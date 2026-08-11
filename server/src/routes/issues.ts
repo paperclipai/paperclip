@@ -14095,7 +14095,7 @@ export function issueRoutes(
             issueAssigneeAdapterOverrides: currentIssue.assigneeAdapterOverrides,
           })
         : null;
-      if (identityReply) {
+      if (identityReply && assignee) {
         const identityComment = await svc.addComment(currentIssue.id, identityReply, {}, {
           authorType: "system",
         });
