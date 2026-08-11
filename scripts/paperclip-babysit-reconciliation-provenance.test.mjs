@@ -104,6 +104,19 @@ describe("babysitter artifact provenance", () => {
     expect(manifest.sourceRevision.contentDigest).toBe(result.sourceContentDigest);
     expect(manifest.buildExecution.id).toBe(`build-eco-1123-${input.sourceRevision.commit}`);
     expect(manifest.buildExecution.inputsDigest).toBe(input.build.inputsDigest);
+    expect(manifest.buildExecution.workflow).toBe("paperclip-babysitter-reconciliation");
+    expect(manifest.buildExecution.inputs).toEqual([
+      reviewedSourcePath,
+      "server/tsconfig.json",
+      "server/package.json",
+      "pnpm-lock.yaml",
+    ]);
+    expect(manifest.buildExecution.environment).toMatchObject({
+      platform: process.platform,
+      arch: process.arch,
+      builder: "paperclip-local-build",
+    });
+    expect(manifest.buildExecution.executionIdentity).toBe(manifest.buildExecution.id);
     expect(manifest.artifactInstance).toMatchObject({
       kind: result.kind,
       sourceRevision: result.sourceRevision,
@@ -117,6 +130,12 @@ describe("babysitter artifact provenance", () => {
     });
     expect(manifest.artifactInstance.buildExecutionId).toBe(manifest.buildExecution.id);
     expect(manifest.artifactInstanceDigest).toBe(result.artifactInstanceDigest);
+    expect(manifest.artifactInstance.contentPath).toBe(retainedBuildOutputPath);
+    expect(manifest.artifactInstance.contentLength).toBe(retainedBuildOutputBytes.length);
+    expect(manifest.artifactInstance.retention).toEqual({
+      locator: retainedBuildOutputPath,
+      mediaType: input.mediaType,
+    });
     expect(manifest.retainedAttachments).toEqual([
       {
         id: `attachment-source-${input.sourceRevision.commit}`,
