@@ -34,9 +34,17 @@ project="$(jq -ce --arg name "${project_name}" '
 ' <<<"${projects}" || true)"
 
 if [[ -z "${project}" ]]; then
-  project="$(dokploy_post project.create "$(jq -cn --arg name "${project_name}" --arg description "Private GitHub Actions runner for trusted Paperclip CI" '{json: {name: $name, description: $description}}')" | jq -ce '.result.data.json')"
+  printf 'Creating Dokploy project %s\n' "${project_name}"
+  dokploy_post project.create "$(jq -cn --arg name "${project_name}" --arg description "Private GitHub Actions runner for trusted Paperclip CI" '{json: {name: $name, description: $description}}')" >/dev/null
+  # project.create does not reliably return the automatically-created default
+  # environment, so reload the canonical project shape before resolving it.
+  projects="$(dokploy_get project.all)"
+  project="$(jq -ce --arg name "${project_name}" '
+    .result.data.json[] | select(.name == $name)
+  ' <<<"${projects}")"
 fi
 
+printf 'Resolving Dokploy environment for %s\n' "${project_name}"
 environment_id="$(jq -er '
   (.environments // [])
   | (map(select(.name == "production"))[0] // .[0])
@@ -60,6 +68,7 @@ compose="$(jq -ce --arg name "${compose_name}" '
 ' <<<"${projects}" || true)"
 
 if [[ -z "${compose}" ]]; then
+  printf 'Creating Dokploy runner compose\n'
   compose="$(dokploy_post compose.create "$(jq -cn \
     --arg name "${compose_name}" \
     --arg app_name "${app_name}" \
@@ -67,6 +76,7 @@ if [[ -z "${compose}" ]]; then
     --arg compose_file "${compose_file}" \
     '{json: {name: $name, appName: $app_name, environmentId: $environment_id, composeType: "docker-compose", composeFile: $compose_file}}')" | jq -ce '.result.data.json')"
 else
+  printf 'Updating Dokploy runner compose\n'
   compose="$(dokploy_post compose.update "$(jq -cn \
     --arg compose_id "$(jq -er '.composeId' <<<"${compose}")" \
     --arg compose_file "${compose_file}" \
@@ -74,6 +84,7 @@ else
 fi
 
 compose_id="$(jq -er '.composeId' <<<"${compose}")"
+printf 'Deploying Dokploy runner compose\n'
 curl --silent --show-error --fail-with-body \
   --request POST \
   --header "X-API-Key: ${DOKPLOY_API_KEY}" \
