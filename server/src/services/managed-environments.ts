@@ -49,6 +49,7 @@ import type { Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import { environmentService } from "./environments.js";
 import type { ManagedSandboxEnvironmentReconcileAction } from "./environments.js";
+import { instanceSettingsService } from "./instance-settings.js";
 import type { ManagedInstanceConfig } from "./managed-config.js";
 import type { ManagedResourceStockStatus } from "./managed-resource-drift.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
@@ -86,8 +87,10 @@ export interface ApplyManagedEnvironmentsOptions {
   /** Test seam: overrides the environment service built from `db`. */
   environments?: Pick<
     ReturnType<typeof environmentService>,
-    "ensureManagedSandboxEnvironment" | "archiveManagedSandboxEnvironment"
+    "ensureManagedSandboxEnvironment" | "archiveManagedSandboxEnvironment" | "getById"
   >;
+  /** Test seam: overrides the instance-settings service built from `db`. */
+  instanceSettings?: Pick<ReturnType<typeof instanceSettingsService>, "get" | "update">;
   /** Test seam: overrides the sandbox-provider plugin driver lookup. */
   resolveSandboxProviderDriver?: (input: {
     db: Db;
@@ -152,6 +155,38 @@ export async function applyManagedEnvironments(
 
   const resolveDriver = opts.resolveSandboxProviderDriver ?? resolvePluginSandboxProviderDriverByKey;
   const environments = opts.environments ?? environmentService(db);
+  const settings = opts.instanceSettings ?? instanceSettingsService(db);
+
+  /**
+   * Point the instance default at the managed sandbox row when no
+   * deliberate choice stands in the way: an unset default, a default on
+   * the (hidden-on-cloud) local row, or a dangling reference all move to
+   * the managed environment, so pickers and run selection agree that
+   * "the default" is the platform sandbox. A tenant-chosen custom
+   * environment (ssh, their own sandbox) is never overridden. Idempotent
+   * and best-effort — a failure degrades to the run-time policy, which
+   * refuses local under managed-sandbox-only regardless.
+   */
+  const ensureManagedInstanceDefault = async (managedEnvironmentId: string): Promise<void> => {
+    try {
+      const current = (await settings.get()).defaultEnvironmentId ?? null;
+      if (current === managedEnvironmentId) return;
+      if (current !== null) {
+        const currentEnvironment = await environments.getById(current);
+        if (currentEnvironment && currentEnvironment.driver !== "local") return;
+      }
+      await settings.update({ defaultEnvironmentId: managedEnvironmentId });
+      logger.info(
+        { environmentId: managedEnvironmentId, previousDefaultEnvironmentId: current },
+        "instance default environment set to the managed sandbox environment",
+      );
+    } catch (err) {
+      logger.error(
+        { err, environmentId: managedEnvironmentId },
+        "failed to set the instance default environment to the managed sandbox environment",
+      );
+    }
+  };
 
   // Recovery path for a `ready` plugin whose worker was down at check time:
   // that shape is usually a crash in restart-backoff, and the manager's
@@ -276,6 +311,7 @@ export async function applyManagedEnvironments(
         stockStatus: reconciliation.stockStatus,
         updateAvailable: reconciliation.updateAvailable,
       });
+      await ensureManagedInstanceDefault(reconciliation.environment.id);
       const logContext = {
         environmentId: reconciliation.environment.id,
         name: reconciliation.environment.name,

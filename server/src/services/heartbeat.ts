@@ -13960,10 +13960,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const requestedReusableExecutionWorkspaceConfig = reusableExistingExecutionWorkspace?.config ?? null;
     const localEnvironment = await environmentsSvc.ensureLocalEnvironment(agent.companyId);
     const resolvedInstanceSettings = await instanceSettings.get();
+    // Managed-sandbox-only policy: a run that would land on the local
+    // environment is redirected onto the platform-managed sandbox row, and
+    // with no active managed row the resolution fails closed
+    // (ManagedSandboxUnavailableError) — never local. Mirrors the forced
+    // kubernetes execution mode below, which takes precedence when both
+    // regimes are active.
+    const managedSandboxOnly =
+      (await instanceSettings.getExperimental()).enableManagedSandboxOnly === true;
+    const managedSandboxEnvironment = managedSandboxOnly
+      ? await environmentsSvc.findManagedSandboxEnvironment(agent.companyId)
+      : null;
     const environmentResolution = resolveExecutionWorkspaceEnvironmentId({
       agentDefaultEnvironmentId: agent.defaultEnvironmentId,
       instanceDefaultEnvironmentId: resolvedInstanceSettings.defaultEnvironmentId ?? null,
       localDefaultEnvironmentId: localEnvironment.id,
+      managedSandboxOnly,
+      managedSandboxEnvironmentId: managedSandboxEnvironment?.id ?? null,
     });
     const effectiveExecutionWorkspaceMode: ReturnType<typeof resolveExecutionWorkspaceMode> =
       requestedExecutionWorkspaceMode;

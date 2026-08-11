@@ -50,6 +50,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableManagedSandboxOnly: {
+    title: "Managed Sandbox Only",
+    description:
+      "Hide the local environment and run all agents in the platform-managed sandbox environment.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableIsolatedWorkspaces: {
     title: "Isolated Workspaces",
     description:

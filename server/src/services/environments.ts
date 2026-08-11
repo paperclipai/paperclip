@@ -953,6 +953,31 @@ export function environmentService(db: Db) {
       return match ? toEnvironment(match) : null;
     },
 
+    /**
+     * Find the active platform-managed sandbox environment (the single
+     * `managedByPaperclip`-marked slot row), if one exists. Read-only
+     * counterpart to `ensureManagedSandboxEnvironment`, used by the
+     * managed-sandbox-only run guard — which must fail closed rather than
+     * create a config-less environment when the slot is empty or archived
+     * (the provisioner archives it while its provider plugin is down).
+     */
+    findManagedSandboxEnvironment: async (_companyId?: string): Promise<Environment | null> => {
+      const rows = await db
+        .select()
+        .from(environments)
+        .where(
+          and(
+            eq(environments.driver, "sandbox"),
+            eq(environments.status, "active"),
+          ),
+        )
+        .orderBy(desc(environments.updatedAt));
+      const match = rows.find(
+        (row) => (row.metadata as Record<string, unknown> | null)?.managedByPaperclip === true,
+      );
+      return match ? toEnvironment(match) : null;
+    },
+
     create: async (
       companyIdOrInput: string | CreateEnvironment,
       maybeInput?: CreateEnvironment,
