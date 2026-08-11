@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { CSSProperties } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { Issue, IssueDocument, IssueWorkProduct } from "@paperclipai/shared";
 import {
@@ -24,7 +25,6 @@ import {
 } from "@/lib/issue-artifacts";
 import { attachmentOpenPath } from "@/lib/issue-attachments";
 import { MarkdownBody } from "@/components/MarkdownBody";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 interface IssuePropertiesArtifactsTabProps {
@@ -49,20 +49,21 @@ function workProductIcon(type: string): LucideIcon {
   }
 }
 
-function workProductStatusBadge(status: string): { label: string; className: string } | null {
+/** Work-product status → label + `--status-task-*` base-hue var for `.status-chip`. */
+function workProductStatusBadge(status: string): { label: string; cssVar: string } | null {
   switch (status) {
     case "active":
     case "draft":
-      return { label: "In progress", className: "bg-blue-500/10 text-blue-600 dark:text-blue-400" };
+      return { label: "In progress", cssVar: "--status-task-in_progress" };
     case "ready_for_review":
-      return { label: "For review", className: "bg-amber-500/10 text-amber-600 dark:text-amber-400" };
+      return { label: "For review", cssVar: "--status-task-in_review" };
     case "approved":
     case "merged":
-      return { label: "Done", className: "bg-green-500/10 text-green-600 dark:text-green-400" };
+      return { label: "Done", cssVar: "--status-task-done" };
     case "changes_requested":
-      return { label: "Changes requested", className: "bg-orange-500/10 text-orange-600 dark:text-orange-400" };
+      return { label: "Changes requested", cssVar: "--status-task-todo" };
     case "failed":
-      return { label: "Failed", className: "bg-red-500/10 text-red-600 dark:text-red-400" };
+      return { label: "Failed", cssVar: "--status-task-blocked" };
     default:
       return null;
   }
@@ -88,9 +89,12 @@ function WorkProductRow({ workProduct }: { workProduct: IssueWorkProduct }) {
       <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       <span className="min-w-0 flex-1 truncate">{workProduct.title}</span>
       {badge ? (
-        <Badge variant="ghost" className={cn("shrink-0 text-(length:--text-nano) px-1.5", badge.className)}>
+        <span
+          className="status-chip inline-flex shrink-0 items-center rounded-full border px-1.5 py-0.5 text-(length:--text-nano) leading-none whitespace-nowrap"
+          style={{ "--sc": `var(${badge.cssVar})` } as CSSProperties}
+        >
           {badge.label}
-        </Badge>
+        </span>
       ) : null}
       {href ? (
         <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground" />
