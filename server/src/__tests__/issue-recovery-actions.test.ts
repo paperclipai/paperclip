@@ -457,6 +457,34 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).toHaveBeenCalled();
   });
 
+  it("escalates a successful run that flagged a manager-review change instead of auto-continuing", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "succeeded",
+      livenessState: "needs_followup",
+      actionability: "manager_review",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    // manager_review must route to human/manager escalation (issue -> blocked),
+    // NOT the productive-continuation auto-requeue path — a run that flags a
+    // prod deploy / secret rotation / strategy call is not safe to auto-continue.
+    expect(result.escalated).toBe(1);
+    expect(result.continuationRequeued).toBe(0);
+    const [issueRow] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(issueRow?.status).toBe("blocked");
+  });
+
   it("schedules a provider-quota monitor for the original assignee without creating recovery work", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     const runId = randomUUID();

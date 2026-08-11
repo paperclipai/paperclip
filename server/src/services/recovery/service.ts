@@ -155,6 +155,7 @@ type LatestIssueRun = Pick<
   | "errorCode"
   | "contextSnapshot"
   | "livenessState"
+  | "actionability"
   | "startedAt"
   | "createdAt"
 > & {
@@ -795,6 +796,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        actionability: heartbeatRuns.actionability,
         resultJson: heartbeatRuns.resultJson,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
@@ -825,6 +827,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        actionability: heartbeatRuns.actionability,
         resultJson: heartbeatRuns.resultJson,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
@@ -1064,6 +1067,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        actionability: heartbeatRuns.actionability,
         resultJson: heartbeatRuns.resultJson,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
@@ -4140,6 +4144,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
       if (isSuccessfulInProgressContinuationRun(latestRun)) {
         const successfulRun = latestRun;
+
+        // A successful run that flagged a manager/human-review change (e.g. a
+        // production deploy, secret rotation, or strategy call) must not be
+        // auto-continued. Route it to the same blocked + manager-owner
+        // escalation used elsewhere so a human reviews the flagged change
+        // before the issue resumes. manager_review is the only actionability
+        // that maps to a successful needs_followup run, so the guard is enough.
+        if (successfulRun.actionability === "manager_review") {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_progress",
+            latestRun: successfulRun,
+            comment:
+              "This run flagged a change that needs manager or human review before it is safe to continue. " +
+              "Moving it to `blocked` so a manager reviews the flagged change before the issue resumes.",
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
 
         if (!isProductiveContinuationRun(successfulRun)) {
           result.successfulContinuationObserved += 1;
