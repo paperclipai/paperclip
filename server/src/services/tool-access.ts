@@ -143,6 +143,31 @@ const OAUTH_REFRESH_LEASE_POLL_MS = 25;
 // concurrently -- exactly the race the lease exists to prevent. This timeout
 // caps the one thing that wasn't already bounded by the lease duration.
 const OAUTH_TOKEN_EXCHANGE_TIMEOUT_MS = 30_000;
+// Same reasoning, for secrets.rotate(): its underlying secret provider can be
+// an external service (see getSecretProvider) with no timeout of its own.
+// Two of these can run in a single refresh (refresh token, then access
+// token) alongside the token exchange above, so 30s each keeps the worst-case
+// critical section (30 + 30 + 30 = 90s) comfortably under the 120s lease.
+// This can abandon a hung rotate() call rather than truly cancel it (no
+// AbortSignal support in the secret-provider abstraction), but it still
+// closes the common case: a slow-but-eventually-completing write now fails
+// cleanly and releases the lease, instead of silently outliving it.
+const SECRET_ROTATION_TIMEOUT_MS = 30_000;
+
+async function raceWithTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(message)), ms);
+        timeout.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
 
 type OAuthProviderEndpoints = {
   provider: string;
@@ -6400,9 +6425,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         // on their old (still-matching) generation, and the access-token
         // rotation below never runs.
         if (token.refreshToken) {
-          await secrets.rotate(refreshTokenRef.secretId, { value: token.refreshToken }, {});
+          await raceWithTimeout(
+            secrets.rotate(refreshTokenRef.secretId, { value: token.refreshToken }, {}),
+            SECRET_ROTATION_TIMEOUT_MS,
+            "Timed out rotating a connection grant's refresh token secret",
+          );
         }
-        await secrets.rotate(accessTokenRef.secretId, { value: token.accessToken }, {});
+        await raceWithTimeout(
+          secrets.rotate(accessTokenRef.secretId, { value: token.accessToken }, {}),
+          SECRET_ROTATION_TIMEOUT_MS,
+          "Timed out rotating a connection grant's access token secret",
+        );
 
         const expiresAt = token.expiresIn ? new Date(Date.now() + token.expiresIn * 1000).toISOString() : null;
         const updatedRefs = grant.credentialSecretRefs.map((ref) =>
