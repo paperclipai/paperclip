@@ -30,6 +30,14 @@ helpers in [`src/ssh.ts`](./src/ssh.ts):
 calls for adapters that want a per-run remote workspace and an automatic
 `restoreWorkspace()` finally hook.
 
+## Local process sandbox mounts
+
+When a local process uses the workspace filesystem scope, Bubblewrap mounts
+managed paths, extra paths, and the workspace from shallowest to deepest. This
+keeps the most specific access mode effective: a read-only extra path inside
+the workspace stays read-only, while a read-only parent path does not make the
+workspace read-only.
+
 The invariant is pinned by the `no-remote-git contract` case in
 [`src/ssh-fixture.test.ts`](./src/ssh-fixture.test.ts), which asserts that a
 remote-only commit propagates to the local worktree through the

@@ -96,6 +96,57 @@ describe("local process sandbox", () => {
     expect(target.args.slice(-3)).toEqual([process.execPath, "-e", "console.log('ok')"]);
   });
 
+  it("keeps a read-only extra path inside the workspace read-only", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-nested-ro-"));
+    cleanup.push(root);
+    const workspace = path.join(root, "workspace");
+    const protectedPath = path.join(workspace, "secrets");
+    await fs.mkdir(protectedPath, { recursive: true });
+
+    const target = await buildLocalProcessSandboxSpawnTarget({
+      executable: process.execPath,
+      args: ["-e", "process.exit(0)"],
+      cwd: workspace,
+      options: {
+        workspaceDir: workspace,
+        filesystemScope: "workspace",
+        extraPaths: [{ path: protectedPath, access: "ro" }],
+      },
+    });
+
+    const workspaceMount = target.args.findIndex((value, index) =>
+      value === "--bind" && target.args[index + 1] === workspace && target.args[index + 2] === workspace);
+    const protectedMount = target.args.findIndex((value, index) =>
+      value === "--ro-bind" && target.args[index + 1] === protectedPath && target.args[index + 2] === protectedPath);
+    expect(workspaceMount).toBeGreaterThanOrEqual(0);
+    expect(protectedMount).toBeGreaterThan(workspaceMount);
+  });
+
+  it("keeps the workspace writable when a read-only extra path contains it", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-parent-ro-"));
+    cleanup.push(root);
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(workspace, { recursive: true });
+
+    const target = await buildLocalProcessSandboxSpawnTarget({
+      executable: process.execPath,
+      args: ["-e", "process.exit(0)"],
+      cwd: workspace,
+      options: {
+        workspaceDir: workspace,
+        filesystemScope: "workspace",
+        extraPaths: [{ path: root, access: "ro" }],
+      },
+    });
+
+    const parentMount = target.args.findIndex((value, index) =>
+      value === "--ro-bind" && target.args[index + 1] === root && target.args[index + 2] === root);
+    const workspaceMount = target.args.findIndex((value, index) =>
+      value === "--bind" && target.args[index + 1] === workspace && target.args[index + 2] === workspace);
+    expect(parentMount).toBeGreaterThanOrEqual(0);
+    expect(workspaceMount).toBeGreaterThan(parentMount);
+  });
+
   it("binds a confined absolute alias to the synchronized workspace", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-alias-"));
     cleanup.push(root);
