@@ -12,6 +12,7 @@ import {
   companySecretVersions,
   companySecrets,
   createDb,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -49,6 +50,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
     await db.delete(companySecrets);
     await db.delete(companySecretProviderConfigs);
     await db.delete(agents);
+    await db.delete(principalPermissionGrants);
     await db.delete(companies);
   });
 
@@ -113,6 +115,31 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
       versionSelector: "latest",
       required: true,
     });
+  });
+
+  it("grants every new agent a baseline tools:use permission at creation", async () => {
+    const companyId = await seedCompany();
+    const created = await agentService(db).create(companyId, {
+      name: "Fresh Hire",
+      role: "engineer",
+      status: "pending_approval",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+    });
+
+    const grants = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(and(
+        eq(principalPermissionGrants.companyId, companyId),
+        eq(principalPermissionGrants.principalType, "agent"),
+        eq(principalPermissionGrants.principalId, created.id),
+        eq(principalPermissionGrants.permissionKey, "tools:use"),
+      ));
+
+    expect(grants).toHaveLength(1);
+    expect(grants[0]?.scope).toBeNull();
   });
 
   it("stores approved class-3 env lease metadata on agent secret bindings", async () => {

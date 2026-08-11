@@ -15,6 +15,7 @@ import {
   issueExecutionDecisions,
   issues,
   issueComments,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -629,6 +630,22 @@ export function agentService(db: Db) {
           .returning()
           .then((rows) => rows[0]);
         await syncAgentSecretBindings(created, txDb);
+        // Baseline tool access: grant every new agent a null-scope tools:use so it can
+        // reach gateway tools once active — deny-default otherwise leaves new hires
+        // silently tool-less. Destructive tools still need formal approval and
+        // require_approval policies still gate writes; this only lifts the floor.
+        // Idempotent via the unique (company, principal_type, principal_id, key) index.
+        await tx
+          .insert(principalPermissionGrants)
+          .values({
+            companyId,
+            principalType: "agent",
+            principalId: created.id,
+            permissionKey: "tools:use",
+            scope: null,
+            grantedByUserId: null,
+          })
+          .onConflictDoNothing();
         const normalizedCreated = await agentService(txDb).getById(created.id);
         if (!normalizedCreated) {
           throw notFound("Agent not found");
