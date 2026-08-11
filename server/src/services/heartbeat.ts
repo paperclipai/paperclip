@@ -4033,6 +4033,14 @@ function readActiveQuotaCooldown(
   return resetAt;
 }
 
+export function isTokenBudgetExhaustedRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson"> | null | undefined,
+): boolean {
+  if (!run) return false;
+  if (run.errorCode === "token_budget_exhausted") return true;
+  return readNonEmptyString(parseObject(run.resultJson).stopReason) === "token_budget_exhausted";
+}
+
 function isExecutionReviewParticipantRecoveryRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "contextSnapshot"> | null,
 ) {
@@ -19467,6 +19475,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // for the same issue. Otherwise cancelling an accidental wake can itself
       // spend another agent turn.
       if (isVerifiedOperatorCancellation) return { kind: "released" as const };
+      // A live token-cap stop is also terminal for this issue invocation. Do not
+      // turn the safety stop into a second paid recovery wake; surface a visible,
+      // machine-readable blocked disposition for deliberate operator review.
+      if (
+        isTokenBudgetExhaustedRun(run) &&
+        (issue.status === "todo" || issue.status === "in_progress") &&
+        !issue.assigneeUserId &&
+        issue.assigneeAgentId === run.agentId
+      ) {
+        return {
+          kind: "token_cap_blocked" as const,
+          issue,
+          previousStatus: issue.status,
+        };
+      }
       const activeQuotaCooldown = readActiveQuotaCooldown(run);
 
       // Workspace-validation recovery: if the finalizing run failed workspace
@@ -20243,6 +20266,50 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         run: queuedRun,
       };
     });
+
+    if (promotionResult?.kind === "token_cap_blocked") {
+      await issuesSvc.update(promotionResult.issue.id, {
+        status: "blocked",
+        unblockDescriptor: {
+          owner: "board",
+          action: "Review the token-cap partial work and approve a bounded split or deterministic route before explicitly resuming.",
+        },
+        actorAgentId: run.agentId,
+        actorUserId: null,
+      });
+      const capResult = parseObject(run.resultJson);
+      const configuredCap = Math.max(0, Math.floor(asNumber(capResult.maxTokensPerRun, 0)));
+      const observedTokens = Math.max(0, Math.floor(asNumber(capResult.observedTokens, 0)));
+      await issuesSvc.addComment(
+        promotionResult.issue.id,
+        "Paperclip stopped this run at its live per-run token cap and will not queue a continuation or recovery turn. " +
+          `Run \`${run.id}\`; cap ${configuredCap.toLocaleString("en-US")}; observed ${observedTokens.toLocaleString("en-US")}. ` +
+          "The issue is blocked for deliberate review; resume only with a new bounded disposition, not a replay.",
+        { runId: run.id },
+        { authorType: "system" },
+      );
+      await logActivity(db, {
+        companyId: run.companyId,
+        actorType: "system",
+        actorId: "heartbeat",
+        agentId: run.agentId,
+        runId: run.id,
+        action: "issue.token_cap_disposition_applied",
+        entityType: "issue",
+        entityId: promotionResult.issue.id,
+        details: {
+          status: "blocked",
+          stopReason: "token_budget_exhausted",
+          maxTokensPerRun: configuredCap,
+          observedTokens,
+          recoverySuppressed: true,
+        },
+      });
+      await requeueUnfinishedBatchPickupSiblings(run).catch((err) => {
+        logger.warn({ err, runId: run.id }, "batch issue pickup requeue failed");
+      });
+      return;
+    }
 
     if (promotionResult?.kind === "blocked") {
       await requeueUnfinishedBatchPickupSiblings(run).catch((err) => {

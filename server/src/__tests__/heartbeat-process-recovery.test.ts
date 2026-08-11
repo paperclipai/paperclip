@@ -113,6 +113,7 @@ import {
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   heartbeatService,
   inferIntendedDoneDispositionFromFinalReport,
+  isTokenBudgetExhaustedRun,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
   redactSuccessfulRunHandoffEvidence,
 } from "../services/heartbeat.ts";
@@ -4260,6 +4261,78 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(inferIntendedDoneDispositionFromFinalReport(
       "I intended to finish, but the API was unavailable.",
     )).toBeNull();
+  });
+
+  it("blocks an ACP live token-cap stop without buying a recovery generation run", async () => {
+    expect(isTokenBudgetExhaustedRun({
+      errorCode: "token_budget_exhausted",
+      resultJson: { stopReason: "token_budget_exhausted" },
+    } as never)).toBe(true);
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId, name: "Paperclip App", status: "in_progress" });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      sourceType: "local_path",
+      cwd: process.cwd(),
+      isPrimary: true,
+    });
+    await db.update(issues).set({ projectId, projectWorkspaceId }).where(eq(issues.id, issueId));
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: "Paperclip maxTokensPerRun budget of 100000 tokens exhausted (observed 100000).",
+      errorCode: "token_budget_exhausted",
+      summary: "token_budget_exhausted",
+      usage: { inputTokens: 100_000, cachedInputTokens: 0, outputTokens: 0 },
+      usageBasis: "per_run",
+      resultJson: {
+        status: "cancelled",
+        stopReason: "token_budget_exhausted",
+        maxTokensPerRun: 100_000,
+        observedTokens: 100_000,
+      },
+      provider: "test",
+      model: "test-model",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+
+    const issue = await waitForValue(async () =>
+      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
+        const row = rows[0] ?? null;
+        return row?.status === "blocked" ? row : null;
+      }),
+      5_000,
+    );
+    expect(issue?.status).toBe("blocked");
+
+    const issueRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`);
+    expect(issueRuns).toHaveLength(1);
+    const recoveryWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.agentId, agentId),
+        inArray(agentWakeupRequests.reason, ["issue_assignment_recovery", "issue_continuation_needed"]),
+      ));
+    expect(recoveryWakeups).toHaveLength(0);
+
+    const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+    expect(activity).toContainEqual(expect.objectContaining({
+      action: "issue.token_cap_disposition_applied",
+      details: expect.objectContaining({ recoverySuppressed: true, stopReason: "token_budget_exhausted" }),
+    }));
   });
 
   it("treats the stage 12 blocked-dedup no-op as a quiet blocked wait with no recovery loop", async () => {

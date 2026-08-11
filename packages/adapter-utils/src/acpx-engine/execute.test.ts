@@ -881,7 +881,7 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(result.billingType).toBe("unknown");
   });
 
-  it("stops an ACP turn at its per-run token budget without discarding the session", async () => {
+  it("stops an ACP turn at the exact per-run boundary from used/size telemetry without discarding the session", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const cancel = vi.fn().mockResolvedValue(undefined);
@@ -899,7 +899,15 @@ describe("shared ACPX engine runtime behavior", () => {
               type: "status",
               text: "usage",
               tag: "usage_update",
-              breakdown: { inputTokens: 800_000, outputTokens: 300_000 },
+              used: 999_999,
+              size: 2_000_000,
+            };
+            yield {
+              type: "status",
+              text: "usage",
+              tag: "usage_update",
+              used: 1_000_000,
+              size: 2_000_000,
             };
             yield { type: "done", stopReason: "cancelled" };
           })(),
@@ -926,14 +934,17 @@ describe("shared ACPX engine runtime behavior", () => {
     } as never);
 
     expect(cancel).toHaveBeenCalledWith(expect.objectContaining({ reason: expect.stringContaining("1000000") }));
+    expect(cancel).toHaveBeenCalledTimes(1);
     expect(close).toHaveBeenCalledWith(expect.objectContaining({ discardPersistentState: false }));
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("token_budget_exhausted");
     expect(result.resultJson).toMatchObject({
       stopReason: "token_budget_exhausted",
       maxTokensPerRun: 1_000_000,
-      observedTokens: 1_100_000,
+      observedTokens: 1_000_000,
+      usage: { observedContextTokens: 1_000_000 },
     });
+    expect(result.usage).toEqual({ inputTokens: 1_000_000, outputTokens: 0, cachedInputTokens: 0 });
   });
 
   it.skipIf(process.platform === "win32")("materializes ACPX Claude skills without symlinked descendants", async () => {

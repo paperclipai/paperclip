@@ -3535,8 +3535,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         if (event.type === "status" && event.tag === "usage_update") {
           eventBreakdown = event.breakdown ?? eventBreakdown;
           eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
-          const observed = usageBreakdownTotalTokens(event.breakdown);
-          if (!tokenBudgetExhausted && maxTokensPerRun > 0 && observed > maxTokensPerRun) {
+          // Codex ACP reports the live context total as `used`/`size` but does not
+          // currently include a provider breakdown. Other ACP runtimes provide the
+          // breakdown instead. Enforce the cap from the strongest signal available
+          // so a missing optional breakdown cannot silently disable cancellation.
+          const observed = Math.max(
+            usageBreakdownTotalTokens(event.breakdown),
+            Math.max(0, Math.floor(asNumber(event.used, 0))),
+          );
+          if (!tokenBudgetExhausted && maxTokensPerRun > 0 && observed >= maxTokensPerRun) {
             tokenBudgetExhausted = true;
             tokenBudgetObserved = observed;
             await cancelActiveTurn?.(
@@ -3550,12 +3557,30 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       if (timeout) clearTimeout(timeout);
       // Read usage before the close/warm-handle paths below can discard state.
       const postTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
-      const turnUsage = summarizeAcpxTurnUsage({
+      const summarizedTurnUsage = summarizeAcpxTurnUsage({
         preStatus: preTurnStatus,
         postStatus: postTurnStatus,
         eventBreakdown,
         eventCostUsd,
       });
+      // `used` is a conservative context-token equivalent when the ACP runtime
+      // omits category-level usage. Persist it on cap stops so the ledger and
+      // issue-level aggregate guard do not lose the very usage that tripped the
+      // boundary. Never synthesize this fallback for ordinary completed turns.
+      const turnUsage = tokenBudgetExhausted && !summarizedTurnUsage.usage && tokenBudgetObserved > 0
+        ? {
+            ...summarizedTurnUsage,
+            usage: {
+              inputTokens: tokenBudgetObserved,
+              outputTokens: 0,
+              cachedInputTokens: 0,
+            },
+            usageDetail: {
+              ...(summarizedTurnUsage.usageDetail ?? {}),
+              observedContextTokens: tokenBudgetObserved,
+            },
+          }
+        : summarizedTurnUsage;
       const discardPersistentState = (terminal.status === "cancelled" && !tokenBudgetExhausted) || timedOut;
       if (terminal.status === "failed" || terminal.status === "cancelled" || timedOut) {
         const existing = warmHandles.get(prepared.sessionKey);
