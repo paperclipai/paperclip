@@ -3523,7 +3523,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         if (updated.length === 0) return false;
 
         const repairedState = updated[0].executionState;
-        await logActivity(tx, {
+        // The activity record must commit with the CAS repair. Drizzle's
+        // transaction handle is structurally compatible with the activity
+        // logger at runtime, but its inferred type intentionally omits the
+        // root database client's `$client` property.
+        await logActivity(tx as unknown as Db, {
           companyId: issue.companyId,
           actorType: "system",
           actorId: "system",
