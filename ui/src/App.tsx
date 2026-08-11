@@ -44,7 +44,6 @@ import { CompanyActivity } from "./pages/audit/CompanyActivity";
 import { Inbox } from "./pages/Inbox";
 import { WhatNeedsMe } from "./pages/WhatNeedsMe";
 import { DecisionQueuePage } from "./pages/DecisionQueuePage";
-import { TrainingInspector, TrainingLibrary } from "./pages/Training";
 import { BoardChat } from "./pages/BoardChat";
 import { CompanySettings } from "./pages/CompanySettings";
 import { CompanyEnvironments } from "./pages/CompanyEnvironments";
@@ -281,10 +280,6 @@ function boardRoutes() {
       ) : null}
       <Route path="decisions" element={<WhatNeedsMe />} />
       <Route path="decisions/queues/:key" element={<DecisionQueuePage />} />
-      <Route path="decisions/training" element={<TrainingLibrary />} />
-      <Route path="decisions/training/:id" element={<TrainingInspector />} />
-      <Route path="training" element={<Navigate to="/decisions/training" replace />} />
-      <Route path="training/:id" element={<LegacyTrainingRedirect />} />
       <Route path="inbox" element={<InboxRootRedirect />} />
       <Route path="inbox/mine" element={<Inbox />} />
       <Route path="inbox/recent" element={<Inbox />} />
@@ -310,11 +305,6 @@ function AppsConnectEntryRoute() {
 
 function InboxRootRedirect() {
   return <Navigate to={`/inbox/${loadLastInboxTab()}`} replace />;
-}
-
-function LegacyTrainingRedirect() {
-  const { id } = useParams<{ id: string }>();
-  return <Navigate to={id ? `/decisions/training/${id}` : "/decisions/training"} replace />;
 }
 
 function LegacySkillStudioRedirect() {

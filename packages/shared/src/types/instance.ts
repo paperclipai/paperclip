@@ -46,6 +46,11 @@ export interface InstanceGeneralSettings {
 
 export interface InstanceExperimentalSettings {
   enableEnvironments: boolean;
+  /**
+   * Hide the local environment and run all agents in the platform-managed
+   * sandbox environment. Run selection refuses local while this is on.
+   */
+  enableManagedSandboxOnly: boolean;
   enableIsolatedWorkspaces: boolean;
   enableStreamlinedLeftNavigation: boolean;
   enableApps: boolean;

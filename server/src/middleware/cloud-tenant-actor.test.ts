@@ -159,6 +159,19 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(insertedTables).toContain(companyMemberships);
   });
 
+  it("resyncs an A to B to A context transition inside the debounce window", async () => {
+    const { db, insertedTables } = createFakeDb();
+    const contextA = VALID_HEADERS;
+    const contextB = { ...VALID_HEADERS, "x-paperclip-cloud-stack-role": "member" };
+
+    await resolveCloudTenantActor(db, fakeReq(contextA));
+    await resolveCloudTenantActor(db, fakeReq(contextB));
+    await resolveCloudTenantActor(db, fakeReq(contextA));
+
+    expect(insertedTables.filter((table) => table === authUsers)).toHaveLength(3);
+    expect(insertedTables.filter((table) => table === companyMemberships)).toHaveLength(3);
+  });
+
   it("returns null when the server token is unset", async () => {
     delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
     const { db } = createFakeDb();

@@ -14,6 +14,8 @@ import { executionWorkspacesApi } from "../../api/execution-workspaces";
 import { instanceSettingsApi } from "../../api/instanceSettings";
 import { issuesApi } from "../../api/issues";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
+import { useIssueDocuments } from "@/hooks/useIssueDocuments";
+import { selectAgentArtifactAttachments } from "@/lib/issue-artifacts";
 import { projectsApi } from "../../api/projects";
 import { useCompany } from "../../context/CompanyContext";
 import { queryKeys } from "../../lib/queryKeys";
@@ -206,11 +208,25 @@ export function IssueProperties({
     queryFn: () => issuesApi.listAttachments(issue.id),
     enabled: taskChatShellEnabled,
   });
+  const { data: paneTabWorkProducts } = useQuery({
+    queryKey: queryKeys.issues.workProducts(issue.id),
+    queryFn: () => issuesApi.listWorkProducts(issue.id),
+    enabled: taskChatShellEnabled,
+  });
+  const { data: paneTabDocuments } = useIssueDocuments(taskChatShellEnabled ? issue.id : null);
   const hasPlanTab =
     Boolean(paneTabPlanDocument)
     || (paneTabAcceptedPlans?.length ?? 0) > 0
+    || (paneTabDocuments?.length ?? 0) > 0
     || issue.workMode === "planning";
-  const hasArtifactsTab = (paneTabAttachments?.length ?? 0) > 0;
+  // Artifacts covers the same three sources the tab body composes: work
+  // products, documents (redundant with the Plan tab, intentionally), and
+  // agent-created attachments. User comment uploads stay thread-only and
+  // no longer summon the tab.
+  const hasArtifactsTab =
+    (paneTabWorkProducts?.length ?? 0) > 0
+    || (paneTabDocuments?.length ?? 0) > 0
+    || selectAgentArtifactAttachments(paneTabAttachments, paneTabWorkProducts).length > 0;
   const [paneTab, setPaneTab] = useState("properties");
   // Once a plan document exists, surface it: switch the pane to the Plan tab so
   // the write-up is exposed alongside the plan-approval card, instead of leaving

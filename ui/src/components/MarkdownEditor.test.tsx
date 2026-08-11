@@ -15,6 +15,7 @@ import {
   placeCaretAfterMentionAnchor,
   shouldAcceptAutocompleteKey,
 } from "./MarkdownEditor";
+import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
 
 const mdxEditorMockState = vi.hoisted(() => ({
   emitMountEmptyReset: false,
@@ -1023,6 +1024,64 @@ describe("MarkdownEditor", () => {
       menu.dispatchEvent(wheel);
     });
     expect(wheel.defaultPrevented).toBe(false);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("lets wheel and touch scrolling reach the autocomplete menu inside a modal", async () => {
+    const root = createRoot(container);
+    const mentions = Array.from({ length: 12 }, (_, index) => ({
+      id: `project:project-${index}`,
+      kind: "project" as const,
+      name: `Paperclip App ${index}`,
+      projectId: `project-${index}`,
+      projectColor: "#336699",
+    }));
+
+    await act(async () => {
+      root.render(
+        <Dialog open>
+          <DialogContent>
+            <DialogTitle>Create task</DialogTitle>
+            <MarkdownEditor value="@Pap" onChange={() => {}} mentions={mentions} />
+          </DialogContent>
+        </Dialog>,
+      );
+    });
+    await flush();
+
+    const editable = document.body.querySelector('[data-testid="mdx-editor"]');
+    const textNode = editable?.firstChild;
+    expect(textNode?.nodeType).toBe(Node.TEXT_NODE);
+
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.setStart(textNode!, "@Pap".length);
+    range.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    act(() => {
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await flush();
+
+    const menu = document.body.querySelector('[data-testid="mention-autocomplete-menu"]');
+    expect(menu).toBeTruthy();
+
+    const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 80 });
+    act(() => {
+      menu?.dispatchEvent(wheel);
+    });
+    expect(wheel.defaultPrevented).toBe(false);
+
+    const touchMove = createTouchEvent("touchmove", [{ clientX: 100, clientY: 90 }]);
+    act(() => {
+      menu?.firstElementChild?.dispatchEvent(touchMove);
+    });
+    expect(touchMove.defaultPrevented).toBe(false);
 
     await act(async () => {
       root.unmount();

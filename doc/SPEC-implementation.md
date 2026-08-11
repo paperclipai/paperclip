@@ -556,7 +556,7 @@ Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and
 | Set company budget | yes | no |
 | Set subordinate budget | yes | yes (manager subtree only) |
 | Manage responsible user's inbox state | yes | yes (default-open policy) |
-| Manage another user's inbox state | yes | scoped `inbox:manage` grant |
+| Manage another user's inbox state | yes | saved target-user opt-in or scoped `inbox:manage` grant |
 | Set work-object visibility (issue/project) | no | no (pro gate) |
 
 ### 9.3.1 Shared default-open issue writes
@@ -624,7 +624,7 @@ The approved term set is:
 | Work-object visibility | All issues and projects in-company are visible to board and agents | Project/issue ACLs and reviewer-only channels |
 | Tool/secret policy | Secret refs, log redaction, and adapter-level command/webhook restrictions | Tool allowlists with centralized policy evaluation |
 | Company skills | Open to authenticated company agents; core enforces invariants and any stored restriction policy | Paperclip EE policy editor, protected-skill controls, presets, simulation, and policy audit UX |
-| Inbox management | Responsible agent may archive/unarchive its responsible user's Mine items under a default-open user policy; cross-user access requires `inbox:manage`; all mutations are audited | Policy administration UX, organization presets, simulations, bulk controls, and richer audit/reporting surfaces |
+| Inbox management | Responsible agent may archive/unarchive its responsible user's Mine items under a default-open user policy; explicit cross-user access requires saved target-user opt-in or `inbox:manage`; all mutations are audited | Policy administration UX, organization presets, simulations, bulk controls, and richer audit/reporting surfaces |
 | Escalation | Escalate from agent to manager to board; board approval/budget gates remain authoritative | Escalation routing and SLA windows |
 
 ## 9.7 Recommended first-slice implementation order
@@ -870,7 +870,7 @@ Core authorization follows these rules:
 - Board users may archive or unarchive inbox entries for users in the company.
 - An agent may manage the responsible user's inbox without an explicit grant when the authenticated run resolves that user and the user's inbox-agent policy permits the agent. This is the default-open path.
 - A user may set inbox-agent policy to `disabled` or `allowlist`. Policy restrictions override the default-open path, and low-trust agents are denied.
-- An agent targeting any user other than its resolved responsible user requires an explicit `inbox:manage` grant. Grants may be unscoped or constrained by `scope.userIds`.
+- An agent targeting any user other than its resolved responsible user requires either a materialized target-user policy that permits that agent (`open` or matching `allowlist`) or an explicit `inbox:manage` grant. The implicit default-open policy for a missing row remains responsible-user-only, so it never becomes a blanket cross-user grant. Grants may be unscoped or constrained by `scope.userIds` and act as administrative overrides, including over a disabled target-user policy.
 - Archive and unarchive operations are company-scoped, reversible, and activity logged with actor, agent, run, target user, target-resolution source, and policy mode.
 - New qualifying issue activity may invalidate an archive so the item resurfaces; archival is not a substitute for resolving or closing work.
 - Viewing an issue may update its per-user read receipt, but read receipts alone do not enroll the issue in Mine. Mine participation begins with a user-authored comment, issue creation/assignment, or another audited user mutation; explicit product actions such as manually running a routine may record an audited inbox touch.

@@ -355,6 +355,7 @@ export function InstanceExperimentalSettings() {
     getWorktreeInstanceId(),
   );
   const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
+  const enableManagedSandboxOnly = experimentalQuery.data?.enableManagedSandboxOnly === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
   const enableApps = experimentalQuery.data?.enableApps === true;
   // Streamlined left navigation is now the standard sidebar (PAP-12472); the
@@ -681,6 +682,16 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         managed={managedKeys.enableGoalsSidebarLink}
         ariaLabel="Toggle goals sidebar link experimental setting"
+      />
+
+      <ExperimentalToggleCard
+        title="Managed Sandbox Only"
+        description="Hide the local environment and run all agents in the platform-managed sandbox environment."
+        checked={enableManagedSandboxOnly}
+        onCheckedChange={(checked) => toggleMutation.mutate({ enableManagedSandboxOnly: checked })}
+        disabled={toggleMutation.isPending}
+        managed={managedKeys.enableManagedSandboxOnly}
+        ariaLabel="Toggle managed sandbox only experimental setting"
       />
 
       {inWorktree ? (

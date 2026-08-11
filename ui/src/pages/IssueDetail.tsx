@@ -2172,6 +2172,37 @@ export function IssueDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
     }
   }, [queryClient, selectedCompanyId]);
+  const undoInboxArchive = useCallback(async (
+    id: string,
+    companyId: string | undefined,
+    previousData: InboxIssueCacheSnapshot,
+  ) => {
+    if (companyId) {
+      await cancelInboxIssueQueries(queryClient, companyId);
+      clearLocalInboxArchive(companyId, id);
+      restoreIssueToInboxCaches(queryClient, previousData, id);
+    }
+
+    try {
+      await issuesApi.unarchiveFromInbox(id);
+      pushToast({ title: "Task restored to inbox", tone: "success" });
+    } catch (error) {
+      if (companyId) {
+        beginLocalInboxArchive(companyId, id);
+        removeIssueFromInboxCaches(queryClient, companyId, id);
+        boundLocalInboxArchive(companyId, id);
+      }
+      pushToast({
+        title: "Undo failed",
+        body: error instanceof Error ? error.message : "Unable to restore this task to the inbox",
+        tone: "error",
+      });
+    } finally {
+      if (companyId) {
+        await invalidateInboxIssueQueries(queryClient, companyId);
+      }
+    }
+  }, [pushToast, queryClient]);
   const upsertInteractionInCache = useCallback((interaction: IssueThreadInteraction) => {
     queryClient.setQueryData<IssueThreadInteraction[] | undefined>(
       queryKeys.issues.interactions(issueId!),
@@ -3204,13 +3235,22 @@ export function IssueDetail() {
       removeIssueFromInboxCaches(queryClient, selectedCompanyId, id);
       return { companyId: selectedCompanyId, previousData };
     },
-    onSuccess: (_data, id) => {
+    onSuccess: (_data, id, context) => {
       if (selectedCompanyId) {
         removeIssueFromInboxCaches(queryClient, selectedCompanyId, id);
       }
       invalidateIssueCollections();
       navigate(sourceBreadcrumb.href.startsWith("/inbox") ? sourceBreadcrumb.href : "/inbox", { replace: true });
-      pushToast({ title: "Task archived from inbox", tone: "success" });
+      pushToast({
+        title: "Task archived from inbox",
+        tone: "success",
+        action: {
+          label: "Undo",
+          onClick: () => {
+            void undoInboxArchive(id, context?.companyId, context?.previousData ?? []);
+          },
+        },
+      });
     },
     onError: (err, id, context) => {
       if (context?.companyId) clearLocalInboxArchive(context.companyId, id);

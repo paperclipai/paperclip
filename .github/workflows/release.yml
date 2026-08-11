@@ -31,6 +31,10 @@ on:
         description: For nightly, the explicit canary version to promote (empty selects the newest canary on master). For beta, the explicit nightly version to promote (empty selects the newest nightly on master).
         required: false
         type: string
+      candidate_branch:
+        description: (beta) candidate/beta-* branch to build a cherry-picked beta from. Leave empty to promote a nightly. Mutually exclusive with source_version.
+        required: false
+        type: string
       skip_soak_justification:
         description: (stable) Written justification for publishing a stable whose source has not soaked as a beta for 3 days. Leave empty for normal releases.
         required: false
@@ -362,6 +366,7 @@ jobs:
     outputs:
       sha: ${{ steps.select.outputs.sha }}
       nightly_version: ${{ steps.select.outputs.nightly_version }}
+      mode: ${{ steps.select.outputs.mode }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -373,10 +378,64 @@ jobs:
         id: select
         env:
           EXPLICIT_NIGHTLY_VERSION: ${{ inputs.source_version }}
+          CANDIDATE_BRANCH: ${{ inputs.candidate_branch }}
         run: |
           set -euo pipefail
 
           git fetch origin --tags --prune --quiet
+
+          # Candidate mode: build a cherry-picked beta from a short-lived
+          # candidate branch instead of promoting a nightly.
+          if [ -n "${CANDIDATE_BRANCH:-}" ]; then
+            if [ -n "${EXPLICIT_NIGHTLY_VERSION:-}" ]; then
+              echo "Error: candidate_branch and source_version are mutually exclusive." >&2
+              exit 1
+            fi
+            case "$CANDIDATE_BRANCH" in
+              candidate/beta-*) ;;
+              *)
+                echo "Error: candidate branches must be named candidate/beta-<target> (got: $CANDIDATE_BRANCH)." >&2
+                exit 1
+                ;;
+            esac
+            git fetch origin "$CANDIDATE_BRANCH" --quiet
+            sha="$(git rev-parse --verify "origin/${CANDIDATE_BRANCH}^{commit}" 2>/dev/null || true)"
+            if [ -z "$sha" ]; then
+              echo "Error: candidate branch $CANDIDATE_BRANCH does not exist on origin." >&2
+              exit 1
+            fi
+
+            existing_beta="$(git tag --points-at "$sha" | grep '^beta/v' | head -1 || true)"
+            if [ -n "$existing_beta" ]; then
+              echo "Error: candidate head $sha already shipped as $existing_beta." >&2
+              exit 1
+            fi
+
+            if ! git show "${sha}:scripts/release.sh" | grep -qF -- '--from-candidate'; then
+              echo "Error: candidate head $sha predates candidate-build release tooling; rebase the candidate onto a newer base." >&2
+              exit 1
+            fi
+
+            merge_base="$(git merge-base origin/master "$sha")"
+            echo "mode=candidate" >> "$GITHUB_OUTPUT"
+            echo "sha=$sha" >> "$GITHUB_OUTPUT"
+            echo "nightly_version=" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Beta candidate branch"
+              echo ""
+              echo "- Branch: \`$CANDIDATE_BRANCH\`"
+              echo "- Head: \`$sha\`"
+              echo "- Base (merge-base with master): \`$merge_base\`"
+              echo "- Cherry-picked commits:"
+              echo ""
+              echo '\`\`\`'
+              git log --oneline "${merge_base}..${sha}"
+              echo '\`\`\`'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "mode=promote" >> "$GITHUB_OUTPUT"
 
           if [ -n "${EXPLICIT_NIGHTLY_VERSION:-}" ]; then
             tag="nightly/v${EXPLICIT_NIGHTLY_VERSION}"
@@ -425,8 +484,23 @@ jobs:
             echo "- Source nightly: \`$nightly_version\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  publish_beta:
+  # Candidate-branch heads are new commits that never went through a canary
+  # or nightly, so they must pass full verification before publishing.
+  # Promoted nightlies were already verified by their canary run and skip it.
+  verify_beta_candidate:
     needs: select_beta
+    if: needs.select_beta.outputs.mode == 'candidate'
+    uses: ./.github/workflows/release-verify.yml
+    with:
+      ref: ${{ needs.select_beta.outputs.sha }}
+
+  publish_beta:
+    needs: [select_beta, verify_beta_candidate]
+    if: >-
+      !cancelled() &&
+      needs.select_beta.result == 'success' &&
+      (needs.verify_beta_candidate.result == 'success' ||
+       (needs.verify_beta_candidate.result == 'skipped' && needs.select_beta.outputs.mode == 'promote'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: npm-beta
@@ -480,6 +554,9 @@ jobs:
           GITHUB_ACTIONS: "true"
         run: |
           args=(beta --skip-verify)
+          if [ "${{ needs.select_beta.outputs.mode }}" = "candidate" ]; then
+            args+=(--from-candidate)
+          fi
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             args+=(--dry-run)
           fi

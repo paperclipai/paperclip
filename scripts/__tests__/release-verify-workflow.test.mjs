@@ -47,6 +47,19 @@ test("promotion selection guards against sources that predate their channel tool
   assert.match(releaseWorkflow, /git show "\$\{sha\}:scripts\/release\.sh" \| grep -qF 'canary\|nightly\|beta\|stable\)'/);
 });
 
+test("candidate-branch betas are validated and fully verified before publish", () => {
+  const releaseWorkflow = readWorkflow("release.yml");
+
+  // Candidate heads are new commits: selection must pin the naming
+  // convention and publication must be gated on full verification.
+  assert.match(releaseWorkflow, /candidate\/beta-\*\)/);
+  assert.match(
+    releaseWorkflow,
+    /verify_beta_candidate:\n\s+needs: select_beta\n\s+if: needs\.select_beta\.outputs\.mode == 'candidate'\n\s+uses: \.\/\.github\/workflows\/release-verify\.yml/,
+  );
+  assert.match(releaseWorkflow, /needs\.verify_beta_candidate\.result == 'success'/);
+});
+
 test("every lane's tag push degrades to recovery instructions when rejected", () => {
   const releaseWorkflow = readWorkflow("release.yml");
 

@@ -218,6 +218,26 @@ test("beta refuses commits that already shipped as a beta", () => {
   assert.doesNotMatch(result.calls, /^pnpm /m);
 });
 
+test("beta --from-candidate waives the nightly requirement but keeps the duplicate guard", () => {
+  const result = runRelease(["beta", "--from-candidate", "--skip-verify", "--dry-run"], {
+    FAKE_MISSING_CHANNEL_TAG: "nightly",
+  });
+
+  assert.equal(result.status, 42);
+  assert.doesNotMatch(result.output, /require_channel_tag_at_head nightly/);
+  assert.match(result.output, /\[fixture\] require_channel_tag_absent_at_head beta/);
+  assert.match(result.output, /Beta version: 2026\.710\.0-beta\.0/);
+  assert.match(result.calls, /^pnpm build$/m);
+});
+
+test("--from-candidate is rejected outside the beta channel", () => {
+  const result = runRelease(["nightly", "--from-candidate", "--skip-verify", "--dry-run"]);
+
+  assert.equal(result.status, 1);
+  assert.match(result.output, /--from-candidate only applies to the beta channel/);
+  assert.doesNotMatch(result.calls, /^pnpm /m);
+});
+
 test("beta refuses commits that never shipped a nightly", () => {
   const result = runRelease(["beta", "--skip-verify", "--dry-run"], {
     FAKE_MISSING_CHANNEL_TAG: "nightly",

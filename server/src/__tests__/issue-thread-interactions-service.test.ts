@@ -2477,6 +2477,43 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(listed[0]?.status).toBe("cancelled");
   });
 
+  it("derives legacy pending interactions as expired on closed issues without mutating the GET", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Legacy pending interaction on closed issue");
+    const created = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Proceed?" },
+    }, { userId: "local-board" });
+
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+
+    const listed = await interactionsSvc.listForIssue(issueId);
+    expect(listed[0]).toMatchObject({
+      id: created.id,
+      status: "expired",
+      result: { version: 1, outcome: "issue_closed" },
+    });
+
+    const stored = await db
+      .select({ status: issueThreadInteractions.status })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, created.id))
+      .then((rows) => rows[0]);
+    expect(stored?.status).toBe("pending");
+
+    await expect(interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      projectId: null,
+      goalId: null,
+      status: "done",
+    }, created.id, {}, { userId: "local-board" })).rejects.toThrow(
+      "Interaction is no longer actionable because the issue is closed",
+    );
+    await expect(interactionsSvc.withdrawInteraction({ id: issueId, companyId, status: "done" }, created.id, {}, {
+      userId: "local-board",
+    })).rejects.toThrow("Interaction is no longer actionable because the issue is closed");
+  });
+
   it("does not supersede request confirmations for agent, system, or older user comments", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Comment supersede exclusions");
 

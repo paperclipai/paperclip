@@ -6,7 +6,6 @@ import {
   ChevronDown,
   ChevronUp,
   ExternalLink,
-  GraduationCap,
   Loader2,
   MoreHorizontal,
   RotateCcw,
@@ -29,7 +28,6 @@ import {
   isInlineResolvable,
   sourceMeta,
 } from "../lib/attention";
-import { isTrainable } from "../lib/decisionTraining";
 import { cn, relativeTime } from "../lib/utils";
 import { DecisionTriageStrip } from "./DecisionTriageStrip";
 import { StatusGlyph } from "./StatusGlyph";
@@ -83,8 +81,6 @@ interface AttentionQueueRowProps {
   onToggleExpand: (item: AttentionItem) => void;
   onDismiss: (item: AttentionItem) => void;
   onSnooze?: (item: AttentionItem, snoozedUntil: string) => void;
-  /** Open the decision-training drawer for this row (create or view). */
-  onTrain?: (item: AttentionItem) => void;
   /** Restore a snoozed/dismissed row (curtain variant only). */
   onRestore?: (item: AttentionItem) => void;
   /** "active" renders the live queue row; "hidden" renders a curtain row. */
@@ -113,7 +109,6 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   onToggleExpand,
   onDismiss,
   onSnooze,
-  onTrain,
   onRestore,
   variant = "active",
   agentMap,
@@ -146,12 +141,6 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   // with no triage keep the explicit Open button and never toggle on a stray click.
   const triageEnabled = showTriage && !isHidden;
   const expandable = inline || (!isHidden && hasImages) || triageEnabled;
-  // Any issue-anchored approval or interaction is
-  // trainable at any time (pending or resolved). Trained/untrained renders
-  // purely from the feed's `trainingExampleId` — no per-row fetch.
-  const trainable = !isHidden && !!onTrain && isTrainable(item);
-  const trained = item.trainingExampleId != null;
-
   const activate = () => {
     if (expandable) onToggleExpand(item);
   };
@@ -284,38 +273,6 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
               </span>
             </>
           )}
-          {trainable && trained && (
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 rounded-sm border border-primary/30 bg-primary/10 px-1.5 py-px text-(length:--text-nano) font-medium text-primary hover:bg-primary/15"
-              onClick={(event) => {
-                event.stopPropagation();
-                onTrain?.(item);
-              }}
-              data-testid="attention-trained-badge"
-            >
-              <GraduationCap className="h-3 w-3 fill-primary/25" />
-              Trained ✓
-            </button>
-          )}
-          {/* Visible train affordance for untrained rows. Trained
-              rows already carry the "Trained ✓" badge above; both surfaces also
-              keep the overflow "Train this decision" entry. Sits in the same slot
-              as the badge so a row's training state reads from one place. */}
-          {trainable && !trained && (
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 rounded-sm border border-border bg-background px-1.5 py-px text-(length:--text-nano) font-medium text-muted-foreground hover:border-primary/40 hover:text-primary"
-              onClick={(event) => {
-                event.stopPropagation();
-                onTrain?.(item);
-              }}
-              data-testid="attention-train-inline"
-            >
-              <GraduationCap className="h-3 w-3" />
-              Train
-            </button>
-          )}
         </div>
 
         <div className="flex shrink-0 items-center gap-1" data-attention-menu="true">
@@ -342,19 +299,6 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                {/* Training moved off the header strip (which now carries only
-                    recency + overflow) but keeps its testids so the affordance
-                    is still addressable. */}
-                {trainable && (
-                  <DropdownMenuItem
-                    data-training-state={trained ? "trained" : "untrained"}
-                    data-testid="attention-train-button"
-                    onClick={() => onTrain?.(item)}
-                  >
-                    <GraduationCap className={cn("h-4 w-4", trained && "fill-primary/25")} />
-                    {trained ? "View training example" : "Train this decision"}
-                  </DropdownMenuItem>
-                )}
                 {onSnooze && <SnoozeSubmenu onSnooze={(iso) => onSnooze(item, iso)} />}
                 <DropdownMenuItem onClick={() => onDismiss(item)}>
                   <X className="h-4 w-4" />

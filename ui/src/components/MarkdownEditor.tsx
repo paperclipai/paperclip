@@ -1392,12 +1392,22 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           <div
             data-paperclip-floating-ui=""
             data-testid="mention-autocomplete-menu"
-            className="pointer-events-auto fixed z-(--z-9999) min-w-(--sz-180px) max-w-(--sz-calc-15) max-h-(--sz-208px) overflow-y-auto rounded-md border border-border bg-popover shadow-md"
+            className="pointer-events-auto fixed z-(--z-9999) min-w-(--sz-180px) max-w-(--sz-calc-15) max-h-(--sz-208px) overflow-y-auto overscroll-contain rounded-md border border-border bg-popover shadow-md"
             style={{
               top: mentionMenuPosition.top,
               left: mentionMenuPosition.left,
               touchAction: "pan-y",
               WebkitOverflowScrolling: "touch",
+            }}
+            onWheelCapture={(event) => {
+              // Modal scroll locks treat this body-level portal as outside the
+              // dialog. Keep wheel input on the menu so the lock cannot cancel it.
+              event.stopPropagation();
+            }}
+            onTouchMove={(event) => {
+              // Let the touched option observe movement first, then keep the
+              // native event from reaching a modal's document-level scroll lock.
+              event.stopPropagation();
             }}
           >
             {filteredMentions.map((option, i) => (

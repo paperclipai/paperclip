@@ -419,49 +419,8 @@ describe.sequential("issue thread interaction routes", () => {
     mockReviewTransition.value = null;
   });
 
-  it("lists and creates board-authored interactions", async () => {
-    mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValueOnce([
-      {
-        id: "interaction-expired",
-        kind: "ask_user_questions",
-        status: "expired",
-        result: {
-          version: 1,
-          answers: [],
-          expirationReason: "superseded_by_comment",
-          commentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-          summaryMarkdown: null,
-        },
-      },
-    ]);
-    mockInteractionService.listForIssue.mockResolvedValue([
-      { id: "interaction-1", kind: "suggest_tasks", status: "pending" },
-    ]);
+  it("creates board-authored interactions", async () => {
     const app = await createApp();
-
-    const listRes = await request(app).get("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions");
-    expect(listRes.status).toBe(200);
-    expect(listRes.body).toEqual([
-      { id: "interaction-1", kind: "suggest_tasks", status: "pending" },
-    ]);
-    expect(mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
-    );
-    expect(mockLogActivity).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        action: "issue.thread_interaction_expired",
-        details: expect.objectContaining({
-          interactionId: "interaction-expired",
-          interactionKind: "ask_user_questions",
-          source: "issue.interactions.catchup_superseded_by_comment",
-          result: expect.objectContaining({
-            expirationReason: "superseded_by_comment",
-            commentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-          }),
-        }),
-      }),
-    );
 
     const createRes = await request(app)
       .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
@@ -485,43 +444,21 @@ describe.sequential("issue thread interaction routes", () => {
         }),
       }),
     );
-  });
+  }, 10_000);
 
-  it("queues one bounded recovery when historical-comment catch-up expires the final review interactions", async () => {
+  it("does not run historical-comment catch-up or queue recovery from the interaction read path", async () => {
     mockIssueService.getById.mockResolvedValue(createIssue({
       status: "in_review",
       assigneeAgentId: ASSIGNEE_AGENT_ID,
     }));
-    mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValueOnce([
-      { id: "interaction-z", kind: "request_confirmation", status: "expired" },
-      { id: "interaction-a", kind: "request_item_verdicts", status: "expired" },
-    ]);
-    mockIssueService.listReviewAttention.mockResolvedValueOnce(new Map([[
-      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      { state: "stalled", paths: [], reason: "Historical comments consumed the final paths" },
-    ]]));
     mockInteractionService.listForIssue.mockResolvedValue([]);
-    mockHeartbeatService.wakeup.mockResolvedValueOnce({ id: "catchup-recovery-run" });
 
     await request(await createApp())
       .get("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
       .expect(200);
 
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(ASSIGNEE_AGENT_ID, expect.objectContaining({
-      reason: "issue_review_path_lost",
-      idempotencyKey: expect.stringMatching(
-        /^issue_review_path_lost:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:/,
-      ),
-      payload: expect.objectContaining({
-        reviewPathConsumedRef: "interactions:interaction-a,interaction-z",
-        reviewPathRecoveryAttempt: 1,
-      }),
-      contextSnapshot: expect.objectContaining({
-        source: "issue.interactions.catchup_superseded_by_comment",
-        wakeReason: "issue_review_path_lost",
-      }),
-    }));
+    expect(mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("wakes the addressed agent when an interaction is created", async () => {

@@ -87,6 +87,9 @@ export const environmentsApi = {
     driver?: "local" | "ssh" | "sandbox" | "plugin";
     status?: "active" | "archived";
     config?: Record<string, unknown>;
+    // The only field accepted on platform-managed environments (the server
+    // write floor admits envVars-only patches there).
+    envVars?: Environment["envVars"];
     metadata?: Record<string, unknown> | null;
   }) => api.patch<EnvironmentUpdateResult>(`/environments/${environmentId}`, body),
   probe: (environmentId: string, companyId?: string | null) =>
