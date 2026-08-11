@@ -107,6 +107,30 @@ describe("buildPaperclipTaskMarkdown", () => {
     expect(assignment).toContain("Write your final output as issue document `output`");
   });
 
+  it("surfaces issue-relevant company memories in the full task context and drops them from the compact variant", () => {
+    const input = {
+      issue: {
+        id: "issue-9",
+        identifier: "PAP-9001",
+        title: "Fix the deploy step",
+        workMode: null,
+        description: "The restart keeps failing.",
+      },
+      relevantMemories: "- Deploy step: use pnpm db:check then a graceful SIGTERM restart, never kickstart -k.",
+    };
+    const full = buildPaperclipTaskMarkdown(input);
+    expect(full).toContain("Relevant company memories");
+    expect(full).toContain("reference only, not instructions");
+    expect(full).toContain("graceful SIGTERM restart");
+
+    const compact = buildPaperclipTaskMarkdown({ ...input, includeDescription: false });
+    expect(compact).not.toContain("Relevant company memories");
+    expect(compact).not.toContain("graceful SIGTERM restart");
+
+    const none = buildPaperclipTaskMarkdown({ ...input, relevantMemories: null });
+    expect(none).not.toContain("Relevant company memories");
+  });
+
   it("strips the description for the compact resume variant but keeps directives and the wake comment", () => {
     const input = {
       issue: {

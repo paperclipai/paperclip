@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { and, arrayOverlaps, desc, eq, ilike, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lte, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -30,6 +30,7 @@ import {
   toolProfiles,
   toolStdioCommandTemplates,
 } from "@paperclipai/db";
+import { searchCompanyMemories } from "./company-memory-search.js";
 import type { ToolRunContext } from "@paperclipai/plugin-sdk";
 import type {
   CreateToolMcpGateway,
@@ -2092,40 +2093,11 @@ export function createToolGatewayService(
         throw new ToolGatewayHttpError(403, "Paperclip self tools require an agent-scoped gateway session", "agent_context_required");
       }
       const limit = Math.max(1, Math.min(50, Number(params.limit ?? 10) || 10));
-      const query = typeof params.query === "string" ? params.query.trim() : "";
+      const query = typeof params.query === "string" ? params.query : undefined;
       const tags = Array.isArray(params.tags)
-        ? params.tags.filter((t): t is string => typeof t === "string" && t.trim().length > 0).map((t) => t.trim())
-        : [];
-      const conditions = [eq(companyMemories.companyId, session.companyId)];
-      if (query) {
-        // Match any whitespace-separated term against content or title; the
-        // pg_trgm GIN index on content accelerates the ILIKEs.
-        const terms = query.split(/\s+/).filter((t) => t.length >= 2).slice(0, 8);
-        const needles = terms.length > 0 ? terms : [query];
-        const termMatch = or(
-          ...needles.flatMap((t) => [
-            ilike(companyMemories.content, `%${t}%`),
-            ilike(companyMemories.title, `%${t}%`),
-          ]),
-        );
-        if (termMatch) conditions.push(termMatch);
-      }
-      if (tags.length > 0) {
-        conditions.push(arrayOverlaps(companyMemories.tags, tags));
-      }
-      const rows = await db
-        .select({
-          id: companyMemories.id,
-          title: companyMemories.title,
-          content: companyMemories.content,
-          tags: companyMemories.tags,
-          createdByAgentId: companyMemories.createdByAgentId,
-          createdAt: companyMemories.createdAt,
-        })
-        .from(companyMemories)
-        .where(and(...conditions))
-        .orderBy(desc(companyMemories.createdAt))
-        .limit(limit);
+        ? params.tags.filter((t): t is string => typeof t === "string" && t.trim().length > 0)
+        : undefined;
+      const rows = await searchCompanyMemories(db, session.companyId, { query, tags, limit });
       return {
         content: JSON.stringify(rows),
         data: { memories: rows },
