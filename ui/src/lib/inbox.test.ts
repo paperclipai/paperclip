@@ -186,6 +186,7 @@ function makeIssue(id: string, isUnreadForMe: boolean): Issue {
     projectWorkspaceId: null,
     goalId: null,
     parentId: null,
+    createdFromIssueId: null,
     title: `Issue ${id}`,
     description: null,
     status: "todo",
