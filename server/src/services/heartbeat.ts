@@ -135,6 +135,7 @@ import {
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
 import { isBlockedDedupNoOpResult } from "./blocked-dedup-noop.js";
+import { hasUnblockDescriptor } from "./issue-blocked-gate.js";
 import {
   ADAPTER_POLICY_ECHO_ERROR_CODE,
   ADAPTER_POLICY_ECHO_ERROR_MESSAGE,
@@ -10271,6 +10272,59 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { decision: "blocked" as const, interactionId: interaction.id };
   }
 
+  async function readRunOwnedTerminalDisposition(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    issueId: string | null;
+  }) {
+    if (!input.issueId) return null;
+
+    const issue = await db
+      .select({
+        id: issues.id,
+        status: issues.status,
+        unblockDescriptor: issues.unblockDescriptor,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.run.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue || (issue.status !== "done" && issue.status !== "blocked")) return null;
+    const structuredBlock = issue.status !== "blocked" || hasUnblockDescriptor(issue.unblockDescriptor);
+    if (!structuredBlock) return null;
+
+    // A terminal issue write clears its execution lock. The run-linked API
+    // activity receipt is therefore the durable proof that this exact run made
+    // the disposition; timestamps or a pre-existing terminal state cannot win.
+    const transition = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, input.run.companyId),
+        eq(activityLog.runId, input.run.id),
+        eq(activityLog.action, "issue.updated"),
+        eq(activityLog.entityType, "issue"),
+        eq(activityLog.entityId, issue.id),
+      ))
+      .orderBy(desc(activityLog.createdAt))
+      .then((rows) => rows.find((row) => readNonEmptyString(parseObject(row.details).status) === issue.status) ?? null);
+    logger.info(
+      {
+        runId: input.run.id,
+        issueId: issue.id,
+        issueStatus: issue.status,
+        structuredBlock,
+        runLinkedTransitionFound: Boolean(transition),
+      },
+      "evaluated max-turn terminal disposition reconciliation",
+    );
+    if (!transition) return null;
+
+    return {
+      issueId: issue.id,
+      issueStatus: issue.status as "done" | "blocked",
+      proof: "run_linked_issue_update_receipt" as const,
+    };
+  }
+
   async function handleSuccessfulRunHandoff(run: typeof heartbeatRuns.$inferSelect, agent: typeof agents.$inferSelect) {
     if (run.status !== "succeeded") return;
     // POPULATION FIX (2026-08-05, TSMC-19765). Shell-handler runs execute scripts — they cannot
@@ -18512,8 +18566,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // TSMC-18738 / K19: collect issue comments authored during this run for echo detection.
       // Used only when a clean exit would otherwise settle as succeeded.
       let policyEchoCommentBodies: string[] | null = null;
+      const adapterMaxTurnExhausted = Boolean(
+        normalizeMaxTurnStopReason(adapterResult.errorCode)
+        ?? normalizeMaxTurnStopReason(parseObject(adapterResult.resultJson).stopReason),
+      );
+      const runOwnedTerminalDisposition = adapterMaxTurnExhausted
+        ? await readRunOwnedTerminalDisposition({ run, issueId })
+        : null;
       if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
         outcome = latestRun.status;
+      } else if (runOwnedTerminalDisposition) {
+        // The model completed its control-plane obligation before its local
+        // harness noticed the turn boundary. A same-run durable disposition is
+        // authoritative; retain the adapter stop as evidence, but do not turn
+        // completed work into a recovery-triggering failed run.
+        outcome = "succeeded";
+        adapterResult = {
+          ...adapterResult,
+          errorMessage: undefined,
+          errorCode: undefined,
+          resultJson: {
+            ...parseObject(adapterResult.resultJson),
+            terminalDispositionReconciliation: runOwnedTerminalDisposition,
+          },
+        };
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "info",
+          message: "Run-linked terminal issue disposition reconciled the max-turn adapter stop",
+          payload: runOwnedTerminalDisposition,
+        });
       } else if (adapterResult.timedOut) {
         outcome = "timed_out";
       } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {

@@ -15,6 +15,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueRecoveryActions,
   issueThreadInteractions,
   issueRelations,
   issues,
@@ -96,14 +97,19 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     });
     registerServerAdapter({
       type: MAX_TURN_TEST_ADAPTER,
-      execute: async () => ({
-        exitCode: 1,
-        signal: null,
-        timedOut: false,
-        errorMessage: "The configured tool-turn budget was exhausted.",
-        errorCode: "max_turns_exhausted",
-        resultJson: { stopReason: "max_turns_exhausted" },
-      }),
+      execute: async (ctx) => {
+        if (ctx.context.testPersistTerminalDisposition === true) {
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
+        }
+        return {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorMessage: "The configured tool-turn budget was exhausted.",
+          errorCode: "max_turns_exhausted",
+          resultJson: { stopReason: "max_turns_exhausted" },
+        };
+      },
       testEnvironment: async () => ({
         adapterType: MAX_TURN_TEST_ADAPTER,
         status: "pass",
@@ -564,6 +570,188 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.retryOfRunId, run!.id));
     expect(continuations).toEqual([]);
+  });
+
+  it("lets same-run done and structured-blocked receipts win over a later max-turn adapter stop", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Max Turn Disposition Test",
+      role: "engineer",
+      status: "idle",
+      adapterType: MAX_TURN_TEST_ADAPTER,
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Bounded terminal task",
+      status: "todo",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+
+    const run = await heartbeat.invoke(
+      agentId,
+      "on_demand",
+      {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+        testPersistTerminalDisposition: true,
+      },
+      "manual",
+    );
+    expect(run).not.toBeNull();
+
+    await expect.poll(
+      () => heartbeat.getRun(run!.id).then((current) => current?.status),
+      { timeout: 2_000, interval: 20 },
+    ).toBe("running");
+    await expect.poll(
+      () => db
+        .select({ status: issues.status, executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0]),
+      { timeout: 2_000, interval: 20 },
+    ).toMatchObject({ status: "in_progress", executionRunId: run!.id });
+    await issueService(db).update(issueId, { status: "done", actorAgentId: agentId });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      runId: run!.id,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+      details: { identifier: `${issuePrefix}-2`, status: "done" },
+    });
+
+    const finished = await waitForRunToFinish(heartbeat, run!.id);
+    expect(finished).toMatchObject({ status: "succeeded", errorCode: null, error: null });
+    expect(finished?.resultJson).toMatchObject({
+      stopReason: "max_turns_exhausted",
+      terminalDispositionReconciliation: {
+        issueId,
+        issueStatus: "done",
+        proof: "run_linked_issue_update_receipt",
+      },
+    });
+
+    const continuations = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, run!.id));
+    expect(continuations).toEqual([]);
+    const recoveryActions = await db
+      .select({ id: issueRecoveryActions.id })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.sourceIssueId, issueId),
+        ),
+      );
+    expect(recoveryActions).toEqual([]);
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+
+    const blockedIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: blockedIssueId,
+      companyId,
+      title: "Bounded blocked task",
+      status: "todo",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      issueNumber: 3,
+      identifier: `${issuePrefix}-3`,
+    });
+    const blockedRun = await heartbeat.invoke(
+      agentId,
+      "on_demand",
+      {
+        issueId: blockedIssueId,
+        taskId: blockedIssueId,
+        wakeReason: "issue_assigned",
+        testPersistTerminalDisposition: true,
+      },
+      "manual",
+    );
+    expect(blockedRun).not.toBeNull();
+    await expect.poll(
+      () => heartbeat.getRun(blockedRun!.id).then((current) => current?.status),
+      { timeout: 2_000, interval: 20 },
+    ).toBe("running");
+    await expect.poll(
+      () => db
+        .select({ status: issues.status, executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, blockedIssueId))
+        .then((rows) => rows[0]),
+      { timeout: 2_000, interval: 20 },
+    ).toMatchObject({ status: "in_progress", executionRunId: blockedRun!.id });
+    await issueService(db).update(blockedIssueId, {
+      status: "blocked",
+      unblockDescriptor: { owner: "board", action: "Approve the bounded evidence pack." },
+      actorAgentId: agentId,
+    });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      runId: blockedRun!.id,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: blockedIssueId,
+      details: { identifier: `${issuePrefix}-3`, status: "blocked" },
+    });
+    await expect(
+      db
+        .select({ status: issues.status, unblockDescriptor: issues.unblockDescriptor })
+        .from(issues)
+        .where(eq(issues.id, blockedIssueId))
+        .then((rows) => rows[0]),
+    ).resolves.toMatchObject({
+      status: "blocked",
+      unblockDescriptor: { owner: "board", action: "Approve the bounded evidence pack." },
+    });
+    await expect(
+      db
+        .select({ details: activityLog.details })
+        .from(activityLog)
+        .where(and(eq(activityLog.runId, blockedRun!.id), eq(activityLog.entityId, blockedIssueId))),
+    ).resolves.toContainEqual({ details: { identifier: `${issuePrefix}-3`, status: "blocked" } });
+    await expect(heartbeat.getRun(blockedRun!.id)).resolves.toMatchObject({ status: "running" });
+
+    const blockedFinished = await waitForRunToFinish(heartbeat, blockedRun!.id);
+    expect(blockedFinished).toMatchObject({ status: "succeeded", errorCode: null, error: null });
+    expect(blockedFinished?.resultJson).toMatchObject({
+      terminalDispositionReconciliation: {
+        issueId: blockedIssueId,
+        issueStatus: "blocked",
+        proof: "run_linked_issue_update_receipt",
+      },
+    });
   });
 
   async function seedMaxTurnFixture(input?: {
