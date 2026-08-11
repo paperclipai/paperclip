@@ -140,4 +140,55 @@ describe("claude_local ACP startup fallback", () => {
 
     expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
   });
+
+  it("returns a typed no-recovery result when live CLI message usage reaches the cap", async () => {
+    const assistantEvent = JSON.stringify({
+      type: "assistant",
+      uuid: "event-cap",
+      session_id: "claude-session-cap",
+      message: {
+        id: "msg-cap",
+        content: [{ type: "text", text: "working" }],
+        usage: {
+          input_tokens: 10_000,
+          cache_creation_input_tokens: 1,
+          cache_read_input_tokens: 90_000,
+          output_tokens: 1,
+        },
+      },
+    });
+    runAdapterExecutionTargetProcess.mockImplementationOnce(async (...args: unknown[]) => {
+      const options = args[4] as {
+        onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+      };
+      await options.onLog("stdout", `${assistantEvent}\n`);
+      return {
+        exitCode: 143,
+        signal: null,
+        timedOut: false,
+        stdout: assistantEvent,
+        stderr: "",
+        pid: 123,
+        startedAt: new Date().toISOString(),
+      };
+    });
+    const ctx = buildContext({ maxTokensPerRun: 100_000 });
+
+    const result = await execute(ctx as never);
+
+    expect(result).toMatchObject({
+      errorCode: "token_budget_exhausted",
+      clearSession: true,
+      usage: {
+        inputTokens: 10_001,
+        cachedInputTokens: 90_000,
+        outputTokens: 1,
+      },
+      resultJson: {
+        stopReason: "token_budget_exhausted",
+        maxTokensPerRun: 100_000,
+        observedTokens: 100_002,
+      },
+    });
+  });
 });

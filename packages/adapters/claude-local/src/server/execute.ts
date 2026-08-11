@@ -1,8 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
-import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
+import type { AdapterExecutionContext, AdapterExecutionResult, UsageSummary } from "@paperclipai/adapter-utils";
+import {
+  runningProcesses,
+  signalRunningProcess,
+  type RunProcessResult,
+} from "@paperclipai/adapter-utils/server-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -57,6 +61,7 @@ import {
 } from "@paperclipai/adapter-utils/local-process-sandbox";
 import {
   claudeModelUsageTotals,
+  claudeAssistantMessageUsage,
   parseClaudeStreamJson,
   describeClaudeFailure,
   detectClaudeLoginRequired,
@@ -427,6 +432,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
+  const maxTokensPerRun = Math.max(0, asNumber(config.maxTokensPerRun, 0));
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
   const configEnv = parseObject(config.env);
   const workspaceContext = parseObject(context.paperclipWorkspace);
@@ -869,6 +875,49 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return args;
   };
 
+  let tokenBudgetExceeded = false;
+  let tokenBudgetObserved = 0;
+  let tokenStreamRemainder = "";
+  const observedMessageIds = new Set<string>();
+  const observedMessageUsage: Required<UsageSummary> = {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+  };
+  let forceKillTimer: NodeJS.Timeout | null = null;
+  const boundedOnLog: AdapterExecutionContext["onLog"] = async (stream, chunk) => {
+    await onLog(stream, chunk);
+    if (stream !== "stdout" || tokenBudgetExceeded || maxTokensPerRun <= 0) return;
+    const lines = `${tokenStreamRemainder}${chunk}`.split(/\r?\n/);
+    tokenStreamRemainder = lines.pop() ?? "";
+    for (const line of lines) {
+      const event = parseJson(line.trim());
+      const observed = claudeAssistantMessageUsage(event);
+      if (!observed || observedMessageIds.has(observed.messageId)) continue;
+      observedMessageIds.add(observed.messageId);
+      observedMessageUsage.inputTokens += observed.usage.inputTokens;
+      observedMessageUsage.cachedInputTokens += observed.usage.cachedInputTokens ?? 0;
+      observedMessageUsage.outputTokens += observed.usage.outputTokens;
+    }
+    tokenBudgetObserved =
+      observedMessageUsage.inputTokens +
+      observedMessageUsage.cachedInputTokens +
+      observedMessageUsage.outputTokens;
+    if (tokenBudgetObserved < maxTokensPerRun) return;
+
+    tokenBudgetExceeded = true;
+    await onLog(
+      "stderr",
+      `[paperclip] Claude maxTokensPerRun budget of ${maxTokensPerRun} tokens exhausted (observed ${tokenBudgetObserved}); stopping before another model turn.\n`,
+    );
+    const running = runningProcesses.get(runId);
+    if (running) signalRunningProcess(running, "SIGTERM");
+    forceKillTimer = setTimeout(() => {
+      const stillRunning = runningProcesses.get(runId);
+      if (stillRunning) signalRunningProcess(stillRunning, "SIGKILL");
+    }, Math.max(1, graceSec) * 1000);
+  };
+
   const parseFallbackErrorMessage = (proc: RunProcessResult) => {
     const stderrLine =
       proc.stderr
@@ -929,7 +978,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       graceSec,
       onSpawn,
       onRuntimeProgress: ctx.onRuntimeProgress,
-      onLog,
+      onLog: boundedOnLog,
       runLogTail: paperclipBridge?.runLogTail,
       terminalResultCleanup: {
         graceMs: terminalResultCleanupGraceMs,
@@ -938,7 +987,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       localProcessSandbox,
     });
 
+    if (forceKillTimer) {
+      clearTimeout(forceKillTimer);
+      forceKillTimer = null;
+    }
     const parsedStream = parseClaudeStreamJson(proc.stdout);
+    if (parsedStream.usage) {
+      const finalObserved =
+        parsedStream.usage.inputTokens +
+        (parsedStream.usage.cachedInputTokens ?? 0) +
+        parsedStream.usage.outputTokens;
+      tokenBudgetObserved = Math.max(tokenBudgetObserved, finalObserved);
+      if (maxTokensPerRun > 0 && tokenBudgetObserved >= maxTokensPerRun) {
+        tokenBudgetExceeded = true;
+      }
+    }
     const parsed = parsedStream.resultJson ?? parseJson(proc.stdout);
     return { proc, parsedStream, parsed };
   };
@@ -984,6 +1047,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     if (!parsed) {
+      if (tokenBudgetExceeded) {
+        return {
+          exitCode: proc.exitCode,
+          signal: proc.signal,
+          timedOut: false,
+          errorMessage:
+            `Claude maxTokensPerRun budget of ${maxTokensPerRun} tokens exhausted (observed ${tokenBudgetObserved}).`,
+          errorCode: "token_budget_exhausted",
+          usage: observedMessageUsage,
+          usageBasis: "per_run",
+          provider: "anthropic",
+          biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
+          model,
+          billingType,
+          resultJson: {
+            stopReason: "token_budget_exhausted",
+            maxTokensPerRun,
+            observedTokens: tokenBudgetObserved,
+          },
+          clearSession: true,
+        };
+      }
       const fallbackErrorMessage = parseFallbackErrorMessage(proc);
       const providerQuota =
         !loginMeta.requiresLogin &&
@@ -1059,6 +1144,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const usage =
       parsedStream.usage ??
       fallbackModelUsageTotals ??
+      (tokenBudgetExceeded ? observedMessageUsage : null) ??
       (() => {
         const usageObj = parseObject(parsed.usage);
         return {
@@ -1085,7 +1171,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const parsedIsError = asBoolean(parsed.is_error, false);
     const parsedSubtype = asString(parsed.subtype, "").trim().toLowerCase();
     const parsedSucceeded = parsedSubtype === "success" && !parsedIsError;
-    const failed = !parsedSucceeded && ((proc.exitCode ?? 0) !== 0 || parsedIsError);
+    const failed = tokenBudgetExceeded || (!parsedSucceeded && ((proc.exitCode ?? 0) !== 0 || parsedIsError));
     // Validate-before-persist guard: never persist a sessionId whose transcript
     // is known-poisoned. The Claude CLI keeps an on-disk JSONL keyed by the
     // session id; if the last entry contains a non-`msg_`-prefixed
@@ -1111,7 +1197,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
       } as Record<string, unknown>)
       : null;
-    const errorMessage = failed
+    const errorMessage = tokenBudgetExceeded
+      ? `Claude maxTokensPerRun budget of ${maxTokensPerRun} tokens exhausted (observed ${tokenBudgetObserved}).`
+      : failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
     const providerQuota =
@@ -1145,7 +1233,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           errorMessage,
         })
       : null;
-    const resolvedErrorCode = loginMeta.requiresLogin
+    const resolvedErrorCode = tokenBudgetExceeded
+      ? "token_budget_exhausted"
+      : loginMeta.requiresLogin
       ? "claude_auth_required"
       : failed && isClaudeModelNotFoundError({
         parsed,
@@ -1174,6 +1264,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
     const mergedResultJson: Record<string, unknown> = {
       ...parsed,
+      ...(tokenBudgetExceeded
+        ? { stopReason: "token_budget_exhausted", maxTokensPerRun, observedTokens: tokenBudgetObserved }
+        : {}),
       ...(failed && clearSessionForMaxTurns ? { stopReason: "max_turns_exhausted" } : {}),
       ...(failed && poisonedPreviousMessageId ? { stopReason: "claude_poisoned_previous_message_id" } : {}),
       ...(claudeRefusal ? { stopReason: "refusal", errorFamily: "model_refusal" } : {}),
@@ -1206,6 +1299,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       resultJson: mergedResultJson,
       summary: parsedStream.summary || asString(parsed.result, ""),
       clearSession:
+        tokenBudgetExceeded ||
         clearSessionForMaxTurns ||
         // Clear-on-error: a poisoned previous_message_id is a deterministic
         // state error. Force the server to drop persisted session state for
@@ -1287,6 +1381,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     return result;
   } finally {
+    if (forceKillTimer) clearTimeout(forceKillTimer);
     if (paperclipBridge) {
       await paperclipBridge.stop();
     }

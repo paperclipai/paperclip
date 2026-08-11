@@ -105,6 +105,32 @@ export function claudeModelUsageTotals(modelUsage: unknown): UsageSummary | null
   return { inputTokens, outputTokens, cachedInputTokens };
 }
 
+export function claudeAssistantMessageUsage(event: unknown): {
+  messageId: string;
+  usage: UsageSummary;
+} | null {
+  const eventObj = parseObject(event);
+  if (asString(eventObj.type, "") !== "assistant") return null;
+  const message = parseObject(eventObj.message);
+  const usage = parseObject(message.usage);
+  if (Object.keys(usage).length === 0) return null;
+  const messageId =
+    asString(message.id, "") ||
+    asString(eventObj.uuid, "") ||
+    asString(eventObj.request_id, "");
+  if (!messageId) return null;
+  return {
+    messageId,
+    usage: {
+      inputTokens:
+        asNumber(usage.input_tokens, 0) +
+        asNumber(usage.cache_creation_input_tokens, 0),
+      cachedInputTokens: asNumber(usage.cache_read_input_tokens, 0),
+      outputTokens: asNumber(usage.output_tokens, 0),
+    },
+  };
+}
+
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
   let model = "";
@@ -160,7 +186,9 @@ export function parseClaudeStreamJson(stdout: string) {
   const modelUsageTotals = claudeModelUsageTotals(finalResult.modelUsage);
   const usageObj = parseObject(finalResult.usage);
   const usage: UsageSummary = modelUsageTotals ?? {
-    inputTokens: asNumber(usageObj.input_tokens, 0),
+    inputTokens:
+      asNumber(usageObj.input_tokens, 0) +
+      asNumber(usageObj.cache_creation_input_tokens, 0),
     cachedInputTokens: asNumber(usageObj.cache_read_input_tokens, 0),
     outputTokens: asNumber(usageObj.output_tokens, 0),
   };

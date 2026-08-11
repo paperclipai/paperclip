@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   claudeModelUsageTotals,
+  claudeAssistantMessageUsage,
   parseClaudeStreamJson,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
@@ -62,6 +63,36 @@ describe("parseClaudeStreamJson", () => {
         },
       }),
     });
+  });
+});
+
+describe("claudeAssistantMessageUsage", () => {
+  it("reads live per-turn usage and counts cache creation as fresh input", () => {
+    expect(claudeAssistantMessageUsage({
+      type: "assistant",
+      uuid: "event-1",
+      message: {
+        id: "msg-1",
+        usage: {
+          input_tokens: 3,
+          cache_creation_input_tokens: 9_784,
+          cache_read_input_tokens: 17_137,
+          output_tokens: 1,
+        },
+      },
+    })).toEqual({
+      messageId: "msg-1",
+      usage: {
+        inputTokens: 9_787,
+        cachedInputTokens: 17_137,
+        outputTokens: 1,
+      },
+    });
+  });
+
+  it("ignores non-assistant events and assistant events without usage", () => {
+    expect(claudeAssistantMessageUsage({ type: "result", usage: {} })).toBeNull();
+    expect(claudeAssistantMessageUsage({ type: "assistant", message: { id: "msg-1" } })).toBeNull();
   });
 });
 
