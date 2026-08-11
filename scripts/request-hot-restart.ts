@@ -78,26 +78,51 @@ async function readPreviousServerInfo() {
   }
 }
 
-async function readPreflightActiveRunIds() {
+type PreflightActiveRun = {
+  id: string;
+  processPid: number | null;
+  processGroupId: number | null;
+  adapterType: string;
+};
+
+// ACP/process adapters cannot be adopted after a server restart until their child
+// identity has been written. Treat this narrow spawn window as a drain condition,
+// never as permission to cut over and later report a lost run.
+function requiresDrainForUntrackedLocalChild(run: PreflightActiveRun): boolean {
+  return ["codex_local", "claude_local", "hermes_local"].includes(run.adapterType)
+    && !run.processPid
+    && !run.processGroupId;
+}
+
+async function readPreflightActiveRuns(): Promise<PreflightActiveRun[]> {
   const config = loadConfig();
   const dbUrl = process.env.DATABASE_URL?.trim()
     || config.databaseUrl
     || `postgres://paperclip:paperclip@127.0.0.1:${config.embeddedPostgresPort}/paperclip`;
   const db = createDb(dbUrl);
   try {
-    const rows = await db.$client<{ id: string }[]>`
-      SELECT id
+    const rows = await db.$client<PreflightActiveRun[]>`
+      SELECT heartbeat_runs.id,
+             heartbeat_runs.process_pid AS "processPid",
+             heartbeat_runs.process_group_id AS "processGroupId",
+             agents.adapter_type AS "adapterType"
       FROM heartbeat_runs
-      WHERE status = 'running'
+      INNER JOIN agents ON agents.id = heartbeat_runs.agent_id
+      WHERE heartbeat_runs.status = 'running'
     `;
-    return rows.map((row) => row.id);
+    return rows;
   } finally {
     await db.$client.end({ timeout: 1 });
   }
 }
 
-const { serverPid, drainRequired } = readArgs(process.argv.slice(2));
-const preflightActiveRunIds = drainRequired ? [] : await readPreflightActiveRunIds();
+const { serverPid, drainRequired: requestedDrainRequired } = readArgs(process.argv.slice(2));
+const preflightActiveRuns = requestedDrainRequired ? [] : await readPreflightActiveRuns();
+const untrackedLocalChildRunIds = preflightActiveRuns
+  .filter(requiresDrainForUntrackedLocalChild)
+  .map((run) => run.id);
+const drainRequired = requestedDrainRequired || untrackedLocalChildRunIds.length > 0;
+const preflightActiveRunIds = drainRequired ? [] : preflightActiveRuns.map((run) => run.id);
 const previousServerInfo = await readPreviousServerInfo();
 const intent = await writeHotRestartIntent({
   previousServerPid: serverPid,
@@ -117,4 +142,5 @@ console.log(JSON.stringify({
   previousServerVersion: intent.previousServerVersion,
   drainRequired: intent.drainRequired,
   preflightActiveRunIds: intent.preflightActiveRunIds,
+  ...(untrackedLocalChildRunIds.length > 0 ? { untrackedLocalChildRunIds } : {}),
 }, null, 2));
