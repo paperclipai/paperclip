@@ -13980,7 +13980,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     const effectiveExecutionWorkspaceMode: ReturnType<typeof resolveExecutionWorkspaceMode> =
       requestedExecutionWorkspaceMode;
-    const executionPolicy = { executionMode: resolvedInstanceSettings.general.executionMode };
+    const executionPolicy = {
+      executionMode: resolvedInstanceSettings.general.executionMode,
+      // Backstop behind the resolver's local→managed redirect: the run-time
+      // allowlist below fails any run that still resolved to a `local`
+      // environment under managed-sandbox-only, so no selection path or
+      // tenant-set env var can land untrusted execution on the tenant
+      // container.
+      managedSandboxOnly,
+    };
     const executionForcedToKubernetes = isExecutionForcedToKubernetes(executionPolicy);
     let selectedEnvironmentId = environmentResolution.environmentId;
     if (executionForcedToKubernetes) {
