@@ -114,6 +114,12 @@ export {
   type UpsertSidebarOrderPreference,
 } from "./sidebar-preferences.js";
 export {
+  subscribePushSubscriptionSchema,
+  type SubscribePushSubscription,
+  unsubscribePushSubscriptionSchema,
+  type UnsubscribePushSubscription,
+} from "./push-subscriptions.js";
+export {
   resourceMembershipStateSchema,
   updateDocumentResourceMembershipSchema,
   updateResourceMembershipSchema,

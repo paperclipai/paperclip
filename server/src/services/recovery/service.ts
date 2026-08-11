@@ -36,6 +36,7 @@ import { isPidAlive, isProcessGroupAlive, terminateLocalService } from "../local
 import { redactCurrentUserText } from "../../log-redaction.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { logActivity } from "../activity-log.js";
+import { publishLiveEvent } from "../live-events.js";
 import { budgetService } from "../budgets.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
@@ -2242,6 +2243,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         sourceIssueId: sourceIssue?.id ?? null,
         silenceAgeMs: evidence.silenceAgeMs,
         lastOutputAt: input.run.lastOutputAt?.toISOString() ?? null,
+      },
+    });
+    publishLiveEvent({
+      companyId: evaluation.companyId,
+      type: "issue.stale",
+      payload: {
+        issueId: evaluation.id,
+        issueIdentifier: evaluation.identifier ?? "",
+        issueTitle: evaluation.title,
+        sourceIssueId: sourceIssue?.id ?? null,
+        staleRunId: input.run.id,
+        level,
       },
     });
     if (level === "critical") {

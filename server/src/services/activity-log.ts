@@ -155,6 +155,26 @@ export function publishActivity(publication: ActivityPublication) {
     payload: publication.payload,
   });
   if (publication.pluginEvent) publishPluginDomainEvent(publication.pluginEvent);
+  const { payload } = publication;
+  const action = typeof payload.action === "string" ? payload.action : "";
+  const issueId = payload.entityType === "issue" && typeof payload.entityId === "string" ? payload.entityId : null;
+  if (!issueId) return;
+  const details = payload.details && typeof payload.details === "object" ? payload.details as Record<string, unknown> : {};
+  const issueTitle = typeof details.title === "string" ? details.title : "";
+  if (action === "issue.thread_interaction_created") {
+    publishLiveEvent({ companyId: publication.companyId, type: "issue.interaction.pending", payload: {
+      issueId, issueTitle, responsibleUserId: payload.responsibleUserId,
+    } });
+  }
+  if (action === "issue.updated") {
+    const changes = details.changes && typeof details.changes === "object" ? details.changes as Record<string, unknown> : {};
+    const status = changes.status as { to?: unknown } | undefined;
+    if (status?.to === "blocked") publishLiveEvent({ companyId: publication.companyId, type: "issue.blocked", payload: { issueId, issueTitle } });
+    const assignee = changes.assigneeUserId as { to?: unknown } | undefined;
+    if (typeof assignee?.to === "string") publishLiveEvent({ companyId: publication.companyId, type: "issue.user_assigned", payload: {
+      issueId, issueTitle, responsibleUserId: assignee.to,
+    } });
+  }
 }
 
 export async function persistActivity(db: Db, input: LogActivityInput) {

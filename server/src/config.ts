@@ -87,6 +87,9 @@ export interface Config {
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
+  vapidPublicKey: string | undefined;
+  vapidPrivateKey: string | undefined;
+  vapidSubject: string | undefined;
 }
 
 function detectTailnetBindHost(): string | undefined {
@@ -244,6 +247,9 @@ export function loadConfig(): Config {
     companyDeletionEnvRaw !== undefined
       ? companyDeletionEnvRaw === "true"
       : deploymentMode === "local_trusted";
+  const vapidPublicKey = process.env.VAPID_PUBLIC_KEY?.trim() || undefined;
+  const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY?.trim() || undefined;
+  const vapidSubject = process.env.VAPID_SUBJECT?.trim() || undefined;
   const databaseBackupEnabled =
     process.env.PAPERCLIP_DB_BACKUP_ENABLED !== undefined
       ? process.env.PAPERCLIP_DB_BACKUP_ENABLED === "true"
@@ -333,5 +339,8 @@ export function loadConfig(): Config {
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
+    vapidPublicKey,
+    vapidPrivateKey,
+    vapidSubject,
   };
 }

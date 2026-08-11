@@ -97,6 +97,9 @@ import {
   updateBudgetSchema,
   upsertBudgetPolicySchema,
   resolveBudgetIncidentSchema,
+  // Push notifications
+  subscribePushSubscriptionSchema,
+  unsubscribePushSubscriptionSchema,
   // Sidebar
   upsertSidebarOrderPreferenceSchema,
   // Execution workspaces
@@ -3398,6 +3401,32 @@ registry.registerPath({
     }),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+// ─── Push notifications ──────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/push-subscriptions/me",
+  tags: ["push-notifications"],
+  summary: "Subscribe the current user device to push notifications",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(subscribePushSubscriptionSchema),
+  },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/push-subscriptions/me",
+  tags: ["push-notifications"],
+  summary: "Unsubscribe the current user device from push notifications",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(unsubscribePushSubscriptionSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
