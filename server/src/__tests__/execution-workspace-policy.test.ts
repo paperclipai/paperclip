@@ -299,6 +299,7 @@ describe("execution workspace policy helpers", () => {
         enabled: true,
         sharedWorkspaceConcurrency: "serialize",
         defaultMode: "isolated",
+        environmentId: "22222222-2222-4222-8222-222222222222",
         workspaceStrategy: {
           type: "git_worktree",
           worktreeParentDir: ".paperclip/worktrees",
@@ -311,6 +312,7 @@ describe("execution workspace policy helpers", () => {
       enabled: true,
       sharedWorkspaceConcurrency: "serialize",
       defaultMode: "isolated_workspace",
+      environmentId: "22222222-2222-4222-8222-222222222222",
       workspaceStrategy: {
         type: "git_worktree",
         worktreeParentDir: ".paperclip/worktrees",
@@ -373,6 +375,30 @@ describe("execution workspace policy helpers", () => {
     });
     expect(selectEnvironmentExecutionWorkspaceSettings(parsedSettings, true)).toEqual(parsedSettings);
     expect(selectEnvironmentExecutionWorkspaceSettings({ mode: "isolated_workspace" }, false)).toBeNull();
+  });
+
+  it("prefers an issue environment over project, agent, and instance defaults", () => {
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        issueEnvironmentId: "issue-env",
+        projectEnvironmentId: "project-env",
+        agentDefaultEnvironmentId: "agent-env",
+        instanceDefaultEnvironmentId: "instance-env",
+        localDefaultEnvironmentId: "local-env",
+      }),
+    ).toEqual({ environmentId: "issue-env", source: "issue" });
+  });
+
+  it("prefers a project environment over agent and instance defaults", () => {
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        issueEnvironmentId: null,
+        projectEnvironmentId: "project-env",
+        agentDefaultEnvironmentId: "agent-env",
+        instanceDefaultEnvironmentId: "instance-env",
+        localDefaultEnvironmentId: "local-env",
+      }),
+    ).toEqual({ environmentId: "project-env", source: "project" });
   });
 
   it("prefers the agent default environment", () => {

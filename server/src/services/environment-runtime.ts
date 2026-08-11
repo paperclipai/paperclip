@@ -131,6 +131,9 @@ export interface EnvironmentDriverAcquireInput {
   executionWorkspaceId: string | null;
   executionWorkspaceMode: ExecutionWorkspace["mode"] | null;
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+  /** Explicitly validated private-repository checkout requirements. */
+  repositoryCredentialsRequired?: boolean;
+  gitReadOnlySecretName?: string | null;
   /**
    * The harness/adapter type for this run (the agent's adapter). Drivers that
    * materialize a per-run sandbox use it to select the runtime image so a single
@@ -1009,6 +1012,8 @@ function createSandboxEnvironmentDriver(
             // environment's default adapter image (a pi agent then runs in the
             // opencode image and the harness binary is missing at exec time).
             adapterType: input.adapterType ?? undefined,
+            repositoryCredentialsRequired: input.repositoryCredentialsRequired ?? false,
+            gitReadOnlySecretName: input.gitReadOnlySecretName ?? null,
           },
           resolvePluginSandboxRpcTimeoutMs(workerConfig),
         );
@@ -1930,6 +1935,8 @@ export function environmentRuntimeService(
       executionWorkspaceSettings?: IssueExecutionWorkspaceSettings | null;
       /** The agent's adapter type for this run (mixed-harness environments). */
       adapterType?: string | null;
+      repositoryCredentialsRequired?: boolean;
+      gitReadOnlySecretName?: string | null;
       /**
        * Force applying the active custom-image template even for ad-hoc (no
        * issue/run) invocations. Operator `Test` probes set this so the runtime
@@ -1955,6 +1962,8 @@ export function environmentRuntimeService(
         executionWorkspaceMode: leaseContext.executionWorkspaceMode,
         executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
         adapterType: input.adapterType ?? null,
+        repositoryCredentialsRequired: input.repositoryCredentialsRequired ?? false,
+        gitReadOnlySecretName: input.gitReadOnlySecretName ?? null,
         applyCustomImageTemplate: input.applyCustomImageTemplate ?? false,
       });
 

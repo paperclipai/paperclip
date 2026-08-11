@@ -1453,7 +1453,7 @@ export async function resolveWorkspaceAfterLowTrustPreflight<TWorkspace>(input: 
   effectiveExecutionWorkspaceMode: string | null | undefined;
   issue: { companyId: string; id?: string | null; projectId?: string | null } | null;
   resolveSelectedEnvironmentDriver: () => Promise<string | null | undefined>;
-  resolveWorkspace: () => Promise<TWorkspace>;
+  resolveWorkspace: (selectedEnvironmentDriver: string | null) => Promise<TWorkspace>;
 }): Promise<{ selectedEnvironmentDriver: string | null; workspace: TWorkspace }> {
   const selectedEnvironmentDriver = await preflightLowTrustWorkspaceIsolation({
     db: input.db,
@@ -1463,10 +1463,9 @@ export async function resolveWorkspaceAfterLowTrustPreflight<TWorkspace>(input: 
     issue: input.issue,
     resolveSelectedEnvironmentDriver: input.resolveSelectedEnvironmentDriver,
   });
-
   return {
     selectedEnvironmentDriver,
-    workspace: await input.resolveWorkspace(),
+    workspace: await input.resolveWorkspace(selectedEnvironmentDriver),
   };
 }
 
@@ -2634,6 +2633,34 @@ export function buildRunWorkspaceHints(
       projectId: additional.projectId,
     })),
   ];
+}
+
+export function resolveEffectiveSandboxRepositoryRef(input: {
+  issueBaseRef?: string | null;
+  projectBaseRef?: string | null;
+  defaultRepoRef?: string | null;
+}): string | null {
+  return [input.issueBaseRef, input.projectBaseRef, input.defaultRepoRef]
+    .map(readNonEmptyString)
+    .find((value): value is string => value !== undefined && value !== null) ?? null;
+}
+
+export function resolveEffectiveRepositoryCredentialsRequired(input: {
+  issuePolicy?: boolean;
+  projectPolicy?: boolean;
+  workspacePolicy?: boolean;
+}): boolean {
+  return input.issuePolicy ?? input.projectPolicy ?? input.workspacePolicy ?? false;
+}
+
+export function isKubernetesSandboxRepositoryEnvironment(input: {
+  driver: string | null | undefined;
+  config: unknown;
+}): boolean {
+  const config = parseObject(input.config);
+  return input.driver === "sandbox" &&
+    readNonEmptyString(config.provider) === "kubernetes" &&
+    (readNonEmptyString(config.backend) ?? "sandbox-cr") === "sandbox-cr";
 }
 
 type ProjectWorkspaceCandidate = {
@@ -8429,7 +8456,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
     previousSessionParams: Record<string, unknown> | null,
-    opts?: { useProjectWorkspace?: boolean | null },
+    opts?: { useProjectWorkspace?: boolean | null; sandboxNative?: boolean },
   ): Promise<ResolvedAnchorWorkspaceForRun> {
     const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     const contextProjectId = readNonEmptyString(context.projectId);
@@ -8467,13 +8494,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       unorderedProjectWorkspaceRows,
       preferredProjectWorkspaceId,
     );
-
     const workspaceHints = projectWorkspaceRows.map((workspace) => ({
       workspaceId: workspace.id,
       cwd: readNonEmptyString(workspace.cwd),
       repoUrl: readNonEmptyString(workspace.repoUrl),
       repoRef: readNonEmptyString(workspace.repoRef),
     }));
+
+    // A sandbox-native run must not inspect, create, or fall back to a host
+    // project workspace. The provider owns repository realization inside the
+    // sandbox; this virtual path is only the transport-neutral request value.
+    if (opts?.sandboxNative) {
+      const workspace = projectWorkspaceRows[0];
+      return {
+        cwd: "/workspace/repository",
+        source: "project_primary" as const,
+        projectId: resolvedProjectId,
+        workspaceId: workspace?.id ?? null,
+        repoUrl: readNonEmptyString(workspace?.repoUrl),
+        repoRef: readNonEmptyString(workspace?.repoRef),
+        workspaceHints,
+        warnings: [],
+        baseCwdFallback: false,
+        materializationFailures: [],
+      };
+    }
 
     if (projectWorkspaceRows.length > 0) {
       const preferredWorkspace = preferredProjectWorkspaceId
@@ -8653,7 +8698,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
     previousSessionParams: Record<string, unknown> | null,
-    opts?: { useProjectWorkspace?: boolean | null; executionEnvironmentDriver?: string | null },
+    opts?: {
+      useProjectWorkspace?: boolean | null;
+      executionEnvironmentDriver?: string | null;
+      sandboxNative?: boolean;
+    },
   ): Promise<ResolvedWorkspaceForRun> {
     const anchor = await resolveAnchorWorkspaceForRun(agent, context, previousSessionParams, opts);
     if (!isMultiProjectWorkspaceSyncEnabled()) {
@@ -13669,6 +13718,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const isolatedWorkspacesEnabled = experimentalInstanceSettings.enableIsolatedWorkspaces;
     const parsedIssueExecutionWorkspaceSettings = parseIssueExecutionWorkspaceSettings(
       issueContext?.executionWorkspaceSettings,
+      { includeEnvironmentId: true },
     );
     const issueExecutionWorkspaceSettings = isolatedWorkspacesEnabled
       ? parsedIssueExecutionWorkspaceSettings
@@ -13961,6 +14011,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const localEnvironment = await environmentsSvc.ensureLocalEnvironment(agent.companyId);
     const resolvedInstanceSettings = await instanceSettings.get();
     const environmentResolution = resolveExecutionWorkspaceEnvironmentId({
+      issueEnvironmentId: issueExecutionWorkspaceSettings?.environmentId ?? null,
+      projectEnvironmentId: projectExecutionWorkspacePolicy?.environmentId ?? null,
       agentDefaultEnvironmentId: agent.defaultEnvironmentId,
       instanceDefaultEnvironmentId: resolvedInstanceSettings.defaultEnvironmentId ?? null,
       localDefaultEnvironmentId: localEnvironment.id,
@@ -14317,7 +14369,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
         return preflightEnvironment.driver;
       },
-      resolveWorkspace: () =>
+      resolveWorkspace: (selectedEnvironmentDriver) =>
         resolveWorkspaceForRun(
           agent,
           context,
@@ -14329,6 +14381,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             // target. A remote run resolves referenced projects only for the confined sandbox
             // transport with the remote flag on. This never changes the anchor workspace.
             executionEnvironmentDriver: selectedEnvironmentForConfig?.driver ?? null,
+            sandboxNative: isKubernetesSandboxRepositoryEnvironment({
+              driver: selectedEnvironmentForConfig?.driver ?? selectedEnvironmentDriver,
+              config: selectedEnvironmentForConfig?.config,
+            }),
           },
         ),
     });
@@ -14343,19 +14399,42 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       projectId: resolvedWorkspace.projectId,
       workspaceId: resolvedWorkspace.workspaceId,
       repoUrl: resolvedWorkspace.repoUrl,
-      repoRef: resolvedWorkspace.repoRef,
+      repoRef: resolveEffectiveSandboxRepositoryRef({
+        issueBaseRef: issueExecutionWorkspaceSettings?.workspaceStrategy?.baseRef,
+        projectBaseRef: parseObject(projectExecutionWorkspacePolicy?.workspaceStrategy).baseRef as string | null | undefined,
+        defaultRepoRef: resolvedWorkspace.repoRef,
+      }),
       additionalWorkspaces: resolvedWorkspace.additionalWorkspaces,
+      repositoryCredentialsRequired: resolveEffectiveRepositoryCredentialsRequired({
+        issuePolicy: issueExecutionWorkspaceSettings?.repositoryCredentialsRequired,
+        projectPolicy: projectExecutionWorkspacePolicy?.repositoryCredentialsRequired,
+        workspacePolicy: requestedReusableExecutionWorkspaceConfig?.repositoryCredentialsRequired,
+      }),
     } satisfies ExecutionWorkspaceInput;
-    await assertGitWorktreeBaseWorkspaceReady({
-      requestedExecutionWorkspaceMode,
-      config: hostExecutionWorkspaceConfig,
-      issue: issueRef,
-      base: executionWorkspaceBase,
-      anchor: {
-        baseCwdFallback: resolvedWorkspace.baseCwdFallback,
-        materializationFailures: resolvedWorkspace.materializationFailures,
-      },
+    const sandboxNativeRun = isKubernetesSandboxRepositoryEnvironment({
+      driver: selectedEnvironmentForConfig?.driver ?? lowTrustPreflightEnvironmentDriver,
+      config: selectedEnvironmentForConfig?.config,
     });
+    const configuredGitReadOnlySecretName = readNonEmptyString(
+      parseObject(selectedEnvironmentForConfig?.config).gitReadOnlySecretName,
+    );
+    if (sandboxNativeRun && executionWorkspaceBase.repositoryCredentialsRequired && !configuredGitReadOnlySecretName) {
+      throw new Error(
+        "Private sandbox repository runs require both repositoryCredentialsRequired and gitReadOnlySecretName before lease creation; refusing to create a pod or clone.",
+      );
+    }
+    if (!sandboxNativeRun) {
+      await assertGitWorktreeBaseWorkspaceReady({
+        requestedExecutionWorkspaceMode,
+        config: hostExecutionWorkspaceConfig,
+        issue: issueRef,
+        base: executionWorkspaceBase,
+        anchor: {
+          baseCwdFallback: resolvedWorkspace.baseCwdFallback,
+          materializationFailures: resolvedWorkspace.materializationFailures,
+        },
+      });
+    }
     const workspaceStrategyForFingerprint = parseObject(hostExecutionWorkspaceConfig.workspaceStrategy);
     const workspaceStrategyFingerprintValue =
       Object.keys(workspaceStrategyForFingerprint).length > 0 ? workspaceStrategyForFingerprint : null;
@@ -14420,14 +14499,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           evaluatedAt: latestWorkspaceConfigMetadata.evaluatedAt,
         })
       : null;
-    const workspaceConfigFreshness = resolveExecutionWorkspaceConfigFreshness({
-      hasExistingWorkspace: requestedShouldReuseExisting && Boolean(reusableExistingExecutionWorkspace),
-      existingWorkspaceMetadata: reusableExistingExecutionWorkspace?.metadata ?? null,
-      inferredMetadata: inferredExistingWorkspaceConfigMetadata,
-      nextMetadata: latestWorkspaceConfigMetadata,
-    });
+    const workspaceConfigFreshness = sandboxNativeRun
+      ? {
+          action: "create" as const,
+          shouldReuseExisting: false,
+          shouldRefreshConfigSnapshot: false,
+          reasons: [],
+          changedCategories: [],
+          storedFingerprint: null,
+          inferredFingerprint: null,
+          nextFingerprint: latestWorkspaceConfigMetadata.fingerprint,
+          storedFingerprintPresent: false,
+        }
+      : resolveExecutionWorkspaceConfigFreshness({
+          hasExistingWorkspace: requestedShouldReuseExisting && Boolean(reusableExistingExecutionWorkspace),
+          existingWorkspaceMetadata: reusableExistingExecutionWorkspace?.metadata ?? null,
+          inferredMetadata: inferredExistingWorkspaceConfigMetadata,
+          nextMetadata: latestWorkspaceConfigMetadata,
+        });
     const workspaceReuseProvisioningPolicy = resolveExecutionWorkspaceReuseProvisioningPolicy({
-      requestedShouldReuseExisting,
+      requestedShouldReuseExisting: sandboxNativeRun ? false : requestedShouldReuseExisting,
       workspaceConfigFreshness,
     });
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
@@ -14445,8 +14536,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueId,
       heartbeatRunId: run.id,
     });
-    const { executionWorkspace, reusedExecutionWorkspace, policy: resolvedWorkspaceReusePolicy } =
-      await provisionExecutionWorkspaceForFreshnessDecision<RealizedExecutionWorkspace>({
+    const provisionedWorkspace = sandboxNativeRun
+      ? {
+          executionWorkspace: {
+            ...executionWorkspaceBase,
+            strategy: "sandbox_repository" as const,
+            cwd: "/workspace/repository",
+            branchName: null,
+            worktreePath: null,
+            warnings: [],
+            created: false,
+          } satisfies RealizedExecutionWorkspace,
+          reusedExecutionWorkspace: null,
+          policy: {
+            shouldRestoreExistingWorkspace: false,
+            shouldRefreshWorkspaceConfigSnapshot: false,
+            shouldPersistLatestWorkspaceConfigMetadata: false,
+          },
+        }
+      : await provisionExecutionWorkspaceForFreshnessDecision<RealizedExecutionWorkspace>({
         requestedShouldReuseExisting,
         existingExecutionWorkspaceId: workspaceReuseRequest.requestedExecutionWorkspaceId,
         issueRef,
@@ -14514,7 +14622,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           recorder: workspaceOperationRecorder,
           resolveGitAuth: workspaceGitAuthProvider,
         }),
-      });
+        });
+    const { executionWorkspace, reusedExecutionWorkspace, policy: resolvedWorkspaceReusePolicy } = provisionedWorkspace;
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
     const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
     let persistedExecutionWorkspace: ExecutionWorkspace | null = null;
@@ -14568,14 +14677,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const pendingForwardBranchReconcile = executionWorkspace.pendingForwardBranchReconcile ?? null;
     const branchNameForInitialPersistence =
       pendingForwardBranchReconcile?.recordedBranchName ?? executionWorkspace.branchName;
-    try {
+    const persistedWorkspaceProviderType = selectedEnvironmentForConfig?.driver === "sandbox"
+      ? "adapter_managed" as const
+      : executionWorkspace.strategy === "git_worktree"
+        ? "git_worktree" as const
+        : "local_fs" as const;
+    if (!sandboxNativeRun) try {
       persistedExecutionWorkspace = resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace && reusableExistingExecutionWorkspace
         ? await executionWorkspacesSvc.update(reusableExistingExecutionWorkspace.id, {
             cwd: executionWorkspace.cwd,
             repoUrl: executionWorkspace.repoUrl,
             baseRef: executionWorkspace.repoRef,
             branchName: branchNameForInitialPersistence,
-            providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
+            providerType: persistedWorkspaceProviderType,
             providerRef: executionWorkspace.worktreePath,
             status: "active",
             lastUsedAt: new Date(),
@@ -14606,7 +14720,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               repoUrl: executionWorkspace.repoUrl,
               baseRef: executionWorkspace.repoRef,
               branchName: branchNameForInitialPersistence,
-              providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
+              providerType: persistedWorkspaceProviderType,
               providerRef: executionWorkspace.worktreePath,
               lastUsedAt: new Date(),
               openedAt: new Date(),
@@ -14623,7 +14737,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 ?? workspaceReuseRequest.requestedExecutionWorkspaceId
                 ?? `transient-${run.id}`,
               cwd: executionWorkspace.cwd,
-              providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
+              providerType: persistedWorkspaceProviderType,
               providerRef: executionWorkspace.worktreePath,
               branchName: executionWorkspace.branchName,
               repoUrl: executionWorkspace.repoUrl,
@@ -14722,6 +14836,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       agentId: agent.id,
       persistedExecutionWorkspace,
       executionWorkspaceSettings: environmentExecutionWorkspaceSettings,
+      repositoryCredentialsRequired: executionWorkspace.repositoryCredentialsRequired,
+      gitReadOnlySecretName: sandboxNativeRun ? configuredGitReadOnlySecretName : null,
     });
     const selectedEnvironment = acquiredEnvironment.environment;
     // Defense-in-depth: re-check the actually-acquired environment against the
@@ -14763,6 +14879,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       executionWorkspace,
       effectiveExecutionWorkspaceMode,
       persistedExecutionWorkspace,
+      repositoryCredentialSecretName: sandboxNativeRun ? configuredGitReadOnlySecretName : null,
     });
     activeEnvironmentLease = {
       ...activeEnvironmentLease,

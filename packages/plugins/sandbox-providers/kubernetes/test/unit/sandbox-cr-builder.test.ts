@@ -41,7 +41,7 @@ describe("buildSandboxCrManifest", () => {
 
   it("uses sleep-infinity entrypoint via Tini for multi-command exec", () => {
     const cr = buildSandboxCrManifest(baseInput);
-    const container = cr.spec.podTemplate.spec.containers[0];
+    const container = cr.spec.podTemplate.spec.containers.find((c: { name: string }) => c.name === "agent");
     expect(container.command).toEqual([
       "/usr/bin/tini",
       "--",
@@ -71,9 +71,33 @@ describe("buildSandboxCrManifest", () => {
     expect(cr.spec.podTemplate.spec.automountServiceAccountToken).toBe(false);
   });
 
-  it("declares emptyDir volume mounts for standard agent paths", () => {
+  it("keeps ServiceAccount token mounts out of the loader and agent containers", () => {
+    const cr = buildSandboxCrManifest({ ...baseInput, gitReadOnlySecretName: "git-read-only" });
+    const containers = cr.spec.podTemplate.spec.containers;
+    const volumeNames = cr.spec.podTemplate.spec.volumes.map((volume: { name: string }) => volume.name);
+
+    expect(volumeNames).not.toContain("kube-api-access");
+    expect(volumeNames).not.toContain("service-account-token");
+    for (const container of containers) {
+      expect(container.volumeMounts).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ mountPath: "/var/run/secrets/kubernetes.io/serviceaccount" }),
+      ]));
+    }
+  });
+
+  it("declares writable loader and agent paths under read-only root filesystems", () => {
     const cr = buildSandboxCrManifest(baseInput);
-    const mounts = cr.spec.podTemplate.spec.containers[0].volumeMounts;
+    const loader = cr.spec.podTemplate.spec.containers.find((c: { name: string }) => c.name === "repo-loader");
+    expect(loader.env).toEqual([
+      { name: "HOME", value: "/home/loader" },
+      { name: "TMPDIR", value: "/home/loader/tmp" },
+      { name: "XDG_CONFIG_HOME", value: "/home/loader/.config" },
+    ]);
+    expect(loader.volumeMounts).toEqual([
+      { name: "workspace", mountPath: "/workspace" },
+      { name: "loader-home", mountPath: "/home/loader" },
+    ]);
+    const mounts = cr.spec.podTemplate.spec.containers.find((c: { name: string }) => c.name === "agent").volumeMounts;
     const mountPaths = mounts
       .map((m: { mountPath: string }) => m.mountPath)
       .sort();
@@ -92,8 +116,51 @@ describe("buildSandboxCrManifest", () => {
 
   it("envFrom references the per-run secret", () => {
     const cr = buildSandboxCrManifest(baseInput);
-    const envFrom = cr.spec.podTemplate.spec.containers[0].envFrom;
+    const envFrom = cr.spec.podTemplate.spec.containers.find((c: { name: string }) => c.name === "agent").envFrom;
     expect(envFrom[0].secretRef.name).toBe(baseInput.envSecretName);
+  });
+
+  it("selectively injects only the minimal Git keys into the loader and never the agent", () => {
+    const cr = buildSandboxCrManifest({ ...baseInput, gitReadOnlySecretName: "git-read-only" });
+    const containers = cr.spec.podTemplate.spec.containers;
+    const loaderEnv = containers.find((c: { name: string }) => c.name === "repo-loader").env;
+    expect(loaderEnv).toContainEqual({ name: "GIT_USERNAME", valueFrom: { secretKeyRef: { name: "git-read-only", key: "GIT_USERNAME" } } });
+    expect(loaderEnv).toContainEqual({ name: "GIT_TOKEN", valueFrom: { secretKeyRef: { name: "git-read-only", key: "GIT_TOKEN" } } });
+    expect(containers.find((c: { name: string }) => c.name === "repo-loader").envFrom).toBeUndefined();
+    expect(containers.find((c: { name: string }) => c.name === "agent").envFrom).toEqual([
+      { secretRef: { name: baseInput.envSecretName } },
+    ]);
+    expect(containers.find((c: { name: string }) => c.name === "agent").volumeMounts).not.toContainEqual(
+      { name: "loader-home", mountPath: "/home/loader" },
+    );
+    expect(containers.find((c: { name: string }) => c.name === "agent").volumeMounts).toEqual([
+      { name: "workspace", mountPath: "/workspace" },
+      { name: "home", mountPath: "/home/paperclip" },
+      { name: "cache", mountPath: "/home/paperclip/.cache" },
+      { name: "tmp", mountPath: "/tmp" },
+    ]);
+  });
+
+  it("keeps public repositories credential-free when no binding is configured", () => {
+    const loader = buildSandboxCrManifest(baseInput).spec.podTemplate.spec.containers.find((c: { name: string }) => c.name === "repo-loader");
+    expect(loader.env).not.toContainEqual(expect.objectContaining({ name: "GIT_TOKEN" }));
+    expect(loader.envFrom).toBeUndefined();
+  });
+
+  it("injects the repository proxy only into repo-loader", () => {
+    const cr = buildSandboxCrManifest({ ...baseInput, repositoryProxyUrl: "http://192.168.0.63:3129" });
+    const containers = cr.spec.podTemplate.spec.containers;
+    const loaderEnv = containers.find((c: { name: string }) => c.name === "repo-loader").env;
+    const agentEnv = containers.find((c: { name: string }) => c.name === "agent").env;
+    expect(loaderEnv).toEqual(expect.arrayContaining([
+      { name: "HTTP_PROXY", value: "http://192.168.0.63:3129" },
+      { name: "HTTPS_PROXY", value: "http://192.168.0.63:3129" },
+      { name: "NO_PROXY", value: "localhost,127.0.0.1" },
+    ]));
+    expect(agentEnv).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "HTTP_PROXY" }),
+      expect.objectContaining({ name: "HTTPS_PROXY" }),
+    ]));
   });
 
   it("applies runtimeClassName when set", () => {

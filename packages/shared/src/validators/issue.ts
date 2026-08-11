@@ -110,7 +110,7 @@ export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
 
 const executionWorkspaceStrategySchema = z
   .object({
-    type: z.enum(["project_primary", "git_worktree", "adapter_managed", "cloud_sandbox"]).optional(),
+    type: z.enum(["project_primary", "git_worktree", "sandbox_repository", "adapter_managed", "cloud_sandbox"]).optional(),
     baseRef: z.string().optional().nullable(),
     branchTemplate: z.string().optional().nullable(),
     worktreeParentDir: z.string().optional().nullable(),
@@ -156,6 +156,7 @@ export const issueExecutionWorkspaceSettingsSchema = z
     mode: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional(),
     sharedWorkspaceConcurrency: z.enum(["auto", "serialize", "allow"]).optional(),
     environmentId: z.string().uuid().optional().nullable(),
+    repositoryCredentialsRequired: z.boolean().optional(),
     workspaceStrategy: executionWorkspaceStrategySchema.optional().nullable(),
     workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
     networkEgress: z.object({

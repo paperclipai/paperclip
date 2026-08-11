@@ -60,6 +60,10 @@ const manifest: PaperclipPluginManifestV1 = {
             items: { type: "string" },
             description: "Names of pre-created Docker image pull secrets in the tenant namespace.",
           },
+          gitReadOnlySecretName: {
+            type: "string",
+            description: "Optional pre-created Secret containing short-lived read-only Git credentials. It is mounted only into the repo-loader sidecar, never the agent container.",
+          },
           egressAllowFqdns: {
             type: "array",
             items: { type: "string" },

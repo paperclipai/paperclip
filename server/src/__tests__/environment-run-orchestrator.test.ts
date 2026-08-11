@@ -276,6 +276,17 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     expect(mockResolveEnvironmentExecutionTarget).toHaveBeenCalledOnce();
   });
 
+  it("keeps the existing workspace strategy for sandbox environments", async () => {
+    const runtime = makeMockRuntime();
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+
+    await orchestrator.realizeForRun(makeRealizeInput({ environment: makeEnvironment("sandbox") }));
+
+    expect(mockBuildWorkspaceRealizationRequest).toHaveBeenCalledWith(
+      expect.objectContaining({ repositoryStrategy: null }),
+    );
+  });
+
   it("uses an in-place authoritative root on the adapter execution target", async () => {
     mockResolveEnvironmentExecutionTarget.mockResolvedValue({
       kind: "remote",

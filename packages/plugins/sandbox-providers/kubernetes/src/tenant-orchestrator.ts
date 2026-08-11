@@ -10,6 +10,7 @@ export interface EnsureTenantInput {
   egressMode: "standard" | "cilium";
   egressAllowFqdns: string[];
   egressAllowCidrs: string[];
+  repositoryProxy?: { cidr: string; port: number } | null;
   resourceQuota: {
     pods: string;
     requestsCpu: string;
@@ -212,6 +213,7 @@ async function ensureNetworkPolicies(clients: KubeClients, input: EnsureTenantIn
     paperclipServerNamespace: input.paperclipServerNamespace,
     egressAllowCidrs: input.egressAllowCidrs,
     egressAllowFqdns: input.egressAllowFqdns,
+    repositoryProxy: input.repositoryProxy,
   });
 
   await ensureNetworkPolicy(clients, input.namespace, denyAll);
