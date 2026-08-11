@@ -655,6 +655,49 @@ describe("shared ACPX engine runtime behavior", () => {
     });
   });
 
+  it("preserves a disposition concatenated after Markdown emphasis", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield {
+              type: "text_delta",
+              text: '**Final check**PAPERCLIP_DISPOSITION {"status":"in_review"}',
+              stream: "output",
+              tag: "agent_message_chunk",
+            };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-disposition-markdown-tail",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.summary).toBe("**Final check**");
+    expect(result.resultJson).toMatchObject({
+      disposition: { status: "in_review", hasBlocker: false },
+    });
+  });
+
   it("recovers an explicit bare JSON disposition when the in-run API write failed", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");

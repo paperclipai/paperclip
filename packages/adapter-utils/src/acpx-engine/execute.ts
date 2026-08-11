@@ -97,7 +97,11 @@ import type { CommandManagedRuntimeRunner } from "../command-managed-runtime.js"
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
 const BENIGN_NES_CLOSE_STDERR = /method: ['"]nes\/close['"].*-32601/;
-const PAPERCLIP_DISPOSITION_RE = /(?:^|\n)\s*`?PAPERCLIP_DISPOSITION\s*:?\s*(\{[^\n]*\})`?\s*(?=$|\n)/g;
+// ACP text deltas can concatenate a Markdown heading and the final token
+// without preserving the newline (`**Final check**PAPERCLIP_DISPOSITION …`).
+// Accept a marker after whitespace, a line start, a backtick, or Markdown
+// emphasis, but still require a valid JSON record to the end of that line.
+const PAPERCLIP_DISPOSITION_RE = /(?:^|(?<=[\s`*_]))`?PAPERCLIP_DISPOSITION\s*:?\s*(\{[^\n]*\})`?\s*(?=$|\n)/g;
 const ACPX_FINALIZATION_REMINDER =
   "Before ending this ACP run, record the real issue state through Paperclip. " +
   "If that write cannot be confirmed, your FINAL response line MUST be exactly a " +
