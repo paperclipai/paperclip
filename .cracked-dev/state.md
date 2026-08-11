@@ -4,6 +4,20 @@ Repo: paperclipai/paperclip · default branch: `master` · fork remote: `fork` (
 Isolation: run in a git worktree off origin/master (main tree has concurrent activity).
 
 ## Done
+- **New-agent grant durability: baseline tools:use at creation** — `agents.ts create()` inserts
+  a null-scope `tools:use` grant in the same transaction as the agent (the single
+  `insert(agents)` seam → covers hire/built-in/UI/clone). Fixes the root of the 08-10 incident:
+  nothing auto-granted tools:use, so every new hire was deny_default-blocked until a manual
+  INSERT. Also added ON DELETE cascade to `principal_permission_grants.company_id` (migration
+  `0214`) — the lone company-scoped FK missing cascade; now required since every company has
+  agent grants (company deletion + every agent-creating test's teardown would else FK-fail).
+  Blast radius found empirically: FK-on-`delete(companies)` in agent-creating service tests
+  (route tests were already safe — route-test-harness deletes grants). Cascade fixed it
+  universally; ~600 tests across agent/permission/tool/company suites green. +test (create grants
+  tools:use). DEPLOYED: db:check flagged 0214 pending + no collision (its first real catch),
+  graceful restart clean exit 0, FK confdeltype=c on live, grant code in dist. Self-audit: CLEAN
+  (baseline grant = approved design; destructive still formal-approval-gated; idempotent).
+  Commit `6e073a219`. RISKY (migration + core create path) → local commit.
 - **Auto-recall: issue-relevant memory injection at run start** — new
   `company-memory-search.ts` (shared keyword search; `recall` refactored onto it, isolation test
   guards it) + `heartbeat.ts executeRun` fetches top-3 memories matched against the issue
@@ -139,10 +153,8 @@ Isolation: run in a git worktree off origin/master (main tree has concurrent act
   real linked PRs). `trelmitt` has no upstream write — PRs go via the `fork` remote.
 
 ## Next candidates (ranked)
-1. Make the D1 `tools:use` grant durable for NEW agents — bake into hire.mjs / apply on agent
-   activation via `routes/access.ts` so a freshly-hired agent isn't silently tool-less (S–M).
-   (Baseline grant applied to all 13 current agents 2026-08-10 via one-shot INSERT — a new hire
-   would be tool-less again without this.)
-2. Semantic/vector recall once trigram ILIKE is outgrown — needs pgvector + an embedding step (L).
-3. Auto-recall quality: minTermLength/stopword tuning + a relevance score (currently recency-
+1. Semantic/vector recall once trigram ILIKE is outgrown — needs pgvector + an embedding step (L).
+2. Auto-recall quality: minTermLength/stopword tuning + a relevance score (currently recency-
    ranked keyword match, limit 3) once real memory volume exists to tune against (S–M).
+3. Company memory management surface — dedup/edit/forget stale memories as volume grows (UI + a
+   forget tool); today it's append-only via remember (S–M).
