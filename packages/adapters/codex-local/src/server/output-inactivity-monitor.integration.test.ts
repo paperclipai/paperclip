@@ -16,6 +16,16 @@ process.stdin.on("data", () => {});
 setInterval(() => {}, 60_000);
 `;
 
+const ACTIVE_SILENT_BUILD_SCRIPT = `
+const end = Date.now() + 7_000;
+const work = () => {
+  const sliceEnd = Math.min(end, Date.now() + 10);
+  while (Date.now() < sliceEnd) {}
+  if (Date.now() < end) setTimeout(work, 40);
+};
+work();
+`;
+
 describe("codex inactivity monitor (integration: real subprocess)", () => {
   it.skipIf(process.platform !== "linux")(
     "allows a long silent build while the child process group is consuming CPU",
@@ -24,7 +34,7 @@ describe("codex inactivity monitor (integration: real subprocess)", () => {
       // Leave enough room for the first /proc baseline on a busy CI host.
       // The test still exercises a multi-timeout period with no output, but
       // avoids treating scheduler contention as a product-level inactivity.
-      const timeoutMs = 1_500;
+      const timeoutMs = 3_000;
       const processActivityMonitor: {
         current: ReturnType<typeof createCodexProcessActivityMonitor> | null;
       } = { current: null };
@@ -40,11 +50,11 @@ describe("codex inactivity monitor (integration: real subprocess)", () => {
         const proc = await runChildProcess(
           runId,
           process.execPath,
-          ["-e", "const end = Date.now() + 3_000; while (Date.now() < end) {}"],
+          ["-e", ACTIVE_SILENT_BUILD_SCRIPT],
           {
             cwd: process.cwd(),
             env: process.env as Record<string, string>,
-            timeoutSec: 7,
+            timeoutSec: 12,
             graceSec: 1,
             onSpawn: async (meta) => {
               processActivityMonitor.current = createCodexProcessActivityMonitor({

@@ -64,6 +64,23 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function delegatedChildExecutionContract() {
+  return {
+    schemaVersion: 2,
+    contractType: "delegated_task",
+    taskType: "implementation",
+    core: {
+      objective: "Complete the delegated child task.",
+      why: "The child needs the parent intent as a durable handoff.",
+      sourceOfTruth: { kind: "issue_test" },
+      acceptanceChecks: ["The delegated task is completed."],
+      handoffNotes: {
+        managerReasoning: "This child is a concrete delegated unit of work.",
+      },
+    },
+  };
+}
+
 describe("issue list limit helpers", () => {
   it("clamps untrusted issue-list limits to the server maximum", () => {
     expect(clampIssueListLimit(0)).toBe(1);
@@ -2799,6 +2816,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       title: "Agent-created child",
       createdByAgentId: agentId,
       actorRunId: runId,
+      executionContract: delegatedChildExecutionContract(),
     });
 
     expect(parent.responsibleUserId).toBe(responsibleUserId);
@@ -6211,6 +6229,7 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
         priority: "medium" as const,
         createdByAgentId: assigneeAgentId,
         actorAgentId: assigneeAgentId,
+        executionContract: delegatedChildExecutionContract(),
       },
       {
         title: "Create only the missing child after reassignment",
@@ -6219,6 +6238,7 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
         priority: "medium" as const,
         createdByAgentId: assigneeAgentId,
         actorAgentId: assigneeAgentId,
+        executionContract: delegatedChildExecutionContract(),
       },
     ];
 
@@ -7919,7 +7939,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     ]));
   });
 
-  it("resurfaces archived issue when status/updatedAt changes after archiving", async () => {
+  it("keeps an archived issue hidden after a status change without new user attention", async () => {
     const companyId = randomUUID();
     const userId = "user-1";
     const otherUserId = "user-2";
@@ -7978,12 +7998,12 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       })
       .where(eq(issues.id, issueId));
 
-    // Should resurface because updatedAt > archivedAt
+    // Passive status changes do not resurface an archived issue.
     const afterUpdate = await svc.list(companyId, {
       touchedByUserId: userId,
       inboxArchivedByUserId: userId,
     });
-    expect(afterUpdate.map((i) => i.id)).toContain(issueId);
+    expect(afterUpdate.map((i) => i.id)).not.toContain(issueId);
   });
 
   it("sorts and exposes last activity from comments and non-local issue activity logs", async () => {
@@ -8370,6 +8390,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await db.delete(projects);
     await db.delete(goals);
     await db.delete(agents);
+    await db.delete(environments);
     await db.delete(instanceSettings);
     await db.delete(companies);
   });
@@ -8454,7 +8475,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
-  it("captures the assignee default environment when neither issue nor project specifies one", async () => {
+  it("does not stamp the assignee default environment onto new issues", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
@@ -8524,11 +8545,10 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
     expect(issue.executionWorkspaceSettings).toEqual({
       mode: "shared_workspace",
-      environmentId: assigneeEnvironmentId,
     });
   });
 
-  it("does not promote the assignee default environment when the project policy already specifies one", async () => {
+  it("ignores legacy project environment selection when creating new issues", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
@@ -8606,14 +8626,10 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       priority: "medium",
     });
 
-    // Project policy's environmentId must win over the assignee's default;
-    // executionWorkspaceSettings should not bake in an environmentId in this case
-    // so resolveExecutionWorkspaceEnvironmentId can fall through to the project
-    // policy's value at run time.
     expect(issue.executionWorkspaceSettings).toEqual({ mode: "shared_workspace" });
   });
 
-  it("captures the new assignee's default environment on reassignment", async () => {
+  it("does not rewrite execution workspace settings on reassignment", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
@@ -8705,8 +8721,8 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       priority: "medium",
     });
 
-    expect(created.executionWorkspaceSettings).toMatchObject({
-      environmentId: firstEnvironmentId,
+    expect(created.executionWorkspaceSettings).toEqual({
+      mode: "shared_workspace",
     });
 
     const reassigned = await svc.update(created.id, {
@@ -8714,12 +8730,12 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
 
     expect(reassigned).not.toBeNull();
-    expect(reassigned!.executionWorkspaceSettings).toMatchObject({
-      environmentId: secondEnvironmentId,
+    expect(reassigned!.executionWorkspaceSettings).toEqual({
+      mode: "shared_workspace",
     });
   });
 
-  it("preserves an operator-set environmentId across reassignment", async () => {
+  it("strips legacy environmentId values from execution workspace settings updates", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
@@ -8778,24 +8794,21 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       priority: "medium",
     });
 
-    // Operator explicitly overrides the environmentId in a separate update.
     const overridden = await svc.update(created.id, {
       executionWorkspaceSettings: {
         mode: "shared_workspace",
         environmentId: operatorEnvironmentId,
       },
     });
-    expect(overridden!.executionWorkspaceSettings).toMatchObject({
-      environmentId: operatorEnvironmentId,
+    expect(overridden!.executionWorkspaceSettings).toEqual({
+      mode: "shared_workspace",
     });
 
-    // A subsequent reassignment-only update must NOT overwrite the operator's
-    // explicit choice with the new assignee's default.
     const reassigned = await svc.update(created.id, {
       assigneeAgentId: secondAgentId,
     });
-    expect(reassigned!.executionWorkspaceSettings).toMatchObject({
-      environmentId: operatorEnvironmentId,
+    expect(reassigned!.executionWorkspaceSettings).toEqual({
+      mode: "shared_workspace",
     });
   });
 
@@ -11045,8 +11058,9 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
     expect(workspace?.metadata).toEqual({
       config: {
-        environmentId: "env-new",
+        environmentId: null,
         provisionCommand: "bash ./scripts/provision-new.sh",
+        runtimeProvisionCommand: null,
         teardownCommand: "bash ./scripts/teardown-new.sh",
         cleanupCommand: null,
         workspaceRuntime: { profile: "new" },

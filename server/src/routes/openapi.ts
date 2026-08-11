@@ -7337,6 +7337,131 @@ registerCurrentRoute({
   }),
 });
 
+// --- Resynced fork API inventory ---------------------------------------------
+//
+// These endpoints are part of the production fork and are mounted alongside
+// the upstream API surface. Keep this explicit inventory in lockstep with the
+// route-coverage test so public OpenAPI consumers cannot silently lose fork
+// capabilities during a future upstream resync. Detailed request/response
+// schemas can be promoted here as their route validators are consolidated in
+// the shared contract package.
+type ResyncedRouteCoverage = {
+  method: "get" | "post" | "put" | "patch" | "delete";
+  path: string;
+  tag: string;
+  summary: string;
+  access?: "board" | "public";
+};
+
+const resyncedRouteCoverage: ResyncedRouteCoverage[] = [
+  { method: "delete", path: "/api/agents/{id}/mcp-servers/{name}", tag: "agents", summary: "Remove an agent MCP server", access: "board" },
+  { method: "delete", path: "/api/companies/{companyId}/browser-profiles/{profileId}", tag: "browser", summary: "Delete a browser profile", access: "board" },
+  { method: "delete", path: "/api/companies/{companyId}/github-connections/{connectionId}", tag: "github-connections", summary: "Delete a GitHub connection", access: "board" },
+  { method: "delete", path: "/api/companies/{companyId}/mcp-servers/{serverId}", tag: "company-mcp-servers", summary: "Delete a company MCP server", access: "board" },
+  { method: "delete", path: "/api/credentials/{id}", tag: "credentials", summary: "Delete a credential", access: "board" },
+  { method: "delete", path: "/api/issues/{id}/collaborators/{principalType}/{principalId}", tag: "issues", summary: "Remove an issue collaborator", access: "board" },
+  { method: "delete", path: "/api/organizations/{id}/companies/{companyId}", tag: "organizations", summary: "Remove a company from an organization", access: "board" },
+  { method: "delete", path: "/api/organizations/{id}/members/{userId}", tag: "organizations", summary: "Remove an organization member", access: "board" },
+  { method: "delete", path: "/api/projects/{id}/agents-access/{agentId}", tag: "projects", summary: "Remove an agent project-access grant", access: "board" },
+  { method: "delete", path: "/api/projects/{id}/members/{memberId}", tag: "projects", summary: "Remove a project member", access: "board" },
+  { method: "get", path: "/api/agents/{id}/codex-login/{sessionId}", tag: "agents", summary: "Get a Codex login session", access: "board" },
+  { method: "get", path: "/api/agents/{id}/mcp-server-refs", tag: "agents", summary: "List agent MCP server references", access: "board" },
+  { method: "get", path: "/api/agents/{id}/mcp-servers", tag: "agents", summary: "List agent MCP servers", access: "board" },
+  { method: "get", path: "/api/companies/{companyId}/agent-permissions", tag: "companies", summary: "List company agent permissions", access: "board" },
+  { method: "get", path: "/api/companies/{companyId}/authenticators", tag: "authenticators", summary: "List company authenticators", access: "board" },
+  { method: "get", path: "/api/companies/{companyId}/browser-profiles", tag: "browser", summary: "List browser profiles", access: "board" },
+  { method: "get", path: "/api/companies/{companyId}/credentials", tag: "credentials", summary: "List company credentials", access: "board" },
+  { method: "get", path: "/api/companies/{companyId}/credentials/codex/device-auth-poll/{sessionId}", tag: "credentials", summary: "Poll Codex device authentication", access: "board" },
+  { method: "get", path: "/api/companies/{companyId}/credentials/quota-windows", tag: "credentials", summary: "List credential quota windows", access: "board" },
+  { method: "get", path: "/api/companies/{companyId}/credentials/usage", tag: "credentials", summary: "Get credential usage", access: "board" },
+  { method: "get", path: "/api/companies/{companyId}/github-connections", tag: "github-connections", summary: "List GitHub connections", access: "board" },
+  { method: "get", path: "/api/companies/{companyId}/improvement-suggestions", tag: "improvement-suggestions", summary: "List company improvement suggestions" },
+  { method: "get", path: "/api/companies/{companyId}/improvement-suggestions/{suggestionId}", tag: "improvement-suggestions", summary: "Get an improvement suggestion" },
+  { method: "get", path: "/api/companies/{companyId}/mcp-servers", tag: "company-mcp-servers", summary: "List company MCP servers", access: "board" },
+  { method: "get", path: "/api/companies/{companyId}/mcp-servers/{serverId}", tag: "company-mcp-servers", summary: "Get a company MCP server", access: "board" },
+  { method: "get", path: "/api/companies/{companyId}/work-cycles", tag: "work-cycles", summary: "List company work cycles" },
+  { method: "get", path: "/api/credentials/{id}/reveal", tag: "credentials", summary: "Reveal a credential", access: "board" },
+  { method: "get", path: "/api/health/backups", tag: "health", summary: "Get database backup health", access: "board" },
+  { method: "get", path: "/api/health/schema", tag: "health", summary: "Get database schema health", access: "board" },
+  { method: "get", path: "/api/heartbeat-runs/{runId}/browser-stream", tag: "browser", summary: "Stream live browser frames" },
+  { method: "get", path: "/api/improvement-suggestions", tag: "improvement-suggestions", summary: "List instance improvement suggestions", access: "board" },
+  { method: "get", path: "/api/issues/{id}/collaborators", tag: "issues", summary: "List issue collaborators", access: "board" },
+  { method: "get", path: "/api/issues/{id}/image-generations/{jobId}", tag: "issues", summary: "Get an issue image-generation job" },
+  { method: "get", path: "/api/mcp-oauth/callback", tag: "company-mcp-servers", summary: "Complete MCP OAuth authorization", access: "public" },
+  { method: "get", path: "/api/notifications/subscriptions", tag: "notifications", summary: "List notification subscriptions", access: "board" },
+  { method: "get", path: "/api/notifications/vapid-public-key", tag: "notifications", summary: "Get the VAPID public key", access: "public" },
+  { method: "get", path: "/api/organizations", tag: "organizations", summary: "List organizations", access: "board" },
+  { method: "get", path: "/api/organizations/{id}", tag: "organizations", summary: "Get an organization", access: "board" },
+  { method: "get", path: "/api/organizations/{id}/companies", tag: "organizations", summary: "List organization companies", access: "board" },
+  { method: "get", path: "/api/organizations/{id}/members", tag: "organizations", summary: "List organization members", access: "board" },
+  { method: "get", path: "/api/project-role-presets", tag: "projects", summary: "List project role presets", access: "board" },
+  { method: "get", path: "/api/projects/{id}/agents-access", tag: "projects", summary: "List agent project-access grants", access: "board" },
+  { method: "get", path: "/api/projects/{id}/members", tag: "projects", summary: "List project members", access: "board" },
+  { method: "get", path: "/api/work-cycles/{id}", tag: "work-cycles", summary: "Get a work cycle" },
+  { method: "patch", path: "/api/companies/{companyId}/agents/{agentId}/permissions", tag: "companies", summary: "Update agent permissions", access: "board" },
+  { method: "patch", path: "/api/companies/{companyId}/github-connections/{connectionId}", tag: "github-connections", summary: "Update a GitHub connection", access: "board" },
+  { method: "patch", path: "/api/companies/{companyId}/mcp-servers/{serverId}", tag: "company-mcp-servers", summary: "Update a company MCP server", access: "board" },
+  { method: "patch", path: "/api/credentials/{id}", tag: "credentials", summary: "Update a credential", access: "board" },
+  { method: "patch", path: "/api/organizations/{id}", tag: "organizations", summary: "Update an organization", access: "board" },
+  { method: "patch", path: "/api/organizations/{id}/members/{userId}", tag: "organizations", summary: "Update an organization member", access: "board" },
+  { method: "patch", path: "/api/projects/{id}/members/{memberId}/permissions", tag: "projects", summary: "Update project-member permissions", access: "board" },
+  { method: "patch", path: "/api/work-cycles/{id}", tag: "work-cycles", summary: "Update a work cycle" },
+  { method: "post", path: "/api/agents/{id}/codex-login", tag: "agents", summary: "Start Codex login", access: "board" },
+  { method: "post", path: "/api/agents/{id}/heartbeat-runs/cancel-active", tag: "agents", summary: "Cancel an agent's active heartbeat run", access: "board" },
+  { method: "post", path: "/api/agents/{id}/mcp-servers", tag: "agents", summary: "Create an agent MCP server", access: "board" },
+  { method: "post", path: "/api/agents/{id}/mcp-servers/{name}/oauth/start", tag: "agents", summary: "Start agent MCP OAuth authorization", access: "board" },
+  { method: "post", path: "/api/authenticators/{id}/code", tag: "authenticators", summary: "Generate an authenticator code", access: "board" },
+  { method: "post", path: "/api/companies/{companyId}/authenticators", tag: "authenticators", summary: "Create a company authenticator", access: "board" },
+  { method: "post", path: "/api/companies/{companyId}/browser-profiles", tag: "browser", summary: "Create a browser profile", access: "board" },
+  { method: "post", path: "/api/companies/{companyId}/credentials", tag: "credentials", summary: "Create a credential", access: "board" },
+  { method: "post", path: "/api/companies/{companyId}/credentials/codex/device-auth-start", tag: "credentials", summary: "Start Codex device authentication", access: "board" },
+  { method: "post", path: "/api/companies/{companyId}/github-connections", tag: "github-connections", summary: "Create a GitHub connection", access: "board" },
+  { method: "post", path: "/api/companies/{companyId}/github-connections/{connectionId}/test", tag: "github-connections", summary: "Test a GitHub connection", access: "board" },
+  { method: "post", path: "/api/companies/{companyId}/improvement-suggestions", tag: "improvement-suggestions", summary: "Create an improvement suggestion" },
+  { method: "post", path: "/api/companies/{companyId}/improvement-suggestions/{suggestionId}/implementation-issue", tag: "improvement-suggestions", summary: "Create an improvement implementation issue", access: "board" },
+  { method: "post", path: "/api/companies/{companyId}/improvement-suggestions/{suggestionId}/review", tag: "improvement-suggestions", summary: "Review an improvement suggestion", access: "board" },
+  { method: "post", path: "/api/companies/{companyId}/mcp-servers", tag: "company-mcp-servers", summary: "Create a company MCP server", access: "board" },
+  { method: "post", path: "/api/companies/{companyId}/mcp-servers/{serverId}/oauth/start", tag: "company-mcp-servers", summary: "Start company MCP OAuth authorization", access: "board" },
+  { method: "post", path: "/api/companies/{companyId}/skills/refresh", tag: "company-skills", summary: "Refresh company skills", access: "board" },
+  { method: "post", path: "/api/companies/{companyId}/work-cycles", tag: "work-cycles", summary: "Create a work cycle" },
+  { method: "post", path: "/api/credentials/probe", tag: "credentials", summary: "Probe credential connectivity", access: "board" },
+  { method: "post", path: "/api/credentials/validate", tag: "credentials", summary: "Validate a credential", access: "board" },
+  { method: "post", path: "/api/credentials/{id}/reenable", tag: "credentials", summary: "Re-enable a credential", access: "board" },
+  { method: "post", path: "/api/credentials/{id}/test", tag: "credentials", summary: "Test a credential", access: "board" },
+  { method: "post", path: "/api/heartbeat-runs/{runId}/browser-activity", tag: "browser", summary: "Record browser activity for a heartbeat run" },
+  { method: "post", path: "/api/issues/{id}/collaborators", tag: "issues", summary: "Add an issue collaborator", access: "board" },
+  { method: "post", path: "/api/issues/{id}/image-generations", tag: "issues", summary: "Create an issue image-generation job" },
+  { method: "post", path: "/api/issues/{id}/recovery-actions/accept", tag: "issues", summary: "Accept an issue recovery action", access: "board" },
+  { method: "post", path: "/api/issues/{id}/visibility", tag: "issues", summary: "Update issue visibility", access: "board" },
+  { method: "post", path: "/api/notifications/subscribe", tag: "notifications", summary: "Subscribe to notifications", access: "board" },
+  { method: "post", path: "/api/notifications/test", tag: "notifications", summary: "Send a test notification", access: "board" },
+  { method: "post", path: "/api/notifications/unsubscribe", tag: "notifications", summary: "Unsubscribe from notifications", access: "board" },
+  { method: "post", path: "/api/organizations", tag: "organizations", summary: "Create an organization", access: "board" },
+  { method: "post", path: "/api/organizations/{id}/archive", tag: "organizations", summary: "Archive an organization", access: "board" },
+  { method: "post", path: "/api/organizations/{id}/companies/{companyId}", tag: "organizations", summary: "Add a company to an organization", access: "board" },
+  { method: "post", path: "/api/organizations/{id}/members", tag: "organizations", summary: "Add an organization member", access: "board" },
+  { method: "post", path: "/api/organizations/{id}/unarchive", tag: "organizations", summary: "Unarchive an organization", access: "board" },
+  { method: "post", path: "/api/projects/{id}/agents-access", tag: "projects", summary: "Grant an agent project access", access: "board" },
+  { method: "post", path: "/api/projects/{id}/members", tag: "projects", summary: "Add a project member", access: "board" },
+  { method: "post", path: "/api/projects/{id}/members/{memberId}/role-preset", tag: "projects", summary: "Apply a project role preset", access: "board" },
+  { method: "put", path: "/api/agents/{id}/mcp-server-refs", tag: "agents", summary: "Replace agent MCP server references", access: "board" },
+  { method: "put", path: "/api/agents/{id}/mcp-servers", tag: "agents", summary: "Replace agent MCP servers", access: "board" },
+  { method: "put", path: "/api/authenticators/{id}/agents", tag: "authenticators", summary: "Replace authenticator agent bindings", access: "board" },
+  { method: "put", path: "/api/companies/{companyId}/browser-profiles/project-assignment", tag: "browser", summary: "Assign a browser profile to a project", access: "board" },
+];
+
+for (const route of resyncedRouteCoverage) {
+  const key = operationKey(route.method, route.path);
+  if (route.access === "public") PUBLIC_OPERATIONS.add(key);
+  if (route.access === "board") BOARD_ONLY_OPERATIONS.add(key);
+  registerCurrentRoute({
+    method: route.method,
+    path: route.path,
+    tags: [route.tag],
+    summary: route.summary,
+  });
+}
+
 // ─── Spec builder ─────────────────────────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

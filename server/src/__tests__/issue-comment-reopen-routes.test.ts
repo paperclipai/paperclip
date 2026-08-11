@@ -1902,7 +1902,7 @@ describe.sequential("issue comment reopen routes", () => {
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "B replies on B's own issue" });
     expect(res.status).toBe(201);
-    await vi.waitFor(() => expect(mockIssueService.findMentionedAgents).toHaveBeenCalledOnce());
+    expect(mockIssueService.findMentionedAgents).not.toHaveBeenCalled();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
 

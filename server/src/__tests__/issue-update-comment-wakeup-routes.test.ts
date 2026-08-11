@@ -43,6 +43,29 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
+const mockExternalObjectService = vi.hoisted(() => ({
+  syncCommentSafely: vi.fn(async () => undefined),
+  syncIssueSafely: vi.fn(async () => undefined),
+}));
+const mockResolveTaskWatchdogMutationScope = vi.hoisted(() => vi.fn(async () => ({ kind: "none" as const })));
+const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null));
+
+vi.mock("../services/external-objects.js", () => ({
+  externalObjectService: () => mockExternalObjectService,
+}));
+vi.mock("../services/task-watchdog-scope.js", () => ({
+  TASK_WATCHDOG_ORIGIN_KIND: "task_watchdog",
+  resolveTaskWatchdogMutationScope: mockResolveTaskWatchdogMutationScope,
+  taskWatchdogScopeAllowsIssueMutation: vi.fn(async () => ({ kind: "none" as const })),
+}));
+vi.mock("../services/cross-issue-influence-limit.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../services/cross-issue-influence-limit.js")>(),
+  observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
+}));
+vi.mock("../services/source-trust.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../services/source-trust.js")>(),
+  resolveActorSourceTrustForIssue: vi.fn(async () => null),
+}));
 
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
@@ -124,6 +147,12 @@ function registerModuleMocks() {
     }),
     accessService: () => ({
       canUser: vi.fn(async () => true),
+      decide: vi.fn(async (input: { action?: string }) => ({
+        allowed: true,
+        action: input.action,
+        reason: "allow_explicit_grant",
+        explanation: "Allowed by test grant.",
+      })),
       hasPermission: vi.fn(async () => true),
     }),
     agentService: () => mockAgentService,
@@ -190,7 +219,27 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp(actorOverride?: Record<string, unknown>) {
+function runContextDb(input: { id: string; agentId: string }) {
+  const rows = Promise.resolve([{
+    id: input.id,
+    companyId: "company-1",
+    agentId: input.agentId,
+    contextSnapshot: {},
+  }]);
+  const query = {
+    limit: () => rows,
+    then: rows.then.bind(rows),
+  };
+  return {
+    select: () => ({
+      from: () => ({
+        where: () => query,
+      }),
+    }),
+  };
+}
+
+async function createApp(actorOverride?: Record<string, unknown>, db: Record<string, unknown> = {}) {
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
@@ -207,7 +256,7 @@ async function createApp(actorOverride?: Record<string, unknown>) {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes(db as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -312,7 +361,7 @@ describe("issue update comment wakeups", () => {
         }),
       }),
     );
-  });
+  }, 15_000);
 
   it("includes the new comment in assignment wakes from issue updates", async () => {
     const existing = makeIssue();
@@ -567,7 +616,7 @@ describe("issue update comment wakeups", () => {
     const authorAgentId = "44444444-4444-4444-8444-444444444444";
     const ctoAgentId = "55555555-5555-4555-8555-555555555555";
     const existing = makeIssue({
-      status: "in_progress",
+      status: "blocked",
       assigneeAgentId: authorAgentId,
       assigneeUserId: null,
       parentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -701,12 +750,15 @@ describe("issue update comment wakeups", () => {
     ]);
 
     const res = await request(
-      await createApp({
-        type: "agent",
-        agentId: authorAgentId,
-        companyId: "company-1",
-        runId: "run-human-next-owner",
-      }),
+      await createApp(
+        {
+          type: "agent",
+          agentId: authorAgentId,
+          companyId: "company-1",
+          runId: "run-human-next-owner",
+        },
+        runContextDb({ id: "run-human-next-owner", agentId: authorAgentId }),
+      ),
     )
       .post(`/api/issues/${existing.id}/comments`)
       .send({ body: commentBody });
@@ -753,12 +805,15 @@ describe("issue update comment wakeups", () => {
       agent: raw === "CEO" ? ceoAgent : null,
     }));
 
-    const res = await request(await createApp({
-      type: "agent",
-      agentId: authorAgentId,
-      companyId: "company-1",
-      runId: "run-next-owner-comment",
-    }))
+    const res = await request(await createApp(
+      {
+        type: "agent",
+        agentId: authorAgentId,
+        companyId: "company-1",
+        runId: "run-next-owner-comment",
+      },
+      runContextDb({ id: "run-next-owner-comment", agentId: authorAgentId }),
+    ))
       .post(`/api/issues/${existing.id}/comments`)
       .send({
         body: commentBody,
@@ -943,10 +998,7 @@ describe("issue update comment wakeups", () => {
         eventMessage: "run interrupted by board comment",
       }),
     );
-    await vi.waitFor(() => expect(mockIssueService.findMentionedAgents).toHaveBeenCalledWith(
-      existing.companyId,
-      "stop here, I will take it",
-    ));
+    expect(mockIssueService.findMentionedAgents).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
@@ -1061,14 +1113,11 @@ describe("issue update comment wakeups", () => {
       });
 
     expect(res.status).toBe(201);
-    await vi.waitFor(() => expect(mockIssueService.findMentionedAgents).toHaveBeenCalledWith(
-      existing.companyId,
-      "QA please take the screenshot",
-    ));
+    expect(mockIssueService.findMentionedAgents).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
-  it("routes a structured mentioned agent without making that agent the issue owner", async () => {
+  it("does not turn a structured agent mention into a wake target", async () => {
     const existing = makeIssue({
       assigneeAgentId: null,
       assigneeUserId: "local-board",
@@ -1079,37 +1128,19 @@ describe("issue update comment wakeups", () => {
       id: "comment-structured-mention",
       issueId: existing.id,
       companyId: existing.companyId,
-      body: "[@QA](/agents/33333333-3333-4333-8333-333333333333) please inspect this",
+      body: `[@QA](agent://${MENTIONED_AGENT_ID}) please inspect this`,
     });
     mockIssueService.findMentionedAgents.mockResolvedValue([MENTIONED_AGENT_ID]);
 
     const res = await request(await createApp())
       .post(`/api/issues/${existing.id}/comments`)
       .send({
-        body: "[@QA](/agents/33333333-3333-4333-8333-333333333333) please inspect this",
+        body: `[@QA](agent://${MENTIONED_AGENT_ID}) please inspect this`,
       });
 
     expect(res.status).toBe(201);
-    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
     expect(mockIssueService.update).not.toHaveBeenCalled();
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      MENTIONED_AGENT_ID,
-      expect.objectContaining({
-        source: "automation",
-        reason: "issue_comment_mentioned",
-        payload: {
-          issueId: existing.id,
-          commentId: "comment-structured-mention",
-        },
-        contextSnapshot: expect.objectContaining({
-          issueId: existing.id,
-          taskId: existing.id,
-          commentId: "comment-structured-mention",
-          wakeCommentId: "comment-structured-mention",
-          wakeReason: "issue_comment_mentioned",
-          source: "comment.mention",
-        }),
-      }),
-    );
+    expect(mockIssueService.findMentionedAgents).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 });

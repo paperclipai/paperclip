@@ -786,7 +786,7 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     });
   });
 
-  it("preserves direct-parent reporting while default-opening visible standard-trust writes", async () => {
+  it("preserves direct-parent reports and default-open child-lane writes while protecting coordination lanes", async () => {
     const fixture = await seedLowTrustFixture(db);
     const standardApp = createApp(db, standardReportActor(fixture));
     const lowTrustApp = createApp(db, agentActor(fixture));
@@ -810,18 +810,16 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       .send({ body: "Contained report must not cross" });
     expect(lowTrustParentComment.status, JSON.stringify(lowTrustParentComment.body)).toBe(403);
 
-    const defaultOpenComments = [
-      request(standardApp)
-        .post(`/api/issues/${fixture.issues.reviewGrandparent.id}/comments`)
-        .send({ body: "Visible grandparent context" }),
-      request(standardApp)
-        .post(`/api/issues/${fixture.issues.sameBoundaryChild.id}/comments`)
-        .send({ body: "Visible sibling context" }),
-    ];
-    for (const defaultOpenComment of defaultOpenComments) {
-      const response = await defaultOpenComment;
-      expect(response.status, JSON.stringify(response.body)).toBe(201);
-    }
+    const coordinationLaneComment = await request(standardApp)
+      .post(`/api/issues/${fixture.issues.reviewGrandparent.id}/comments`)
+      .send({ body: "Visible grandparent context" });
+    expect(coordinationLaneComment.status, JSON.stringify(coordinationLaneComment.body)).toBe(403);
+    expect(coordinationLaneComment.body.details.code).toBe("worker_coordination_lane_forbidden");
+
+    const defaultOpenChildLaneComment = await request(standardApp)
+      .post(`/api/issues/${fixture.issues.sameBoundaryChild.id}/comments`)
+      .send({ body: "Visible sibling context" });
+    expect(defaultOpenChildLaneComment.status, JSON.stringify(defaultOpenChildLaneComment.body)).toBe(201);
 
     const checkedOutPeerUpdate = await request(standardApp)
       .patch(`/api/issues/${fixture.issues.reviewRoot.id}`)
@@ -897,13 +895,14 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     await request(app).patch(`/api/issues/${fixture.issues.standardChild.id}`).send({ status: "in_review" }).expect(200);
     await request(app).patch(`/api/issues/${fixture.issues.standardChild.id}`).send({ status: "done" }).expect(200);
 
-    const relayComments = await db
+    const systemComments = await db
       .select({ body: issueComments.body, authorType: issueComments.authorType })
       .from(issueComments)
       .where(and(
         eq(issueComments.issueId, fixture.issues.reviewRoot.id),
         eq(issueComments.authorType, "system"),
       ));
+    const relayComments = systemComments.filter((comment) => comment.body.startsWith("System relay:"));
     expect(relayComments).toHaveLength(2);
     expect(relayComments.map((comment) => comment.body)).toEqual(expect.arrayContaining([
       expect.stringContaining(`transitioned to \`blocked\``),
@@ -918,13 +917,14 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       expect(relay.body).not.toContain(fixture.issues.standardChild.identifier);
     }
 
-    const reparentedRelayComments = await db
+    const reparentedSystemComments = await db
       .select({ body: issueComments.body, authorType: issueComments.authorType })
       .from(issueComments)
       .where(and(
         eq(issueComments.issueId, fixture.issues.reviewGrandparent.id),
         eq(issueComments.authorType, "system"),
       ));
+    const reparentedRelayComments = reparentedSystemComments.filter((comment) => comment.body.startsWith("System relay:"));
     expect(reparentedRelayComments).toHaveLength(1);
     expect(reparentedRelayComments[0]?.body).toContain("transitioned to `blocked`");
     expect(reparentedRelayComments[0]?.body).not.toContain(fixture.canaries.raw);

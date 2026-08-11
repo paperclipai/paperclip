@@ -31,9 +31,6 @@ const mockEnvironmentService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockTelemetryTrack = vi.hoisted(() => vi.fn());
-const mockAccessService = vi.hoisted(() => ({
-  canUser: vi.fn(async () => true),
-}));
 
 vi.mock("../telemetry.js", () => ({
   getTelemetryClient: mockGetTelemetryClient,
@@ -47,7 +44,6 @@ vi.mock("../services/index.js", () => ({
   projectService: () => mockProjectService,
   secretService: () => mockSecretService,
   workspaceOperationService: () => mockWorkspaceOperationService,
-  accessService: () => mockAccessService,
 }));
 
 vi.mock("../services/workspace-runtime.js", () => ({
@@ -68,7 +64,6 @@ function registerModuleMocks() {
     projectService: () => mockProjectService,
     secretService: () => mockSecretService,
     workspaceOperationService: () => mockWorkspaceOperationService,
-    accessService: () => mockAccessService,
   }));
 
   vi.doMock("../services/workspace-runtime.js", () => ({

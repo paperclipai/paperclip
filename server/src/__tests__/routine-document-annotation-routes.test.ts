@@ -24,6 +24,25 @@ const mockAnnotationService = vi.hoisted(() => ({
   remapOpenThreadsForRoutineDocument: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockDbSelect = vi.hoisted(() => vi.fn());
+
+function emptySelectQuery() {
+  const rows = Promise.resolve<unknown[]>([]);
+  const query = {
+    from: vi.fn(),
+    innerJoin: vi.fn(),
+    where: vi.fn(),
+    orderBy: vi.fn(),
+    limit: vi.fn(),
+    then: rows.then.bind(rows),
+  };
+  query.from.mockReturnValue(query);
+  query.innerJoin.mockReturnValue(query);
+  query.where.mockReturnValue(query);
+  query.orderBy.mockReturnValue(query);
+  query.limit.mockReturnValue(query);
+  return query;
+}
 
 const routine = {
   id: routineId,
@@ -149,7 +168,7 @@ async function createApp(actor: "board" | "agent" = "board", actorCompanyId = co
       };
     next();
   });
-  app.use("/api", routineRoutes({} as any));
+  app.use("/api", routineRoutes({ select: mockDbSelect } as any));
   app.use(errorHandler);
   return app;
 }
@@ -161,6 +180,8 @@ describe("routine description annotation routes", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.clearAllMocks();
+
+    mockDbSelect.mockImplementation(() => emptySelectQuery());
 
     mockRoutineService.get.mockResolvedValue(routine);
     mockRoutineService.getDescriptionDocument.mockResolvedValue(updatedDescriptionDocument);

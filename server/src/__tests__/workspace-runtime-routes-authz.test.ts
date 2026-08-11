@@ -31,13 +31,11 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
-}));
-const mockAssertCanManageProjectWorkspaceRuntimeServices = vi.hoisted(() => vi.fn());
-const mockAssertCanManageExecutionWorkspaceRuntimeServices = vi.hoisted(() => vi.fn());
-const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(async () => true),
   hasPermission: vi.fn(async () => true),
 }));
+const mockAssertCanManageProjectWorkspaceRuntimeServices = vi.hoisted(() => vi.fn());
+const mockAssertCanManageExecutionWorkspaceRuntimeServices = vi.hoisted(() => vi.fn());
 
 vi.mock("../telemetry.js", () => ({
   getTelemetryClient: mockGetTelemetryClient,

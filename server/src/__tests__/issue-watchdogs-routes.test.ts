@@ -512,10 +512,26 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
     expect(nestedWatchdogs).toHaveLength(0);
 
     const allowedChild = await request(app)
-      .post(`/api/issues/${watchedChildId}/children`)
-      .send({ title: "Allowed watched child" });
+      .post(`/api/issues/${watchedRootId}/children`)
+      .send({
+        title: "Allowed watched root child",
+        executionContract: {
+          schemaVersion: 2,
+          contractType: "delegated_task",
+          taskType: "watchdog_follow_up",
+          core: {
+            objective: "Record the watchdog follow-up within the watched issue tree.",
+            why: "The watchdog may only create concrete work inside its watched scope.",
+            sourceOfTruth: { watchedIssueId: watchedRootId },
+            acceptanceChecks: ["The follow-up remains attached to the watched root issue."],
+            handoffNotes: {
+              managerReasoning: "The child is a scoped watchdog follow-up, not a new hierarchy level.",
+            },
+          },
+        },
+      });
     expect(allowedChild.status, JSON.stringify(allowedChild.body)).toBe(201);
-    expect(allowedChild.body.parentId).toBe(watchedChildId);
+    expect(allowedChild.body.parentId).toBe(watchedRootId);
   });
 
   it("routes watchdog-discovered product bugs outside the watched source tree with evidence links", async () => {
