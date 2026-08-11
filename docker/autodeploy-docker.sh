@@ -241,10 +241,14 @@ read_env_value() {
 
 # Encode a value for a double-quoted dotenv assignment.
 # Prevents newlines / quotes / backslashes from corrupting .env.bootstrap parsing.
+# Also doubles `$` so Docker Compose does not interpolate `$VAR` / `${VAR}` when
+# loading env_file (Compose treats `$$` as a literal `$`).
 dotenv_escape() {
   local value="$1"
+  local dollar='$$'
   value=${value//\\/\\\\}
   value=${value//\"/\\\"}
+  value=${value//$/$dollar}
   value=${value//$'\n'/\\n}
   value=${value//$'\r'/\\r}
   printf '%s' "$value"

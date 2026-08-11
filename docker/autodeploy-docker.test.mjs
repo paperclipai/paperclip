@@ -52,13 +52,14 @@ source "${helpersFile}"
 die() { echo "$*" >&2; exit 1; }
 : > "${outFile}"
 write_dotenv_kv AUTOMATED_ADMIN_EMAIL 'a+b@example.com' >> "${outFile}"
-write_dotenv_kv AUTOMATED_ADMIN_PASSWORD 'p@ss # "word"' >> "${outFile}"
+write_dotenv_kv AUTOMATED_ADMIN_PASSWORD 'p@ss # "word" \$HOME \${USER}' >> "${outFile}"
 write_dotenv_kv AUTOMATED_ADMIN_NAME 'Ada Lovelace' >> "${outFile}"
 `;
     execFileSync('bash', ['-c', bash], { stdio: 'pipe' });
     const body = readFileSync(outFile, 'utf8');
     assert.match(body, /AUTOMATED_ADMIN_EMAIL="a\+b@example\.com"/);
-    assert.match(body, /AUTOMATED_ADMIN_PASSWORD="p@ss # \\"word\\""/);
+    // Compose needs $$ so a literal $ survives env_file interpolation.
+    assert.match(body, /AUTOMATED_ADMIN_PASSWORD="p@ss # \\"word\\" \$\$HOME \$\$\{USER\}"/);
     assert.match(body, /AUTOMATED_ADMIN_NAME="Ada Lovelace"/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
