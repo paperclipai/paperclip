@@ -22,7 +22,7 @@ Options:
   --image <image:tag>           Paperclip image
   --admin-email <email>         First admin email
   --admin-name <name>           First admin display name
-  --admin-password <pass>       First admin password (random when omitted)
+  --admin-password-file <path>  Read first admin password from a file (preferred)
   --bind-mounts                 Use bind-mounted folders for data instead of docker named volumes
   --data-dir <path>             Folder for bind-mounted data (default: data). Implies --bind-mounts.
   --no-auto-admin               Generate bootstrap invite only
@@ -300,6 +300,7 @@ IMAGE="ghcr.io/paperclipai/paperclip:latest"
 ADMIN_EMAIL=""
 ADMIN_NAME="Paperclip Admin"
 ADMIN_PASSWORD=""
+ADMIN_PASSWORD_FILE=""
 AUTO_ADMIN="true"
 START_CONTAINERS="true"
 NO_OPEN="0"
@@ -319,7 +320,11 @@ while [ "$#" -gt 0 ]; do
     --image) IMAGE="${2:-}"; shift 2 ;;
     --admin-email) ADMIN_EMAIL="${2:-}"; shift 2 ;;
     --admin-name) ADMIN_NAME="${2:-}"; shift 2 ;;
-    --admin-password) ADMIN_PASSWORD="${2:-}"; shift 2 ;;
+    --admin-password-file) ADMIN_PASSWORD_FILE="${2:-}"; shift 2 ;;
+    # Reject password on argv: it leaks via shell history and process listings.
+    --admin-password)
+      die "Do not pass --admin-password on the command line. Use --admin-password-file <path>, env PAPERCLIP_ADMIN_PASSWORD, or omit the flag to generate a random password."
+      ;;
     --bind-mounts) USE_BIND_MOUNTS="true"; shift ;;
     --data-dir) DATA_DIR="${2:-}"; USE_BIND_MOUNTS="true"; shift 2 ;;
     --no-auto-admin) AUTO_ADMIN="false"; shift ;;
@@ -334,6 +339,15 @@ while [ "$#" -gt 0 ]; do
       PROFILE="$1"; shift ;;
   esac
 done
+
+# Resolve admin password without putting secrets on argv.
+if [ -n "$ADMIN_PASSWORD_FILE" ]; then
+  [ -f "$ADMIN_PASSWORD_FILE" ] || die "Admin password file not found: $ADMIN_PASSWORD_FILE"
+  ADMIN_PASSWORD="$(tr -d '\r\n' <"$ADMIN_PASSWORD_FILE")"
+  [ -n "$ADMIN_PASSWORD" ] || die "Admin password file is empty: $ADMIN_PASSWORD_FILE"
+elif [ -n "${PAPERCLIP_ADMIN_PASSWORD:-}" ]; then
+  ADMIN_PASSWORD="$PAPERCLIP_ADMIN_PASSWORD"
+fi
 
 if [ -z "$PROFILE" ]; then
   PROFILE="$(choose_profile)"
@@ -714,6 +728,8 @@ services:
       DATABASE_URL: postgres://paperclip:\${POSTGRES_PASSWORD}@db:5432/paperclip
       AUTOMATED_INTERNAL_URL: http://paperclip:$PAPERCLIP_PORT
       AUTOMATED_PUBLIC_URL: \${PAPERCLIP_PUBLIC_URL}
+      HOST_UID: "$HOST_UID"
+      HOST_GID: "$HOST_GID"
     volumes:
       - ./scripts:/paperclip-automated:ro
       - ./:/paperclip-output
@@ -995,6 +1011,17 @@ async function writeAdminCredentials() {
   ].join("\n");
   const target = "/paperclip-output/admin-credentials.txt";
   await fs.writeFile(target, content, { mode: 0o600 });
+  // Prefer host operator ownership so mode 0600 is readable outside the
+  // container when the image user is not the host UID (common on Linux).
+  const hostUid = Number.parseInt(process.env.HOST_UID || "", 10);
+  const hostGid = Number.parseInt(process.env.HOST_GID || "", 10);
+  if (Number.isInteger(hostUid) && Number.isInteger(hostGid) && hostUid >= 0 && hostGid >= 0) {
+    try {
+      await fs.chown(target, hostUid, hostGid);
+    } catch (err) {
+      log(`Could not chown admin-credentials.txt to ${hostUid}:${hostGid}: ${err?.message || err}`);
+    }
+  }
   log(`Credentials written to admin-credentials.txt`);
 }
 
