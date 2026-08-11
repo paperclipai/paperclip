@@ -55,10 +55,10 @@ import {
   logActivity,
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
-  deliveryAttestationService,
 } from "../services/index.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
+import { deliveryAttestationService } from "../services/delivery-attestations.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
