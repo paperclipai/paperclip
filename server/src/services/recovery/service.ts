@@ -23,6 +23,7 @@ import {
   issueComments,
   issueApprovals,
   issueRecoveryActions,
+  issueResultCommentGraceFlags,
   issueRelations,
   issueThreadInteractions,
   issues,
@@ -1184,6 +1185,92 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         wakeReason: "issue_assigned",
         source: "issue.assigned_todo_liveness_dispatch",
       }, "normal_model"),
+    });
+  }
+
+  // SAG-3385: Result-comment grace helpers — detect runs that left a result
+  // comment but no disposition PATCH, and give ONE bounded flush continuation
+  // before §9.2 stranded-work recovery fires.
+
+  function isGraceFlagUniqueConflict(error: unknown): boolean {
+    if (!error || typeof error !== "object") return false;
+    const maybe = error as { code?: string; constraint?: string; constraint_name?: string; message?: string };
+    return maybe.code === "23505" &&
+      (
+        maybe.constraint === "issue_result_comment_grace_flags_strand_uq" ||
+        maybe.constraint_name === "issue_result_comment_grace_flags_strand_uq" ||
+        (typeof maybe.message === "string" && maybe.message.includes("issue_result_comment_grace_flags_strand_uq"))
+      );
+  }
+
+  async function findRunResultComment(companyId: string, issueId: string, runId: string) {
+    return db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, companyId),
+          eq(issueComments.issueId, issueId),
+          eq(issueComments.createdByRunId, runId),
+          isNull(issueComments.deletedAt),
+          // Only agent-authored comments count as result evidence;
+          // system/platform comments are harness noise.
+          sql`${issueComments.authorType} NOT IN ('system', 'platform')`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function trySetResultCommentGraceFlag(
+    companyId: string,
+    sourceIssueId: string,
+    runId: string,
+    resultCommentId: string,
+  ): Promise<boolean> {
+    // Set BEFORE queuing the flush wake so a concurrent stranded scan for the
+    // same (issueId, runId) strand sees the conflict and does not double-queue.
+    try {
+      await db.insert(issueResultCommentGraceFlags).values({
+        companyId,
+        sourceIssueId,
+        runId,
+        resultCommentId,
+      });
+      return true;
+    } catch (error) {
+      if (isGraceFlagUniqueConflict(error)) return false;
+      throw error;
+    }
+  }
+
+  async function enqueueDispositionFlushContinuation(input: {
+    issueId: string;
+    agentId: string;
+    runId: string;
+    resultCommentId: string;
+  }) {
+    // allowDeliverableWork: false is enforced via "status_only" model-profile hint.
+    // The agent is told to issue a PATCH (disposition) only — no new deliverable work.
+    return deps.enqueueWakeup(input.agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_continuation_needed",
+      payload: withRecoveryModelProfileHint({
+        issueId: input.issueId,
+        retryOfRunId: input.runId,
+      }, "status_only"),
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      contextSnapshot: withRecoveryModelProfileHint({
+        issueId: input.issueId,
+        taskId: input.issueId,
+        wakeReason: "issue_continuation_needed",
+        retryReason: "result_comment_disposition_flush",
+        source: "issue.result_comment_grace_continuation",
+        retryOfRunId: input.runId,
+        resultCommentId: input.resultCommentId,
+      }, "status_only"),
     });
   }
 
@@ -2838,6 +2925,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     previousStatus: StrandedPreviousStatus;
     recoveryCause: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    resultCommentId?: string | null;
   }) {
     const context = parseObject(input.latestRun?.contextSnapshot);
     const workspaceValidation = input.recoveryCause === "workspace_validation_failed"
@@ -2859,6 +2947,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       handoffAttempt: input.successfulRunHandoffEvidence?.handoffAttempt ?? null,
       maxHandoffAttempts: input.successfulRunHandoffEvidence?.maxHandoffAttempts ?? null,
       ...(workspaceValidation ? { workspaceValidation } : {}),
+      resultCommentId: input.resultCommentId ?? null,
     };
   }
 
@@ -2869,6 +2958,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryCause?: StrandedRecoveryCause;
     recoveryOwnerAgentId?: string | null;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    resultCommentId?: string | null;
   }) {
     const recoveryCause = resolveStrandedRecoveryCause(input.latestRun, input.recoveryCause);
     const routing = await resolveStrandedRecoveryRouting({
@@ -2900,6 +2990,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           previousStatus: input.previousStatus,
           recoveryCause,
           successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+          resultCommentId: input.resultCommentId,
         }),
         failureSummary: summarizeRunFailureForIssueComment(input.latestRun)?.trim() ?? null,
         routingFallbackReason: routing.routingFallbackReason,
@@ -3306,6 +3397,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryCause?: StrandedRecoveryCause;
     recoveryOwnerAgentId?: string | null;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    resultCommentId?: string | null;
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) {
       return escalateStrandedRecoveryIssueInPlace({
@@ -3323,6 +3415,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryCause,
       recoveryOwnerAgentId: input.recoveryOwnerAgentId,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+      resultCommentId: input.resultCommentId,
     });
     const isProviderQuotaWait = recoveryCause === "provider_quota" &&
       !recoveryAction.ownerAgentId &&
@@ -3658,6 +3751,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       assignmentDispatched: 0,
       dispatchRequeued: 0,
       continuationRequeued: 0,
+      dispositionFlushQueued: 0,
       productiveContinuationObserved: 0,
       successfulContinuationObserved: 0,
       orphanBlockersAssigned: 0,
@@ -4139,6 +4233,47 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (isSuccessfulInProgressContinuationRun(latestRun)) {
         const successfulRun = latestRun;
 
+        // SAG-3385: Result-comment grace — before §9.2 stranded-work fires, check
+        // if this run left a result comment but no disposition PATCH. If so, and if
+        // no grace has been given yet for this (issueId, runId) strand, set the grace
+        // flag atomically BEFORE queuing the flush wake (idempotency hard requirement).
+        // A flush run itself cannot earn a second grace, preventing free-wake loops.
+        // graceResultCommentId is captured for evidence even in the fall-through path.
+        let graceResultCommentId: string | null = null;
+        const isFlushRun = readNonEmptyString(parseObject(successfulRun.contextSnapshot).retryReason) ===
+          "result_comment_disposition_flush";
+        if (!isFlushRun) {
+          const resultComment = await findRunResultComment(issue.companyId, issue.id, successfulRun.id);
+          if (resultComment) {
+            graceResultCommentId = resultComment.id;
+            const graceSet = await trySetResultCommentGraceFlag(
+              issue.companyId,
+              issue.id,
+              successfulRun.id,
+              resultComment.id,
+            );
+            if (graceSet) {
+              if (!(await isInvocationBudgetBlocked(issue, agentId))) {
+                const queued = await enqueueDispositionFlushContinuation({
+                  issueId: issue.id,
+                  agentId,
+                  runId: successfulRun.id,
+                  resultCommentId: resultComment.id,
+                });
+                if (queued) {
+                  result.dispositionFlushQueued += 1;
+                  result.issueIds.push(issue.id);
+                  continue;
+                }
+              }
+              result.skipped += 1;
+              continue;
+            }
+            // Grace already given for (issueId, runId): fall through to normal §9.2.
+            // graceResultCommentId will be stored in recovery action evidence.
+          }
+        }
+
         if (!isProductiveContinuationRun(successfulRun)) {
           result.successfulContinuationObserved += 1;
           result.skipped += 1;
@@ -4164,6 +4299,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               comment:
                 "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry " +
                 "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+              resultCommentId: graceResultCommentId,
             });
             if (updated) {
               result.escalated += 1;
