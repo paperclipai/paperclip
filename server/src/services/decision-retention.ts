@@ -115,7 +115,7 @@ async function resolveOrigin(
       ? await db.select({ issueId: issueRecoveryActions.sourceIssueId }).from(issueRecoveryActions)
         .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.id, sourceId)))
         .then((rows) => rows[0]?.issueId ?? null)
-      : (["productivity_review", "blocker_attention", "review"] as string[]).includes(sourceKind) ? sourceId : null;
+      : (["productivity_review", "blocker_attention", "review", "manual_issue"] as string[]).includes(sourceKind) ? sourceId : null;
     if (issueId) {
       const row = await db.select({ agentId: issues.createdByAgentId, issueId: issues.id }).from(issues)
         .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))

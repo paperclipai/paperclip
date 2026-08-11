@@ -169,6 +169,7 @@ describeEmbeddedPostgres("attention service", () => {
     executionState?: Record<string, unknown> | null;
     updatedAt?: Date;
     createdAt?: Date;
+    hiddenAt?: Date | null;
     unblockDescriptor?: { owner: { userId: string } | "board"; action: string } | null;
     blockedTransitionAt?: Date | null;
     harnessKind?: string | null;
@@ -195,6 +196,7 @@ describeEmbeddedPostgres("attention service", () => {
       harnessKind: input.harnessKind ?? null,
       createdAt: input.createdAt,
       updatedAt: input.updatedAt,
+      hiddenAt: input.hiddenAt ?? null,
     });
     return id;
   }
@@ -255,6 +257,196 @@ describeEmbeddedPostgres("attention service", () => {
     expect(feed.items.some((item) => item.subject.id === harnessIssueId)).toBe(false);
     expect(feed.countsBySourceKind.review ?? 0).toBe(0);
     expect(feed.items.flatMap((item) => item.queues).some((queue) => queue.key === "internal-review")).toBe(false);
+  });
+
+  it("surfaces WAT-shaped board-owned manual issues once and leaves in-review work to the review source", async () => {
+    const { companyId, workerId } = await seedCompany("ATM");
+    const expectedIssueIds = await Promise.all([
+      ["ATM-1", "Backlog board decision", "backlog"],
+      ["ATM-2", "Todo board decision", "todo"],
+      ["ATM-3", "Active board decision", "in_progress"],
+    ].map(([identifier, title, status], index) => insertIssue({
+      companyId,
+      identifier: identifier!,
+      title: title!,
+      status: status!,
+      assigneeUserId: "board-user",
+      updatedAt: new Date(`2026-07-09T12:0${index}:00.000Z`),
+    })));
+    const blockedIssueId = await insertIssue({
+      companyId,
+      identifier: "ATM-4",
+      title: "Blocked board decision",
+      status: "blocked",
+      assigneeUserId: "board-user",
+      updatedAt: new Date("2026-07-09T12:03:00.000Z"),
+    });
+    const requestedUserDecisionIssueId = await insertIssue({
+      companyId,
+      identifier: "ATM-11",
+      title: "Execution policy requests a user decision",
+      status: "todo",
+      executionState: pendingUserExecutionState("board-user"),
+      updatedAt: new Date("2026-07-09T12:04:00.000Z"),
+    });
+    const inReviewIssueId = await insertIssue({
+      companyId,
+      identifier: "ATM-13",
+      title: "Existing review source wins",
+      status: "in_review",
+      assigneeUserId: "board-user",
+      updatedAt: new Date("2026-07-09T12:05:00.000Z"),
+    });
+
+    await Promise.all([
+      insertIssue({ companyId, identifier: "ATM-5", title: "Different user", status: "todo", assigneeUserId: "someone-else" }),
+      insertIssue({ companyId, identifier: "ATM-6", title: "Agent owned", status: "todo", assigneeAgentId: workerId }),
+      insertIssue({ companyId, identifier: "ATM-7", title: "Completed", status: "done", assigneeUserId: "board-user" }),
+      insertIssue({ companyId, identifier: "ATM-8", title: "Cancelled", status: "cancelled", assigneeUserId: "board-user" }),
+      insertIssue({ companyId, identifier: "ATM-9", title: "Hidden", status: "todo", assigneeUserId: "board-user", hiddenAt: new Date("2026-07-09T12:00:00.000Z") }),
+      insertIssue({ companyId, identifier: "ATM-10", title: "Generated workflow row", status: "todo", assigneeUserId: "board-user", originKind: "issue_productivity_review" }),
+      insertIssue({ companyId, identifier: "ATM-12", title: "Agent execution participant", status: "todo", executionState: pendingAgentExecutionState(workerId) }),
+    ]);
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const manualItems = feed.items.filter((item) => item.sourceKind === "manual_issue");
+
+    expect(manualItems).toHaveLength(5);
+    expect(feed.countsBySourceKind.manual_issue).toBe(5);
+    expect(new Set(manualItems.map((item) => item.subject.id))).toEqual(new Set([
+      ...expectedIssueIds,
+      blockedIssueId,
+      requestedUserDecisionIssueId,
+    ]));
+    expect(feed.items.filter((item) => item.subject.id === inReviewIssueId)).toEqual([
+      expect.objectContaining({ sourceKind: "review" }),
+    ]);
+    for (const item of manualItems) {
+      expect(item).toMatchObject({
+        sourceKind: "manual_issue",
+        inlineResolvable: false,
+        relatedIssue: null,
+        subject: {
+          kind: "issue",
+          companyId,
+          href: expect.stringMatching(/^\/ATM\/issues\/ATM-/),
+        },
+        whyNow: expect.stringContaining("requires your"),
+        dedupKey: `manual_issue:${item.subject.id}`,
+      });
+      expect(item.decisionVerbs).toEqual([expect.objectContaining({ id: "review_issue" })]);
+    }
+    expect(manualItems.find((item) => item.subject.id === requestedUserDecisionIssueId)?.subject.metadata?.assigneeUserId).toBeNull();
+    for (const item of manualItems.filter((candidate) => candidate.subject.id !== requestedUserDecisionIssueId)) {
+      expect(item.subject.metadata?.assigneeUserId).toBe("board-user");
+    }
+  });
+
+  it("lets pending interactions and open decisions supersede a generic manual-issue card", async () => {
+    const { companyId, workerId } = await seedCompany("ATS");
+    const interactionIssueId = await insertIssue({
+      companyId,
+      identifier: "ATS-1",
+      title: "Formal interaction wins",
+      status: "todo",
+      assigneeUserId: "board-user",
+    });
+    const decisionIssueId = await insertIssue({
+      companyId,
+      identifier: "ATS-2",
+      title: "Formal decision wins",
+      status: "blocked",
+      assigneeUserId: "board-user",
+    });
+    const approvalIssueId = await insertIssue({
+      companyId,
+      identifier: "ATS-3",
+      title: "Formal approval wins",
+      status: "todo",
+      assigneeUserId: "board-user",
+    });
+    const secondApprovalIssueId = await insertIssue({
+      companyId,
+      identifier: "ATS-5",
+      title: "Same formal approval also wins",
+      status: "backlog",
+      assigneeUserId: "board-user",
+    });
+    const genericIssueId = await insertIssue({
+      companyId,
+      identifier: "ATS-4",
+      title: "Generic manual card remains",
+      status: "backlog",
+      assigneeUserId: "board-user",
+    });
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId: interactionIssueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      title: "Choose through the formal interaction",
+      payload: { version: 1, prompt: "Proceed?" },
+    });
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId,
+      type: "request_board_approval",
+      status: "pending",
+      payload: { title: "Choose through the formal approval" },
+    });
+    await db.insert(issueApprovals).values([
+      { companyId, issueId: approvalIssueId, approvalId },
+      { companyId, issueId: secondApprovalIssueId, approvalId },
+    ]);
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: workerId,
+      status: "succeeded",
+      contextSnapshot: { issueId: decisionIssueId },
+    });
+    await db.insert(decisions).values({
+      id: randomUUID(),
+      companyId,
+      originAgentId: workerId,
+      originIssueId: decisionIssueId,
+      originRunId: runId,
+      title: "Choose through the formal decision",
+      body: "A structured decision already exists.",
+      options: [],
+      status: "open",
+      expiresAt: new Date("2026-08-10T00:00:00.000Z"),
+      signedSpec: "test",
+      targetSnapshots: {},
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+
+    expect(feed.items.some((item) => item.sourceKind === "manual_issue" && item.subject.id === interactionIssueId)).toBe(false);
+    expect(feed.items.some((item) => item.sourceKind === "manual_issue" && item.subject.id === decisionIssueId)).toBe(false);
+    expect(feed.items.some((item) => item.sourceKind === "manual_issue" && item.subject.id === approvalIssueId)).toBe(false);
+    expect(feed.items.some((item) => item.sourceKind === "manual_issue" && item.subject.id === secondApprovalIssueId)).toBe(false);
+    expect(feed.items.some((item) => item.sourceKind === "manual_issue" && item.subject.id === genericIssueId)).toBe(true);
+    expect(feed.items.some((item) => item.sourceKind === "issue_thread_interaction" && item.relatedIssue?.id === interactionIssueId)).toBe(true);
+    expect(feed.items.some((item) => item.sourceKind === "decision" && item.relatedIssue?.id === decisionIssueId)).toBe(true);
+    expect(feed.items.some((item) => item.sourceKind === "approval" && item.subject.id === approvalId)).toBe(true);
+
+    await db.insert(inboxDismissals).values({
+      companyId,
+      userId: "board-user",
+      itemKey: `attention:interaction:${interactionId}`,
+      kind: "snooze",
+      dismissedAt: new Date("2099-01-01T00:00:00.000Z"),
+      snoozedUntil: new Date("2099-01-02T00:00:00.000Z"),
+    });
+    const snoozedFeed = await attentionService(db).list(companyId, { userId: "board-user" });
+    expect(snoozedFeed.items.some((item) => item.sourceKind === "issue_thread_interaction" && item.relatedIssue?.id === interactionIssueId)).toBe(false);
+    expect(snoozedFeed.items.some((item) => item.sourceKind === "manual_issue" && item.subject.id === interactionIssueId)).toBe(false);
   });
 
   it("returns ranked decision-only items for every active source and excludes non-human or transient rows", async () => {

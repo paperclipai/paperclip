@@ -195,6 +195,7 @@ describe("sourceMeta + severityStyle", () => {
       "productivity_review",
       "blocker_attention",
       "review",
+      "manual_issue",
       "failed_run",
       "budget_alert",
       "agent_error_alert",
@@ -202,6 +203,7 @@ describe("sourceMeta + severityStyle", () => {
     for (const kind of kinds) {
       expect(sourceMeta(kind).label.length).toBeGreaterThan(0);
     }
+    expect(sourceMeta("manual_issue").label).toBe("Board decision");
   });
 
   it("maps escalation severity to distinct accents", () => {
