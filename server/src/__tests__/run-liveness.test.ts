@@ -437,4 +437,76 @@ describe("run liveness classifier", () => {
       });
     }
   });
+
+  // Lifecycle golden corpus: locks the run-status / issue-status / evidence axis
+  // that the adversarial matrix (text-actionability only) does not cover, so every
+  // RunLivenessState has a pinned case. A regression here flips a real run's fate.
+  describe("lifecycle golden corpus", () => {
+    const evidenceAt = new Date("2026-04-18T12:00:00Z");
+    const lifecycleCases: Array<{
+      name: string;
+      input: Parameters<typeof classifyRunLiveness>[0];
+      expectedLiveness: string;
+    }> = [
+      {
+        name: "interrupted run -> needs_followup",
+        input: { ...baseInput, runStatus: "interrupted", errorCode: "session_reset" },
+        expectedLiveness: "needs_followup",
+      },
+      {
+        name: "adapter-failed run -> failed",
+        input: { ...baseInput, runStatus: "failed", errorCode: "adapter_failed" },
+        expectedLiveness: "failed",
+      },
+      {
+        name: "timed-out run -> failed",
+        input: { ...baseInput, runStatus: "timeout" },
+        expectedLiveness: "failed",
+      },
+      {
+        name: "issue already done -> completed",
+        input: { ...baseInput, issue: { ...baseInput.issue, status: "done" } },
+        expectedLiveness: "completed",
+      },
+      {
+        name: "issue cancelled -> completed",
+        input: { ...baseInput, issue: { ...baseInput.issue, status: "cancelled" } },
+        expectedLiveness: "completed",
+      },
+      {
+        name: "succeeded with no output or evidence -> empty_response",
+        input: { ...baseInput },
+        expectedLiveness: "empty_response",
+      },
+      {
+        name: "concrete action evidence -> advanced",
+        input: {
+          ...baseInput,
+          resultJson: { summary: "Applied the change." },
+          evidence: { issueCommentsCreated: 1, workProductsCreated: 1, latestEvidenceAt: evidenceAt },
+        },
+        expectedLiveness: "advanced",
+      },
+      {
+        name: "plan-document revision with useful output -> advanced",
+        input: {
+          ...baseInput,
+          resultJson: { summary: "Drafted the implementation plan." },
+          evidence: { planDocumentRevisionsCreated: 1, latestEvidenceAt: evidenceAt },
+        },
+        expectedLiveness: "advanced",
+      },
+      {
+        name: "useful completed output, no concrete evidence -> needs_followup",
+        input: { ...baseInput, resultJson: { summary: "Corrected the typo in the configuration comment." } },
+        expectedLiveness: "needs_followup",
+      },
+    ];
+
+    for (const tc of lifecycleCases) {
+      it(tc.name, () => {
+        expect(classifyRunLiveness(tc.input).livenessState).toBe(tc.expectedLiveness);
+      });
+    }
+  });
 });
