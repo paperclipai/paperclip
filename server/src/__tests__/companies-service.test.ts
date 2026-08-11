@@ -128,6 +128,33 @@ describeEmbeddedPostgres("companyService", () => {
     expect(afterReconcileRows.filter((row) => readBuiltInAgentMarker(row.metadata)?.key === "reflection-coach")).toHaveLength(1);
   });
 
+  it("remove() deletes the company and its agent tool grants (regression: agent grants must not block company deletion)", async () => {
+    const created = await companyService(db).create({ name: "Doomed Company" });
+
+    // create() auto-provisions a built-in agent via agentService.create, which now also
+    // inserts a tools:use grant. A company-scoped child row that blocks deletion is exactly
+    // the class that bit on 2026-08-11 (grant FK had no cascade and was not in every teardown).
+    // This guards that company removal stays clean as agents gain baseline grants.
+    const agentsBefore = await db.select().from(agents).where(eq(agents.companyId, created.id));
+    const grantsBefore = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(and(
+        eq(principalPermissionGrants.companyId, created.id),
+        eq(principalPermissionGrants.permissionKey, "tools:use"),
+      ));
+    expect(agentsBefore.length).toBeGreaterThan(0);
+    expect(grantsBefore.length).toBeGreaterThan(0);
+
+    await companyService(db).remove(created.id);
+
+    expect(await db.select().from(companies).where(eq(companies.id, created.id))).toHaveLength(0);
+    expect(await db.select().from(agents).where(eq(agents.companyId, created.id))).toHaveLength(0);
+    expect(
+      await db.select().from(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, created.id)),
+    ).toHaveLength(0);
+  });
+
   it("archives companies by pausing runnable agents and cancelling active runs", async () => {
     const companyId = randomUUID();
     const runningAgentId = randomUUID();
