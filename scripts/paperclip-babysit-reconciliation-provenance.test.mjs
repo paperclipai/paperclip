@@ -4,18 +4,28 @@ import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { createBabysitterArtifactInstance } from "./paperclip-babysit-reconciliation-provenance.mjs";
 
-const reviewedSourcePath = "scripts/paperclip-babysit-reconciliation.mjs";
+const reviewedSourcePath = "server/src/services/recovery/service.ts";
+const retainedBuildOutputPath = "server/dist/services/recovery/service.js";
+execFileSync("pnpm", ["--filter", "@paperclipai/server", "build"], { stdio: "inherit" });
 const reviewedSourceBytes = readFileSync(reviewedSourcePath);
-// Simulate the retained output emitted by the BuildExecution, rather than
-// treating the source file itself as the deployable ArtifactInstance.
-const retainedBuildOutputBytes = Buffer.from(`built:${reviewedSourceBytes.toString("base64")}`);
+// Read the retained output emitted by the real server BuildExecution. The
+// ArtifactInstance must describe deployable runtime bytes, not synthetic data
+// derived from a source file or a test-only script.
+const retainedBuildOutputBytes = readFileSync(retainedBuildOutputPath);
 const input = {
   sourceRevision: {
     repository: "paperclipai/paperclip",
     commit: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
     path: reviewedSourcePath,
   },
-  build: { tool: process.execPath, version: process.versions.node, inputsDigest: `sha256:${createHash("sha256").update(readFileSync("package.json")).digest("hex")}` },
+  build: {
+    tool: "pnpm --filter @paperclipai/server build",
+    version: execFileSync("pnpm", ["--version"], { encoding: "utf8" }).trim(),
+    inputsDigest: `sha256:${createHash("sha256").update(Buffer.concat([
+      readFileSync("server/tsconfig.json"),
+      readFileSync("server/package.json"),
+    ])).digest("hex")}`,
+  },
   sourceBytes: reviewedSourceBytes,
   buildOutputBytes: retainedBuildOutputBytes,
   mediaType: "application/javascript",
