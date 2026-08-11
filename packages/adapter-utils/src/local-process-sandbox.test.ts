@@ -10,6 +10,7 @@ import {
   parseLocalProcessNetworkAllowlist,
   parseLocalProcessNetworkScope,
   parseLocalProcessSandboxExtraPaths,
+  probeLocalProcessSandboxCapability,
 } from "./local-process-sandbox.js";
 import { runChildProcess } from "./server-utils.js";
 
@@ -37,6 +38,113 @@ describe("local process sandbox", () => {
       { path: "/var/lib/tool", access: "rw" },
     ]);
     expect(() => parseLocalProcessSandboxExtraPaths(["relative"])).toThrow("must be an absolute path");
+  });
+
+  it("detects a host where Bubblewrap cannot create a user namespace", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-bwrap-probe-"));
+    cleanup.push(root);
+    const fakeBwrap = path.join(root, "bwrap");
+    await fs.writeFile(
+      fakeBwrap,
+      "#!/bin/sh\necho 'bwrap: No permissions to create a new namespace' >&2\nexit 1\n",
+      { mode: 0o755 },
+    );
+
+    await expect(probeLocalProcessSandboxCapability({
+      command: fakeBwrap,
+      cwd: root,
+      env: process.env,
+    })).resolves.toEqual({
+      supported: false,
+      reason: "user_namespace_unavailable",
+      detail: "bwrap: No permissions to create a new namespace",
+    });
+  });
+
+  it("uses a narrowly scoped sudo Bubblewrap fallback when user namespaces are unavailable", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-bwrap-sudo-"));
+    cleanup.push(root);
+    const workspace = path.join(root, "workspace");
+    const fakeBwrap = path.join(root, "bwrap");
+    const fakeSudo = path.join(root, "sudo");
+    const argsLog = path.join(root, "bwrap-args.log");
+    await fs.mkdir(workspace);
+    await fs.writeFile(fakeBwrap, [
+      "#!/bin/sh",
+      "if [ \"$PAPERCLIP_TEST_PRIVILEGED\" != 1 ]; then",
+      "  echo 'bwrap: No permissions to create a new namespace' >&2",
+      "  exit 1",
+      "fi",
+      "printf '%s\\n' \"$*\" >> \"$PAPERCLIP_TEST_ARGS_FILE\"",
+      "sandbox_cwd=",
+      "while [ \"$#\" -gt 0 ] && [ \"$1\" != \"--\" ]; do",
+      "  if [ \"$1\" = \"--chdir\" ]; then shift; sandbox_cwd=$1; fi",
+      "  shift",
+      "done",
+      "shift",
+      "[ -n \"$sandbox_cwd\" ] && cd \"$sandbox_cwd\"",
+      "exec \"$@\"",
+      "",
+    ].join("\n"), { mode: 0o755 });
+    await fs.writeFile(fakeSudo, [
+      "#!/bin/sh",
+      "[ \"$1\" = \"-n\" ] && shift",
+      "[ \"$1\" = \"--preserve-env\" ] && shift",
+      "[ \"$1\" = \"--\" ] && shift",
+      "PAPERCLIP_TEST_PRIVILEGED=1 exec \"$@\"",
+      "",
+    ].join("\n"), { mode: 0o755 });
+
+    const result = await runChildProcess("filesystem-sandbox-sudo-fallback", process.execPath, [
+      "-e",
+      "require('node:fs').writeFileSync('workspace-ok.txt', String(process.getuid?.()))",
+    ], {
+      cwd: workspace,
+      env: { PATH: `${root}:${process.env.PATH ?? ""}`, PAPERCLIP_TEST_ARGS_FILE: argsLog },
+      timeoutSec: 10,
+      graceSec: 1,
+      onLog: async () => {},
+      localProcessSandbox: {
+        workspaceDir: workspace,
+        filesystemScope: "workspace",
+        command: fakeBwrap,
+      },
+    });
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    await expect(fs.readFile(path.join(workspace, "workspace-ok.txt"), "utf8"))
+      .resolves.toBe(String(process.getuid?.()));
+    const generatedArgs = await fs.readFile(argsLog, "utf8");
+    expect(generatedArgs).toContain(`--uid ${process.getuid?.()} --gid ${process.getgid?.()}`);
+    expect(generatedArgs).toContain(`--ro-bind /dev/null ${fakeSudo}`);
+    expect(generatedArgs).toContain(`--bind ${workspace} ${workspace}`);
+    expect(generatedArgs).not.toContain(path.join(root, "outside"));
+  });
+
+  it("fails closed when user namespaces and the scoped sudo fallback are unavailable", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-bwrap-no-sudo-"));
+    cleanup.push(root);
+    const workspace = path.join(root, "workspace");
+    const fakeBwrap = path.join(root, "bwrap");
+    await fs.mkdir(workspace);
+    await fs.writeFile(
+      fakeBwrap,
+      "#!/bin/sh\necho 'bwrap: No permissions to create a new namespace' >&2\nexit 1\n",
+      { mode: 0o755 },
+    );
+
+    await expect(runChildProcess("filesystem-sandbox-no-sudo", process.execPath, ["-e", "process.exit(0)"], {
+      cwd: workspace,
+      env: { PATH: root },
+      timeoutSec: 10,
+      graceSec: 1,
+      onLog: async () => {},
+      localProcessSandbox: {
+        workspaceDir: workspace,
+        filesystemScope: "workspace",
+        command: fakeBwrap,
+      },
+    })).rejects.toThrow("cannot start Bubblewrap (user_namespace_unavailable)");
   });
 
   it("parses network scopes and exact-host allowlists", () => {
@@ -290,12 +398,13 @@ describe("local process sandbox", () => {
   });
 
   it.runIf(Boolean(process.env.PAPERCLIP_TEST_BWRAP))(
-    "prevents reads outside the workspace while allowing workspace writes",
+    "prevents reads and writes outside the workspace while allowing workspace writes",
     async () => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-sandbox-integration-"));
       cleanup.push(root);
       const workspace = path.join(root, "workspace");
       const outside = path.join(root, "canary.txt");
+      const outsideWrite = path.join(root, "outside-write.txt");
       const allowed = path.join(root, "allowed.txt");
       await fs.mkdir(workspace);
       await fs.writeFile(outside, "host-secret", "utf8");
@@ -307,6 +416,9 @@ describe("local process sandbox", () => {
         "  if (!['ENOENT', 'EACCES'].includes(error.code)) throw error;",
         "}",
         `if (fs.readFileSync(${JSON.stringify(allowed)}, 'utf8') !== 'allowed-value') process.exit(8);`,
+        `try { fs.writeFileSync(${JSON.stringify(outsideWrite)}, 'denied'); process.exit(7); } catch (error) {`,
+        "  if (!['ENOENT', 'EACCES', 'EROFS'].includes(error.code)) throw error;",
+        "}",
         "fs.writeFileSync('workspace-ok.txt', 'ok');",
       ].join("\n");
       const result = await runChildProcess("filesystem-sandbox-test", process.execPath, ["-e", script], {
@@ -325,6 +437,7 @@ describe("local process sandbox", () => {
 
       expect(result.exitCode, result.stderr).toBe(0);
       await expect(fs.readFile(path.join(workspace, "workspace-ok.txt"), "utf8")).resolves.toBe("ok");
+      await expect(fs.lstat(outsideWrite)).rejects.toMatchObject({ code: "ENOENT" });
     },
   );
 
