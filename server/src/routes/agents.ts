@@ -2549,7 +2549,6 @@ export function agentRoutes(
   router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCanCreateAgentsForCompany(req, companyId);
-    const ownerUserId = resolveOwnerUserIdOrThrow(req);
     const sourceIssueIds = parseSourceIssueIds(req.body);
     const {
       desiredSkills: requestedDesiredSkills,
@@ -2612,6 +2611,11 @@ export function agentRoutes(
 
     const requiresApproval = company.requireBoardApprovalForNewAgents;
     const status = requiresApproval ? "pending_approval" : "idle";
+    // Resolved last, immediately before use -- see the matching comment in
+    // the direct-create route above for why this must not run ahead of the
+    // security checks (assertNoAgentAdapterConfigMutation etc.) earlier in
+    // this handler.
+    const ownerUserId = resolveOwnerUserIdOrThrow(req);
     const createdAgent = await svc.create(companyId, {
       id: hiredAgentId,
       ...normalizedHireInput,
@@ -2733,7 +2737,6 @@ export function agentRoutes(
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCanCreateAgentsForCompany(req, companyId);
-    const ownerUserId = resolveOwnerUserIdOrThrow(req);
 
     const company = await db
       .select()
@@ -2797,6 +2800,12 @@ export function agentRoutes(
       allowedSandboxProviders: allowedSandboxProvidersForAgent(createInput.adapterType),
     });
 
+    // Resolved last, immediately before use: this throws 422 for an agent
+    // actor with no responsibleUserId, and must not run ahead of the
+    // security checks above (assertNoAgentAdapterConfigMutation etc.) --
+    // those need to return their 403 first for a request that both lacks a
+    // resolvable owner AND is attempting a blocked mutation.
+    const ownerUserId = resolveOwnerUserIdOrThrow(req);
     const createdAgent = await svc.create(companyId, {
       id: agentId,
       ...createInput,

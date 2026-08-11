@@ -918,6 +918,7 @@ describe.sequential("agent permission routes", () => {
       expect.objectContaining({
         status: "idle",
       }),
+      { ownerUserId: "agent-admin-user", ownershipSource: "agent_create" },
     );
     expect(mockAccessService.setPrincipalPermission).toHaveBeenCalledWith(
       companyId,
@@ -1050,6 +1051,7 @@ describe.sequential("agent permission routes", () => {
           },
         },
       }),
+      { ownerUserId: "board-user", ownershipSource: "agent_create" },
     );
   });
 
@@ -1112,6 +1114,7 @@ describe.sequential("agent permission routes", () => {
             },
           },
         }),
+        { ownerUserId: "board-user", ownershipSource: "agent_create" },
       );
     } finally {
       unregisterServerAdapter("failing_profile_discovery");
@@ -1150,6 +1153,7 @@ describe.sequential("agent permission routes", () => {
           model: DEFAULT_OPENCODE_LOCAL_MODEL,
         }),
       }),
+      { ownerUserId: "board-user", ownershipSource: "agent_create" },
     );
   });
 
@@ -1187,6 +1191,7 @@ describe.sequential("agent permission routes", () => {
           model: "anthropic/claude-sonnet-4-5",
         }),
       }),
+      { ownerUserId: "board-user", ownershipSource: "agent_create" },
     );
   });
 
@@ -1228,6 +1233,7 @@ describe.sequential("agent permission routes", () => {
           },
         },
       }),
+      { ownerUserId: "board-user", ownershipSource: "agent_hire" },
     );
   });
 
@@ -1451,6 +1457,7 @@ describe.sequential("agent permission routes", () => {
       expect.objectContaining({
         defaultEnvironmentId: environmentId,
       }),
+      { ownerUserId: "board-user", ownershipSource: "agent_create" },
     );
   });
 
@@ -1536,6 +1543,7 @@ describe.sequential("agent permission routes", () => {
           adapterType: adapterCase.adapterType,
           defaultEnvironmentId: environmentId,
         }),
+        { ownerUserId: "board-user", ownershipSource: "agent_create" },
       );
     });
   }
