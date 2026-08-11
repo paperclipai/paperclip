@@ -4596,12 +4596,8 @@ export function agentRoutes(
 
   router.get("/heartbeat-runs/:runId/delivery-attestations", async (req, res) => {
     const runId = req.params.runId as string;
-    const run = await heartbeat.getRun(runId);
-    if (!run) {
-      res.status(404).json({ error: "Heartbeat run not found" });
-      return;
-    }
-    assertCompanyAccess(req, run.companyId);
+    const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
+    if (!run) return;
 
     const attestations = await deliveryAttestations.listForRun(runId, run.companyId);
     res.json(attestations);

@@ -6413,12 +6413,8 @@ export function issueRoutes(
 
   router.get("/issues/:id/delivery-attestations", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await svc.getById(id);
-    if (!issue) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const attestations = await deliveryAttestationsSvc.listForIssue(issue.id, issue.companyId);
     res.json(attestations);
