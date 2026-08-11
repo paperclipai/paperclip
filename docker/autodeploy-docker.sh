@@ -643,9 +643,11 @@ POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 PAPERCLIP_DATA_DIR=$DATA_DIR_REL
 PAPERCLIP_DEPLOY_ID=$DEPLOY_ID
 PAPERCLIP_PROJECT_NAME=$PROJECT_NAME
-# Non-secret identity for re-arming bootstrap after ./manage.sh reset
-PAPERCLIP_BOOTSTRAP_ADMIN_EMAIL=$ADMIN_EMAIL
-PAPERCLIP_BOOTSTRAP_ADMIN_NAME=$ADMIN_NAME
+# Whether this deploy was configured for automatic first-admin bootstrap.
+# Used by ./manage.sh reset to re-arm secrets without changing invite-only mode.
+PAPERCLIP_AUTO_ADMIN=$([ "$DEPLOYMENT_MODE" = "authenticated" ] && [ "$AUTO_ADMIN" = "true" ] && printf 'true' || printf 'false')
+PAPERCLIP_BOOTSTRAP_ADMIN_EMAIL=$([ "$DEPLOYMENT_MODE" = "authenticated" ] && [ "$AUTO_ADMIN" = "true" ] && printf '%s' "$ADMIN_EMAIL" || printf '')
+PAPERCLIP_BOOTSTRAP_ADMIN_NAME=$([ "$DEPLOYMENT_MODE" = "authenticated" ] && [ "$AUTO_ADMIN" = "true" ] && printf '%s' "$ADMIN_NAME" || printf '')
 
 # Allow opencode/all-models in agent runner (set to false to restrict)
 OPENCODE_ALLOW_ALL_MODELS=true
@@ -1149,14 +1151,16 @@ PURGED
 # After `reset` wipes DB volumes, re-enable auto-admin with a fresh password so
 # the next `./manage.sh start` can provision a new administrator.
 rearm_bootstrap_secrets() {
-  local deployment_mode email name pass
+  local deployment_mode auto_admin email name pass
   deployment_mode="$(read_env_value .env PAPERCLIP_DEPLOYMENT_MODE)"
   [ "$deployment_mode" = "authenticated" ] || return 0
+  auto_admin="$(read_env_value .env PAPERCLIP_AUTO_ADMIN)"
+  # Never flip invite-only deploys (--no-auto-admin) into auto-admin on reset.
+  [ "$auto_admin" = "true" ] || return 0
 
   email="$(read_env_value .env PAPERCLIP_BOOTSTRAP_ADMIN_EMAIL)"
   name="$(read_env_value .env PAPERCLIP_BOOTSTRAP_ADMIN_NAME)"
-  # Only re-arm when the original deploy configured auto-admin (email stored).
-  [ -n "$email" ] || return 0
+  email="${email:-admin@paperclip.local}"
   name="${name:-Paperclip Admin}"
   if command -v openssl >/dev/null 2>&1; then
     pass="$(openssl rand -hex 12)"
