@@ -67,6 +67,19 @@ import type {
   PluginEnvironmentCancelInteractiveSetupResult,
   PluginEnvironmentDeleteTemplateParams,
   PluginEnvironmentDeleteTemplateResult,
+  PluginRepositoryProviderBeginInstallationParams,
+  PluginRepositoryProviderBeginInstallationResult,
+  PluginRepositoryProviderCompleteInstallationParams,
+  PluginRepositoryProviderCompleteInstallationResult,
+  PluginRepositoryProviderDisconnectParams,
+  PluginRepositoryProviderDiscoverParams,
+  PluginRepositoryProviderDiscoverResult,
+  PluginRepositoryProviderRefreshMetadataParams,
+  PluginRepositoryProviderRefreshMetadataResult,
+  PluginRepositoryProviderResolveCloneCredentialParams,
+  PluginRepositoryProviderResolveCloneCredentialResult,
+  PluginRepositoryProviderSyncParams,
+  PluginRepositoryProviderSyncResult,
   PluginEnvironmentLease,
   PluginEnvironmentProbeParams,
   PluginEnvironmentProbeResult,
@@ -432,6 +445,64 @@ export interface PluginDefinition {
   onEnvironmentDeleteTemplate?(
     params: PluginEnvironmentDeleteTemplateParams,
   ): Promise<PluginEnvironmentDeleteTemplateResult>;
+
+  // -------------------------------------------------------------------------
+  // Repository providers — require `repository.providers.register`
+  // -------------------------------------------------------------------------
+  //
+  // A trusted extension implements these to serve a manifest-declared
+  // `repositoryProviders[]` identity (provider key + normalized host). The host
+  // registers a connector for that identity only while the plugin is ready and
+  // its worker is running, and unregisters it on stop/unload.
+  //
+  // The host owns every persisted row: the worker answers provider questions
+  // and never sees or supplies a connection secret. Anything returned here is
+  // re-validated and sanitized before the host acts on it.
+  //
+  // A plugin that implements `onRepositoryProviderBeginInstallation` MUST also
+  // implement `onRepositoryProviderCompleteInstallation`,
+  // `onRepositoryProviderDiscover`, `onRepositoryProviderRefreshMetadata`,
+  // `onRepositoryProviderSync`, and
+  // `onRepositoryProviderResolveCloneCredential` — the host refuses to register
+  // a partially implemented connector rather than failing mid-flow.
+
+  /** Called to start the provider's install/authorize flow for a company. */
+  onRepositoryProviderBeginInstallation?(
+    params: PluginRepositoryProviderBeginInstallationParams,
+  ): Promise<PluginRepositoryProviderBeginInstallationResult>;
+
+  /** Called with the provider callback's signed state to finish installation. */
+  onRepositoryProviderCompleteInstallation?(
+    params: PluginRepositoryProviderCompleteInstallationParams,
+  ): Promise<PluginRepositoryProviderCompleteInstallationResult>;
+
+  /** Called to list repositories visible to a connection, paginated/searchable. */
+  onRepositoryProviderDiscover?(
+    params: PluginRepositoryProviderDiscoverParams,
+  ): Promise<PluginRepositoryProviderDiscoverResult>;
+
+  /** Called to re-read one repository's metadata (rename/transfer/visibility). */
+  onRepositoryProviderRefreshMetadata?(
+    params: PluginRepositoryProviderRefreshMetadataParams,
+  ): Promise<PluginRepositoryProviderRefreshMetadataResult>;
+
+  /** Called to enumerate a connection's repositories for idempotent sync. */
+  onRepositoryProviderSync?(
+    params: PluginRepositoryProviderSyncParams,
+  ): Promise<PluginRepositoryProviderSyncResult>;
+
+  /** Called when a connection is disconnected so the provider can revoke state. */
+  onRepositoryProviderDisconnect?(
+    params: PluginRepositoryProviderDisconnectParams,
+  ): Promise<void>;
+
+  /**
+   * Called to mint a short-lived clone credential. The returned token is
+   * transient: the host marks it no-store and never persists or logs it.
+   */
+  onRepositoryProviderResolveCloneCredential?(
+    params: PluginRepositoryProviderResolveCloneCredentialParams,
+  ): Promise<PluginRepositoryProviderResolveCloneCredentialResult>;
 }
 
 // ---------------------------------------------------------------------------

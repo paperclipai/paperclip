@@ -29,6 +29,13 @@ interface GitHubConnectionDialogProps {
   companyId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /**
+   * Host of the GitHub provider identity to connect. The `github` provider key
+   * can be served by more than one host once an extension registers an
+   * enterprise install, and the server refuses an ambiguous lookup, so the
+   * caller passes the host it offered. Omitted when only one host serves the key.
+   */
+  host?: string | null;
   /** Called after repositories are imported so the catalog can refresh. */
   onImported?: (importedCount: number) => void;
 }
@@ -45,6 +52,7 @@ export function GitHubConnectionDialog({
   companyId,
   open,
   onOpenChange,
+  host = null,
   onImported,
 }: GitHubConnectionDialogProps) {
   const queryClient = useQueryClient();
@@ -78,7 +86,7 @@ export function GitHubConnectionDialog({
   }
 
   const beginMutation = useMutation({
-    mutationFn: () => repositoriesApi.beginConnection(companyId, "github", {}),
+    mutationFn: () => repositoriesApi.beginConnection(companyId, "github", {}, host),
     onSuccess: (result) => {
       setState(result.state);
       window.open(result.installUrl, "_blank", "noopener,noreferrer");
@@ -103,10 +111,15 @@ export function GitHubConnectionDialog({
   const completeMutation = useMutation({
     mutationFn: () => {
       if (!state) throw new Error("Start the connection before confirming installation");
-      return repositoriesApi.completeConnection(companyId, "github", {
-        state,
-        installationId: installationId.trim(),
-      });
+      return repositoriesApi.completeConnection(
+        companyId,
+        "github",
+        {
+          state,
+          installationId: installationId.trim(),
+        },
+        host,
+      );
     },
     onSuccess: async (result) => {
       setConnection(result.connection);

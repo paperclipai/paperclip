@@ -945,6 +945,7 @@ export type {
   PluginApiRouteDeclaration,
   PluginObjectReferenceRefreshPolicy,
   PluginObjectReferenceProviderDeclaration,
+  PluginRepositoryProviderDeclaration,
   PaperclipPluginManifestV1,
   PluginRecord,
   PluginDatabaseNamespaceRecord,

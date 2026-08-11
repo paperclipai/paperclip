@@ -58,6 +58,7 @@ export function Repositories() {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
   const [githubOpen, setGithubOpen] = useState(false);
+  const [githubHost, setGithubHost] = useState<string | null>(null);
   const [manualOpen, setManualOpen] = useState(false);
   const [manualUrl, setManualUrl] = useState("");
 
@@ -75,6 +76,22 @@ export function Repositories() {
     queryFn: () => repositoriesApi.listConnections(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const providersQuery = useQuery({
+    queryKey: queryKeys.repositories.providers(selectedCompanyId!),
+    queryFn: () => repositoriesApi.listProviders(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  // The `github` key can be served by several hosts once an extension registers
+  // an enterprise install. The server refuses an ambiguous lookup, so the page
+  // offers each identity separately and sends the host the operator picked.
+  const githubProviders = (providersQuery.data ?? []).filter((entry) => entry.provider === "github");
+  const defaultGithubHost = githubProviders.length === 1 ? githubProviders[0]!.host : null;
+
+  function openGithubDialog(host: string | null) {
+    setGithubHost(host);
+    setGithubOpen(true);
+  }
 
   const manualMutation = useMutation({
     mutationFn: (cloneUrl: string) =>
@@ -132,9 +149,17 @@ export function Repositories() {
       <Button variant="outline" onClick={() => setManualOpen(true)}>
         <Plus className="h-4 w-4" /> Add manually
       </Button>
-      <Button onClick={() => setGithubOpen(true)}>
-        <Github className="h-4 w-4" /> Connect GitHub
-      </Button>
+      {githubProviders.length > 1 ? (
+        githubProviders.map((entry) => (
+          <Button key={entry.host} onClick={() => openGithubDialog(entry.host)}>
+            <Github className="h-4 w-4" /> Connect {entry.host}
+          </Button>
+        ))
+      ) : (
+        <Button onClick={() => openGithubDialog(defaultGithubHost)}>
+          <Github className="h-4 w-4" /> Connect GitHub
+        </Button>
+      )}
     </div>
   );
 
@@ -197,7 +222,7 @@ export function Repositories() {
           message="Connect GitHub to import repositories, or add one manually by its clone URL."
           action="Connect GitHub"
           hideActionIcon
-          onAction={() => setGithubOpen(true)}
+          onAction={() => openGithubDialog(defaultGithubHost)}
         />
       ) : (
         <div className="flex flex-col gap-3">
@@ -252,6 +277,7 @@ export function Repositories() {
       <GitHubConnectionDialog
         companyId={selectedCompanyId!}
         open={githubOpen}
+        host={githubHost}
         onOpenChange={setGithubOpen}
         onImported={() => refresh()}
       />

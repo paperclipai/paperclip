@@ -66,7 +66,7 @@ function discoveryPage(overrides: Partial<{ items: unknown[]; nextCursor: string
 let container: HTMLDivElement;
 let root: Root;
 
-function render() {
+function render(host: string | null = null) {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -74,7 +74,7 @@ function render() {
   flushSync(() => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <GitHubConnectionDialog companyId="company-1" open onOpenChange={() => {}} />
+        <GitHubConnectionDialog companyId="company-1" open host={host} onOpenChange={() => {}} />
       </QueryClientProvider>,
     );
   });
@@ -91,7 +91,7 @@ describe("GitHubConnectionDialog", () => {
     container.remove();
   });
 
-  async function reachSelectStep() {
+  async function reachSelectStep(host: string | null = null) {
     repositoriesApiMock.beginConnection.mockResolvedValue({
       provider: "github",
       installUrl: "https://github.com/apps/paperclip/installations/new?state=abc",
@@ -104,17 +104,22 @@ describe("GitHubConnectionDialog", () => {
       repositories: [],
     });
     repositoriesApiMock.discoverConnectionRepositories.mockResolvedValue(discoveryPage());
-    render();
+    render(host);
 
     clickByText("Authorize on GitHub");
     await waitFor(() => expect(windowOpen).toHaveBeenCalled());
     setInputValue(document.querySelector<HTMLInputElement>("#github-installation-id")!, "42");
     clickByText("Continue");
     await waitFor(() => {
-      expect(repositoriesApiMock.completeConnection).toHaveBeenCalledWith("company-1", "github", {
-        state: "signed-state",
-        installationId: "42",
-      });
+      expect(repositoriesApiMock.completeConnection).toHaveBeenCalledWith(
+        "company-1",
+        "github",
+        {
+          state: "signed-state",
+          installationId: "42",
+        },
+        host,
+      );
       expect(document.body.textContent).toContain("acme/alpha");
     });
   }
@@ -176,5 +181,24 @@ describe("GitHubConnectionDialog", () => {
     });
     clickByText("Authorize on GitHub");
     await waitFor(() => expect(windowOpen).toHaveBeenCalled());
+  });
+
+  // Without the host, the server cannot tell github.com from an enterprise
+  // install contributed by an extension, and refuses the ambiguous lookup.
+  it("sends the provider host on both install calls when one is selected", async () => {
+    await reachSelectStep("github.acme-corp.example");
+
+    expect(repositoriesApiMock.beginConnection).toHaveBeenCalledWith(
+      "company-1",
+      "github",
+      {},
+      "github.acme-corp.example",
+    );
+    expect(repositoriesApiMock.completeConnection).toHaveBeenCalledWith(
+      "company-1",
+      "github",
+      { state: "signed-state", installationId: "42" },
+      "github.acme-corp.example",
+    );
   });
 });

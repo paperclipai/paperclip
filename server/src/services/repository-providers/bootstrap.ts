@@ -1,4 +1,5 @@
 import { repositoryProviderRegistry } from "../repository-connections.js";
+import { guardRepositoryProviderConnector } from "./connector-guard.js";
 import { createGitHubProvider } from "./github-provider.js";
 import { createGitHubAppTransport } from "./github-transport.js";
 
@@ -32,7 +33,20 @@ export function registerConfiguredRepositoryProviders(
       apiBaseUrl: env.PAPERCLIP_GITHUB_API_BASE_URL?.trim() || undefined,
     });
     const provider = createGitHubProvider({ transport, config: { appSlug, stateSecret } });
-    unregister.push(repositoryProviderRegistry.register(provider));
+    unregister.push(repositoryProviderRegistry.register(
+      // Core providers go through the same hardening wrapper as extensions:
+      // one contract, one place where provider output is validated.
+      guardRepositoryProviderConnector(provider, { provider: provider.provider, host: provider.host }),
+      {
+        host: provider.host,
+        descriptor: {
+          displayName: "GitHub",
+          source: "core",
+          supportsDiscovery: true,
+          supportsCloneCredentials: true,
+        },
+      },
+    ));
   }
 
   return unregister;

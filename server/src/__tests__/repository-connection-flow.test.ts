@@ -183,6 +183,30 @@ describeEmbeddedPostgres("repository connection flow (GitHub-style provider)", (
     expect(install.status).toBe(422);
   });
 
+  it("advertises only providers that are actually registered", async () => {
+    const company = await seedCompany();
+    const app = createApp(db, boardActor(company.id));
+
+    const before = await request(app).get(`/api/companies/${company.id}/repository-providers`);
+    expect(before.status).toBe(200);
+    expect(before.body.providers).toEqual([]);
+
+    registerFakeProvider();
+    const during = await request(app).get(`/api/companies/${company.id}/repository-providers`);
+    expect(during.body.providers).toHaveLength(1);
+    expect(during.body.providers[0]).toMatchObject({
+      provider: "fake",
+      host: "fake.example.com",
+      supportsDiscovery: true,
+    });
+
+    // Unregistering is what a plugin unload does; the capability listing must
+    // follow immediately so core UI stops offering the provider.
+    for (const unregister of unregisterProviders.splice(0).reverse()) unregister();
+    const after = await request(app).get(`/api/companies/${company.id}/repository-providers`);
+    expect(after.body.providers).toEqual([]);
+  });
+
   async function importOneRepository(companyId: string) {
     const { installationId } = registerFakeProvider();
     const app = createApp(db, boardActor(companyId));

@@ -12,6 +12,7 @@ const breadcrumbState = vi.hoisted(() => ({ setBreadcrumbs: vi.fn() }));
 const repositoriesApiMock = vi.hoisted(() => ({
   list: vi.fn(),
   listConnections: vi.fn(),
+  listProviders: vi.fn(),
   createManual: vi.fn(),
   syncConnection: vi.fn(),
 }));
@@ -42,6 +43,21 @@ async function waitFor(assertion: () => void, attempts = 50) {
     }
   }
   throw lastError;
+}
+
+function provider(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    provider: "github",
+    host: "github.com",
+    displayName: "GitHub",
+    description: null,
+    source: "core",
+    pluginKey: null,
+    supportsDiscovery: true,
+    supportsCloneCredentials: true,
+    documentationUrl: null,
+    ...overrides,
+  };
 }
 
 function makeRepo(overrides: Partial<Record<string, unknown>> = {}) {
@@ -93,9 +109,11 @@ describe("Repositories catalog", () => {
   beforeEach(() => {
     repositoriesApiMock.list.mockReset();
     repositoriesApiMock.listConnections.mockReset();
+    repositoriesApiMock.listProviders.mockReset();
     repositoriesApiMock.createManual.mockReset();
     repositoriesApiMock.syncConnection.mockReset();
     repositoriesApiMock.listConnections.mockResolvedValue([]);
+    repositoriesApiMock.listProviders.mockResolvedValue([provider()]);
   });
 
   afterEach(() => {
@@ -171,6 +189,24 @@ describe("Repositories catalog", () => {
         cloneUrl: "https://github.com/acme/manual.git",
         visibility: "unknown",
       });
+    });
+  });
+
+  // One `github` key can be served by github.com and by an enterprise install
+  // an extension registered. The server refuses an ambiguous lookup, so the page
+  // has to offer each host as its own action.
+  it("offers one connect action per host when several serve the github provider", async () => {
+    repositoriesApiMock.list.mockResolvedValue([makeRepo()]);
+    repositoriesApiMock.listProviders.mockResolvedValue([
+      provider(),
+      provider({ host: "github.acme-corp.example", source: "plugin", pluginKey: "acme.github-enterprise" }),
+    ]);
+    render();
+
+    await waitFor(() => {
+      const labels = [...document.querySelectorAll("button")].map((button) => button.textContent ?? "");
+      expect(labels.some((label) => label.includes("Connect github.com"))).toBe(true);
+      expect(labels.some((label) => label.includes("Connect github.acme-corp.example"))).toBe(true);
     });
   });
 });

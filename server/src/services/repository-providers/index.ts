@@ -4,4 +4,7 @@ export * from "./github-provider.js";
 export * from "./github-transport.js";
 export * from "./fake-provider.js";
 export * from "./registry.js";
+export * from "./connector-guard.js";
+export * from "./plugin-connector.js";
+export * from "./plugin-registrar.js";
 export * from "./bootstrap.js";

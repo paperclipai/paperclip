@@ -26,6 +26,7 @@ import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { repositoryRoutes } from "./routes/repositories.js";
 import { registerConfiguredRepositoryProviders } from "./services/repository-providers/bootstrap.js";
+import { createPluginRepositoryProviderRegistrar } from "./services/repository-providers/plugin-registrar.js";
 import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { caseRoutes } from "./routes/cases.js";
@@ -471,6 +472,14 @@ export async function createApp(
     jobStore,
   });
   const hostServiceCleanup = createPluginHostServiceCleanup(lifecycle, hostServicesDisposers);
+  // Repository providers contributed by trusted extension packages are bound to
+  // the plugin lifecycle: registered when a declaring plugin's worker is ready,
+  // and dropped on stop, disable, unload, or error.
+  const repositoryProviderRegistrar = createPluginRepositoryProviderRegistrar({
+    db,
+    lifecycle,
+    workerManager,
+  });
   let viteHtmlRenderer: ReturnType<typeof createCachedViteHtmlRenderer> | null = null;
   const loader = pluginLoader(
     db,
@@ -643,6 +652,9 @@ export async function createApp(
   app.use(errorHandler);
 
   jobCoordinator.start();
+  void repositoryProviderRegistrar.start().catch((err) => {
+    logger.error({ err }, "Failed to start the repository provider registrar");
+  });
   scheduler.start();
   let feedbackExportShuttingDown = false;
   let feedbackExportTimer: ReturnType<typeof setInterval> | null = null;
@@ -744,6 +756,7 @@ export async function createApp(
     viteHtmlRenderer?.dispose();
     hostServiceCleanup.disposeAll();
     hostServiceCleanup.teardown();
+    repositoryProviderRegistrar.stop();
   };
   app.locals.paperclipShutdown = shutdownAppServices;
 

@@ -21,7 +21,10 @@ import {
   repositoryConnectionService,
   repositoryService,
 } from "../services/index.js";
-import { getRepositoryProviderConnector } from "../services/repository-providers/registry.js";
+import {
+  getRepositoryProviderConnector,
+  listAvailableRepositoryProviders,
+} from "../services/repository-providers/registry.js";
 import { forbidden, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 
@@ -51,6 +54,17 @@ export function repositoryRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     res.json(await repositories.list(companyId, { includeArchived: req.query.includeArchived === "true" }));
+  });
+
+  // Capability surface for core UI: which provider identities this instance can
+  // actually connect right now. A provider contributed by a trusted extension
+  // only appears while that extension is installed, ready, and running, so the
+  // UI never offers a connection the host would refuse.
+  router.get("/companies/:companyId/repository-providers", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json({ providers: listAvailableRepositoryProviders(companyId) });
   });
 
   router.post(
@@ -255,7 +269,10 @@ export function repositoryRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
       const providerKey = (req.params.provider as string).toLowerCase();
-      const connector = getRepositoryProviderConnector(providerKey);
+      // `host` disambiguates a provider key served by more than one host (e.g.
+      // github.com alongside an enterprise install contributed by an extension).
+      const requestedHost = typeof req.query.host === "string" ? req.query.host : null;
+      const connector = getRepositoryProviderConnector(providerKey, { host: requestedHost, companyId });
       if (!connector) throw unprocessable(`Repository provider '${providerKey}' is not available`);
       const { actor } = activityActor(req);
       const userId = actor.actorType === "user" ? actor.actorId : actor.agentId;
@@ -282,7 +299,8 @@ export function repositoryRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
       const providerKey = (req.params.provider as string).toLowerCase();
-      const connector = getRepositoryProviderConnector(providerKey);
+      const requestedHost = typeof req.query.host === "string" ? req.query.host : null;
+      const connector = getRepositoryProviderConnector(providerKey, { host: requestedHost, companyId });
       if (!connector) throw unprocessable(`Repository provider '${providerKey}' is not available`);
       const meta = await connector.completeInstallation({
         state: req.body.state,
@@ -325,7 +343,10 @@ export function repositoryRoutes(db: Db) {
       "Repository connection not found",
     );
     if (!connection) return;
-    const connector = getRepositoryProviderConnector(connection.provider);
+    const connector = getRepositoryProviderConnector(connection.provider, {
+      host: connection.host,
+      companyId: connection.companyId,
+    });
     if (!connector) throw unprocessable(`Repository provider '${connection.provider}' does not support discovery`);
     if (connection.status === "disconnected") throw unprocessable("Disconnected repository connection cannot be discovered");
 
@@ -374,7 +395,10 @@ export function repositoryRoutes(db: Db) {
         "Repository connection not found",
       );
       if (!connection) return;
-      const connector = getRepositoryProviderConnector(connection.provider);
+      const connector = getRepositoryProviderConnector(connection.provider, {
+        host: connection.host,
+        companyId: connection.companyId,
+      });
       if (!connector) throw unprocessable(`Repository provider '${connection.provider}' does not support import`);
       if (connection.status === "disconnected") throw unprocessable("Disconnected repository connection cannot import repositories");
 
@@ -447,7 +471,10 @@ export function repositoryRoutes(db: Db) {
 
     const connection = await connections.getById(repository.connectionId);
     if (!connection || connection.status === "disconnected") throw unprocessable("Repository connection is unavailable");
-    const connector = getRepositoryProviderConnector(connection.provider);
+    const connector = getRepositoryProviderConnector(connection.provider, {
+      host: connection.host,
+      companyId: connection.companyId,
+    });
     if (!connector) throw unprocessable(`Repository provider '${connection.provider}' cannot resolve clone credentials`);
 
     const resolved = await connector.resolveCloneCredential({

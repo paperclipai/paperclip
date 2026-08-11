@@ -564,6 +564,47 @@ export interface PluginObjectReferenceProviderDeclaration {
   webhookEndpointKeys?: string[];
 }
 
+/**
+ * Declares a first-class repository provider contributed by a trusted
+ * extension package (e.g. the Paperclip EE GitHub Enterprise provider).
+ *
+ * The host owns every persisted row, company scope, and secret boundary. A
+ * declaration only tells the host *which* connector identity the plugin can
+ * answer for; the connector itself is reached over the `repositoryProvider*`
+ * worker RPCs and is registered only while the plugin is ready and running.
+ *
+ * Requires the `repository.providers.register` capability. Connector identity
+ * is `providerKey` plus normalized `host`, so the same provider key may be
+ * served for several hosts (github.com vs. an enterprise install) without
+ * either registration shadowing the other.
+ */
+export interface PluginRepositoryProviderDeclaration {
+  /** Stable provider key such as "github-enterprise". Lowercase. */
+  providerKey: string;
+  /** Human-readable provider name shown in operator-facing surfaces. */
+  displayName: string;
+  /** Short operator-facing description. */
+  description?: string;
+  /**
+   * Normalized provider host this connector serves, e.g. `github.example.com`.
+   * Must be a bare host (optionally with a port) — no scheme, credentials,
+   * path, query, or fragment.
+   */
+  host: string;
+  /**
+   * Declares that the connector implements paginated/searchable discovery.
+   * Core UI only offers repository browsing when this is true.
+   */
+  supportsDiscovery?: boolean;
+  /**
+   * Declares that the connector can mint short-lived clone credentials.
+   * Credentials are transient: the host never persists or logs them.
+   */
+  supportsCloneCredentials?: boolean;
+  /** Optional operator-facing documentation URL. */
+  documentationUrl?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Plugin Manifest V1
 // ---------------------------------------------------------------------------
@@ -632,6 +673,11 @@ export interface PaperclipPluginManifestV1 {
   localFolders?: PluginLocalFolderDeclaration[];
   /** External object reference providers this plugin contributes. */
   objectReferences?: PluginObjectReferenceProviderDeclaration[];
+  /**
+   * First-class repository providers this plugin contributes.
+   * Requires the `repository.providers.register` capability.
+   */
+  repositoryProviders?: PluginRepositoryProviderDeclaration[];
   /**
    * Legacy top-level launcher declarations.
    * Prefer `ui.launchers` for new manifests.

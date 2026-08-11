@@ -924,6 +924,175 @@ export interface PluginEnvironmentDeleteTemplateResult {
 }
 
 // ---------------------------------------------------------------------------
+// Repository provider payloads
+// ---------------------------------------------------------------------------
+
+/**
+ * Wire shapes for the `repositoryProvider*` host→worker RPCs.
+ *
+ * These mirror the host's in-process `RepositoryProviderConnector` contract
+ * with two deliberate differences:
+ *
+ * 1. **Timestamps are ISO-8601 strings.** JSON-RPC has no Date, and letting a
+ *    worker return an arbitrary object where the host expects a Date is how
+ *    expiry checks get bypassed. The host parses and re-validates them.
+ * 2. **Everything a worker returns is untrusted.** The host re-normalizes
+ *    identity (provider + host), strips sensitive metadata keys, sanitizes
+ *    error text, and rewrites audit fields from values it already knows.
+ *
+ * Requires the `repository.providers.register` capability, and the host only
+ * dispatches to identities the manifest declared.
+ */
+export interface PluginRepositoryProviderBaseParams {
+  /** Declared provider key this call is for. */
+  providerKey: string;
+  /** Declared, normalized provider host this call is for. */
+  host: string;
+  /** Company the call is scoped to. Workers must not cross this boundary. */
+  companyId: string;
+}
+
+/** Secret-free snapshot of a persisted connection row handed to the worker. */
+export interface PluginRepositoryConnectionSnapshot {
+  id: string;
+  companyId: string;
+  provider: string;
+  host: string;
+  installationId: string | null;
+  accountId: string | null;
+  accountName: string | null;
+  status: string;
+  syncStatus: string;
+  syncCursor: string | null;
+  lastSyncedAt: string | null;
+  /** Sanitized provider metadata as persisted by the host. */
+  providerMetadata: Record<string, unknown> | null;
+}
+
+export interface PluginRepositoryProviderBeginInstallationParams
+  extends PluginRepositoryProviderBaseParams {
+  /** User initiating the connection; the worker binds it into signed state. */
+  userId: string;
+  redirectPath?: string | null;
+}
+
+export interface PluginRepositoryProviderBeginInstallationResult {
+  installUrl: string;
+  state: string;
+  /** ISO-8601 timestamp for when the signed state stops being valid. */
+  expiresAt: string;
+}
+
+export interface PluginRepositoryProviderCompleteInstallationParams
+  extends PluginRepositoryProviderBaseParams {
+  state: string;
+  installationId: string;
+}
+
+export interface PluginRepositoryProviderCompleteInstallationResult {
+  companyId: string;
+  userId: string;
+  installationId: string;
+  accountId: string | null;
+  accountName: string | null;
+  host: string;
+  providerMetadata?: Record<string, unknown> | null;
+}
+
+export interface PluginRepositoryProviderDiscoverParams
+  extends PluginRepositoryProviderBaseParams {
+  connection: PluginRepositoryConnectionSnapshot;
+  query?: string | null;
+  cursor?: string | null;
+  pageSize?: number;
+}
+
+export interface PluginDiscoveredRepository {
+  providerRepositoryId: string;
+  owner: string;
+  name: string;
+  cloneUrl: string;
+  webUrl?: string | null;
+  defaultBranch?: string | null;
+  visibility?: string;
+  archived?: boolean;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface PluginRepositoryProviderDiscoverResult {
+  items: PluginDiscoveredRepository[];
+  nextCursor: string | null;
+  total: number | null;
+}
+
+export interface PluginRepositorySnapshot {
+  providerRepositoryId: string;
+  cloneUrl: string;
+  webUrl?: string | null;
+  defaultBranch?: string | null;
+  visibility?: string;
+  state?: string;
+  unavailableReason?: string | null;
+  providerMetadata?: Record<string, unknown> | null;
+}
+
+export interface PluginRepositoryProviderRefreshMetadataParams
+  extends PluginRepositoryProviderBaseParams {
+  connection: PluginRepositoryConnectionSnapshot;
+  providerRepositoryId: string;
+}
+
+export interface PluginRepositoryProviderRefreshMetadataResult {
+  repository: PluginRepositorySnapshot | null;
+}
+
+export interface PluginRepositoryProviderSyncParams
+  extends PluginRepositoryProviderBaseParams {
+  connection: PluginRepositoryConnectionSnapshot;
+  cursor: string | null;
+}
+
+export interface PluginRepositoryProviderSyncResult {
+  repositories: PluginRepositorySnapshot[];
+  cursor?: string | null;
+}
+
+export interface PluginRepositoryProviderDisconnectParams
+  extends PluginRepositoryProviderBaseParams {
+  connection: PluginRepositoryConnectionSnapshot;
+}
+
+export interface PluginRepositoryProviderResolveCloneCredentialParams
+  extends PluginRepositoryProviderBaseParams {
+  connection: PluginRepositoryConnectionSnapshot;
+  repository: {
+    id: string;
+    providerRepositoryId: string | null;
+    owner: string;
+    name: string;
+    cloneUrl: string;
+    host: string;
+  };
+}
+
+/**
+ * A transient clone credential. The host marks the resolved value no-store: it
+ * is never written to a row, a log line, an API response, a prompt, or
+ * portability output, and the host-side object redacts itself on serialization.
+ */
+export interface PluginRepositoryProviderResolveCloneCredentialResult {
+  username: string;
+  token: string;
+  authenticatedCloneUrl: string;
+  /** ISO-8601 expiry. The host rejects non-future values. */
+  expiresAt: string;
+  /** Optional secret-free extras for the audit line. Host-known fields win. */
+  audit?: {
+    installationId?: string | null;
+  };
+}
+
+// ---------------------------------------------------------------------------
 // UI launcher / modal host interaction payloads
 // ---------------------------------------------------------------------------
 
@@ -1064,6 +1233,34 @@ export interface HostToWorkerMethods {
     params: PluginEnvironmentDeleteTemplateParams,
     result: PluginEnvironmentDeleteTemplateResult,
   ];
+  repositoryProviderBeginInstallation: [
+    params: PluginRepositoryProviderBeginInstallationParams,
+    result: PluginRepositoryProviderBeginInstallationResult,
+  ];
+  repositoryProviderCompleteInstallation: [
+    params: PluginRepositoryProviderCompleteInstallationParams,
+    result: PluginRepositoryProviderCompleteInstallationResult,
+  ];
+  repositoryProviderDiscover: [
+    params: PluginRepositoryProviderDiscoverParams,
+    result: PluginRepositoryProviderDiscoverResult,
+  ];
+  repositoryProviderRefreshMetadata: [
+    params: PluginRepositoryProviderRefreshMetadataParams,
+    result: PluginRepositoryProviderRefreshMetadataResult,
+  ];
+  repositoryProviderSync: [
+    params: PluginRepositoryProviderSyncParams,
+    result: PluginRepositoryProviderSyncResult,
+  ];
+  repositoryProviderDisconnect: [
+    params: PluginRepositoryProviderDisconnectParams,
+    result: void,
+  ];
+  repositoryProviderResolveCloneCredential: [
+    params: PluginRepositoryProviderResolveCloneCredentialParams,
+    result: PluginRepositoryProviderResolveCloneCredentialResult,
+  ];
 }
 
 /** Union of all host→worker method names. */
@@ -1105,6 +1302,13 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "environmentCaptureTemplate",
   "environmentCancelInteractiveSetup",
   "environmentDeleteTemplate",
+  "repositoryProviderBeginInstallation",
+  "repositoryProviderCompleteInstallation",
+  "repositoryProviderDiscover",
+  "repositoryProviderRefreshMetadata",
+  "repositoryProviderSync",
+  "repositoryProviderDisconnect",
+  "repositoryProviderResolveCloneCredential",
 ] as const;
 
 // ---------------------------------------------------------------------------

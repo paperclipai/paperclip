@@ -341,6 +341,8 @@ export interface PaperclipPluginManifestV1 {
   database?: PluginDatabaseDeclaration;
   apiRoutes?: PluginApiRouteDeclaration[];
   environmentDrivers?: PluginEnvironmentDriverDeclaration[];
+  /** Requires `repository.providers.register`. See §13.11. */
+  repositoryProviders?: PluginRepositoryProviderDeclaration[];
   agents?: PluginManagedAgentDeclaration[];
   projects?: PluginManagedProjectDeclaration[];
   routines?: PluginManagedRoutineDeclaration[];
@@ -634,6 +636,47 @@ The host provides:
 
 The worker executes the tool and returns a typed result (string content, structured data, or error).
 
+### 13.11 `repositoryProvider*`
+
+Serves a first-class repository provider contributed by a trusted extension
+package. Requires the `repository.providers.register` capability and a matching
+`repositoryProviders[]` manifest declaration.
+
+Required methods: `repositoryProviderBeginInstallation`,
+`repositoryProviderCompleteInstallation`, `repositoryProviderDiscover`,
+`repositoryProviderRefreshMetadata`, `repositoryProviderSync`, and
+`repositoryProviderResolveCloneCredential`. Registration is refused when the
+worker implements only some of them.
+
+Optional method: `repositoryProviderDisconnect`. Implement it to revoke an
+installation on the provider side. A provider with nothing to revoke may omit
+it — the host then skips the call and still tears the connection down locally,
+so an operator can always disconnect.
+
+Connector identity is `providerKey` plus a normalized `host`, so the same
+provider key can serve github.com and an enterprise install without either
+shadowing the other. Every call carries the company the host resolved, plus a
+secret-free connection snapshot — the worker never receives a stored credential.
+
+Host rules the worker cannot opt out of:
+
+- **Deny by default.** A connector is registered only while the plugin is
+  `ready`, holds the capability, declares the exact identity, and has a running
+  worker. Stop, disable, unload, error, or crash drops the registration, and the
+  capability listing (`GET /companies/:companyId/repository-providers`) stops
+  advertising it — core UI never offers a provider the host could not serve.
+- **Untrusted output.** Results are re-validated: malformed rows are dropped,
+  metadata keys that look like secrets are stripped, error text is sanitized,
+  and a result claiming another company or host is rejected outright.
+- **No-store credentials.** `repositoryProviderResolveCloneCredential` returns a
+  transient token. The host marks it no-store and redacts it on serialization,
+  so it cannot reach a row, a log line, portability output, or a prompt. The
+  audit line is rebuilt from host-known values.
+
+Extensions verify their implementation with the conformance suite exported at
+`@paperclipai/plugin-sdk/repository-provider-conformance`, which the host also
+runs against the bridge.
+
 ## 14. SDK Surface
 
 Plugins do not talk to the DB directly.
@@ -853,6 +896,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `http.outbound`
 - `secrets.read-ref`
 - `environment.drivers.register`
+- `repository.providers.register`
 
 ### Agent Tools
 

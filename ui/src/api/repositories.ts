@@ -28,6 +28,23 @@ export interface RepositoryDiscoveryQuery {
   pageSize?: number;
 }
 
+/**
+ * One provider identity a company can connect right now. A provider key can be
+ * served by more than one host — github.com alongside an enterprise install
+ * contributed by an extension — so the host is part of the identity.
+ */
+export interface RepositoryProviderAvailability {
+  provider: string;
+  host: string;
+  displayName: string;
+  description: string | null;
+  source: "core" | "plugin";
+  pluginKey: string | null;
+  supportsDiscovery: boolean;
+  supportsCloneCredentials: boolean;
+  documentationUrl: string | null;
+}
+
 function discoveryQueryString(opts: RepositoryDiscoveryQuery = {}): string {
   const params = new URLSearchParams();
   if (opts.query) params.set("query", opts.query);
@@ -35,6 +52,15 @@ function discoveryQueryString(opts: RepositoryDiscoveryQuery = {}): string {
   if (typeof opts.pageSize === "number") params.set("pageSize", String(opts.pageSize));
   const qs = params.toString();
   return qs ? `?${qs}` : "";
+}
+
+/**
+ * Disambiguates a provider key served by more than one host. Omitting the host
+ * only resolves server-side when a single host serves the key, so the caller
+ * sends the host it picked from the available-provider list.
+ */
+function providerHostQuery(host?: string | null): string {
+  return host ? `?host=${encodeURIComponent(host)}` : "";
 }
 
 export const repositoriesApi = {
@@ -70,18 +96,30 @@ export const repositoriesApi = {
     ),
 
   // ---- Guided provider connection flow (GitHub.com + other providers) ----
-  beginConnection: (companyId: string, provider: string, input: { redirectPath?: string | null } = {}) =>
+  listProviders: (companyId: string) =>
+    api
+      .get<{ providers: RepositoryProviderAvailability[] }>(
+        `/companies/${encodeURIComponent(companyId)}/repository-providers`,
+      )
+      .then((result) => result.providers),
+  beginConnection: (
+    companyId: string,
+    provider: string,
+    input: { redirectPath?: string | null } = {},
+    host?: string | null,
+  ) =>
     api.post<BeginRepositoryConnectionResult>(
-      `/companies/${encodeURIComponent(companyId)}/repository-connections/${encodeURIComponent(provider)}/install`,
+      `/companies/${encodeURIComponent(companyId)}/repository-connections/${encodeURIComponent(provider)}/install${providerHostQuery(host)}`,
       input,
     ),
   completeConnection: (
     companyId: string,
     provider: string,
     input: { state: string; installationId: string },
+    host?: string | null,
   ) =>
     api.post<CompleteRepositoryConnectionResult>(
-      `/companies/${encodeURIComponent(companyId)}/repository-connections/${encodeURIComponent(provider)}/callback`,
+      `/companies/${encodeURIComponent(companyId)}/repository-connections/${encodeURIComponent(provider)}/callback${providerHostQuery(host)}`,
       input,
     ),
   discoverConnectionRepositories: (connectionId: string, opts: RepositoryDiscoveryQuery = {}) =>

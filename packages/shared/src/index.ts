@@ -1390,6 +1390,7 @@ export type {
   PluginApiRouteDeclaration,
   PluginObjectReferenceRefreshPolicy,
   PluginObjectReferenceProviderDeclaration,
+  PluginRepositoryProviderDeclaration,
   PaperclipPluginManifestV1,
   PluginRecord,
   PluginDatabaseNamespaceRecord,
@@ -1442,6 +1443,13 @@ export {
   type VerifyDocumentAnchorSelectorInput,
   type VerifyDocumentAnchorSelectorResult,
 } from "./document-anchors.js";
+
+export {
+  REPOSITORY_PROVIDER_ANY_HOST,
+  normalizeRepositoryProviderHost,
+  normalizeRepositoryProviderKey,
+  repositoryProviderIdentityKey,
+} from "./repository-provider-identity.js";
 
 export {
   formatExternalObjectMentionSourceLabel,
@@ -2186,6 +2194,7 @@ export {
   pluginLauncherDeclarationSchema,
   pluginDatabaseDeclarationSchema,
   pluginApiRouteDeclarationSchema,
+  pluginRepositoryProviderDeclarationSchema,
   pluginManifestV1Schema,
   installPluginSchema,
   upsertPluginConfigSchema,

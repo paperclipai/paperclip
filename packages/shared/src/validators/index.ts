@@ -761,6 +761,7 @@ export {
   pluginManagedSkillFileDeclarationSchema,
   pluginManagedSkillDeclarationSchema,
   pluginApiRouteDeclarationSchema,
+  pluginRepositoryProviderDeclarationSchema,
   pluginManifestV1Schema,
   installPluginSchema,
   upsertPluginConfigSchema,

@@ -1348,6 +1348,11 @@ export const PLUGIN_CAPABILITIES = [
   "http.outbound",
   "secrets.read-ref",
   "environment.drivers.register",
+  // Register a first-class repository provider connector (installation flow,
+  // discovery, sync, short-lived clone credentials) with the host registry.
+  // Trusted-extension surface: the host still owns persistence, company
+  // scoping, and secret redaction; the plugin only answers provider questions.
+  "repository.providers.register",
   "local.folders",
   // Agent Tools
   "agent.tools.register",
