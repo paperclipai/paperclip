@@ -186,3 +186,9 @@ A change is done when all are true:
 ## Design system
 
 `DESIGN.md` at the repo root is the source of truth for UI design decisions. The token-only rule applies to all `ui/` changes: every color, spacing, radius, type, shadow, and motion value in `ui/src/components/**` and `ui/src/pages/**` comes from the token layer in `ui/src/index.css` — no hex, raw px, arbitrary Tailwind bracket values, or raw `font-size`/`fontSize` declarations in components, outside the documented allowlist in `ui/src/index.css`. Run `pnpm check:token-gates` (`scripts/check-token-gates.mjs`) before committing UI changes — it fails on any violation not covered by that allowlist.
+## Keep tool output small (token budget)
+
+Tool results are re-sent to the model every turn, so bloated output gets re-prefilled on every step — the single biggest avoidable cost in a long build. Therefore:
+- Read **narrow line ranges**, not whole files (`sed -n '40,80p'`, or a ranged read).
+- Pipe large command output through `head`/`tail`/`wc -l` — never dump a full build/test log or a multi-KB file into the transcript.
+- `grep` for the part you need instead of `cat`-ing the whole thing.
