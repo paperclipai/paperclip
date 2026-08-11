@@ -396,7 +396,13 @@ export function createFileSystemSandboxCallbackBridgeQueueClient(): SandboxCallb
     readTextFile: async (remotePath) => await fs.readFile(remotePath, "utf8"),
     writeTextFile: async (remotePath, body) => {
       await fs.mkdir(path.posix.dirname(remotePath), { recursive: true });
-      await fs.writeFile(remotePath, body, "utf8");
+      // Write to a temporary path that does NOT end in `.json`, then rename it
+      // onto the final `.json` path. A direct `writeFile` truncates the final
+      // path first, so a `.json`-only reader (the stdin poller) can see an
+      // empty or partial file. The atomic rename never exposes partial content.
+      const tempPath = `${remotePath}.paperclip-upload.decoded`;
+      await fs.writeFile(tempPath, body, "utf8");
+      await fs.rename(tempPath, remotePath);
     },
     writeResponseFile: async (responsePath, body, options = {}) => {
       const responseDir = path.posix.dirname(responsePath);
@@ -532,10 +538,17 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
     },
     writeTextFile: async (remotePath, body) => {
       const remoteDir = path.posix.dirname(remotePath);
+      // Two temporary paths that do NOT end in `.json`, so a `.json`-only
+      // reader (the stdin poller) never lists them. The base64 upload lands in
+      // `tempPath`. The decode result lands in `decodedPath`. An atomic rename
+      // then moves the complete decoded content onto the final `.json` path.
+      // A direct `> remotePath` redirect truncates the final path before the
+      // decode writes it, so a reader can see an empty or partial file.
       const tempPath = `${remotePath}.paperclip-upload.b64`;
+      const decodedPath = `${remotePath}.paperclip-upload.decoded`;
       await runChecked(
         `prepare upload ${remotePath}`,
-        `mkdir -p ${shellQuote(remoteDir)} && rm -f ${shellQuote(tempPath)} && : > ${shellQuote(tempPath)}`,
+        `mkdir -p ${shellQuote(remoteDir)} && rm -f ${shellQuote(tempPath)} ${shellQuote(decodedPath)} && : > ${shellQuote(tempPath)}`,
       );
       const base64Body = toBuffer(Buffer.from(body, "utf8")).toString("base64");
       for (const chunk of base64Chunks(base64Body)) {
@@ -546,7 +559,7 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
       }
       await runChecked(
         `finalize upload ${remotePath}`,
-        `base64 -d < ${shellQuote(tempPath)} > ${shellQuote(remotePath)} && rm -f ${shellQuote(tempPath)}`,
+        `base64 -d < ${shellQuote(tempPath)} > ${shellQuote(decodedPath)} && mv ${shellQuote(decodedPath)} ${shellQuote(remotePath)} && rm -f ${shellQuote(tempPath)}`,
       );
     },
     writeResponseFile: async (responsePath, body, options = {}) => {
