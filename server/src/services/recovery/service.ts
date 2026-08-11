@@ -3499,29 +3499,31 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     for (const issue of candidates) {
       // Subject/company-bound CAS repair. Only currentParticipant changes;
       // decision and verdict history remain untouched.
-      const repaired = await db
-        .update(issues)
-        .set({
-          executionState: sql`jsonb_set(${issues.executionState}, '{currentParticipant}', ${issues.executionState}->'returnAssignee')`,
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(issues.id, issue.id),
-          eq(issues.companyId, issue.companyId),
-          inArray(issues.status, ["todo", "in_progress", "in_review"]),
-          isNull(issues.hiddenAt),
-          sql`${issues.executionState}->>'status' = 'changes_requested'`,
-          sql`${issues.executionState}->>'lastDecisionOutcome' = 'changes_requested'`,
-          sql`${issues.executionState}->'returnAssignee'->>'type' = 'agent'`,
-          sql`EXISTS (SELECT 1 FROM ${agents} AS return_agent
-            WHERE return_agent.id::text = ${issues.executionState}->'returnAssignee'->>'agentId'
-              AND return_agent.company_id = ${issues.companyId})`,
-          sql`(${issues.executionState}->'currentParticipant'->>'agentId') IS DISTINCT FROM (${issues.executionState}->'returnAssignee'->>'agentId')`,
-        ))
-        .returning({ id: issues.id });
-      if (repaired.length > 0) {
-        result.changesRequestedRepaired += repaired.length;
-        await logActivity(db, {
+      const repaired = await db.transaction(async (tx) => {
+        const updated = await tx
+          .update(issues)
+          .set({
+            executionState: sql`jsonb_set(${issues.executionState}, '{currentParticipant}', ${issues.executionState}->'returnAssignee')`,
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(issues.id, issue.id),
+            eq(issues.companyId, issue.companyId),
+            inArray(issues.status, ["todo", "in_progress", "in_review"]),
+            isNull(issues.hiddenAt),
+            sql`${issues.executionState}->>'status' = 'changes_requested'`,
+            sql`${issues.executionState}->>'lastDecisionOutcome' = 'changes_requested'`,
+            sql`${issues.executionState}->'returnAssignee'->>'type' = 'agent'`,
+            sql`EXISTS (SELECT 1 FROM ${agents} AS return_agent
+              WHERE return_agent.id::text = ${issues.executionState}->'returnAssignee'->>'agentId'
+                AND return_agent.company_id = ${issues.companyId})`,
+            sql`(${issues.executionState}->'currentParticipant'->>'agentId') IS DISTINCT FROM (${issues.executionState}->'returnAssignee'->>'agentId')`,
+          ))
+          .returning({ id: issues.id, executionState: issues.executionState });
+        if (updated.length === 0) return false;
+
+        const repairedState = updated[0].executionState;
+        await logActivity(tx, {
           companyId: issue.companyId,
           actorType: "system",
           actorId: "system",
@@ -3532,15 +3534,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           entityId: issue.id,
           details: {
             source: "recovery.reconcile_stranded_assigned_issues",
-            canonicalPmKey: "ECO-1123",
-            repairedIssueId: issue.id,
-            returnAssignee: issue.executionState && typeof issue.executionState === "object"
-              ? (issue.executionState as Record<string, unknown>).returnAssignee ?? null
+            issueId: issue.id,
+            identifier: issue.identifier,
+            returnAssignee: repairedState && typeof repairedState === "object"
+              ? (repairedState as Record<string, unknown>).returnAssignee ?? null
               : null,
             invariant: "currentParticipant only; decision and verdict history preserved",
           },
         });
-      }
+        return true;
+      });
+      if (repaired) result.changesRequestedRepaired += 1;
 
       const executionState = issue.status === "in_review"
         ? parseIssueExecutionState(issue.executionState)
