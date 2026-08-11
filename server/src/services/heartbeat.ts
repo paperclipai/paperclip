@@ -77,6 +77,7 @@ import { getStartupTraceContext } from "../instrumentation.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
+import { validateControlledAgentSkillScope } from "./controlled-agent-admission.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
@@ -20500,6 +20501,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
     };
+
+    const controlledSkillScope = validateControlledAgentSkillScope(agent);
+    if (!controlledSkillScope.ok) {
+      if (explicitManualUserWake) {
+        throw conflict(controlledSkillScope.error, {
+          code: controlledSkillScope.code,
+          ...(controlledSkillScope.details ?? {}),
+        });
+      }
+      await writeSkippedHeartbeatRequest("heartbeat.controlled_skill_scope_too_broad", {
+        reason: controlledSkillScope.error,
+        code: controlledSkillScope.code,
+        ...(controlledSkillScope.details ?? {}),
+      });
+      return null;
+    }
 
     // A staged lane must be safe to unpause without Paperclip immediately
     // replaying every old assignment, continuation, or recovery wake attached

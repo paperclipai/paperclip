@@ -3707,11 +3707,12 @@ export function agentRoutes(
         action: "agent.resume_rejected_controlled_admission_required",
         entityType: "agent",
         entityId: existing.id,
-        details: { code: controlledAdmission.code },
+        details: { code: controlledAdmission.code, ...(controlledAdmission.details ?? {}) },
       });
       res.status(409).json({
         error: controlledAdmission.error,
         code: controlledAdmission.code,
+        ...(controlledAdmission.details ?? {}),
       });
       return;
     }
