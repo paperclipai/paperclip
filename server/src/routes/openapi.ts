@@ -4424,6 +4424,15 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/interactions/{interactionId}",
+  tags: ["issues"],
+  summary: "Get an issue thread interaction by ID",
+  request: { params: z.object({ id: z.string(), interactionId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/issues/{id}/interactions",
   tags: ["issues"],

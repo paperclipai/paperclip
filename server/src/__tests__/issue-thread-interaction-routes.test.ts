@@ -487,6 +487,49 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
+  it("gets a single interaction by id for a board actor", async () => {
+    mockInteractionService.getForIssue.mockResolvedValueOnce({
+      id: "interaction-1",
+      kind: "ask_user_questions",
+      status: "pending",
+      payload: { version: 1, questions: [{ id: "q1", prompt: "What?", selectionMode: "single", options: [{ id: "o1", label: "One" }] }], selectionMode: "single" },
+    });
+    const app = await createApp();
+    const res = await request(app).get("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-1");
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      id: "interaction-1",
+      kind: "ask_user_questions",
+      status: "pending",
+    });
+    expect(res.body.payload.questions).toHaveLength(1);
+    expect(res.body.payload.selectionMode).toBe("single");
+  });
+
+  it("gets a single interaction by id for an agent actor", async () => {
+    mockInteractionService.getForIssue.mockResolvedValueOnce({
+      id: "interaction-1",
+      kind: "request_confirmation",
+      status: "pending",
+      payload: { version: 1, prompt: "Deploy?" },
+      result: null,
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-1",
+    });
+    const res = await request(app).get("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-1");
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      id: "interaction-1",
+      kind: "request_confirmation",
+      status: "pending",
+    });
+    expect(res.body.payload.prompt).toBe("Deploy?");
+  });
+
   it("queues one bounded recovery when historical-comment catch-up expires the final review interactions", async () => {
     mockIssueService.getById.mockResolvedValue(createIssue({
       status: "in_review",

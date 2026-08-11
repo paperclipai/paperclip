@@ -10181,6 +10181,16 @@ export function issueRoutes(
     res.json(interactions);
   });
 
+  router.get("/issues/:id/interactions/:interactionId", async (req, res) => {
+    const id = req.params.id as string;
+    const interactionId = req.params.interactionId as string;
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    const interaction = await issueThreadInteractionsSvc.getForIssue(issue, interactionId);
+    res.json(interaction);
+  });
+
   router.post("/issues/:id/interactions", validate(createIssueThreadInteractionSchema), async (req, res) => {
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
