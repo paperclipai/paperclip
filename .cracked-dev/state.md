@@ -15,8 +15,23 @@ Isolation: run in a git worktree off origin/master (main tree has concurrent act
   recovered next fire; no work lost. VERIFY: server typecheck green; 61/61 scheduler-adjacent
   heartbeat tests (suppression/start-lock/retry/stale-queue). Self-audit: CLEAN (no security
   boundary; reads a Set size + debug log + early return). Isolated local commit `8fb1e9158`
-  (NOT a PR — tree carries stacked WIP). NOT yet deployed (needs server rebuild + `launchctl
-  kickstart -k gui/501/com.rhen.paperclip`, brief fleet interruption — left for Trevor's go).
+  (NOT a PR — tree carries stacked WIP). DEPLOYED (server dist rebuilt + restarted); verified
+  live — guard skip-count 0 (no starvation), heartbeat ticks + enqueues runs normally.
+- **Boot-time migrator crash-loop — root cause + fix (incident)** — the deploy restart took the
+  control plane DOWN for ~20 min. HONEST root cause: NOT the `-k` flag and NOT the reentrancy
+  guard (my two wrong intermediate guesses). The server runs pending drizzle migrations on
+  EVERY boot; migration `0212` did `ALTER TABLE heartbeat_runs ADD COLUMN actionability`, which
+  collided (Postgres 42701) with the column that had been hand-added earlier (out of band) to
+  clear the fleet jam. The running process had already passed its migration step, so it only
+  surfaced on the next restart — exactly the "reconcile migration history" follow-up flagged
+  when 0212 was generated. Fix: `ADD COLUMN IF NOT EXISTS` (commit `c9cc4d40a`) — correct for
+  both the live DB (skip existing col, create the cloud_upstream_* tables) and a fresh DB.
+  Migrator reads migrations from SOURCE (`packages/db/src/migrations`), so no rebuild needed.
+  KEY DEBUG LESSON: the app logs the real boot error to `~/.paperclip/instances/default/logs/
+  server.log` (READABLE) — read THAT first; the `~/Library/Logs/*` files are Read-blocked and
+  the manual `> /tmp` redirects are empty because the app logs to its own dir, which sent me
+  down a wrong native-SIGABRT path for ~20 min. Recovery: `launchctl bootout` to stop the
+  crash-loop, fix migration, `launchctl bootstrap` (graceful, not `-k`).
 - **Follow-ups: cap permanence + synthesis schedule + stale-fold** — (1) self-start `HARD_CEIL`
   default 3->5 so the compute win survives reboot (twentyfour-artifacts `e18bc0c`). (2) Weekly
   launchd job `com.rhen.agent-synthesis` runs the synthesis -> vault report Sundays 07:00
