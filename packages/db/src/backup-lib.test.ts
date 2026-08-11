@@ -5,7 +5,6 @@ import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import postgres from "postgres";
 import {
-  __setBackupStatfsSyncForTests,
   createBufferedGzipTextFileWriter,
   createBufferedTextFileWriter,
   runDatabaseBackup,
@@ -45,7 +44,6 @@ async function createSiblingDatabase(connectionString: string, databaseName: str
 }
 
 afterEach(async () => {
-  __setBackupStatfsSyncForTests(null);
   while (cleanups.length > 0) {
     const cleanup = cleanups.pop();
     await cleanup?.();
@@ -110,22 +108,34 @@ describe("runDatabaseBackup preflight", () => {
     const latestBackup = path.join(backupDir, "paperclip-test-20260811-100000.sql.gz");
     fs.writeFileSync(latestBackup, Buffer.alloc(1024));
 
-    __setBackupStatfsSyncForTests(() => ({
-      type: 0,
-      bsize: 1,
-      blocks: 0,
-      bfree: 0,
-      bavail: 1400,
-      files: 0,
-      ffree: 0,
-    }) as ReturnType<typeof fs.statfsSync>);
-
     await expect(runDatabaseBackup({
       connectionString: "postgres://paperclip:paperclip@127.0.0.1:54329/paperclip",
       backupDir,
       retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
       filenamePrefix: "paperclip-test",
+      getAvailableDiskSpaceBytes: () => 1400,
     })).rejects.toThrow(/Insufficient free space/);
+  });
+
+  it("removes stale partial backup files before starting a new run", async () => {
+    const backupDir = createTempDir("paperclip-db-backup-preflight-partials-");
+    const stalePartial = path.join(backupDir, "paperclip-test-20260811-100000.sql.gz.partial");
+    const recentPartial = path.join(backupDir, "paperclip-test-20260811-110000.sql.gz.partial");
+    fs.writeFileSync(stalePartial, "stale");
+    fs.writeFileSync(recentPartial, "recent");
+    fs.utimesSync(stalePartial, new Date("2026-08-09T00:00:00Z"), new Date("2026-08-09T00:00:00Z"));
+    fs.utimesSync(recentPartial, new Date("2026-08-11T11:00:00Z"), new Date("2026-08-11T11:00:00Z"));
+
+    await expect(runDatabaseBackup({
+      connectionString: "postgres://paperclip:paperclip@127.0.0.1:1/paperclip",
+      backupDir,
+      retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      filenamePrefix: "paperclip-test",
+      getAvailableDiskSpaceBytes: () => 1024 * 1024,
+    })).rejects.toThrow();
+
+    expect(fs.existsSync(stalePartial)).toBe(false);
+    expect(fs.existsSync(recentPartial)).toBe(true);
   });
 });
 
@@ -161,7 +171,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
   );
 
   it(
-    "keeps only the newest seven completed backups when maxBackups is set",
+    "caps retained backups at seven after applying the retention policy",
     async () => {
       const sourceConnectionString = await createTempDatabase();
       const backupDir = createTempDir("paperclip-db-backup-max-count-");
@@ -177,7 +187,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         connectionString: sourceConnectionString,
         backupDir,
         maxBackups: 7,
-        retention: { dailyDays: 30, weeklyWeeks: 4, monthlyMonths: 1 },
+        retention: { dailyDays: 30, weeklyWeeks: 12, monthlyMonths: 12 },
         filenamePrefix: "paperclip-test",
         backupEngine: "javascript",
       });
