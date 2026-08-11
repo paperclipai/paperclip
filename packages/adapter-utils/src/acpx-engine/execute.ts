@@ -2649,6 +2649,14 @@ function resolveLiveUsagePollIntervalMs(config: Record<string, unknown>): number
   return Math.max(5, Math.min(5_000, configured));
 }
 
+// ACP runtimes usually publish usage only after a model step has completed.
+// Cancelling only once the reported total reaches the cap therefore permits the
+// final step to overshoot it. Keep enough headroom for one more step, and grow
+// that reserve to the largest step observed in this turn. This is deliberately
+// conservative: a hard ceiling is more important than spending every last
+// token of the allowance.
+const MIN_ACP_NEXT_STEP_TOKEN_RESERVE = 8_192;
+
 function usageSummaryTotalTokens(usage: UsageSummary | null | undefined): number {
   if (!usage) return 0;
   return Math.max(0, Math.floor(
@@ -3517,6 +3525,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     const liveUsagePollIntervalMs = resolveLiveUsagePollIntervalMs(ctx.config);
     let tokenBudgetExhausted = false;
     let tokenBudgetObserved = 0;
+    let previousTokenBudgetObservation = 0;
+    let largestObservedTokenStep = 0;
     const textParts: string[] = [];
     let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
     let eventCostUsd: number | null = null;
@@ -3545,11 +3555,22 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         await turn.cancel({ reason });
       };
       const enforceTokenBudget = async (observed: number) => {
-        if (tokenBudgetExhausted || maxTokensPerRun <= 0 || observed < maxTokensPerRun) return;
+        if (tokenBudgetExhausted || maxTokensPerRun <= 0 || observed <= 0) return;
+        if (previousTokenBudgetObservation > 0 && observed > previousTokenBudgetObservation) {
+          largestObservedTokenStep = Math.max(
+            largestObservedTokenStep,
+            observed - previousTokenBudgetObservation,
+          );
+        }
+        previousTokenBudgetObservation = Math.max(previousTokenBudgetObservation, observed);
+        const nextStepReserve = Math.max(MIN_ACP_NEXT_STEP_TOKEN_RESERVE, largestObservedTokenStep);
+        if (observed < maxTokensPerRun && observed + nextStepReserve < maxTokensPerRun) return;
         tokenBudgetExhausted = true;
         tokenBudgetObserved = observed;
         await cancelActiveTurn?.(
-          `Paperclip maxTokensPerRun budget of ${maxTokensPerRun} tokens exhausted (observed ${observed}).`,
+          observed >= maxTokensPerRun
+            ? `Paperclip maxTokensPerRun budget of ${maxTokensPerRun} tokens exhausted (observed ${observed}).`
+            : `Paperclip maxTokensPerRun budget of ${maxTokensPerRun} tokens cannot safely fit another model step (observed ${observed}, reserved ${nextStepReserve}).`,
         );
       };
       let stopLiveUsagePolling = false;

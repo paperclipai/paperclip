@@ -881,7 +881,7 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(result.billingType).toBe("unknown");
   });
 
-  it("stops an ACP turn at the exact per-run boundary from used/size telemetry without discarding the session", async () => {
+  it("stops an ACP turn before the per-run boundary when another model step cannot safely fit", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const cancel = vi.fn().mockResolvedValue(undefined);
@@ -941,10 +941,62 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(result.resultJson).toMatchObject({
       stopReason: "token_budget_exhausted",
       maxTokensPerRun: 1_000_000,
-      observedTokens: 1_000_000,
-      usage: { observedContextTokens: 1_000_000 },
+      observedTokens: 999_999,
+      usage: { observedContextTokens: 999_999 },
     });
-    expect(result.usage).toEqual({ inputTokens: 1_000_000, outputTokens: 0, cachedInputTokens: 0 });
+    expect(result.usage).toEqual({ inputTokens: 999_999, outputTokens: 0, cachedInputTokens: 0 });
+  });
+
+  it("uses the largest observed ACP step to stop before a later step can overshoot the cap", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield { type: "status", text: "usage", tag: "usage_update", used: 70_000, size: 200_000 };
+            yield { type: "status", text: "usage", tag: "usage_update", used: 82_000, size: 200_000 };
+            yield { type: "status", text: "usage", tag: "usage_update", used: 90_000, size: 200_000 };
+            yield { type: "done", stopReason: "cancelled" };
+          })(),
+          result: Promise.resolve({ status: "cancelled", stopReason: "cancelled" }),
+          cancel,
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-predictive-token-budget",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        maxTokensPerRun: 100_000,
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalledWith(expect.objectContaining({
+      reason: expect.stringContaining("cannot safely fit another model step"),
+    }));
+    expect(result.errorCode).toBe("token_budget_exhausted");
+    expect(result.resultJson).toMatchObject({
+      stopReason: "token_budget_exhausted",
+      maxTokensPerRun: 100_000,
+      observedTokens: 90_000,
+    });
   });
 
   it("polls runtime status and cancels when an ACP agent omits live usage events", async () => {
