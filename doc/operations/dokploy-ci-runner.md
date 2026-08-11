@@ -10,8 +10,10 @@ runs-on: [self-hosted, linux, x64, paperclip-ci]
 
 Run `.github/workflows/provision-dokploy-ci-runner.yml` manually to create or
 repair the service. The bootstrap workflow uses the existing
-`DOKPLOY_API_KEY` GitHub secret and a short-lived GitHub runner registration
-token. The token is removed from the runner process after registration and the
+`DOKPLOY_API_KEY` GitHub secret plus `PAPERCLIP_RUNNER_ADMIN_TOKEN`, a
+fine-grained PAT restricted to this repository with Administration read/write
+permission. The PAT mints a short-lived GitHub runner registration token; that
+short-lived token is removed from the runner process after registration and the
 runner's registration state/workspace persist in named volumes.
 
 Only trusted `push` workflows for this repository may use the runner. Do not

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 : "${DOKPLOY_API_KEY:?DOKPLOY_API_KEY is required}"
-: "${GITHUB_TOKEN:?GITHUB_TOKEN is required}"
+: "${RUNNER_ADMIN_TOKEN:?RUNNER_ADMIN_TOKEN is required}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 
 dokploy_url="${DOKPLOY_URL:-https://dokploy.zenova.id}"
@@ -53,7 +53,7 @@ environment_id="$(jq -er '
 
 runner_token="$(curl --silent --show-error --fail-with-body \
   --request POST \
-  --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+  --header "Authorization: Bearer ${RUNNER_ADMIN_TOKEN}" \
   --header "Accept: application/vnd.github+json" \
   --header "X-GitHub-Api-Version: 2022-11-28" \
   "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runners/registration-token" \

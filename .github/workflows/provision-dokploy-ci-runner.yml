@@ -18,6 +18,6 @@ jobs:
       - name: Provision private trusted-branch runner
         env:
           DOKPLOY_API_KEY: ${{ secrets.DOKPLOY_API_KEY }}
-          GITHUB_TOKEN: ${{ github.token }}
+          RUNNER_ADMIN_TOKEN: ${{ secrets.PAPERCLIP_RUNNER_ADMIN_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: bash scripts/provision-dokploy-ci-runner.sh
