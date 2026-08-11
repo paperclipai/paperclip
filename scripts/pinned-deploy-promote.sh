@@ -43,7 +43,7 @@ Commands:
   promote-pointer           Atomically stage candidate -> DEPLOY_ROOT if gates green
                             (requires --allow-live-pointer and ALLOW_LIVE=1;
                             re-asserts .paperclip/.env on the staged tree)
-  promote-and-restart       promote-pointer then kickstart deploy LaunchAgent
+  promote-and-restart       promote-pointer then gracefully restart deploy LaunchAgent
                             with a zero-loss live-run handoff (same dual allow
                             flags; sanctioned single door)
   rollback-drill            Non-production pointer swap drill under STATE_DIR/drill
@@ -538,8 +538,8 @@ NODE
 # A hot restart marker is written only after the pointer is safely promoted and
 # immediately before launchd receives its restart signal.  The old server then
 # snapshots live children and the new process adopts them.  This is deliberately
-# part of the single sanctioned deploy door: a raw kickstart previously stranded
-# active runners during an otherwise healthy release.
+# part of the single sanctioned deploy door: force-killing a LaunchAgent bypasses
+# the server's SIGTERM snapshot and can strand a run that starts after preflight.
 live_api_base() {
   local raw="${PAPERCLIP_PINNED_DEPLOY_API_URL:-http://127.0.0.1:3100}"
   raw="${raw%/}"
@@ -689,16 +689,19 @@ cmd_promote_and_restart() {
     fail "promote-and-restart: launchctl not available"
   fi
   if launchctl print "$target" >/dev/null 2>&1; then
-    log "kickstarting deploy LaunchAgent $target"
-    launchctl kickstart -k "$target" \
-      || fail "promote-and-restart: launchctl kickstart failed for $target"
-    log "promote-and-restart: kickstart issued for $target"
+    # launchctl kickstart -k force-kills the old process, skipping its SIGTERM
+    # handler and therefore the hot-restart snapshot. KeepAlive starts the new
+    # process after this graceful signal reaches the old one.
+    log "sending SIGTERM to deploy LaunchAgent $target for graceful handoff"
+    launchctl kill SIGTERM "$target" \
+      || fail "promote-and-restart: launchctl SIGTERM failed for $target"
+    log "promote-and-restart: graceful restart signal issued for $target"
     wait_for_hot_restart_report "$api_base" "$old_pid"
     handoff_verified=1
     trap - EXIT
     release_deployment_lease
   else
-    fail "promote-and-restart: LaunchAgent not loaded: $target (pointer already promoted; load plist then kickstart manually)"
+    fail "promote-and-restart: LaunchAgent not loaded: $target (pointer already promoted; load plist then signal a graceful restart manually)"
   fi
 }
 

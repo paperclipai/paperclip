@@ -450,6 +450,12 @@ test("promote-and-restart refuses without allow flags (fail closed, no pointer m
   }
 });
 
+test("sanctioned restart uses SIGTERM so the old server can write its handoff snapshot", () => {
+  const source = readFileSync(PROMOTE, "utf8");
+  assert.match(source, /launchctl kill SIGTERM/);
+  assert.doesNotMatch(source, /^\s*launchctl kickstart -k/m);
+});
+
 test("rollback-drill passes in isolated state dir", () => {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "pinned-rollback-"));
   try {
