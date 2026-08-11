@@ -44,7 +44,7 @@ import {
   buildRoutineMentionHref,
   buildUserMentionHref,
 } from "@paperclipai/shared";
-import { Boxes, CalendarClock, Hash, User, X } from "lucide-react";
+import { Boxes, CalendarClock, Hash, TerminalSquare, User, X } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 import { applyMentionChipDecoration, clearMentionChipDecoration, parseMentionChipHref } from "../lib/mention-chips";
 import { MentionAwareLinkNode, mentionAwareLinkNodeReplacement } from "../lib/mention-aware-link-node";
@@ -498,11 +498,35 @@ function mentionMarkdown(option: MentionOption): string {
   return `[@${option.name}](${buildAgentMentionHref(agentId, option.agentIcon ?? null)}) `;
 }
 
-function slashCommandLabel(option: SlashCommandOption): string {
+export function slashCommandLabel(option: SlashCommandOption): string {
+  if (option.kind === "chat-command") return `/${option.name}`;
   return option.kind === "routine" ? `/routine:${option.name}` : `/${option.slug}`;
 }
 
-function slashCommandMarkdown(option: SlashCommandOption): string {
+/**
+ * Filter slash-command options (skills, routines, and assignee chat commands
+ * like `/goal`) by the text typed after `/`, matching case-insensitively
+ * against each option's aliases. An empty query returns every command.
+ */
+export function filterSlashCommandOptions(
+  commands: SlashCommandOption[],
+  query: string,
+  limit = MAX_AUTOCOMPLETE_OPTIONS,
+): SlashCommandOption[] {
+  const q = query.trim().toLowerCase();
+  return commands
+    .filter((command) => {
+      if (!q) return true;
+      return command.aliases.some((alias) => alias.toLowerCase().includes(q));
+    })
+    .slice(0, limit);
+}
+
+export function slashCommandMarkdown(option: SlashCommandOption): string {
+  // Chat commands are dispatched by the server's leading-slash parser, so they
+  // must be inserted as literal `/name ` text (with a trailing space to start
+  // the argument) rather than a mention link.
+  if (option.kind === "chat-command") return `/${option.name} `;
   if (option.kind === "routine") {
     return `[${slashCommandLabel(option)}](${buildRoutineMentionHref(option.routineId)}) `;
   }
@@ -510,7 +534,7 @@ function slashCommandMarkdown(option: SlashCommandOption): string {
 }
 
 function autocompleteMarkdown(option: AutocompleteOption): string {
-  return option.kind === "skill" || option.kind === "routine"
+  return option.kind === "skill" || option.kind === "routine" || option.kind === "chat-command"
     ? slashCommandMarkdown(option)
     : mentionMarkdown(option);
 }
@@ -539,6 +563,10 @@ export function isSameAutocompleteSession(
 }
 
 function autocompleteOptionMatchesLink(option: AutocompleteOption, href: string): boolean {
+  // Chat commands are inserted as literal `/name` text, not mention links, so
+  // they never resolve to an anchor.
+  if (option.kind === "chat-command") return false;
+
   const parsed = parseMentionChipHref(href);
   if (!parsed) return false;
 
@@ -715,12 +743,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     if (!mentionState) return [];
     const q = mentionState.query.trim().toLowerCase();
     if (mentionState.trigger === "skill") {
-      return slashCommands
-        .filter((command) => {
-          if (!q) return true;
-          return command.aliases.some((alias) => alias.toLowerCase().includes(q));
-        })
-        .slice(0, MAX_AUTOCOMPLETE_OPTIONS);
+      return filterSlashCommandOptions(slashCommands, q);
     }
     if (!mentions) return [];
     return mentions
@@ -1429,7 +1452,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                   setMentionIndex(i);
                 }}
               >
-                {option.kind === "routine" ? (
+                {option.kind === "chat-command" ? (
+                  <TerminalSquare className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                ) : option.kind === "routine" ? (
                   <CalendarClock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 ) : option.kind === "skill" ? (
                   <Boxes className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
@@ -1448,7 +1473,23 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                     className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
                   />
                 )}
-                {option.kind === "issue" && option.issueIdentifier ? (
+                {option.kind === "chat-command" ? (
+                  <span className="flex min-w-0 flex-col">
+                    <span className="flex min-w-0 items-baseline gap-1.5">
+                      <span className="shrink-0 font-mono">{slashCommandLabel(option)}</span>
+                      {option.argHint ? (
+                        <span className="truncate font-mono text-(length:--text-micro) text-muted-foreground">
+                          {option.argHint}
+                        </span>
+                      ) : null}
+                    </span>
+                    {option.description ? (
+                      <span className="truncate text-(length:--text-micro) leading-4 text-muted-foreground">
+                        {option.description}
+                      </span>
+                    ) : null}
+                  </span>
+                ) : option.kind === "issue" && option.issueIdentifier ? (
                   <span className="flex min-w-0 items-baseline gap-1.5">
                     <span className="shrink-0 font-mono text-(length:--text-micro) text-muted-foreground">
                       {option.issueIdentifier}
@@ -1475,6 +1516,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 {option.kind === "user" && (
                   <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
                     User
+                  </span>
+                )}
+                {option.kind === "chat-command" && (
+                  <span className="ml-auto self-start text-(length:--text-nano) uppercase tracking-(--tracking-caps) text-muted-foreground">
+                    Command
                   </span>
                 )}
                 {option.kind === "skill" && (

@@ -37,6 +37,20 @@ export {
 } from "./quota.js";
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 import { sessionCodec as acpxSessionCodec } from "@paperclipai/adapter-utils/acpx-engine/session-codec";
+import type { AdapterChatCommand } from "@paperclipai/adapter-utils";
+import { CODEX_APP_SERVER_RUNTIME, readCodexGoalConfig } from "./app-server/index.js";
+
+export function listCodexChatCommands(ctx: { adapterConfig: Record<string, unknown> }): AdapterChatCommand[] {
+  const goalConfig = readCodexGoalConfig(ctx.adapterConfig);
+  if (goalConfig.runtime !== CODEX_APP_SERVER_RUNTIME || !goalConfig.goal.enabled) return [];
+  return [
+    {
+      name: "goal",
+      argHint: "<objective> | status | clear",
+      description: "Set, inspect, or clear the Codex goal for this issue thread.",
+    },
+  ];
+}
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -55,12 +69,24 @@ export const sessionCodec: AdapterSessionCodec = {
     const workspaceId = readNonEmptyString(record.workspaceId) ?? readNonEmptyString(record.workspace_id);
     const repoUrl = readNonEmptyString(record.repoUrl) ?? readNonEmptyString(record.repo_url);
     const repoRef = readNonEmptyString(record.repoRef) ?? readNonEmptyString(record.repo_ref);
+    const protocol = readNonEmptyString(record.protocol);
+    const goalRuntimeMode = readNonEmptyString(record.goalRuntimeMode);
+    const issueId = readNonEmptyString(record.issueId);
+    const objectiveFingerprint = readNonEmptyString(record.objectiveFingerprint);
+    const features = Array.isArray(record.features)
+      ? record.features.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      : [];
     return {
       sessionId,
       ...(cwd ? { cwd } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       ...(repoUrl ? { repoUrl } : {}),
       ...(repoRef ? { repoRef } : {}),
+      ...(protocol ? { protocol } : {}),
+      ...(features.length > 0 ? { features } : {}),
+      ...(goalRuntimeMode ? { goalRuntimeMode } : {}),
+      ...(issueId ? { issueId } : {}),
+      ...(objectiveFingerprint ? { objectiveFingerprint } : {}),
     };
   },
   serialize(params: Record<string, unknown> | null) {
@@ -74,12 +100,24 @@ export const sessionCodec: AdapterSessionCodec = {
     const workspaceId = readNonEmptyString(params.workspaceId) ?? readNonEmptyString(params.workspace_id);
     const repoUrl = readNonEmptyString(params.repoUrl) ?? readNonEmptyString(params.repo_url);
     const repoRef = readNonEmptyString(params.repoRef) ?? readNonEmptyString(params.repo_ref);
+    const protocol = readNonEmptyString(params.protocol);
+    const goalRuntimeMode = readNonEmptyString(params.goalRuntimeMode);
+    const issueId = readNonEmptyString(params.issueId);
+    const objectiveFingerprint = readNonEmptyString(params.objectiveFingerprint);
+    const features = Array.isArray(params.features)
+      ? params.features.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      : [];
     return {
       sessionId,
       ...(cwd ? { cwd } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       ...(repoUrl ? { repoUrl } : {}),
       ...(repoRef ? { repoRef } : {}),
+      ...(protocol ? { protocol } : {}),
+      ...(features.length > 0 ? { features } : {}),
+      ...(goalRuntimeMode ? { goalRuntimeMode } : {}),
+      ...(issueId ? { issueId } : {}),
+      ...(objectiveFingerprint ? { objectiveFingerprint } : {}),
     };
   },
   getDisplayId(params: Record<string, unknown> | null) {

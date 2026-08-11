@@ -64,7 +64,8 @@ export interface IssueChatTranscriptEntry {
     | "stderr"
     | "system"
     | "stdout"
-    | "diff";
+    | "diff"
+    | "goal_update";
   ts: string;
   text?: string;
   delta?: boolean;
@@ -83,6 +84,13 @@ export interface IssueChatTranscriptEntry {
   cachedTokens?: number;
   costUsd?: number;
   changeType?: "add" | "remove" | "context" | "hunk" | "file_header" | "truncation";
+  phase?: "init" | "progress" | "transition" | "final";
+  status?: "active" | "paused" | "blocked" | "usageLimited" | "budgetLimited" | "complete" | "cleared" | "error";
+  objective?: string;
+  tokensUsed?: number;
+  tokenBudget?: number | null;
+  timeUsedSeconds?: number;
+  reason?: string;
 }
 
 const ISSUE_CHAT_TRANSCRIPT_MAX_VISIBLE_ENTRIES = 30;
@@ -859,6 +867,30 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
     }
     if (entry.kind === "thinking" && entry.text) {
       orderedParts.push({ type: "reasoning", text: entry.text });
+      continue;
+    }
+    if (entry.kind === "goal_update") {
+      const status = entry.status === "budgetLimited"
+        ? "budget limited"
+        : entry.status === "usageLimited"
+          ? "usage limited"
+          : entry.status;
+      const usage = [
+        typeof entry.tokensUsed === "number" ? `${entry.tokensUsed} tokens used` : null,
+        typeof entry.tokenBudget === "number" ? `${entry.tokenBudget} token budget` : null,
+        typeof entry.timeUsedSeconds === "number" && entry.timeUsedSeconds > 0
+          ? `${Math.round(entry.timeUsedSeconds)}s elapsed`
+          : null,
+      ].filter(Boolean).join(", ");
+      orderedParts.push({
+        type: "reasoning",
+        text: [
+          `Codex goal ${status ?? "updated"}.`,
+          entry.objective ? `Objective: ${summarizeNotice(entry.objective)}` : "",
+          usage,
+          entry.reason ? `Reason: ${summarizeNotice(entry.reason)}` : "",
+        ].filter(Boolean).join(" "),
+      });
       continue;
     }
     if (entry.kind === "tool_call") {

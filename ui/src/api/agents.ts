@@ -38,6 +38,18 @@ export interface AdapterModel {
   label: string;
 }
 
+/**
+ * A chat/slash command the agent's adapter advertises for the issue-thread
+ * composer (e.g. Codex `/goal`). Mirrors the server `AdapterChatCommand` shape
+ * returned by `GET /agents/:id/chat-commands`. Adapters that don't support any
+ * chat commands (legacy exec runtime, non-codex adapters) return `[]`.
+ */
+export interface AgentChatCommand {
+  name: string;
+  argHint?: string | null;
+  description: string;
+}
+
 export type { AdapterModelProfileKey };
 export type AdapterModelProfile = AdapterModelProfileDefinition;
 
@@ -130,6 +142,8 @@ export const agentsApi = {
   },
   getConfiguration: (id: string, companyId?: string) =>
     api.get<Record<string, unknown>>(agentPath(id, companyId, "/configuration")),
+  listChatCommands: (id: string, companyId?: string) =>
+    api.get<AgentChatCommand[]>(agentPath(id, companyId, "/chat-commands")),
   listConfigRevisions: (id: string, companyId?: string) =>
     api.get<AgentConfigRevision[]>(agentPath(id, companyId, "/config-revisions")),
   getConfigRevision: (id: string, revisionId: string, companyId?: string) =>

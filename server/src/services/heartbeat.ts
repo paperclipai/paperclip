@@ -84,6 +84,8 @@ import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-ru
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
+  AdapterChatCommand,
+  AdapterChatCommandInvocation,
   AdapterExecutionResult,
   AdapterInvocationMeta,
   AdapterModelProfileDefinition,
@@ -114,6 +116,12 @@ import {
   mergeHeartbeatRunStopMetadata,
   normalizeMaxTurnStopReason,
 } from "./heartbeat-stop-metadata.js";
+import {
+  buildGoalChatCommandReplyPresentation,
+  buildUnsupportedChatCommandReply,
+  isHumanIssueChatCommandComment,
+  parseLeadingIssueChatCommand,
+} from "./issue-chat-commands.js";
 import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
@@ -13326,6 +13334,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       readNonEmptyString(nestedContext.taskId);
   }
 
+  async function listSupportedChatCommandsForRun(input: {
+    adapter: ReturnType<typeof getServerAdapter>;
+    adapterConfig: Record<string, unknown>;
+    runtimeConfig: Record<string, unknown> | null;
+    agent: typeof agents.$inferSelect;
+  }): Promise<AdapterChatCommand[]> {
+    if (!input.adapter.listChatCommands) return [];
+    return await input.adapter.listChatCommands({
+      adapterConfig: input.adapterConfig,
+      runtimeConfig: input.runtimeConfig,
+      agent: {
+        id: input.agent.id,
+        companyId: input.agent.companyId,
+        name: input.agent.name,
+        adapterType: input.agent.adapterType,
+        adapterConfig: input.agent.adapterConfig,
+      },
+    });
+  }
+
   async function scanSilentActiveRuns(opts?: { now?: Date; companyId?: string }) {
     return recovery.scanSilentActiveRuns({ ...opts, issueCreatedAtGte: await getWorktreeExecutionCutoff() });
   }
@@ -15363,6 +15391,73 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
+      const leadingChatCommand = isHumanIssueChatCommandComment(safeWakeCommentContext)
+        ? parseLeadingIssueChatCommand(safeWakeCommentContext.body)
+        : null;
+      const chatCommandInvocation: AdapterChatCommandInvocation | null =
+        leadingChatCommand && wakeCommentId
+          ? {
+              name: leadingChatCommand.name,
+              args: leadingChatCommand.args,
+              raw: leadingChatCommand.raw,
+              sourceCommentId: wakeCommentId,
+              sourceAuthorType: "user",
+            }
+          : null;
+      let precomputedAdapterResult: AdapterExecutionResult | null = null;
+      if (chatCommandInvocation) {
+        const supportedCommands = await listSupportedChatCommandsForRun({
+          adapter,
+          adapterConfig: runtimeConfig,
+          runtimeConfig: parseObject(agent.runtimeConfig),
+          agent,
+        });
+        const supported = supportedCommands.some((command) => command.name === chatCommandInvocation.name);
+        if (supported) {
+          context.paperclipChatCommand = chatCommandInvocation;
+          await onLog(
+            "stdout",
+            `[paperclip] Dispatching issue-thread slash command /${chatCommandInvocation.name} from human-authored comment ${wakeCommentId}; skipping prompt passthrough.\n`,
+          );
+        } else {
+          delete context.paperclipChatCommand;
+          context.skipIssueComment = true;
+          const reply = buildUnsupportedChatCommandReply({
+            command: chatCommandInvocation,
+            adapterType: agent.adapterType,
+          });
+          if (issueId) {
+            await issuesSvc.addComment(issueId, reply.message, { agentId: agent.id, runId: run.id }, {
+              presentation: {
+                kind: "system_notice",
+                tone: "warning",
+                title: "Unsupported command",
+                detailsDefaultOpen: false,
+              },
+              metadata: {
+                version: 1,
+                sourceRunId: run.id,
+                sections: [
+                  {
+                    title: "Command",
+                    rows: [
+                      { type: "key_value", label: "Command", value: `/${chatCommandInvocation.name}` },
+                      { type: "key_value", label: "Adapter", value: agent.adapterType },
+                    ],
+                  },
+                ],
+              },
+            });
+          }
+          await onLog(
+            "stdout",
+            `[paperclip] Replied to unsupported issue-thread slash command /${chatCommandInvocation.name}; adapter was not invoked.\n`,
+          );
+          precomputedAdapterResult = reply.result;
+        }
+      } else {
+        delete context.paperclipChatCommand;
+      }
       let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
       const inspectFinalizeWorkspaceBranch = async () => {
         const workspaceRecord = persistedExecutionWorkspace?.id
@@ -15561,7 +15656,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (managedMcpConfig) {
           adapterContext.paperclipManagedMcp = managedMcpConfig;
         }
-        adapterResult = await adapter.execute({
+        adapterResult = precomputedAdapterResult ?? (await adapter.execute({
           runId: run.id,
           agent,
           runtime: runtimeForAdapter,
@@ -15595,7 +15690,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             });
           },
           authToken: authToken ?? undefined,
-        });
+        }));
         // Adapter returned cleanly, which means its workspace-restore finally
         // block also ran without throwing. Record the workspace_finalize
         // barrier so dependents that share this executionWorkspace can wake.
@@ -15916,7 +16011,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             if (!existingRunComment) {
               const issueComment = buildHeartbeatRunIssueComment(persistedResultJson);
               if (issueComment) {
-                await issuesSvc.addComment(issueId, issueComment, { agentId: agent.id, runId: livenessRun.id });
+                // Supported adapter chat-command replies (e.g. Codex `/goal`)
+                // render as a structured goal card; everything else posts as a
+                // plain run-summary comment.
+                const goalReply = buildGoalChatCommandReplyPresentation(persistedResultJson);
+                await issuesSvc.addComment(
+                  issueId,
+                  issueComment,
+                  { agentId: agent.id, runId: livenessRun.id },
+                  goalReply
+                    ? { presentation: goalReply.presentation, metadata: goalReply.metadata }
+                    : undefined,
+                );
               }
             }
           } catch (err) {

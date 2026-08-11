@@ -48,6 +48,7 @@ import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 import { useSecondTick } from "../hooks/useSecondTick";
 import { usePaperclipIssueRuntime, type PaperclipIssueRuntimeReassignment } from "../hooks/usePaperclipIssueRuntime";
 import { useOptionalToastActions } from "../context/ToastContext";
+import { EditorAutocompleteProvider } from "../context/EditorAutocompleteContext";
 import { copyTextToClipboard } from "../lib/clipboard";
 import {
   buildIssueChatMessages,
@@ -410,6 +411,7 @@ export interface IssueChatComposerHandle {
 }
 
 interface IssueChatComposerProps {
+  companyId?: string | null;
   onImageUpload?: (file: File) => Promise<string>;
   onAttachImage?: (file: File) => Promise<IssueAttachment | void>;
   draftKey?: string;
@@ -2381,6 +2383,19 @@ function isIssueCommentPresentation(value: unknown): value is IssueCommentPresen
   return v.kind === "system_notice" || v.kind === "message";
 }
 
+/**
+ * Whether an agent-authored comment carries a `system_notice` presentation and
+ * should therefore render as a structured notice card rather than a chat
+ * bubble. Used for adapter command replies (Codex `/goal` confirmations and the
+ * unsupported-command error) which are posted as agent comments but read as
+ * structured feedback, not conversational turns.
+ */
+export function issueChatMessageIsSystemNoticePresentation(message: ThreadMessage): boolean {
+  const custom = message.metadata?.custom as Record<string, unknown> | undefined;
+  const presentation = custom?.presentation;
+  return isIssueCommentPresentation(presentation) && presentation.kind === "system_notice";
+}
+
 function isIssueCommentMetadata(value: unknown): value is IssueCommentMetadata {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
@@ -3648,12 +3663,25 @@ const IssueChatMessageRow = memo(function IssueChatMessageRow({
     )
     : message.role === "assistant"
       ? (
-        <IssueChatAssistantMessage
-          message={message}
-          activeVote={activeVote}
-          isRunActive={isRunActive}
-          isStoppingRun={isStoppingRun}
-        />
+        issueChatMessageIsSystemNoticePresentation(message)
+          ? (
+            <SystemNoticeCommentRow
+              message={message}
+              anchorId={
+                typeof (message.metadata?.custom as Record<string, unknown> | undefined)?.anchorId === "string"
+                  ? ((message.metadata.custom as Record<string, unknown>).anchorId as string)
+                  : undefined
+              }
+            />
+          )
+          : (
+            <IssueChatAssistantMessage
+              message={message}
+              activeVote={activeVote}
+              isRunActive={isRunActive}
+              isStoppingRun={isStoppingRun}
+            />
+          )
       )
       : <IssueChatSystemMessage message={message} />;
 
@@ -3681,6 +3709,7 @@ function areIssueChatMessageRowPropsEqual(
 }
 
 const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerProps>(function IssueChatComposer({
+  companyId,
   onImageUpload,
   onAttachImage,
   draftKey,
@@ -3721,6 +3750,13 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   const composerContainerRef = useRef<HTMLDivElement | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const canAcceptFiles = Boolean(onImageUpload || onAttachImage);
+  // The assignee the next comment is addressed to drives which adapter chat
+  // commands (`/goal`, …) the composer offers. Tracks the pending reassign
+  // target so switching the assignee updates the available `/` commands live.
+  const composerAssigneeAgentId = useMemo(
+    () => (reassignTarget.startsWith("agent:") ? reassignTarget.slice("agent:".length) || null : null),
+    [reassignTarget],
+  );
 
   function queueViewportRestore(snapshot: ReturnType<typeof captureComposerViewportSnapshot>) {
     if (!snapshot) return;
@@ -4081,18 +4117,23 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         </div>
       ) : null}
 
-      <MarkdownEditor
-        ref={editorRef}
-        value={body}
-        onChange={setBody}
-        placeholder="Reply"
-        mentions={mentions}
-        onSubmit={handleSubmit}
-        imageUploadHandler={onImageUpload}
-        fileDropTarget="parent"
-        bordered={false}
-        contentClassName="max-h-(--sz-28dvh) overflow-y-auto pr-1 pb-2 text-sm scrollbar-auto-hide"
-      />
+      <EditorAutocompleteProvider
+        assigneeAgentId={composerAssigneeAgentId}
+        companyId={companyId}
+      >
+        <MarkdownEditor
+          ref={editorRef}
+          value={body}
+          onChange={setBody}
+          placeholder="Reply"
+          mentions={mentions}
+          onSubmit={handleSubmit}
+          imageUploadHandler={onImageUpload}
+          fileDropTarget="parent"
+          bordered={false}
+          contentClassName="max-h-(--sz-28dvh) overflow-y-auto pr-1 pb-2 text-sm scrollbar-auto-hide"
+        />
+      </EditorAutocompleteProvider>
 
       {coachVisible && plainNameCandidate ? (
         <div className="mt-2">
@@ -5193,6 +5234,7 @@ export function IssueChatThread({
           >
             <IssueChatComposer
               ref={composerRef}
+              companyId={companyId}
               onImageUpload={imageUploadHandler}
               onAttachImage={onAttachImage}
               draftKey={draftKey}

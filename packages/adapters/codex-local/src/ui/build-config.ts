@@ -40,6 +40,15 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
   if (Object.keys(env).length > 0) ac.env = env;
   ac.search = v.search;
   ac.fastMode = v.fastMode;
+  if (v.goalRuntime === "app_server_experimental") {
+    ac.runtime = "app_server_experimental";
+    ac.goal = {
+      enabled: true,
+      ...(typeof v.goalTokenBudget === "number" && v.goalTokenBudget > 0
+        ? { tokenBudget: Math.floor(v.goalTokenBudget) }
+        : {}),
+    };
+  }
   ac.dangerouslyBypassApprovalsAndSandbox =
     typeof v.dangerouslyBypassSandbox === "boolean"
       ? v.dangerouslyBypassSandbox

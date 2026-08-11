@@ -44,6 +44,7 @@ Core fields:
 - chrome (boolean, optional): pass --chrome when running Claude
 - promptTemplate (string, optional): run prompt template
 - maxTurnsPerRun (number, optional): max turns for one run
+- goal (object, optional): Claude Code goal command config. { enabled } — when enabled, the agent advertises the /goal issue-thread command (set, status, clear)
 - dangerouslySkipPermissions (boolean, optional, default true): allow non-interactive Claude runs to proceed without approval prompts. Local targets receive --dangerously-skip-permissions; remote targets receive a curated --allowedTools list so they do not inherit local bypass permissions.
 - command (string, optional): defaults to "claude"
 - extraArgs (string[], optional): additional CLI args
@@ -72,4 +73,8 @@ Notes:
 - The Claude ACP lane requires Node >=22.12.0 and @agentclientprotocol/claude-agent-acp to be installed with this adapter package. Auto engine selection falls back to CLI when those prerequisites are unavailable; explicit engine="acp" fails loudly.
 - For ACP runs, model selection is passed through ANTHROPIC_MODEL at ACP server startup; Paperclip-managed Claude permissions and ephemeral skill materialization are handled by the shared ACP engine.
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
+- /goal maps onto Claude Code's native goal command: setting a goal registers a session-scoped Stop hook and starts a run that keeps working until the condition is met; the goal auto-clears on success and an unmet goal persists in the session, so subsequent heartbeat resumes keep working under it. status/clear are zero-turn, zero-cost.
+- Goal command lines are passed as a CLI argument (not the stdin prompt transport) because Claude Code only dispatches slash commands from argv prompts. Objectives are capped at 4000 characters; clear synonyms (stop, off, reset, none, cancel) are honored.
+- The goal command is feature-gated per Claude CLI install. Paperclip probes support with a throwaway zero-cost session and replies with claude_goal_unsupported_cli instead of forwarding /goal to an unsupporting CLI. Remote/sandbox execution targets are refused with claude_goal_remote_unsupported.
+- Unlike the Codex app-server goal runtime, goal runs keep normal Paperclip env injection (including PAPERCLIP_API_KEY): they are ordinary Claude Code sessions in the same harness, and later heartbeats resume the same session with credentials regardless.
 `;

@@ -416,11 +416,32 @@ export interface AcpTargetDescriptor {
   };
 }
 
+export interface AdapterChatCommand {
+  name: string;
+  argHint?: string | null;
+  description: string;
+}
+
+export interface AdapterChatCommandContext {
+  adapterConfig: Record<string, unknown>;
+  runtimeConfig?: Record<string, unknown> | null;
+  agent?: AdapterAgent | null;
+}
+
+export interface AdapterChatCommandInvocation {
+  name: string;
+  raw: string;
+  args: string;
+  sourceCommentId: string | null;
+  sourceAuthorType: "user" | "agent" | "system" | null;
+}
+
 export interface ServerAdapterModule {
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
   testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult>;
   acp?: AcpTargetDescriptor;
+  listChatCommands?: (ctx: AdapterChatCommandContext) => Promise<AdapterChatCommand[]> | AdapterChatCommand[];
   listSkills?: (ctx: AdapterSkillContext) => Promise<AdapterSkillSnapshot>;
   syncSkills?: (ctx: AdapterSkillContext, desiredSkills: string[]) => Promise<AdapterSkillSnapshot>;
   sessionCodec?: AdapterSessionCodec;
@@ -513,6 +534,17 @@ export type TranscriptEntry =
   | { kind: "tool_call"; ts: string; name: string; input: unknown; toolUseId?: string; invocationId?: string; actionRequestId?: string }
   | { kind: "tool_result"; ts: string; toolUseId: string; toolName?: string; content: string; isError: boolean }
   | { kind: "init"; ts: string; model: string; sessionId: string }
+  | {
+      kind: "goal_update";
+      ts: string;
+      phase: "init" | "progress" | "transition" | "final";
+      status: "active" | "paused" | "blocked" | "usageLimited" | "budgetLimited" | "complete" | "cleared" | "error";
+      objective?: string;
+      tokensUsed?: number;
+      tokenBudget?: number | null;
+      timeUsedSeconds?: number;
+      reason?: string;
+    }
   | { kind: "result"; ts: string; text: string; inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; subtype: string; isError: boolean; errors: string[] }
   | { kind: "stderr"; ts: string; text: string }
   | { kind: "system"; ts: string; text: string }
@@ -571,6 +603,9 @@ export interface CreateConfigValues {
   geminiAcpWarmHandleIdleMs?: number;
   search: boolean;
   fastMode: boolean;
+  goalRuntime?: "off" | "app_server_experimental";
+  goalTokenBudget?: number;
+  goalCommand?: boolean;
   dangerouslyBypassSandbox: boolean;
   command: string;
   args: string;

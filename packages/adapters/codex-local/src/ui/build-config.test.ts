@@ -14,6 +14,8 @@ function makeValues(overrides: Partial<CreateConfigValues> = {}): CreateConfigVa
     dangerouslySkipPermissions: true,
     search: false,
     fastMode: false,
+    goalRuntime: "off",
+    goalTokenBudget: 0,
     dangerouslyBypassSandbox: true,
     command: "",
     args: "",
@@ -67,5 +69,24 @@ describe("buildCodexLocalConfig", () => {
     const config = buildCodexLocalConfig(makeValues({ model: "" }));
 
     expect(config).not.toHaveProperty("model");
+  });
+
+  it("persists goal runtime as app-server runtime plus goal config", () => {
+    const config = buildCodexLocalConfig(
+      makeValues({
+        goalRuntime: "app_server_experimental",
+        goalTokenBudget: 500_000,
+      }),
+    );
+
+    expect(config).toMatchObject({
+      runtime: "app_server_experimental",
+      goal: {
+        enabled: true,
+        tokenBudget: 500_000,
+      },
+    });
+    expect(config).not.toHaveProperty("goalRuntime");
+    expect(config).not.toHaveProperty("goalTokenBudget");
   });
 });

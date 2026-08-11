@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vite
 import { buildIssueReferenceHref, buildProjectMentionHref, buildRoutineMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
 import {
   computeMentionMenuPosition,
+  filterSlashCommandOptions,
   findClosestAutocompleteAnchor,
   findMentionMatch,
   isSameAutocompleteSession,
@@ -14,7 +15,14 @@ import {
   type MentionOption,
   placeCaretAfterMentionAnchor,
   shouldAcceptAutocompleteKey,
+  slashCommandLabel,
+  slashCommandMarkdown,
 } from "./MarkdownEditor";
+import type {
+  ChatCommandOption,
+  RoutineCommandOption,
+  SkillCommandOption,
+} from "../context/EditorAutocompleteContext";
 
 const mdxEditorMockState = vi.hoisted(() => ({
   emitMountEmptyReset: false,
@@ -1115,5 +1123,81 @@ describe("MarkdownEditor", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+});
+
+describe("slash-command autocomplete", () => {
+  const goalCommand: ChatCommandOption = {
+    id: "chat-command:goal",
+    kind: "chat-command",
+    name: "goal",
+    argHint: "<objective> | status | clear",
+    description: "Set, inspect, or clear the Codex goal for this issue thread.",
+    aliases: ["goal", "/goal"],
+  };
+  const reviewCommand: ChatCommandOption = {
+    id: "chat-command:review",
+    kind: "chat-command",
+    name: "review",
+    argHint: null,
+    description: "Review the working changes.",
+    aliases: ["review", "/review"],
+  };
+  const skill: SkillCommandOption = {
+    id: "skill:skill-1",
+    kind: "skill",
+    skillId: "skill-1",
+    key: "agent-browser",
+    name: "Agent Browser",
+    slug: "agent-browser",
+    description: null,
+    href: buildSkillMentionHref("skill-1", "agent-browser"),
+    aliases: ["agent-browser", "Agent Browser", "agent-browser"],
+  };
+  const routine: RoutineCommandOption = {
+    id: "routine:routine-1",
+    kind: "routine",
+    routineId: "routine-1",
+    name: "Weekly release review",
+    status: "active",
+    href: buildRoutineMentionHref("routine-1"),
+    aliases: ["routine:Weekly release review", "Weekly release review", "routine-1"],
+  };
+
+  it("returns every command when the query is empty", () => {
+    const filtered = filterSlashCommandOptions([goalCommand, skill, routine], "");
+    expect(filtered).toHaveLength(3);
+    // Chat commands lead the list so `/goal` is the most prominent suggestion.
+    expect(filtered[0]).toBe(goalCommand);
+  });
+
+  it("matches chat commands by name against the typed query", () => {
+    expect(filterSlashCommandOptions([goalCommand, reviewCommand, skill], "go")).toEqual([goalCommand]);
+    expect(filterSlashCommandOptions([goalCommand, reviewCommand, skill], "rev")).toEqual([reviewCommand]);
+  });
+
+  it("matches a chat command whether or not the leading slash is typed", () => {
+    expect(filterSlashCommandOptions([goalCommand, skill], "goal")).toEqual([goalCommand]);
+    expect(filterSlashCommandOptions([goalCommand, skill], "/goal")).toEqual([goalCommand]);
+  });
+
+  it("filters out commands the assignee cannot honor once they are absent", () => {
+    // A non-goal agent advertises no chat commands, so `/goal` never appears.
+    expect(filterSlashCommandOptions([skill, routine], "goal")).toEqual([]);
+  });
+
+  it("still matches skills and routines alongside chat commands", () => {
+    expect(filterSlashCommandOptions([goalCommand, skill, routine], "agent")).toEqual([skill]);
+    expect(filterSlashCommandOptions([goalCommand, skill, routine], "weekly")).toEqual([routine]);
+  });
+
+  it("labels a chat command with its leading slash", () => {
+    expect(slashCommandLabel(goalCommand)).toBe("/goal");
+  });
+
+  it("inserts a chat command as literal text so the server command router recognizes it", () => {
+    // Must NOT be a mention link — the leading-slash parser reads raw body text.
+    expect(slashCommandMarkdown(goalCommand)).toBe("/goal ");
+    expect(slashCommandMarkdown(skill)).toContain("](");
   });
 });

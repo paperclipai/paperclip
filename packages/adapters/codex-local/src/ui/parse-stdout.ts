@@ -22,6 +22,31 @@ function asNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function asGoalStatus(value: unknown):
+  | "active"
+  | "paused"
+  | "blocked"
+  | "usageLimited"
+  | "budgetLimited"
+  | "complete"
+  | "cleared"
+  | "error"
+  | null {
+  if (
+    value === "active" ||
+    value === "paused" ||
+    value === "blocked" ||
+    value === "usageLimited" ||
+    value === "budgetLimited" ||
+    value === "complete" ||
+    value === "cleared" ||
+    value === "error"
+  ) {
+    return value;
+  }
+  return null;
+}
+
 function errorText(value: unknown): string {
   if (typeof value === "string") return value;
   const rec = asRecord(value);
@@ -57,9 +82,10 @@ function parseCommandExecutionItem(
   const id = asString(item.id);
   const command = asString(item.command);
   const status = asString(item.status);
-  const exitCode = typeof item.exit_code === "number" && Number.isFinite(item.exit_code) ? item.exit_code : null;
+  const exitCodeRaw = item.exit_code ?? item.exitCode;
+  const exitCode = typeof exitCodeRaw === "number" && Number.isFinite(exitCodeRaw) ? exitCodeRaw : null;
   const safeCommand = command;
-  const output = asString(item.aggregated_output).replace(/\s+$/, "");
+  const output = asString(item.aggregated_output ?? item.aggregatedOutput).replace(/\s+$/, "");
 
   if (phase === "started") {
     return [{
@@ -172,7 +198,7 @@ function parseCodexItem(
 ): TranscriptEntry[] {
   const itemType = asString(item.type);
 
-  if (itemType === "agent_message") {
+  if (itemType === "agent_message" || itemType === "agentMessage") {
     const text = asString(item.text);
     if (text) return [{ kind: "assistant", ts, text }];
     return [];
@@ -184,15 +210,15 @@ function parseCodexItem(
     return [{ kind: "system", ts, text: phase === "started" ? "reasoning started" : "reasoning completed" }];
   }
 
-  if (itemType === "command_execution") {
+  if (itemType === "command_execution" || itemType === "commandExecution") {
     return parseCommandExecutionItem(item, ts, phase);
   }
 
-  if (itemType === "file_change" && phase === "completed") {
+  if ((itemType === "file_change" || itemType === "fileChange") && phase === "completed") {
     return parseFileChangeItem(item, ts);
   }
 
-  if (itemType === "tool_use") {
+  if (itemType === "tool_use" || itemType === "mcpToolCall" || itemType === "dynamicToolCall") {
     return parseToolUseItem(item, ts, phase);
   }
 
@@ -231,6 +257,43 @@ export function parseCodexStdoutLine(line: string, ts: string): TranscriptEntry[
   const type = asString(parsed.type);
   if (type.startsWith("acpx.")) {
     return parseAcpxStdoutLine(line, ts);
+  }
+
+  if (type === "goal.updated") {
+    const goal = asRecord(parsed.goal);
+    const status = asGoalStatus(goal?.status);
+    if (!goal || !status) return [{ kind: "system", ts, text: "goal updated" }];
+    const tokensUsed = asNumber(goal.tokensUsed);
+    const phase =
+      status === "complete" || status === "budgetLimited" || status === "blocked" || status === "usageLimited"
+        ? "final"
+        : status === "active" && tokensUsed === 0
+          ? "init"
+          : "transition";
+    return [{
+      kind: "goal_update",
+      ts,
+      phase,
+      status,
+      objective: asString(goal.objective) || undefined,
+      tokensUsed,
+      tokenBudget:
+        typeof goal.tokenBudget === "number" && Number.isFinite(goal.tokenBudget)
+          ? goal.tokenBudget
+          : null,
+      timeUsedSeconds: asNumber(goal.timeUsedSeconds),
+      reason: asString(goal.reason) || undefined,
+    }];
+  }
+
+  if (type === "goal.cleared") {
+    return [{
+      kind: "goal_update",
+      ts,
+      phase: "final",
+      status: "cleared",
+      reason: asString(parsed.reason) || undefined,
+    }];
   }
 
   if (type === "thread.started") {

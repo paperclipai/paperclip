@@ -374,6 +374,12 @@ describe.sequential("agent cross-tenant route authorization", () => {
         untouched: [mockAgentService.listKeys],
       },
       {
+        label: "list chat commands",
+        request: (app: express.Express) =>
+          requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}/chat-commands`)),
+        untouched: [],
+      },
+      {
         label: "create key",
         request: (app: express.Express) =>
           requestApp(app, (baseUrl) => request(baseUrl).post(`/api/agents/${agentId}/keys`).send({ name: "exploit" })),
