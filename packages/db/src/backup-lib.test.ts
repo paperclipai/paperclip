@@ -119,20 +119,22 @@ describe("runDatabaseBackup preflight", () => {
 
   it("removes stale partial backup files before starting a new run", async () => {
     const backupDir = createTempDir("paperclip-db-backup-preflight-partials-");
+    const latestBackup = path.join(backupDir, "paperclip-test-20260811-090000.sql.gz");
     const stalePartial = path.join(backupDir, "paperclip-test-20260811-100000.sql.gz.partial");
     const recentPartial = path.join(backupDir, "paperclip-test-20260811-110000.sql.gz.partial");
+    fs.writeFileSync(latestBackup, Buffer.alloc(1024));
     fs.writeFileSync(stalePartial, "stale");
     fs.writeFileSync(recentPartial, "recent");
     fs.utimesSync(stalePartial, new Date("2026-08-09T00:00:00Z"), new Date("2026-08-09T00:00:00Z"));
     fs.utimesSync(recentPartial, new Date("2026-08-11T11:00:00Z"), new Date("2026-08-11T11:00:00Z"));
 
     await expect(runDatabaseBackup({
-      connectionString: "postgres://paperclip:paperclip@127.0.0.1:1/paperclip",
+      connectionString: "postgres://paperclip:paperclip@127.0.0.1:54329/paperclip",
       backupDir,
       retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
       filenamePrefix: "paperclip-test",
-      getAvailableDiskSpaceBytes: () => 1024 * 1024,
-    })).rejects.toThrow();
+      getAvailableDiskSpaceBytes: () => 1400,
+    })).rejects.toThrow(/Insufficient free space/);
 
     expect(fs.existsSync(stalePartial)).toBe(false);
     expect(fs.existsSync(recentPartial)).toBe(true);

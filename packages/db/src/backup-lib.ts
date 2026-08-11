@@ -460,11 +460,18 @@ async function runPgDumpBackup(opts: {
     throw new Error("pg_dump did not expose stdout");
   }
 
+  const childResult = waitForChildExit(child, pgDumpBin);
   const output = fs.createWriteStream(opts.partialBackupFile, { flags: "wx" });
-  await waitForWriteStreamOpen(output);
+  try {
+    await waitForWriteStreamOpen(output);
+  } catch (error) {
+    output.destroy();
+    child.kill();
+    await Promise.allSettled([childResult]);
+    throw error;
+  }
 
   const pipelineResult = pipeline(child.stdout, createGzip(), output);
-  const childResult = waitForChildExit(child, pgDumpBin);
   const [pipelineState, childState] = await Promise.allSettled([pipelineResult, childResult]);
 
   if (childState.status === "rejected") {
