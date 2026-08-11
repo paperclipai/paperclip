@@ -148,6 +148,11 @@ services:
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
       TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
       TELEGRAM_WEBHOOK_SECRET: "${TELEGRAM_WEBHOOK_SECRET:-}"
+      # Persistent credential source for codex_local. Individual company/agent
+      # homes remain isolated; Paperclip links their auth.json from this source.
+      # Keeping it on paperclip-data-dev prevents a Dokploy redeploy from
+      # discarding a host-authorized Codex subscription login.
+      CODEX_HOME: "${CODEX_HOME:-/paperclip/instances/default/codex-home}"
     volumes:
       - paperclip-data-dev:/paperclip
     depends_on:
