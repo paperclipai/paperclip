@@ -4,6 +4,37 @@
       "title": "创建您的第一家公司",
       "description": "通过创建公司开始。",
       "newCompany": "新公司"
+    },
+    "onboardingRoute": {
+      "addAgent": {
+        "title": "为 {{companyName}} 添加另一个智能体",
+        "description": "再次运行入门流程，为这家公司添加智能体和起始任务。",
+        "cta": "添加智能体"
+      },
+      "createAnother": {
+        "title": "创建另一家公司",
+        "description": "再次运行入门流程，创建另一家公司并初始化第一个智能体。"
+      },
+      "createFirst": {
+        "title": "创建您的第一家公司",
+        "description": "创建公司和第一个智能体后即可开始。"
+      },
+      "startCta": "开始入门流程"
+    },
+    "onboardingWizard": {
+      "close": "关闭",
+      "stepLabel": "第 {{step}} 步",
+      "backToStart": "← 返回开始",
+      "step1": {
+        "title": "命名您的公司",
+        "description": "我们应该如何称呼您的公司？",
+        "companyName": "公司名称",
+        "placeholder": "示例公司"
+      },
+      "navigation": {
+        "back": "返回",
+        "next": "下一步"
+      }
     }
   }
 }
