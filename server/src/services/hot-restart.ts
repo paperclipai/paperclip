@@ -16,6 +16,8 @@ export const EMBEDDED_POSTGRES_STARTUP_RECOVERY_FILENAME = "embedded-postgres-st
 export const SERVER_LIFECYCLE_JOURNAL_FILENAME = "server-lifecycle.json";
 
 const EMBEDDED_POSTGRES_HANDOFF_TTL_MS = 10 * 60 * 1_000;
+const EMBEDDED_POSTGRES_STARTUP_MAX_SPAWN_DELAY_MS = 10 * 60 * 1_000;
+const EMBEDDED_POSTGRES_STARTUP_CLOCK_SKEW_MS = 5_000;
 
 export type EmbeddedPostgresProcessIdentity = {
   pid: number;
@@ -54,6 +56,17 @@ export type EmbeddedPostgresHandoffClaim = {
   replacementServerStartedAtEpochMs: number;
   replacementServerExecutablePath: string;
   ownershipKind?: "fresh_start" | "hot_restart";
+};
+export type EmbeddedPostgresStartupOwnership = {
+  version: 1;
+  ownershipKind: "fresh_start_pending";
+  claimId: string;
+  createdAt: string;
+  ownerServerPid: number;
+  ownerServerStartedAtEpochMs: number;
+  ownerServerExecutablePath: string;
+  postgresDataDir: string;
+  postgresPort: number;
 };
 export type EmbeddedPostgresStartupRecovery = {
   version: 1;
@@ -493,14 +506,26 @@ export async function claimEmbeddedPostgresOwnershipRecovery(input: {
     }
     const ownership = parseEmbeddedPostgresOwnership(raw);
     const interruptedHandoff = ownership ? null : parseEmbeddedPostgresHandoff(raw);
+    const startupOwnership = ownership || interruptedHandoff
+      ? null
+      : parseEmbeddedPostgresStartupOwnership(raw);
     const postgres = ownership?.postgres ?? interruptedHandoff?.postgres;
-    if (!postgres || !samePostgresIdentity(postgres, input.expectedPostgres)) return null;
+    if (
+      postgres
+        ? !samePostgresIdentity(postgres, input.expectedPostgres)
+        : !startupOwnership
+          || !matchesEmbeddedPostgresStartupOwnership(startupOwnership, input.expectedPostgres)
+    ) return null;
 
-    const recordedPid = ownership?.replacementServerPid ?? interruptedHandoff!.predecessorServerPid;
+    const recordedPid = ownership?.replacementServerPid
+      ?? interruptedHandoff?.predecessorServerPid
+      ?? startupOwnership!.ownerServerPid;
     const recordedStartedAtEpochMs = ownership?.replacementServerStartedAtEpochMs
-      ?? interruptedHandoff!.predecessorServerStartedAtEpochMs;
+      ?? interruptedHandoff?.predecessorServerStartedAtEpochMs
+      ?? startupOwnership!.ownerServerStartedAtEpochMs;
     const recordedExecutablePath = ownership?.replacementServerExecutablePath
-      ?? interruptedHandoff!.predecessorServerExecutablePath;
+      ?? interruptedHandoff?.predecessorServerExecutablePath
+      ?? startupOwnership!.ownerServerExecutablePath;
     const ownerAlive = input.isProcessAlive ?? isServerProcessIdentityAlive;
     if (await ownerAlive(recordedPid, recordedStartedAtEpochMs, recordedExecutablePath)) return null;
 
@@ -517,13 +542,22 @@ export async function claimEmbeddedPostgresOwnershipRecovery(input: {
           replacementServerStartedAtEpochMs,
           replacementServerExecutablePath,
         }
-      : createEmbeddedPostgresOwnership(
-          interruptedHandoff!,
-          replacementServerPid,
-          replacementServerStartedAtEpochMs,
-          replacementServerExecutablePath,
-          input.now ?? new Date(),
-        );
+      : interruptedHandoff
+        ? createEmbeddedPostgresOwnership(
+            interruptedHandoff,
+            replacementServerPid,
+            replacementServerStartedAtEpochMs,
+            replacementServerExecutablePath,
+            input.now ?? new Date(),
+          )
+        : createEmbeddedPostgresOwnershipFromStartup(
+            startupOwnership!,
+            input.expectedPostgres,
+            replacementServerPid,
+            replacementServerStartedAtEpochMs,
+            replacementServerExecutablePath,
+            input.now ?? new Date(),
+          );
     await writeJsonFileAtomic(ownershipPath, recovered);
     return recovered;
   });
@@ -608,6 +642,55 @@ function parseEmbeddedPostgresOwnership(value: unknown): EmbeddedPostgresHandoff
   };
 }
 
+function parseEmbeddedPostgresStartupOwnership(value: unknown): EmbeddedPostgresStartupOwnership | null {
+  if (!isRecord(value) || value.version !== 1 || value.ownershipKind !== "fresh_start_pending") return null;
+  const claimId = asString(value.claimId);
+  const createdAt = asDateString(value.createdAt);
+  const ownerServerPid = asNumber(value.ownerServerPid);
+  const ownerServerStartedAtEpochMs = asNumber(value.ownerServerStartedAtEpochMs);
+  const ownerServerExecutablePath = asString(value.ownerServerExecutablePath);
+  const postgresDataDir = asString(value.postgresDataDir);
+  const postgresPort = asNumber(value.postgresPort);
+  if (
+    !claimId
+    || !createdAt
+    || !ownerServerPid
+    || !ownerServerStartedAtEpochMs
+    || !ownerServerExecutablePath
+    || !postgresDataDir
+    || !postgresPort
+  ) return null;
+  return {
+    version: 1,
+    ownershipKind: "fresh_start_pending",
+    claimId,
+    createdAt,
+    ownerServerPid,
+    ownerServerStartedAtEpochMs,
+    ownerServerExecutablePath,
+    postgresDataDir,
+    postgresPort,
+  };
+}
+
+function matchesEmbeddedPostgresStartupOwnership(
+  ownership: EmbeddedPostgresStartupOwnership,
+  postgres: EmbeddedPostgresProcessIdentity,
+) {
+  const createdAtEpochMs = Date.parse(ownership.createdAt);
+  return matchesEmbeddedPostgresStartupTarget(ownership, postgres)
+    && postgres.processStartedAtEpochMs >= createdAtEpochMs - EMBEDDED_POSTGRES_STARTUP_CLOCK_SKEW_MS
+    && postgres.processStartedAtEpochMs <= createdAtEpochMs + EMBEDDED_POSTGRES_STARTUP_MAX_SPAWN_DELAY_MS;
+}
+
+function matchesEmbeddedPostgresStartupTarget(
+  ownership: EmbeddedPostgresStartupOwnership,
+  postgres: EmbeddedPostgresProcessIdentity,
+) {
+  return samePath(ownership.postgresDataDir, postgres.dataDir)
+    && ownership.postgresPort === postgres.port;
+}
+
 function createEmbeddedPostgresOwnership(
   handoff: EmbeddedPostgresHandoff,
   replacementServerPid: number,
@@ -631,6 +714,123 @@ function createEmbeddedPostgresOwnership(
     replacementServerExecutablePath,
     ownershipKind: "hot_restart",
   };
+}
+
+function createEmbeddedPostgresOwnershipFromStartup(
+  startup: EmbeddedPostgresStartupOwnership,
+  postgres: EmbeddedPostgresProcessIdentity,
+  ownerServerPid: number,
+  ownerServerStartedAtEpochMs: number,
+  ownerServerExecutablePath: string,
+  now: Date,
+): EmbeddedPostgresHandoffClaim {
+  return {
+    version: 1,
+    claimId: startup.claimId,
+    claimedAt: now.toISOString(),
+    expiresAt: "9999-12-31T23:59:59.999Z",
+    hotRestartRequestedAt: startup.createdAt,
+    shutdownSnapshotCapturedAt: startup.createdAt,
+    predecessorServerPid: startup.ownerServerPid,
+    predecessorServerStartedAtEpochMs: startup.ownerServerStartedAtEpochMs,
+    predecessorServerExecutablePath: startup.ownerServerExecutablePath,
+    postgres,
+    replacementServerPid: ownerServerPid,
+    replacementServerStartedAtEpochMs: ownerServerStartedAtEpochMs,
+    replacementServerExecutablePath: ownerServerExecutablePath,
+    ownershipKind: "fresh_start",
+  };
+}
+
+export async function beginEmbeddedPostgresStartupOwnership(input: {
+  ownerServerPid?: number;
+  ownerServerStartedAtEpochMs?: number;
+  ownerServerExecutablePath?: string;
+  postgresDataDir: string;
+  postgresPort: number;
+  now?: Date;
+  homeDir?: string;
+}) {
+  const receipt: EmbeddedPostgresStartupOwnership = {
+    version: 1,
+    ownershipKind: "fresh_start_pending",
+    claimId: randomUUID(),
+    createdAt: (input.now ?? new Date()).toISOString(),
+    ownerServerPid: input.ownerServerPid ?? process.pid,
+    ownerServerStartedAtEpochMs: input.ownerServerStartedAtEpochMs
+      ?? Math.round(Date.now() - process.uptime() * 1_000),
+    ownerServerExecutablePath: input.ownerServerExecutablePath
+      ?? await resolveCurrentProcessExecutablePath(),
+    postgresDataDir: path.resolve(input.postgresDataDir),
+    postgresPort: input.postgresPort,
+  };
+  await writeJsonFileAtomic(resolveEmbeddedPostgresOwnershipPath(input.homeDir), receipt);
+  return receipt;
+}
+
+export async function finalizeEmbeddedPostgresStartupOwnership(input: {
+  startup: EmbeddedPostgresStartupOwnership;
+  postgres: EmbeddedPostgresProcessIdentity;
+  now?: Date;
+  homeDir?: string;
+}) {
+  const ownershipPath = resolveEmbeddedPostgresOwnershipPath(input.homeDir);
+  return await withHotRestartPathLock(ownershipPath, async () => {
+    let pending: EmbeddedPostgresStartupOwnership | null;
+    try {
+      pending = parseEmbeddedPostgresStartupOwnership(
+        JSON.parse(await fs.readFile(ownershipPath, "utf8")),
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+    if (
+      !pending
+      || pending.claimId !== input.startup.claimId
+      || pending.ownerServerPid !== input.startup.ownerServerPid
+      || pending.ownerServerStartedAtEpochMs !== input.startup.ownerServerStartedAtEpochMs
+      || !samePath(pending.ownerServerExecutablePath, input.startup.ownerServerExecutablePath)
+      || !matchesEmbeddedPostgresStartupTarget(pending, input.postgres)
+    ) return null;
+    const ownership = createEmbeddedPostgresOwnershipFromStartup(
+      pending,
+      input.postgres,
+      pending.ownerServerPid,
+      pending.ownerServerStartedAtEpochMs,
+      pending.ownerServerExecutablePath,
+      input.now ?? new Date(),
+    );
+    await writeJsonFileAtomic(ownershipPath, ownership);
+    return ownership;
+  });
+}
+
+export async function releaseEmbeddedPostgresStartupOwnership(input: {
+  startup: EmbeddedPostgresStartupOwnership;
+  homeDir?: string;
+}) {
+  const ownershipPath = resolveEmbeddedPostgresOwnershipPath(input.homeDir);
+  return await withHotRestartPathLock(ownershipPath, async () => {
+    let pending: EmbeddedPostgresStartupOwnership | null;
+    try {
+      pending = parseEmbeddedPostgresStartupOwnership(
+        JSON.parse(await fs.readFile(ownershipPath, "utf8")),
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+    if (
+      !pending
+      || pending.claimId !== input.startup.claimId
+      || pending.ownerServerPid !== input.startup.ownerServerPid
+      || pending.ownerServerStartedAtEpochMs !== input.startup.ownerServerStartedAtEpochMs
+      || !samePath(pending.ownerServerExecutablePath, input.startup.ownerServerExecutablePath)
+    ) return false;
+    await fs.rm(ownershipPath, { force: true });
+    return true;
+  });
 }
 
 export async function writeEmbeddedPostgresOwnership(input: {

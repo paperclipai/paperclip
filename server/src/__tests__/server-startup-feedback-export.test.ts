@@ -666,6 +666,46 @@ describe("startServer feedback export wiring", () => {
       rmSync(tempHome, { recursive: true, force: true });
     }
   });
+
+  it("persists fresh embedded PostgreSQL ownership before start and clears it when start fails", async () => {
+    const originalHome = process.env.PAPERCLIP_HOME;
+    const originalInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    const tempHome = mkdtempSync(path.join(tmpdir(), "paperclip-prestart-ownership-"));
+    const dataDir = path.join(tempHome, "postgres");
+    const ownershipPath = path.join(
+      tempHome,
+      "instances",
+      "default",
+      "embedded-postgres-ownership.json",
+    );
+    process.env.PAPERCLIP_HOME = tempHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "default";
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      databaseMode: "embedded-postgres",
+      databaseUrl: undefined,
+      embeddedPostgresDataDir: dataDir,
+    }));
+    embeddedPostgresStartMock.mockImplementationOnce(async () => {
+      expect(JSON.parse(readFileSync(ownershipPath, "utf8"))).toMatchObject({
+        ownershipKind: "fresh_start_pending",
+        postgresDataDir: path.resolve(dataDir),
+        postgresPort: 54329,
+      });
+      throw new Error("forced embedded PostgreSQL start failure");
+    });
+
+    try {
+      await expect(startServer()).rejects.toThrow("forced embedded PostgreSQL start failure");
+      expect(() => readFileSync(ownershipPath, "utf8")).toThrow();
+      expect(embeddedPostgresStopMock).not.toHaveBeenCalled();
+    } finally {
+      if (originalHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = originalHome;
+      if (originalInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = originalInstanceId;
+      rmSync(tempHome, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("startServer authenticated auth origin setup", () => {

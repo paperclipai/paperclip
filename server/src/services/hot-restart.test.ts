@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   appendServerLifecycleEvent,
+  beginEmbeddedPostgresStartupOwnership,
   beginServerLifecycle,
   claimEmbeddedPostgresOwnershipRecovery,
   claimEmbeddedPostgresStartupRecovery,
@@ -663,6 +664,68 @@ describe("embedded PostgreSQL ownership survives a post-adopt replacement crash"
       expect(recovered).not.toBeNull();
       expect(recovered?.replacementServerPid).toBe(999001);
       expect(recovered?.postgres.pid).toBe(postgres.pid);
+    });
+  });
+});
+
+// FAI-9822: a durable, process-bound receipt exists before PostgreSQL is
+// spawned. A successor may finalize it only for the matching process that was
+// launched within the recorded startup attempt, and only after the owner dies.
+describe("embedded PostgreSQL ownership survives a fresh-start crash", () => {
+  it("claims a matching pending startup receipt after the recorded owner dies", async () => {
+    await withTempHome(async (homeDir) => {
+      const createdAt = new Date("2026-08-11T00:00:00.000Z");
+      const dataDir = path.resolve(homeDir, "postgres");
+      await beginEmbeddedPostgresStartupOwnership({
+        homeDir,
+        ownerServerPid: 7301,
+        ownerServerStartedAtEpochMs: createdAt.getTime() - 1_000,
+        ownerServerExecutablePath: path.resolve(homeDir, "node.exe"),
+        postgresDataDir: dataDir,
+        postgresPort: 5432,
+        now: createdAt,
+      });
+      const postgres = {
+        pid: 7302,
+        startedAtEpochSeconds: Math.floor(createdAt.getTime() / 1_000),
+        processStartedAtEpochMs: createdAt.getTime() + 500,
+        executablePath: path.resolve(homeDir, "postgres.exe"),
+        dataDir,
+        port: 5432,
+      };
+
+      await expect(claimEmbeddedPostgresOwnershipRecovery({
+        homeDir,
+        expectedPostgres: postgres,
+        isProcessAlive: () => true,
+      })).resolves.toBeNull();
+      await expect(claimEmbeddedPostgresOwnershipRecovery({
+        homeDir,
+        expectedPostgres: { ...postgres, dataDir: path.resolve(homeDir, "other") },
+        isProcessAlive: () => false,
+      })).resolves.toBeNull();
+      await expect(claimEmbeddedPostgresOwnershipRecovery({
+        homeDir,
+        expectedPostgres: {
+          ...postgres,
+          processStartedAtEpochMs: createdAt.getTime() + 10 * 60_000 + 1,
+        },
+        isProcessAlive: () => false,
+      })).resolves.toBeNull();
+
+      await expect(claimEmbeddedPostgresOwnershipRecovery({
+        homeDir,
+        expectedPostgres: postgres,
+        replacementServerPid: 7303,
+        replacementServerStartedAtEpochMs: createdAt.getTime() + 20_000,
+        replacementServerExecutablePath: path.resolve(homeDir, "node.exe"),
+        isProcessAlive: () => false,
+      })).resolves.toMatchObject({
+        ownershipKind: "fresh_start",
+        predecessorServerPid: 7301,
+        replacementServerPid: 7303,
+        postgres,
+      });
     });
   });
 });

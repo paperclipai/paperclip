@@ -94,16 +94,18 @@ import { systemdNotify } from "./services/systemd-notify.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
 import {
   appendServerLifecycleEvent,
+  beginEmbeddedPostgresStartupOwnership,
   beginServerLifecycle,
   claimEmbeddedPostgresHandoff,
   claimEmbeddedPostgresOwnershipRecovery,
   claimEmbeddedPostgresStartupRecovery,
+  finalizeEmbeddedPostgresStartupOwnership,
   readEmbeddedPostgresProcessIdentity,
   readHotRestartIntent,
   releaseEmbeddedPostgresOwnership,
+  releaseEmbeddedPostgresStartupOwnership,
   releaseEmbeddedPostgresStartupRecovery,
   writeEmbeddedPostgresHandoff,
-  writeEmbeddedPostgresOwnership,
   writeEmbeddedPostgresStartupRecovery,
   type EmbeddedPostgresProcessIdentity,
   type ServerLifecycleBoot,
@@ -702,47 +704,61 @@ async function startServerInternal(
           logger.warn("Removing stale embedded PostgreSQL lock file");
           rmSync(postmasterPidFile, { force: true });
         }
+        const startupOwnership = await beginEmbeddedPostgresStartupOwnership({
+          ownerServerStartedAtEpochMs: serverStartedAtEpochMs,
+          postgresDataDir: dataDir,
+          postgresPort: port,
+        });
         try {
           await embeddedPostgres.start();
         } catch (err) {
+          await releaseEmbeddedPostgresStartupOwnership({ startup: startupOwnership }).catch((releaseError) => {
+            logger.error({ err: releaseError }, "Failed to clear embedded PostgreSQL pre-start ownership receipt");
+          });
           logEmbeddedPostgresFailure("start", err);
           throw formatEmbeddedPostgresError(err, {
             fallbackMessage: `Failed to start embedded PostgreSQL on port ${port}`,
             recentLogs: logBuffer.getRecentLogs(),
           });
         }
-        let freshIdentity: EmbeddedPostgresProcessIdentity | null;
-        try {
-          freshIdentity = await readEmbeddedPostgresProcessIdentity(dataDir);
-        } catch (err) {
-          await embeddedPostgres.stop();
-          throw new Error("Failed to observe fresh embedded PostgreSQL OS process identity", { cause: err });
-        }
-        if (!freshIdentity) {
-          await embeddedPostgres.stop();
-          throw new Error("Embedded PostgreSQL started without a complete OS process identity");
-        }
-        try {
-          await writeEmbeddedPostgresOwnership({
-            ownerServerStartedAtEpochMs: serverStartedAtEpochMs,
-            postgres: freshIdentity,
-          });
-        } catch (err) {
-          await embeddedPostgres.stop();
-          throw new Error("Failed to persist fresh embedded PostgreSQL ownership", { cause: err });
-        }
+        let freshIdentity: EmbeddedPostgresProcessIdentity | null = null;
+        let freshOwnershipFinalized = false;
         stopOwnedEmbeddedPostgres = async () => {
           await embeddedPostgres!.stop();
           try {
-            await releaseEmbeddedPostgresOwnership({
-              ownerServerStartedAtEpochMs: serverStartedAtEpochMs,
-              expectedPostgres: freshIdentity,
-            });
+            if (freshOwnershipFinalized && freshIdentity) {
+              await releaseEmbeddedPostgresOwnership({
+                ownerServerStartedAtEpochMs: serverStartedAtEpochMs,
+                expectedPostgres: freshIdentity,
+              });
+            } else {
+              await releaseEmbeddedPostgresStartupOwnership({ startup: startupOwnership });
+            }
           } catch (err) {
             logger.error({ err }, "Failed to clear stopped fresh embedded PostgreSQL ownership receipt");
           }
         };
         setStartupCleanup({ stop: stopOwnedEmbeddedPostgres, dataDir });
+        try {
+          freshIdentity = await readEmbeddedPostgresProcessIdentity(dataDir);
+        } catch (err) {
+          throw new Error("Failed to observe fresh embedded PostgreSQL OS process identity", { cause: err });
+        }
+        if (!freshIdentity) {
+          throw new Error("Embedded PostgreSQL started without a complete OS process identity");
+        }
+        try {
+          const finalizedOwnership = await finalizeEmbeddedPostgresStartupOwnership({
+            startup: startupOwnership,
+            postgres: freshIdentity,
+          });
+          if (!finalizedOwnership) {
+            throw new Error("Fresh embedded PostgreSQL startup ownership receipt changed before finalization");
+          }
+          freshOwnershipFinalized = true;
+        } catch (err) {
+          throw new Error("Failed to persist fresh embedded PostgreSQL ownership", { cause: err });
+        }
         ownedEmbeddedPostgresIdentity = freshIdentity;
       }
     }
