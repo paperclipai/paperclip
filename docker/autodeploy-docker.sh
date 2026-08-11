@@ -485,8 +485,17 @@ TOP_LEVEL_VOLUMES_BLOCK="volumes:
 PAPERCLIP_USER_ENV=""
 DATA_DIR_ABS=""
 DATA_DIR_REL=""
-HOST_UID=""
-HOST_GID=""
+
+# Always capture the deploy operator's UID/GID. Bootstrap writes
+# admin-credentials.txt into the host deploy directory (bind-mounted at
+# /paperclip-output) for both named-volume and bind-mount data modes; without
+# these values the file can end up root/node-owned and unreadable on the host.
+HOST_UID="${PAPERCLIP_RUNTIME_UID:-$(id -u)}"
+HOST_GID="${PAPERCLIP_RUNTIME_GID:-$(id -g)}"
+if [ "$HOST_UID" = "0" ] || [ "$HOST_GID" = "0" ]; then
+  HOST_UID="1000"
+  HOST_GID="1000"
+fi
 
 if [ "$USE_BIND_MOUNTS" = "true" ]; then
   if [ -z "$DATA_DIR" ]; then
@@ -508,12 +517,7 @@ if [ "$USE_BIND_MOUNTS" = "true" ]; then
   # fall back to 1000:1000. The bind-mounted data will be owned by uid 1000
   # on the host, which is fine — root can still read/edit/back it up, and
   # the container runs as a non-privileged user.
-  HOST_UID="${PAPERCLIP_RUNTIME_UID:-$(id -u)}"
-  HOST_GID="${PAPERCLIP_RUNTIME_GID:-$(id -g)}"
-
-  if [ "$HOST_UID" = "0" ] || [ "$HOST_GID" = "0" ]; then
-    HOST_UID="1000"
-    HOST_GID="1000"
+  if [ "${PAPERCLIP_RUNTIME_UID:-$(id -u)}" = "0" ] || [ "${PAPERCLIP_RUNTIME_GID:-$(id -g)}" = "0" ]; then
     info "Running as root with bind mounts — using UID/GID 1000 inside the container"
     info "(data dir on host will be chowned to 1000:1000; root retains full access)"
   fi
@@ -715,6 +719,9 @@ services:
   bootstrap:
     image: $IMAGE
     profiles: ["bootstrap"]
+    # One-shot helper: run as root so it can chown admin-credentials.txt to the
+    # host operator UID after writing it into the deploy-dir bind mount.
+    user: "0:0"
     depends_on:
       db:
         condition: service_healthy
@@ -1011,18 +1018,15 @@ async function writeAdminCredentials() {
   ].join("\n");
   const target = "/paperclip-output/admin-credentials.txt";
   await fs.writeFile(target, content, { mode: 0o600 });
-  // Prefer host operator ownership so mode 0600 is readable outside the
-  // container when the image user is not the host UID (common on Linux).
+  // Host operator ownership so mode 0600 is readable outside the container
+  // (deploy dir is always bind-mounted at /paperclip-output).
   const hostUid = Number.parseInt(process.env.HOST_UID || "", 10);
   const hostGid = Number.parseInt(process.env.HOST_GID || "", 10);
-  if (Number.isInteger(hostUid) && Number.isInteger(hostGid) && hostUid >= 0 && hostGid >= 0) {
-    try {
-      await fs.chown(target, hostUid, hostGid);
-    } catch (err) {
-      log(`Could not chown admin-credentials.txt to ${hostUid}:${hostGid}: ${err?.message || err}`);
-    }
+  if (!Number.isInteger(hostUid) || !Number.isInteger(hostGid) || hostUid < 0 || hostGid < 0) {
+    throw new Error("HOST_UID/HOST_GID must be set so admin-credentials.txt is host-readable");
   }
-  log(`Credentials written to admin-credentials.txt`);
+  await fs.chown(target, hostUid, hostGid);
+  log(`Credentials written to admin-credentials.txt (owner ${hostUid}:${hostGid})`);
 }
 
 async function bootstrap() {
