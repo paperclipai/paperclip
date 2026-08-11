@@ -152,6 +152,10 @@ function positionsStorageKey(companyId: string): string {
   return `paperclip:goal-map-positions:${companyId}`;
 }
 
+function viewStateStorageKey(companyId: string): string {
+  return `paperclip:goal-map-view:${companyId}`;
+}
+
 function layoutGoalMap(
   nodes: GoalMapNode[],
   trees: IssueTreeInfo,
@@ -655,12 +659,52 @@ export function GoalMap() {
     });
   }, [layout]);
 
+  // Restore the last view (filter, pan, zoom) so leaving for a task and
+  // coming back lands exactly where you were; a restored view skips auto-fit.
   const hasInitialized = useRef(false);
+  const [viewLoaded, setViewLoaded] = useState(false);
   useEffect(() => {
-    if (hasInitialized.current || layout.placedGoals.length === 0 || !containerRef.current) return;
+    if (!selectedCompanyId) return;
+    try {
+      const raw = window.localStorage.getItem(viewStateStorageKey(selectedCompanyId));
+      if (raw) {
+        const parsed = JSON.parse(raw) as { hideCompleted?: unknown; pan?: { x?: unknown; y?: unknown }; zoom?: unknown };
+        if (typeof parsed.hideCompleted === "boolean") setHideCompleted(parsed.hideCompleted);
+        if (
+          typeof parsed.zoom === "number" &&
+          typeof parsed.pan?.x === "number" &&
+          typeof parsed.pan?.y === "number"
+        ) {
+          setPan({ x: parsed.pan.x, y: parsed.pan.y });
+          setZoom(clampZoom(parsed.zoom));
+          hasInitialized.current = true;
+        }
+      }
+    } catch {
+      // View state is cosmetic; ignore storage failures.
+    }
+    setViewLoaded(true);
+  }, [selectedCompanyId]);
+  useEffect(() => {
+    if (!selectedCompanyId || !viewLoaded) return;
+    const timer = window.setTimeout(() => {
+      try {
+        window.localStorage.setItem(
+          viewStateStorageKey(selectedCompanyId),
+          JSON.stringify({ hideCompleted, pan, zoom }),
+        );
+      } catch {
+        // View state is cosmetic; ignore storage failures.
+      }
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [selectedCompanyId, viewLoaded, hideCompleted, pan, zoom]);
+
+  useEffect(() => {
+    if (hasInitialized.current || !viewLoaded || layout.placedGoals.length === 0 || !containerRef.current) return;
     hasInitialized.current = true;
     fitToScreen();
-  }, [layout, fitToScreen]);
+  }, [layout, fitToScreen, viewLoaded]);
 
   const selectIssue = useCallback((issueId: string) => {
     if (suppressNextClick.current) return;
