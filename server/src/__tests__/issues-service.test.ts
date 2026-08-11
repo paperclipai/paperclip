@@ -42,6 +42,12 @@ import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
 } from "../services/execution-workspace-policy.ts";
 import { buildAgentMentionHref, buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH, type IssueWorkMode } from "@paperclipai/shared";
+import { documentService } from "../services/documents.ts";
+import {
+  ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  getIssueContinuationSummaryDocument,
+  isSeededDelegatedChildSummary,
+} from "../services/issue-continuation-summary.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -6062,4 +6068,187 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
     });
   });
 
+});
+
+// HELA-7805: cross-agent handoff. A fresh child delegated (create+assign) from
+// agent A to a DIFFERENT agent B must start its first heartbeat with a non-empty
+// continuation summary seeded from A's latest summary + the parent objective.
+describeEmbeddedPostgres("issueService.create cross-agent handoff seed", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-handoff-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueDocuments);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(documents);
+    await db.delete(goals);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompanyWithTwoAgents() {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `H${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const delegatorId = randomUUID();
+    const assigneeId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: delegatorId,
+        companyId,
+        name: "Alpha",
+        role: "engineer",
+        status: "active",
+        reportsTo: null,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: assigneeId,
+        companyId,
+        name: "Coder",
+        role: "engineer",
+        status: "active",
+        reportsTo: null,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    return { companyId, delegatorId, assigneeId };
+  }
+
+  const PARENT_DESCRIPTION = [
+    "## Objective",
+    "",
+    "Resolve print price from the selected paper and quantity.",
+    "",
+    "## Blockers / Decisions",
+    "",
+    "- Awaiting confirmation of the rounding rule.",
+  ].join("\n");
+
+  it("seeds the delegated child's continuation summary from delegator + parent", async () => {
+    const { companyId, delegatorId, assigneeId } = await seedCompanyWithTwoAgents();
+
+    const parent = await svc.create(companyId, {
+      title: "Pricing umbrella",
+      description: PARENT_DESCRIPTION,
+      status: "todo",
+      priority: "medium",
+    });
+
+    // Give the delegator a prior continuation summary on a separate issue so the
+    // "delegator handoff" source is populated for the cross-agent boundary.
+    const delegatorIssue = await svc.create(companyId, {
+      title: "Delegator's own work",
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+    await documentService(db).upsertIssueDocument({
+      issueId: delegatorIssue.id,
+      key: ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+      title: "Continuation Summary",
+      format: "markdown",
+      body: [
+        "# Continuation Summary",
+        "",
+        "## Recent Concrete Actions",
+        "",
+        "- Landed the parent scaffold in server/src/services/pricing.ts.",
+      ].join("\n"),
+      createdByAgentId: delegatorId,
+    });
+
+    const child = await svc.create(companyId, {
+      title: "Wire paper selection into pricing",
+      description: "Child DoR text.",
+      status: "todo",
+      priority: "medium",
+      parentId: parent.id,
+      createdByAgentId: delegatorId,
+      assigneeAgentId: assigneeId,
+    });
+
+    const summary = await getIssueContinuationSummaryDocument(db, child.id);
+    expect(summary).not.toBeNull();
+    expect(isSeededDelegatedChildSummary(summary!.body)).toBe(true);
+    // Parent objective + blockers crossed the boundary.
+    expect(summary!.body).toContain("Resolve print price from the selected paper and quantity.");
+    expect(summary!.body).toContain("Awaiting confirmation of the rounding rule.");
+    // Delegator's own recent work handed off + provenance attributes Alpha.
+    expect(summary!.body).toContain("Landed the parent scaffold in server/src/services/pricing.ts.");
+    expect(summary!.body).toContain("Delegated by: Alpha");
+  });
+
+  it("does not seed when the child is self-assigned (intra-agent, not a handoff)", async () => {
+    const { companyId, delegatorId } = await seedCompanyWithTwoAgents();
+    const parent = await svc.create(companyId, {
+      title: "Umbrella",
+      description: PARENT_DESCRIPTION,
+      status: "todo",
+      priority: "medium",
+    });
+
+    const child = await svc.create(companyId, {
+      title: "Self-assigned follow-up",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      parentId: parent.id,
+      createdByAgentId: delegatorId,
+      assigneeAgentId: delegatorId,
+    });
+
+    const summary = await getIssueContinuationSummaryDocument(db, child.id);
+    expect(summary).toBeNull();
+  });
+
+  it("does not seed an unassigned child", async () => {
+    const { companyId, delegatorId } = await seedCompanyWithTwoAgents();
+    const parent = await svc.create(companyId, {
+      title: "Umbrella",
+      description: PARENT_DESCRIPTION,
+      status: "todo",
+      priority: "medium",
+    });
+
+    const child = await svc.create(companyId, {
+      title: "Unassigned child",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      parentId: parent.id,
+      createdByAgentId: delegatorId,
+      assigneeAgentId: null,
+    });
+
+    const summary = await getIssueContinuationSummaryDocument(db, child.id);
+    expect(summary).toBeNull();
+  });
 });

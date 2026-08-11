@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   ISSUE_CONTINUATION_SUMMARY_MAX_BODY_CHARS,
   buildContinuationSummaryMarkdown,
+  buildDelegatedChildSeedSummaryMarkdown,
   continuationSummaryParksExecutor,
   extractContinuationSummaryNextAction,
+  isSeededDelegatedChildSummary,
 } from "../services/issue-continuation-summary.js";
 
 describe("issue continuation summaries", () => {
@@ -111,5 +113,79 @@ describe("issue continuation summaries", () => {
     ].join("\n");
 
     expect(continuationSummaryParksExecutor(body)).toBe(false);
+  });
+});
+
+describe("delegated child seed summary (cross-agent handoff)", () => {
+  it("seeds parent objective/blockers and delegator handoff with provenance", () => {
+    const body = buildDelegatedChildSeedSummaryMarkdown({
+      child: { identifier: "PAP-2000", title: "Wire paper selection into pricing" },
+      delegator: {
+        agentId: "agent-alpha",
+        agentName: "Alpha",
+        runId: "run-42",
+        sourceIssueIdentifier: "PAP-1803",
+        summaryBody: [
+          "# Continuation Summary",
+          "",
+          "## Recent Concrete Actions",
+          "",
+          "- Landed the parent scaffold in server/src/services/pricing.ts.",
+          "",
+          "## Next Action",
+          "",
+          "- Delegate the paper-selection wiring to a coder.",
+        ].join("\n"),
+      },
+      parent: {
+        identifier: "PAP-1803",
+        title: "Pricing umbrella",
+        description: [
+          "## Objective",
+          "",
+          "Resolve print price from the selected paper and quantity.",
+          "",
+          "## Blockers / Decisions",
+          "",
+          "- Awaiting confirmation of the rounding rule.",
+        ].join("\n"),
+      },
+    });
+
+    // Provenance is machine-detectable and attributes the delegator + run.
+    expect(isSeededDelegatedChildSummary(body)).toBe(true);
+    expect(body).toContain("Delegated by: Alpha (run `run-42`)");
+    expect(body).toContain("Delegator source issue: PAP-1803");
+    expect(body).toContain("Parent: PAP-1803 — Pricing umbrella");
+
+    // Parent objective + blockers cross the boundary.
+    expect(body).toContain("Resolve print price from the selected paper and quantity.");
+    expect(body).toContain("Awaiting confirmation of the rounding rule.");
+
+    // Delegator's own recent work + next action are handed off.
+    expect(body).toContain("Landed the parent scaffold in server/src/services/pricing.ts.");
+    expect(body).toContain("Delegate the paper-selection wiring to a coder.");
+
+    // The seeded next action stays runnable (does not park the executor for review).
+    expect(continuationSummaryParksExecutor(body)).toBe(false);
+    expect(body.length).toBeLessThanOrEqual(ISSUE_CONTINUATION_SUMMARY_MAX_BODY_CHARS);
+  });
+
+  it("degrades gracefully when the delegator left no summary and parent objective is missing", () => {
+    const body = buildDelegatedChildSeedSummaryMarkdown({
+      child: { identifier: "PAP-2001", title: "Follow-up" },
+      delegator: { agentId: null, agentName: null, runId: null },
+      parent: {
+        identifier: "PAP-1900",
+        title: "Umbrella",
+        description: "Freeform parent description without headings.",
+      },
+    });
+
+    expect(isSeededDelegatedChildSummary(body)).toBe(true);
+    expect(body).toContain("Delegated by: another agent");
+    // Falls back to the raw parent description when there is no ## Objective heading.
+    expect(body).toContain("Freeform parent description without headings.");
+    expect(body).toContain("The delegating agent left no continuation summary");
   });
 });

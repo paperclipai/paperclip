@@ -88,6 +88,7 @@ import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallbac
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
+import { seedDelegatedChildContinuationSummary } from "./issue-continuation-summary.js";
 import {
   summarizeIssueWatchdog,
   upsertIssueWatchdogForIssue,
@@ -6056,7 +6057,7 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      return db.transaction(async (tx) => {
+      const created = await db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
         let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
@@ -6272,6 +6273,41 @@ export function issueService(db: Db) {
         const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
         return withRelations;
       });
+
+      // HELA-7805: cross-agent handoff. When A creates+assigns a child to a
+      // DIFFERENT agent B, seed B's continuation summary from A's latest summary
+      // + the parent objective/blockers so B starts with real context instead of
+      // an empty summary. Best-effort and post-commit: a failed/absent seed must
+      // never block issue creation. Skips self-assignment (A === B) since that is
+      // intra-agent work, not a cross-agent boundary.
+      const delegatorAgentId = issueData.createdByAgentId ?? null;
+      if (
+        created?.id &&
+        created.assigneeAgentId &&
+        delegatorAgentId &&
+        delegatorAgentId !== created.assigneeAgentId
+      ) {
+        try {
+          await seedDelegatedChildContinuationSummary({
+            db,
+            child: {
+              id: created.id,
+              identifier: created.identifier ?? null,
+              title: created.title,
+            },
+            parentId: issueData.parentId ?? null,
+            delegatorAgentId,
+            delegatorRunId: actorRunId ?? issueData.originRunId ?? null,
+          });
+        } catch (err) {
+          logger.warn(
+            { err, childIssueId: created.id, delegatorAgentId },
+            "failed to seed delegated child continuation summary",
+          );
+        }
+      }
+
+      return created;
     },
 
     update: async (

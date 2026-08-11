@@ -1,6 +1,6 @@
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { documents, issueDocuments, issues } from "@paperclipai/db";
+import { agents, documents, issueDocuments, issues } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, type SourceTrustMetadata } from "@paperclipai/shared";
 import { documentService } from "./documents.js";
 
@@ -279,6 +279,200 @@ export async function refreshIssueContinuationSummary(input: {
     changeSummary: `Refresh continuation summary after run ${run.id}`,
     createdByAgentId: agent.id,
     createdByRunId: run.id,
+  });
+  return result.document;
+}
+
+// --- Cross-agent delegation handoff (HELA-7805) -----------------------------
+// When agent A creates+assigns a child issue to agent B, only the child's own
+// text crosses the boundary; A's reasoning / run summary / touched files do not,
+// and the child's continuation summary is empty because it is keyed per-issue and
+// built only from that issue's OWN runs. That is why founders hand-copy the full
+// DoR into the description. These helpers seed the fresh child's continuation
+// summary from the delegator's latest summary + the parent objective/blockers so
+// B has non-empty, provenance-tagged handoff context on its FIRST heartbeat.
+
+// Machine-readable provenance marker embedded in seeded summaries so a reader
+// (or a later refresh) can tell the body was seeded on delegation, not produced
+// by an executor run on this issue.
+export const DELEGATED_SEED_PROVENANCE_MARKER =
+  "<!-- paperclip:seeded-continuation origin=delegation -->";
+
+export function isSeededDelegatedChildSummary(body: string | null | undefined) {
+  return typeof body === "string" && body.includes(DELEGATED_SEED_PROVENANCE_MARKER);
+}
+
+export type DelegatedChildSeedInput = {
+  child: { identifier: string | null; title: string };
+  delegator: {
+    agentId: string | null;
+    agentName: string | null;
+    runId: string | null;
+    summaryBody?: string | null;
+    sourceIssueIdentifier?: string | null;
+  };
+  parent?: {
+    identifier: string | null;
+    title: string;
+    description: string | null;
+  } | null;
+};
+
+export function buildDelegatedChildSeedSummaryMarkdown(input: DelegatedChildSeedInput) {
+  const { child, delegator, parent } = input;
+  const delegatorLabel = delegator.agentName ?? delegator.agentId ?? "another agent";
+
+  const parentObjective = parent
+    ? extractMarkdownSection(parent.description, "Objective") ??
+      (parent.description ? truncateText(parent.description, SUMMARY_SECTION_MAX_CHARS) : null)
+    : null;
+  const parentBlockers = parent
+    ? extractMarkdownSection(parent.description, "Blockers / Decisions") ??
+      extractMarkdownSection(parent.description, "Blockers")
+    : null;
+
+  const delegatorHandoff =
+    extractMarkdownSection(delegator.summaryBody, "Recent Concrete Actions") ??
+    extractMarkdownSection(delegator.summaryBody, "Objective") ??
+    (delegator.summaryBody ? truncateText(delegator.summaryBody, SUMMARY_SECTION_MAX_CHARS) : null);
+  const delegatorNextAction = extractMarkdownSection(delegator.summaryBody, "Next Action");
+
+  const provenance = [
+    `- Delegated by: ${delegatorLabel}${delegator.runId ? ` (run \`${delegator.runId}\`)` : ""}`,
+    `- Delegator source issue: ${delegator.sourceIssueIdentifier ?? "unknown"}`,
+    `- Parent: ${parent ? `${parent.identifier ?? "?"} — ${parent.title}` : "none"}`,
+  ];
+
+  const body = [
+    "# Continuation Summary",
+    DELEGATED_SEED_PROVENANCE_MARKER,
+    "",
+    `- Issue: ${child.identifier ?? "(new)"} — ${child.title}`,
+    "- Current mode: seeded-on-delegation (no executor run has touched this issue yet)",
+    ...provenance,
+    "",
+    "> This summary was seeded from the delegating agent and the parent issue. No code",
+    "> has been written for THIS issue yet — verify current repository/board state before",
+    "> assuming any of the work below is already done.",
+    "",
+    "## Objective",
+    "",
+    parentObjective ??
+      "No parent objective was captured. Read this issue's description and the parent thread for the goal.",
+    "",
+    "## Parent Blockers / Decisions",
+    "",
+    parentBlockers ?? "No blockers or decisions were recorded on the parent.",
+    "",
+    "## Delegator Handoff",
+    "",
+    delegatorHandoff ??
+      "The delegating agent left no continuation summary; treat this issue's description as the source of truth.",
+    ...(delegatorNextAction
+      ? ["", "Delegator's own next action at hand-off time:", "", delegatorNextAction]
+      : []),
+    "",
+    "## Next Action",
+    "",
+    "- Start implementation from the parent objective and delegator handoff above; confirm the current state first, since this context was seeded by the delegator rather than earned by a run on this issue.",
+  ].join("\n");
+
+  return truncateText(body, ISSUE_CONTINUATION_SUMMARY_MAX_BODY_CHARS);
+}
+
+async function findLatestAgentContinuationSummary(db: Db, agentId: string, excludeIssueId: string) {
+  return db
+    .select({
+      body: documents.latestBody,
+      issueIdentifier: issues.identifier,
+    })
+    .from(issueDocuments)
+    .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+    .innerJoin(issues, eq(issueDocuments.issueId, issues.id))
+    .where(
+      and(
+        eq(issueDocuments.key, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
+        eq(documents.createdByAgentId, agentId),
+        ne(issueDocuments.issueId, excludeIssueId),
+      ),
+    )
+    .orderBy(desc(documents.updatedAt))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+}
+
+// Seed a freshly-created delegated child's continuation summary. Best-effort:
+// callers should invoke this AFTER the create transaction commits and swallow
+// failures, since a missing handoff summary must never block issue creation.
+// Guards: only seeds when the child has NO summary yet, and only writes when at
+// least one real source (parent description or delegator summary) is available.
+export async function seedDelegatedChildContinuationSummary(input: {
+  db: Db;
+  child: { id: string; identifier: string | null; title: string };
+  parentId: string | null;
+  delegatorAgentId: string | null;
+  delegatorRunId: string | null;
+}) {
+  const { db, child, parentId, delegatorAgentId, delegatorRunId } = input;
+
+  // Guard: never overwrite an existing summary — only seed genuinely fresh children.
+  const existing = await getIssueContinuationSummaryDocument(db, child.id);
+  if (existing) return null;
+
+  const [parent, delegatorAgent, delegatorSummary] = await Promise.all([
+    parentId
+      ? db
+          .select({
+            identifier: issues.identifier,
+            title: issues.title,
+            description: issues.description,
+          })
+          .from(issues)
+          .where(eq(issues.id, parentId))
+          .then((rows) => rows[0] ?? null)
+      : Promise.resolve(null),
+    delegatorAgentId
+      ? db
+          .select({ name: agents.name })
+          .from(agents)
+          .where(eq(agents.id, delegatorAgentId))
+          .then((rows) => rows[0] ?? null)
+      : Promise.resolve(null),
+    delegatorAgentId
+      ? findLatestAgentContinuationSummary(db, delegatorAgentId, child.id)
+      : Promise.resolve(null),
+  ]);
+
+  const hasParentContext = Boolean(parent?.description?.trim());
+  const hasDelegatorSummary = Boolean(delegatorSummary?.body?.trim());
+  if (!hasParentContext && !hasDelegatorSummary) return null;
+
+  const body = buildDelegatedChildSeedSummaryMarkdown({
+    child: { identifier: child.identifier, title: child.title },
+    delegator: {
+      agentId: delegatorAgentId,
+      agentName: delegatorAgent?.name ?? null,
+      runId: delegatorRunId,
+      summaryBody: delegatorSummary?.body ?? null,
+      sourceIssueIdentifier: delegatorSummary?.issueIdentifier ?? null,
+    },
+    parent: parent
+      ? { identifier: parent.identifier, title: parent.title, description: parent.description }
+      : null,
+  });
+
+  const result = await documentService(db).upsertIssueDocument({
+    issueId: child.id,
+    key: ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+    title: ISSUE_CONTINUATION_SUMMARY_TITLE,
+    format: "markdown",
+    body,
+    baseRevisionId: null,
+    changeSummary: `Seed continuation summary on delegation${
+      delegatorAgent?.name ? ` from ${delegatorAgent.name}` : ""
+    }`,
+    createdByAgentId: delegatorAgentId,
+    createdByRunId: delegatorRunId,
   });
   return result.document;
 }
