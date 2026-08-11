@@ -165,17 +165,34 @@ export async function applyManagedEnvironments(
    * that "the default" is the platform sandbox. A tenant-chosen custom
    * environment (ssh, their own sandbox) is never overridden.
    *
-   * Gated on the document declaring `enableManagedSandboxOnly`: while the
-   * mode is off, local execution is a legitimate default, and stamping
-   * here would silently move agent runs into the sandbox on the next
-   * boot. Idempotent and best-effort — a failure degrades to the run-time
+   * Gated symmetrically on the document declaring
+   * `enableManagedSandboxOnly`:
+   *
+   * - Declared: stamp the managed row as the default, so pickers and run
+   *   selection agree the platform sandbox is "the default".
+   * - Not declared: local execution is a legitimate default again, so a
+   *   default THIS reconciliation stamped earlier (it points at the
+   *   managed row) reverts to unset — otherwise turning the mode off
+   *   would keep routing default-following runs into the sandbox off a
+   *   stale stamp. A tenant-chosen custom default is untouched in both
+   *   directions.
+   *
+   * Idempotent and best-effort — a failure degrades to the run-time
    * policy, which refuses local under managed-sandbox-only regardless.
    */
   const managedSandboxOnlyDeclared = managedConfig.features.enableManagedSandboxOnly === true;
   const ensureManagedInstanceDefault = async (managedEnvironmentId: string): Promise<void> => {
-    if (!managedSandboxOnlyDeclared) return;
     try {
       const current = (await settings.get()).defaultEnvironmentId ?? null;
+      if (!managedSandboxOnlyDeclared) {
+        if (current !== managedEnvironmentId) return;
+        await settings.update({ defaultEnvironmentId: null });
+        logger.info(
+          { environmentId: managedEnvironmentId },
+          "instance default environment reverted from the managed sandbox environment (managed-sandbox-only is not declared)",
+        );
+        return;
+      }
       if (current === managedEnvironmentId) return;
       if (current !== null) {
         const currentEnvironment = await environments.getById(current);
@@ -189,7 +206,7 @@ export async function applyManagedEnvironments(
     } catch (err) {
       logger.error(
         { err, environmentId: managedEnvironmentId },
-        "failed to set the instance default environment to the managed sandbox environment",
+        "failed to reconcile the instance default environment with the managed sandbox environment",
       );
     }
   };

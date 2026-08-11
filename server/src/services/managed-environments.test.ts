@@ -548,6 +548,39 @@ describe("applyManagedEnvironments", () => {
     expect(instanceSettings.update).not.toHaveBeenCalled();
   });
 
+  it("reverts a stamped managed default when managed-sandbox-only turns off", async () => {
+    // Turning the mode off must not keep routing default-following runs
+    // into the sandbox off the stale stamp: a default pointing at the
+    // managed row reverts to unset, while any other default is untouched.
+    const stamped = instanceSettingsSeam({
+      get: vi.fn().mockResolvedValue({ defaultEnvironmentId: "env-1" }) as InstanceSettingsSeam["get"],
+    });
+    const config = parsedConfig({
+      environments: [{ name: "Daytona", provider: "daytona" }],
+    });
+
+    await applyManagedEnvironments(noDb, config, {
+      env: {},
+      workerManager: runningWorkerManager(),
+      instanceSettings: stamped,
+      environments: environmentsSeam(),
+      resolveSandboxProviderDriver: readyDriverResolver(),
+    });
+    expect(stamped.update).toHaveBeenCalledWith({ defaultEnvironmentId: null });
+
+    const tenantChosen = instanceSettingsSeam({
+      get: vi.fn().mockResolvedValue({ defaultEnvironmentId: "env-ssh" }) as InstanceSettingsSeam["get"],
+    });
+    await applyManagedEnvironments(noDb, config, {
+      env: {},
+      workerManager: runningWorkerManager(),
+      instanceSettings: tenantChosen,
+      environments: environmentsSeam(),
+      resolveSandboxProviderDriver: readyDriverResolver(),
+    });
+    expect(tenantChosen.update).not.toHaveBeenCalled();
+  });
+
   it("never overrides a tenant-chosen custom default environment", async () => {
     const instanceSettings = instanceSettingsSeam({
       get: vi.fn().mockResolvedValue({ defaultEnvironmentId: "env-ssh" }) as InstanceSettingsSeam["get"],
