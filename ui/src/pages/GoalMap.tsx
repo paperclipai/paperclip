@@ -12,6 +12,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { IssueStatusBadge, StatusBadge } from "../components/StatusBadge";
@@ -316,7 +317,36 @@ export function GoalMap() {
     },
   });
 
-  const trees = useMemo(() => buildIssueTrees(goalMap?.issues ?? []), [goalMap]);
+  // Hide-completed: open tasks stay, plus (a) their done ancestors so trees
+  // keep their shape, and (b) the completed blockers that unlocked a shown
+  // task, so green "path clear" arrows keep their context.
+  const [hideCompleted, setHideCompleted] = useState(false);
+  const visibleIssues = useMemo(() => {
+    const all = goalMap?.issues ?? [];
+    if (!hideCompleted) return all;
+    const byId = new Map(all.map((issue) => [issue.id, issue]));
+    const keep = new Set<string>();
+    const addWithAncestors = (issue: GoalMapIssueNode) => {
+      const seen = new Set<string>();
+      let current: GoalMapIssueNode | undefined = issue;
+      while (current && !keep.has(current.id) && !seen.has(current.id)) {
+        seen.add(current.id);
+        keep.add(current.id);
+        current = current.parentId ? byId.get(current.parentId) : undefined;
+      }
+    };
+    for (const issue of all) {
+      if (issue.status !== "done" && issue.status !== "cancelled") addWithAncestors(issue);
+    }
+    for (const edge of goalMap?.issueEdges ?? []) {
+      if (!keep.has(edge.toIssueId)) continue;
+      const blocker = byId.get(edge.fromIssueId);
+      if (blocker) addWithAncestors(blocker);
+    }
+    return all.filter((issue) => keep.has(issue.id));
+  }, [goalMap, hideCompleted]);
+
+  const trees = useMemo(() => buildIssueTrees(visibleIssues), [visibleIssues]);
   const layout = useMemo(() => layoutGoalMap(goalMap?.nodes ?? [], trees), [goalMap, trees]);
   const issueById = useMemo(
     () => new Map((goalMap?.issues ?? []).map((issue) => [issue.id, issue])),
@@ -585,6 +615,14 @@ export function GoalMap() {
             Tree view
           </Button>
         </Link>
+        <Button
+          variant={hideCompleted ? "secondary" : "outline"}
+          size="sm"
+          aria-pressed={hideCompleted}
+          onClick={() => setHideCompleted((value) => !value)}
+        >
+          Hide completed
+        </Button>
         {goalMap.issuesTruncated && (
           <span className="text-xs text-muted-foreground">Showing the first {goalMap.issues.length} tasks.</span>
         )}
@@ -1011,12 +1049,41 @@ export function GoalMap() {
               </div>
 
               <InspectorSection title="Actions">
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-2">
                   <StatusIcon
                     status={selectedIssue.status}
                     showLabel
                     onChange={(status) => updateIssue.mutate({ issueId: selectedIssue.id, data: { status } })}
                   />
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button variant="outline" size="sm">Move to…</Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-64 p-1" align="start">
+                      <p className="px-2 py-1.5 text-xs text-muted-foreground">
+                        Move to the top level of a goal. To nest under another task, drag the card on the map.
+                      </p>
+                      {goalMap.nodes.map((node) => {
+                        const isCurrent = selectedIssue.goalId === node.goal.id && !selectedIssue.parentId;
+                        return (
+                          <button
+                            key={node.goal.id}
+                            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent/50 disabled:opacity-50"
+                            disabled={isCurrent}
+                            onClick={() =>
+                              updateIssue.mutate({
+                                issueId: selectedIssue.id,
+                                data: { parentId: null, goalId: node.goal.id },
+                              })
+                            }
+                          >
+                            <span className="truncate">{node.goal.title}</span>
+                            {isCurrent && <span className="ml-auto shrink-0 text-xs text-muted-foreground">current</span>}
+                          </button>
+                        );
+                      })}
+                    </PopoverContent>
+                  </Popover>
                   <Link to={`/issues/${selectedIssue.id}`} className="ml-auto">
                     <Button variant="outline" size="sm">Open task</Button>
                   </Link>

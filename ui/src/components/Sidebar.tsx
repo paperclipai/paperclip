@@ -2,6 +2,7 @@ import {
   Inbox,
   ListChecks,
   CircleDot,
+  Map,
   Target,
   LayoutDashboard,
   DollarSign,
@@ -234,7 +235,10 @@ export function Sidebar() {
             <SidebarNavItem to="/pipelines" label="Pipelines" icon={GitBranch} />
           ) : null}
           {showGoalsLink ? (
-            <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+            <>
+              <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+              <SidebarNavItem to="/goals/map" label="Goal Map" icon={Map} />
+            </>
           ) : goalsLinkPending ? (
             <div
               data-testid="sidebar-goals-placeholder"
