@@ -218,6 +218,49 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   }
 
+  it("repairs the live review participant once and preserves protected history", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const decisionId = randomUUID();
+    const stageId = randomUUID();
+    await db.update(issues).set({
+      status: "in_review",
+      executionState: {
+        status: "changes_requested",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: coderId, userId: null },
+        returnAssignee: { type: "agent", agentId: managerId, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: decisionId,
+        lastDecisionOutcome: "changes_requested",
+      },
+    }).where(eq(issues.id, sourceIssueId));
+
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const first = await recovery.reconcileStrandedAssignedIssues();
+    const [afterFirst] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    const repairs = await db.select().from(activityLog).where(eq(activityLog.entityId, sourceIssueId));
+
+    expect(first.changesRequestedRepaired).toBe(1);
+    expect(afterFirst?.executionState).toMatchObject({
+      status: "changes_requested",
+      currentParticipant: { type: "agent", agentId: managerId },
+      returnAssignee: { type: "agent", agentId: managerId },
+      lastDecisionId: decisionId,
+      lastDecisionOutcome: "changes_requested",
+    });
+    expect(repairs.filter((entry) => entry.action === "recovery.changes_requested_participant_repaired")).toHaveLength(1);
+    expect(enqueueWakeup).toHaveBeenCalledWith(managerId, expect.anything());
+
+    const second = await recovery.reconcileStrandedAssignedIssues();
+    expect(second.changesRequestedRepaired).toBe(0);
+    expect((await db.select().from(activityLog)).filter((entry) => entry.action === "recovery.changes_requested_participant_repaired")).toHaveLength(1);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+  });
+
   function createApp(
     actor: any = { type: "board", source: "local_implicit" },
     opts: Parameters<typeof issueRoutes>[2] = {},

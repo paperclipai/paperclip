@@ -3520,7 +3520,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             sql`(${issues.executionState}->'currentParticipant'->>'agentId') IS DISTINCT FROM (${issues.executionState}->'returnAssignee'->>'agentId')`,
           ))
           .returning({ id: issues.id, executionState: issues.executionState });
-        if (updated.length === 0) return false;
+        if (updated.length === 0) return null;
 
         const repairedState = updated[0].executionState;
         // The activity record must commit with the CAS repair. Drizzle's
@@ -3546,14 +3546,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             invariant: "currentParticipant only; decision and verdict history preserved",
           },
         });
-        return true;
+        return repairedState;
       });
       if (repaired) result.changesRequestedRepaired += 1;
 
+      // The candidate snapshot may predate the CAS repair. Use the state
+      // returned by that transaction for the remainder of this pass so a
+      // restored review participant, rather than the original assignee, owns
+      // any follow-up wake. A concurrent restoration that wins the CAS leaves
+      // `repaired` null and the candidate is handled from its original state.
+      const effectiveExecutionState = repaired ?? issue.executionState;
       const executionState = issue.status === "in_review"
-        ? parseIssueExecutionState(issue.executionState)
+        ? parseIssueExecutionState(effectiveExecutionState)
         : null;
-      const pendingExecutionState = executionState?.status === "pending" ? executionState : null;
+      const pendingExecutionState = executionState?.currentParticipant ? executionState : null;
       const currentParticipant = pendingExecutionState
         ? pendingExecutionState.currentParticipant
         : null;
