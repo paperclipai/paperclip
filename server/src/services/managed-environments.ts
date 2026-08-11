@@ -87,7 +87,11 @@ export interface ApplyManagedEnvironmentsOptions {
   /** Test seam: overrides the environment service built from `db`. */
   environments?: Pick<
     ReturnType<typeof environmentService>,
-    "ensureManagedSandboxEnvironment" | "archiveManagedSandboxEnvironment" | "getById" | "update"
+    | "ensureManagedSandboxEnvironment"
+    | "archiveManagedSandboxEnvironment"
+    | "getById"
+    | "update"
+    | "findManagedSandboxEnvironment"
   >;
   /** Test seam: overrides the instance-settings service built from `db`. */
   instanceSettings?: Pick<ReturnType<typeof instanceSettingsService>, "get" | "update">;
@@ -132,7 +136,47 @@ export async function applyManagedEnvironments(
   managedConfig: ManagedInstanceConfig | null,
   opts: ApplyManagedEnvironmentsOptions = {},
 ): Promise<ApplyManagedEnvironmentsResult | null> {
-  if (!managedConfig || managedConfig.environments.length === 0) return null;
+  if (!managedConfig) return null;
+
+  const settings = opts.instanceSettings ?? instanceSettingsService(db);
+  const environments = opts.environments ?? environmentService(db);
+  const managedSandboxOnlyDeclared = managedConfig.features.enableManagedSandboxOnly === true;
+
+  // Mode-off default cleanup runs BEFORE any ensure, and regardless of
+  // whether the document still declares environments or the provider is
+  // available: a reconciliation-stamped default must not outlive the mode
+  // through the paths that skip per-entry reconciliation entirely — the
+  // declaration was removed, the provider is down, or the row was
+  // archived. Only a default that points at the managed row AND carries
+  // the `managedDefaultStamped` marker reverts; tenant-chosen defaults
+  // (no marker) are untouched.
+  if (!managedSandboxOnlyDeclared) {
+    try {
+      const managedRow = await environments.findManagedSandboxEnvironment(undefined, {
+        includeArchived: true,
+      });
+      if (
+        managedRow &&
+        managedRow.metadata?.managedDefaultStamped === true &&
+        ((await settings.get()).defaultEnvironmentId ?? null) === managedRow.id
+      ) {
+        await settings.update({ defaultEnvironmentId: null });
+        const { managedDefaultStamped: _cleared, ...remainingMetadata } = managedRow.metadata ?? {};
+        await environments.update(managedRow.id, { metadata: remainingMetadata });
+        logger.info(
+          { environmentId: managedRow.id },
+          "instance default environment reverted from the managed sandbox environment (managed-sandbox-only is not declared)",
+        );
+      }
+    } catch (err) {
+      logger.error(
+        { err },
+        "failed to revert the stamped managed sandbox instance default (degraded: stale default until the next boot)",
+      );
+    }
+  }
+
+  if (managedConfig.environments.length === 0) return null;
 
   // The forced-execution-mode bootstrap (`PAPERCLIP_EXECUTION_MODE=kubernetes`)
   // and this one both own the single Paperclip-managed sandbox row
@@ -154,8 +198,6 @@ export async function applyManagedEnvironments(
   await opts.pluginsReady;
 
   const resolveDriver = opts.resolveSandboxProviderDriver ?? resolvePluginSandboxProviderDriverByKey;
-  const environments = opts.environments ?? environmentService(db);
-  const settings = opts.instanceSettings ?? instanceSettingsService(db);
 
   /**
    * Point the instance default at the managed sandbox row when no
@@ -185,26 +227,13 @@ export async function applyManagedEnvironments(
    * Idempotent and best-effort — a failure degrades to the run-time
    * policy, which refuses local under managed-sandbox-only regardless.
    */
-  const managedSandboxOnlyDeclared = managedConfig.features.enableManagedSandboxOnly === true;
   const ensureManagedInstanceDefault = async (managedEnvironment: {
     id: string;
     metadata: Record<string, unknown> | null;
   }): Promise<void> => {
+    if (!managedSandboxOnlyDeclared) return;
     try {
       const current = (await settings.get()).defaultEnvironmentId ?? null;
-      const stampedByReconciliation = managedEnvironment.metadata?.managedDefaultStamped === true;
-      if (!managedSandboxOnlyDeclared) {
-        if (current !== managedEnvironment.id || !stampedByReconciliation) return;
-        await settings.update({ defaultEnvironmentId: null });
-        const { managedDefaultStamped: _cleared, ...remainingMetadata } =
-          managedEnvironment.metadata ?? {};
-        await environments.update(managedEnvironment.id, { metadata: remainingMetadata });
-        logger.info(
-          { environmentId: managedEnvironment.id },
-          "instance default environment reverted from the managed sandbox environment (managed-sandbox-only is not declared)",
-        );
-        return;
-      }
       if (current === managedEnvironment.id) return;
       if (current !== null) {
         const currentEnvironment = await environments.getById(current);

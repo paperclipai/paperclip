@@ -102,6 +102,8 @@ function environmentsSeam(overrides: Partial<EnvironmentsSeam> = {}): Environmen
       overrides.archiveManagedSandboxEnvironment ?? vi.fn().mockResolvedValue(null),
     getById: overrides.getById ?? vi.fn().mockResolvedValue(null),
     update: overrides.update ?? vi.fn().mockResolvedValue(environmentRow()),
+    findManagedSandboxEnvironment:
+      overrides.findManagedSandboxEnvironment ?? vi.fn().mockResolvedValue(null),
   };
 }
 
@@ -572,20 +574,22 @@ describe("applyManagedEnvironments", () => {
 
   it("reverts a stamped managed default when managed-sandbox-only turns off", async () => {
     // Turning the mode off must not keep routing default-following runs
-    // into the sandbox off the stale stamp: a default pointing at the
-    // managed row AND carrying the reconciliation stamp reverts to unset,
-    // while any other default is untouched.
+    // into the sandbox off the stale stamp — even when the document no
+    // longer declares any environments or the row was archived, which
+    // skip per-entry reconciliation entirely. Only a default pointing at
+    // the managed row AND carrying the reconciliation stamp reverts.
+    const stampedRow = environmentRow({
+      status: "archived",
+      metadata: { managedByPaperclip: true, managedDefaultStamped: true },
+    });
     const stamped = instanceSettingsSeam({
       get: vi.fn().mockResolvedValue({ defaultEnvironmentId: "env-1" }) as InstanceSettingsSeam["get"],
     });
     const stampedEnvironments = environmentsSeam({
-      ensureManagedSandboxEnvironment: vi.fn().mockResolvedValue(reconciliationResult({
-        environment: environmentRow({ metadata: { managedByPaperclip: true, managedDefaultStamped: true } }),
-      })),
+      findManagedSandboxEnvironment: vi.fn().mockResolvedValue(stampedRow),
     });
-    const config = parsedConfig({
-      environments: [{ name: "Daytona", provider: "daytona" }],
-    });
+    // No environments declaration at all: the cleanup must still run.
+    const config = parsedConfig({});
 
     await applyManagedEnvironments(noDb, config, {
       env: {},
@@ -593,6 +597,9 @@ describe("applyManagedEnvironments", () => {
       instanceSettings: stamped,
       environments: stampedEnvironments,
       resolveSandboxProviderDriver: readyDriverResolver(),
+    });
+    expect(stampedEnvironments.findManagedSandboxEnvironment).toHaveBeenCalledWith(undefined, {
+      includeArchived: true,
     });
     expect(stamped.update).toHaveBeenCalledWith({ defaultEnvironmentId: null });
     // The marker clears with the revert so a later deliberate tenant
@@ -606,26 +613,19 @@ describe("applyManagedEnvironments", () => {
     const tenantManagedDefault = instanceSettingsSeam({
       get: vi.fn().mockResolvedValue({ defaultEnvironmentId: "env-1" }) as InstanceSettingsSeam["get"],
     });
+    const unmarkedEnvironments = environmentsSeam({
+      findManagedSandboxEnvironment: vi.fn().mockResolvedValue(
+        environmentRow({ metadata: { managedByPaperclip: true } }),
+      ),
+    });
     await applyManagedEnvironments(noDb, config, {
       env: {},
       workerManager: runningWorkerManager(),
       instanceSettings: tenantManagedDefault,
-      environments: environmentsSeam(),
+      environments: unmarkedEnvironments,
       resolveSandboxProviderDriver: readyDriverResolver(),
     });
     expect(tenantManagedDefault.update).not.toHaveBeenCalled();
-
-    const tenantChosen = instanceSettingsSeam({
-      get: vi.fn().mockResolvedValue({ defaultEnvironmentId: "env-ssh" }) as InstanceSettingsSeam["get"],
-    });
-    await applyManagedEnvironments(noDb, config, {
-      env: {},
-      workerManager: runningWorkerManager(),
-      instanceSettings: tenantChosen,
-      environments: environmentsSeam(),
-      resolveSandboxProviderDriver: readyDriverResolver(),
-    });
-    expect(tenantChosen.update).not.toHaveBeenCalled();
   });
 
   it("never overrides a tenant-chosen custom default environment", async () => {

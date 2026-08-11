@@ -17,6 +17,8 @@ const mockHeartbeatService = vi.hoisted(() => ({
 }));
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  findManagedSandboxEnvironment: vi.fn(),
+  update: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
@@ -66,6 +68,9 @@ describe("instance settings routes", () => {
     mockHeartbeatService.buildIssueGraphLivenessAutoRecoveryPreview.mockReset();
     mockHeartbeatService.reconcileIssueGraphLiveness.mockReset();
     mockEnvironmentService.getById.mockReset();
+    mockEnvironmentService.findManagedSandboxEnvironment.mockReset();
+    mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue(null);
+    mockEnvironmentService.update.mockReset();
     mockLogActivity.mockReset();
     mockInstanceSettingsService.get.mockResolvedValue({
       id: "instance-settings-1",
@@ -297,6 +302,36 @@ describe("instance settings routes", () => {
       defaultEnvironmentId: "11111111-1111-4111-8111-111111111111",
     });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears the managed-default stamp marker on an explicit tenant default write", async () => {
+    // A tenant write of defaultEnvironmentId reclassifies the default as
+    // tenant-chosen: the reconciliation stamp marker on the managed
+    // sandbox row must not survive, or a later managed-sandbox-only
+    // mode-off pass would mistake the tenant's choice for a stamp.
+    mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue({
+      id: "managed-env-1",
+      driver: "sandbox",
+      status: "active",
+      config: {},
+      envVars: {},
+      metadata: { managedByPaperclip: true, managedDefaultStamped: true },
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const patchRes = await request(app)
+      .patch("/api/instance/settings")
+      .send({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
+
+    expect(patchRes.status).toBe(200);
+    expect(mockEnvironmentService.update).toHaveBeenCalledWith("managed-env-1", {
+      metadata: { managedByPaperclip: true },
+    });
   });
 
   it("rejects unknown defaultEnvironmentId values with 422", async () => {

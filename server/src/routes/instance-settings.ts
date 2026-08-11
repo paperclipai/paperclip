@@ -48,6 +48,21 @@ export function instanceSettingsRoutes(db: Db) {
         );
       }
       const updated = await svc.update(req.body);
+      if (Object.prototype.hasOwnProperty.call(req.body, "defaultEnvironmentId")) {
+        // An explicit tenant write of the instance default reclassifies its
+        // attribution: whatever the default now is — including a deliberate
+        // re-selection of the managed sandbox row — it is tenant-chosen, so
+        // the reconciliation stamp marker must not survive to let a later
+        // managed-sandbox-only mode-off pass mistake the tenant's choice
+        // for a stamp and clear it.
+        const managedSandbox = await environments.findManagedSandboxEnvironment(undefined, {
+          includeArchived: true,
+        });
+        if (managedSandbox?.metadata?.managedDefaultStamped === true) {
+          const { managedDefaultStamped: _cleared, ...remainingMetadata } = managedSandbox.metadata;
+          await environments.update(managedSandbox.id, { metadata: remainingMetadata });
+        }
+      }
       const actor = getActorInfo(req);
       const companyIds = await svc.listCompanyIds();
       await Promise.all(
