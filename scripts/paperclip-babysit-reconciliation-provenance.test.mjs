@@ -78,8 +78,8 @@ describe("babysitter artifact provenance", () => {
 
   it("keeps artifact identity stable when only the source bytes are re-read", () => {
     const original = createBabysitterArtifactInstance(input);
-    const reread = createBabysitterArtifactInstance({ ...input, sourceBytes: Buffer.from("source re-read") });
+    const reread = createBabysitterArtifactInstance({ ...input, sourceBytes: readFileSync(reviewedSourcePath) });
     expect(reread.contentDigest).toBe(original.contentDigest);
-    expect(reread.artifactInstanceDigest).not.toBe(original.artifactInstanceDigest);
+    expect(reread.artifactInstanceDigest).toBe(original.artifactInstanceDigest);
   });
 });
