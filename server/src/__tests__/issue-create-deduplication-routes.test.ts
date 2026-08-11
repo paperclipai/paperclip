@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { eq } from "drizzle-orm";
+import { eq, isNull } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -451,5 +451,42 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
     const children = await db.select().from(issues).where(eq(issues.parentId, parent.id));
     expect(children).toHaveLength(6);
+  });
+
+  it("keeps unrelated root issues that share a leading batch code", async () => {
+    const companyId = await seedCompany();
+    const app = createApp();
+
+    // Root issues share one company-wide bucket, so a shared leading code there is
+    // not evidence of a single batch. Collapsing them would silently drop real work.
+    await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "ROT-01 — rotate the staging keys" })
+      .expect(201);
+    await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "ROT-01 — rotate the vendor webhook secret" })
+      .expect(201);
+
+    const roots = await db.select().from(issues).where(isNull(issues.parentId));
+    expect(roots).toHaveLength(2);
+  });
+
+  it("still collapses rephrased siblings under the same parent", async () => {
+    const companyId = await seedCompany();
+    const parent = await seedParent(companyId);
+    const app = createApp();
+
+    await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ parentId: parent.id, title: "ROT-02 — rotate the staging keys" })
+      .expect(201);
+    await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ parentId: parent.id, title: "ROT-02 — rotate keys in staging" })
+      .expect(200); // replayed, not created
+
+    const children = await db.select().from(issues).where(eq(issues.parentId, parent.id));
+    expect(children).toHaveLength(1);
   });
 });

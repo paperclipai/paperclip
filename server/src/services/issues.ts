@@ -6934,9 +6934,9 @@ export function issueService(db: Db) {
           const titleGuardKey =
             `issue-create:title:${companyId}:${issueData.parentId ?? "root"}:${normalizedTitle}`;
           await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${titleGuardKey}, 0))`);
-          if (titleCode) {
+          if (titleCode && issueData.parentId) {
             const codeGuardKey =
-              `issue-create:code:${companyId}:${issueData.parentId ?? "root"}:${titleCode}`;
+              `issue-create:code:${companyId}:${issueData.parentId}:${titleCode}`;
             await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${codeGuardKey}, 0))`);
           }
         }
@@ -6989,7 +6989,11 @@ export function issueService(db: Db) {
             .limit(1);
           if (existingIssue) deduplicationReason = "recent_open_title";
         }
-        if (!existingIssue && allowDuplicate === false && titleCode) {
+        // Scoped to real siblings on purpose. Root issues share a single company-wide
+        // bucket, so a leading code there is not evidence of one batch: two unrelated
+        // root issues opened days apart under the same code would collapse and the
+        // second one would be silently dropped. Under a parent the bucket is the batch.
+        if (!existingIssue && allowDuplicate === false && titleCode && issueData.parentId) {
           // A code that names an existing issue is a reference ("ENG-0042 follow-up"),
           // not a work-item code, so it must not collapse unrelated siblings.
           const [referencedIssue] = await tx
@@ -7006,7 +7010,7 @@ export function issueService(db: Db) {
               .from(issues)
               .where(and(
                 eq(issues.companyId, companyId),
-                issueData.parentId ? eq(issues.parentId, issueData.parentId) : isNull(issues.parentId),
+                eq(issues.parentId, issueData.parentId),
                 isNull(issues.hiddenAt),
                 notInArray(issues.status, ["done", "cancelled"]),
                 gte(issues.createdAt, new Date(Date.now() - 48 * 60 * 60 * 1000)),
