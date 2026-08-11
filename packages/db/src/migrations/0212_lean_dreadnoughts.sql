@@ -53,7 +53,7 @@ CREATE TABLE "cloud_upstream_runs" (
 	"completed_at" timestamp with time zone
 );
 --> statement-breakpoint
-ALTER TABLE "heartbeat_runs" ADD COLUMN "actionability" text;--> statement-breakpoint
+ALTER TABLE "heartbeat_runs" ADD COLUMN IF NOT EXISTS "actionability" text;--> statement-breakpoint
 ALTER TABLE "cloud_upstream_connections" ADD CONSTRAINT "cloud_upstream_connections_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "cloud_upstream_runs" ADD CONSTRAINT "cloud_upstream_runs_connection_id_cloud_upstream_connections_id_fk" FOREIGN KEY ("connection_id") REFERENCES "public"."cloud_upstream_connections"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "cloud_upstream_runs" ADD CONSTRAINT "cloud_upstream_runs_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
