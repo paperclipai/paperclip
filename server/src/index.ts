@@ -1168,6 +1168,17 @@ export async function startServer(): Promise<StartedServer> {
           );
         }
 
+        trackHeartbeatSchedulerWork(heartbeat
+          .reconcilePendingRunCancellations()
+          .then((result) => {
+            if (result.reconciled > 0 || result.failed > 0) {
+              logger.info({ ...result }, "heartbeat cancellation finalization sweep completed");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "heartbeat cancellation finalization sweep failed");
+          }));
+
         if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
           trackHeartbeatSchedulerWork(heartbeat
             .tickTimers(new Date())

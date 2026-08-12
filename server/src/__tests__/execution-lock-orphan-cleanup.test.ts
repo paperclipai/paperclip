@@ -90,6 +90,78 @@ describeEmbeddedPostgres("execution lock orphan cleanup", () => {
   }
 
   describe("heartbeat run finalization", () => {
+    it("rolls back a prepared cancellation with the caller transaction", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent(companyId, "Cleanup owner");
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "running",
+        contextSnapshot: {},
+      });
+
+      const heartbeat = heartbeatService(db);
+      await expect(db.transaction(async (tx) => {
+        await heartbeat.prepareRunCancellationInTransaction(tx as any, runId);
+        const [inside] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        expect(inside?.status).toBe("cancelled");
+        throw new Error("force caller rollback");
+      })).rejects.toThrow("force caller rollback");
+
+      const [afterRollback] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(afterRollback?.status).toBe("running");
+      expect(afterRollback?.resultJson).toBeNull();
+    });
+
+    it("durably records prepared cancellation finalization until reconciliation completes", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent(companyId, "Cleanup owner");
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "running",
+        contextSnapshot: {},
+      });
+
+      const heartbeat = heartbeatService(db);
+      const prepared = await db.transaction(async (tx) => {
+        const cancellation = await heartbeat.prepareRunCancellationInTransaction(tx as any, runId);
+        const marker = (cancellation.run.resultJson as Record<string, unknown> | null)
+          ?.pendingCancellationFinalization;
+        expect(marker).toMatchObject({ id: cancellation.finalizationId });
+        return cancellation;
+      });
+
+      const [committed] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(committed?.status).toBe("cancelled");
+      expect((committed?.resultJson as Record<string, unknown> | null)?.pendingCancellationFinalization)
+        .toMatchObject({ id: prepared.finalizationId });
+
+      await db
+        .update(heartbeatRuns)
+        .set({ updatedAt: new Date(Date.now() - 60_000) })
+        .where(eq(heartbeatRuns.id, runId));
+      const sweep = await heartbeatService(db).reconcilePendingRunCancellations();
+
+      const [finalized] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      const lifecycleEvents = await db
+        .select()
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, runId));
+      const [finalizedAgent] = await db.select().from(agents).where(eq(agents.id, agentId));
+      expect((finalized?.resultJson as Record<string, unknown> | null)?.pendingCancellationFinalization)
+        .toBeUndefined();
+      expect(sweep).toEqual({ checked: 1, reconciled: 1, failed: 0 });
+      expect(lifecycleEvents).toHaveLength(1);
+      expect(finalizedAgent?.status).toBe("idle");
+    });
+
     it("clears execution_run_id on every issue that references the finalized run, not just the run's contextSnapshot issue", async () => {
       // Regression test for the "stale execution lock" bug:
       //

@@ -69,6 +69,7 @@ const {
     scanSilentActiveRuns: vi.fn(async () => ({ created: 0, escalated: 0 })),
     sweepStaleIssueLocks: vi.fn(async () => ({ cleared: 0 })),
     reconcileProductivityReviews: vi.fn(async () => ({ created: 0, updated: 0, failed: 0 })),
+    reconcilePendingRunCancellations: vi.fn(async () => ({ checked: 0, reconciled: 0, failed: 0 })),
     sweepExpiredRuntimeStatuses: vi.fn(() => 0),
     tickTimers: vi.fn(async () => ({ checked: 0, enqueued: 0, skipped: 0 })),
   };
@@ -496,6 +497,7 @@ describe("startServer feedback export wiring", () => {
       await Promise.resolve();
 
       expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.reconcilePendingRunCancellations).toHaveBeenCalledTimes(1);
       expect(externalObjectsServiceMock.refreshDueObjectsForActiveCompanies).toHaveBeenCalledTimes(1);
       expect(issueThreadInteractionServiceMock.sweepMergedPullRequestConfirmations).toHaveBeenCalledTimes(1);
       expect(executionWorkspaceServiceMock.sweepTerminalWorkspaces).toHaveBeenCalledTimes(1);
