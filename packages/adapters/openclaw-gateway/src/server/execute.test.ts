@@ -72,7 +72,7 @@ describe("buildAgentParams", () => {
       sessionKey: "agent:meridian:paperclip:issue:issue-456",
       idempotencyKey: "run-123",
       agentId: "meridian",
-      timeout: 30_000,
+      timeout: 30, // seconds — OpenClaw multiplies this by 1000
     });
   });
 

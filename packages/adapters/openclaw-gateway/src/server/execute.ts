@@ -491,8 +491,13 @@ export function buildAgentParams(input: {
     agentParams.agentId = input.configuredAgentId;
   }
 
+  // OpenClaw reads agent.timeout as SECONDS (resolveAgentTimeoutMs -> overrideSeconds * 1000).
+  // Sending milliseconds turned a 300s deadline into 83 hours: Paperclip gave up after five
+  // minutes while the run kept going inside OpenClaw, holding the agent's session key. The next
+  // timer wake then collided with that zombie and timed out too — 655 of 655 timer runs failed
+  // this way before 2026-08-12.
   if (typeof agentParams.timeout !== "number") {
-    agentParams.timeout = input.waitTimeoutMs;
+    agentParams.timeout = Math.ceil(input.waitTimeoutMs / 1000);
   }
 
   return agentParams;
