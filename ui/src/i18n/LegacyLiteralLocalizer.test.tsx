@@ -29,6 +29,14 @@ describe("static UI literal localization", () => {
     expect(translateUiLiteral("Delete")).toBe("Delete");
   });
 
+  it("uses product context for ambiguous UI terms", async () => {
+    await setLocale("zh-CN");
+    expect(translateUiLiteral("Disabled")).toBe("未启用");
+    expect(translateUiLiteral("New secret")).toBe("新建密钥");
+    expect(translateUiLiteral("Choose zip")).toBe("选择 ZIP 包");
+    expect(translateUiLiteral("Alpha")).toBe("测试版");
+  });
+
   it("updates literals without resetting component state", async () => {
     const container = document.createElement("div");
     const root = createRoot(container);

@@ -704,7 +704,7 @@ export function IssuesList({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { i18n } = useTranslation();
+  const { i18n, t } = useTranslation();
   const currentLocale = i18n.resolvedLanguage ?? i18n.language;
   const { keyboardShortcutsEnabled } = useGeneralSettings();
   // Keyboard selection for the list view (mirrors the inbox). Hover moves the
@@ -1619,7 +1619,7 @@ export function IssuesList({
   ]);
 
   const createActionLabel = createIssueLabel ? `Create ${createIssueLabel}` : "Create Task";
-  const createButtonLabel = createIssueLabel ? `New ${createIssueLabel}` : "New Task";
+  const createButtonLabel = createIssueLabel ? `New ${createIssueLabel}` : t("nav.newTask");
   const openCreateIssueDialog = useCallback((group?: { key: string; items: Issue[] }) => {
     openNewIssue(newIssueDefaults(group));
   }, [newIssueDefaults, openNewIssue]);

@@ -5,6 +5,7 @@ import { cn, formatCents } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { translateUiLiteral } from "@/i18n/LegacyLiteralLocalizer";
 
 function centsInputValue(value: number) {
   return (value / 100).toFixed(2);
@@ -19,7 +20,7 @@ function parseDollarInput(value: string) {
 }
 
 function windowLabel(windowKind: BudgetPolicySummary["windowKind"]) {
-  return windowKind === "lifetime" ? "Lifetime budget" : "Monthly UTC budget";
+  return translateUiLiteral(windowKind === "lifetime" ? "Lifetime budget" : "Monthly UTC budget");
 }
 
 function statusTone(status: BudgetPolicySummary["status"]) {

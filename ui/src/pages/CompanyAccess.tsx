@@ -25,6 +25,7 @@ import { useToast } from "@/context/ToastContext";
 import { Link, Navigate } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 import { usePluginSlots } from "@/plugins/slots";
+import { translateUiLiteral } from "@/i18n/LegacyLiteralLocalizer";
 
 const reassignmentIssueStatuses = "backlog,todo,in_progress,in_review,blocked,failed,timed_out";
 type EditableMemberStatus = "pending" | "active" | "suspended";
@@ -333,12 +334,12 @@ export function CompanyAccess() {
                   </div>
                   <div className="text-sm">
                     {member.membershipRole
-                      ? HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS[member.membershipRole]
+                      ? translateUiLiteral(HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS[member.membershipRole])
                       : "Unset"}
                   </div>
                   <div>
                     <Badge variant={member.status === "active" ? "secondary" : member.status === "suspended" ? "destructive" : "outline"}>
-                      {member.status.replace("_", " ")}
+                      {translateUiLiteral(member.status.replace("_", " "))}
                     </Badge>
                   </div>
                   <div className="space-y-1 text-right">
@@ -351,14 +352,16 @@ export function CompanyAccess() {
                         variant="outline"
                         onClick={() => setRemovingMemberId(member.id)}
                         disabled={!canArchive}
-                        title={removalReason ?? undefined}
+                        title={removalReason ? translateUiLiteral(removalReason) : undefined}
                       >
                         <Trash2 className="mr-1 h-3.5 w-3.5" />
                         Remove
                       </Button>
                     </div>
                     {removalReason ? (
-                      <div className="text-xs text-muted-foreground">{removalReason}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {translateUiLiteral(removalReason)}
+                      </div>
                     ) : null}
                   </div>
                 </div>

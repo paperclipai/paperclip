@@ -16,6 +16,7 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { translateUiLiteral } from "@/i18n/LegacyLiteralLocalizer";
 import { Input } from "@/components/ui/input";
 import {
   Dialog,
@@ -114,7 +115,7 @@ function ExperimentalToggleCard({
             {isManaged ? <ManagedByCloudBadge /> : null}
           </div>
           <p className="max-w-2xl text-sm text-muted-foreground">{description}</p>
-          {footnote ? <p className="max-w-2xl text-xs text-muted-foreground">{footnote}</p> : null}
+          {footnote ? <p className="max-w-2xl text-xs text-muted-foreground">{translateUiLiteral(footnote)}</p> : null}
         </div>
         <ToggleSwitch
           checked={checked}

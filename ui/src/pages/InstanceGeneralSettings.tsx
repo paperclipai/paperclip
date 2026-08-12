@@ -19,6 +19,7 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { cn } from "../lib/utils";
 import { useSignOut } from "@/hooks/useSignOut";
 import { useTranslation } from "@/i18n";
+import { translateUiLiteral } from "@/i18n/LegacyLiteralLocalizer";
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
@@ -350,13 +351,11 @@ export function InstanceGeneralSettings() {
             })}
           </div>
           <p className="text-xs text-muted-foreground">
-            {t("pages.instanceGeneralSettings.retestFirstUsePrompt", {
-              defaultValue: "To retest the first-use prompt in local dev, remove the {{key}} key from the {{row}} JSON row for this instance, or set it back to {{prompt1}}. Unset and {{prompt2}} both mean no default has been chosen yet.",
-              key: <code>feedbackDataSharingPreference</code>,
-              row: <code>instance_settings.general</code>,
-              prompt1: <code>"prompt"</code>,
-              prompt2: <code>"prompt"</code>,
-            })}
+            {translateUiLiteral("To retest the first-use prompt in local dev, remove the")}{" "}
+            <code>feedbackDataSharingPreference</code>{" "}
+            {translateUiLiteral("key from this instance's")}{" "}
+            <code>instance_settings.general</code>{" "}
+            {translateUiLiteral("JSON row, or set it back to \"prompt\". Unset and \"prompt\" both mean no default has been chosen yet.")}
           </p>
         </div>
       </Card>
