@@ -310,8 +310,15 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   // Counts completed reviews already raised against this source inside the escalation lookback.
   // Deliberately keyed on review volume rather than source inactivity: a permanently-active source
   // always has activity, so the no-action streak never accumulates for exactly the issues that
-  // loop worst (BLU-7716). Cancelled reviews are excluded — a dismissal is not evidence the source
-  // is looping, matching how the creation cap already treats them.
+  // loop worst. Cancelled reviews are excluded — a dismissal is not evidence the source is looping,
+  // matching how the creation cap already treats them.
+  //
+  // The window is keyed on when each review was *completed*, not when it was opened: a long-running
+  // review opened before the cutoff but resolved inside it is still evidence of recent review churn,
+  // and dropping it delays or prevents the escalated snooze. completedAt is set on every transition
+  // into `done` and cleared on the way out, so it is populated for every row this filter can match;
+  // updatedAt is the fallback for any row written outside that path, and is the same terminal
+  // timestamp findRecentTerminalProductivityReview snoozes against.
   async function countCompletedProductivityReviews(
     companyId: string,
     sourceIssueId: string,
@@ -329,7 +336,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           eq(issues.originId, sourceIssueId),
           visibleIssueCondition(),
           eq(issues.status, "done"),
-          sql`${issues.createdAt} >= ${cutoff.toISOString()}::timestamptz`,
+          sql`coalesce(${issues.completedAt}, ${issues.updatedAt}) >= ${cutoff.toISOString()}::timestamptz`,
         ),
       )
       .then((rows) => Number(rows[0]?.count ?? 0));

@@ -17,6 +17,7 @@ import {
 import { MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 import {
   DEFAULT_PRODUCTIVITY_REVIEW_ESCALATE_AFTER_COMPLETED_REVIEWS,
+  DEFAULT_PRODUCTIVITY_REVIEW_ESCALATION_LOOKBACK_MS,
   DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS,
   DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS,
   DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
@@ -725,6 +726,52 @@ describeEmbeddedPostgres("productivity review service", () => {
 
     // Without escalation a 48h-old terminal review is outside the 12h base snooze, so the source
     // would be reviewed again. The escalated window must keep it snoozed instead.
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.snoozed).toBe(1);
+  });
+
+  it("escalates on reviews completed inside the lookback even when they were created before it", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    // Long-running reviews: opened well before the 30-day escalation lookback, but only resolved
+    // inside it. Keying the count on creation time drops every one of these, so the source never
+    // escalates to the 7-day snooze and keeps getting re-reviewed.
+    const createdBeforeLookback = new Date(
+      now.getTime() - DEFAULT_PRODUCTIVITY_REVIEW_ESCALATION_LOOKBACK_MS - 5 * 24 * 60 * 60 * 1000,
+    );
+    for (let index = 0; index < DEFAULT_PRODUCTIVITY_REVIEW_ESCALATE_AFTER_COMPLETED_REVIEWS; index += 1) {
+      const completedAt = new Date(now.getTime() - 48 * 60 * 60 * 1000 - index * 60 * 60 * 1000);
+      await db.insert(issues).values({
+        id: randomUUID(),
+        companyId: seeded.companyId,
+        title: `Long-running productivity review ${index}`,
+        status: "done",
+        priority: "high",
+        originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+        originId: seeded.issueId,
+        originFingerprint: `productivity-review:${seeded.issueId}`,
+        parentId: seeded.issueId,
+        issueNumber: 200 + index,
+        identifier: `${seeded.issuePrefix}-${200 + index}`,
+        createdAt: createdBeforeLookback,
+        completedAt,
+        updatedAt: completedAt,
+      });
+    }
+
     const result = await productivityReviewService(db).reconcileProductivityReviews({
       now,
       companyId: seeded.companyId,
