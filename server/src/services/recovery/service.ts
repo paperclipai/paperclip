@@ -680,6 +680,7 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
 }
 
 export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup }) {
+  const locallyRequeuedReviewRuns = new Set<string>();
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -3581,7 +3582,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       // A participant is recoverable only while the execution gate is pending.
       // `changes_requested` belongs to the executor until resubmission; a
       // recovery wake must not manufacture a validator adjudication path.
-      const pendingExecutionState = executionState?.status === "pending" ? executionState : null;
+      // Recovery must continue to honor a live pending participant even when
+      // preserved historical fields are from an older/looser state shape.
+      // Do not rewrite that history merely because strict read validation
+      // cannot parse an otherwise actionable live state.
+      const rawExecutionState = parseObject(effectiveExecutionState);
+      const pendingExecutionState = executionState?.status === "pending"
+        ? executionState
+        : effectiveIssue.status === "in_review" && rawExecutionState.status === "pending"
+          ? rawExecutionState as unknown as NonNullable<typeof executionState>
+          : null;
       const currentParticipant = pendingExecutionState
         ? pendingExecutionState.currentParticipant
         : null;
@@ -3907,6 +3917,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           result.skipped += 1;
           continue;
         }
+        if (locallyRequeuedReviewRuns.has(participantLatestRun.id)) {
+          result.skipped += 1;
+          continue;
+        }
 
         if (await isInvocationBudgetBlocked(issue, participantAgentId)) {
           result.skipped += 1;
@@ -3927,6 +3941,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now, or mark the issue blocked with the exact unblock action.",
           },
         });
+        locallyRequeuedReviewRuns.add(participantLatestRun.id);
         if (queued) {
           result.reviewParticipantRequeued += 1;
           result.issueIds.push(issue.id);
