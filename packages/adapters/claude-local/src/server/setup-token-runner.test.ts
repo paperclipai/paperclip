@@ -114,11 +114,18 @@ describe("runSetupTokenLogin", () => {
     const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT] });
     const onPrompt = vi.fn();
     const provideCode = vi.fn(async () => BROWSER_CODE);
-    const promise = runSetupTokenLogin(fake.driver, { onPrompt, provideCode, timeoutMs: 1000 });
+    const promise = runSetupTokenLogin(fake.driver, {
+      onPrompt,
+      provideCode,
+      timeoutMs: 1000,
+      codeSubmitSettleMs: 0,
+    });
     await flush();
-    // The runner writes the code once, only after it matches the prompt.
+    // The runner writes the code once, only after it matches the prompt. It writes
+    // the code and the terminator as two separate writes, so the terminator reads
+    // as a distinct Return key against an Ink paste field.
     expect(provideCode).toHaveBeenCalledTimes(1);
-    expect(fake.writes).toEqual([`${BROWSER_CODE}${CODE_SUBMISSION_TERMINATOR}`]);
+    expect(fake.writes).toEqual([BROWSER_CODE, CODE_SUBMISSION_TERMINATOR]);
     fake.resolveExit(0);
     const result = await promise;
     expect(result.outcome).toBe("success");

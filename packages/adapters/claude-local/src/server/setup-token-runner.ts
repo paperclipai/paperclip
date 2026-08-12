@@ -33,10 +33,22 @@ export const CLAUDE_SETUP_TOKEN_COMMAND = "claude setup-token";
 
 /**
  * The submission terminator for the browser code. The interactive login UI reads
- * the code on a PTY and submits it on a carriage return. So the runner appends a
- * carriage return to the code.
+ * the code on a PTY and submits it on a carriage return. The runner writes this
+ * terminator as its own write, after the code write and a short settle delay.
+ * The live characterization showed that a single write of `code + "\r"` does not
+ * submit: the input is an Ink text field with paste handling, so a glued
+ * carriage return folds into the pasted text instead of a Return key, and the
+ * login stalls at the prompt. Two writes with a settle gap submit on the first
+ * Return.
  */
 export const CODE_SUBMISSION_TERMINATOR = "\r";
+
+/**
+ * The default settle delay in milliseconds between the code write and the
+ * terminator write. The delay lets the Ink paste buffer settle, so the terminator
+ * arrives as a distinct Return key. A caller can override it; a test sets it to 0.
+ */
+export const CODE_SUBMIT_SETTLE_MS = 150;
 
 /**
  * The maximum number of characters the runner keeps for the next chunk. The
@@ -123,12 +135,36 @@ export interface RunSetupTokenLoginOptions {
   provideCode: SetupTokenCodeProvider;
   /** The credential sink. The runner invokes it one time with the token bytes. */
   onCredential?: SetupTokenCredentialSink;
+  /**
+   * The settle delay in milliseconds between the code write and the terminator
+   * write. Defaults to {@link CODE_SUBMIT_SETTLE_MS}. A test sets it to 0.
+   */
+  codeSubmitSettleMs?: number;
   /** The host-side timeout in milliseconds. */
   timeoutMs: number;
   /** An optional cancellation signal. */
   signal?: AbortSignal;
   /** A non-leaking progress sink. It receives only fixed status lines. */
   log?: (line: string) => void;
+}
+
+/**
+ * Waits `ms` milliseconds, or resolves at once when the signal aborts. The
+ * routine lets the Ink paste buffer settle between the code write and the
+ * terminator write. It never rejects; a caller checks the signal after it
+ * resolves. A zero or negative delay resolves on the next microtask.
+ */
+function settleDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (ms <= 0 || signal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
 }
 
 type RaceResult =
@@ -205,6 +241,7 @@ export async function runSetupTokenLogin(
 ): Promise<SetupTokenLoginResult> {
   const { onPrompt, provideCode, onCredential, timeoutMs, signal } = options;
   const command = options.command ?? CLAUDE_SETUP_TOKEN_COMMAND;
+  const codeSubmitSettleMs = options.codeSubmitSettleMs ?? CODE_SUBMIT_SETTLE_MS;
   const log = options.log ?? (() => {});
 
   // A private controller that fans a timeout or a cancellation into the
@@ -254,7 +291,14 @@ export async function runSetupTokenLogin(
     }
     if (controller.signal.aborted) return;
     try {
-      driver.write(code + CODE_SUBMISSION_TERMINATOR);
+      // Write the code, let the Ink paste buffer settle, then write the Return as
+      // its own write. A glued `code + "\r"` burst folds the Return into the
+      // pasted text and never submits (live characterization). Two writes with a
+      // settle gap submit on the first Return.
+      driver.write(code);
+      await settleDelay(codeSubmitSettleMs, controller.signal);
+      if (controller.signal.aborted) return;
+      driver.write(CODE_SUBMISSION_TERMINATOR);
       codeSubmitted = true;
       log("[paperclip] Setup-token login: sent the browser code to the prompt.");
     } catch {

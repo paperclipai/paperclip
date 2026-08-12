@@ -82,13 +82,13 @@ obvious from the prompt characterization alone.
   Claude. (The non-secret `state` suffix may remain visible at the tail of the
   masked echo, because it is public — it is the same `state` carried in the URL.)
 
-> Implementation note for `setup-token-runner.ts`: `CODE_SUBMISSION_TERMINATOR`
-> is delivered by `driver.write(code + CODE_SUBMISSION_TERMINATOR)` — a single
-> write that glues the code and the terminator. Against this Claude Code build
-> that burst did not submit. A production PTY driver should either write the
-> terminator as a separate write after a short delay, or wrap the code in a
-> bracketed-paste sequence and then send a distinct Return. Confirm the exact
-> behavior in the live end-to-end test before locking the runner's write path.
+> Implementation note for `setup-token-runner.ts`: the runner now writes the
+> code and `CODE_SUBMISSION_TERMINATOR` as two separate writes — `driver.write(code)`,
+> a short settle delay (`CODE_SUBMIT_SETTLE_MS`), then `driver.write(CODE_SUBMISSION_TERMINATOR)`.
+> A single glued `code + "\r"` burst did not submit against this Claude Code
+> build: the trailing `\r` folded into the pasted text. The separate Return,
+> after the paste buffer settles, submits on the first Return. Confirm the exact
+> settle delay in the live end-to-end test.
 
 ## Success token shape (resolves the deferred assumption)
 
