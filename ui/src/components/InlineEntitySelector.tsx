@@ -1,6 +1,7 @@
-import { forwardRef, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { orderItemsBySelectedAndRecent } from "../lib/recent-selections";
 import { cn } from "../lib/utils";
 
 export interface InlineEntityOption {
@@ -21,9 +22,18 @@ interface InlineEntitySelectorProps {
   className?: string;
   renderTriggerValue?: (option: InlineEntityOption | null) => ReactNode;
   renderOption?: (option: InlineEntityOption, isSelected: boolean) => ReactNode;
+  recentOptionIds?: string[];
   /** Skip the Portal so the popover stays in the DOM tree (fixes scroll inside Dialogs). */
   disablePortal?: boolean;
+  /** Open the popover when the trigger receives keyboard/programmatic focus. */
+  openOnFocus?: boolean;
+  /** Disable the trigger and prevent the popover from opening. */
+  disabled?: boolean;
+  /** Optional test id forwarded to the trigger button. */
+  triggerTestId?: string;
 }
+
+const EMPTY_RECENT_OPTION_IDS: string[] = [];
 
 export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySelectorProps>(
   function InlineEntitySelector(
@@ -39,21 +49,26 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
       className,
       renderTriggerValue,
       renderOption,
+      recentOptionIds = EMPTY_RECENT_OPTION_IDS,
       disablePortal,
+      openOnFocus = true,
+      disabled = false,
+      triggerTestId,
     },
     ref,
   ) {
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState("");
     const [highlightedIndex, setHighlightedIndex] = useState(0);
+    const highlightedIndexRef = useRef(0);
     const inputRef = useRef<HTMLInputElement>(null);
     const shouldPreventCloseAutoFocusRef = useRef(false);
     const isPointerDownRef = useRef(false);
 
-    const allOptions = useMemo<InlineEntityOption[]>(
-      () => [{ id: "", label: noneLabel, searchText: noneLabel }, ...options],
-      [noneLabel, options],
-    );
+    const allOptions = useMemo<InlineEntityOption[]>(() => {
+      const baseOptions = [{ id: "", label: noneLabel, searchText: noneLabel }, ...options];
+      return orderItemsBySelectedAndRecent(baseOptions, value, recentOptionIds);
+    }, [noneLabel, options, recentOptionIds, value]);
 
     const filteredOptions = useMemo(() => {
       const term = query.trim().toLowerCase();
@@ -66,11 +81,17 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
 
     const currentOption = options.find((option) => option.id === value) ?? null;
 
+    const setHighlightedIndexValue = useCallback((next: number | ((current: number) => number)) => {
+      const resolved = typeof next === "function" ? next(highlightedIndexRef.current) : next;
+      highlightedIndexRef.current = resolved;
+      setHighlightedIndex(resolved);
+    }, []);
+
     useEffect(() => {
       if (!open) return;
       const selectedIndex = filteredOptions.findIndex((option) => option.id === value);
-      setHighlightedIndex(selectedIndex >= 0 ? selectedIndex : 0);
-    }, [filteredOptions, open, value]);
+      setHighlightedIndexValue(selectedIndex >= 0 ? selectedIndex : 0);
+    }, [filteredOptions, open, setHighlightedIndexValue, value]);
 
     const commitSelection = (index: number, moveNext: boolean) => {
       const option = filteredOptions[index] ?? filteredOptions[0];
@@ -89,6 +110,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
       <Popover
         open={open}
         onOpenChange={(next) => {
+          if (disabled) return;
           setOpen(next);
           if (!next) setQuery("");
         }}
@@ -97,13 +119,16 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
           <button
             ref={ref}
             type="button"
+            disabled={disabled}
+            data-testid={triggerTestId}
             className={cn(
-              "inline-flex min-w-0 items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-sm font-medium text-foreground transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              "inline-flex min-w-0 items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1 text-sm font-medium text-foreground transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 disabled:pointer-events-none",
               className,
             )}
             onPointerDown={() => { isPointerDownRef.current = true; }}
             onFocus={() => {
-              if (!isPointerDownRef.current) setOpen(true);
+              if (disabled) return;
+              if (openOnFocus && !isPointerDownRef.current) setOpen(true);
               isPointerDownRef.current = false;
             }}
           >
@@ -116,17 +141,11 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
           align="start"
           side="bottom"
           collisionPadding={16}
-          className="w-[min(20rem,calc(100vw-2rem))] p-1"
+          className="w-(--sz-calc-6) p-1"
           disablePortal={disablePortal}
           onOpenAutoFocus={(event) => {
             event.preventDefault();
-            // On touch devices, don't auto-focus the search input to avoid
-            // opening the virtual keyboard which reshapes the viewport and
-            // pushes the popover off-screen.
-            const isTouch = window.matchMedia("(pointer: coarse)").matches;
-            if (!isTouch) {
-              inputRef.current?.focus();
-            }
+            inputRef.current?.focus();
           }}
           onCloseAutoFocus={(event) => {
             if (!shouldPreventCloseAutoFocusRef.current) return;
@@ -145,14 +164,16 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
             onKeyDown={(event) => {
               if (event.key === "ArrowDown") {
                 event.preventDefault();
-                setHighlightedIndex((current) =>
+                event.stopPropagation();
+                setHighlightedIndexValue((current) =>
                   filteredOptions.length === 0 ? 0 : (current + 1) % filteredOptions.length,
                 );
                 return;
               }
               if (event.key === "ArrowUp") {
                 event.preventDefault();
-                setHighlightedIndex((current) => {
+                event.stopPropagation();
+                setHighlightedIndexValue((current) => {
                   if (filteredOptions.length === 0) return 0;
                   return current <= 0 ? filteredOptions.length - 1 : current - 1;
                 });
@@ -160,16 +181,19 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
               }
               if (event.key === "Enter") {
                 event.preventDefault();
-                commitSelection(highlightedIndex, true);
+                event.stopPropagation();
+                commitSelection(highlightedIndexRef.current, true);
                 return;
               }
               if (event.key === "Tab" && !event.shiftKey) {
                 event.preventDefault();
-                commitSelection(highlightedIndex, true);
+                event.stopPropagation();
+                commitSelection(highlightedIndexRef.current, true);
                 return;
               }
               if (event.key === "Escape") {
                 event.preventDefault();
+                event.stopPropagation();
                 setOpen(false);
               }
             }}
@@ -189,7 +213,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
                       "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm touch-manipulation",
                       isHighlighted && "bg-accent",
                     )}
-                    onMouseEnter={() => setHighlightedIndex(index)}
+                    onMouseEnter={() => setHighlightedIndexValue(index)}
                     onClick={() => commitSelection(index, true)}
                   >
                     {renderOption ? renderOption(option, isSelected) : <span className="truncate">{option.label}</span>}

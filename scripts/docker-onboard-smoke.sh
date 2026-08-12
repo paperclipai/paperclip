@@ -13,6 +13,11 @@ PAPERCLIP_DEPLOYMENT_MODE="${PAPERCLIP_DEPLOYMENT_MODE:-authenticated}"
 PAPERCLIP_DEPLOYMENT_EXPOSURE="${PAPERCLIP_DEPLOYMENT_EXPOSURE:-private}"
 PAPERCLIP_PUBLIC_URL="${PAPERCLIP_PUBLIC_URL:-http://localhost:${HOST_PORT}}"
 SMOKE_AUTO_BOOTSTRAP="${SMOKE_AUTO_BOOTSTRAP:-true}"
+# Seconds to wait for /api/health after the container starts. The container
+# cold-installs paperclipai from npm and initializes embedded postgres before
+# it can serve health, so CI callers with no warm caches need far more than
+# the local default.
+SMOKE_READY_TIMEOUT_SECONDS="${SMOKE_READY_TIMEOUT_SECONDS:-90}"
 SMOKE_ADMIN_NAME="${SMOKE_ADMIN_NAME:-Smoke Admin}"
 SMOKE_ADMIN_EMAIL="${SMOKE_ADMIN_EMAIL:-smoke-admin@paperclip.local}"
 SMOKE_ADMIN_PASSWORD="${SMOKE_ADMIN_PASSWORD:-paperclip-smoke-password}"
@@ -63,6 +68,9 @@ wait_for_http() {
   if ! container_is_running; then
     echo "Smoke bootstrap failed: container $CONTAINER_NAME exited before readiness check completed" >&2
     docker logs "$CONTAINER_NAME" >&2 || true
+  else
+    echo "Smoke bootstrap failed: $url not ready after ${attempts} attempts; container is still running. Last container logs:" >&2
+    docker logs --tail 150 "$CONTAINER_NAME" >&2 || true
   fi
   return 1
 }
@@ -242,7 +250,7 @@ echo "==> Building onboard smoke image"
 docker build \
   --build-arg PAPERCLIPAI_VERSION="$PAPERCLIPAI_VERSION" \
   --build-arg HOST_UID="$HOST_UID" \
-  -f "$REPO_ROOT/Dockerfile.onboard-smoke" \
+  -f "$REPO_ROOT/docker/Dockerfile.onboard-smoke" \
   -t "$IMAGE_NAME" \
   "$REPO_ROOT"
 
@@ -278,7 +286,7 @@ fi
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-onboard-smoke.XXXXXX")"
 COOKIE_JAR="$TMP_DIR/cookies.txt"
 
-if ! wait_for_http "$PAPERCLIP_PUBLIC_URL/api/health" 90 1; then
+if ! wait_for_http "$PAPERCLIP_PUBLIC_URL/api/health" "$SMOKE_READY_TIMEOUT_SECONDS" 1; then
   echo "Smoke bootstrap failed: server did not become ready at $PAPERCLIP_PUBLIC_URL/api/health" >&2
   exit 1
 fi

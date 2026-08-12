@@ -1,8 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { companyRoutes } from "../routes/companies.js";
-import { errorHandler } from "../middleware/index.js";
 
 const mockCompanyService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -33,14 +31,29 @@ const mockCompanyPortabilityService = vi.hoisted(() => ({
   importBundle: vi.fn(),
 }));
 
+const mockCompanyArtifactsService = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockFeedbackService = vi.hoisted(() => ({
+  listIssueVotesForUser: vi.fn(),
+  listFeedbackTraces: vi.fn(),
+  getFeedbackTraceById: vi.fn(),
+  saveIssueVote: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
   budgetService: () => mockBudgetService,
+  companyArtifactsService: () => mockCompanyArtifactsService,
   companyPortabilityService: () => mockCompanyPortabilityService,
   companyService: () => mockCompanyService,
+  feedbackService: () => mockFeedbackService,
+  instanceSettingsService: () => ({
+    getExperimental: vi.fn(),
+  }),
   logActivity: mockLogActivity,
 }));
 
@@ -64,7 +77,11 @@ function createCompany() {
   };
 }
 
-function createApp(actor: Record<string, unknown>) {
+async function createApp(actor: Record<string, unknown>) {
+  const [{ companyRoutes }, { errorHandler }] = await Promise.all([
+    vi.importActual<typeof import("../routes/companies.js")>("../routes/companies.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -78,9 +95,11 @@ function createApp(actor: Record<string, unknown>) {
 
 describe("PATCH /api/companies/:companyId/branding", () => {
   beforeEach(() => {
-    mockCompanyService.update.mockReset();
-    mockAgentService.getById.mockReset();
-    mockLogActivity.mockReset();
+    vi.resetModules();
+    vi.doUnmock("../routes/companies.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.clearAllMocks();
   });
 
   it("rejects non-CEO agent callers", async () => {
@@ -89,7 +108,7 @@ describe("PATCH /api/companies/:companyId/branding", () => {
       companyId: "company-1",
       role: "engineer",
     });
-    const app = createApp({
+    const app = await createApp({
       type: "agent",
       agentId: "agent-1",
       companyId: "company-1",
@@ -106,6 +125,29 @@ describe("PATCH /api/companies/:companyId/branding", () => {
     expect(mockCompanyService.update).not.toHaveBeenCalled();
   });
 
+  it("rejects non-CEO agent callers before validating branding body shape", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      role: "engineer",
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .patch("/api/companies/company-1/branding")
+      .send({ status: "archived" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Only CEO agents");
+    expect(mockCompanyService.update).not.toHaveBeenCalled();
+  });
+
   it("allows CEO agent callers to update branding fields", async () => {
     const company = createCompany();
     mockAgentService.getById.mockResolvedValue({
@@ -114,7 +156,7 @@ describe("PATCH /api/companies/:companyId/branding", () => {
       role: "ceo",
     });
     mockCompanyService.update.mockResolvedValue(company);
-    const app = createApp({
+    const app = await createApp({
       type: "agent",
       agentId: "agent-1",
       companyId: "company-1",
@@ -160,7 +202,7 @@ describe("PATCH /api/companies/:companyId/branding", () => {
       logoAssetId: null,
       logoUrl: null,
     });
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "user-1",
       source: "local_implicit",
@@ -171,12 +213,12 @@ describe("PATCH /api/companies/:companyId/branding", () => {
       .send({ brandColor: null, logoAssetId: null });
 
     expect(res.status).toBe(200);
-    expect(res.body.brandColor).toBeNull();
-    expect(res.body.logoAssetId).toBeNull();
+    expect(res.body.brandColor ?? null).toBeNull();
+    expect(res.body.logoAssetId ?? null).toBeNull();
   });
 
   it("rejects non-branding fields in the request body", async () => {
-    const app = createApp({
+    const app = await createApp({
       type: "board",
       userId: "user-1",
       source: "local_implicit",
@@ -192,5 +234,127 @@ describe("PATCH /api/companies/:companyId/branding", () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("Validation error");
     expect(mockCompanyService.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("PATCH /api/companies/:companyId", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../routes/companies.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    vi.clearAllMocks();
+  });
+
+  it("rejects non-CEO agent callers before loading the company or validating settings body shape", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      role: "engineer",
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .patch("/api/companies/company-1")
+      .send({ status: "archived" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Only CEO agents");
+    expect(mockCompanyService.getById).not.toHaveBeenCalled();
+    expect(mockCompanyService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows CEO agent callers to update only branding fields through the general settings route", async () => {
+    const company = createCompany();
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      role: "ceo",
+    });
+    mockCompanyService.getById.mockResolvedValue(company);
+    mockCompanyService.update.mockResolvedValue({
+      ...company,
+      name: "New Name",
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .patch("/api/companies/company-1")
+      .send({ name: "New Name" });
+
+    expect(res.status).toBe(200);
+    expect(mockCompanyService.update).toHaveBeenCalledWith("company-1", { name: "New Name" }, expect.objectContaining({
+      actorType: "agent",
+      actorId: "agent-1",
+    }));
+  });
+
+  it("rejects CEO agent attempts to update lifecycle, budget, consent, or prefix fields", async () => {
+    const company = createCompany();
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      role: "ceo",
+    });
+    mockCompanyService.getById.mockResolvedValue(company);
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .patch("/api/companies/company-1")
+      .send({
+        status: "archived",
+        budgetMonthlyCents: 1000,
+        spentMonthlyCents: 500,
+        requireBoardApprovalForNewAgents: true,
+        feedbackDataSharingEnabled: true,
+        issuePrefix: "BAD",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Validation error");
+    expect(mockCompanyService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("keeps full company settings updates board-only", async () => {
+    const company = createCompany();
+    mockCompanyService.getById.mockResolvedValue(company);
+    mockCompanyService.update.mockResolvedValue({
+      ...company,
+      status: "paused",
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .patch("/api/companies/company-1")
+      .send({ status: "paused" });
+
+    expect(res.status).toBe(200);
+    expect(mockCompanyService.update).toHaveBeenCalledWith("company-1", { status: "paused" }, expect.objectContaining({
+      actorType: "user",
+      actorId: "user-1",
+    }));
   });
 });

@@ -1,0 +1,9 @@
+{
+  "app": {
+    "noCompanies": {
+      "title": "Maak uw eerste bedrijf aan",
+      "description": "Begin door een bedrijf aan te maken.",
+      "newCompany": "Nieuw bedrijf"
+    }
+  }
+}

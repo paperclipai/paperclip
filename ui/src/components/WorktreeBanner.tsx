@@ -1,12 +1,26 @@
+import { useCallback, useState } from "react";
 import { getWorktreeUiBranding } from "../lib/worktree-branding";
+import { copyTextToClipboard } from "../lib/clipboard";
 
 export function WorktreeBanner() {
   const branding = getWorktreeUiBranding();
+  const [copied, setCopied] = useState(false);
+
+  const handleCopyName = useCallback(() => {
+    if (!branding) return;
+    void copyTextToClipboard(branding.name)
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      })
+      .catch(() => {});
+  }, [branding]);
+
   if (!branding) return null;
 
   return (
     <div
-      className="relative overflow-hidden border-b px-3 py-1.5 text-[11px] font-medium tracking-[0.2em] uppercase"
+      className="relative overflow-hidden border-b px-3 py-1.5 text-(length:--text-micro) font-medium tracking-(--tracking-caps) uppercase"
       style={{
         backgroundColor: branding.color,
         color: branding.textColor,
@@ -18,7 +32,14 @@ export function WorktreeBanner() {
       <div className="flex items-center gap-2 overflow-hidden whitespace-nowrap">
         <span className="shrink-0 opacity-70">Worktree</span>
         <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-70" aria-hidden="true" />
-        <span className="truncate font-semibold tracking-[0.12em]">{branding.name}</span>
+        <button
+          type="button"
+          onClick={handleCopyName}
+          title="Click to copy worktree name"
+          className="truncate font-semibold tracking-(--tracking-eyebrow) cursor-pointer hover:opacity-80 transition-opacity bg-transparent border-none p-0 text-current uppercase text-(length:--text-micro)"
+        >
+          {copied ? "Copied!" : branding.name}
+        </button>
       </div>
     </div>
   );

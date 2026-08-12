@@ -14,6 +14,8 @@ const ignoredTestConfigBasenames = new Set([
   "vitest.config.ts",
 ]);
 
+const nodeDiagnosticReportPattern = /^report\.\d{8}\.\d{6}\.\d+\.\d+\.\d+\.json$/i;
+
 export function shouldTrackDevServerPath(relativePath) {
   const normalizedPath = String(relativePath).replaceAll("\\", "/").replace(/^\.\/+/, "");
   if (normalizedPath.length === 0) return false;
@@ -21,6 +23,9 @@ export function shouldTrackDevServerPath(relativePath) {
   const segments = normalizedPath.split("/");
   const basename = segments.at(-1) ?? normalizedPath;
 
+  if (nodeDiagnosticReportPattern.test(basename)) {
+    return false;
+  }
   if (segments.includes(".paperclip")) {
     return false;
   }

@@ -7,6 +7,7 @@ export const PAGE_ROUTE = "kitchensink";
 export const SLOT_IDS = {
   page: "kitchen-sink-page",
   settingsPage: "kitchen-sink-settings-page",
+  companySettingsPage: "kitchen-sink-company-settings-page",
   dashboardWidget: "kitchen-sink-dashboard-widget",
   sidebar: "kitchen-sink-sidebar-link",
   sidebarPanel: "kitchen-sink-sidebar-panel",
@@ -23,6 +24,7 @@ export const SLOT_IDS = {
 export const EXPORT_NAMES = {
   page: "KitchenSinkPage",
   settingsPage: "KitchenSinkSettingsPage",
+  companySettingsPage: "KitchenSinkCompanySettingsPage",
   dashboardWidget: "KitchenSinkDashboardWidget",
   sidebar: "KitchenSinkSidebarLink",
   sidebarPanel: "KitchenSinkSidebarPanel",

@@ -38,19 +38,26 @@ This does:
 2. Runs `paperclipai doctor` with repair enabled
 3. Starts the server when checks pass
 
-## Tailscale/Private Auth Dev Mode
+## Bind Presets In Dev
 
-To run in `authenticated/private` mode for network access:
+Default `pnpm dev` stays in `local_trusted` with loopback-only binding.
+
+To open Paperclip to a private network with login enabled:
+
+```sh
+pnpm dev --bind lan
+```
+
+For Tailscale-only binding on a detected tailnet address:
+
+```sh
+pnpm dev --bind tailnet
+```
+
+Legacy aliases still work and map to the older broad private-network behavior:
 
 ```sh
 pnpm dev --tailscale-auth
-```
-
-This binds the server to `0.0.0.0` for private-network access.
-
-Alias:
-
-```sh
 pnpm dev --authenticated-private
 ```
 
@@ -70,6 +77,32 @@ curl http://localhost:3100/api/health
 
 curl http://localhost:3100/api/companies
 # -> []
+```
+
+## Safe Worktree Bootstrap for Local Agent Runs
+
+For safer parallel local experiments, initialize a dedicated worktree instance instead of reusing your main checkout:
+
+```sh
+pnpm paperclipai worktree:make local-lab --seed-mode minimal
+cd ~/paperclip-local-lab
+pnpm paperclipai worktree env                       # inspect generated env exports
+eval "$(pnpm paperclipai worktree env)"             # bash/zsh
+pnpm paperclipai run
+pnpm paperclipai doctor
+```
+
+If the experiment gets noisy, repair or reseed the worktree without touching the main branch:
+
+```sh
+pnpm paperclipai worktree repair --branch paperclip-local-lab
+pnpm paperclipai worktree reseed --from . --to paperclip-local-lab
+```
+
+When done, shut it down and remove the isolated state explicitly:
+
+```sh
+pnpm paperclipai worktree:cleanup local-lab --force
 ```
 
 ## Reset Dev Data

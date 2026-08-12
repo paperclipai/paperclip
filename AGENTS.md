@@ -29,6 +29,10 @@ Before making changes, read in this order:
 - `packages/adapters/`: agent adapter implementations (Claude, Codex, Cursor, etc.)
 - `packages/adapter-utils/`: shared adapter utilities
 - `packages/plugins/`: plugin system packages
+- `packages/skills-catalog/`: app-shipped skills catalog (`@paperclipai/skills-catalog`)
+- `packages/teams-catalog/`: app-shipped teams catalog (`@paperclipai/teams-catalog`)
+- `cli/`: `paperclipai` CLI package (published bin, agent-facing commands)
+- `skills/`: Paperclip runtime/operational skills (not part of the app catalog)
 - `doc/`: operational and product docs
 
 ## 4. Dev Setup (Auto DB)
@@ -81,8 +85,11 @@ If you change schema/API behavior, update all impacted layers:
 4. Do not replace strategic docs wholesale unless asked.
 Prefer additive updates. Keep `doc/SPEC.md` and `doc/SPEC-implementation.md` aligned.
 
-5. Keep plan docs dated and centralized.
-New plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames.
+5. Keep repo plan docs dated and centralized.
+When you are creating a plan file in the repository itself, new plan documents belong in `doc/plans/` and should use `YYYY-MM-DD-slug.md` filenames. This does not replace Paperclip issue planning: if a Paperclip issue asks for a plan, update the issue `plan` document per the `paperclip` skill instead of creating a repo markdown file.
+
+6. Attach inspectable generated artifacts.
+When your task produces a user-inspectable deliverable file, follow the Paperclip skill's "Generated Artifacts and Work Products" workflow before final disposition. In this repo, prefer the self-contained skill helper at `skills/paperclip/scripts/paperclip-upload-artifact.sh` so the file is available through the Paperclip API, create/update an artifact work product when the file is the deliverable, link the uploaded artifact in the final issue comment, and then set status. Do not rely on local filesystem paths as the only access path. If an important file intentionally remains workspace-only, create/update a work product with `metadata.resourceRef.kind: "workspace_file"` and a workspace-relative path, then name that work product and path in the final comment. Treat browse/search as a fallback for recovering workspace files, not the preferred deliverable path. See `doc/AGENT-ARTIFACTS.md` for details and `.mp4`/`.webm` examples.
 
 ## 6. Database Change Workflow
 
@@ -108,7 +115,24 @@ Notes:
 
 ## 7. Verification Before Hand-off
 
-Run this full check before claiming done:
+Default local/agent test path:
+
+```sh
+pnpm test
+```
+
+This is the cheap default and only runs the Vitest suite. Browser suites stay opt-in:
+
+```sh
+pnpm test:e2e
+pnpm test:release-smoke
+```
+
+Run the browser suites only when your change touches them or when you are explicitly verifying CI/release flows.
+
+For normal issue work, run the smallest relevant verification first. Do not default to repo-wide typecheck/build/test on every heartbeat when a narrower check is enough to prove the change.
+
+Run this full check before claiming repo work done in a PR-ready hand-off, or when the change scope is broad enough that targeted checks are not sufficient:
 
 ```sh
 pnpm -r typecheck
@@ -138,7 +162,18 @@ When adding endpoints:
 - Use company selection context for company-scoped pages
 - Surface failures clearly; do not silently ignore API errors
 
-## 10. Definition of Done
+## 10. Pull Request Requirements
+
+When creating a pull request (via `gh pr create` or any other method), you **must** read and fill in every section of [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). Do not craft ad-hoc PR bodies — use the template as the structure for your PR description. Required sections:
+
+- **Thinking Path** — trace reasoning from project context to this change (see `CONTRIBUTING.md` for examples)
+- **What Changed** — bullet list of concrete changes
+- **Verification** — how a reviewer can confirm it works
+- **Risks** — what could go wrong
+- **Model Used** — the AI model that produced or assisted with the change (provider, exact model ID, context window, capabilities). Write "None — human-authored" if no AI was used.
+- **Checklist** — all items checked
+
+## 11. Definition of Done
 
 A change is done when all are true:
 
@@ -146,3 +181,8 @@ A change is done when all are true:
 2. Typecheck, tests, and build pass
 3. Contracts are synced across db/shared/server/ui
 4. Docs updated when behavior or commands change
+5. PR description follows the [PR template](.github/PULL_REQUEST_TEMPLATE.md) with all sections filled in (including Model Used)
+
+## Design system
+
+`DESIGN.md` at the repo root is the source of truth for UI design decisions. The token-only rule applies to all `ui/` changes: every color, spacing, radius, type, shadow, and motion value in `ui/src/components/**` and `ui/src/pages/**` comes from the token layer in `ui/src/index.css` — no hex, raw px, arbitrary Tailwind bracket values, or raw `font-size`/`fontSize` declarations in components, outside the documented allowlist in `ui/src/index.css`. Run `pnpm check:token-gates` (`scripts/check-token-gates.mjs`) before committing UI changes — it fails on any violation not covered by that allowlist.

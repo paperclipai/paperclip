@@ -187,13 +187,15 @@ function formatExtraUsageLabel(extraUsage: AnthropicExtraUsage): string | null {
   ) {
     return null;
   }
-  return `${formatCurrencyAmount(usedCredits, extraUsage.currency)} / ${formatCurrencyAmount(monthlyLimit, extraUsage.currency)}`;
+  // API returns values in cents — convert to dollars for display
+  return `${formatCurrencyAmount(usedCredits / 100, extraUsage.currency)} / ${formatCurrencyAmount(monthlyLimit / 100, extraUsage.currency)}`;
 }
 
-/** Convert a 0-1 utilization fraction to a 0-100 integer percent. Returns null for null/undefined input. */
+/** Convert a utilization value to a 0-100 integer percent. Returns null for null/undefined input.
+ *  Handles both 0-1 fractions (legacy) and 0-100 percentages (current API). */
 export function toPercent(utilization: number | null | undefined): number | null {
   if (utilization == null) return null;
-  return Math.min(100, Math.round(utilization * 100));
+  return Math.min(100, Math.round(utilization < 1 ? utilization * 100 : utilization));
 }
 
 /** fetch with an abort-based timeout so a hanging provider api doesn't block the response indefinitely */
@@ -477,6 +479,14 @@ function formatProviderError(source: string, error: unknown): string {
 }
 
 export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
+  if (
+    process.env.CLAUDE_CODE_USE_BEDROCK === "1" ||
+    process.env.CLAUDE_CODE_USE_BEDROCK === "true" ||
+    hasNonEmptyProcessEnv("ANTHROPIC_BEDROCK_BASE_URL")
+  ) {
+    return { provider: "anthropic", source: "bedrock", ok: true, windows: [] };
+  }
+
   const authStatus = await readClaudeAuthStatus();
   const authDescription = describeClaudeSubscriptionAuth(authStatus);
   const token = await readClaudeToken();

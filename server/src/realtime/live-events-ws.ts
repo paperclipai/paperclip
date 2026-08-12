@@ -46,7 +46,15 @@ interface UpgradeContext {
   actorId: string;
 }
 
+/** Cloud-proxied browser identity resolved from trusted x-paperclip-cloud-* headers. */
+export interface CloudUpgradeActor {
+  userId: string;
+  /** Companies this actor may subscribe to (primary stack company + real memberships). */
+  companyIds: string[];
+}
+
 interface IncomingMessageWithContext extends IncomingMessage {
+  paperclipWebSocketHandled?: boolean;
   paperclipUpgradeContext?: UpgradeContext;
 }
 
@@ -54,10 +62,31 @@ function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
+function isWritableUpgradeSocket(socket: Duplex) {
+  const maybeWritableState = socket as Duplex & { writable?: boolean; writableEnded?: boolean; writableDestroyed?: boolean };
+  return !socket.destroyed && maybeWritableState.writable !== false && !maybeWritableState.writableEnded && !maybeWritableState.writableDestroyed;
+}
+
+function closeUpgradeSocket(socket: Duplex) {
+  if (!socket.destroyed) {
+    socket.destroy();
+  }
+}
+
 function rejectUpgrade(socket: Duplex, statusLine: string, message: string) {
   const safe = message.replace(/[\r\n]+/g, " ").trim();
-  socket.write(`HTTP/1.1 ${statusLine}\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n${safe}`);
-  socket.destroy();
+  if (!isWritableUpgradeSocket(socket)) {
+    closeUpgradeSocket(socket);
+    return;
+  }
+
+  try {
+    socket.once("finish", () => closeUpgradeSocket(socket));
+    socket.end(`HTTP/1.1 ${statusLine}\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\n${safe}`);
+  } catch (err) {
+    logger.warn({ err }, "failed to reject live websocket upgrade");
+    closeUpgradeSocket(socket);
+  }
 }
 
 function parseCompanyId(pathname: string) {
@@ -100,6 +129,7 @@ async function authorizeUpgrade(
   opts: {
     deploymentMode: DeploymentMode;
     resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
+    resolveCloudActor?: (req: IncomingMessage) => Promise<CloudUpgradeActor | null>;
   },
 ): Promise<UpgradeContext | null> {
   const queryToken = url.searchParams.get("token")?.trim() ?? "";
@@ -114,6 +144,25 @@ async function authorizeUpgrade(
         actorType: "board",
         actorId: "board",
       };
+    }
+
+    // Cloud-managed deployments authenticate proxied browsers with trusted
+    // x-paperclip-cloud-* headers, never a local Better Auth session — the
+    // session fallback below can only 403 them, which left the live-events
+    // socket permanently unreachable behind the Cloud front door. A resolved
+    // cloud actor is authoritative: authorize against its membership scope.
+    // Absent/invalid cloud headers fall through to the session path, so
+    // self-hosted behavior is unchanged.
+    if (opts.resolveCloudActor) {
+      const cloudActor = await opts.resolveCloudActor(req);
+      if (cloudActor) {
+        if (!cloudActor.companyIds.includes(companyId)) return null;
+        return {
+          companyId,
+          actorType: "board",
+          actorId: cloudActor.userId,
+        };
+      }
     }
 
     if (opts.deploymentMode !== "authenticated" || !opts.resolveSessionFromHeaders) {
@@ -181,6 +230,12 @@ export function setupLiveEventsWebSocketServer(
   opts: {
     deploymentMode: DeploymentMode;
     resolveSessionFromHeaders?: (headers: Headers) => Promise<BetterAuthSessionResult | null>;
+    /**
+     * Resolves a Cloud-proxied browser's identity from the trusted
+     * x-paperclip-cloud-* headers on the upgrade request. Wired by managed
+     * deployments; self-hosted instances leave it unset.
+     */
+    resolveCloudActor?: (req: IncomingMessage) => Promise<CloudUpgradeActor | null>;
   },
 ) {
   const wss = new WebSocketServer({ noServer: true });
@@ -234,6 +289,21 @@ export function setupLiveEventsWebSocketServer(
   });
 
   server.on("upgrade", (req, socket, head) => {
+    if ((req as IncomingMessageWithContext).paperclipWebSocketHandled) {
+      return;
+    }
+
+    const onRawSocketError = (err: Error) => {
+      logger.warn({ err, path: req.url }, "live websocket upgrade socket error");
+    };
+    const cleanupRawSocketListeners = () => {
+      socket.off("error", onRawSocketError);
+      socket.off("close", cleanupRawSocketListeners);
+    };
+
+    socket.on("error", onRawSocketError);
+    socket.once("close", cleanupRawSocketListeners);
+
     if (!req.url) {
       rejectUpgrade(socket, "400 Bad Request", "missing url");
       return;
@@ -242,13 +312,14 @@ export function setupLiveEventsWebSocketServer(
     const url = new URL(req.url, "http://localhost");
     const companyId = parseCompanyId(url.pathname);
     if (!companyId) {
-      socket.destroy();
+      closeUpgradeSocket(socket);
       return;
     }
 
     void authorizeUpgrade(db, req, companyId, url, {
       deploymentMode: opts.deploymentMode,
       resolveSessionFromHeaders: opts.resolveSessionFromHeaders,
+      resolveCloudActor: opts.resolveCloudActor,
     })
       .then((context) => {
         if (!context) {
@@ -256,9 +327,15 @@ export function setupLiveEventsWebSocketServer(
           return;
         }
 
+        if (!isWritableUpgradeSocket(socket)) {
+          cleanupRawSocketListeners();
+          return;
+        }
+
         const reqWithContext = req as IncomingMessageWithContext;
         reqWithContext.paperclipUpgradeContext = context;
 
+        cleanupRawSocketListeners();
         wss.handleUpgrade(req, socket, head, (ws: WsSocket) => {
           wss.emit("connection", ws, reqWithContext);
         });

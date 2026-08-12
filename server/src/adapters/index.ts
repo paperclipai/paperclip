@@ -1,9 +1,26 @@
-export { getServerAdapter, listAdapterModels, listServerAdapters, findServerAdapter, detectAdapterModel } from "./registry.js";
+export {
+  getServerAdapter,
+  listAdapterModels,
+  refreshAdapterModels,
+  listServerAdapters,
+  findServerAdapter,
+  findActiveServerAdapter,
+  detectAdapterModel,
+  listAdapterModelProfiles,
+  registerServerAdapter,
+  unregisterServerAdapter,
+  requireServerAdapter,
+} from "./registry.js";
 export type {
   ServerAdapterModule,
+  AcpTargetDescriptor,
   AdapterExecutionContext,
   AdapterExecutionResult,
   AdapterInvocationMeta,
+  AdapterRuntimeEvent,
+  AdapterRuntimeMcpServer,
+  AdapterRuntimeMcpAccess,
+  AdapterModelProfileDefinition,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestStatus,
