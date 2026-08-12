@@ -1460,4 +1460,76 @@ describe("sandbox callback bridge", () => {
     expect(script).toContain("/workspace/b");
     expect(script).toContain("/workspace/c");
   });
+
+  it("emits a schtasks-based launch script for MSYS/Cygwin/Windows targets", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-runtime-"));
+    cleanupDirs.push(rootDir);
+
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+
+    const runner = createExecRunner();
+    const capturedScripts: string[] = [];
+    const capturingRunner = {
+      execute: async (input: {
+        command: string;
+        args?: string[];
+        cwd?: string;
+        env?: Record<string, string>;
+        stdin?: string;
+        timeoutMs?: number;
+      }): Promise<RunProcessResult> => {
+        if ((input.command === "sh" || input.command === "bash") && typeof input.args?.[1] === "string") {
+          capturedScripts.push(input.args[1]);
+        }
+        return runner.execute(input);
+      },
+    };
+
+    const bridgeAsset = await createSandboxCallbackBridgeAsset();
+    cleanupFns.push(bridgeAsset.cleanup);
+
+    const prepared = await prepareCommandManagedRuntime({
+      runner,
+      spec: {
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+      },
+      adapterKey: "bridge-test",
+      workspaceLocalDir: remoteWorkspaceDir,
+      assets: [
+        {
+          key: "bridge",
+          localDir: bridgeAsset.localDir,
+        },
+      ],
+    });
+
+    const queueDir = path.posix.join(prepared.runtimeRootDir, "paperclip-bridge");
+    const bridgeToken = createSandboxCallbackBridgeToken();
+
+    const bridge = await startSandboxCallbackBridgeServer({
+      runner: capturingRunner,
+      remoteCwd: remoteWorkspaceDir,
+      assetRemoteDir: prepared.assetDirs.bridge,
+      queueDir,
+      bridgeToken,
+      timeoutMs: 30_000,
+    });
+    cleanupFns.push(async () => {
+      await bridge.stop();
+    });
+
+    const startScript = capturedScripts.join("\n");
+    // Windows (MSYS/git bash) detection gate (uname -s matched case-insensitively).
+    expect(startScript).toContain("mingw|msys|cygwin|^nt");
+    // Wrapper .cmd generation: crlf header, env baking, node invocation.
+    expect(startScript).toContain("printf '@echo off");
+    expect(startScript).toContain("PAPERCLIP_BRIDGE_QUEUE_DIR");
+    // schtasks one-shot registration + run (detaches the process from the SSH session).
+    expect(startScript).toContain("schtasks /create");
+    expect(startScript).toContain("schtasks /run");
+    // POSIX fallback is preserved for non-Windows targets.
+    expect(startScript).toContain("nohup");
+  });
 });

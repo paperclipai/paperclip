@@ -241,8 +241,8 @@ export function parseAgyJsonl(stdout: string) {
       const stepType = asString(stepUpdate.step_type, "").trim();
       const state = asString(stepUpdate.state, "").trim();
       if (stepType === "agent_response" && (state === "ACTIVE" || state === "DONE")) {
-        const delta = asString(stepUpdate.text_delta, "").trim();
-        if (delta) textParts.push(delta);
+        const delta = asString(stepUpdate.text_delta, "");
+        if (delta.length > 0) textParts.push(delta);
       }
       const stepUsage = stepUpdate.usage ?? event.usage;
       if (stepUsage) accumulateUsage(usage, stepUsage);
