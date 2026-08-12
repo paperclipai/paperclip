@@ -1177,7 +1177,7 @@ function createSandboxEnvironmentDriver(
       // (or no candidate at all) means a brand new provider lease was acquired,
       // regardless of `resolvedLeasePolicy` below (a config-level setting, not
       // a fact about this specific lease).
-      const wasResumed = Boolean(reusableLease) && providerLease.providerLeaseId === reusableLease.providerLeaseId;
+      const wasResumed = reusableLease != null && providerLease.providerLeaseId === reusableLease.providerLeaseId;
 
       // Same ephemeral-policy-for-tests guard as the plugin-backed path:
       // ad-hoc test leases must not be publishable for reuse.
