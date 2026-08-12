@@ -25,12 +25,14 @@ function normalizeModelId(model: string | null | undefined): string {
   return typeof model === "string" ? model.trim() : "";
 }
 
-// Legacy model aliases with no OpenAI-published metadata are rewritten to the concrete slug the
-// Codex CLI actually knows. Without this, agents still configured with the bare `gpt-5.6` alias
-// (the old default) keep triggering "Model metadata for `gpt-5.6` not found" warnings and Codex
-// falls back to generic context-window limits, even on a Codex build that ships the 5.6 family.
+// Legacy/unavailable model IDs are rewritten to the concrete slug the deployed Codex CLI knows.
+// Without this, agents still configured with the bare `gpt-5.6` alias keep triggering metadata
+// fallback warnings. `gpt-5.3-codex` also cannot be run through this instance's ChatGPT-account
+// authentication, so preserving a stale per-message override turns an otherwise valid wake into
+// a provider 400 instead of using the current supported Codex default.
 const CODEX_LOCAL_MODEL_ALIASES: Readonly<Record<string, string>> = {
   "gpt-5.6": "gpt-5.6-sol",
+  "gpt-5.3-codex": "gpt-5.6-sol",
 };
 
 export function normalizeCodexModel(model: string | null | undefined): string {
@@ -66,10 +68,6 @@ export const models = [
   { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
   { id: "gpt-5.6-terra", label: "gpt-5.6-terra" },
   { id: "gpt-5.6-luna", label: "gpt-5.6-luna" },
-  // OpenAI's current agentic coding model. Dynamic discovery can add newer
-  // models for API-key deployments; this fallback also covers Codex-login
-  // deployments where no OPENAI_API_KEY is intentionally exposed to Paperclip.
-  { id: "gpt-5.3-codex", label: "GPT-5.3-Codex" },
   { id: "gpt-5.4", label: "gpt-5.4" },
   { id: "gpt-5.4-mini", label: "gpt-5.4-mini" },
   { id: "gpt-5", label: "gpt-5" },
