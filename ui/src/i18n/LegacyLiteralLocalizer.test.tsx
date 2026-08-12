@@ -1,9 +1,15 @@
 // @vitest-environment jsdom
 
+import { act, useState } from "react";
+import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { setLocale } from ".";
-import { translateLegacyLiteral, translateUiLiteral } from "./LegacyLiteralLocalizer";
+import {
+  translateLegacyLiteral,
+  translateUiLiteral,
+  useUiLiteralLocale,
+} from "./LegacyLiteralLocalizer";
 
 afterEach(async () => setLocale("en"));
 
@@ -21,5 +27,27 @@ describe("static UI literal localization", () => {
 
     await setLocale("en");
     expect(translateUiLiteral("Delete")).toBe("Delete");
+  });
+
+  it("updates literals without resetting component state", async () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+
+    function Harness() {
+      useUiLiteralLocale();
+      const [value, setValue] = useState("unsaved");
+      return (
+        <button onClick={() => setValue("edited")}>
+          {translateUiLiteral("Delete")}: {value}
+        </button>
+      );
+    }
+
+    await act(async () => root.render(<Harness />));
+    await act(async () => container.querySelector("button")?.click());
+    await act(async () => setLocale("zh-CN"));
+
+    expect(container.textContent).toBe("删除: edited");
+    await act(async () => root.unmount());
   });
 });

@@ -3,6 +3,7 @@ import ts from "typescript";
 import type { Plugin } from "vite";
 
 const helper = "__paperclipTranslateUiLiteral";
+const localeHook = "__paperclipUseUiLiteralLocale";
 const translatableAttributes = /^(?:alt|aria-description|aria-label|buttonLabel|cancelLabel|confirmLabel|description|empty(?:Message|Text)|error(?:Message|Text)?|help(?:Text)?|hint|label|message|placeholder|subtitle|title|tooltip)$/i;
 const userFeedbackCalls = /(?:^|\.)(?:addToast|alert|confirm|prompt|showToast|toast)$|(?:^|\.)(?:toast|toasts)\.(?:error|info|success|warn|warning)$/;
 const skippedElements = new Set(["code", "kbd", "noscript", "pre", "script", "style", "textarea"]);
@@ -75,6 +76,28 @@ export function staticUiLocalization(): Plugin {
         id.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
       );
       const replacements = new Map<number, { end: number; value: string }>();
+      const componentBodies = new Set<number>();
+
+      function markComponentOwner(node: ts.Node) {
+        for (let current = node.parent; current; current = current.parent) {
+          if (ts.isFunctionDeclaration(current) && current.name && /^[A-Z]/.test(current.name.text)) {
+            componentBodies.add(current.body.getStart(sourceFile) + 1);
+            return;
+          }
+          if (!ts.isArrowFunction(current) && !ts.isFunctionExpression(current)) continue;
+          if (!ts.isBlock(current.body)) continue;
+          let parent: ts.Node = current.parent;
+          if (ts.isCallExpression(parent)) parent = parent.parent;
+          if (
+            ts.isVariableDeclaration(parent) &&
+            ts.isIdentifier(parent.name) &&
+            /^[A-Z]/.test(parent.name.text)
+          ) {
+            componentBodies.add(current.body.getStart(sourceFile) + 1);
+            return;
+          }
+        }
+      }
 
       function addExpression(node: ts.Expression) {
         const text = expressionText(node);
@@ -83,6 +106,7 @@ export function staticUiLocalization(): Plugin {
           end: node.end,
           value: `${helper}(${node.getText(sourceFile)})`,
         });
+        markComponentOwner(node);
       }
 
       function collectExpression(node: ts.Expression) {
@@ -114,6 +138,7 @@ export function staticUiLocalization(): Plugin {
               end: node.end,
               value: `{${helper}(${JSON.stringify(text)})}`,
             });
+            markComponentOwner(node);
           }
         }
 
@@ -125,6 +150,7 @@ export function staticUiLocalization(): Plugin {
                 end: node.initializer.end,
                 value: `{${helper}(${JSON.stringify(node.initializer.text)})}`,
               });
+              markComponentOwner(node);
             } else if (ts.isJsxExpression(node.initializer) && node.initializer.expression) {
               collectExpression(node.initializer.expression);
             }
@@ -139,11 +165,15 @@ export function staticUiLocalization(): Plugin {
       visit(sourceFile);
       if (!replacements.size) return null;
 
+      for (const position of componentBodies) {
+        replacements.set(position, { end: position, value: `\n${localeHook}();` });
+      }
+
       let code = source;
       for (const [start, replacement] of [...replacements].sort((left, right) => right[0] - left[0])) {
         code = `${code.slice(0, start)}${replacement.value}${code.slice(replacement.end)}`;
       }
-      code = `import { translateUiLiteral as ${helper} } from "@/i18n/LegacyLiteralLocalizer";\n${code}`;
+      code = `import { translateUiLiteral as ${helper}, useUiLiteralLocale as ${localeHook} } from "@/i18n/LegacyLiteralLocalizer";\n${code}`;
       return { code, map: null };
     },
   };

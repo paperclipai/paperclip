@@ -123,15 +123,6 @@ function findIssuesScrollContainer(element: HTMLElement | null): HTMLElement | n
   return null;
 }
 const boardIssueStatuses = ISSUE_STATUSES;
-const issueStatusLabels: Record<IssueStatus, string> = {
-  backlog: entityStatusLabel("backlog"),
-  todo: entityStatusLabel("todo"),
-  in_progress: entityStatusLabel("in_progress"),
-  in_review: entityStatusLabel("in_review"),
-  done: entityStatusLabel("done"),
-  blocked: entityStatusLabel("blocked"),
-  cancelled: entityStatusLabel("cancelled"),
-};
 const progressSegmentClasses: Record<IssueStatus, string> = {
   backlog: "bg-muted-foreground/40",
   todo: "bg-blue-500",
@@ -639,7 +630,7 @@ function SubIssueProgressSummaryStrip({
                 key={status}
                 className={cn("h-full", progressSegmentClasses[status])}
                 style={{ width: `${(count / summary.totalCount) * 100}%` }}
-                title={`${issueStatusLabels[status]}: ${count}`}
+                title={`${entityStatusLabel(status)}: ${count}`}
                 aria-hidden="true"
               />
             ))}

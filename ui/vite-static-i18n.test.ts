@@ -18,6 +18,7 @@ describe("staticUiLocalization", () => {
 
     expect(code).toContain('__paperclipTranslateUiLiteral("Company settings")');
     expect(code).toContain('__paperclipTranslateUiLiteral("Welcome")');
+    expect(code).toContain("__paperclipUseUiLiteralLocale();");
     expect(code).toContain("{company.name}");
     expect(code).not.toContain("__paperclipTranslateUiLiteral(company.name)");
   });

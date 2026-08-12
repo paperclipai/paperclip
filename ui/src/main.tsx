@@ -15,7 +15,6 @@ import { DialogProvider } from "./context/DialogContext";
 import { EditorAutocompleteProvider } from "./context/EditorAutocompleteContext";
 import { ToastProvider } from "./context/ToastContext";
 import { ThemeProvider } from "./context/ThemeContext";
-import { LocaleRenderBoundary } from "./i18n/LegacyLiteralLocalizer";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
@@ -59,31 +58,29 @@ createRoot(document.getElementById("root")!).render(
     <AppErrorBoundary>
       <QueryClientProvider client={queryClient}>
         <ThemeProvider>
-          <LocaleRenderBoundary>
-            <BrowserRouter>
-              <CompanyProvider>
-                <EditorAutocompleteProvider>
-                  <ToastProvider>
-                    <LiveUpdatesProvider>
-                      <TooltipProvider>
-                        <CompanyAwareBreadcrumbProvider>
-                          <SidebarProvider>
-                            <PanelProvider>
-                              <PluginLauncherProvider>
-                                <DialogProvider>
-                                  <App />
-                                </DialogProvider>
-                              </PluginLauncherProvider>
-                            </PanelProvider>
-                          </SidebarProvider>
-                        </CompanyAwareBreadcrumbProvider>
-                      </TooltipProvider>
-                    </LiveUpdatesProvider>
-                  </ToastProvider>
-                </EditorAutocompleteProvider>
-              </CompanyProvider>
-            </BrowserRouter>
-          </LocaleRenderBoundary>
+          <BrowserRouter>
+            <CompanyProvider>
+              <EditorAutocompleteProvider>
+                <ToastProvider>
+                  <LiveUpdatesProvider>
+                    <TooltipProvider>
+                      <CompanyAwareBreadcrumbProvider>
+                        <SidebarProvider>
+                          <PanelProvider>
+                            <PluginLauncherProvider>
+                              <DialogProvider>
+                                <App />
+                              </DialogProvider>
+                            </PluginLauncherProvider>
+                          </PanelProvider>
+                        </SidebarProvider>
+                      </CompanyAwareBreadcrumbProvider>
+                    </TooltipProvider>
+                  </LiveUpdatesProvider>
+                </ToastProvider>
+              </EditorAutocompleteProvider>
+            </CompanyProvider>
+          </BrowserRouter>
         </ThemeProvider>
       </QueryClientProvider>
     </AppErrorBoundary>

@@ -1,4 +1,3 @@
-import { Fragment, type ReactElement } from "react";
 import { useTranslation } from "react-i18next";
 import { i18n } from ".";
 
@@ -115,7 +114,6 @@ export function translateUiLiteral(value: string) {
   return translated ?? value;
 }
 
-export function LocaleRenderBoundary({ children }: { children: ReactElement }) {
-  const { i18n } = useTranslation();
-  return <Fragment key={i18n.resolvedLanguage ?? i18n.language}>{children}</Fragment>;
+export function useUiLiteralLocale() {
+  useTranslation();
 }

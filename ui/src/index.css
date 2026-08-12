@@ -2091,6 +2091,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-30px: 30px; /* Extracted from ui/src/components/WorkspaceFileBrowser.tsx (min-h-[30px]). */
   --sz-8px: 8px; /* Extracted from ui/src/components/artifacts/ArtifactGroupCard.tsx (translate-x-[8px]). */
   --sz-4px: 4px; /* Extracted from ui/src/components/artifacts/ArtifactGroupCard.tsx (translate-x-[4px]). */
+  --sz-10px: 10px; /* LocaleSwitcher compact control spacing. */
+  --sz-12px: 12px; /* LocaleSwitcher menu row spacing. */
   --sz-34px: 34px; /* Extracted from ui/src/components/environment-variables-editor/SecretPicker.tsx (h-[34px]). */
   --sz-11rem: 11rem; /* Extracted from ui/src/components/issue-properties/IssueProperties.tsx (min-w-[11rem]). */
   --sz-32rem: 32rem; /* Extracted from ui/src/components/issue-properties/IssueProperties.tsx (w-[32rem]). */

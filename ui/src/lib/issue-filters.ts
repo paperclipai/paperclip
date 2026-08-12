@@ -64,28 +64,29 @@ export const externalObjectFilterOrder = [
   "none",
 ];
 
-const EXTERNAL_OBJECT_FILTER_LABELS: Record<string, string> = {
-  failed: t("filter.externalAnyFailed", { defaultValue: "Any failed" }),
-  waiting: t("filter.externalAnyWaiting", { defaultValue: "Any waiting" }),
-  running: t("filter.externalAnyRunning", { defaultValue: "Any running" }),
-  auth_required: t("filter.externalAuthRequired", { defaultValue: "Auth required" }),
-  unreachable: t("filter.externalUnreachable", { defaultValue: "Unreachable" }),
-  stale: t("filter.externalStale", { defaultValue: "Stale" }),
-  none: t("filter.externalNone", { defaultValue: "No external objects" }),
+const EXTERNAL_OBJECT_FILTER_LABELS: Record<string, [string, string]> = {
+  failed: ["filter.externalAnyFailed", "Any failed"],
+  waiting: ["filter.externalAnyWaiting", "Any waiting"],
+  running: ["filter.externalAnyRunning", "Any running"],
+  auth_required: ["filter.externalAuthRequired", "Auth required"],
+  unreachable: ["filter.externalUnreachable", "Unreachable"],
+  stale: ["filter.externalStale", "Stale"],
+  none: ["filter.externalNone", "No external objects"],
 };
 
 export function externalObjectFilterLabel(value: string): string {
-  return EXTERNAL_OBJECT_FILTER_LABELS[value] ?? issueFilterLabel(value);
+  const translation = EXTERNAL_OBJECT_FILTER_LABELS[value];
+  return translation ? t(translation[0], { defaultValue: translation[1] }) : issueFilterLabel(value);
 }
 
 export const issueStatusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
 export const issuePriorityOrder = ["critical", "high", "medium", "low"];
 
 export const issueQuickFilterPresets = [
-  { label: t("filter.all", { defaultValue: "All" }), statuses: [] as string[] },
-  { label: t("filter.active", { defaultValue: "Active" }), statuses: ["todo", "in_progress", "in_review", "blocked"] },
-  { label: t("filter.backlog", { defaultValue: "Backlog" }), statuses: ["backlog"] },
-  { label: t("filter.done", { defaultValue: "Done" }), statuses: ["done", "cancelled"] },
+  { labelKey: "filter.all", defaultLabel: "All", statuses: [] as string[] },
+  { labelKey: "filter.active", defaultLabel: "Active", statuses: ["todo", "in_progress", "in_review", "blocked"] },
+  { labelKey: "filter.backlog", defaultLabel: "Backlog", statuses: ["backlog"] },
+  { labelKey: "filter.done", defaultLabel: "Done", statuses: ["done", "cancelled"] },
 ];
 
 export function issueFilterLabel(value: string): string {
