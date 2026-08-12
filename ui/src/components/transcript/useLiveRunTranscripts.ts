@@ -339,12 +339,19 @@ export function useLiveRunTranscripts({
     if (!companyId || activeRunIds.size === 0) return;
 
     let closed = false;
+    let reconnectAttempt = 0;
     let reconnectTimer: number | null = null;
     let socket: WebSocket | null = null;
 
+    // Exponential backoff (1.5s → 15s cap), mirroring LiveUpdatesProvider.
+    // A flat retry hammers a backend that is still cold-starting — every
+    // failed handshake immediately queues the next one, so a stack that
+    // takes a minute to come up sees a steady stream of doomed connections.
     const scheduleReconnect = () => {
       if (closed) return;
-      reconnectTimer = window.setTimeout(connect, 1500);
+      reconnectAttempt += 1;
+      const delayMs = Math.min(15_000, 1_500 * 2 ** Math.min(reconnectAttempt - 1, 4));
+      reconnectTimer = window.setTimeout(connect, delayMs);
     };
 
     const connect = () => {
@@ -353,6 +360,11 @@ export function useLiveRunTranscripts({
         `/api/companies/${encodeURIComponent(companyId)}/events/ws`,
       );
       socket = new WebSocket(url);
+
+      socket.onopen = () => {
+        if (closed) return;
+        reconnectAttempt = 0;
+      };
 
       socket.onmessage = (message) => {
         const raw = typeof message.data === "string" ? message.data : "";
