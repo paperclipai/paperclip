@@ -11,10 +11,16 @@ export interface ProviderCredential {
   // is an ISO timestamp while the credential is parked after a failure.
   cooldownUntil: string | null;
   cooldownReason: string | null;
+  // Durable provider-quota circuit. A null quotaCooldownUntil with a non-null
+  // quotaReason means blocked until quota is authoritatively confirmed healthy.
+  quotaCooldownUntil: string | null;
+  quotaSampledAt: string | null;
+  quotaReason: string | null;
   lastUsedAt: string | null;
   // Escalating failover: count of consecutive credential-related failures, and
   // (when auto- or manually disabled) when/why it was parked out of the pool.
   consecutiveFailureCount: number;
+  lastFailureKind: string | null;
   disabledAt: string | null;
   disabledReason: string | null;
   createdAt: string;

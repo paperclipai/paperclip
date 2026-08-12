@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, eq, gt, gte, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, eq, gt, gte, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentCredentials, agents, costEvents, providerCredentials } from "@paperclipai/db";
 import type {
@@ -34,7 +34,16 @@ export type CredentialAssignmentValidationResult =
 
 function stripCredential(row: CredentialRow): SafeCredential {
   const { credential: _credential, ...safe } = row;
-  return safe;
+  const quotaIsLater = Boolean(row.quotaReason) && (
+    !row.quotaCooldownUntil
+    || !row.cooldownUntil
+    || row.quotaCooldownUntil.getTime() >= row.cooldownUntil.getTime()
+  );
+  return {
+    ...safe,
+    cooldownUntil: quotaIsLater ? row.quotaCooldownUntil ?? null : row.cooldownUntil,
+    cooldownReason: quotaIsLater ? row.quotaReason : row.cooldownReason,
+  };
 }
 
 function decryptPayload(row: CredentialRow): Record<string, unknown> {
@@ -335,7 +344,11 @@ export function credentialService(db: Db) {
         updates.disabledReason = null;
         updates.cooldownUntil = null;
         updates.cooldownReason = null;
+        updates.quotaCooldownUntil = null;
+        updates.quotaSampledAt = null;
+        updates.quotaReason = null;
         updates.consecutiveFailureCount = 0;
+        updates.lastFailureKind = null;
       }
 
       const [updated] = await db
@@ -349,8 +362,8 @@ export function credentialService(db: Db) {
 
     /**
      * Re-enable a credential the user disabled or that was auto-disabled after
-     * repeated failures: clears the disabled flag, any active cooldown, and the
-     * consecutive-failure counter so it rejoins the rotation pool.
+     * repeated failures. Failure cooldown state is cleared, while an independent
+     * provider-quota circuit remains authoritative until its sampled reset.
      */
     async reenable(id: string): Promise<SafeCredential | null> {
       const [updated] = await db
@@ -361,6 +374,7 @@ export function credentialService(db: Db) {
           cooldownUntil: null,
           cooldownReason: null,
           consecutiveFailureCount: 0,
+          lastFailureKind: null,
           updatedAt: new Date(),
         })
         .where(eq(providerCredentials.id, id))
@@ -984,13 +998,12 @@ export const CREDENTIAL_DEFAULT_COOLDOWN_MS = 30 * 60 * 1000;
 export const CREDENTIAL_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
 
 /**
- * Escalating cooldown ladder for a credential that keeps hitting its provider
- * rate/usage limit (e.g. Claude's 5-hour window). The Nth consecutive limit hit
+ * Escalating cooldown ladder for a credential that keeps hitting provider
+ * throttling without an exact reset. The Nth consecutive limit hit
  * parks the credential for ladder[min(N-1, last)] — 30min, then 2h, then 2h
- * thereafter. A provider Retry-After (when sent) is NOT used to delay the AGENT
- * (it would idle for hours); it only informs how long THIS credential rests,
- * and we cap that at the ladder so a different bound credential is tried first.
- * Rate-limits never freeze — they self-recover when the window resets.
+ * thereafter. Hard quota depletion is separate: an exact provider reset is
+ * honored in full for that credential while another eligible pool member can be
+ * tried immediately. Quota/rate limits never freeze a credential.
  */
 export const CREDENTIAL_RATE_LIMIT_COOLDOWN_LADDER_MS = [
   30 * 60 * 1000, //  1st: 30 min
@@ -1017,10 +1030,11 @@ const CREDENTIAL_FAILURE_ERROR_CODES = new Set<string>([
   // auth / bad key
   "claude_auth_required",
   "codex_auth_required",
+  "refresh_token_reused",
+  "refresh_token_expired",
+  "refresh_token_invalidated",
   "deepseek_api_key_missing",
   "mimo_api_key_missing",
-  // provider rejection (e.g. MiMo rejecting a model id, 400 param errors)
-  "deepseek_api_request_failed",
 ]);
 
 /**
@@ -1035,14 +1049,27 @@ export function isCredentialFailure(input: {
   errorCode?: string | null;
   errorMessage?: string | null;
 }): boolean {
-  if (input.errorFamily === "transient_upstream") return true;
+  if (input.errorFamily === "provider_quota") return true;
   const code = typeof input.errorCode === "string" ? input.errorCode : "";
+  if (code === "provider_quota") return true;
+  // A generic upstream outage or local harness crash is not credential health.
+  // Only rotate a transient failure when it carries key-scoped throttling
+  // evidence; Claude/Codex hard quota failures use provider_quota above.
+  if (input.errorFamily === "transient_upstream") {
+    const message = (input.errorMessage ?? "").toLowerCase();
+    return code === "provider_rate_limit"
+      || ([
+        "claude_transient_upstream",
+        "codex_transient_upstream",
+        "deepseek_transient_upstream",
+      ].includes(code) && /\b429\b|rate limit|too many requests/.test(message));
+  }
   if (code && CREDENTIAL_FAILURE_ERROR_CODES.has(code)) return true;
   const msg = (input.errorMessage ?? "").toLowerCase();
   if (!msg) return false;
   return (
-    /\b401\b|\b403\b|\b400\b/.test(msg) ||
-    /unauthorized|forbidden|invalid api key|invalid_api_key|invalid key|authentication|expired|param incorrect|not supported model|invalid_request_error/.test(
+    /\b401\b|\b403\b/.test(msg) ||
+    /unauthorized|forbidden|invalid api key|invalid_api_key|incorrect api key|expired (?:api )?key|authentication (?:failed|required)/.test(
       msg,
     )
   );
@@ -1082,6 +1109,23 @@ function credentialTypesForAdapterRuntime(
   adapterType: string,
   adapterConfig: Record<string, unknown> | null | undefined,
 ): readonly string[] {
+  if (adapterType === "pi_local") {
+    const provider = readPiModelProvider(adapterConfig);
+    if (!provider) return credentialTypesForAdapterType(adapterType);
+    return PI_PROVIDER_CREDENTIAL_TYPES[provider] ?? [];
+  }
+  if (adapterType === "opencode_local") {
+    const provider = readPiModelProvider(adapterConfig);
+    const opencodeProviderTypes: Record<string, readonly string[]> = {
+      anthropic: ["claude_api_key"],
+      google: ["gemini_api_key"],
+      gemini: ["gemini_api_key"],
+      openai: ["openai_api_key"],
+      openrouter: ["openrouter_api_key"],
+    };
+    if (!provider) return credentialTypesForAdapterType(adapterType);
+    return opencodeProviderTypes[provider] ?? [];
+  }
   if (adapterType !== "acpx_local") return credentialTypesForAdapterType(adapterType);
 
   const acpxAgent = readCredentialConfigString(adapterConfig, "agent") ?? "claude";
@@ -1262,16 +1306,111 @@ export function selectActiveCredentialForAdapter(input: {
     });
   }
 
-  return eligible[0] ?? input.chosen[0] ?? null;
+  return eligible[0] ?? (
+    credentialTypesForAdapterType(input.adapterType).length === 0
+      ? input.chosen[0] ?? null
+      : null
+  );
+}
+
+/** Whether resolved non-managed config already supplies an explicit credential
+ * the adapter can use. This lets project/routine secret bindings override an
+ * unavailable managed pool without treating a path-only HOME as valid auth. */
+export function hasConfiguredRuntimeCredentialForAdapter(input: {
+  adapterType: string;
+  adapterConfig?: Record<string, unknown> | null;
+  env: Record<string, unknown>;
+}): boolean {
+  const types = new Set(credentialTypesForAdapterRuntime(
+    input.adapterType,
+    input.adapterConfig ?? null,
+  ));
+  const has = (key: string) => hasNonEmptyEnvValue(input.env, key);
+  if (types.has("openai_api_key") && has("OPENAI_API_KEY")) return true;
+  if (types.has("claude_api_key") && has("ANTHROPIC_API_KEY")) return true;
+  if (types.has("claude_oauth") && has("CLAUDE_CODE_OAUTH_TOKEN")) return true;
+  if (types.has("deepseek_api_key") && (
+    has("DEEPSEEK_API_KEY") || (anthropicBaseUrlUsesDeepSeek(input.env) && has("ANTHROPIC_AUTH_TOKEN"))
+  )) return true;
+  if (types.has("mimo_api_key") && (
+    has("XIAOMI_TOKEN_PLAN_SGP_API_KEY") || (anthropicBaseUrlUsesMimo(input.env) && has("ANTHROPIC_AUTH_TOKEN"))
+  )) return true;
+  if (types.has("openrouter_api_key") && has("OPENROUTER_API_KEY")) return true;
+  if (types.has("gemini_api_key") && (has("GEMINI_API_KEY") || has("GOOGLE_API_KEY"))) return true;
+  return false;
+}
+
+/**
+ * Keep pool-unavailable failures scoped to credentials the configured adapter
+ * can actually consume. This is especially important for Pi, where the model
+ * provider selects one auth lane from several credential types.
+ */
+export function unavailableCredentialPoolsForAdapter(input: {
+  adapterType: string;
+  adapterConfig?: Record<string, unknown> | null;
+  pools: UnavailableCredentialPool[];
+}): UnavailableCredentialPool[] {
+  const eligibleTypes = new Set(credentialTypesForAdapterRuntime(
+    input.adapterType,
+    input.adapterConfig ?? null,
+  ));
+  if (eligibleTypes.size === 0) return [];
+  return input.pools.filter((pool) => eligibleTypes.has(pool.type));
 }
 
 type RotationCandidate = {
   credentialId: string;
   type: string;
   cooldownUntil: Date | null;
+  cooldownReason: string | null;
+  quotaCooldownUntil: Date | null;
+  quotaSampledAt: Date | null;
+  quotaReason: string | null;
   lastUsedAt: Date | null;
   updatedAt: Date;
 };
+
+export type UnavailableCredentialPool = {
+  type: string;
+  reason: "cooldown" | "quota_depleted";
+  credentialIds: string[];
+  nextEligibleAt: Date | null;
+};
+
+/** Resolve whether an agent exists and every assigned credential of one type,
+ * including disabled bindings and the legacy singular assignment. Consumers
+ * use this as an authority boundary before considering instance-global auth. */
+export async function assignedCredentialIdsOfType(
+  db: Db,
+  agentId: string,
+  type: string,
+): Promise<{ agentExists: boolean; credentialIds: string[] }> {
+  const [agent] = await db
+    .select({ credentialId: agents.credentialId })
+    .from(agents)
+    .where(eq(agents.id, agentId))
+    .limit(1);
+  if (!agent) return { agentExists: false, credentialIds: [] };
+
+  const rows = await db
+    .select({ credentialId: agentCredentials.credentialId })
+    .from(agentCredentials)
+    .innerJoin(providerCredentials, eq(agentCredentials.credentialId, providerCredentials.id))
+    .where(and(
+      eq(agentCredentials.agentId, agentId),
+      eq(providerCredentials.type, type),
+    ));
+  const ids = new Set(rows.map((row) => row.credentialId));
+  if (agent.credentialId) {
+    const [legacy] = await db
+      .select({ id: providerCredentials.id })
+      .from(providerCredentials)
+      .where(and(eq(providerCredentials.id, agent.credentialId), eq(providerCredentials.type, type)))
+      .limit(1);
+    if (legacy) ids.add(legacy.id);
+  }
+  return { agentExists: true, credentialIds: [...ids] };
+}
 
 const QUOTA_AWARE_CREDENTIAL_TYPES = new Set<CredentialType>(["claude_oauth", "codex_oauth"]);
 const UNKNOWN_QUOTA_PRESSURE = 75;
@@ -1291,6 +1430,125 @@ function quotaPressureFromWindows(windows: QuotaWindow[]): number | null {
   return pressure;
 }
 
+export function quotaDepletionCooldownUntil(
+  windows: QuotaWindow[],
+  sampledAt = new Date(),
+  credentialType?: string,
+): Date | null {
+  const observation = credentialQuotaCircuitState(windows, sampledAt, credentialType);
+  return observation.kind === "depleted" ? observation.until : null;
+}
+
+export type CredentialQuotaCircuitState =
+  | { kind: "unknown" }
+  | { kind: "healthy" }
+  | { kind: "depleted"; until: Date | null };
+
+export type CredentialQuotaCircuitSnapshot = {
+  quotaCooldownUntil: Date | null;
+  quotaSampledAt: Date | null;
+  quotaReason: string | null;
+};
+
+export function credentialQuotaCircuitState(
+  windows: QuotaWindow[],
+  sampledAt: Date,
+  credentialType?: string,
+): CredentialQuotaCircuitState {
+  const nowMs = sampledAt.getTime();
+  const applicable = windows.filter((window) => {
+    // Only credential-wide windows may open or close this credential-wide
+    // circuit. Model-specific/additive telemetry is not authoritative health.
+    if (credentialType === "claude_oauth") {
+      return ["current session", "current week (all models)"].includes(window.label.trim().toLowerCase());
+    }
+    if (credentialType === "codex_oauth") return !window.label.includes("·");
+    return true;
+  }).filter((window) => window.usedPercent != null && Number.isFinite(window.usedPercent));
+  if (applicable.length === 0) return { kind: "unknown" };
+
+  const depleted = applicable.filter((window) => (window.usedPercent ?? 0) >= 100);
+  if (depleted.length === 0) return { kind: "healthy" };
+  const resetTimes = depleted.map((window) => {
+    const parsed = window.resetsAt ? new Date(window.resetsAt) : null;
+    return parsed && Number.isFinite(parsed.getTime()) && parsed.getTime() > nowMs ? parsed : null;
+  });
+  // A provider-declared reset closes the circuit at that exact time. If a
+  // depleted sample has no usable reset, keep it open until an authoritative
+  // healthy sample (or replacement secret) arrives instead of probing it with
+  // another inference request after an arbitrary timer.
+  if (resetTimes.some((value) => value === null)) return { kind: "depleted", until: null };
+  return {
+    kind: "depleted",
+    until: new Date(Math.max(...resetTimes.map((value) => (value as Date).getTime()))),
+  };
+}
+
+/**
+ * Persist a provider-reported exhausted quota window in its own routing circuit.
+ * The sampled-at watermark makes updates monotonic across replicas: an older
+ * healthy response cannot clear a newer depletion observation.
+ */
+export async function syncCredentialQuotaCooldown(
+  db: Db,
+  credentialId: string,
+  type: string,
+  windows: QuotaWindow[],
+  sampledAt = new Date(),
+): Promise<CredentialQuotaCircuitSnapshot | null> {
+  if (!isQuotaAwareCredentialType(type)) return null;
+  const reason = `quota_depleted:${type}`;
+  const observation = credentialQuotaCircuitState(windows, sampledAt, type);
+  if (observation.kind === "unknown") {
+    const [current] = await db
+      .select({
+        quotaCooldownUntil: providerCredentials.quotaCooldownUntil,
+        quotaSampledAt: providerCredentials.quotaSampledAt,
+        quotaReason: providerCredentials.quotaReason,
+      })
+      .from(providerCredentials)
+      .where(eq(providerCredentials.id, credentialId))
+      .limit(1);
+    return current ?? null;
+  }
+  const cooldownUntil = observation.kind === "depleted" ? observation.until : null;
+  const preserveFutureDatedCircuit = observation.kind === "healthy";
+  const [updated] = await db
+    .update(providerCredentials)
+    .set({
+      quotaCooldownUntil: preserveFutureDatedCircuit
+        ? sql<Date | null>`case when ${providerCredentials.quotaCooldownUntil} > ${sampledAt.toISOString()}::timestamptz then ${providerCredentials.quotaCooldownUntil} else null end`
+        : cooldownUntil,
+      quotaSampledAt: sampledAt,
+      quotaReason: observation.kind === "depleted"
+        ? reason
+        : sql<string | null>`case when ${providerCredentials.quotaCooldownUntil} > ${sampledAt.toISOString()}::timestamptz then ${providerCredentials.quotaReason} else null end`,
+    })
+    .where(and(
+      eq(providerCredentials.id, credentialId),
+      or(
+        isNull(providerCredentials.quotaSampledAt),
+        lt(providerCredentials.quotaSampledAt, sampledAt),
+      ),
+    ))
+    .returning({
+      quotaCooldownUntil: providerCredentials.quotaCooldownUntil,
+      quotaSampledAt: providerCredentials.quotaSampledAt,
+      quotaReason: providerCredentials.quotaReason,
+    });
+  if (updated) return updated;
+  const [current] = await db
+    .select({
+      quotaCooldownUntil: providerCredentials.quotaCooldownUntil,
+      quotaSampledAt: providerCredentials.quotaSampledAt,
+      quotaReason: providerCredentials.quotaReason,
+    })
+    .from(providerCredentials)
+    .where(eq(providerCredentials.id, credentialId))
+    .limit(1);
+  return current ?? null;
+}
+
 function quotaPressureForCandidate(candidate: RotationCandidate, nowMs: number): number | null {
   if (!isQuotaAwareCredentialType(candidate.type)) return null;
   const cached = getReusableQuotaCache({
@@ -1302,18 +1560,80 @@ function quotaPressureForCandidate(candidate: RotationCandidate, nowMs: number):
   return quotaPressureFromWindows(cached.quotaWindows) ?? UNKNOWN_QUOTA_PRESSURE;
 }
 
+function quotaDepletionForCandidate(
+  candidate: RotationCandidate,
+  nowMs: number,
+): { until: Date | null; reason: "quota_depleted" } | null {
+  if (!isQuotaAwareCredentialType(candidate.type)) return null;
+  const cached = getReusableQuotaCache({
+    id: candidate.credentialId,
+    type: candidate.type,
+    updatedAt: candidate.updatedAt,
+  }, nowMs);
+  if (!cached) return null;
+
+  const cachedSampledAt = new Date(cached.sampledAt);
+  if (
+    candidate.quotaSampledAt
+    && Number.isFinite(cachedSampledAt.getTime())
+    && cachedSampledAt.getTime() <= candidate.quotaSampledAt.getTime()
+  ) return null;
+
+  const observation = credentialQuotaCircuitState(
+    cached.quotaWindows,
+    cachedSampledAt,
+    candidate.type,
+  );
+  if (observation.kind !== "depleted") return null;
+  if (observation.until && observation.until.getTime() <= nowMs) return null;
+  return { until: observation.until, reason: "quota_depleted" };
+}
+
+function credentialAvailability(
+  candidate: RotationCandidate,
+  nowMs: number,
+): { available: true } | { available: false; reason: "cooldown" | "quota_depleted"; until: Date | null } {
+  const cooldownUntil = candidate.cooldownUntil;
+  const persistedQuotaUntil = candidate.quotaCooldownUntil;
+  const quotaDepletion = quotaDepletionForCandidate(candidate, nowMs);
+  const activeCooldown = cooldownUntil && cooldownUntil.getTime() > nowMs ? cooldownUntil : null;
+  const persistedQuotaOpen = Boolean(candidate.quotaReason) && (
+    !persistedQuotaUntil || persistedQuotaUntil.getTime() > nowMs
+  );
+  const cachedQuotaOpen = quotaDepletion != null;
+  const activeQuota = [
+    persistedQuotaOpen ? persistedQuotaUntil : null,
+    cachedQuotaOpen ? quotaDepletion.until : null,
+  ]
+    .filter((value): value is Date => value instanceof Date)
+    .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+  if (!activeCooldown && !persistedQuotaOpen && !cachedQuotaOpen) return { available: true };
+
+  const cooldownIsQuota = candidate.cooldownReason === "provider_quota"
+    || candidate.cooldownReason?.startsWith("quota_depleted:") === true;
+  if ((persistedQuotaOpen || cachedQuotaOpen) && (
+    !activeCooldown || !activeQuota || activeQuota.getTime() >= activeCooldown.getTime()
+  )) {
+    return { available: false, reason: "quota_depleted", until: activeQuota };
+  }
+  return {
+    available: false,
+    reason: cooldownIsQuota ? "quota_depleted" : "cooldown",
+    until: activeCooldown,
+  };
+}
+
 /**
  * Pick one credential from a same-type pool: prefer credentials not on cooldown,
  * and among those the least-recently-used (null lastUsedAt = never used = first).
- * If every candidate is cooling down, fall back to the one whose cooldown expires
- * soonest so the agent can still attempt a run rather than be wedged.
+ * A credential with a live cooldown or a fresh, fully-depleted quota window is a
+ * hard exclusion. Returning null when the whole pool is unavailable prevents a
+ * known-depleted credential from being probed again before its reset.
  */
-function pickPoolCredential(candidates: RotationCandidate[], nowMs: number): RotationCandidate {
+function pickPoolCredential(candidates: RotationCandidate[], nowMs: number): RotationCandidate | null {
   const byLru = (a: RotationCandidate, b: RotationCandidate) =>
     (a.lastUsedAt ? a.lastUsedAt.getTime() : 0) - (b.lastUsedAt ? b.lastUsedAt.getTime() : 0);
-  const available = candidates.filter(
-    (c) => !c.cooldownUntil || c.cooldownUntil.getTime() <= nowMs,
-  );
+  const available = candidates.filter((candidate) => credentialAvailability(candidate, nowMs).available);
   if (available.length > 0) {
     const ranked = available.map((candidate) => ({
       candidate,
@@ -1328,9 +1648,35 @@ function pickPoolCredential(candidates: RotationCandidate[], nowMs: number): Rot
       return aBucket - bBucket || byLru(a.candidate, b.candidate);
     })[0].candidate;
   }
-  return [...candidates].sort(
-    (a, b) => (a.cooldownUntil?.getTime() ?? 0) - (b.cooldownUntil?.getTime() ?? 0),
-  )[0];
+  return null;
+}
+
+function unavailablePoolForCandidates(
+  type: string,
+  candidates: RotationCandidate[],
+  nowMs: number,
+): UnavailableCredentialPool | null {
+  const unavailable = candidates
+    .map((candidate) => ({ candidate, availability: credentialAvailability(candidate, nowMs) }))
+    .filter((entry): entry is {
+      candidate: RotationCandidate;
+      availability: { available: false; reason: "cooldown" | "quota_depleted"; until: Date | null };
+    } => !entry.availability.available);
+  if (unavailable.length !== candidates.length) return null;
+  const nextTimes = unavailable
+    .map((entry) => entry.availability.until)
+    .filter((value): value is Date => value instanceof Date && Number.isFinite(value.getTime()));
+  const nextEligibleAt = nextTimes.length > 0
+    ? new Date(Math.min(...nextTimes.map((value) => value.getTime())))
+    : null;
+  return {
+    type,
+    reason: unavailable.some((entry) => entry.availability.reason === "quota_depleted")
+      ? "quota_depleted"
+      : "cooldown",
+    credentialIds: candidates.map((candidate) => candidate.credentialId),
+    nextEligibleAt,
+  };
 }
 
 async function touchCredentialLastUsed(db: Db, credentialId: string): Promise<void> {
@@ -1353,21 +1699,26 @@ export async function setCredentialCooldown(
 ): Promise<void> {
   await db
     .update(providerCredentials)
-    .set({ cooldownUntil, cooldownReason: reason, updatedAt: new Date() })
+    .set({
+      cooldownUntil: sql<Date>`greatest(${providerCredentials.cooldownUntil}, ${cooldownUntil.toISOString()}::timestamptz)`,
+      cooldownReason: reason,
+    })
     .where(eq(providerCredentials.id, credentialId));
 }
 
-export type CredentialFailureKind = "rate_limit" | "auth";
+export type CredentialFailureKind = "quota" | "rate_limit" | "auth";
 
 /**
  * Record a credential-related run FAILURE and apply the right policy.
  *
- * `rate_limit` (provider usage/quota window, e.g. Claude's 5-hour limit):
+ * `quota` (provider usage window, e.g. Claude's 5-hour limit): honors an exact
+ *   provider reset without capping it, so a depleted account is not retried early.
+ *
+ * `rate_limit` (short request throttling without a hard quota reset):
  *   escalating cooldown per CREDENTIAL_RATE_LIMIT_COOLDOWN_LADDER_MS
  *   (30min → 2h → 2h…); NEVER frozen — it self-recovers when the window resets.
- *   The provider's Retry-After, when given, sets a floor on the cooldown but is
- *   capped at the ladder rung so the agent rotates to another key rather than
- *   idling for hours.
+ *   The provider's Retry-After, when given, is an uncapped floor so routing
+ *   never retries that credential earlier than the provider instructed.
  *
  * `auth` (bad/expired/invalid key, provider rejection): short fixed cooldown,
  *   and FROZEN (disabled + flagged) after CREDENTIAL_DISABLE_THRESHOLD
@@ -1380,54 +1731,103 @@ export async function recordCredentialFailure(
   db: Db,
   credentialId: string,
   opts: { kind: CredentialFailureKind; reason: string | null; providerRetryAfter?: Date | null },
-): Promise<{ disabled: boolean; failureCount: number; cooldownUntil: Date }> {
-  const [current] = await db
-    .select({ count: providerCredentials.consecutiveFailureCount })
-    .from(providerCredentials)
-    .where(eq(providerCredentials.id, credentialId))
-    .limit(1);
-  const nextCount = (current?.count ?? 0) + 1;
-  const now = new Date();
+): Promise<{ disabled: boolean; failureCount: number; cooldownUntil: Date | null }> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`
+      select ${providerCredentials.id}
+      from ${providerCredentials}
+      where ${providerCredentials.id} = ${credentialId}
+      for update
+    `);
+    const [current] = await tx
+      .select({
+        count: providerCredentials.consecutiveFailureCount,
+        lastFailureKind: providerCredentials.lastFailureKind,
+        quotaCooldownUntil: providerCredentials.quotaCooldownUntil,
+        quotaSampledAt: providerCredentials.quotaSampledAt,
+      })
+      .from(providerCredentials)
+      .where(eq(providerCredentials.id, credentialId))
+      .limit(1);
+    const nextCount = current?.lastFailureKind === opts.kind ? (current.count ?? 0) + 1 : 1;
+    const now = new Date();
 
-  let cooldownMs: number;
-  if (opts.kind === "rate_limit") {
-    const ladder = CREDENTIAL_RATE_LIMIT_COOLDOWN_LADDER_MS;
-    const rung = ladder[Math.min(nextCount - 1, ladder.length - 1)];
-    // Honor Retry-After as a floor, but cap at the rung so we don't idle the
-    // agent for the provider's full multi-hour window when another key exists.
-    const retryAfterMs =
-      opts.providerRetryAfter && opts.providerRetryAfter.getTime() > now.getTime()
-        ? opts.providerRetryAfter.getTime() - now.getTime()
-        : 0;
-    cooldownMs = Math.min(Math.max(rung, retryAfterMs), ladder[ladder.length - 1]);
-  } else {
-    cooldownMs = CREDENTIAL_FAILURE_COOLDOWN_MS;
-  }
-  const cooldownUntil = new Date(now.getTime() + cooldownMs);
+    let proposedCooldownUntil: Date | null;
+    if (opts.kind === "quota") {
+      // With a provider reset, close at that exact time. Without one, keep the
+      // quota circuit open until an authoritative healthy sample or credential
+      // replacement; an arbitrary inference-time probe would violate the
+      // known-depleted exclusion guarantee.
+      proposedCooldownUntil =
+        opts.providerRetryAfter && opts.providerRetryAfter.getTime() > now.getTime()
+          ? opts.providerRetryAfter
+          : null;
+    } else if (opts.kind === "rate_limit") {
+      const ladder = CREDENTIAL_RATE_LIMIT_COOLDOWN_LADDER_MS;
+      const rung = ladder[Math.min(nextCount - 1, ladder.length - 1)];
+      const retryAfterMs =
+        opts.providerRetryAfter && opts.providerRetryAfter.getTime() > now.getTime()
+          ? opts.providerRetryAfter.getTime() - now.getTime()
+          : 0;
+      // Retry-After is provider authority: never route this credential before
+      // a valid future header even when it exceeds our ordinary ladder.
+      const cooldownMs = Math.max(rung, retryAfterMs);
+      proposedCooldownUntil = new Date(now.getTime() + cooldownMs);
+    } else {
+      proposedCooldownUntil = new Date(now.getTime() + CREDENTIAL_FAILURE_COOLDOWN_MS);
+    }
 
-  // Only AUTH failures freeze; rate-limits escalate cooldown forever.
-  const shouldDisable = opts.kind === "auth" && nextCount >= CREDENTIAL_DISABLE_THRESHOLD;
+    // Only AUTH failures freeze; quota/rate limits self-recover.
+    const shouldDisable = opts.kind === "auth" && nextCount >= CREDENTIAL_DISABLE_THRESHOLD;
 
-  await db
-    .update(providerCredentials)
-    .set({
-      cooldownUntil,
-      cooldownReason: opts.reason,
-      consecutiveFailureCount: nextCount,
-      ...(shouldDisable
-        ? {
-            disabledAt: now,
-            disabledReason: `Frozen after ${nextCount} consecutive auth failures: ${opts.reason ?? "credential error"}`,
-          }
-        : {}),
-      updatedAt: now,
-    })
-    .where(eq(providerCredentials.id, credentialId));
-  return { disabled: shouldDisable, failureCount: nextCount, cooldownUntil };
+    const currentQuotaUntil = current?.quotaCooldownUntil ?? null;
+    const nextQuotaUntil = opts.kind === "quota"
+      ? proposedCooldownUntil && currentQuotaUntil
+        ? new Date(Math.max(proposedCooldownUntil.getTime(), currentQuotaUntil.getTime()))
+        : proposedCooldownUntil
+      : currentQuotaUntil;
+    const nextQuotaSampledAt = opts.kind === "quota"
+      ? new Date(Math.max(now.getTime(), current?.quotaSampledAt?.getTime() ?? 0))
+      : current?.quotaSampledAt ?? null;
+    const [updated] = await tx
+      .update(providerCredentials)
+      .set({
+        ...(opts.kind === "quota"
+          ? {
+              quotaCooldownUntil: nextQuotaUntil,
+              quotaSampledAt: nextQuotaSampledAt,
+              quotaReason: opts.reason ?? "provider_quota",
+            }
+          : {
+              cooldownUntil: sql<Date>`greatest(${providerCredentials.cooldownUntil}, ${proposedCooldownUntil!.toISOString()}::timestamptz)`,
+              cooldownReason: opts.reason,
+            }),
+        consecutiveFailureCount: nextCount,
+        lastFailureKind: opts.kind,
+        ...(shouldDisable
+          ? {
+              disabledAt: now,
+              disabledReason: `Frozen after ${nextCount} consecutive auth failures: ${opts.reason ?? "credential error"}`,
+            }
+          : {}),
+      })
+      .where(eq(providerCredentials.id, credentialId))
+      .returning({
+        cooldownUntil: providerCredentials.cooldownUntil,
+        quotaCooldownUntil: providerCredentials.quotaCooldownUntil,
+      });
+    return {
+      disabled: shouldDisable,
+      failureCount: nextCount,
+      cooldownUntil:
+        (opts.kind === "quota" ? updated?.quotaCooldownUntil : updated?.cooldownUntil)
+        ?? proposedCooldownUntil,
+    };
+  });
 }
 
 /**
- * Does this agent have ANOTHER usable (not cooling, not disabled) credential of
+ * Does this agent have ANOTHER usable (not cooling, not depleted, not disabled) credential of
  * the given provider type, besides `excludeCredentialId`? Used to decide whether
  * a failed run should be retried immediately (seamless switch to the other key)
  * or just cooled down to wait. Strictly same-type — providers never cross.
@@ -1439,7 +1839,17 @@ export async function hasAlternateCredentialOfType(
   excludeCredentialId: string,
 ): Promise<boolean> {
   const rows = await db
-    .select({ id: agentCredentials.credentialId })
+    .select({
+      credentialId: agentCredentials.credentialId,
+      type: providerCredentials.type,
+      cooldownUntil: providerCredentials.cooldownUntil,
+      cooldownReason: providerCredentials.cooldownReason,
+      quotaCooldownUntil: providerCredentials.quotaCooldownUntil,
+      quotaSampledAt: providerCredentials.quotaSampledAt,
+      quotaReason: providerCredentials.quotaReason,
+      lastUsedAt: providerCredentials.lastUsedAt,
+      updatedAt: providerCredentials.updatedAt,
+    })
     .from(agentCredentials)
     .innerJoin(providerCredentials, eq(agentCredentials.credentialId, providerCredentials.id))
     .where(
@@ -1449,10 +1859,10 @@ export async function hasAlternateCredentialOfType(
         isNull(providerCredentials.disabledAt),
       ),
     );
-  // A still-cooling alternate counts — the picker prefers non-cooling but will
-  // fall back to the soonest-recovering one, which is still better than retrying
-  // the just-failed key.
-  return rows.some((r) => r.id !== excludeCredentialId);
+  const nowMs = Date.now();
+  return rows.some((row) => (
+    row.credentialId !== excludeCredentialId && credentialAvailability(row, nowMs).available
+  ));
 }
 
 /**
@@ -1463,7 +1873,7 @@ export async function hasAlternateCredentialOfType(
 export async function recordCredentialSuccess(db: Db, credentialId: string): Promise<void> {
   await db
     .update(providerCredentials)
-    .set({ consecutiveFailureCount: 0, updatedAt: new Date() })
+    .set({ consecutiveFailureCount: 0, lastFailureKind: null })
     .where(and(eq(providerCredentials.id, credentialId), gt(providerCredentials.consecutiveFailureCount, 0)));
 }
 
@@ -1611,6 +2021,7 @@ export async function resolveAllCredentialEnv(
   home?: string;
   credentialIds: string[];
   chosen: Array<{ credentialId: string; type: string }>;
+  unavailablePools: UnavailableCredentialPool[];
 }> {
   // adapterType decides how some credentials resolve (e.g. a deepseek_api_key on
   // a Claude Code agent routes the CLI through DeepSeek's Anthropic endpoint).
@@ -1620,7 +2031,7 @@ export async function resolveAllCredentialEnv(
     .where(eq(agents.id, agentId))
     .limit(1);
   const adapterType = adapterTypeOverride ?? agentRow?.adapterType ?? undefined;
-  const allowedCredentialIds = credentialIdAllowList && credentialIdAllowList.length > 0
+  const allowedCredentialIds = credentialIdAllowList != null
     ? new Set(credentialIdAllowList)
     : null;
 
@@ -1629,34 +2040,52 @@ export async function resolveAllCredentialEnv(
   // them until the user re-enables them from the Credentials UI. Lock the pool
   // rows before picking/touching so concurrent heartbeats spread across LRU
   // candidates instead of racing on the same oldest credential.
-  const chosenCandidates = await db.transaction(async (tx) => {
+  const poolSelection = await db.transaction(async (tx) => {
     await tx.execute(sql`
       select ${providerCredentials.id}
       from ${agentCredentials}
       inner join ${providerCredentials}
         on ${agentCredentials.credentialId} = ${providerCredentials.id}
       where ${agentCredentials.agentId} = ${agentId}
-        and ${providerCredentials.disabledAt} is null
+        ${agentRow?.companyId ? sql`and ${providerCredentials.companyId} = ${agentRow.companyId}` : sql``}
       for update of provider_credentials
     `);
+
+    const [assignedBinding] = await tx
+      .select({ credentialId: agentCredentials.credentialId })
+      .from(agentCredentials)
+      .where(eq(agentCredentials.agentId, agentId))
+      .limit(1);
 
     const joinRows = await tx
       .select({
         credentialId: agentCredentials.credentialId,
         type: providerCredentials.type,
         cooldownUntil: providerCredentials.cooldownUntil,
+        cooldownReason: providerCredentials.cooldownReason,
+        quotaCooldownUntil: providerCredentials.quotaCooldownUntil,
+        quotaSampledAt: providerCredentials.quotaSampledAt,
+        quotaReason: providerCredentials.quotaReason,
         lastUsedAt: providerCredentials.lastUsedAt,
         updatedAt: providerCredentials.updatedAt,
       })
       .from(agentCredentials)
       .innerJoin(providerCredentials, eq(agentCredentials.credentialId, providerCredentials.id))
-      .where(and(eq(agentCredentials.agentId, agentId), isNull(providerCredentials.disabledAt)));
+      .where(and(
+        eq(agentCredentials.agentId, agentId),
+        ...(agentRow?.companyId ? [eq(providerCredentials.companyId, agentRow.companyId)] : []),
+        isNull(providerCredentials.disabledAt),
+      ));
     const routeRows = allowedCredentialIds && agentRow?.companyId
       ? await tx
           .select({
             credentialId: providerCredentials.id,
             type: providerCredentials.type,
             cooldownUntil: providerCredentials.cooldownUntil,
+            cooldownReason: providerCredentials.cooldownReason,
+            quotaCooldownUntil: providerCredentials.quotaCooldownUntil,
+            quotaSampledAt: providerCredentials.quotaSampledAt,
+            quotaReason: providerCredentials.quotaReason,
             lastUsedAt: providerCredentials.lastUsedAt,
             updatedAt: providerCredentials.updatedAt,
           })
@@ -1666,20 +2095,31 @@ export async function resolveAllCredentialEnv(
             inArray(providerCredentials.id, Array.from(allowedCredentialIds)),
             isNull(providerCredentials.disabledAt),
           ))
+          .for("update")
       : [];
 
     const nowMs = Date.now();
     const byType = new Map<string, RotationCandidate[]>();
+    const seenCredentialIds = new Set<string>();
     for (const row of [...joinRows, ...routeRows]) {
       if (allowedCredentialIds && !allowedCredentialIds.has(row.credentialId)) continue;
+      if (seenCredentialIds.has(row.credentialId)) continue;
+      seenCredentialIds.add(row.credentialId);
       const list = byType.get(row.type) ?? [];
       list.push(row);
       byType.set(row.type, list);
     }
 
     const picked: RotationCandidate[] = [];
-    for (const list of byType.values()) {
-      picked.push(pickPoolCredential(list, nowMs));
+    const unavailablePools: UnavailableCredentialPool[] = [];
+    for (const [type, list] of byType.entries()) {
+      const candidate = pickPoolCredential(list, nowMs);
+      if (candidate) {
+        picked.push(candidate);
+      } else {
+        const unavailable = unavailablePoolForCandidates(type, list, nowMs);
+        if (unavailable) unavailablePools.push(unavailable);
+      }
     }
 
     const lastUsedAt = new Date(nowMs);
@@ -1690,23 +2130,72 @@ export async function resolveAllCredentialEnv(
         .where(eq(providerCredentials.id, candidate.credentialId));
     }
 
-    return picked;
+    return {
+      picked,
+      unavailablePools,
+      hadPoolCandidates: byType.size > 0,
+      hadAssignedBindings: Boolean(assignedBinding),
+    };
   });
+  const chosenCandidates = poolSelection.picked;
 
   if (chosenCandidates.length === 0) {
-    if (!agentRow?.credentialId) return { env: {}, credentialIds: [], chosen: [] };
+    if (poolSelection.hadPoolCandidates) {
+      return {
+        env: {},
+        credentialIds: [],
+        chosen: [],
+        unavailablePools: poolSelection.unavailablePools,
+      };
+    }
+    if (poolSelection.hadAssignedBindings) {
+      return { env: {}, credentialIds: [], chosen: [], unavailablePools: [] };
+    }
+    if (!agentRow?.credentialId) {
+      return { env: {}, credentialIds: [], chosen: [], unavailablePools: [] };
+    }
+    // A route allow-list is authoritative. Its company-scoped rows were loaded
+    // above; falling through to the legacy singular FK here would bypass it.
+    if (allowedCredentialIds) {
+      return { env: {}, credentialIds: [], chosen: [], unavailablePools: [] };
+    }
     const [row] = await db
-      .select({ type: providerCredentials.type, disabledAt: providerCredentials.disabledAt })
+      .select({
+        credentialId: providerCredentials.id,
+        type: providerCredentials.type,
+        disabledAt: providerCredentials.disabledAt,
+        cooldownUntil: providerCredentials.cooldownUntil,
+        cooldownReason: providerCredentials.cooldownReason,
+        quotaCooldownUntil: providerCredentials.quotaCooldownUntil,
+        quotaSampledAt: providerCredentials.quotaSampledAt,
+        quotaReason: providerCredentials.quotaReason,
+        lastUsedAt: providerCredentials.lastUsedAt,
+        updatedAt: providerCredentials.updatedAt,
+      })
       .from(providerCredentials)
       .where(eq(providerCredentials.id, agentRow.credentialId))
       .limit(1);
-    if (!row) return { env: {}, credentialIds: [], chosen: [] };
+    if (!row) return { env: {}, credentialIds: [], chosen: [], unavailablePools: [] };
     if (row.disabledAt) {
       logger.warn(
         { agentId, credentialId: agentRow.credentialId },
         "legacy agent credential is disabled; skipping runtime resolution",
       );
-      return { env: {}, credentialIds: [], chosen: [] };
+      return { env: {}, credentialIds: [], chosen: [], unavailablePools: [] };
+    }
+    const availability = credentialAvailability(row, Date.now());
+    if (!availability.available) {
+      return {
+        env: {},
+        credentialIds: [],
+        chosen: [],
+        unavailablePools: [{
+          type: row.type,
+          reason: availability.reason,
+          credentialIds: [row.credentialId],
+          nextEligibleAt: availability.until,
+        }],
+      };
     }
     const res = await resolveCredentialEnv(db, agentId, agentRow.credentialId, adapterType);
     await touchCredentialLastUsed(db, agentRow.credentialId);
@@ -1715,6 +2204,7 @@ export async function resolveAllCredentialEnv(
       home: res.home,
       credentialIds: [agentRow.credentialId],
       chosen: [{ credentialId: agentRow.credentialId, type: row.type }],
+      unavailablePools: [],
     };
   }
 
@@ -1739,5 +2229,5 @@ export async function resolveAllCredentialEnv(
     chosen.push({ credentialId: candidate.credentialId, type: candidate.type });
   }
 
-  return { env, home, credentialIds, chosen };
+  return { env, home, credentialIds, chosen, unavailablePools: poolSelection.unavailablePools };
 }

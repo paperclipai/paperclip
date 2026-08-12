@@ -19,6 +19,10 @@ import { assertBoard, assertCompanyAccess, getAccessibleResource } from "./authz
 import { forbidden } from "../errors.js";
 import { accessService, credentialService, logActivity } from "../services/index.js";
 import {
+  type CredentialQuotaCircuitSnapshot,
+  syncCredentialQuotaCooldown,
+} from "../services/credentials.js";
+import {
   getFreshQuotaCache,
   getRecentQuotaErrorCache,
   getReusableQuotaCache,
@@ -65,6 +69,22 @@ export function activeCredentialCooldownUntil(
   const cooldownMs = cooldownUntil.getTime();
   if (!Number.isFinite(cooldownMs) || cooldownMs <= now) return null;
   return cooldownUntil.toISOString();
+}
+
+function authoritativeQuotaCircuitFields(
+  circuit: CredentialQuotaCircuitSnapshot | null,
+  nowMs: number,
+) {
+  if (!circuit) return {};
+  const quotaCooldownUntil = activeCredentialCooldownUntil(circuit.quotaCooldownUntil, nowMs);
+  const quotaBlocked = Boolean(circuit.quotaReason) && (
+    circuit.quotaCooldownUntil === null || quotaCooldownUntil !== null
+  );
+  return {
+    quotaBlocked,
+    quotaCooldownUntil: quotaBlocked ? quotaCooldownUntil : null,
+    quotaReason: quotaBlocked ? circuit.quotaReason : null,
+  };
 }
 
 export function credentialRoutes(db: Db) {
@@ -132,6 +152,11 @@ export function credentialRoutes(db: Db) {
         type: credential.type,
         cooldownUntil,
         cooldownReason: cooldownUntil ? credential.cooldownReason ?? null : null,
+        ...authoritativeQuotaCircuitFields({
+          quotaCooldownUntil: credential.quotaCooldownUntil,
+          quotaSampledAt: credential.quotaSampledAt,
+          quotaReason: credential.quotaReason,
+        }, sampledAtMs),
         disabledAt: credential.disabledAt ? credential.disabledAt.toISOString() : null,
         sampledAt,
       };
@@ -154,8 +179,16 @@ export function credentialRoutes(db: Db) {
         updatedAt: credential.updatedAt,
       });
       if (reusableCached) {
+        const quotaCircuit = await syncCredentialQuotaCooldown(
+          db,
+          credential.id,
+          credential.type,
+          reusableCached.quotaWindows,
+          new Date(reusableCached.sampledAt),
+        );
         return {
           ...base,
+          ...authoritativeQuotaCircuitFields(quotaCircuit, sampledAtMs),
           sampledAt: reusableCached.sampledAt,
           supported: true,
           ok: true,
@@ -213,8 +246,16 @@ export function credentialRoutes(db: Db) {
             quotaWindows,
             sampledAt,
           });
+          const quotaCircuit = await syncCredentialQuotaCooldown(
+            db,
+            credential.id,
+            credential.type,
+            quotaWindows,
+            sampledAtDate,
+          );
           return {
             ...base,
+            ...authoritativeQuotaCircuitFields(quotaCircuit, sampledAtMs),
             supported: true,
             ok: true,
             quotaWindows,
@@ -226,20 +267,27 @@ export function credentialRoutes(db: Db) {
         const accountId = typeof payload?.accountId === "string" && payload.accountId.trim()
           ? payload.accountId.trim()
           : null;
+        const quotaWindows = await fetchCodexQuota(accessToken, accountId);
+        setQuotaSuccessCache(credential.id, {
+          type: credentialType,
+          credentialUpdatedAtMs: credential.updatedAt.getTime(),
+          source,
+          quotaWindows,
+          sampledAt,
+        });
+        const quotaCircuit = await syncCredentialQuotaCooldown(
+          db,
+          credential.id,
+          credential.type,
+          quotaWindows,
+          sampledAtDate,
+        );
         return {
           ...base,
+          ...authoritativeQuotaCircuitFields(quotaCircuit, sampledAtMs),
           supported: true,
           ok: true,
-          quotaWindows: await fetchCodexQuota(accessToken, accountId).then((quotaWindows) => {
-            setQuotaSuccessCache(credential.id, {
-              type: credentialType,
-              credentialUpdatedAtMs: credential.updatedAt.getTime(),
-              source,
-              quotaWindows,
-              sampledAt,
-            });
-            return quotaWindows;
-          }),
+          quotaWindows,
           source,
           stale: false,
           cachedAt: null,

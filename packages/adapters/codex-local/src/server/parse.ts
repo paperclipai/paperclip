@@ -13,7 +13,11 @@ const CODEX_RATE_LIMIT_RE =
 const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’| ha)ve\s+(?:hit|reached)\s+(?:your\s+)?usage limit[\s\S]*?try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
 const CODEX_PROVIDER_QUOTA_RE =
-  /(?:you(?:'|’)ve hit your usage limit|usage limit|model (?:is )?at capacity|at capacity for this model|capacity limit)/i;
+  /(?:you(?:'|’)ve hit your usage limit|usage limit)/i;
+const CODEX_MODEL_CAPACITY_RE =
+  /(?:model (?:is )?at capacity|at capacity for this model|capacity limit)/i;
+const CODEX_MODEL_SPECIFIC_USAGE_LIMIT_RE =
+  /usage limit for [^.\n]+[.][\s\S]*?switch to another model/i;
 const CODEX_REFRESH_TOKEN_REUSED_RE =
   /(?:refresh[_\s-]?token[_\s-]?reused|refresh token (?:has )?already been used|token reuse detected)/i;
 const CODEX_REFRESH_TOKEN_EXPIRED_RE =
@@ -367,6 +371,7 @@ export function isCodexTransientUpstreamError(input: {
   return (
     CODEX_REMOTE_COMPACTION_RE.test(haystack) ||
     CODEX_RATE_LIMIT_RE.test(haystack) ||
+    CODEX_MODEL_CAPACITY_RE.test(haystack) ||
     /high\s+demand|temporary\s+errors/i.test(haystack)
   );
 }
@@ -377,5 +382,6 @@ export function isCodexProviderQuotaError(input: {
   errorMessage?: string | null;
 }): boolean {
   const haystack = buildCodexErrorHaystack(input);
+  if (CODEX_MODEL_SPECIFIC_USAGE_LIMIT_RE.test(haystack)) return false;
   return CODEX_PROVIDER_QUOTA_RE.test(haystack) || extractCodexRetryNotBefore(input) != null;
 }

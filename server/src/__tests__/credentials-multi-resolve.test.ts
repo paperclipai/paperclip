@@ -18,9 +18,14 @@ import {
 } from "./helpers/embedded-postgres.js";
 import {
   credentialService,
+  hasAlternateCredentialOfType,
+  isCredentialFailure,
   persistCodexRefreshedTokens,
+  recordCredentialFailure,
   resolveAllCredentialEnv,
   selectActiveCredentialForAdapter,
+  syncCredentialQuotaCooldown,
+  unavailableCredentialPoolsForAdapter,
 } from "../services/credentials.js";
 import { clearCredentialQuotaCacheForTest, setQuotaSuccessCache } from "../services/credential-quota-cache.js";
 
@@ -72,6 +77,31 @@ describeEmbeddedPostgres("credentials multi-resolve", () => {
       .returning();
     return { company, agent };
   }
+
+  it("does not poison credential health for bad models or request-shape errors", () => {
+    expect(isCredentialFailure({ errorCode: "model_not_found", errorMessage: "400 model not supported" })).toBe(false);
+    expect(isCredentialFailure({ errorCode: "deepseek_api_request_failed", errorMessage: "invalid_request_error" })).toBe(false);
+    expect(isCredentialFailure({ errorMessage: "param incorrect" })).toBe(false);
+    expect(isCredentialFailure({ errorMessage: "401 invalid_api_key" })).toBe(true);
+    expect(isCredentialFailure({ errorCode: "refresh_token_expired" })).toBe(true);
+    for (const errorCode of ["claude_transient_upstream", "codex_transient_upstream", "deepseek_transient_upstream"]) {
+      expect(isCredentialFailure({
+        errorFamily: "transient_upstream",
+        errorCode,
+        errorMessage: "429 Too Many Requests: rate limit reached",
+      })).toBe(true);
+    }
+    expect(isCredentialFailure({
+      errorFamily: "transient_upstream",
+      errorCode: "codex_transient_upstream",
+      errorMessage: "The requested model is at capacity",
+    })).toBe(false);
+    expect(isCredentialFailure({
+      errorFamily: "transient_upstream",
+      errorCode: "codex_harness_crash",
+      errorMessage: "harness exited before a protocol event",
+    })).toBe(false);
+  });
 
   it("merges env from claude_oauth (long-lived) and openai_api_key when both are assigned", async () => {
     const { company, agent } = await setupCompanyAndAgent();
@@ -165,7 +195,7 @@ describeEmbeddedPostgres("credentials multi-resolve", () => {
     expect(resolved2.chosen[0].credentialId).not.toBe(firstChoice);
   });
 
-  it("prioritizes healthier cached quota windows over least-recently-used OAuth credentials", async () => {
+  it("never selects a credential whose cached quota is fully depleted", async () => {
     const { company, agent } = await setupCompanyAndAgent("codex_local");
     const svc = credentialService(db);
 
@@ -197,7 +227,7 @@ describeEmbeddedPostgres("credentials multi-resolve", () => {
       credentialUpdatedAtMs: lowQuota.updatedAt.getTime(),
       source: "test",
       quotaWindows: [
-        { label: "5h", usedPercent: 94, resetsAt: null, valueLabel: null },
+        { label: "5h", usedPercent: 100, resetsAt: "2099-04-20T15:00:00.000Z", valueLabel: null },
         { label: "Weekly", usedPercent: 45, resetsAt: null, valueLabel: null },
       ],
       sampledAt: new Date().toISOString(),
@@ -220,6 +250,340 @@ describeEmbeddedPostgres("credentials multi-resolve", () => {
       tokens: {
         access_token: "codex-healthy-quota-token",
       },
+    });
+  });
+
+  it("returns an unavailable pool instead of routing when every credential is depleted", async () => {
+    const { company, agent } = await setupCompanyAndAgent("codex_local");
+    const svc = credentialService(db);
+    const first = await svc.create(company.id, {
+      name: "codex-depleted-1",
+      type: "codex_oauth",
+      credential: { accessToken: "codex-depleted-token-1" },
+    });
+    const second = await svc.create(company.id, {
+      name: "codex-depleted-2",
+      type: "codex_oauth",
+      credential: { accessToken: "codex-depleted-token-2" },
+    });
+    expect((await svc.setForAgent(agent.id, [first.id, second.id])).ok).toBe(true);
+
+    for (const credential of [first, second]) {
+      setQuotaSuccessCache(credential.id, {
+        type: "codex_oauth",
+        credentialUpdatedAtMs: credential.updatedAt.getTime(),
+        source: "test",
+        quotaWindows: [
+          { label: "5h", usedPercent: 100, resetsAt: "2099-04-20T15:00:00.000Z", valueLabel: null },
+        ],
+        sampledAt: new Date().toISOString(),
+      });
+    }
+
+    const resolved = await resolveAllCredentialEnv(db, agent.id);
+
+    expect(resolved.env).toEqual({});
+    expect(resolved.chosen).toEqual([]);
+    expect(resolved.unavailablePools).toEqual([{
+      type: "codex_oauth",
+      reason: "quota_depleted",
+      credentialIds: expect.arrayContaining([first.id, second.id]),
+      nextEligibleAt: new Date("2099-04-20T15:00:00.000Z"),
+    }]);
+  });
+
+  it("persists a depleted quota sample so process-cache loss cannot make it eligible", async () => {
+    const { company, agent } = await setupCompanyAndAgent("codex_local");
+    const svc = credentialService(db);
+    const credential = await svc.create(company.id, {
+      name: "codex-persisted-depletion",
+      type: "codex_oauth",
+      credential: { accessToken: "codex-persisted-depletion-token" },
+    });
+    expect((await svc.setForAgent(agent.id, [credential.id])).ok).toBe(true);
+    const resetAt = new Date("2099-04-20T15:00:00.000Z");
+
+    await syncCredentialQuotaCooldown(db, credential.id, credential.type, [{
+      label: "5h",
+      usedPercent: 100,
+      resetsAt: resetAt.toISOString(),
+      valueLabel: null,
+    }]);
+    clearCredentialQuotaCacheForTest();
+
+    const resolved = await resolveAllCredentialEnv(db, agent.id);
+    expect(resolved.chosen).toEqual([]);
+    expect(resolved.unavailablePools[0]).toMatchObject({
+      type: "codex_oauth",
+      reason: "quota_depleted",
+      nextEligibleAt: resetAt,
+    });
+  });
+
+  it("does not let an older healthy sample clear newer cross-replica depletion state", async () => {
+    const { company } = await setupCompanyAndAgent("codex_local");
+    const svc = credentialService(db);
+    const credential = await svc.create(company.id, {
+      name: "codex-monotonic-quota",
+      type: "codex_oauth",
+      credential: { accessToken: "codex-monotonic-token" },
+    });
+    const newerSample = new Date("2030-04-20T15:00:00.000Z");
+    const olderSample = new Date("2030-04-20T14:00:00.000Z");
+    const resetAt = new Date("2099-04-20T15:00:00.000Z");
+
+    await syncCredentialQuotaCooldown(db, credential.id, credential.type, [{
+      label: "5h limit",
+      usedPercent: 100,
+      resetsAt: resetAt.toISOString(),
+      valueLabel: null,
+    }], newerSample);
+    await syncCredentialQuotaCooldown(db, credential.id, credential.type, [{
+      label: "5h limit",
+      usedPercent: 25,
+      resetsAt: resetAt.toISOString(),
+      valueLabel: null,
+    }], newerSample);
+    await syncCredentialQuotaCooldown(db, credential.id, credential.type, [{
+      label: "5h limit",
+      usedPercent: 25,
+      resetsAt: resetAt.toISOString(),
+      valueLabel: null,
+    }], olderSample);
+
+    const row = await db
+      .select({
+        quotaCooldownUntil: providerCredentials.quotaCooldownUntil,
+        quotaSampledAt: providerCredentials.quotaSampledAt,
+      })
+      .from(providerCredentials)
+      .where(eq(providerCredentials.id, credential.id))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({ quotaCooldownUntil: resetAt, quotaSampledAt: newerSample });
+  });
+
+  it("does not let an empty or unrecognized quota response clear known depletion", async () => {
+    const { company } = await setupCompanyAndAgent("codex_local");
+    const credential = await credentialService(db).create(company.id, {
+      name: "codex-partial-quota",
+      type: "codex_oauth",
+      credential: { accessToken: "codex-partial-token" },
+    });
+    const resetAt = new Date("2099-04-20T15:00:00.000Z");
+    const depletedAt = new Date("2030-04-20T15:00:00.000Z");
+    await syncCredentialQuotaCooldown(db, credential.id, credential.type, [{
+      label: "5h limit",
+      usedPercent: 100,
+      resetsAt: resetAt.toISOString(),
+      valueLabel: null,
+    }], depletedAt);
+
+    await syncCredentialQuotaCooldown(db, credential.id, credential.type, [], new Date(depletedAt.getTime() + 1_000));
+    await syncCredentialQuotaCooldown(db, credential.id, credential.type, [{
+      label: "Credits",
+      usedPercent: null,
+      resetsAt: null,
+      valueLabel: "$0 remaining",
+    }], new Date(depletedAt.getTime() + 2_000));
+
+    const row = await db
+      .select({
+        quotaCooldownUntil: providerCredentials.quotaCooldownUntil,
+        quotaSampledAt: providerCredentials.quotaSampledAt,
+        quotaReason: providerCredentials.quotaReason,
+      })
+      .from(providerCredentials)
+      .where(eq(providerCredentials.id, credential.id))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      quotaCooldownUntil: resetAt,
+      quotaSampledAt: depletedAt,
+      quotaReason: "quota_depleted:codex_oauth",
+    });
+  });
+
+  it("keeps a depleted credential without a reset blocked until a healthy sample", async () => {
+    const { company, agent } = await setupCompanyAndAgent("codex_local");
+    const credential = await credentialService(db).create(company.id, {
+      name: "codex-open-ended-quota",
+      type: "codex_oauth",
+      credential: { accessToken: "codex-open-ended-token" },
+    });
+    expect((await credentialService(db).setForAgent(agent.id, [credential.id])).ok).toBe(true);
+    const depletedAt = new Date("2030-04-20T15:00:00.000Z");
+    await syncCredentialQuotaCooldown(db, credential.id, credential.type, [{
+      label: "5h limit",
+      usedPercent: 100,
+      resetsAt: null,
+      valueLabel: null,
+    }], depletedAt);
+
+    const unavailable = await resolveAllCredentialEnv(db, agent.id);
+    expect(unavailable.chosen).toEqual([]);
+    expect(unavailable.unavailablePools[0]).toMatchObject({
+      reason: "quota_depleted",
+      nextEligibleAt: null,
+    });
+
+    await syncCredentialQuotaCooldown(db, credential.id, credential.type, [{
+      label: "5h limit",
+      usedPercent: 10,
+      resetsAt: null,
+      valueLabel: null,
+    }], new Date(depletedAt.getTime() + 1_000));
+    expect((await resolveAllCredentialEnv(db, agent.id)).chosen).toEqual([
+      { credentialId: credential.id, type: "codex_oauth" },
+    ]);
+  });
+
+  it("keeps failure and quota cooldowns independent while a dated quota circuit reaches reset", async () => {
+    const { company, agent } = await setupCompanyAndAgent("codex_local");
+    const svc = credentialService(db);
+    const credential = await svc.create(company.id, {
+      name: "codex-independent-circuits",
+      type: "codex_oauth",
+      credential: { accessToken: "codex-independent-token" },
+    });
+    expect((await svc.setForAgent(agent.id, [credential.id])).ok).toBe(true);
+    const failureCooldownUntil = new Date("2099-05-20T15:00:00.000Z");
+    await db
+      .update(providerCredentials)
+      .set({ cooldownUntil: failureCooldownUntil, cooldownReason: "invalid_api_key" })
+      .where(eq(providerCredentials.id, credential.id));
+
+    await syncCredentialQuotaCooldown(db, credential.id, credential.type, [{
+      label: "5h limit",
+      usedPercent: 100,
+      resetsAt: "2099-04-20T15:00:00.000Z",
+      valueLabel: null,
+    }], new Date("2030-04-20T15:00:00.000Z"));
+    await syncCredentialQuotaCooldown(db, credential.id, credential.type, [{
+      label: "5h limit",
+      usedPercent: 20,
+      resetsAt: "2099-04-20T15:00:00.000Z",
+      valueLabel: null,
+    }], new Date("2030-04-20T16:00:00.000Z"));
+
+    const row = await db
+      .select({
+        cooldownUntil: providerCredentials.cooldownUntil,
+        cooldownReason: providerCredentials.cooldownReason,
+        quotaCooldownUntil: providerCredentials.quotaCooldownUntil,
+      })
+      .from(providerCredentials)
+      .where(eq(providerCredentials.id, credential.id))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      cooldownUntil: failureCooldownUntil,
+      cooldownReason: "invalid_api_key",
+      quotaCooldownUntil: new Date("2099-04-20T15:00:00.000Z"),
+    });
+    expect((await resolveAllCredentialEnv(db, agent.id)).unavailablePools[0]).toMatchObject({
+      reason: "cooldown",
+      nextEligibleAt: failureCooldownUntil,
+    });
+  });
+
+  it("does not turn model-specific or additive quota windows into an account-wide block", async () => {
+    const { company } = await setupCompanyAndAgent("claude_local");
+    const svc = credentialService(db);
+    const credential = await svc.create(company.id, {
+      name: "claude-model-specific-quota",
+      type: "claude_oauth",
+      credential: { accessToken: "claude-model-specific-token" },
+    });
+    await syncCredentialQuotaCooldown(db, credential.id, credential.type, [
+      {
+        label: "Current week (Sonnet only)",
+        usedPercent: 100,
+        resetsAt: "2099-04-20T15:00:00.000Z",
+        valueLabel: null,
+      },
+      {
+        label: "Extra usage",
+        usedPercent: 100,
+        resetsAt: null,
+        valueLabel: "$10 / $10",
+      },
+    ]);
+
+    const row = await db
+      .select({ quotaCooldownUntil: providerCredentials.quotaCooldownUntil })
+      .from(providerCredentials)
+      .where(eq(providerCredentials.id, credential.id))
+      .then((rows) => rows[0]);
+    expect(row?.quotaCooldownUntil).toBeNull();
+  });
+
+  it("does not treat another cooling credential as an immediate failover target", async () => {
+    const { company, agent } = await setupCompanyAndAgent("codex_local");
+    const svc = credentialService(db);
+    const first = await svc.create(company.id, {
+      name: "codex-cooling-1",
+      type: "codex_oauth",
+      credential: { accessToken: "codex-cooling-token-1" },
+    });
+    const second = await svc.create(company.id, {
+      name: "codex-cooling-2",
+      type: "codex_oauth",
+      credential: { accessToken: "codex-cooling-token-2" },
+    });
+    expect((await svc.setForAgent(agent.id, [first.id, second.id])).ok).toBe(true);
+    await db
+      .update(providerCredentials)
+      .set({ cooldownUntil: new Date("2099-04-20T15:00:00.000Z"), cooldownReason: "provider_quota" })
+      .where(eq(providerCredentials.id, second.id));
+
+    await expect(hasAlternateCredentialOfType(
+      db,
+      agent.id,
+      "codex_oauth",
+      first.id,
+    )).resolves.toBe(false);
+  });
+
+  it("honors an exact provider quota reset beyond the normal cooldown cap", async () => {
+    const { company } = await setupCompanyAndAgent("codex_local");
+    const svc = credentialService(db);
+    const credential = await svc.create(company.id, {
+      name: "codex-long-reset",
+      type: "codex_oauth",
+      credential: { accessToken: "codex-long-reset-token" },
+    });
+    const providerReset = new Date(Date.now() + 6 * 60 * 60 * 1000);
+
+    const result = await recordCredentialFailure(db, credential.id, {
+      kind: "quota",
+      reason: "provider_quota",
+      providerRetryAfter: providerReset,
+    });
+
+    expect(result.cooldownUntil?.getTime()).toBeGreaterThanOrEqual(providerReset.getTime());
+    expect(result.disabled).toBe(false);
+  });
+
+  it("counts consecutive failures by kind before freezing an auth credential", async () => {
+    const { company } = await setupCompanyAndAgent("codex_local");
+    const mixed = await credentialService(db).create(company.id, {
+      name: "mixed-failure-kinds",
+      type: "openai_api_key",
+      credential: { apiKey: "sk-mixed" },
+    });
+    await recordCredentialFailure(db, mixed.id, { kind: "rate_limit", reason: "429" });
+    await recordCredentialFailure(db, mixed.id, { kind: "rate_limit", reason: "429" });
+    const firstAuth = await recordCredentialFailure(db, mixed.id, { kind: "auth", reason: "invalid_api_key" });
+    expect(firstAuth).toMatchObject({ failureCount: 1, disabled: false });
+
+    const authOnly = await credentialService(db).create(company.id, {
+      name: "three-auth-failures",
+      type: "openai_api_key",
+      credential: { apiKey: "sk-auth" },
+    });
+    expect((await recordCredentialFailure(db, authOnly.id, { kind: "auth", reason: "invalid_api_key" })).disabled).toBe(false);
+    expect((await recordCredentialFailure(db, authOnly.id, { kind: "auth", reason: "invalid_api_key" })).disabled).toBe(false);
+    expect(await recordCredentialFailure(db, authOnly.id, { kind: "auth", reason: "invalid_api_key" })).toMatchObject({
+      failureCount: 3,
+      disabled: true,
     });
   });
 
@@ -656,6 +1020,78 @@ describeEmbeddedPostgres("credentials multi-resolve", () => {
     })).toEqual({ credentialId: "openai-cred", type: "openai_api_key" });
   });
 
+  it("scopes unavailable Pi pools to the model provider auth lane", () => {
+    const pools = [
+      {
+        type: "codex_oauth",
+        reason: "quota_depleted" as const,
+        credentialIds: ["codex-depleted"],
+        nextEligibleAt: new Date("2099-04-20T15:00:00.000Z"),
+      },
+      {
+        type: "deepseek_api_key",
+        reason: "cooldown" as const,
+        credentialIds: ["deepseek-cooling"],
+        nextEligibleAt: new Date("2099-04-20T16:00:00.000Z"),
+      },
+    ];
+
+    expect(unavailableCredentialPoolsForAdapter({
+      adapterType: "pi_local",
+      adapterConfig: { model: "deepseek/deepseek-v4-pro" },
+      pools,
+    })).toEqual([pools[1]]);
+  });
+
+  it("scopes unavailable OpenCode pools to the configured model provider", () => {
+    const pools = [
+      {
+        type: "openai_api_key",
+        reason: "cooldown" as const,
+        credentialIds: ["openai-cooling"],
+        nextEligibleAt: new Date("2099-04-20T15:00:00.000Z"),
+      },
+      {
+        type: "claude_api_key",
+        reason: "cooldown" as const,
+        credentialIds: ["anthropic-cooling"],
+        nextEligibleAt: new Date("2099-04-20T16:00:00.000Z"),
+      },
+    ];
+
+    expect(unavailableCredentialPoolsForAdapter({
+      adapterType: "opencode_local",
+      adapterConfig: { model: "anthropic/claude-opus-4" },
+      pools,
+    })).toEqual([pools[1]]);
+  });
+
+  it("does not attribute or block unknown Pi/OpenCode provider lanes with unrelated managed keys", () => {
+    const chosen = [{ credentialId: "openai-cred", type: "openai_api_key" }];
+    const pools = [{
+      type: "openai_api_key",
+      reason: "quota_depleted" as const,
+      credentialIds: ["openai-cred"],
+      nextEligibleAt: new Date("2099-04-20T16:00:00.000Z"),
+    }];
+    for (const [adapterType, model] of [
+      ["pi_local", "custom-provider/model"],
+      ["opencode_local", "opencode/model"],
+    ] as const) {
+      expect(selectActiveCredentialForAdapter({
+        adapterType,
+        adapterConfig: { model },
+        chosen,
+        env: { OPENAI_API_KEY: "sk-openai" },
+      })).toBeNull();
+      expect(unavailableCredentialPoolsForAdapter({
+        adapterType,
+        adapterConfig: { model },
+        pools,
+      })).toEqual([]);
+    }
+  });
+
   it("falls back to legacy agents.credential_id when the join is empty", async () => {
     const { company, agent } = await setupCompanyAndAgent();
     const svc = credentialService(db);
@@ -674,6 +1110,54 @@ describeEmbeddedPostgres("credentials multi-resolve", () => {
     const resolved = await resolveAllCredentialEnv(db, agent.id);
     expect(resolved.env.OPENAI_API_KEY).toBe("sk-legacy");
     expect(resolved.credentialIds).toEqual([cred.id]);
+  });
+
+  it("does not let a route allow-list fall through to the legacy credential", async () => {
+    const { company, agent } = await setupCompanyAndAgent();
+    const svc = credentialService(db);
+    const legacy = await svc.create(company.id, {
+      name: "legacy-not-allowed",
+      type: "openai_api_key",
+      credential: { apiKey: "sk-legacy-not-allowed" },
+    });
+    await db
+      .update(agents)
+      .set({ credentialId: legacy.id })
+      .where(eq(agents.id, agent.id));
+
+    const resolved = await resolveAllCredentialEnv(db, agent.id, null, [randomUUID()]);
+    const emptyAllowed = await resolveAllCredentialEnv(db, agent.id, null, []);
+
+    expect(resolved.env).toEqual({});
+    expect(resolved.credentialIds).toEqual([]);
+    expect(resolved.chosen).toEqual([]);
+    expect(emptyAllowed.env).toEqual({});
+    expect(emptyAllowed.chosen).toEqual([]);
+  });
+
+  it("does not resurrect a legacy credential when current bindings are disabled", async () => {
+    const { company, agent } = await setupCompanyAndAgent();
+    const svc = credentialService(db);
+    const legacy = await svc.create(company.id, {
+      name: "legacy-stale",
+      type: "openai_api_key",
+      credential: { apiKey: "sk-legacy-stale" },
+    });
+    const assignedDisabled = await svc.create(company.id, {
+      name: "assigned-disabled",
+      type: "claude_api_key",
+      credential: { apiKey: "sk-assigned-disabled" },
+    });
+    await db.update(agents).set({ credentialId: legacy.id }).where(eq(agents.id, agent.id));
+    expect((await svc.setForAgent(agent.id, [assignedDisabled.id])).ok).toBe(true);
+    await db
+      .update(providerCredentials)
+      .set({ disabledAt: new Date(), disabledReason: "test disabled" })
+      .where(eq(providerCredentials.id, assignedDisabled.id));
+
+    const resolved = await resolveAllCredentialEnv(db, agent.id);
+    expect(resolved.env).toEqual({});
+    expect(resolved.chosen).toEqual([]);
   });
 
   it("does not resolve a disabled legacy agents.credential_id", async () => {

@@ -3,12 +3,20 @@ import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { assets as assetRows, issueAttachments, issueImageGenerationJobs } from "@paperclipai/db";
 import type { StorageService } from "../storage/types.js";
-import { issueService, logActivity, resolveAllCredentialEnv } from "./index.js";
+import { issueService, logActivity } from "./index.js";
+import {
+  assignedCredentialIdsOfType,
+  hasAlternateCredentialOfType,
+  recordCredentialFailure,
+  recordCredentialSuccess,
+  resolveAllCredentialEnv,
+} from "./credentials.js";
 import { normalizeContentType } from "../attachment-types.js";
 import { logger } from "../middleware/logger.js";
 import { notFound, unprocessable } from "../errors.js";
 import {
   generateOpenAiIssueImage,
+  OpenAiImageProviderError,
   PAPERCLIP_IMAGE_MODEL,
   streamToBuffer,
   type ImageReferenceInput,
@@ -26,6 +34,7 @@ const MAX_GENERATED_IMAGE_DIMENSION = 8192;
 const GENERATED_IMAGE_ASPECT_RATIO_TOLERANCE = 0.02;
 const DEFAULT_LEASE_MS = 60_000;
 const DEFAULT_TICK_INTERVAL_MS = 5_000;
+const MAX_CREDENTIAL_RETRY_ATTEMPTS = 8;
 
 type IssueImageProvider = "codex_native" | "openai";
 type ParsedSize = { width: number; height: number };
@@ -87,6 +96,7 @@ type JobSelect = {
   actor: ActorInfo;
   terminalAudit: Record<string, unknown> | null;
   claimToken: string | null;
+  retryAt: Date | null;
 };
 
 type PersistedAttachment = {
@@ -226,7 +236,24 @@ function selectShape(job: JobRow): JobSelect {
     actor: readJson<ActorInfo>(job.actor),
     terminalAudit: readJson<Record<string, unknown> | null>(job.terminalAudit),
     claimToken: job.claimToken,
+    retryAt: job.status === "queued" ? job.leaseExpiresAt : null,
   };
+}
+
+class ImageCredentialUnavailableError extends Error {
+  constructor(readonly retryAt: Date | null) {
+    super(retryAt
+      ? `The assigned OpenAI credential pool is unavailable until ${retryAt.toISOString()}; image generation was not sent to the provider.`
+      : "The assigned OpenAI credential pool is unavailable until provider quota is confirmed healthy; image generation was not sent to the provider.");
+    this.name = "ImageCredentialUnavailableError";
+  }
+}
+
+class RetryableImageCredentialError extends Error {
+  constructor(readonly retryAt: Date) {
+    super(`OpenAI image credential is cooling down until ${retryAt.toISOString()}`);
+    this.name = "RetryableImageCredentialError";
+  }
 }
 
 async function loadImageReferences(input: {
@@ -506,7 +533,7 @@ export function createIssueImageGenerationJobService(
       WITH candidate AS (
         SELECT id
         FROM issue_image_generation_jobs
-        WHERE status = 'queued'
+        WHERE (status = 'queued' AND (lease_expires_at IS NULL OR lease_expires_at <= now()))
           OR (status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < now())
         ORDER BY created_at ASC
         LIMIT 1
@@ -662,9 +689,36 @@ export function createIssueImageGenerationJobService(
     }
 
     const imageProvider = resolveIssueImageProvider();
-    const credentialResolution = imageProvider === "openai" && job.actor.agentId
-      ? await resolveAllCredentialEnv(db, job.actor.agentId)
-      : { env: {} as Record<string, string> };
+    const assignedOpenAi = imageProvider === "openai" && job.actor.agentId
+      ? await assignedCredentialIdsOfType(db, job.actor.agentId, "openai_api_key")
+      : null;
+    if (assignedOpenAi && !assignedOpenAi.agentExists) {
+      throw unprocessable("The image-generation agent no longer exists; instance-global OpenAI credentials were not used.");
+    }
+    const managedOpenAi = Boolean(assignedOpenAi && assignedOpenAi.credentialIds.length > 0);
+    const credentialResolution = managedOpenAi && job.actor.agentId
+      ? await resolveAllCredentialEnv(db, job.actor.agentId, null, assignedOpenAi!.credentialIds)
+      : {
+          env: {} as Record<string, string>,
+          chosen: [],
+          credentialIds: [],
+          unavailablePools: [],
+        };
+    const unavailableOpenAiPool = credentialResolution.unavailablePools.find(
+      (pool) => pool.type === "openai_api_key",
+    );
+    if (managedOpenAi && unavailableOpenAiPool) {
+      throw new ImageCredentialUnavailableError(unavailableOpenAiPool.nextEligibleAt);
+    }
+    const activeOpenAiChoice = managedOpenAi
+      ? credentialResolution.chosen.find((choice) => choice.type === "openai_api_key") ?? null
+      : null;
+    const managedOpenAiApiKey = managedOpenAi ? credentialResolution.env.OPENAI_API_KEY?.trim() : null;
+    if (managedOpenAi && (!activeOpenAiChoice || !managedOpenAiApiKey)) {
+      throw unprocessable(
+        "The assigned OpenAI credential could not be resolved. Re-enable it or replace its API key; instance-global credentials were not used.",
+      );
+    }
     // A timer extends the cross-replica lease while the provider is running.
     // Every publication step separately fences on the same claim token.
     let leaseLost = false;
@@ -674,15 +728,44 @@ export function createIssueImageGenerationJobService(
     heartbeat.unref?.();
     let generated: Awaited<ReturnType<typeof generateOpenAiIssueImage>> | Awaited<ReturnType<typeof generateCodexIssueImage>>;
     try {
-      generated = imageProvider === "openai"
-        ? await generateOpenAiIssueImage({
-          prompt: job.request.prompt,
-          size: job.request.size,
-          quality: job.request.quality,
-          references,
-          apiKey: credentialResolution.env.OPENAI_API_KEY,
-        })
-        : await generateCodexIssueImage({
+      if (imageProvider === "openai") {
+        try {
+          generated = await generateOpenAiIssueImage({
+            prompt: job.request.prompt,
+            size: job.request.size,
+            quality: job.request.quality,
+            references,
+            apiKey: managedOpenAiApiKey,
+            allowEnvironmentFallback: !managedOpenAi,
+          });
+          if (activeOpenAiChoice) await recordCredentialSuccess(db, activeOpenAiChoice.credentialId);
+        } catch (error) {
+          if (
+            activeOpenAiChoice
+            && job.actor.agentId
+            && error instanceof OpenAiImageProviderError
+            && error.credentialFailureKind
+          ) {
+            const result = await recordCredentialFailure(db, activeOpenAiChoice.credentialId, {
+              kind: error.credentialFailureKind,
+              reason: error.providerErrorCode ?? `openai_http_${error.statusCode}`,
+              providerRetryAfter: error.retryNotBefore,
+            });
+            const hasAlternate = await hasAlternateCredentialOfType(
+              db,
+              job.actor.agentId,
+              "openai_api_key",
+              activeOpenAiChoice.credentialId,
+            );
+            if (hasAlternate) throw new RetryableImageCredentialError(new Date());
+            if (error.credentialFailureKind !== "auth" && result.cooldownUntil) {
+              throw new RetryableImageCredentialError(result.cooldownUntil);
+            }
+          }
+          throw error;
+        }
+      } else {
+        generated = await generateCodexIssueImage({
             prompt: job.request.prompt,
             size: job.request.size,
             quality: job.request.quality,
@@ -691,6 +774,7 @@ export function createIssueImageGenerationJobService(
             agentId: job.actor.agentId,
             runId: job.actor.runId,
           });
+      }
     } finally {
       clearInterval(heartbeat);
     }
@@ -856,6 +940,25 @@ export function createIssueImageGenerationJobService(
       ));
   }
 
+  async function reschedule(job: JobSelect, error: unknown, retryAt: Date | null) {
+    const message = error instanceof Error ? error.message : String(error);
+    await db
+      .update(issueImageGenerationJobs)
+      .set({
+        status: "queued",
+        lastError: message,
+        finishedAt: null,
+        updatedAt: new Date(),
+        leaseExpiresAt: retryAt,
+        claimToken: null,
+      })
+      .where(and(
+        eq(issueImageGenerationJobs.id, job.id),
+        eq(issueImageGenerationJobs.status, "running"),
+        eq(issueImageGenerationJobs.claimToken, job.claimToken ?? ""),
+      ));
+  }
+
   async function tick(): Promise<void> {
     if (draining) return;
     draining = true;
@@ -867,7 +970,17 @@ export function createIssueImageGenerationJobService(
           await execute(job);
         } catch (error) {
           log.warn({ err: error, jobId: job.id, issueId: job.issueId }, "issue image generation job failed");
-          await fail(job, error);
+          if (error instanceof RetryableImageCredentialError && job.attemptCount < MAX_CREDENTIAL_RETRY_ATTEMPTS) {
+            await reschedule(job, error, error.retryAt);
+          } else if (
+            error instanceof ImageCredentialUnavailableError
+            && error.retryAt
+            && job.attemptCount < MAX_CREDENTIAL_RETRY_ATTEMPTS
+          ) {
+            await reschedule(job, error, error.retryAt);
+          } else {
+            await fail(job, error);
+          }
         }
       }
     } finally {

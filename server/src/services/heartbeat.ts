@@ -117,7 +117,10 @@ import {
   recordCredentialFailure,
   recordCredentialSuccess,
   resolveAllCredentialEnv,
+  hasConfiguredRuntimeCredentialForAdapter,
   selectActiveCredentialForAdapter,
+  unavailableCredentialPoolsForAdapter,
+  type UnavailableCredentialPool,
 } from "./credentials.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
@@ -509,6 +512,55 @@ export class ConfigurationIncompleteFailure extends Error {
   }
 }
 
+// Pre-dispatch gate outcome: the agent has managed provider credentials, but
+// every credential in the active pool is known to be cooling down or depleted.
+// Treat this as provider quota (with reset metadata), never as missing auth, and
+// never dispatch the adapter with a credential that routing already knows is bad.
+export class CredentialPoolUnavailableFailure extends Error {
+  code: "provider_quota" | "credential_pool_unavailable";
+  resultJson: Record<string, unknown>;
+
+  constructor(pools: UnavailableCredentialPool[]) {
+    const quotaOnly = pools.every((pool) => pool.reason === "quota_depleted");
+    const errorFamily = quotaOnly ? "provider_quota" : "transient_upstream";
+    const nextEligibleAt = pools
+      .map((pool) => pool.nextEligibleAt)
+      .filter((value): value is Date => value instanceof Date && Number.isFinite(value.getTime()))
+      .sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
+    const retryNotBefore = nextEligibleAt?.toISOString() ?? null;
+    super(
+      retryNotBefore
+        ? `All applicable provider credentials are unavailable until ${retryNotBefore}`
+        : "All applicable provider credentials are unavailable due to quota or cooldown",
+    );
+    this.name = "CredentialPoolUnavailableFailure";
+    this.code = quotaOnly ? "provider_quota" : "credential_pool_unavailable";
+    this.resultJson = {
+      errorFamily,
+      ...(retryNotBefore
+        ? {
+            retryNotBefore,
+            transientRetryNotBefore: retryNotBefore,
+            ...(quotaOnly ? { providerQuotaRetryNotBefore: retryNotBefore } : {}),
+          }
+        : {}),
+      credentialPoolUnavailable: {
+        nextEligibleAt: retryNotBefore,
+        pools: pools.map((pool) => ({
+          type: pool.type,
+          reason: pool.reason,
+          credentialIds: pool.credentialIds,
+          nextEligibleAt: pool.nextEligibleAt?.toISOString() ?? null,
+        })),
+      },
+    };
+  }
+}
+
+function isCredentialPoolUnavailableFailure(error: unknown): error is CredentialPoolUnavailableFailure {
+  return error instanceof CredentialPoolUnavailableFailure;
+}
+
 export interface SharedWorkspaceHolder {
   runId: string;
   agentId: string;
@@ -865,7 +917,10 @@ export async function resolveExecutionRunAdapterConfig(input: {
    * Resolves the selected provider-credential pool for this run after secret
    * bindings are validated, but before adapter-specific readiness checks.
    */
-  resolveProviderCredentialEnv?: () => Promise<Record<string, string>>;
+  resolveProviderCredentialEnv?: (
+    resolvedEnv: Record<string, unknown>,
+    resolvedAdapterConfig: Record<string, unknown>,
+  ) => Promise<Record<string, string>>;
   trustPreset?: TrustPresetResolution;
   requiredScopedEnvBinding?: {
     keys: string[];
@@ -1130,7 +1185,10 @@ export async function resolveExecutionRunAdapterConfig(input: {
   // isolated CODEX_HOME (or an OpenAI API-key credential) counts as available
   // authentication instead of being added too late to avoid a false blocker.
   if (input.resolveProviderCredentialEnv) {
-    const providerCredentialEnv = await input.resolveProviderCredentialEnv();
+    const providerCredentialEnv = await input.resolveProviderCredentialEnv(
+      parseObject(resolvedConfig.env),
+      resolvedConfig,
+    );
     if (Object.keys(providerCredentialEnv).length > 0) {
       resolvedConfig.env = {
         ...parseObject(resolvedConfig.env),
@@ -15867,12 +15925,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       env: {},
       credentialIds: [],
       chosen: [],
+      unavailablePools: [],
     };
-    const resolveProviderCredentialEnv = async (): Promise<Record<string, string>> => {
+    const resolveProviderCredentialEnv = async (
+      configuredEnv: Record<string, unknown>,
+      effectiveAdapterConfig: Record<string, unknown>,
+    ): Promise<Record<string, string>> => {
       try {
         credentialResolution = await resolveAllCredentialEnv(db, agent.id);
+        const applicableUnavailablePools = unavailableCredentialPoolsForAdapter({
+          adapterType: agent.adapterType,
+          adapterConfig: effectiveAdapterConfig,
+          pools: credentialResolution.unavailablePools,
+        });
+        const mergedEnv = { ...configuredEnv, ...credentialResolution.env };
+        const activeChoice = selectActiveCredentialForAdapter({
+          adapterType: agent.adapterType,
+          adapterConfig: effectiveAdapterConfig,
+          chosen: credentialResolution.chosen,
+          env: mergedEnv,
+        });
+        const hasConfiguredCredential = hasConfiguredRuntimeCredentialForAdapter({
+          adapterType: agent.adapterType,
+          adapterConfig: effectiveAdapterConfig,
+          env: configuredEnv,
+        });
+        if (!activeChoice && !hasConfiguredCredential && applicableUnavailablePools.length > 0) {
+          throw new CredentialPoolUnavailableFailure(applicableUnavailablePools);
+        }
         return credentialResolution.env;
       } catch (err) {
+        if (isCredentialPoolUnavailableFailure(err)) throw err;
         logger.error(
           { agentId: agent.id, credentialId: agent.credentialId, err: err instanceof Error ? err.message : String(err) },
           "failed to apply provider credential env to execution run",
@@ -15916,13 +15999,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     try {
       const activeChoice = selectActiveCredentialForAdapter({
         adapterType: agent.adapterType,
-        adapterConfig: parseObject(agent.adapterConfig),
+        adapterConfig: resolvedConfig,
         chosen: credentialResolution.chosen,
         env: parseObject(resolvedConfig.env),
       });
       runActiveCredentialId = activeChoice?.credentialId ?? null;
       runActiveCredentialType = activeChoice?.type ?? null;
+      const applicableUnavailablePools = unavailableCredentialPoolsForAdapter({
+        adapterType: agent.adapterType,
+        adapterConfig: resolvedConfig,
+        pools: credentialResolution.unavailablePools,
+      });
+      const hasConfiguredCredential = hasConfiguredRuntimeCredentialForAdapter({
+        adapterType: agent.adapterType,
+        adapterConfig: resolvedConfig,
+        env: parseObject(resolvedConfig.env),
+      });
+      if (!activeChoice && !hasConfiguredCredential && applicableUnavailablePools.length > 0) {
+        throw new CredentialPoolUnavailableFailure(applicableUnavailablePools);
+      }
     } catch (err) {
+      if (isCredentialPoolUnavailableFailure(err)) throw err;
       logger.error(
         { agentId: agent.id, credentialId: agent.credentialId, err: err instanceof Error ? err.message : String(err) },
         "failed to apply provider credential env to execution run",
@@ -17668,8 +17765,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               errorMessage: adapterResult.errorMessage ?? null,
             })
           ) {
-            const kind: "rate_limit" | "auth" =
-              adapterResult.errorFamily === "transient_upstream" ? "rate_limit" : "auth";
+            const kind: "quota" | "rate_limit" | "auth" =
+              adapterResult.errorFamily === "provider_quota" || adapterResult.errorCode === "provider_quota"
+                ? "quota"
+                : adapterResult.errorFamily === "transient_upstream"
+                  ? "rate_limit"
+                  : "auth";
             const retryAt = readNonEmptyString(adapterResult.retryNotBefore);
             const parsedRetryAfter = retryAt ? new Date(retryAt) : null;
             const result = await recordCredentialFailure(db, runActiveCredentialId, {
@@ -17680,7 +17781,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   ? parsedRetryAfter
                   : null,
             });
-            // Seamless switch: only for a rate-limit, and only when there's
+            // Seamless switch: only for a quota/rate limit, and only when there's
             // another same-type credential to land on (else an immediate retry
             // would just hit the same wall). The just-failed credential is now
             // cooling down, so the picker will choose the alternate.
@@ -17692,14 +17793,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 runActiveCredentialType,
                 runActiveCredentialId,
               ));
-            seamlessFailoverRetry = kind === "rate_limit" && hasAlternate;
+            seamlessFailoverRetry = kind !== "auth" && hasAlternate;
             await onLog(
               "stderr",
               result.disabled
                 ? `[paperclip] credential ${runActiveCredentialId} FROZEN after ${result.failureCount} consecutive auth failures — using another credential and flagging for the board to fix\n`
                 : seamlessFailoverRetry
-                  ? `[paperclip] credential ${runActiveCredentialId} hit a usage limit (cooling until ${result.cooldownUntil.toISOString()}) — switching to another ${runActiveCredentialType} credential now\n`
-                  : `[paperclip] credential ${runActiveCredentialId} cooling down until ${result.cooldownUntil.toISOString()} (${kind} failure ${result.failureCount}) — next run rotates to another credential\n`,
+                  ? `[paperclip] credential ${runActiveCredentialId} hit a usage limit (${result.cooldownUntil ? `cooling until ${result.cooldownUntil.toISOString()}` : "blocked until quota is confirmed healthy"}) — switching to another ${runActiveCredentialType} credential now\n`
+                  : `[paperclip] credential ${runActiveCredentialId} ${result.cooldownUntil ? `cooling down until ${result.cooldownUntil.toISOString()}` : "blocked until quota is confirmed healthy"} (${kind} failure ${result.failureCount}) — next run rotates to another credential\n`,
             );
           } else if (outcome === "succeeded") {
             await recordCredentialSuccess(db, runActiveCredentialId);
@@ -17903,11 +18004,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       );
       const workspaceValidationFailure = isWorkspaceValidationFailure(err) ? err : null;
       const configurationIncompleteFailure = isConfigurationIncompleteFailure(err) ? err : null;
+      const credentialPoolUnavailableFailure = isCredentialPoolUnavailableFailure(err) ? err : null;
       const recordedResponsibleUserDenialCode =
         normalizeResponsibleUserDenialCode((await getRun(run.id).catch(() => null))?.errorCode);
       const failureErrorCode =
         workspaceValidationFailure?.code
         ?? configurationIncompleteFailure?.code
+        ?? credentialPoolUnavailableFailure?.code
         ?? recordedResponsibleUserDenialCode
         ?? "adapter_failed";
       logger.error({ err, runId }, "heartbeat execution failed");
@@ -17935,7 +18038,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
           errorCode: failureErrorCode,
           errorMessage: message,
-          resultJson: workspaceValidationFailure?.resultJson ?? configurationIncompleteFailure?.resultJson ?? null,
+          resultJson:
+            workspaceValidationFailure?.resultJson
+            ?? configurationIncompleteFailure?.resultJson
+            ?? credentialPoolUnavailableFailure?.resultJson
+            ?? null,
         }),
         stdoutExcerpt,
         stderrExcerpt,
@@ -18020,7 +18127,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       await finalizeAgentStatus(agent.id, "failed", message, {
         wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
-        keepIdleOnFailure: isWorkspaceSyncConflictFailure(message),
+        keepIdleOnFailure:
+          Boolean(credentialPoolUnavailableFailure) || isWorkspaceSyncConflictFailure(message),
       });
     }
     } catch (outerErr) {
@@ -18047,11 +18155,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // recovery path routes it to a human owner instead of looping retries.
           const workspaceValidationSetupFailure = isWorkspaceValidationFailure(outerErr) ? outerErr : null;
           const configurationIncompleteSetupFailure = isConfigurationIncompleteFailure(outerErr) ? outerErr : null;
+          const credentialPoolUnavailableSetupFailure = isCredentialPoolUnavailableFailure(outerErr) ? outerErr : null;
           const recordedResponsibleUserDenialCode =
             normalizeResponsibleUserDenialCode((await getRun(runId).catch(() => null))?.errorCode);
           const setupFailureErrorCode =
             workspaceValidationSetupFailure?.code ??
             configurationIncompleteSetupFailure?.code ??
+            credentialPoolUnavailableSetupFailure?.code ??
             recordedResponsibleUserDenialCode ??
             "setup_failed";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
@@ -18065,7 +18175,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 errorCode: setupFailureErrorCode,
                 errorMessage: message,
                 resultJson:
-                  workspaceValidationSetupFailure?.resultJson ?? configurationIncompleteSetupFailure?.resultJson ?? null,
+                  credentialPoolUnavailableSetupFailure?.resultJson ??
+                  workspaceValidationSetupFailure?.resultJson ??
+                  configurationIncompleteSetupFailure?.resultJson ??
+                  null,
               }),
             } : {}),
           }).catch(() => ({ run: null, updated: false as const }));
@@ -18112,15 +18225,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             const failedAgent = setupFailureAgent ?? await getAgent(run.agentId).catch(() => null);
             if (failedAgent) {
               await refreshContinuationSummaryForRun(livenessRun, failedAgent).catch(() => undefined);
+              if (
+                credentialPoolUnavailableSetupFailure
+                && readTransientRecoveryContractFromRun(livenessRun)?.retryNotBefore
+              ) {
+                await scheduleBoundedRetryForRun(livenessRun, failedAgent).catch((retryError) => {
+                  logger.warn(
+                    { err: retryError, runId: livenessRun.id },
+                    "failed to schedule credential-pool recovery retry after setup failure",
+                  );
+                });
+              }
               if (!isWorkspaceValidationFailedRun(livenessRun) && !isConfigurationIncompleteFailedRun(livenessRun)) {
                 await finalizeIssueCommentPolicy(livenessRun, failedAgent).catch(() => undefined);
               }
-              await scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent).catch((retryError) => {
-                logger.warn(
-                  { err: retryError, runId: livenessRun.id },
-                  "failed to schedule interaction continuation retry after setup failure",
-                );
-              });
+              if (!credentialPoolUnavailableSetupFailure) {
+                await scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent).catch((retryError) => {
+                  logger.warn(
+                    { err: retryError, runId: livenessRun.id },
+                    "failed to schedule interaction continuation retry after setup failure",
+                  );
+                });
+              }
             }
             await releaseIssueExecutionAndPromote(livenessRun).catch((releaseError) => {
               logger.error(
@@ -18140,6 +18266,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // the run, keep that terminal outcome authoritative.
           if (setupFailureWrite.updated) {
             await finalizeAgentStatus(run.agentId, "failed", message, {
+              keepIdleOnFailure: Boolean(credentialPoolUnavailableSetupFailure),
               wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
             }).catch(() => undefined);
           }

@@ -634,7 +634,11 @@ describe("resolveExecutionRunAdapterConfig codex_local credential pre-dispatch g
       HOME: "/tmp/paperclip-provider-credential-home",
     }));
     const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
-      config: { command: "codex", env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" } },
+      config: {
+        command: "codex",
+        model: "openai-codex/gpt-5.5",
+        env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" },
+      },
       secretKeys: new Set<string>(),
       manifest: [],
     });
@@ -643,7 +647,11 @@ describe("resolveExecutionRunAdapterConfig codex_local credential pre-dispatch g
       companyId: "company-1",
       agentId: "agent-1",
       adapterType: "codex_local",
-      executionRunConfig: { command: "codex", env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" } },
+      executionRunConfig: {
+        command: "codex",
+        model: "openai-codex/gpt-5.5",
+        env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" },
+      },
       projectEnv: null,
       secretsSvc: {
         resolveAdapterConfigForRuntime,
@@ -654,6 +662,10 @@ describe("resolveExecutionRunAdapterConfig codex_local credential pre-dispatch g
     });
 
     expect(resolveProviderCredentialEnv).toHaveBeenCalledTimes(1);
+    expect(resolveProviderCredentialEnv).toHaveBeenCalledWith(
+      expect.objectContaining({ CODEX_HOME: managedAgentHome }),
+      expect.objectContaining({ command: "codex", model: "openai-codex/gpt-5.5" }),
+    );
     expect(result.resolvedConfig.env).toMatchObject({
       CODEX_HOME: providerCredentialHome,
       HOME: "/tmp/paperclip-provider-credential-home",

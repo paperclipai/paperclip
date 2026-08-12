@@ -14774,6 +14774,7 @@ export function issueRoutes(
       statusUrl: `/api/issues/${encodeURIComponent(issue.id)}/image-generations/${encodeURIComponent(job.id)}`,
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
+      retryAt: job.retryAt,
     });
   });
 
@@ -14799,6 +14800,7 @@ export function issueRoutes(
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
       finishedAt: job.finishedAt,
+      retryAt: job.retryAt,
       request: {
         size: job.request.size,
         quality: job.request.quality,

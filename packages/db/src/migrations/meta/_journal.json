@@ -1709,6 +1709,13 @@
       "when": 1785240060000,
       "tag": "0245_issue_image_generation_job_claim_fencing",
       "breakpoints": true
+    },
+    {
+      "idx": 246,
+      "version": "7",
+      "when": 1786555614558,
+      "tag": "0246_provider_credential_quota_circuit",
+      "breakpoints": true
     }
   ]
 }

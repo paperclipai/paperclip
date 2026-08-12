@@ -5,25 +5,40 @@ import sharp from "sharp";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agentCredentials,
+  agents,
   assets,
   companies,
   createDb,
   issueAttachments,
   issueImageGenerationJobs,
   issues,
+  providerCredentials,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { createIssueImageGenerationJobService } from "../services/issue-image-generation-jobs.ts";
+import { OpenAiImageProviderError } from "../services/openai-image-generation.js";
 import type { StorageService } from "../storage/types.js";
 
 const mockGenerateCodexIssueImage = vi.fn();
+const mockGenerateOpenAiIssueImage = vi.fn();
 
 vi.mock("../services/codex-image-generation.js", () => ({
   generateCodexIssueImage: (...args: unknown[]) => mockGenerateCodexIssueImage(...args),
 }));
+
+vi.mock("../services/openai-image-generation.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/openai-image-generation.js")>(
+    "../services/openai-image-generation.js",
+  );
+  return {
+    ...actual,
+    generateOpenAiIssueImage: (...args: unknown[]) => mockGenerateOpenAiIssueImage(...args),
+  };
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -135,15 +150,21 @@ describeEmbeddedPostgres("createIssueImageGenerationJobService", () => {
 
   beforeEach(() => {
     mockGenerateCodexIssueImage.mockReset();
+    mockGenerateOpenAiIssueImage.mockReset();
     delete process.env.PAPERCLIP_IMAGE_PROVIDER;
+    delete process.env.PAPERCLIP_IMAGE_OPENAI_API_KEY;
   });
 
   afterEach(async () => {
+    delete process.env.PAPERCLIP_IMAGE_OPENAI_API_KEY;
     await db.delete(issueImageGenerationJobs);
     await db.delete(issueAttachments);
     await db.delete(assets);
     await db.delete(issues);
     await db.delete(activityLog);
+    await db.delete(agentCredentials);
+    await db.delete(agents);
+    await db.delete(providerCredentials);
     await db.delete(companies);
   });
 
@@ -247,6 +268,159 @@ describeEmbeddedPostgres("createIssueImageGenerationJobService", () => {
     expect(persisted?.auditAttachmentId).toBeNull();
     expect(await db.select().from(issueAttachments)).toHaveLength(0);
     expect(await db.select().from(assets)).toHaveLength(0);
+  });
+
+  it("does not bypass a cooling assigned OpenAI pool with the instance-global key", async () => {
+    const seed = await seedIssue();
+    const agentId = randomUUID();
+    const credentialId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId: seed.companyId,
+      name: "ImageAgent",
+      adapterType: "codex_local",
+    });
+    await db.insert(providerCredentials).values({
+      id: credentialId,
+      companyId: seed.companyId,
+      name: "openai-cooling",
+      type: "openai_api_key",
+      credential: {},
+      cooldownUntil: new Date("2099-04-20T15:00:00.000Z"),
+      cooldownReason: "provider_rate_limit",
+    });
+    await db.insert(agentCredentials).values({ agentId, credentialId });
+    process.env.PAPERCLIP_IMAGE_PROVIDER = "openai";
+    process.env.PAPERCLIP_IMAGE_OPENAI_API_KEY = "sk-instance-global-must-not-run";
+    const storage = createMockStorage();
+    const service = createIssueImageGenerationJobService(db, storage, {
+      leaseMs: 1_500,
+      scheduleOnEnqueue: false,
+    });
+    const input = buildEnqueueInput(seed);
+    const job = await service.enqueue({
+      ...input,
+      actor: { ...input.actor, agentId },
+    });
+
+    await service.tick();
+
+    const persisted = await loadJob(job.id);
+    expect(persisted?.status).toBe("queued");
+    expect(persisted?.lastError).toContain("assigned OpenAI credential pool is unavailable");
+    expect(persisted?.leaseExpiresAt).toEqual(new Date("2099-04-20T15:00:00.000Z"));
+    expect(mockGenerateOpenAiIssueImage).not.toHaveBeenCalled();
+  });
+
+  it("does not bypass a disabled assigned OpenAI credential with the instance-global key", async () => {
+    const seed = await seedIssue();
+    const agentId = randomUUID();
+    const credentialId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId: seed.companyId,
+      name: "DisabledImageAgent",
+      adapterType: "codex_local",
+    });
+    await db.insert(providerCredentials).values({
+      id: credentialId,
+      companyId: seed.companyId,
+      name: "openai-disabled",
+      type: "openai_api_key",
+      credential: {},
+      disabledAt: new Date(),
+      disabledReason: "invalid key",
+    });
+    await db.insert(agentCredentials).values({ agentId, credentialId });
+    process.env.PAPERCLIP_IMAGE_PROVIDER = "openai";
+    process.env.PAPERCLIP_IMAGE_OPENAI_API_KEY = "sk-instance-global-must-not-run";
+    const service = createIssueImageGenerationJobService(db, createMockStorage(), {
+      leaseMs: 1_500,
+      scheduleOnEnqueue: false,
+    });
+    const input = buildEnqueueInput(seed);
+    const job = await service.enqueue({ ...input, actor: { ...input.actor, agentId } });
+
+    await service.tick();
+
+    const persisted = await loadJob(job.id);
+    expect(persisted?.status).toBe("failed");
+    expect(persisted?.lastError).toContain("could not be resolved");
+    expect(mockGenerateOpenAiIssueImage).not.toHaveBeenCalled();
+  });
+
+  it("cools a provider-rejected OpenAI key and immediately succeeds on its alternate", async () => {
+    const seed = await seedIssue();
+    const agentId = randomUUID();
+    const firstCredentialId = randomUUID();
+    const secondCredentialId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId: seed.companyId,
+      name: "RotatingImageAgent",
+      adapterType: "codex_local",
+    });
+    await db.insert(providerCredentials).values([
+      {
+        id: firstCredentialId,
+        companyId: seed.companyId,
+        name: "openai-first",
+        type: "openai_api_key",
+        credential: { apiKey: "sk-first" },
+        lastUsedAt: new Date("2020-01-01T00:00:00.000Z"),
+      },
+      {
+        id: secondCredentialId,
+        companyId: seed.companyId,
+        name: "openai-second",
+        type: "openai_api_key",
+        credential: { apiKey: "sk-second" },
+        lastUsedAt: new Date("2021-01-01T00:00:00.000Z"),
+      },
+    ]);
+    await db.insert(agentCredentials).values([
+      { agentId, credentialId: firstCredentialId },
+      { agentId, credentialId: secondCredentialId },
+    ]);
+    process.env.PAPERCLIP_IMAGE_PROVIDER = "openai";
+    const resetAt = new Date(Date.now() + 60 * 60 * 1000);
+    mockGenerateOpenAiIssueImage
+      .mockRejectedValueOnce(new OpenAiImageProviderError({
+        message: "Rate limit reached",
+        statusCode: 429,
+        providerErrorCode: "rate_limit_exceeded",
+        retryNotBefore: resetAt,
+        credentialFailureKind: "rate_limit",
+      }))
+      .mockResolvedValueOnce({
+        outputBytes: pngBytes,
+        endpoint: "openai",
+        model: "gpt-image-2",
+        providerRequestId: "req-rotate",
+        generationMode: "prompt_only",
+        actualImageInputsBound: [],
+      });
+    const service = createIssueImageGenerationJobService(db, createMockStorage(), {
+      leaseMs: 1_500,
+      scheduleOnEnqueue: false,
+    });
+    const input = buildEnqueueInput(seed);
+    const job = await service.enqueue({ ...input, actor: { ...input.actor, agentId } });
+
+    await service.tick();
+
+    const persisted = await loadJob(job.id);
+    expect(persisted?.status).toBe("succeeded");
+    expect(persisted?.attemptCount).toBe(2);
+    expect(mockGenerateOpenAiIssueImage).toHaveBeenNthCalledWith(1, expect.objectContaining({ apiKey: "sk-first" }));
+    expect(mockGenerateOpenAiIssueImage).toHaveBeenNthCalledWith(2, expect.objectContaining({ apiKey: "sk-second" }));
+    const failedCredential = await db
+      .select()
+      .from(providerCredentials)
+      .where(eq(providerCredentials.id, firstCredentialId))
+      .then((rows) => rows[0]);
+    expect(failedCredential.cooldownReason).toBe("rate_limit_exceeded");
+    expect(failedCredential.cooldownUntil?.getTime()).toBeGreaterThanOrEqual(resetAt.getTime());
   });
 
   it("prevents a stale worker from publishing after another worker reclaims the lease", async () => {

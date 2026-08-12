@@ -53,8 +53,8 @@ describe("adapter model listing", () => {
     expect(models.some((model) => model.id === "gpt-5.6-sol")).toBe(true);
     expect(models.some((model) => model.id === "gpt-5.6-terra")).toBe(true);
     expect(models.some((model) => model.id === "gpt-5.6-luna")).toBe(true);
-    expect(models.some((model) => model.id === "gpt-5.3-codex")).toBe(true);
-    expect(models.some((model) => model.id === "gpt-5.3-codex-spark")).toBe(false);
+    expect(models.some((model) => model.id === "gpt-5.3-codex")).toBe(false);
+    expect(models.some((model) => model.id === "gpt-5.3-codex-spark")).toBe(true);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 

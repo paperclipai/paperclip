@@ -264,12 +264,12 @@ describe("isCodexTransientUpstreamError", () => {
     ).toBe(true);
   });
 
-  it("classifies usage-limit windows as provider quota and extracts the retry time", () => {
+  it("keeps model-specific usage limits transient and extracts the retry time", () => {
     const errorMessage = "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at 11:31 PM.";
     const now = new Date(2026, 3, 22, 22, 29, 2);
 
-    expect(isCodexProviderQuotaError({ errorMessage })).toBe(true);
-    expect(isCodexTransientUpstreamError({ errorMessage })).toBe(false);
+    expect(isCodexProviderQuotaError({ errorMessage })).toBe(false);
+    expect(isCodexTransientUpstreamError({ errorMessage })).toBe(true);
     expect(extractCodexRetryNotBefore({ errorMessage }, now)?.getTime()).toBe(
       new Date(2026, 3, 22, 23, 31, 0, 0).getTime(),
     );
@@ -300,11 +300,11 @@ describe("isCodexTransientUpstreamError", () => {
     ).toBe(true);
   });
 
-  it("classifies model-capacity messages as provider quota without reset metadata", () => {
+  it("classifies model-capacity messages as transient rather than credential-wide quota", () => {
     const errorMessage = "The requested model is at capacity. Please try again later.";
 
-    expect(isCodexProviderQuotaError({ errorMessage })).toBe(true);
-    expect(isCodexTransientUpstreamError({ errorMessage })).toBe(false);
+    expect(isCodexProviderQuotaError({ errorMessage })).toBe(false);
+    expect(isCodexTransientUpstreamError({ errorMessage })).toBe(true);
     expect(extractCodexRetryNotBefore({ errorMessage })).toBeNull();
   });
 

@@ -7,6 +7,12 @@ export interface ProviderCredential {
   name: string;
   type: CredentialType;
   isDefault: boolean;
+  cooldownUntil?: Date | null;
+  cooldownReason?: string | null;
+  quotaCooldownUntil?: Date | null;
+  quotaSampledAt?: Date | null;
+  quotaReason?: string | null;
+  lastFailureKind?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -21,6 +27,9 @@ export interface ProviderCredentialQuota {
   source?: string | null;
   cooldownUntil?: string | null;
   cooldownReason?: string | null;
+  quotaBlocked?: boolean;
+  quotaCooldownUntil?: string | null;
+  quotaReason?: string | null;
   disabledAt?: string | null;
   error?: string;
   stale?: boolean;

@@ -1679,7 +1679,26 @@ function CredentialsSection({ companyId }: { companyId: string }) {
                           needs attention
                         </span>
                       )}
-                      {!cred.disabledAt && formatCredentialCooldown(cred.cooldownUntil) && (
+                      {!cred.disabledAt && (
+                        (Boolean(cred.quotaReason) && !cred.quotaCooldownUntil)
+                        || (quotaByCredential.get(cred.id)?.quotaBlocked === true
+                          && !quotaByCredential.get(cred.id)?.quotaCooldownUntil)
+                      ) && (
+                        <span
+                          className="shrink-0 flex items-center gap-0.5 rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-600"
+                          title="Provider quota is exhausted without a usable reset time. Runs skip this credential until an authoritative healthy quota sample is received or the credential is replaced."
+                        >
+                          <Clock className="h-2.5 w-2.5" />
+                          quota blocked
+                        </span>
+                      )}
+                      {!cred.disabledAt
+                        && !(
+                          (Boolean(cred.quotaReason) && !cred.quotaCooldownUntil)
+                          || (quotaByCredential.get(cred.id)?.quotaBlocked === true
+                            && !quotaByCredential.get(cred.id)?.quotaCooldownUntil)
+                        )
+                        && formatCredentialCooldown(cred.cooldownUntil) && (
                         <span
                           className="shrink-0 flex items-center gap-0.5 rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-600"
                           title={`Cooling down after a failure${cred.cooldownReason ? ` (${cred.cooldownReason})` : ""}${cred.consecutiveFailureCount > 0 ? ` · ${cred.consecutiveFailureCount} consecutive` : ""}. Runs rotate to another bound credential of this type until the window elapses.`}

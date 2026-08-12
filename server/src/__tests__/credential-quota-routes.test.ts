@@ -7,6 +7,7 @@ const mockFetchClaudeCliQuotaForOAuth = vi.hoisted(() => vi.fn());
 const mockFetchCodexQuota = vi.hoisted(() => vi.fn());
 const mockRunCodexLogin = vi.hoisted(() => vi.fn());
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockSyncCredentialQuotaCooldown = vi.hoisted(() => vi.fn());
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(async () => true),
 }));
@@ -30,6 +31,14 @@ vi.mock("../services/index.js", () => ({
   credentialService: () => mockCredentialService,
   logActivity: mockLogActivity,
 }));
+
+vi.mock("../services/credentials.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/credentials.js")>("../services/credentials.js");
+  return {
+    ...actual,
+    syncCredentialQuotaCooldown: mockSyncCredentialQuotaCooldown,
+  };
+});
 
 import { errorHandler } from "../middleware/index.js";
 import { activeCredentialCooldownUntil, credentialRoutes } from "../routes/credentials.js";
@@ -78,6 +87,8 @@ describe("credential quota route caching", () => {
     mockFetchCodexQuota.mockReset();
     mockRunCodexLogin.mockReset();
     mockLogActivity.mockReset();
+    mockSyncCredentialQuotaCooldown.mockReset();
+    mockSyncCredentialQuotaCooldown.mockResolvedValue(null);
     mockAccessService.canUser.mockClear();
     mockCredentialService.list.mockReset();
     mockCredentialService.getDecryptedPayload.mockReset();
@@ -137,6 +148,94 @@ describe("credential quota route caching", () => {
       ok: true,
       cooldownUntil: null,
       cooldownReason: null,
+    });
+  });
+
+  it("reports open-ended quota depletion as blocked until health is confirmed", async () => {
+    const app = createApp();
+    mockCredentialService.list.mockResolvedValue([
+      claudeCredential("claude-open-ended-quota", {
+        quotaCooldownUntil: null,
+        quotaReason: "quota_depleted:claude_oauth",
+      }),
+    ]);
+    // An empty/partial success is not authoritative enough to clear the block.
+    mockFetchClaudeQuota.mockResolvedValue([]);
+
+    const response = await request(app)
+      .get("/api/companies/company-1/credentials/quota-windows?refresh=true")
+      .expect(200);
+
+    expect(response.body[0]).toMatchObject({
+      ok: true,
+      quotaBlocked: true,
+      quotaCooldownUntil: null,
+      quotaReason: "quota_depleted:claude_oauth",
+    });
+  });
+
+  it("reports the durable circuit when a cached sample is older than persisted quota state", async () => {
+    const app = createApp();
+    mockCredentialService.list.mockResolvedValue([claudeCredential("claude-stale-healthy-cache")]);
+    mockFetchClaudeQuota.mockResolvedValue([{
+      label: "Current session",
+      usedPercent: 20,
+      resetsAt: "2099-04-20T15:00:00.000Z",
+      valueLabel: null,
+      detail: null,
+    }]);
+
+    await request(app).get("/api/companies/company-1/credentials/quota-windows").expect(200);
+    mockSyncCredentialQuotaCooldown.mockResolvedValueOnce({
+      quotaCooldownUntil: new Date("2099-04-20T15:00:00.000Z"),
+      quotaSampledAt: new Date("2030-04-20T15:00:00.000Z"),
+      quotaReason: "quota_depleted:claude_oauth",
+    });
+
+    const response = await request(app)
+      .get("/api/companies/company-1/credentials/quota-windows")
+      .expect(200);
+
+    expect(mockFetchClaudeQuota).toHaveBeenCalledTimes(1);
+    expect(response.body[0]).toMatchObject({
+      ok: true,
+      quotaBlocked: true,
+      quotaCooldownUntil: "2099-04-20T15:00:00.000Z",
+      quotaReason: "quota_depleted:claude_oauth",
+    });
+  });
+
+  it("does not display a partial healthy sample as clearing a preserved future circuit", async () => {
+    const app = createApp();
+    mockCredentialService.list.mockResolvedValue([
+      claudeCredential("claude-partial-preserved", {
+        quotaCooldownUntil: new Date("2099-04-20T15:00:00.000Z"),
+        quotaSampledAt: new Date("2030-04-20T15:00:00.000Z"),
+        quotaReason: "quota_depleted:claude_oauth",
+      }),
+    ]);
+    mockFetchClaudeQuota.mockResolvedValue([{
+      label: "Current session",
+      usedPercent: 20,
+      resetsAt: "2099-04-20T15:00:00.000Z",
+      valueLabel: null,
+      detail: null,
+    }]);
+    mockSyncCredentialQuotaCooldown.mockResolvedValueOnce({
+      quotaCooldownUntil: new Date("2099-04-20T15:00:00.000Z"),
+      quotaSampledAt: new Date("2030-04-20T16:00:00.000Z"),
+      quotaReason: "quota_depleted:claude_oauth",
+    });
+
+    const response = await request(app)
+      .get("/api/companies/company-1/credentials/quota-windows?refresh=true")
+      .expect(200);
+
+    expect(response.body[0]).toMatchObject({
+      ok: true,
+      quotaBlocked: true,
+      quotaCooldownUntil: "2099-04-20T15:00:00.000Z",
+      quotaReason: "quota_depleted:claude_oauth",
     });
   });
 

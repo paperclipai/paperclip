@@ -32,8 +32,8 @@ const mockAdapterExecute = vi.hoisted(() =>
     signal: null,
     timedOut: false,
     errorMessage: "You have reached your usage limit. Try again at 8:15 AM.",
-    errorCode: "codex_transient_upstream",
-    errorFamily: "transient_upstream",
+    errorCode: "provider_quota",
+    errorFamily: "provider_quota",
     retryNotBefore: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
     provider: "openai",
     model: "gpt-5-codex",
@@ -112,11 +112,15 @@ async function waitForCredentialStatesWithCooldown(
         id: providerCredentials.id,
         cooldownUntil: providerCredentials.cooldownUntil,
         cooldownReason: providerCredentials.cooldownReason,
+        quotaCooldownUntil: providerCredentials.quotaCooldownUntil,
+        quotaReason: providerCredentials.quotaReason,
         consecutiveFailureCount: providerCredentials.consecutiveFailureCount,
       })
       .from(providerCredentials)
       .where(inArray(providerCredentials.id, credentialIds));
-    if (states.some((credential) => credential.cooldownUntil !== null)) return states;
+    if (states.some((credential) => (
+      credential.cooldownUntil !== null || credential.quotaCooldownUntil !== null
+    ))) return states;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   return db
@@ -124,6 +128,8 @@ async function waitForCredentialStatesWithCooldown(
       id: providerCredentials.id,
       cooldownUntil: providerCredentials.cooldownUntil,
       cooldownReason: providerCredentials.cooldownReason,
+      quotaCooldownUntil: providerCredentials.quotaCooldownUntil,
+      quotaReason: providerCredentials.quotaReason,
       consecutiveFailureCount: providerCredentials.consecutiveFailureCount,
     })
     .from(providerCredentials)
@@ -260,19 +266,19 @@ describeEmbeddedPostgres("heartbeat credential failover", () => {
 
     expect(finished).toMatchObject({
       status: "failed",
-      errorCode: "codex_transient_upstream",
+      errorCode: "provider_quota",
     });
 
     const credentialStates = await waitForCredentialStatesWithCooldown(db, [first.id, second.id]);
-    const cooledCredentials = credentialStates.filter((credential) => credential.cooldownUntil !== null);
+    const cooledCredentials = credentialStates.filter((credential) => credential.quotaCooldownUntil !== null);
     expect(cooledCredentials).toHaveLength(1);
     const cooledCredential = cooledCredentials[0];
     const alternateCredentialId = cooledCredential.id === first.id ? second.id : first.id;
     expect(cooledCredential).toMatchObject({
-      cooldownReason: "codex_transient_upstream",
+      quotaReason: "provider_quota",
       consecutiveFailureCount: 1,
     });
-    expect(cooledCredential.cooldownUntil).toBeInstanceOf(Date);
+    expect(cooledCredential.quotaCooldownUntil).toBeInstanceOf(Date);
 
     const retryRun = await waitForRetryRun(db, queued!.id);
 
@@ -302,5 +308,124 @@ describeEmbeddedPostgres("heartbeat credential failover", () => {
       .from(agentCredentials)
       .where(eq(agentCredentials.agentId, agentId));
     expect(joinRows.map((row) => row.credentialId).sort()).toEqual([first.id, second.id].sort());
+  });
+
+  it("does not dispatch the adapter when every assigned credential is already cooling down", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const svc = credentialService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip Exhausted Pool",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+
+    const first = await svc.create(companyId, {
+      name: "codex-cooling-1",
+      type: "codex_oauth",
+      credential: { accessToken: "codex-oauth-access-token-1" },
+    });
+    const second = await svc.create(companyId, {
+      name: "codex-cooling-2",
+      type: "codex_oauth",
+      credential: { accessToken: "codex-oauth-access-token-2" },
+    });
+    expect((await svc.setForAgent(agentId, [first.id, second.id])).ok).toBe(true);
+    const resetAt = new Date(Date.now() + 60 * 60 * 1000);
+    await db
+      .update(providerCredentials)
+      .set({ cooldownUntil: resetAt, cooldownReason: "provider_quota" })
+      .where(inArray(providerCredentials.id, [first.id, second.id]));
+
+    const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(queued).toBeTruthy();
+    await heartbeat.resumeQueuedRuns();
+    const finished = await waitForRunToFinish(heartbeat, queued!.id);
+
+    expect(finished).toMatchObject({
+      status: "failed",
+      errorCode: "provider_quota",
+    });
+    expect(finished?.resultJson).toMatchObject({
+      errorFamily: "provider_quota",
+      credentialPoolUnavailable: {
+        nextEligibleAt: resetAt.toISOString(),
+        pools: [{
+          type: "codex_oauth",
+          reason: "quota_depleted",
+        }],
+      },
+    });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    const retryRun = await waitForRetryRun(db, queued!.id);
+    expect(retryRun).toMatchObject({
+      status: "scheduled_retry",
+      scheduledRetryReason: "transient_failure",
+    });
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      providerQuotaRetryNotBefore: resetAt.toISOString(),
+    });
+  });
+
+  it("allows an explicit runtime API key to override a depleted managed OAuth pool", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const svc = credentialService(db);
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip Explicit Auth Override",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexOverride",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: { env: { OPENAI_API_KEY: "sk-explicit-runtime-key" } },
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    const managedOAuth = await svc.create(companyId, {
+      name: "codex-depleted-managed",
+      type: "codex_oauth",
+      credential: { accessToken: "codex-depleted-managed-token" },
+    });
+    expect((await svc.setForAgent(agentId, [managedOAuth.id])).ok).toBe(true);
+    await db
+      .update(providerCredentials)
+      .set({
+        quotaCooldownUntil: new Date(Date.now() + 60 * 60 * 1000),
+        quotaSampledAt: new Date(),
+        quotaReason: "provider_quota",
+      })
+      .where(eq(providerCredentials.id, managedOAuth.id));
+
+    const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(queued).toBeTruthy();
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToFinish(heartbeat, queued!.id);
+
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
   });
 });
