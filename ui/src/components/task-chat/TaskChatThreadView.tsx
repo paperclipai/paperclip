@@ -138,7 +138,7 @@ export function TaskChatThreadView({
   scroll = true,
 }: TaskChatThreadViewProps) {
   const body = (
-    <div className={cn("mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-3 px-4 py-4", className)}>
+    <div className={cn("mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-5 px-4 py-4", className)}>
       {header ? (
         <div className="flex flex-col gap-6 pb-2" data-testid="task-chat-thread-header">
           {header}
