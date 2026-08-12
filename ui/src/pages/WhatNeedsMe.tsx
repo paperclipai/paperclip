@@ -16,6 +16,7 @@ import {
   ATTENTION_AGING_DAYS,
   ATTENTION_STALE_DAYS,
   attentionIsAging,
+  attentionIsLowImpactBlocker,
   attentionIsStale,
   buildAttentionFilterOptions,
   defaultAttentionFilterState,
@@ -114,6 +115,7 @@ export function WhatNeedsMe() {
   const [dismissedOpen, setDismissedOpen] = useState(false);
   const [agingOpen, setAgingOpen] = useState(false);
   const [staleOpen, setStaleOpen] = useState(false);
+  const [lowImpactOpen, setLowImpactOpen] = useState(false);
   const [decidedOpen, setDecidedOpen] = useState(false);
   const [expiredOpen, setExpiredOpen] = useState(false);
 
@@ -245,8 +247,20 @@ export function WhatNeedsMe() {
     () => activeItems.filter((item) => !attentionIsAging(item) && attentionIsStale(item, now)),
     [activeItems, now],
   );
+  // Zero-impact blockers (block 0 downstream tasks) fold off the live desk into
+  // their own curtain — stuck, but not on anyone's critical path.
+  const lowImpactItems = useMemo(
+    () => activeItems.filter((item) => !attentionIsAging(item) && attentionIsLowImpactBlocker(item)),
+    [activeItems],
+  );
   const deskItems = useMemo(
-    () => activeItems.filter((item) => !attentionIsAging(item) && !attentionIsStale(item, now)),
+    () =>
+      activeItems.filter(
+        (item) =>
+          !attentionIsAging(item)
+          && !attentionIsStale(item, now)
+          && !attentionIsLowImpactBlocker(item),
+      ),
     [activeItems, now],
   );
   const snoozedItems = useMemo(
@@ -745,6 +759,35 @@ export function WhatNeedsMe() {
                 Review decisions idle {ATTENTION_STALE_DAYS}+ days — folded off the desk so blockers and fresh items stay on top. Blockers never fold; reopen any you still want surfaced.
               </p>
               {staleItems.map((item) => (
+                <AgingItemRow
+                  key={item.id}
+                  item={item}
+                  companyId={selectedCompanyId}
+                  now={now}
+                  agentMap={agentMap}
+                  agents={agents}
+                  currentUserId={currentUserId}
+                  expanded={expandedId === item.id}
+                  onToggleExpand={handleToggleExpand}
+                  onDismiss={handleDismiss}
+                  onSnooze={handleSnooze}
+                  onTrain={handleTrain}
+                />
+              ))}
+            </Curtain>
+          )}
+
+          {lowImpactItems.length > 0 && (
+            <Curtain
+              label="Low-impact blockers"
+              count={lowImpactItems.length}
+              open={lowImpactOpen}
+              onToggle={() => setLowImpactOpen((prev) => !prev)}
+            >
+              <p className="text-xs text-muted-foreground">
+                Blocked but blocking 0 downstream tasks — folded off the desk so blockers that hold up real work stay on top. Reopen any you still want surfaced.
+              </p>
+              {lowImpactItems.map((item) => (
                 <AgingItemRow
                   key={item.id}
                   item={item}

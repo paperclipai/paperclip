@@ -15,6 +15,7 @@ import {
 import type { Agent, AttentionDetailImage, AttentionItem } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { accessApi } from "../api/access";
+import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { useToastActions } from "../context/ToastContext";
@@ -207,6 +208,14 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
         <div className="flex flex-wrap items-center gap-2 @xl:justify-end">
           {showCompact && (
             <CompactDecisionActions item={item} companyId={companyId} />
+          )}
+
+          {item.sourceKind === "agent_error_alert" && (
+            <AgentErrorActions item={item} companyId={companyId} />
+          )}
+
+          {item.sourceKind === "blocker_attention" && item.decisionVerbs.some((v) => v.id === "nudge") && (
+            <BlockerActions item={item} companyId={companyId} agents={agents ?? []} />
           )}
 
           {showOpen && (
@@ -618,6 +627,167 @@ function CompactDecisionActions({
         </Button>
       ))}
     </div>
+  );
+}
+
+/**
+ * Agent-error rows carry a real one-click fix — clear the error so the agent
+ * picks work back up — instead of a bare deep link. The attention feed already
+ * hands us the agent id as `subject.id`, so no extra fetch. Mirrors
+ * CompactDecisionActions' 409-is-a-sync-gap handling: if the agent left error
+ * state out-of-band, refetch and clear the row calmly.
+ */
+function AgentErrorActions({ item, companyId }: { item: AttentionItem; companyId: string }) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
+  const clear = useMutation<unknown, Error, void>({
+    mutationFn: () => agentsApi.clearError(item.subject.id, companyId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
+      pushToast({ title: "Error cleared", body: "The agent can pick work back up.", tone: "success" });
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "";
+      const status = (error as { status?: number } | null)?.status;
+      if (status === 409 || /already|not in error/i.test(message)) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
+        pushToast({ title: "Already handled", body: "This agent left error state — clearing it from your queue.", tone: "info" });
+        return;
+      }
+      pushToast({ title: "Could not clear error", body: message || "Please try again.", tone: "error" });
+    },
+  });
+  return (
+    <Button
+      type="button"
+      variant="default"
+      size="xs"
+      className={cn(ACTION_BTN, "min-w-0")}
+      disabled={clear.isPending}
+      onClick={(event) => {
+        event.stopPropagation();
+        clear.mutate();
+      }}
+    >
+      {clear.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+      Clear error
+    </Button>
+  );
+}
+
+/**
+ * Blocked-dependency rows carry two safe, real actions the feed only *names*
+ * via inert `decisionVerbs`: Nudge (wake the stalled owner agent) and Reassign
+ * (route the stuck issue to a live agent). Both fire the underlying mutations
+ * directly — blocker_attention has no server-side verb resolver — mirroring
+ * AgentErrorActions. "Unblock" is deliberately absent: the only status-reopen
+ * path that respects the blocker graph silently no-ops while real blockers stay
+ * open, so it stays a deep link (Open) to the issue's own guarded surface.
+ *
+ * Rendered only for the agent-stall shape of blocker card (the one that carries
+ * a `nudge` verb) — a human-owned directly-blocked issue needs real blocker
+ * resolution on its own page, not a reassign that leaves it blocked.
+ */
+function BlockerActions({ item, companyId, agents }: { item: AttentionItem; companyId: string; agents: Agent[] }) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
+  const assigneeAgentId =
+    typeof item.subject.metadata?.assigneeAgentId === "string" ? item.subject.metadata.assigneeAgentId : null;
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
+  // Live agents you can hand work to — same filter as the triage route-to-agent
+  // picker, minus the current owner.
+  const assignable = agents.filter((a) => a.status !== "terminated" && a.id !== assigneeAgentId);
+
+  const nudge = useMutation<unknown, Error, void>({
+    mutationFn: () => {
+      if (!assigneeAgentId) throw new Error("No agent owner to nudge.");
+      return agentsApi.wakeup(
+        assigneeAgentId,
+        { source: "on_demand", triggerDetail: "ping", reason: "Nudged from the Decisions desk." },
+        companyId,
+      );
+    },
+    onSuccess: () => {
+      invalidate();
+      pushToast({ title: "Nudged", body: "Woke the owner — it should pick the work back up.", tone: "success" });
+    },
+    onError: (error) => {
+      pushToast({ title: "Could not nudge", body: error instanceof Error ? error.message : "Please try again.", tone: "error" });
+    },
+  });
+
+  const reassign = useMutation<unknown, Error, string>({
+    mutationFn: (agentId: string) =>
+      issuesApi.update(item.subject.id, { comment: "Reassigned from the Decisions desk.", assigneeAgentId: agentId }),
+    onSuccess: (_result, agentId) => {
+      invalidate();
+      const name = agents.find((a) => a.id === agentId)?.name ?? "the new owner";
+      pushToast({ title: "Reassigned", body: `Routed to ${name}.`, tone: "success" });
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "";
+      const status = (error as { status?: number } | null)?.status;
+      if (status === 409 || /already/i.test(message)) {
+        invalidate();
+        pushToast({ title: "Already handled", body: "This resolved elsewhere — clearing it from your queue.", tone: "info" });
+        return;
+      }
+      pushToast({ title: "Could not reassign", body: message || "Please try again.", tone: "error" });
+    },
+  });
+
+  const busy = nudge.isPending || reassign.isPending;
+
+  return (
+    <>
+      {assigneeAgentId && (
+        <Button
+          type="button"
+          variant="outline"
+          size="xs"
+          className={cn(ACTION_BTN, "min-w-0")}
+          disabled={busy}
+          onClick={(event) => {
+            event.stopPropagation();
+            nudge.mutate();
+          }}
+        >
+          {nudge.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+          Nudge
+        </Button>
+      )}
+      {assignable.length > 0 && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              className={cn(ACTION_BTN, "min-w-0")}
+              disabled={busy}
+              onClick={(event) => event.stopPropagation()}
+            >
+              {reassign.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+              Reassign
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="max-h-72 overflow-y-auto">
+            {assignable.map((a) => (
+              <DropdownMenuItem
+                key={a.id}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  reassign.mutate(a.id);
+                }}
+              >
+                {a.name}
+                {a.role ? <span className="ml-2 text-xs text-muted-foreground">{a.role}</span> : null}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+    </>
   );
 }
 

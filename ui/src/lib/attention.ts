@@ -417,6 +417,20 @@ export function attentionIsStale(item: AttentionItem, now: number): boolean {
   return attentionKind(item) === "review" && attentionIdleDays(item, now) >= ATTENTION_STALE_DAYS;
 }
 
+/**
+ * A blocker that blocks zero downstream work is stuck but not on anyone's
+ * critical path — the server's own subtitle reads "Blocks 0 tasks". Fold these
+ * into a "Low-impact" curtain so real blockers and fresh decisions own the
+ * desk. Only the terminal-blocker source sets `blockedTaskCount`; a
+ * directly-blocked, human-owned issue (no count) is genuinely actionable and
+ * never folds.
+ */
+export function attentionIsLowImpactBlocker(item: AttentionItem): boolean {
+  if (item.sourceKind !== "blocker_attention") return false;
+  const detail = item.detail;
+  return detail?.kind === "blocker" && detail.blockedTaskCount === 0;
+}
+
 // ---------------------------------------------------------------------------
 // Decide-by control (triage strip) — the segmented options an operator/agent
 // picks from. `date` is handled separately by a date input.
