@@ -34,7 +34,7 @@ import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { resolveArchivedCompanyBounce, shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
-import { useToastActions } from "../context/ToastContext";
+import { useOptionalToastActions } from "../context/ToastContext";
 import {
   applyMainContentScrollTop,
   NavigationScrollMemory,
@@ -95,7 +95,8 @@ export function Layout() {
   } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialogActions();
   const { togglePanelVisible } = usePanel();
-  const { pushToast } = useToastActions();
+  // Optional: Layout also renders in harnesses without a ToastProvider.
+  const pushToast = useOptionalToastActions()?.pushToast ?? null;
   const {
     companies,
     loading: companiesLoading,
@@ -252,7 +253,7 @@ export function Layout() {
       companies,
     });
     if (bounce) {
-      pushToast({
+      pushToast?.({
         title: `${matchedCompany.name} is archived`,
         body: `Switched to ${bounce.name}.`,
         tone: "info",
