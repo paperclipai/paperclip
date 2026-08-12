@@ -235,6 +235,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS as RECOVERY_ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS, recoveryService } from "./recovery/service.js";
+import type { HostLoadSnapshot } from "./recovery/load-guard.js";
 import {
   buildIssueReviewPathLostIdempotencyKey,
   decideIssueReviewPathRecovery,
@@ -6508,6 +6509,13 @@ export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
   runtimeEnv?: Record<string, string | undefined>;
+  /** RBR-1013: injectable host-load reader passed through to recoveryService
+   * and productivityReviewService, so tests never implicitly read this
+   * process's real, possibly elevated, load average. */
+  readHostLoadSnapshot?: () => HostLoadSnapshot;
+  /** RBR-1013: injectable API p50 (ms) reader passed through to
+   * recoveryService and productivityReviewService. */
+  readApiP50Ms?: () => number | null;
 }
 
 type WorkspaceReadyCommentWriter = {
@@ -6642,7 +6650,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
-  const recovery = recoveryService(db, { enqueueWakeup });
+  const recovery = recoveryService(db, {
+    enqueueWakeup,
+    readHostLoadSnapshot: options.readHostLoadSnapshot,
+    readApiP50Ms: options.readApiP50Ms,
+  });
 
   function isPlanApprovalConfirmationPayload(payload: unknown) {
     const target = parseObject(parseObject(payload).target);
@@ -6862,7 +6874,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return interaction.id;
   }
 
-  const productivityReviews = productivityReviewService(db, { enqueueWakeup });
+  const productivityReviews = productivityReviewService(db, {
+    enqueueWakeup,
+    readApiP50Ms: options.readApiP50Ms,
+  });
   const taskWatchdogs = taskWatchdogService(db, { enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 

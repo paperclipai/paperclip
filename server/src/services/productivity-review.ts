@@ -21,6 +21,8 @@ import {
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { RECOVERY_ORIGIN_KINDS } from "./recovery/origins.js";
+import { apiLatencyTracker } from "./recovery/load-guard.js";
+import { resolveAgentJwtTtlSeconds } from "../agent-auth-jwt.js";
 
 export const PRODUCTIVITY_REVIEW_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.issueProductivityReview;
 export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 10;
@@ -33,6 +35,12 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS = 3;
 export const DEFAULT_PRODUCTIVITY_REVIEW_CREATION_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 1;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CONSECUTIVE_NO_ACTION_REVIEWS = 3;
+// RBR-1013 (RBR-977 scope item 4) — a "no comment" observation sampled while
+// the API itself was slow is unattributable to the agent: RBR-977 measured
+// `GET /api/agents/me` taking 53.2s and a single POST taking 101.4s under
+// load average 52.40 on 12 cores. Default matches the recovery load gate's
+// API latency threshold for the same reason (see recovery/load-guard.ts).
+export const DEFAULT_PRODUCTIVITY_REVIEW_API_P50_THRESHOLD_MS = 5_000;
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -48,7 +56,7 @@ type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 // result_json/context_snapshot for up to MAX_RUNS_FOR_STREAK runs per issue.
 type ProductivityRunSample = Pick<
   HeartbeatRunRow,
-  "id" | "agentId" | "status" | "livenessState" | "createdAt" | "nextAction" | "usageJson"
+  "id" | "agentId" | "status" | "livenessState" | "createdAt" | "startedAt" | "finishedAt" | "nextAction" | "usageJson"
 >;
 type ProductivityReviewTrigger = "no_comment_streak" | "long_active_duration" | "high_churn";
 
@@ -63,6 +71,29 @@ type ProductivityReviewThresholds = {
   creationWindowMs: number;
   maxCreationsPerWindow: number;
   maxConsecutiveNoActionReviews: number;
+  /** RBR-1013: `no_comment_streak` is suppressed rather than reviewed when
+   * the sample window's API p50 exceeds this. */
+  apiP50ThresholdMs: number;
+  /** RBR-1013: `no_comment_streak` is suppressed when any streak run's
+   * (finishedAt - startedAt) exceeds this — the run outlived the agent JWT
+   * it was minted with and could not have posted a closing comment even if
+   * the API had been instantaneous. */
+  jwtTtlMs: number;
+};
+
+/** RBR-1013 (RBR-977 scope item 4) — why a `no_comment_streak` observation
+ * was suppressed instead of turned into a review issue. Both causes are
+ * unattributable to the agent: the API was measurably slow, or the run's
+ * own credential expired before it could act. A third cause named in the
+ * ticket — "killed-mid-flight" — is already covered by the existing
+ * liveness-state exclusion of non-terminal/killed runs from the streak
+ * count, so it does not need a separate reason here. */
+export type NoCommentStreakSuppressionReason = "degraded_window_api_latency" | "run_credential_expired";
+
+export type NoCommentStreakSuppression = {
+  reasons: NoCommentStreakSuppressionReason[];
+  apiP50Ms: number | null;
+  credentialExpiredRunIds: string[];
 };
 
 type ProductivityReviewEvidence = {
@@ -190,7 +221,50 @@ function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): Pro
       overrides?.maxConsecutiveNoActionReviews ?? DEFAULT_PRODUCTIVITY_REVIEW_MAX_CONSECUTIVE_NO_ACTION_REVIEWS,
       DEFAULT_PRODUCTIVITY_REVIEW_MAX_CONSECUTIVE_NO_ACTION_REVIEWS,
     ),
+    apiP50ThresholdMs: readPositiveInteger(
+      overrides?.apiP50ThresholdMs ?? DEFAULT_PRODUCTIVITY_REVIEW_API_P50_THRESHOLD_MS,
+      DEFAULT_PRODUCTIVITY_REVIEW_API_P50_THRESHOLD_MS,
+    ),
+    jwtTtlMs: readPositiveInteger(
+      overrides?.jwtTtlMs ?? resolveAgentJwtTtlSeconds() * 1000,
+      resolveAgentJwtTtlSeconds() * 1000,
+    ),
   };
+}
+
+/**
+ * RBR-1013 (RBR-977 scope item 4) — decide whether a `no_comment_streak`
+ * observation is attributable to the agent at all. A completed run with no
+ * comment has at least three non-agent causes: the closing POST was too
+ * slow to return, the run's own credential expired before it could act, or
+ * the run was killed mid-flight (already excluded upstream by the liveness
+ * filter feeding `latestRuns`). This function covers the first two.
+ *
+ * `apiP50Ms` is read once at evidence-collection time (the sample window is
+ * "now", matching what the agent would have experienced while trying to
+ * comment) rather than reconstructed after the fact — there is no per-run
+ * historical latency record, only the live process-local tracker.
+ */
+export function evaluateNoCommentStreakSuppression(input: {
+  streakRuns: ProductivityRunSample[];
+  apiP50Ms: number | null;
+  thresholds: ProductivityReviewThresholds;
+}): NoCommentStreakSuppression {
+  const reasons: NoCommentStreakSuppressionReason[] = [];
+  if (input.apiP50Ms !== null && input.apiP50Ms > input.thresholds.apiP50ThresholdMs) {
+    reasons.push("degraded_window_api_latency");
+  }
+  const credentialExpiredRunIds = input.streakRuns
+    .filter((run) => {
+      if (!run.startedAt || !run.finishedAt) return false;
+      const durationMs = run.finishedAt.getTime() - run.startedAt.getTime();
+      return durationMs > input.thresholds.jwtTtlMs;
+    })
+    .map((run) => run.id);
+  if (credentialExpiredRunIds.length > 0) {
+    reasons.push("run_credential_expired");
+  }
+  return { reasons, apiP50Ms: input.apiP50Ms, credentialExpiredRunIds };
 }
 
 function choosePrimaryTrigger(input: {
@@ -214,9 +288,30 @@ function formatTrigger(trigger: ProductivityReviewTrigger) {
   return "Long active duration";
 }
 
-export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: EnqueueWakeup }) {
+export function productivityReviewService(
+  db: Db,
+  deps?: {
+    enqueueWakeup?: EnqueueWakeup;
+    /** RBR-1013: injectable API p50 (ms) reader. Defaults to the
+     * process-wide `apiLatencyTracker`, scoped to the caller-supplied
+     * window (see `collectEvidence` — the window is bounded to the
+     * no-comment streak's own time span, not the tracker's full six-hour
+     * retention), anchored at the caller-supplied `at` (the streak's own
+     * end time, not "now" — see Greptile P1 on PR #11028: reconciliation
+     * can run well after the streak's newest run finished, and unrelated
+     * same-company latency in that gap must not retroactively explain a
+     * streak it never overlapped), and scoped to the caller-supplied
+     * `companyId` — a shared multi-tenant instance must never let one
+     * company's slow API traffic suppress another company's genuine
+     * no-comment streak. */
+    readApiP50Ms?: (windowMs?: number, companyId?: string, at?: number) => number | null;
+  },
+) {
   const issuesSvc = issueService(db);
   const budgets = budgetService(db);
+  const readApiP50Ms =
+    deps?.readApiP50Ms ??
+    ((windowMs?: number, companyId?: string, at?: number) => apiLatencyTracker.getP50(windowMs, at, companyId));
 
   async function getCompanyIssuePrefix(companyId: string) {
     return db
@@ -459,6 +554,8 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         status: heartbeatRuns.status,
         livenessState: heartbeatRuns.livenessState,
         createdAt: heartbeatRuns.createdAt,
+        startedAt: heartbeatRuns.startedAt,
+        finishedAt: heartbeatRuns.finishedAt,
         nextAction: heartbeatRuns.nextAction,
         usageJson: heartbeatRuns.usageJson,
       })
@@ -546,7 +643,32 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       ? Math.max(0, now.getTime() - activeStartedAt.getTime())
       : null;
 
-    const noComment = noCommentStreak >= thresholds.noCommentStreakRuns;
+    // RBR-1013 (RBR-977 scope item 4) — before treating a no-comment streak
+    // as attributable to the agent, check whether it is explainable by API
+    // degradation or credential expiry. Scoped to the runs that make up the
+    // streak itself, not the whole `latestRuns` sample: a run outside the
+    // streak having run long is irrelevant to *this* observation.
+    const streakRuns = terminalRuns.slice(0, noCommentStreak);
+    // Bound the API-latency sample to the streak's own time span: from the
+    // oldest streak run's start through the newest streak run's finish
+    // (not "now") rather than the tracker's full six-hour retention —
+    // otherwise latency from an unrelated request (different issue,
+    // different company, a period before this streak even started, or —
+    // Greptile P1 on PR #11028 — a period *after* the streak's last run
+    // finished but before this reconciliation pass happened to run) could
+    // suppress a genuine no-comment streak it never overlapped.
+    const oldestStreakRun = streakRuns[streakRuns.length - 1];
+    const newestStreakRun = streakRuns[0];
+    const streakWindowEndAt = newestStreakRun
+      ? (newestStreakRun.finishedAt ?? newestStreakRun.createdAt).getTime()
+      : now.getTime();
+    const streakWindowMs = oldestStreakRun
+      ? Math.max(1, streakWindowEndAt - (oldestStreakRun.startedAt ?? oldestStreakRun.createdAt).getTime())
+      : undefined;
+    const apiP50Ms = readApiP50Ms(streakWindowMs, sourceIssue.companyId, streakWindowEndAt);
+    const suppression = evaluateNoCommentStreakSuppression({ streakRuns, apiP50Ms, thresholds });
+    const noCommentSuppressed = noCommentStreak >= thresholds.noCommentStreakRuns && suppression.reasons.length > 0;
+    const noComment = noCommentStreak >= thresholds.noCommentStreakRuns && !noCommentSuppressed;
     const longActive = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
     const highChurn =
       runCountLastHour >= thresholds.highChurnHourly ||
@@ -554,7 +676,22 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       runCountLastSixHours >= thresholds.highChurnSixHours ||
       assigneeRunCommentCountLastSixHours >= thresholds.highChurnSixHours;
     const trigger = choosePrimaryTrigger({ noComment, longActive, highChurn });
-    if (!trigger) return null;
+    if (!trigger) {
+      if (noCommentSuppressed) {
+        logger.info(
+          {
+            issueId: sourceIssue.id,
+            agentId: sourceAgent.id,
+            noCommentStreak,
+            suppressionReasons: suppression.reasons,
+            apiP50Ms: suppression.apiP50Ms,
+            credentialExpiredRunIds: suppression.credentialExpiredRunIds,
+          },
+          "productivity review no_comment_streak suppressed: unattributable to agent",
+        );
+      }
+      return null;
+    }
 
     const triggerReasons: string[] = [];
     if (noComment) triggerReasons.push(`${noCommentStreak} consecutive completed issue-linked runs had no run-created issue comment`);

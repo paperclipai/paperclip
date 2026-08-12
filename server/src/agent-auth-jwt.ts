@@ -42,7 +42,7 @@ function jwtConfig() {
 
   return {
     secret,
-    ttlSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 60 * 60),
+    ttlSeconds: resolveAgentJwtTtlSeconds(),
     issuer: process.env.PAPERCLIP_AGENT_JWT_ISSUER ?? "paperclip",
     audience: process.env.PAPERCLIP_AGENT_JWT_AUDIENCE ?? "paperclip-api",
     // The control-plane instance this process belongs to. The live plane runs as
@@ -53,6 +53,16 @@ function jwtConfig() {
     instanceId: resolvePaperclipInstanceId(),
     disableLegacyFallback: parseBooleanEnv(process.env.PAPERCLIP_AGENT_JWT_DISABLE_LEGACY_FALLBACK),
   };
+}
+
+/**
+ * RBR-1013 — exposed so the productivity-review monitor can tell whether a
+ * completed run's agent JWT could have expired before it finished (and
+ * therefore before it could have posted its closing comment), independent
+ * of API latency. Same default (1h) and env override as the JWT itself.
+ */
+export function resolveAgentJwtTtlSeconds(): number {
+  return parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 60 * 60);
 }
 
 /**
