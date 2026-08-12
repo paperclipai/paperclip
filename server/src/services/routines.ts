@@ -2158,7 +2158,12 @@ export function routineService(
       return createdRoutine;
     },
 
-    update: async (id: string, patch: UpdateRoutine, actor: Actor): Promise<Routine | null> => {
+    update: async (
+      id: string,
+      patch: UpdateRoutine,
+      actor: Actor,
+      options: { replaceResponsibleUser?: boolean } = {},
+    ): Promise<Routine | null> => {
       const existing = await getRoutineById(id);
       if (!existing) return null;
       const nextProjectId = patch.projectId === undefined ? existing.projectId : patch.projectId;
@@ -2250,7 +2255,9 @@ export function routineService(
           activityGateScope: patch.activityGateScope ?? locked.activityGateScope,
           variables: nextVariables,
           env: nextEnv,
-          responsibleUserId: locked.responsibleUserId ?? responsibleUserId,
+          responsibleUserId: options.replaceResponsibleUser
+            ? responsibleUserId
+            : locked.responsibleUserId ?? responsibleUserId,
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
         };
