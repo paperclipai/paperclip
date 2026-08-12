@@ -540,6 +540,37 @@ describe("realizeExecutionWorkspace", () => {
     expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(expectedRemoteHead);
   });
 
+  it("git-initializes a project_primary workspace so git-sensitive adapters can launch (TSMC-20801)", async () => {
+    const plainDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-project-primary-"));
+    try {
+      // Precondition: a project_primary (shared) workspace is a plain, non-git directory.
+      expect(existsSync(path.join(plainDir, ".git"))).toBe(false);
+
+      const workspace = await realizeExecutionWorkspace({
+        base: {
+          baseCwd: plainDir,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: null,
+        },
+        config: { workspaceStrategy: { type: "project_primary" } },
+        issue: { id: "issue-1", identifier: "TSR-9999", title: "Daily scan" },
+        agent: { id: "agent-1", name: "JobSourcer-Codex", companyId: "company-1" },
+      });
+
+      expect(workspace.strategy).toBe("project_primary");
+      expect(workspace.cwd).toBe(plainDir);
+      expect(workspace.warnings).toEqual([]);
+      // The fix: the shared workspace is now a git repo, so the git-sensitive
+      // adapter guard (assertGitSensitiveAdapterWorkspaceValid) accepts it.
+      expect((await fs.stat(path.join(plainDir, ".git"))).isDirectory()).toBe(true);
+    } finally {
+      await fs.rm(plainDir, { recursive: true, force: true });
+    }
+  });
+
   it("creates and reuses a git worktree for an issue-scoped branch", async () => {
     const repoRoot = await createTempRepo();
 

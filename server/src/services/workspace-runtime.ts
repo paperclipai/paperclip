@@ -2670,6 +2670,41 @@ async function resolveGitRepoRootForWorkspaceCleanup(
   return path.dirname(resolvedGitDir);
 }
 
+/**
+ * Git-sensitive local adapters (codex_local, claude_local — see
+ * GIT_SENSITIVE_LOCAL_ADAPTER_TYPES / assertGitSensitiveAdapterWorkspaceValid)
+ * refuse to launch in a directory without .git metadata. A project_primary
+ * (shared) workspace is realized as a plain directory, so those adapters failed
+ * with "expected a git workspace ... has no .git metadata" whenever an issue was
+ * bound to such a project (TSMC-20801). Initialize the shared workspace as a git
+ * repository so git-sensitive adapters can run there. Idempotent: a directory
+ * that is already a git repo is left untouched. A failure is surfaced as a
+ * warning rather than aborting realization — a non-git adapter can still run.
+ */
+async function ensureProjectPrimaryGitRepo(cwd: string): Promise<string[]> {
+  if (!cwd) return [];
+  const alreadyGit = await fs
+    .stat(path.join(cwd, ".git"))
+    .then(() => true)
+    .catch(() => false);
+  if (alreadyGit) return [];
+  try {
+    await fs.mkdir(cwd, { recursive: true });
+    await runGit(["init"], cwd);
+    // A committable identity lets an adapter snapshot its own work inside the
+    // shared workspace without tripping git's "please tell me who you are" guard.
+    await runGit(["config", "user.email", "workspace@paperclip.local"], cwd).catch(() => undefined);
+    await runGit(["config", "user.name", "Paperclip Workspace"], cwd).catch(() => undefined);
+  } catch (error) {
+    return [
+      `Failed to initialize a git repository in project workspace "${cwd}": ${
+        error instanceof Error ? error.message : String(error)
+      }. Git-sensitive adapters may refuse to launch here.`,
+    ];
+  }
+  return [];
+}
+
 export async function realizeExecutionWorkspace(input: {
   db?: Db | null;
   base: ExecutionWorkspaceInput;
@@ -2684,13 +2719,14 @@ export async function realizeExecutionWorkspace(input: {
   const rawStrategy = parseObject(input.config.workspaceStrategy);
   const strategyType = asString(rawStrategy.type, "project_primary");
   if (strategyType !== "git_worktree") {
+    const projectPrimaryWarnings = await ensureProjectPrimaryGitRepo(input.base.baseCwd);
     return {
       ...input.base,
       strategy: "project_primary",
       cwd: input.base.baseCwd,
       branchName: null,
       worktreePath: null,
-      warnings: [],
+      warnings: projectPrimaryWarnings,
       created: false,
       baseRefSha: null,
     };
