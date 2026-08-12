@@ -1129,6 +1129,15 @@ describe("IssueDetail", () => {
 
   it("renders the full sub-task tree below the title in the chat center pane", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.list.mockResolvedValue([
+      createIssue({
+        id: "child-1",
+        parentId: "issue-1",
+        identifier: "PAP-2",
+        issueNumber: 2,
+        title: "Child task",
+      }),
+    ]);
 
     await act(async () => {
       root.render(
@@ -1155,6 +1164,26 @@ describe("IssueDetail", () => {
         showProgressSummary: true,
       }),
     );
+  });
+
+  it("hides the full sub-task tree when the task has no subtasks", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.list.mockResolvedValue([]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Sub-issues");
+    expect(mockIssuesListRender.mock.calls).not.toContainEqual([
+      expect.objectContaining({ isLoading: false }),
+    ]);
   });
 
   it("keeps the properties panel stable across unrelated chat-detail renders", async () => {

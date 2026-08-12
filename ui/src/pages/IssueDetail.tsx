@@ -2626,7 +2626,7 @@ export function IssueDetail() {
   // center-column section below the header.
   const subTasksTree = useMemo(
     () =>
-      taskChatShellEnabled && issue ? (
+      taskChatShellEnabled && issue && showRichSubIssuesSection ? (
         <IssuesList
           issues={childIssues}
           isLoading={childIssuesLoading}
@@ -2649,6 +2649,7 @@ export function IssueDetail() {
     [
       taskChatShellEnabled,
       issue,
+      showRichSubIssuesSection,
       childIssues,
       childIssuesLoading,
       agents,
