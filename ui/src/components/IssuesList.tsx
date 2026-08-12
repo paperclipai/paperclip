@@ -86,6 +86,7 @@ import { statusBadge } from "../lib/status-colors";
 import { workflowSort } from "../lib/workflow-sort";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
 import { entityStatusLabel } from "@/lib/entity-labels";
+import { useTranslation } from "@/i18n";
 import { deriveOriginatingActor, ISSUE_STATUSES, type Issue, type IssueStatus, type Project } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
 const ISSUE_SEARCH_DEBOUNCE_MS = 250;
@@ -703,6 +704,8 @@ export function IssuesList({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { i18n } = useTranslation();
+  const currentLocale = i18n.resolvedLanguage ?? i18n.language;
   const { keyboardShortcutsEnabled } = useGeneralSettings();
   // Keyboard selection for the list view (mirrors the inbox). Hover moves the
   // selection only after real pointer movement, so keyboard-driven scrolling
@@ -1296,6 +1299,7 @@ export function IssuesList({
     issueTitleMap,
     companyUserLabelMap,
     projectById,
+    currentLocale,
   ]);
 
   // Flattened visible order (group headers, then tree DFS per group —
