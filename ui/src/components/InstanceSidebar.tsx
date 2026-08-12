@@ -7,6 +7,7 @@ import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
 import { queryKeys } from "@/lib/queryKeys";
 import { SIDEBAR_SCROLL_RESET_STATE } from "@/lib/navigation-scroll";
 import { SidebarNavItem } from "./SidebarNavItem";
+import { useTranslation } from "@/i18n";
 
 /**
  * Sandbox-provider-only plugins (e.g. E2B, exe.dev, Modal) have no per-plugin
@@ -21,6 +22,7 @@ function isSandboxProviderOnly(plugin: PluginRecord): boolean {
 }
 
 export function InstanceSidebar() {
+  const { t } = useTranslation();
   const { data: plugins } = useQuery({
     queryKey: queryKeys.plugins.all,
     queryFn: () => pluginsApi.list(),
@@ -33,14 +35,14 @@ export function InstanceSidebar() {
       <div className="flex items-center gap-2 px-3 h-12 shrink-0">
         <Settings className="h-4 w-4 text-muted-foreground shrink-0 ml-1" />
         <span className="flex-1 text-sm font-bold text-foreground truncate">
-          Instance Settings
+          {t("nav.instanceSettings", { defaultValue: "Instance settings" })}
         </span>
       </div>
 
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 px-3 py-2">
         <div className="flex flex-col gap-0.5">
           <SidebarNavItem to={`${INSTANCE_SETTINGS_PATH_PREFIX}/profile`} label="Profile" icon={UserRoundPen} end />
-          <SidebarNavItem to={`${INSTANCE_SETTINGS_PATH_PREFIX}/general`} label="General" icon={SlidersHorizontal} end />
+          <SidebarNavItem to={`${INSTANCE_SETTINGS_PATH_PREFIX}/general`} label={t("nav.general", { defaultValue: "General" })} icon={SlidersHorizontal} end />
           <SidebarNavItem to={`${INSTANCE_SETTINGS_PATH_PREFIX}/environments`} label="Environments" icon={MonitorCog} end />
           <SidebarNavItem to={`${INSTANCE_SETTINGS_PATH_PREFIX}/access`} label="Access" icon={Shield} end />
           <SidebarNavItem to={`${INSTANCE_SETTINGS_PATH_PREFIX}/heartbeats`} label="Heartbeats" icon={Clock3} end />
