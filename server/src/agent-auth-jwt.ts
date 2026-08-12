@@ -36,6 +36,19 @@ function parseBooleanEnv(value: string | undefined): boolean {
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
+/**
+ * Bounded window (seconds) during which an expired-but-validly-signed run JWT
+ * may still authenticate, provided the DB confirms the claimed heartbeat run
+ * is still `status='running'` (see verifyLocalAgentJwt's `allowExpired` option
+ * and actorMiddleware's grace path). This is defense-in-depth: it caps how
+ * long a run stuck on `status='running'` by an unrelated liveness/recovery bug
+ * could keep authenticating past its token's `exp`, independent of whatever
+ * that other bug's root cause turns out to be. See RENA-56176/RENA-56180.
+ */
+export function agentJwtGraceWindowSeconds(): number {
+  return parseNumber(process.env.PAPERCLIP_AGENT_JWT_GRACE_SECONDS, 24 * 60 * 60);
+}
+
 function jwtConfig() {
   const secret = process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim() || process.env.BETTER_AUTH_SECRET?.trim();
   if (!secret) return null;
@@ -154,7 +167,22 @@ export function createLocalAgentJwt(
   return `${signingInput}.${signature}`;
 }
 
-export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
+export interface VerifyLocalAgentJwtOptions {
+  /**
+   * When true, an otherwise-valid token whose `exp` has passed is not
+   * rejected outright — it is returned with `expired: true` so the caller
+   * (actorMiddleware's grace path) can decide whether to accept it based on
+   * independent, DB-backed evidence that the run is still live. Signature,
+   * issuer/audience, and instance checks are never skipped, regardless of
+   * this flag.
+   */
+  allowExpired?: boolean;
+}
+
+export function verifyLocalAgentJwt(
+  token: string,
+  options?: VerifyLocalAgentJwtOptions,
+): (LocalAgentJwtClaims & { expired: boolean }) | null {
   if (!token) return null;
   const config = jwtConfig();
   if (!config) return null;
@@ -216,7 +244,8 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   const companyId = claimedCompanyId;
 
   const now = Math.floor(Date.now() / 1000);
-  if (exp < now) return null;
+  const expired = exp < now;
+  if (expired && !options?.allowExpired) return null;
 
   const issuer = typeof claims.iss === "string" ? claims.iss : undefined;
   const audience = typeof claims.aud === "string" ? claims.aud : undefined;
@@ -245,5 +274,6 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
     ...(audience ? { aud: audience } : {}),
     ...(instanceClaim ? { instance_id: instanceClaim } : {}),
     jti: typeof claims.jti === "string" ? claims.jti : undefined,
+    expired,
   };
 }

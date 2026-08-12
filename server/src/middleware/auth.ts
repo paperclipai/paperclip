@@ -12,7 +12,7 @@ import {
   heartbeatRuns,
   instanceUserRoles,
 } from "@paperclipai/db";
-import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
+import { agentJwtGraceWindowSeconds, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
@@ -75,6 +75,33 @@ async function resolveLegacyRunResponsibleUserId(
     )
     .then((rows) => rows[0] ?? null);
   return normalizeOptionalString(run?.responsibleUserId);
+}
+
+/**
+ * DB-backed liveness check for the grace path: an expired-but-validly-signed
+ * run JWT is only accepted if `heartbeat_runs` still has a matching row with
+ * status='running' for the exact (run, agent, company) the token claims.
+ * Company/agent/status are re-checked here in JS (not just relied on via the
+ * SQL WHERE) so this stays correct even against a query layer that doesn't
+ * enforce the WHERE clause itself, mirroring the belt-and-braces checks
+ * already used elsewhere in this file (e.g. the agentRecord.companyId check).
+ */
+async function isHeartbeatRunLiveForGrace(
+  db: Db,
+  input: { companyId: string; agentId: string; runId: string },
+) {
+  if (!isUuidLike(input.runId)) return false;
+  const run = await db
+    .select({
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      status: heartbeatRuns.status,
+    })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, input.runId))
+    .then((rows) => rows[0] ?? null);
+  if (!run) return false;
+  return run.companyId === input.companyId && run.agentId === input.agentId && run.status === "running";
 }
 
 async function loadResponsibleUserMemberships(
@@ -154,6 +181,34 @@ async function auditAgentJwtRunHeaderMismatch(
     logger.warn(
       { err, companyId: input.companyId, agentId: input.agentId, claimRunId: input.claimRunId },
       "Failed to audit rejected agent JWT run header mismatch",
+    );
+  }
+}
+
+async function auditAgentJwtGraceExpiryAccepted(
+  db: Db,
+  input: { companyId: string; agentId: string; runId: string; method: string; url: string },
+) {
+  try {
+    await db.insert(activityLog).values({
+      companyId: input.companyId,
+      actorType: "agent",
+      actorId: input.agentId,
+      action: "auth.agent_jwt_grace_expiry_accepted",
+      entityType: "heartbeat_run",
+      entityId: input.runId,
+      ...(isUuidLike(input.agentId) ? { agentId: input.agentId } : {}),
+      ...(isUuidLike(input.runId) ? { runId: input.runId } : {}),
+      details: {
+        runId: input.runId,
+        method: input.method,
+        url: input.url,
+      },
+    });
+  } catch (err) {
+    logger.warn(
+      { err, companyId: input.companyId, agentId: input.agentId, runId: input.runId },
+      "Failed to audit accepted agent JWT grace-expiry authentication",
     );
   }
 }
@@ -295,7 +350,37 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .then((rows) => rows[0] ?? null);
 
     if (!key) {
-      const claims = verifyLocalAgentJwt(token);
+      let claims = verifyLocalAgentJwt(token);
+      if (!claims) {
+        // Standard verification failed. If the only reason is that `exp` has
+        // passed on an otherwise validly-signed token (adapter processes hold
+        // a single, non-refreshing JWT for the full run — RENA-56176), fall
+        // back to a bounded, DB-backed grace check instead of failing the
+        // request outright: an agent whose heartbeat run is still genuinely
+        // `status='running'` should not be locked out of commenting/PATCHing
+        // its own issue just because the token clock ran out mid-run.
+        const graceClaims = verifyLocalAgentJwt(token, { allowExpired: true });
+        if (graceClaims?.expired) {
+          const withinGraceWindow = Math.floor(Date.now() / 1000) - graceClaims.exp <= agentJwtGraceWindowSeconds();
+          const runIsLive =
+            withinGraceWindow &&
+            (await isHeartbeatRunLiveForGrace(db, {
+              companyId: graceClaims.company_id,
+              agentId: graceClaims.sub,
+              runId: graceClaims.run_id,
+            }));
+          if (runIsLive) {
+            await auditAgentJwtGraceExpiryAccepted(db, {
+              companyId: graceClaims.company_id,
+              agentId: graceClaims.sub,
+              runId: graceClaims.run_id,
+              method: req.method,
+              url: req.originalUrl,
+            });
+            claims = graceClaims;
+          }
+        }
+      }
       if (!claims) {
         next();
         return;
