@@ -34,6 +34,7 @@ import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
+import { findCompanyByUrlSegment } from "../lib/company-routes";
 import {
   applyMainContentScrollTop,
   NavigationScrollMemory,
@@ -133,11 +134,10 @@ export function Layout() {
   const activeScrollKey = useRef<string>(location.key);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const matchedCompany = useMemo(() => {
-    if (!companyPrefix) return null;
-    const requestedPrefix = companyPrefix.toUpperCase();
-    return companies.find((company) => company.issuePrefix.toUpperCase() === requestedPrefix) ?? null;
-  }, [companies, companyPrefix]);
+  const matchedCompany = useMemo(
+    () => findCompanyByUrlSegment(companies, companyPrefix),
+    [companies, companyPrefix],
+  );
   const hasUnknownCompanyPrefix =
     Boolean(companyPrefix) && !companiesLoading && companies.length > 0 && !matchedCompany;
   const pluginRoutePath = useMemo(
@@ -236,7 +236,7 @@ export function Layout() {
 
     if (companyPrefix !== matchedCompany.issuePrefix) {
       const suffix = location.pathname.replace(/^\/[^/]+/, "");
-      navigate(`/${matchedCompany.issuePrefix}${suffix}${location.search}`, { replace: true });
+      navigate(`/${matchedCompany.issuePrefix}${suffix}${location.search}${location.hash}`, { replace: true });
       return;
     }
 
@@ -256,6 +256,7 @@ export function Layout() {
     matchedCompany,
     location.pathname,
     location.search,
+    location.hash,
     navigate,
     selectionSource,
     selectedCompanyId,
