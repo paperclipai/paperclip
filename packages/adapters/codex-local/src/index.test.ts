@@ -21,15 +21,16 @@ describe("codex local adapter metadata", () => {
     expect(modelIds).not.toContain("gpt-5.6");
     expect(isCodexLocalFastModeSupported(DEFAULT_CODEX_LOCAL_MODEL)).toBe(true);
     expect(modelIds).not.toContain("gpt-5.3-codex");
-    expect(modelIds).not.toContain("gpt-5.3-codex-spark");
+    expect(modelIds).toContain("gpt-5.3-codex-spark");
   });
 
-  it("normalizes legacy and unavailable Codex model IDs to the concrete gpt-5.6-sol slug", () => {
+  it("normalizes legacy Codex model IDs to their concrete CLI slugs", () => {
     expect(normalizeCodexModel("gpt-5.6")).toBe("gpt-5.6-sol");
     expect(normalizeCodexModel("  gpt-5.6  ")).toBe("gpt-5.6-sol");
     // Concrete slugs and unknown/manual model IDs pass through untouched.
     expect(normalizeCodexModel("gpt-5.6-sol")).toBe("gpt-5.6-sol");
-    expect(normalizeCodexModel("gpt-5.3-codex")).toBe("gpt-5.6-sol");
+    expect(normalizeCodexModel("gpt-5.3-codex")).toBe("gpt-5.3-codex-spark");
+    expect(normalizeCodexModel("gpt-5.3-codex-spark")).toBe("gpt-5.3-codex-spark");
     expect(normalizeCodexModel("gpt-5.5")).toBe("gpt-5.5");
     expect(normalizeCodexModel("future-model")).toBe("future-model");
     expect(normalizeCodexModel("")).toBe("");

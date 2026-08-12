@@ -25,14 +25,13 @@ function normalizeModelId(model: string | null | undefined): string {
   return typeof model === "string" ? model.trim() : "";
 }
 
-// Legacy/unavailable model IDs are rewritten to the concrete slug the deployed Codex CLI knows.
-// Without this, agents still configured with the bare `gpt-5.6` alias keep triggering metadata
-// fallback warnings. `gpt-5.3-codex` also cannot be run through this instance's ChatGPT-account
-// authentication, so preserving a stale per-message override turns an otherwise valid wake into
-// a provider 400 instead of using the current supported Codex default.
+// Legacy model IDs are rewritten to the concrete slug the deployed Codex CLI knows. Without this,
+// agents still configured with the bare `gpt-5.6` alias keep triggering metadata fallback
+// warnings. ChatGPT-backed Codex CLI uses the Spark variant for GPT-5.3-Codex, so normalize the
+// generic API model id when it appears in a saved agent config or one-message override.
 const CODEX_LOCAL_MODEL_ALIASES: Readonly<Record<string, string>> = {
   "gpt-5.6": "gpt-5.6-sol",
-  "gpt-5.3-codex": "gpt-5.6-sol",
+  "gpt-5.3-codex": "gpt-5.3-codex-spark",
 };
 
 export function normalizeCodexModel(model: string | null | undefined): string {
@@ -68,6 +67,7 @@ export const models = [
   { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
   { id: "gpt-5.6-terra", label: "gpt-5.6-terra" },
   { id: "gpt-5.6-luna", label: "gpt-5.6-luna" },
+  { id: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark" },
   { id: "gpt-5.4", label: "gpt-5.4" },
   { id: "gpt-5.4-mini", label: "gpt-5.4-mini" },
   { id: "gpt-5", label: "gpt-5" },
