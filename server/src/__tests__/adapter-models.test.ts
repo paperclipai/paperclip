@@ -165,15 +165,40 @@ describe("adapter model listing", () => {
       expect(isBedrockModelUsableInConfiguredRegion("apac.anthropic.claude-sonnet-4-20250514-v1:0")).toBe(true);
     });
 
-    it("accepts global profiles and ARNs in any region", () => {
+    it("accepts global profiles in any region", () => {
       process.env.CLAUDE_CODE_USE_BEDROCK = "1";
       process.env.AWS_REGION = "us-east-1";
 
-      // `global.` profiles are published in every region checked, and an ARN names its own region.
+      // `global.` profiles are published in every region checked.
       expect(isBedrockModelUsableInConfiguredRegion("global.anthropic.claude-sonnet-5")).toBe(true);
+    });
+
+    it("compares an ARN's own region against the configured one", () => {
+      process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+      process.env.AWS_REGION = "us-east-1";
+
+      // Bedrock resolves a profile against the endpoint of the configured region, so an ARN from
+      // another region does not resolve however fully the operator wrote it out.
       expect(
         isBedrockModelUsableInConfiguredRegion(
           "arn:aws:bedrock:eu-west-1:123456789012:application-inference-profile/abc123",
+        ),
+      ).toBe(false);
+      expect(
+        isBedrockModelUsableInConfiguredRegion(
+          "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc123",
+        ),
+      ).toBe(true);
+      // Case in an ARN is not significant to this comparison.
+      expect(
+        isBedrockModelUsableInConfiguredRegion(
+          "arn:aws:bedrock:US-EAST-1:123456789012:application-inference-profile/abc123",
+        ),
+      ).toBe(true);
+      // An ARN with no region names no region to disagree with.
+      expect(
+        isBedrockModelUsableInConfiguredRegion(
+          "arn:aws:bedrock::123456789012:application-inference-profile/abc123",
         ),
       ).toBe(true);
     });

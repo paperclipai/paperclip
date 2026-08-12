@@ -282,6 +282,20 @@ export function isBedrockModelId(model: string): boolean {
 }
 
 /**
+ * Read the region out of a Bedrock ARN, which is its fourth colon-separated field. Returns the empty
+ * string for an ARN with no region, and `null` when the value is not a Bedrock ARN at all, so a
+ * caller can tell "no region named" apart from "not an ARN".
+ */
+function bedrockArnRegion(model: string): string | null {
+  const lower = model.toLowerCase();
+  if (!lower.startsWith("arn:")) return null;
+  const fields = lower.split(":");
+  // arn : partition : service : region : account : resource
+  if (fields.length < 6 || fields[2] !== "bedrock") return null;
+  return fields[3] ?? "";
+}
+
+/**
  * Check whether a Bedrock model ID can resolve in the region `env` configures. Bedrock does not
  * accept an inference profile from another region family, so a `us.` profile configured in an EU-only
  * deployment fails at run time. This lets setup reject it earlier, while the operator is still there
@@ -298,11 +312,14 @@ export function isBedrockModelId(model: string): boolean {
  */
 export function isBedrockModelUsableInConfiguredRegion(model: string, env: BedrockEnv = process.env): boolean {
   if (!isBedrockModelId(model)) return false;
-  // A profile ARN names its own region, and the operator wrote that region out in full.
-  if (model.startsWith("arn:aws:bedrock:")) return true;
   if (!isBedrockEnv(env)) return true;
   const region = configuredAwsRegion(env);
   if (!region) return true;
+  // An ARN names its own region, so a mismatch is visible here. Bedrock resolves a profile against
+  // the endpoint of the configured region, so an ARN from another region does not resolve, however
+  // fully the operator wrote it out.
+  const arnRegion = bedrockArnRegion(model);
+  if (arnRegion !== null) return arnRegion === "" || arnRegion === region;
   const family = /^([a-z0-9-]+)\.anthropic\./.exec(model.toLowerCase())?.[1];
   // `global.` profiles are published in every region checked.
   if (!family || family === "global") return true;

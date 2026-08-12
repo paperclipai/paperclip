@@ -635,12 +635,12 @@ describeEmbeddedPostgres("built-in agents", () => {
     process.env.CLAUDE_CODE_USE_BEDROCK = "1";
     process.env.AWS_REGION = "us-east-1";
 
-    // A matching family, a `global.` profile published everywhere, and a full ARN naming its own
-    // region are all usable from us-east-1. Only a provable mismatch is rejected.
+    // A matching family, a `global.` profile published everywhere, and an ARN naming this very region
+    // are all usable from us-east-1. Only a provable mismatch is rejected.
     const accepted = [
       "us.anthropic.claude-sonnet-4-5-20250929-v2:0",
       "global.anthropic.claude-sonnet-5",
-      "arn:aws:bedrock:eu-west-1:123456789012:application-inference-profile/abc123",
+      "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc123",
     ];
 
     for (const model of accepted) {
@@ -651,6 +651,24 @@ describeEmbeddedPostgres("built-in agents", () => {
       });
       expect(state.agent?.adapterConfig, model).toMatchObject({ model });
     }
+  });
+
+  it("rejects an ARN from a region other than the configured one", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    process.env.AWS_REGION = "us-east-1";
+
+    // Bedrock resolves the profile against the configured region's endpoint, so a cross-region ARN
+    // fails at run time. Writing the region out in full does not make it reachable.
+    const companyId = await seedCompany();
+    await expect(builtInAgentService(db).ensure(companyId, "summarizer", {
+      adapterType: "claude_local",
+      adapterConfig: { model: "arn:aws:bedrock:eu-west-1:123456789012:application-inference-profile/abc123" },
+    })).rejects.toMatchObject({
+      status: 422,
+      details: { code: "built_in_agent_model_region_mismatch", region: "us-east-1" },
+    });
+
+    expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(0);
   });
 
   it("maps a bundled default alias onto a region-qualified Bedrock profile", async () => {
