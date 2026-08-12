@@ -136,7 +136,7 @@ export function TaskMessageScroller({ children, contentKey, className }: TaskMes
   }, []);
 
   return (
-    <div className="relative mx-auto min-h-0 w-full max-w-(--tc-shell-max-w) flex-1">
+    <div className="relative min-h-0 flex-1">
       <div
         ref={ref}
         onScroll={handleScroll}

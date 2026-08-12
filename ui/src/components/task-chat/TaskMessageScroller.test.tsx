@@ -89,13 +89,11 @@ describe("TaskMessageScroller", () => {
     expect(el.scrollTop).toBe(el.scrollHeight);
   });
 
-  it("keeps the scrollbar flush with the centered thread frame", () => {
+  it("keeps the scrollbar at the full-width thread viewport edge", () => {
     render();
     const frame = scroller().parentElement;
 
-    expect(frame?.className).toContain("mx-auto");
-    expect(frame?.className).toContain("w-full");
-    expect(frame?.className).toContain("max-w-(--tc-shell-max-w)");
+    expect(frame?.className).toBe("relative min-h-0 flex-1");
   });
 
   it("auto-follows content instantly while pinned", async () => {
