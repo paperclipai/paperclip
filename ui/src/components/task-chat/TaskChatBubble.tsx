@@ -46,8 +46,8 @@ function initialsForName(name: string) {
 
 /**
  * Author-typed message row — the primary legibility signal. Human messages sit
- * right in a solid accent bubble; agent messages sit left in a neutral card
- * bubble with an avatar author header (the agent's assigned icon + name);
+ * right in a solid accent bubble; agent messages sit directly on the page
+ * surface with an avatar author header (the agent's assigned icon + name);
  * system notices are centered and recede.
  */
 function galleryItemForImage(src: string, name?: string): GalleryMediaItem {
@@ -121,10 +121,10 @@ export function TaskChatBubble({ item, attachedTurn, actions }: TaskChatBubblePr
           // bubble body without touching the live thread.
           data-testid={isHuman ? "task-chat-human-bubble" : "task-chat-agent-bubble"}
           className={cn(
-            "max-w-(--pct-85) break-words px-3.5 py-2 text-sm",
+            "break-words py-2 text-sm",
             isHuman
-              ? "rounded-2xl rounded-br-sm bg-(--liveness-blue) text-white"
-              : "rounded-2xl rounded-bl-sm bg-(--bubble-agent) text-foreground",
+              ? "max-w-(--pct-85) rounded-2xl rounded-br-sm bg-(--liveness-blue) px-3.5 text-white"
+              : "w-full bg-transparent px-1 text-foreground",
             item.optimistic ? "opacity-80" : null,
           )}
         >

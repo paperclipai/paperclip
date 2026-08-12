@@ -141,13 +141,14 @@ function useStreamingReplay(
 /**
  * Agent-bubble background treatments explored for PAP-501 (feedback: the
  * dark-mode agent card reads too light against the near-black page). Each id
- * maps to a `[data-bubble-variant]` scope in index.css; "" is today's card.
+ * maps to a `[data-bubble-variant]` scope in index.css; "" is the chosen
+ * page-surface treatment.
  */
 const BUBBLE_VARIANTS = [
-  { id: "", label: "Chosen · Darker" },
+  { id: "", label: "Chosen · C · On bg" },
   { id: "former", label: "Former" },
+  { id: "darker", label: "A · Darker" },
   { id: "hairline", label: "B · Hairline" },
-  { id: "flush", label: "C · On bg" },
 ] as const;
 type BubbleVariantId = (typeof BUBBLE_VARIANTS)[number]["id"];
 

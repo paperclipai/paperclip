@@ -252,10 +252,11 @@
   --tc-mode-plan: var(--status-task-todo);
   --tc-mode-ask: #3b82f6;
 
-  /* Agent-comment bubble fill (v7 grammar): a quiet, borderless card that
-     stays close to the page surface so long responses do not read as a large
-     bright panel. */
+  /* Agent-comment comparison fill used by TaskChatLab. The chosen production
+     treatment sits directly on the page surface; this token keeps the darker
+     card available as an explicit lab alternative. */
   --bubble-agent: oklch(0.97 0 0);
+  --bubble-agent-card-padding-inline: 0.875rem;
 
   /* Redesigned thread viewport bound: lets the thread own its scroll (auto-
      follow + pinned composer) inside the page flow. The issue header lives
@@ -603,8 +604,8 @@
    stage via [data-bubble-variant]; the live thread never sets that attribute,
    so these overrides remain lab-only comparisons. Feedback: the former
    dark-mode agent card (oklch 0.24) read too light against the near-black page
-   for the bulk of the text. The darker treatment is now the production
-   default above; the alternatives remain available for future comparison.
+   for the bulk of the text. The production treatment now sits directly on
+   the page background; the card alternatives remain available for comparison.
    ──────────────────────────────────────────────────────────────────────── */
 
 /* Former production treatment, retained as a direct before/after comparison
@@ -623,14 +624,16 @@
   border-color: oklch(1 0 0 / 8%);
 }
 
-/* C · On the page bg — no fill, no border; agent prose sits directly on the
-   page à la Claude/ChatGPT and spacing does the separation work. */
-[data-bubble-variant="flush"] [data-testid="task-chat-agent-bubble"] {
-  background: transparent;
-  border-radius: 0;
-  padding-left: 0.25rem;
-  padding-right: 0.25rem;
-  max-width: 100%;
+/* Card variants restore the shared card geometry that production no longer
+   applies to agent prose. */
+[data-bubble-variant="former"] [data-testid="task-chat-agent-bubble"],
+[data-bubble-variant="darker"] [data-testid="task-chat-agent-bubble"],
+[data-bubble-variant="hairline"] [data-testid="task-chat-agent-bubble"] {
+  background: var(--bubble-agent);
+  border-radius: var(--radius-2xl);
+  padding-left: var(--bubble-agent-card-padding-inline);
+  padding-right: var(--bubble-agent-card-padding-inline);
+  max-width: var(--pct-85);
 }
 /* Live-line viewport (PAP-361): exactly one line-height tall, clipping the
    wrapped interstitial block. On wrap, the inner block translates up whole
