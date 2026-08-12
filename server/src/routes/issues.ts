@@ -233,6 +233,12 @@ import {
   observeCrossIssueInfluence,
   type CrossIssueInfluenceKind,
 } from "../services/cross-issue-influence-limit.js";
+import {
+  isSSIDirector,
+  readPriorRunKnowledge,
+  resolveProjectDomain,
+  type PriorRunKnowledgeEntry,
+} from "../services/knowledge-reader.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -2712,6 +2718,13 @@ export function issueRoutes(
       actionRequestId: string;
       actor: { agentId?: string | null; userId?: string | null };
     }) => Promise<unknown>;
+    /** Override the priorRunKnowledge reader; used in tests to inject a tempdir-backed reader. */
+    priorRunKnowledgeReader?: (
+      companyId: string,
+      specialty: string,
+      domain: string,
+      currentIdentifier: string,
+    ) => PriorRunKnowledgeEntry[];
   } = {},
 ) {
   const router = Router();
@@ -2796,6 +2809,10 @@ export function issueRoutes(
   };
   const feedbackExportService = opts?.feedbackExportService;
   const environmentsSvc = environmentService(db);
+  const priorRunKnowledgeReader =
+    opts.priorRunKnowledgeReader ??
+    ((companyId, specialty, domain, currentIdentifier) =>
+      readPriorRunKnowledge(companyId, specialty, domain, currentIdentifier));
 
   async function queueTaskWatchdogEvaluation(issue: { id: string; companyId: string }, runId?: string | null) {
     await taskWatchdogsSvc
@@ -5823,6 +5840,18 @@ export function issueRoutes(
       includeForIssueComment: wakeCommentId !== null,
     });
 
+    // priorRunKnowledge: MVP — only for SSI Director assignee; file reads only, no DB hit.
+    let priorRunKnowledge: PriorRunKnowledgeEntry[] | undefined;
+    if (isSSIDirector(issue.assigneeAgentId) && issue.identifier) {
+      const domain = resolveProjectDomain(project?.name);
+      priorRunKnowledge = priorRunKnowledgeReader(
+        issue.companyId,
+        "ssi_director",
+        domain,
+        issue.identifier,
+      );
+    }
+
     const response = {
       issue: {
         id: issue.id,
@@ -5895,6 +5924,7 @@ export function issueRoutes(
         : null,
       planReviewContext,
       currentExecutionWorkspace: compactIssueExecutionWorkspace(currentExecutionWorkspace),
+      ...(priorRunKnowledge !== undefined ? { priorRunKnowledge } : {}),
     };
     res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, response));
   });
