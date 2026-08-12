@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from "express";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { HttpError } from "../errors.js";
+import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { errorHandler } from "../middleware/error-handler.js";
 
 const recordResponsibleUserDenialOnActiveRunMock = vi.hoisted(() => vi.fn());
@@ -22,9 +22,11 @@ function makeReq(): Request {
 function makeRes(): Response {
   const res = {
     status: vi.fn(),
+    type: vi.fn(),
     json: vi.fn(),
   } as unknown as Response;
   (res.status as unknown as ReturnType<typeof vi.fn>).mockReturnValue(res);
+  (res.type as unknown as ReturnType<typeof vi.fn>).mockReturnValue(res);
   return res;
 }
 
@@ -85,6 +87,107 @@ describe("errorHandler", () => {
     expect(res.json).toHaveBeenCalledWith({ error: "db exploded" });
     expect(res.err).toBe(err);
     expect(res.__errorContext?.error?.message).toBe("db exploded");
+  });
+
+  it("emits a stable machine-readable code and forced JSON content type for forbidden()", () => {
+    const req = makeReq();
+    const res = makeRes();
+    const next = vi.fn() as unknown as NextFunction;
+
+    errorHandler(forbidden(), req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.type).toHaveBeenCalledWith("application/json");
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Forbidden",
+      code: "forbidden",
+      details: { code: "forbidden" },
+    });
+  });
+
+  it("emits a stable machine-readable code and forced JSON content type for unauthorized()", () => {
+    const req = makeReq();
+    const res = makeRes();
+    const next = vi.fn() as unknown as NextFunction;
+
+    errorHandler(unauthorized(), req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.type).toHaveBeenCalledWith("application/json");
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Unauthorized",
+      code: "unauthorized",
+      details: { code: "unauthorized" },
+    });
+  });
+
+  it("lets explicit details replace the forbidden() default code", () => {
+    const req = makeReq();
+    const res = makeRes();
+    const next = vi.fn() as unknown as NextFunction;
+
+    errorHandler(forbidden("Custom denial", { code: "custom_denial" }), req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Custom denial",
+      code: "custom_denial",
+      details: { code: "custom_denial" },
+    });
+  });
+
+  it("derives a default code for 403 HttpErrors thrown without details", () => {
+    const req = makeReq();
+    const res = makeRes();
+    const next = vi.fn() as unknown as NextFunction;
+
+    errorHandler(new HttpError(403, "Bare forbidden"), req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Bare forbidden",
+      code: "forbidden",
+    });
+  });
+
+  it("derives a default code for 401 HttpErrors thrown without details", () => {
+    const req = makeReq();
+    const res = makeRes();
+    const next = vi.fn() as unknown as NextFunction;
+
+    errorHandler(new HttpError(401, "Bare unauthorized"), req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Bare unauthorized",
+      code: "unauthorized",
+    });
+  });
+
+  it("derives a default code for 403 HttpErrors whose details lack a code", () => {
+    const req = makeReq();
+    const res = makeRes();
+    const next = vi.fn() as unknown as NextFunction;
+
+    errorHandler(new HttpError(403, "Denied with context", { reason: "quota" }), req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Denied with context",
+      code: "forbidden",
+      details: { reason: "quota" },
+    });
+  });
+
+  it("does not derive an authorization code for non-authorization statuses", () => {
+    const req = makeReq();
+    const res = makeRes();
+    const next = vi.fn() as unknown as NextFunction;
+
+    errorHandler(new HttpError(404, "Not found"), req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(res.json).toHaveBeenCalledWith({ error: "Not found" });
   });
 
   it("records responsible-user denial codes on the active agent run", () => {

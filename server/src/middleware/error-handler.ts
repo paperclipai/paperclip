@@ -102,9 +102,19 @@ export function errorHandler(
       const tc = getTelemetryClient();
       if (tc) trackErrorHandlerCrash(tc, { errorCode: err.name });
     }
-    res.status(err.status).json({
+    // Belt-and-braces for authorization failures (#11267): every 401/403
+    // carries a stable top-level `code` even when the thrower passed no
+    // details.code, and the content type is forced to JSON so an edge proxy
+    // cannot content-negotiate the body into an HTML error page.
+    const derivedAuthzCode =
+      err.status === 401 ? "unauthorized" : err.status === 403 ? "forbidden" : null;
+    res.status(err.status).type("application/json").json({
       error: err.message,
-      ...(typeof details?.code === "string" ? { code: details.code } : {}),
+      ...(typeof details?.code === "string"
+        ? { code: details.code }
+        : derivedAuthzCode
+          ? { code: derivedAuthzCode }
+          : {}),
       ...(redactedSkillPolicyDenial && typeof details?.reason === "string" ? { reason: details.reason } : {}),
       ...(typeof details?.remediation === "string" || (structuredConnectionError && details?.remediation && typeof details.remediation === "object")
         ? { remediation: details.remediation }

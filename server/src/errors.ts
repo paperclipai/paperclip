@@ -13,12 +13,25 @@ export function badRequest(message: string, details?: unknown) {
   return new HttpError(400, message, details);
 }
 
-export function unauthorized(message = "Unauthorized") {
-  return new HttpError(401, message);
+/**
+ * 401 with a stable machine-readable default code so clients (and edge
+ * proxies) can distinguish app-level authentication failures from
+ * infrastructure blocks. Explicit `details` REPLACE the default wholesale
+ * (no merging): callers that pass details should include their own `code`
+ * when they need one — the central error handler still derives
+ * `code: "unauthorized"` when they do not.
+ */
+export function unauthorized(message = "Unauthorized", details?: unknown) {
+  return new HttpError(401, message, details ?? { code: "unauthorized" });
 }
 
+/**
+ * 403 with a stable machine-readable default code. Same replace semantics
+ * as `unauthorized`: explicit `details` win wholesale, and the central
+ * error handler derives `code: "forbidden"` for detail objects without one.
+ */
 export function forbidden(message = "Forbidden", details?: unknown) {
-  return new HttpError(403, message, details);
+  return new HttpError(403, message, details ?? { code: "forbidden" });
 }
 
 export function notFound(message = "Not found") {

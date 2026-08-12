@@ -154,7 +154,13 @@ import { logger } from "../middleware/logger.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { privateJsonEtag } from "../middleware/private-json-etag.js";
 import { createRequestPromiseMemo } from "../lib/request-promise-memo.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import {
+  assertBoard,
+  assertCompanyAccess,
+  getAccessibleResource,
+  getActorInfo,
+  respondForbidden,
+} from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
@@ -3803,7 +3809,7 @@ export function issueRoutes(
     const value = memoizeIssueReadDecision(req, key, () => decideIssueAccess(req, issue, "issue:read"));
     const decision = await value;
     if (decision.allowed) return true;
-    res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+    respondForbidden(res, "issue_read_denied", "Issue is outside this actor's authorization boundary");
     return false;
   }
 
@@ -3840,7 +3846,7 @@ export function issueRoutes(
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
-      res.status(403).json({ error: "Agent authentication required" });
+      respondForbidden(res, "agent_authentication_required", "Agent authentication required");
       return false;
     }
     const watchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
@@ -3931,7 +3937,7 @@ export function issueRoutes(
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
-      res.status(403).json({ error: "Agent authentication required" });
+      respondForbidden(res, "agent_authentication_required", "Agent authentication required");
       return false;
     }
     // Task-watchdog runs receive a scoped *grant* to mutate issues inside the
@@ -3980,16 +3986,18 @@ export function issueRoutes(
       // Past the run lock the issue is idle, so only channels that have not
       // adopted the default-open rule still refuse another agent's issue.
       if (!options.allowVisibleIssueWrite) {
-        res.status(403).json({
-          error: "Agent cannot mutate another agent's issue",
-          details: {
+        respondForbidden(
+          res,
+          "agent_cannot_mutate_other_agents_issue",
+          "Agent cannot mutate another agent's issue",
+          {
             issueId: issue.id,
             assigneeAgentId: issue.assigneeAgentId,
             actorAgentId,
             status: issue.status,
             securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
           },
-        });
+        );
         return false;
       }
       return true;
@@ -4716,12 +4724,14 @@ export function issueRoutes(
     const hasStructuredFields = input.presentation !== undefined || input.metadata !== undefined;
     if (!hasStructuredFields) return true;
     if (req.actor.type === "board") return true;
-    res.status(403).json({
-      error: "Only board users may set structured comment presentation or metadata",
-      details: {
+    respondForbidden(
+      res,
+      "structured_comment_fields_board_only",
+      "Only board users may set structured comment presentation or metadata",
+      {
         securityPrinciples: ["Least Privilege", "Secure Defaults", "Complete Mediation"],
       },
-    });
+    );
     return false;
   }
 
@@ -4827,7 +4837,7 @@ export function issueRoutes(
 
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
-      res.status(403).json({ error: "Agent authentication required" });
+      respondForbidden(res, "agent_authentication_required", "Agent authentication required");
       return false;
     }
     if (issue.assigneeAgentId === actorAgentId) return true;
@@ -4845,9 +4855,11 @@ export function issueRoutes(
       return true;
     }
 
-    res.status(403).json({
-      error: "Agent cannot resolve another owner's recovery action",
-      details: {
+    respondForbidden(
+      res,
+      "recovery_action_owner_mismatch",
+      "Agent cannot resolve another owner's recovery action",
+      {
         issueId: issue.id,
         recoveryActionId: activeRecoveryAction.id,
         actorAgentId,
@@ -4856,7 +4868,7 @@ export function issueRoutes(
         source: input.source,
         securityPrinciples: ["Least Privilege", "Complete Mediation", "Secure Defaults"],
       },
-    });
+    );
     return false;
   }
 

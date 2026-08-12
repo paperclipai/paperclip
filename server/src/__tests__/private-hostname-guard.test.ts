@@ -49,6 +49,49 @@ describe("privateHostnameGuard", () => {
     expect(res.body?.error).toContain(`please run pnpm paperclipai allowed-hostname ${unknownHostname}`);
   });
 
+  it("keeps /api denials JSON with a stable code even when the client only accepts html", async () => {
+    const app = createApp({ enabled: true, allowedHostnames: ["some-other-host"] });
+    const res = await request(app)
+      .get("/api/health")
+      .set("Host", `${unknownHostname}:3100`)
+      .set("Accept", "text/html");
+    expect(res.status).toBe(403);
+    expect(res.headers["content-type"]).toContain("application/json");
+    expect(res.body?.error).toContain(`please run pnpm paperclipai allowed-hostname ${unknownHostname}`);
+    expect(res.body?.code).toBe("private_hostname_forbidden");
+  });
+
+  it("keeps missing-host /api denials JSON with a stable code regardless of Accept", async () => {
+    const middleware = privateHostnameGuard({
+      enabled: true,
+      allowedHostnames: [],
+      bindHost: "0.0.0.0",
+    });
+    const req = {
+      path: "/api/health",
+      header: () => undefined,
+      accepts: () => "html",
+    } as any;
+    const res = {
+      status: vi.fn().mockReturnThis(),
+      type: vi.fn().mockReturnThis(),
+      send: vi.fn(),
+      json: vi.fn(),
+    } as any;
+    const next = vi.fn();
+
+    middleware(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.type).toHaveBeenCalledWith("application/json");
+    expect(res.send).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith({
+      error: expect.stringContaining("Missing Host header"),
+      code: "private_hostname_forbidden",
+    });
+  });
+
   it("blocks unknown hostnames on page routes with plain-text remediation command", async () => {
     const middleware = privateHostnameGuard({
       enabled: true,

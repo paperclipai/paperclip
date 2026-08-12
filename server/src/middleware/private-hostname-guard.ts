@@ -65,15 +65,26 @@ export function privateHostnameGuard(opts: {
 
   return (req, res, next) => {
     const hostname = extractHostname(req);
-    const wantsJson = req.path.startsWith("/api") || req.accepts(["json", "html", "text"]) === "json";
+    const isApiRequest = req.path.startsWith("/api");
+    const wantsJson = isApiRequest || req.accepts(["json", "html", "text"]) === "json";
 
-    if (!hostname) {
-      const error = "Missing Host header. If you want to allow a hostname, run pnpm paperclipai allowed-hostname <host>.";
-      if (wantsJson) {
+    // API denials are unconditionally JSON with a stable machine-readable
+    // code and an explicit content type, regardless of Accept headers, so an
+    // edge proxy cannot re-skin the 403 as an HTML error page and make an
+    // app-level block look like a WAF block (paperclipai/paperclip#11267).
+    // Non-/api (page) requests keep the previous Accept-negotiated behavior.
+    const deny = (error: string) => {
+      if (isApiRequest) {
+        res.status(403).type("application/json").json({ error, code: "private_hostname_forbidden" });
+      } else if (wantsJson) {
         res.status(403).json({ error });
       } else {
         res.status(403).type("text/plain").send(error);
       }
+    };
+
+    if (!hostname) {
+      deny("Missing Host header. If you want to allow a hostname, run pnpm paperclipai allowed-hostname <host>.");
       return;
     }
 
@@ -82,11 +93,6 @@ export function privateHostnameGuard(opts: {
       return;
     }
 
-    const error = blockedHostnameMessage(hostname);
-    if (wantsJson) {
-      res.status(403).json({ error });
-    } else {
-      res.status(403).type("text/plain").send(error);
-    }
+    deny(blockedHostnameMessage(hostname));
   };
 }

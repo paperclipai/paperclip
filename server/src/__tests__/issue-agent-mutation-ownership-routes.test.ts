@@ -886,6 +886,74 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
   });
 
+  it("emits a stable machine-readable code when issue read is outside the boundary", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: false,
+      action: input.action,
+      reason: "deny_low_trust_boundary",
+      explanation: "Issue is outside this low-trust boundary.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .get(`/api/issues/${issueId}/comments`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.headers["content-type"]).toContain("application/json");
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(res.body.code).toBe("issue_read_denied");
+  });
+
+  it("emits a stable machine-readable code on the comment authorization-boundary 403", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action !== "issue:comment",
+      action: input.action,
+      reason: input.action === "issue:comment" ? "deny_missing_grant" : "allow_explicit_grant",
+      explanation: input.action === "issue:comment" ? "Missing permission." : "Allowed by test default.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Denied comment." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.headers["content-type"]).toContain("application/json");
+    // This site routes through the shared issue-write denial copy, which
+    // carries its stable code inside `details` next to the denial prose.
+    expect(res.body.details.code).toBe("issue_write_not_visible");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("emits a stable machine-readable code on the checkout-conflict 409", async () => {
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Blocked" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.headers["content-type"]).toContain("application/json");
+    // The run-lock denial routes through the shared issue-write denial copy;
+    // its stable code lives inside `details` next to the extra context fields.
+    expect(res.body.details.code).toBe("issue_write_assignee_run_lock");
+    expect(res.body.details).toEqual(
+      expect.objectContaining({
+        issueId,
+        assigneeAgentId: ownerAgentId,
+        actorAgentId: peerAgentId,
+      }),
+    );
+  });
+
+  it("emits a stable machine-readable code on the structured-comment-fields 403", async () => {
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Structured attempt.", presentation: { kind: "system_notice" } });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.headers["content-type"]).toContain("application/json");
+    expect(res.body.error).toBe("Only board users may set structured comment presentation or metadata");
+    expect(res.body.code).toBe("structured_comment_fields_board_only");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
   it("rejects peer agents from listing interactions when issue read is outside their boundary", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: false,
