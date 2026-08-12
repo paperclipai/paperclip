@@ -776,9 +776,8 @@ describe("IssueProperties", () => {
   });
 
   it("exposes the classic-layout add sub-issue pill action", async () => {
-    // The chat shell consolidates sub-tasks into a dedicated pane tab (see the
-    // "Sub-tasks" tab test below); the slim pill row + its Add sub-task button
-    // only render in the classic layout now (PAP-496).
+    // The chat shell hosts the full tree in the center pane; the slim pill row
+    // + its Add sub-task button only render in the classic layout (PAP-496).
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableTaskWatchdogs: false,
       enableClassicTaskInterface: true,
@@ -811,33 +810,16 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("hosts the sub-task tree in a dedicated Sub-tasks pane tab in the chat shell", async () => {
-    // Chat shell (default): sub-tasks live in their own pane tab fed by the
-    // host-provided tree, and the Relations pill row is dropped (PAP-496).
+  it("does not duplicate sub-tasks in the properties pane in the chat shell", async () => {
     const root = renderProperties(container, {
       issue: createIssue(),
       childIssues: [],
-      subTasksTree: <div>SUBTASK_TREE_SLOT</div>,
       onUpdate: vi.fn(),
     });
     await flush();
 
-    // The consolidated home replaces the pill row's "Add sub-task" affordance.
     expect(container.textContent).not.toContain("Add sub-task");
-
-    const subTasksTab = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent === "Sub-tasks",
-    );
-    expect(subTasksTab).not.toBeUndefined();
-
-    await act(async () => {
-      // Radix Tabs triggers select on mousedown (button 0), not on click.
-      subTasksTab!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
-    });
-
-    await waitForAssertion(() => {
-      expect(container.textContent).toContain("SUBTASK_TREE_SLOT");
-    });
+    expect(container.textContent).not.toContain("Sub-tasks");
 
     act(() => root.unmount());
   });

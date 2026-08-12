@@ -1127,6 +1127,36 @@ describe("IssueDetail", () => {
     ).toBe(false);
   });
 
+  it("renders the full sub-task tree below the title in the chat center pane", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const title = Array.from(container.querySelectorAll("div")).find(
+      (element) => element.textContent === "Issue detail smoke",
+    );
+    const subTasks = Array.from(container.querySelectorAll("div")).find(
+      (element) => element.textContent === "Sub-issues",
+    );
+    expect(title).toBeDefined();
+    expect(subTasks).toBeDefined();
+    expect(title!.compareDocumentPosition(subTasks!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(mockIssuesListRender).toHaveBeenCalledWith(
+      expect.objectContaining({
+        createIssueLabel: "Sub-task",
+        showProgressSummary: true,
+      }),
+    );
+  });
+
   it("keeps the properties panel stable across unrelated chat-detail renders", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue());
     const detail = (
@@ -1144,9 +1174,9 @@ describe("IssueDetail", () => {
     const panelOpenCount = mockOpenPanel.mock.calls.length;
     expect(panelOpenCount).toBeGreaterThan(0);
 
-    // React Query returns a new mutation result object on render. The sub-task
-    // tree and panel effect must depend on the stable mutate function rather
-    // than that wrapper object, or openPanel's state update recursively renders
+    // React Query returns a new mutation result object on render. The panel
+    // effect must depend on the stable mutate function rather than that wrapper
+    // object, or openPanel's state update recursively renders
     // IssueDetail until React throws "Maximum update depth exceeded".
     await act(async () => {
       root.render(detail);
@@ -1159,8 +1189,8 @@ describe("IssueDetail", () => {
   it("does not loop openPanel when the sub-task list query is still loading (PAP-508)", async () => {
     // While the descendant-issues query is still in flight, `data` is undefined.
     // A literal `= []` default for that `data` mints a new array reference on
-    // every render, which destabilizes `childIssues` → `subTasksTree` → the
-    // Properties-pane openPanel effect, re-firing openPanel each render until
+    // every render, which destabilizes the child-derived panel key, re-firing
+    // openPanel each render until
     // React throws "Maximum update depth exceeded". Keep the list query pending
     // so `data` stays undefined and the stabilization of the empty default is
     // the only thing preventing the loop. A fresh root element is rendered each

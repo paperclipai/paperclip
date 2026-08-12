@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { createPortal } from "react-dom";
 import { PROPERTIES_PANE_HEADER_SLOT_ID } from "../PropertiesPanel";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
@@ -135,15 +135,6 @@ interface IssuePropertiesProps {
   issue: Issue;
   childIssues?: Issue[];
   onAddSubIssue?: () => void;
-  /**
-   * Chat shell only: the full sub-task tree (an `IssuesList` with the progress
-   * strip, blocked badges and New Sub-task control) rendered by the host, where
-   * the child data lives. When present it earns a dedicated "Sub-tasks" tab in
-   * the pane and the slim Sub-tasks pill row in the Relations section is dropped
-   * (PAP-496 — one home, no duplication). Classic mode ignores this and keeps
-   * its center-column tree plus the pill row.
-   */
-  subTasksTree?: ReactNode;
   onUpdate: (data: Record<string, unknown>) => void;
   inline?: boolean;
   /** Whether an agent run is currently in flight on this issue, so the assignee
@@ -164,7 +155,6 @@ export function IssueProperties({
   issue,
   childIssues = [],
   onAddSubIssue,
-  subTasksTree,
   onUpdate,
   inline,
   hasActiveRun = false,
@@ -237,11 +227,6 @@ export function IssueProperties({
     (paneTabWorkProducts?.length ?? 0) > 0
     || (paneTabDocuments?.length ?? 0) > 0
     || selectAgentArtifactAttachments(paneTabAttachments, paneTabWorkProducts).length > 0;
-  // The sub-task tree earns a dedicated pane tab whenever the host supplies it
-  // (chat shell only). It is always offered — even with zero children — so the
-  // tree the user "uses constantly" is always findable and the New Sub-task
-  // control has a home now that the pill row is gone (PAP-496).
-  const hasSubTasksTab = taskChatShellEnabled && subTasksTree != null;
   const [paneTab, setPaneTab] = useState("properties");
   // Once a plan document exists, surface it: switch the pane to the Plan tab so
   // the write-up is exposed alongside the plan-approval card, instead of leaving
@@ -2553,7 +2538,7 @@ export function IssueProperties({
 
   // Chat-style with nothing to switch between: no tab strip — the header bar
   // shows a plain title and the pane body is just the properties stack.
-  if (!hasPlanTab && !hasArtifactsTab && !hasSubTasksTab) {
+  if (!hasPlanTab && !hasArtifactsTab) {
     return (
       <>
         {paneHeaderSlot
@@ -2573,7 +2558,6 @@ export function IssueProperties({
   const activePaneTab =
     (paneTab === "plans" && !hasPlanTab)
     || (paneTab === "artifacts" && !hasArtifactsTab)
-    || (paneTab === "subtasks" && !hasSubTasksTab)
       ? "properties"
       : paneTab;
   // In the pane header the strip stretches to the bar's full height and the
@@ -2596,11 +2580,6 @@ export function IssueProperties({
       {hasPlanTab ? (
         <TabsTrigger value="plans" className={paneTabTriggerClass}>
           Plan
-        </TabsTrigger>
-      ) : null}
-      {hasSubTasksTab ? (
-        <TabsTrigger value="subtasks" className={paneTabTriggerClass}>
-          Sub-tasks
         </TabsTrigger>
       ) : null}
       {hasArtifactsTab ? (
@@ -2629,9 +2608,6 @@ export function IssueProperties({
         <TabsContent value="plans">
           <IssuePropertiesPlansTab issue={issue} inline={inline} />
         </TabsContent>
-      ) : null}
-      {hasSubTasksTab ? (
-        <TabsContent value="subtasks">{subTasksTree}</TabsContent>
       ) : null}
       {hasArtifactsTab ? (
         <TabsContent value="artifacts">

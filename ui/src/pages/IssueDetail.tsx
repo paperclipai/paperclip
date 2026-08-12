@@ -236,10 +236,8 @@ import {
 
 // Stable empty array for React Query `data` defaults. A literal `= []` default
 // creates a new array reference on every render while `data` is undefined
-// (loading/idle), which destabilizes every downstream useMemo that depends on
-// it — e.g. `childIssues` → `subTasksTree` → the Properties-pane openPanel
-// effect, producing a "Maximum update depth exceeded" render loop on task
-// detail pages. Reusing one shared reference keeps those memos stable.
+// (loading/idle), which destabilizes downstream memos and panel keys that
+// depend on it. Reusing one shared reference keeps those values stable.
 const EMPTY_ISSUES: Issue[] = [];
 
 type StopAndFinalizeRunError = Error & {
@@ -2622,12 +2620,10 @@ export function IssueDetail() {
     updateChildIssue.mutate({ id, data });
   }, [updateChildIssue.mutate]);
 
-  // PAP-496: the chat shell no longer renders a sub-task section in the center
-  // column (that block is gated off below). Instead we build the full tree here
-  // — where the child data lives — and hand it to IssueProperties, which hosts
-  // it as a dedicated "Sub-tasks" pane tab. This restores the constantly-used
-  // task tree in one consolidated home (the Properties pane) without the slim
-  // pill row. Classic mode keeps its own center-column tree and ignores this.
+  // PAP-496: the chat shell keeps the full sub-task tree directly below the
+  // title in the center column. This is the tree's single chat-shell home; the
+  // Properties pane does not duplicate it. Classic mode keeps its existing
+  // center-column section below the header.
   const subTasksTree = useMemo(
     () =>
       taskChatShellEnabled && issue ? (
@@ -3493,7 +3489,6 @@ export function IssueDetail() {
         issue={panelIssue}
         childIssues={panelChildIssues}
         onAddSubIssue={openNewSubIssue}
-        subTasksTree={subTasksTree}
         onUpdate={handleIssuePropertiesUpdate}
         hasActiveRun={resolvedHasActiveRun}
         externalObjects={externalObjectsState.isEnabled ? externalObjectsState.groups : undefined}
@@ -3510,7 +3505,6 @@ export function IssueDetail() {
     handleIssuePropertiesUpdate,
     issuePanelKey,
     openNewSubIssue,
-    subTasksTree,
     openPanel,
     panelChildIssues,
     panelIssue,
@@ -4754,6 +4748,8 @@ export function IssueDetail() {
           className={taskChatShellEnabled ? "text-base font-semibold" : "text-xl font-bold"}
         />
 
+        {taskChatShellEnabled ? subTasksTree : null}
+
         <IssueMonitorBanner
           issue={issue}
           onCheckNow={() => checkIssueMonitorNow.mutate()}
@@ -5499,7 +5495,6 @@ export function IssueDetail() {
                 issue={issue}
                 childIssues={childIssues}
                 onAddSubIssue={openNewSubIssue}
-                subTasksTree={subTasksTree}
                 onUpdate={(data) => updateIssue.mutate(data)}
                 inline
                 hasActiveRun={resolvedHasActiveRun}
