@@ -107,6 +107,28 @@ describe("resolveBootstrapCompanySelection", () => {
       storedCompanyId: "archived-company",
     })).toBe("company-1");
   });
+
+  it("keeps an explicitly selected archived company that still exists", () => {
+    // The Layout route-sync selects the company the URL names, archived
+    // included. Vetoing that selection here re-selected an active company,
+    // the route-sync selected the archived one again, and the two effects
+    // ping-ponged until React threw #185 and unmounted the app.
+    expect(resolveBootstrapCompanySelection({
+      companies: [archivedCompany, activeCompany],
+      sidebarCompanies: [activeCompany],
+      selectedCompanyId: "archived-company",
+      storedCompanyId: null,
+    })).toBe("archived-company");
+  });
+
+  it("still replaces a selected company that no longer exists at all", () => {
+    expect(resolveBootstrapCompanySelection({
+      companies: [activeCompany],
+      sidebarCompanies: [activeCompany],
+      selectedCompanyId: "deleted-company",
+      storedCompanyId: null,
+    })).toBe("company-1");
+  });
 });
 
 describe("shouldClearStoredCompanySelection", () => {
