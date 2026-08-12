@@ -315,8 +315,37 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // selection is already handled via the --model CLI flag.  Set after the
   // envConfig loop so user overrides cannot disable this guard.
   env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
-  if (authToken) {
-    env.PAPERCLIP_API_KEY = authToken;
+  // VIR-880 / VIR-881: copy the parent-supplied JWT into the child env, then
+  // emit a `jwt_env_race` telemetry event if the server-side token was set but
+  // the child env value is empty. This isolates the race condition observed in
+  // the 18:35-18:44 / 18:45-19:15 / 19:20-20:07 plan_only clusters from a
+  // plain missing-secret case (which now fails fast in the heartbeat with
+  // `errorCode: missing_local_agent_jwt`). Uses a JSON-shaped stderr line so
+  // the host adapter worker log captures it without depending on a shared
+  // logger module.
+  const parentAuthToken = authToken ?? null;
+  if (parentAuthToken) {
+    env.PAPERCLIP_API_KEY = parentAuthToken;
+  }
+  if (parentAuthToken !== null && env.PAPERCLIP_API_KEY === "") {
+    const raceEvent = {
+      timestamp: new Date().toISOString(),
+      level: "error",
+      event: "jwt_env_race",
+      errorCode: "jwt_env_race",
+      runId,
+      issueId: runId ? null : null,
+      agentId: agent?.id ?? null,
+      adapterType: agent?.adapterType ?? null,
+      message:
+        "PAPERCLIP_API_KEY ausente no child process apesar de authToken ter sido setado no servidor. " +
+        "Suspeita de race condition na propagacao de env do spawn.",
+    };
+    try {
+      process.stderr.write(`${JSON.stringify(raceEvent)}\n`);
+    } catch {
+      // best-effort: never let telemetry itself break the run
+    }
   }
   const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
   const localRuntimeConfigHome =

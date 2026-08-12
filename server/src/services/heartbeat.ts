@@ -538,6 +538,29 @@ export class ConfigurationIncompleteFailure extends Error {
   }
 }
 
+// VIR-880 / VIR-881: adapter declared `supportsLocalAgentJwt=true`, but
+// `createLocalAgentJwt()` returned null (secret absent/invalid). Without a
+// token the child process would run with PAPERCLIP_API_KEY empty and silently
+// fail JWT discovery, producing the plan_only cluster. Fail fast here so a
+// noisy `errorCode: missing_local_agent_jwt` row replaces the silent loop and
+// the recovery path routes to a human owner instead of retrying.
+export const MISSING_LOCAL_AGENT_JWT_CODE = "missing_local_agent_jwt";
+
+export class MissingLocalAgentJwtFailure extends Error {
+  code = MISSING_LOCAL_AGENT_JWT_CODE;
+  resultJson: Record<string, unknown>;
+
+  constructor(message: string, resultJson: Record<string, unknown>) {
+    super(message);
+    this.name = "MissingLocalAgentJwtFailure";
+    this.resultJson = resultJson;
+  }
+}
+
+function isMissingLocalAgentJwtFailure(error: unknown): error is MissingLocalAgentJwtFailure {
+  return error instanceof MissingLocalAgentJwtFailure;
+}
+
 export interface SharedWorkspaceHolder {
   runId: string;
   agentId: string;
@@ -15644,26 +15667,48 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issueRef?.workMode === "skill_test"
           ? { kind: "skill_test" as const, issueId: issueRef.id }
           : { kind: "standard" as const };
-      const authToken = adapter.supportsLocalAgentJwt
+const authToken = adapter.supportsLocalAgentJwt
         ? createLocalAgentJwt(
-          agent.id,
-          agent.companyId,
-          agent.adapterType,
-          run.id,
-          run.responsibleUserId,
-          localAgentJwtScope,
-        )
+            agent.id,
+            agent.companyId,
+            agent.adapterType,
+            run.id,
+            run.responsibleUserId,
+            localAgentJwtScope,
+          )
         : null;
       if (adapter.supportsLocalAgentJwt && !authToken) {
-        logger.warn(
+        // VIR-880 / VIR-881: do not call adapter.execute() without a JWT.
+        // The previous warn-only path let the child process launch with an
+        // empty PAPERCLIP_API_KEY and fall into a fragile JWT-discovery loop
+        // that produced plan_only clusters. Throw a typed failure so the outer
+        // catch transitions the run to `failed` with `errorCode:
+        // missing_local_agent_jwt` and routes the failure to a human owner.
+        const errorCode = MISSING_LOCAL_AGENT_JWT_CODE;
+        const message =
+          "Adapter requer local agent JWT, mas createLocalAgentJwt() retornou null. " +
+          "Verifique PAPERCLIP_AGENT_JWT_SECRET no servidor e a propagação do env para o child process.";
+        const failFastResultJson = {
+          runId: run.id,
+          issueId: issueRef?.id ?? null,
+          issueIdentifier: issueRef?.identifier ?? null,
+          agentId: agent.id,
+          adapterType: agent.adapterType,
+          checkedAt: new Date().toISOString(),
+        };
+        logger.error(
           {
             companyId: agent.companyId,
             agentId: agent.id,
             runId: run.id,
             adapterType: agent.adapterType,
+            errorCode,
+            issueId: issueRef?.id ?? null,
+            issueIdentifier: issueRef?.identifier ?? null,
           },
-          "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
+          "local agent jwt missing; aborting run to avoid plan_only loop (VIR-880)",
         );
+        throw new MissingLocalAgentJwtFailure(message, failFastResultJson);
       }
       let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
       const inspectFinalizeWorkspaceBranch = async () => {
@@ -16486,11 +16531,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // recovery path routes it to a human owner instead of looping retries.
           const workspaceValidationSetupFailure = isWorkspaceValidationFailure(outerErr) ? outerErr : null;
           const configurationIncompleteSetupFailure = isConfigurationIncompleteFailure(outerErr) ? outerErr : null;
+          const missingLocalAgentJwtSetupFailure = isMissingLocalAgentJwtFailure(outerErr) ? outerErr : null;
           const recordedResponsibleUserDenialCode =
             normalizeResponsibleUserDenialCode((await getRun(runId).catch(() => null))?.errorCode);
           const setupFailureErrorCode =
             workspaceValidationSetupFailure?.code ??
             configurationIncompleteSetupFailure?.code ??
+            missingLocalAgentJwtSetupFailure?.code ??
             recordedResponsibleUserDenialCode ??
             "setup_failed";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
@@ -16504,7 +16551,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 errorCode: setupFailureErrorCode,
                 errorMessage: message,
                 resultJson:
-                  workspaceValidationSetupFailure?.resultJson ?? configurationIncompleteSetupFailure?.resultJson ?? null,
+                  workspaceValidationSetupFailure?.resultJson
+                  ?? configurationIncompleteSetupFailure?.resultJson
+                  ?? missingLocalAgentJwtSetupFailure?.resultJson
+                  ?? null,
               }),
             } : {}),
           }).catch(() => ({ run: null, updated: false as const }));
