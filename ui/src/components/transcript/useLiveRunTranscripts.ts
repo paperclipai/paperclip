@@ -132,6 +132,10 @@ export function useLiveRunTranscripts({
   // the effect again once the nearest deadline elapses so a run that stays gone
   // is eventually cleaned up even if the `runs` list never changes again.
   const absenceDeadlineByRunRef = useRef(new Map<string, number>());
+  // Backoff state for the live event socket. Held outside the socket effect
+  // because that effect restarts on run-metadata changes; per-effect state
+  // would reset a progressed delay back to its base mid-outage.
+  const reconnectStateRef = useRef<{ companyId: string; attempt: number } | null>(null);
   const prevKnownRunIdsRef = useRef(new Set<string>());
   const [pruneTick, setPruneTick] = useState(0);
   const transcriptCacheRef = useRef(new Map<string, {
@@ -339,9 +343,16 @@ export function useLiveRunTranscripts({
     if (!companyId || activeRunIds.size === 0) return;
 
     let closed = false;
-    let reconnectAttempt = 0;
     let reconnectTimer: number | null = null;
     let socket: WebSocket | null = null;
+
+    // The attempt counter lives in a ref keyed to the company: this effect
+    // restarts whenever run metadata changes, and a per-effect counter would
+    // reset the backoff to its base delay mid-outage on every such restart.
+    if (reconnectStateRef.current?.companyId !== companyId) {
+      reconnectStateRef.current = { companyId, attempt: 0 };
+    }
+    const reconnectState = reconnectStateRef.current;
 
     // Exponential backoff (1.5s → 15s cap), mirroring LiveUpdatesProvider.
     // A flat retry hammers a backend that is still cold-starting — every
@@ -349,8 +360,8 @@ export function useLiveRunTranscripts({
     // takes a minute to come up sees a steady stream of doomed connections.
     const scheduleReconnect = () => {
       if (closed) return;
-      reconnectAttempt += 1;
-      const delayMs = Math.min(15_000, 1_500 * 2 ** Math.min(reconnectAttempt - 1, 4));
+      reconnectState.attempt += 1;
+      const delayMs = Math.min(15_000, 1_500 * 2 ** Math.min(reconnectState.attempt - 1, 4));
       reconnectTimer = window.setTimeout(connect, delayMs);
     };
 
@@ -363,7 +374,7 @@ export function useLiveRunTranscripts({
 
       socket.onopen = () => {
         if (closed) return;
-        reconnectAttempt = 0;
+        reconnectState.attempt = 0;
       };
 
       socket.onmessage = (message) => {

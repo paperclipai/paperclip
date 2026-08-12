@@ -632,10 +632,10 @@ describe("useLiveRunTranscripts", () => {
   it("backs off exponentially when the live event socket keeps failing", async () => {
     vi.useFakeTimers();
     try {
-      function Harness() {
+      function Harness({ lastOutputBytes }: { lastOutputBytes?: number }) {
         useLiveRunTranscripts({
           companyId: "company-1",
-          runs: [{ id: "run-1", status: "running", adapterType: "codex_local" }],
+          runs: [{ id: "run-1", status: "running", adapterType: "codex_local", lastOutputBytes }],
         });
         return null;
       }
@@ -682,13 +682,30 @@ describe("useLiveRunTranscripts", () => {
       });
       expect(FakeWebSocket.instances).toHaveLength(4);
 
-      // A successful connection resets the backoff to the base delay.
+      // Run-metadata changes restart the socket effect; the progressed delay
+      // must survive the restart instead of resetting to the base delay.
       await act(async () => {
-        FakeWebSocket.instances[3].triggerOpen();
-        FakeWebSocket.instances[3].triggerClose();
-        await vi.advanceTimersByTimeAsync(1_500);
+        root.render(<Harness lastOutputBytes={512} />);
+        await Promise.resolve();
       });
       expect(FakeWebSocket.instances).toHaveLength(5);
+      await act(async () => {
+        FakeWebSocket.instances[4].triggerClose();
+        await vi.advanceTimersByTimeAsync(11_999);
+      });
+      expect(FakeWebSocket.instances).toHaveLength(5);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(FakeWebSocket.instances).toHaveLength(6);
+
+      // A successful connection resets the backoff to the base delay.
+      await act(async () => {
+        FakeWebSocket.instances[5].triggerOpen();
+        FakeWebSocket.instances[5].triggerClose();
+        await vi.advanceTimersByTimeAsync(1_500);
+      });
+      expect(FakeWebSocket.instances).toHaveLength(7);
 
       act(() => {
         root.unmount();
