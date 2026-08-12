@@ -234,6 +234,14 @@ import {
   workspaceFileRefSchema,
 } from "@paperclipai/shared";
 
+// Stable empty array for React Query `data` defaults. A literal `= []` default
+// creates a new array reference on every render while `data` is undefined
+// (loading/idle), which destabilizes every downstream useMemo that depends on
+// it — e.g. `childIssues` → `subTasksTree` → the Properties-pane openPanel
+// effect, producing a "Maximum update depth exceeded" render loop on task
+// detail pages. Reusing one shared reference keeps those memos stable.
+const EMPTY_ISSUES: Issue[] = [];
+
 type StopAndFinalizeRunError = Error & {
   runCancelledBeforeStatusUpdateFailed?: boolean;
 };
@@ -1866,7 +1874,7 @@ export function IssueDetail() {
     [issueId, location.state, location.search],
   );
 
-  const { data: rawChildIssues = [], isLoading: childIssuesLoading } = useQuery({
+  const { data: rawChildIssuesData, isLoading: childIssuesLoading } = useQuery({
     queryKey:
       issue?.id && resolvedCompanyId
         ? queryKeys.issues.listByDescendantRoot(resolvedCompanyId, issue.id)
@@ -1875,8 +1883,9 @@ export function IssueDetail() {
     enabled: !!resolvedCompanyId && !!issue?.id,
     placeholderData: keepPreviousDataForSameQueryTail<Issue[]>(issue?.id ?? "pending"),
   });
+  const rawChildIssues: Issue[] = rawChildIssuesData ?? EMPTY_ISSUES;
   const {
-    data: rawSiblingIssues = [],
+    data: rawSiblingIssuesData,
     isLoading: siblingIssuesLoading,
     isError: siblingIssuesError,
   } = useQuery({
@@ -1887,6 +1896,7 @@ export function IssueDetail() {
     queryFn: () => issuesApi.list(resolvedCompanyId!, { parentId: issue!.parentId!, includeBlockedBy: true }),
     enabled: !!resolvedCompanyId && !!issue?.parentId,
   });
+  const rawSiblingIssues: Issue[] = rawSiblingIssuesData ?? EMPTY_ISSUES;
   const companyLiveRunsQueryKey = resolvedCompanyId ? queryKeys.liveRuns(resolvedCompanyId) : ["live-runs", "pending"] as const;
   const sharedCompanyLiveRuns = useSharedPollingQuery<LiveRunForIssue[]>({
     companyId: resolvedCompanyId,

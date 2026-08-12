@@ -188,12 +188,18 @@ vi.mock("../context/CompanyContext", () => ({
   }),
 }));
 
+const mockOpenNewIssue = vi.hoisted(() => vi.fn());
+const mockOpenNewProject = vi.hoisted(() => vi.fn());
+const mockOpenNewGoal = vi.hoisted(() => vi.fn());
+
 vi.mock("../context/DialogContext", () => ({
   useDialog: () => ({
-    openNewIssue: vi.fn(),
+    openNewIssue: mockOpenNewIssue,
   }),
   useDialogActions: () => ({
-    openNewIssue: vi.fn(),
+    openNewIssue: mockOpenNewIssue,
+    openNewProject: mockOpenNewProject,
+    openNewGoal: mockOpenNewGoal,
   }),
 }));
 
@@ -1077,6 +1083,9 @@ describe("IssueDetail", () => {
     mockImageGalleryRender.mockClear();
     mockIssueWorkspaceCardRender.mockClear();
     mockNavigate.mockClear();
+    mockOpenNewIssue.mockClear();
+    mockOpenNewProject.mockClear();
+    mockOpenNewGoal.mockClear();
     mockLocation.pathname = "/issues/PAP-1";
     mockLocation.search = "";
     mockLocation.hash = "";
@@ -1145,6 +1154,45 @@ describe("IssueDetail", () => {
     await flushReact();
 
     expect(mockOpenPanel).toHaveBeenCalledTimes(panelOpenCount);
+  });
+
+  it("does not loop openPanel when the sub-task list query is still loading (PAP-508)", async () => {
+    // While the descendant-issues query is still in flight, `data` is undefined.
+    // A literal `= []` default for that `data` mints a new array reference on
+    // every render, which destabilizes `childIssues` → `subTasksTree` → the
+    // Properties-pane openPanel effect, re-firing openPanel each render until
+    // React throws "Maximum update depth exceeded". Keep the list query pending
+    // so `data` stays undefined and the stabilization of the empty default is
+    // the only thing preventing the loop. A fresh root element is rendered each
+    // pass so React actually re-renders IssueDetail (a reused element reference
+    // lets the reconciler bail out, masking the loop).
+    const pendingListRequest = createDeferred<Issue[]>();
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.list.mockReturnValue(pendingListRequest.promise);
+    const renderDetail = () => (
+      <QueryClientProvider client={queryClient}>
+        <IssueDetail />
+      </QueryClientProvider>
+    );
+
+    await act(async () => {
+      root.render(renderDetail());
+    });
+    await flushReact();
+    await flushReact();
+
+    const panelOpenCount = mockOpenPanel.mock.calls.length;
+    expect(panelOpenCount).toBeGreaterThan(0);
+
+    await act(async () => {
+      root.render(renderDetail());
+    });
+    await flushReact();
+
+    expect(mockOpenPanel).toHaveBeenCalledTimes(panelOpenCount);
+
+    pendingListRequest.resolve([]);
+    await flushReact();
   });
 
   it("does not load or render decision sections in the issue header", async () => {
