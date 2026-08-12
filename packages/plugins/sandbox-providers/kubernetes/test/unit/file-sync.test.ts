@@ -5,6 +5,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import {
   assertConfinedSandboxPath,
+  parseTarVerboseListingLine,
   performSyncIn,
   performSyncOut,
   type PodStreamExec,
@@ -754,5 +755,68 @@ describe("kubernetes onEnvironmentSyncIn (post-upload commands)", () => {
     // An absent/empty command list adds zero execs — byte-identical to today.
     expect(emptyCalls).toHaveLength(baseCalls.length);
     expect(emptyCalls).toHaveLength(1);
+  });
+});
+
+
+describe("parseTarVerboseListingLine", () => {
+  it("parses GNU tar listing lines (file, dir, symlink, hardlink, numeric owner)", () => {
+    expect(parseTarVerboseListingLine("-rw-r--r-- daytona/daytona 7560 2026-08-11 21:43 AGENTS.md")).toEqual({
+      typeFlag: "-",
+      rest: "AGENTS.md",
+    });
+    expect(parseTarVerboseListingLine("drwxr-xr-x daytona/daytona 0 2026-08-11 21:43 nested/")).toEqual({
+      typeFlag: "d",
+      rest: "nested/",
+    });
+    expect(
+      parseTarVerboseListingLine("lrwxrwxrwx daytona/daytona 0 2026-08-11 21:43 shortcut -> nested/data.txt"),
+    ).toEqual({ typeFlag: "l", rest: "shortcut -> nested/data.txt" });
+    expect(
+      parseTarVerboseListingLine("hrw-r--r-- daytona/daytona 0 2026-08-11 21:43 copy.txt link to data.txt"),
+    ).toEqual({ typeFlag: "h", rest: "copy.txt link to data.txt" });
+    expect(parseTarVerboseListingLine("-rw-r--r-- 0/0 12 2026-08-11 21:43 root-owned.txt")).toEqual({
+      typeFlag: "-",
+      rest: "root-owned.txt",
+    });
+  });
+
+  it("parses bsdtar (macOS) listing lines, including year-form dates", () => {
+    expect(parseTarVerboseListingLine("-rw-r--r--  0 daytona daytona  7560 Aug 11 21:43 AGENTS.md")).toEqual({
+      typeFlag: "-",
+      rest: "AGENTS.md",
+    });
+    expect(parseTarVerboseListingLine("drwxr-xr-x  0 daytona daytona     0 Aug 11 21:43 nested/")).toEqual({
+      typeFlag: "d",
+      rest: "nested/",
+    });
+    expect(
+      parseTarVerboseListingLine("lrwxr-xr-x  0 daytona daytona     0 Aug 11 21:43 shortcut -> nested/data.txt"),
+    ).toEqual({ typeFlag: "l", rest: "shortcut -> nested/data.txt" });
+    expect(
+      parseTarVerboseListingLine("hrw-r--r--  0 daytona daytona     0 Aug 11 21:43 copy.txt link to data.txt"),
+    ).toEqual({ typeFlag: "h", rest: "copy.txt link to data.txt" });
+    expect(parseTarVerboseListingLine("-rw-r--r--  0 daytona daytona  7560 Aug 11  2025 old.txt")).toEqual({
+      typeFlag: "-",
+      rest: "old.txt",
+    });
+  });
+
+  it("keeps the true member name for bsdtar lines with numeric uid/gid, so traversal stays visible", () => {
+    // With unresolvable ids bsdtar prints bare numbers; a looser GNU-first parse
+    // would read this shape shifted by one field and report the member name as
+    // "21:43 ../escape.txt", hiding the leading "../" from the traversal check.
+    expect(parseTarVerboseListingLine("-rw-r--r--  0 1001 1001  7560 Aug 11 21:43 ../escape.txt")).toEqual({
+      typeFlag: "-",
+      rest: "../escape.txt",
+    });
+  });
+
+  it("returns null (fail closed) for lines matching neither dialect", () => {
+    expect(parseTarVerboseListingLine("not a tar listing line")).toBeNull();
+    expect(parseTarVerboseListingLine("tar: Error is not recoverable: exiting now")).toBeNull();
+    // Device nodes carry "major,minor" instead of a byte count in both dialects.
+    expect(parseTarVerboseListingLine("crw-rw-rw- root/root 1,3 2026-08-11 21:43 dev/null")).toBeNull();
+    expect(parseTarVerboseListingLine("crw-rw-rw-  0 root wheel  1,3 Aug 11 21:43 dev/null")).toBeNull();
   });
 });

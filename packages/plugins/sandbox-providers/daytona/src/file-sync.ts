@@ -180,6 +180,29 @@ function posixPathEscapes(relative: string): boolean {
 }
 
 /**
+ * Parse one `tar -tvf` verbose listing line into its leading type flag and the
+ * trailing name-and-link-target field. The listing dialect depends on which tar
+ * the host ships: GNU/busybox emit
+ * `<perms> <owner>/<group> <size> <date> <time> <rest>`, while bsdtar
+ * (libarchive — the system tar on macOS) emits the ls-style
+ * `<perms> <links> <user> <group> <size> <Mon> <day> <time|year> <rest>`.
+ * The second field disambiguates: GNU always slash-joins owner/group, bsdtar
+ * puts a pure-digit link count there, so no line satisfies both shapes — the
+ * slash requirement is load-bearing, since a bsdtar line with numeric uid/gid
+ * would otherwise match the GNU shape shifted, hiding traversal in `<rest>`.
+ * Entries whose size column is not a plain byte count (e.g. a device node's
+ * `major,minor`) match neither shape. Returns null when nothing matches so
+ * callers can fail closed.
+ */
+export function parseTarVerboseListingLine(line: string): { typeFlag: string; rest: string } | null {
+  const gnu = line.match(/^(\S+)\s+\S+\/\S+\s+\d+\s+\S+\s+\S+\s+(.*)$/);
+  if (gnu) return { typeFlag: gnu[1][0], rest: gnu[2] };
+  const bsd = line.match(/^(\S+)\s+\d+\s+\S+\s+\S+\s+\d+\s+\S+\s+\d{1,2}\s+(?:\d{4}|\d{1,2}:\d{2}(?::\d{2})?)\s+(.*)$/);
+  if (bsd) return { typeFlag: bsd[1][0], rest: bsd[2] };
+  return null;
+}
+
+/**
  * Reject a sandbox-authored tarball before extraction if any member would land
  * outside the extraction dir. The archive is produced by the (untrusted) sandbox,
  * so `tar -xf` on the host must never be handed an archive whose entries carry
@@ -197,13 +220,12 @@ async function assertTarballEntriesConfined(archivePath: string): Promise<void> 
   });
   const lines = stdout.split("\n").filter((line) => line.trim().length > 0);
   for (const line of lines) {
-    // GNU tar -tvf: "<perms> <owner>/<group> <size> <date> <time> <name>[ -> target]".
-    const match = line.match(/^(\S+)\s+\S+\s+\d+\s+\S+\s+\S+\s+(.*)$/);
-    if (!match) {
+    const parsed = parseTarVerboseListingLine(line);
+    if (!parsed) {
       throw new Error(`Daytona syncOut refusing tarball with an unparseable entry listing: ${line}`);
     }
-    const typeFlag = match[1][0];
-    let name = match[2];
+    const typeFlag = parsed.typeFlag;
+    let name = parsed.rest;
     let linkTarget: string | null = null;
     if (typeFlag === "l") {
       const idx = name.indexOf(" -> ");
