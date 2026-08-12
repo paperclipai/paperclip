@@ -798,6 +798,13 @@ export type {
   AdapterEnvironmentTestStatus,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
+  AdapterAuthSessionStatus,
+  AdapterAuthSessionInternalStatus,
+  AdapterAuthSessionFailure,
+  AdapterAuthSessionResponse,
+  AdapterAuthSessionPrompt,
+  AdapterAuthSessionOwnerResponse,
+  StartAdapterAuthSessionRequest,
   AssetImage,
   Project,
   ProjectBudgetSummary,
@@ -1411,6 +1418,24 @@ export {
   COMPANY_SEARCH_SORTS,
   COMPANY_SEARCH_UPDATED_WITHIN_OPTIONS,
 } from "./types/index.js";
+export {
+  ADAPTER_AUTH_SESSION_STATUSES,
+  ADAPTER_AUTH_SESSION_INTERNAL_STATUSES,
+} from "./types/index.js";
+export {
+  ADAPTER_AUTH_SESSION_ACTIVE_STATUSES,
+  isActiveAdapterAuthSessionStatus,
+  toPublicAdapterAuthSessionStatus,
+  type AdapterAuthSessionActiveStatus,
+} from "./adapter-auth-session.js";
+export {
+  adapterAuthSessionStatusSchema,
+  adapterAuthSessionFailureSchema,
+  adapterAuthSessionResponseSchema,
+  adapterAuthSessionPromptSchema,
+  adapterAuthSessionOwnerResponseSchema,
+  startAdapterAuthSessionRequestSchema,
+} from "./validators/adapter-auth-session.js";
 export {
   ISSUE_REFERENCE_IDENTIFIER_RE,
   buildIssueReferenceHref,

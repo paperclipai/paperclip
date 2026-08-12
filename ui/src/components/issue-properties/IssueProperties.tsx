@@ -18,6 +18,7 @@ import { useIssueDocuments } from "@/hooks/useIssueDocuments";
 import { selectAgentArtifactAttachments } from "@/lib/issue-artifacts";
 import { projectsApi } from "../../api/projects";
 import { useCompany } from "../../context/CompanyContext";
+import { useSidebar } from "../../context/SidebarContext";
 import { queryKeys } from "../../lib/queryKeys";
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, buildCompanyUserProfileMap, isAgentTaskTarget } from "../../lib/company-members";
 import { ISSUE_OVERRIDE_ADAPTER_TYPES, type IssueModelLane } from "../../lib/issue-assignee-overrides";
@@ -166,6 +167,7 @@ export function IssueProperties({
   checkingMonitorNow = false,
 }: IssuePropertiesProps) {
   const { selectedCompanyId } = useCompany();
+  const { isMobile } = useSidebar();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
   const { data: experimentalSettings } = useQuery({
@@ -2160,7 +2162,12 @@ export function IssueProperties({
           <div>
             <PropertyRow label="Blocked by" wrap>
               {visibleBlockedByRelations.map((relation) => (
-                <RemovableIssueReferencePill key={relation.id} issue={relation} onRemove={removeBlockedBy} />
+                <RemovableIssueReferencePill
+                  key={relation.id}
+                  issue={relation}
+                  onRemove={removeBlockedBy}
+                  isMobile={isMobile}
+                />
               ))}
               <ExpandRelationListButton
                 hiddenCount={hiddenBlockedByCount}
@@ -2178,7 +2185,12 @@ export function IssueProperties({
         ) : (
           <PropertyRow label="Blocked by" wrap>
             {visibleBlockedByRelations.map((relation) => (
-              <RemovableIssueReferencePill key={relation.id} issue={relation} onRemove={removeBlockedBy} />
+              <RemovableIssueReferencePill
+                key={relation.id}
+                issue={relation}
+                onRemove={removeBlockedBy}
+                isMobile={isMobile}
+              />
             ))}
             <ExpandRelationListButton
               hiddenCount={hiddenBlockedByCount}

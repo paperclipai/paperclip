@@ -195,6 +195,14 @@
   --sz-folder-sheet-max: 80dvh;
   --sz-tweak-panel-max: 70vh; /* Task Chat Redesign dev tweak panel scroll cap. */
 
+  /* New-task dialog geometry inputs and gap tokens. The derived top/height
+     calculations live on the dialog element so runtime Visual Viewport
+     overrides participate in computed-value resolution. */
+  --new-issue-visual-viewport-height: 100dvh;
+  --new-issue-visual-viewport-offset-top: 0px;
+  --new-issue-dialog-top-gap: max(1rem, env(safe-area-inset-top));
+  --new-issue-dialog-bottom-gap: max(1rem, env(safe-area-inset-bottom));
+
   /* ────────────────────────────────────────────────────────────────────────
      Motion tokens — chat-style task thread (default; classic legacy view sits
      behind enableClassicTaskInterface).

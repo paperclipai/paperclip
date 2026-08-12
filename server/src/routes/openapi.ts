@@ -587,6 +587,13 @@ const refreshExternalObjectsBodySchema = z.object({
   objectIds: z.array(z.string().uuid()).max(50).optional(),
 }).strict();
 
+// The start route reads the body directly, so document the accepted fields
+// here. A sandbox environment is required. The time-to-live is optional.
+const startAdapterLoginSessionSchema = z.object({
+  environmentId: z.string().min(1),
+  ttlSeconds: z.number().optional(),
+});
+
 const environmentCustomImageCompanyQuerySchema = z.object({
   companyId: z.string().optional(),
 }).strict();
@@ -2101,6 +2108,46 @@ registry.registerPath({
     body: jsonBody(testAdapterEnvironmentSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/adapters/{type}/login-sessions",
+  tags: ["adapters"],
+  summary: "Start a company-scoped adapter device login",
+  request: {
+    params: z.object({ companyId: z.string(), type: z.string() }),
+    body: jsonBody(startAdapterLoginSessionSchema),
+  },
+  responses: {
+    201: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/adapters/{type}/login-sessions/{sessionId}",
+  tags: ["adapters"],
+  summary: "Read an adapter device login session",
+  request: {
+    params: z.object({ companyId: z.string(), type: z.string(), sessionId: z.string() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/adapters/{type}/login-sessions/{sessionId}/cancel",
+  tags: ["adapters"],
+  summary: "Cancel an adapter device login session",
+  request: {
+    params: z.object({ companyId: z.string(), type: z.string(), sessionId: z.string() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 // ─── Issues ──────────────────────────────────────────────────────────────────

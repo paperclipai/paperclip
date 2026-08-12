@@ -136,11 +136,12 @@ function assertProofHomeIsSafeTarget(
 }
 
 /**
- * Enforces the bounded-size, subscription-only auth shape. Returns the
- * subscription `account_id` on success. Rejects an empty, an oversized, an
- * API-key, and a malformed payload. Never puts token bytes into the error.
+ * Enforces the bounded-size, subscription-only auth shape. Rejects an empty, an
+ * oversized, an API-key, and a malformed payload. Never puts token bytes into the
+ * error. The device-login promotion reuses this exact rule, so the export and the
+ * promotion validate the same way.
  */
-function assertUsableSubscriptionShape(bytes: Buffer): void {
+export function assertUsableSubscriptionShape(bytes: Buffer): void {
   if (bytes.length === 0) {
     throw new Error("device-login export: refused an empty auth payload");
   }

@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
+  AdapterAuthSessionPrompt,
+  AdapterAuthSessionStatus,
   AdapterEnvironmentTestResult,
   CompanySecret,
   EnvBinding,
@@ -19,14 +21,16 @@ import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/a
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/adapter-codex-local/ui";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { FolderOpen, Heart, ChevronDown, X } from "lucide-react";
+import { FolderOpen, Heart, ChevronDown, X, Copy, Check, ExternalLink, Loader2, TriangleAlert } from "lucide-react";
 import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { resolveAdapterTestEnvironmentId } from "../lib/adapter-test-environment";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
@@ -84,6 +88,12 @@ type AgentConfigFormProps = {
   onTestFeedbackChange?: (feedback: {
     errorMessage: string | null;
     result: AdapterEnvironmentTestResult | null;
+    // The login panel descriptor when the current target is a sandbox with no
+    // ready authentication, otherwise null. A parent that lifts the test
+    // feedback must render `AdapterLoginPanel` from this descriptor. The inline
+    // feedback branch renders the panel itself, so this descriptor is the only
+    // way the panel reaches a parent that hides the inline branch.
+    login: AdapterLoginDescriptor | null;
   }) => void;
   hideInlineSave?: boolean;
   showAdapterTypeField?: boolean;
@@ -455,6 +465,23 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     [environments, instanceDefaultEnvironmentId],
   );
 
+  // The environment a login session runs in. It mirrors the Test resolution: the
+  // agent's own environment wins, otherwise the instance default. The login
+  // affordance shows only when this environment is a sandbox, because the
+  // canonical auth-missing check comes only from a sandbox target.
+  const effectiveLoginEnvironmentId = useMemo(
+    () =>
+      resolveAdapterTestEnvironmentId({
+        agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
+        instanceDefaultEnvironmentId: instanceSettings?.defaultEnvironmentId ?? null,
+      }),
+    [rawCurrentDefaultEnvironmentId, instanceSettings?.defaultEnvironmentId],
+  );
+  const effectiveLoginEnvironment = useMemo(
+    () => environments.find((environment) => environment.id === effectiveLoginEnvironmentId) ?? null,
+    [environments, effectiveLoginEnvironmentId],
+  );
+
   // When the instance forces Kubernetes execution, new agents must default to the
   // managed Kubernetes sandbox environment (never the implicit local default).
   // Only applies in create mode and only once the K8s environment is loaded; if
@@ -753,6 +780,32 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const testActionLabel = "Test";
   const isSavePending = !isCreate && Boolean(props.isSaving);
   const testEnvironmentDisabled = testActionPending || isSavePending || !selectedCompanyId;
+
+  // Drop a stale Test result when the adapter type or the effective environment
+  // changes. A held result would keep the login affordance visible for a target
+  // the user no longer selected. The reset unmounts the login panel too, so its
+  // session state clears with it. Hold `reset` in a ref so the effect does not
+  // re-run on every render (the mutation object has a new identity each render).
+  const resetTestEnvironmentRef = useRef(testEnvironment.reset);
+  resetTestEnvironmentRef.current = testEnvironment.reset;
+  useEffect(() => {
+    resetTestEnvironmentRef.current();
+    setTestActionError(null);
+  }, [adapterType, effectiveLoginEnvironmentId]);
+
+  // Show the login affordance only for a current `codex_local` sandbox whose most
+  // recent Test result carries the canonical auth-missing check. The result keeps
+  // its own `adapterType`, so a result from another adapter never gates the panel.
+  const authMissingCheck =
+    testEnvironment.data?.adapterType === "codex_local"
+      ? testEnvironment.data.checks.find((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE) ?? null
+      : null;
+  const showAdapterLogin =
+    adapterType === "codex_local" &&
+    effectiveLoginEnvironment?.driver === "sandbox" &&
+    Boolean(effectiveLoginEnvironmentId) &&
+    Boolean(selectedCompanyId) &&
+    Boolean(authMissingCheck);
   const runEnvironmentTest = useCallback(async () => {
     if (!selectedCompanyId) {
       throw new Error("Select a company to test adapter environment");
@@ -819,11 +872,26 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? "Environment test failed"
             : null),
       result: testEnvironment.data ?? null,
+      // `showAdapterLogin` already requires a selected company and a non-empty
+      // environment id, so both are present here.
+      login:
+        showAdapterLogin && selectedCompanyId && effectiveLoginEnvironmentId
+          ? { companyId: selectedCompanyId, adapterType, environmentId: effectiveLoginEnvironmentId }
+          : null,
     });
     return () => {
-      props.onTestFeedbackChange?.({ errorMessage: null, result: null });
+      props.onTestFeedbackChange?.({ errorMessage: null, result: null, login: null });
     };
-  }, [props.onTestFeedbackChange, testActionError, testEnvironment.data, testEnvironment.error]);
+  }, [
+    props.onTestFeedbackChange,
+    testActionError,
+    testEnvironment.data,
+    testEnvironment.error,
+    showAdapterLogin,
+    selectedCompanyId,
+    adapterType,
+    effectiveLoginEnvironmentId,
+  ]);
 
   // Current model for display
   const currentModelValue = isCreate
@@ -1231,6 +1299,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <AdapterEnvironmentResult result={testEnvironment.data} />
           )}
 
+          {showInlineAdapterTestEnvironmentFeedback && showAdapterLogin && (
+            <AdapterLoginPanel
+              key={`${adapterType}:${effectiveLoginEnvironmentId}`}
+              companyId={selectedCompanyId!}
+              adapterType={adapterType}
+              environmentId={effectiveLoginEnvironmentId!}
+            />
+          )}
+
           {/* Working directory */}
           {showLegacyWorkingDirectoryField && (
             <Field label="Working directory (deprecated)" hint={help.cwd}>
@@ -1632,6 +1709,264 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         </div>
       ) : null}
 
+    </div>
+  );
+}
+
+// The public session states that end a login. The panel stops the status poll
+// and shows a terminal message when the session reaches one of these.
+const ADAPTER_LOGIN_TERMINAL_STATUSES = new Set<AdapterAuthSessionStatus>([
+  "authenticated",
+  "failed",
+  "timed_out",
+  "cancelled",
+]);
+
+// The status route poll interval while a session is active (Decision A). The
+// poll stops at a terminal state.
+const ADAPTER_LOGIN_POLL_INTERVAL_MS = 2000;
+
+// A copy-to-clipboard button. It mirrors the workspace service control bar: a
+// short "copied" flash, then it returns to the copy icon.
+function AdapterLoginCopyButton({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    },
+    [],
+  );
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-xs"
+      aria-label={label}
+      title={label}
+      className="text-muted-foreground hover:text-foreground"
+      onClick={async () => {
+        try {
+          await copyTextToClipboard(value);
+          setCopied(true);
+        } catch {
+          setCopied(false);
+        }
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        timeoutRef.current = setTimeout(() => setCopied(false), 1500);
+      }}
+    >
+      {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+    </Button>
+  );
+}
+
+// The terminal message for a finished login. It never shows a secret. It shows
+// only the fixed, non-secret failure message the server returns.
+function AdapterLoginTerminalState({
+  status,
+  message,
+}: {
+  status: AdapterAuthSessionStatus;
+  message: string | null;
+}) {
+  if (status === "authenticated") {
+    return (
+      <div className="flex items-center gap-2 text-(length:--text-micro) text-foreground">
+        <Check className="size-3 shrink-0" />
+        <span>Authenticated. The sandbox has credentials now.</span>
+      </div>
+    );
+  }
+  const label =
+    status === "timed_out"
+      ? "Login timed out"
+      : status === "cancelled"
+        ? "Login cancelled"
+        : "Login failed";
+  return (
+    <div className="flex items-start gap-2 text-(length:--text-micro) text-destructive">
+      <TriangleAlert className="size-3 shrink-0" />
+      <span>
+        {label}
+        {message ? `: ${message}` : "."}
+      </span>
+    </div>
+  );
+}
+
+// The login panel for one adapter in one sandbox environment. It starts a login
+// session, polls the status route, and shows the one-time code and the
+// authentication URL with copy and open actions. It shows the terminal states.
+// It never writes the code, the URL, or any credential byte to a log line.
+//
+// The panel holds its own session state. The parent gives it a stable `key` from
+// the adapter type and the environment id, so a change to either remounts the
+// panel with a fresh session state.
+// The props that identify one login panel: one adapter in one sandbox
+// environment for one company. A parent that lifts the test feedback renders
+// the panel from this descriptor.
+export type AdapterLoginDescriptor = {
+  companyId: string;
+  adapterType: string;
+  environmentId: string;
+};
+
+export function AdapterLoginPanel({
+  companyId,
+  adapterType,
+  environmentId,
+}: AdapterLoginDescriptor) {
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [startError, setStartError] = useState<string | null>(null);
+  // The server delivers the one-time prompt on the first owner read only. Latch
+  // it so a later poll that returns a null prompt does not hide the code and the
+  // URL.
+  const [latchedPrompt, setLatchedPrompt] = useState<AdapterAuthSessionPrompt | null>(null);
+
+  const startLogin = useMutation({
+    mutationFn: () => agentsApi.startAdapterAuthLogin(companyId, adapterType, { environmentId }),
+    onSuccess: (session) => {
+      setStartError(null);
+      setLatchedPrompt(null);
+      setSessionId(session.sessionId);
+    },
+    onError: (error) => {
+      setStartError(error instanceof Error ? error.message : "Could not start the login.");
+    },
+  });
+
+  const cancelLogin = useMutation({
+    mutationFn: () => agentsApi.cancelAdapterAuthLogin(companyId, adapterType, sessionId!),
+    onSuccess: () => {
+      // Reset local state, so the panel returns to its idle start state and the
+      // Log in button is available again.
+      setSessionId(null);
+      setLatchedPrompt(null);
+      setStartError(null);
+    },
+    onError: (error) => {
+      setStartError(error instanceof Error ? error.message : "Could not cancel the login.");
+    },
+  });
+
+  const statusQuery = useQuery({
+    queryKey: ["adapter-login-status", companyId, adapterType, sessionId],
+    queryFn: () => agentsApi.getAdapterAuthLoginStatus(companyId, adapterType, sessionId!),
+    enabled: Boolean(sessionId),
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status && ADAPTER_LOGIN_TERMINAL_STATUSES.has(status)
+        ? false
+        : ADAPTER_LOGIN_POLL_INTERVAL_MS;
+    },
+  });
+
+  // Latch the first non-null prompt for the current session. A later poll
+  // returns a null prompt after the one-time delivery, so keep the latched value.
+  useEffect(() => {
+    const next = statusQuery.data?.prompt ?? null;
+    if (next) setLatchedPrompt(next);
+  }, [statusQuery.data]);
+
+  const session = statusQuery.data ?? startLogin.data ?? null;
+  const status = session?.status ?? null;
+  const prompt = latchedPrompt;
+  const isTerminal = status ? ADAPTER_LOGIN_TERMINAL_STATUSES.has(status) : false;
+  const isActive = Boolean(sessionId) && !isTerminal;
+  const startDisabled = startLogin.isPending || isActive;
+
+  return (
+    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-foreground">Sign in to the sandbox</span>
+        <div className="flex items-center gap-1.5">
+          {isActive && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2.5 text-xs text-muted-foreground hover:text-foreground"
+              disabled={cancelLogin.isPending}
+              onClick={() => cancelLogin.mutate()}
+            >
+              Cancel
+            </Button>
+          )}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 px-2.5 text-xs"
+            disabled={startDisabled}
+            onClick={() => startLogin.mutate()}
+          >
+            Log in
+          </Button>
+        </div>
+      </div>
+
+      {startError && (
+        <div role="alert" className="text-(length:--text-micro) text-destructive">
+          {startError}
+        </div>
+      )}
+
+      {/* One live region announces the loading, prompt, and terminal states, so a
+          screen reader reports each transition without a re-navigation. */}
+      <div role="status" aria-live="polite" className="space-y-2 empty:hidden">
+        {isActive && !prompt && (
+          <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
+            <Loader2 className="size-3 animate-spin shrink-0" />
+            <span>Preparing the login…</span>
+          </div>
+        )}
+
+        {isActive && prompt && (
+          <div className="space-y-2">
+            <div className="text-(length:--text-micro) text-muted-foreground">
+              Open the authentication page and enter the code.
+            </div>
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
+                Code
+              </div>
+              <span className="font-mono text-xs text-foreground break-all">{prompt.code}</span>
+            </div>
+            <AdapterLoginCopyButton value={prompt.code} label="Copy code" />
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
+                Authentication URL
+              </div>
+              <span className="font-mono text-xs text-foreground break-all">{prompt.url}</span>
+            </div>
+            <div className="flex items-center">
+              <AdapterLoginCopyButton value={prompt.url} label="Copy URL" />
+              <Button
+                asChild
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                aria-label="Open the authentication page"
+                title="Open the authentication page"
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <a href={prompt.url} target="_blank" rel="noreferrer noopener">
+                  <ExternalLink className="size-3" />
+                </a>
+              </Button>
+            </div>
+          </div>
+        </div>
+        )}
+
+        {isTerminal && status && (
+          <AdapterLoginTerminalState status={status} message={session?.failure?.message ?? null} />
+        )}
+      </div>
     </div>
   );
 }

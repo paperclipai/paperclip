@@ -95,6 +95,18 @@ import {
 } from "../services/instance-settings.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
+import {
+  checkStagedCredentialReadiness,
+  promoteDeviceLoginCredential,
+} from "@paperclipai/adapter-codex-local/server";
+import {
+  AdapterAuthSessionConflictError,
+  CODEX_DEVICE_LOGIN_ADAPTER_TYPE,
+  createCodexDeviceLoginService,
+  createDbAdapterAuthSessionStore,
+  createProductionLoginSessionRuntime,
+} from "../services/codex-device-login-service.js";
+import type { AdapterAuthSessionOwnerResponse } from "@paperclipai/shared";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
@@ -234,6 +246,83 @@ export function agentRoutes(
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+
+  // The company-scoped adapter login-session service. It runs the device-login
+  // flow in a fresh trusted sandbox and holds the one-time prompt in memory. The
+  // process owns one instance, so the in-memory prompt and the cancellation
+  // controllers persist across requests.
+  const adapterLoginStore = createDbAdapterAuthSessionStore(db);
+  const adapterLoginService = createCodexDeviceLoginService({
+    store: adapterLoginStore,
+    runtime: createProductionLoginSessionRuntime({ db, environmentRuntime }),
+    // The mandatory credential promotion. A successful login authenticates only
+    // after this promotion validates the exact staged credential, runs an
+    // independent readiness check, confirms the session still holds the sole
+    // active claim, and writes the credential into the company scope. A rejected
+    // or unready credential fails the session and writes nothing.
+    promotion: {
+      async promote(authBytes, context) {
+        // Hold the promotion critical-section lock across the ownership check and
+        // the credential write. The reaper takes the same lock before it reclaims
+        // a stale `promoting` row. So a reclaim never interleaves with a live
+        // write: the reaper either wins the lock first and the ownership check
+        // then reads a reclaimed row and writes nothing, or the write finishes
+        // first under the lock and the reaper reclaims only after it completes. A
+        // read-only fence is not enough, because the filesystem write can start
+        // after the fence; the lock spans the whole section.
+        const outcome = await adapterLoginStore.withCompanyAdapterPromotionLock(
+          context.companyId,
+          context.adapterType,
+          () =>
+            promoteDeviceLoginCredential({
+              authBytes,
+              companyId: context.companyId,
+              userInitiated: true,
+              checkReadiness: (bytes) => checkStagedCredentialReadiness(bytes),
+              isSoleActiveOwner: async () => {
+                // The partial unique index allows one active row per company and
+                // adapter. So a `promoting` row for this session is the sole
+                // active owner of the company credential slot. The read runs
+                // inside the lock, so it observes a reaper reclaim that committed
+                // before this section acquired the lock.
+                const row = await adapterLoginStore.get(context.sessionId);
+                return row?.status === "promoting" && row.companyId === context.companyId;
+              },
+              log: (line) => {
+                // The promotion lines carry no token bytes and no raw account id,
+                // so it is safe to log them with the session identifier.
+                logger.info({ sessionId: context.sessionId }, line);
+              },
+            }),
+        );
+        // A resolved promotion is not necessarily an accepted promotion. In
+        // particular, a reaper/expiry race can revoke this session's sole
+        // ownership between the service transition and Decision H. Fail closed:
+        // only a credential write or a deliberate safe keep can authenticate.
+        if (outcome === "kept_foreign_identity") {
+          // The login produced a different account than the one the company
+          // credential home already holds. The promotion never clobbers an
+          // occupied home, so this login installed nothing durable, and the
+          // identity-anchored vend can never select it: a later run keeps the
+          // existing account. Fail the session, so the operator never sees a
+          // false `authenticated` for an account the system will not use.
+          throw new Error(
+            "device-login credential promotion rejected: the login is a different account than the one already set for this company; the existing account was kept",
+          );
+        }
+        if (outcome !== "promoted" && outcome !== "kept") {
+          throw new Error(`device-login credential promotion rejected: ${outcome}`);
+        }
+      },
+    },
+    recordActivity: (event) => {
+      // The event carries no URL, no code, no credential, no account identifier,
+      // and no lease identifier, so it is safe to log.
+      logger.info(event, "adapter login session lifecycle");
+    },
+  });
+  // The cancellation controllers for the in-flight login runs this process owns.
+  const adapterLoginAbortControllers = new Map<string, AbortController>();
 
   async function assertAgentEnvironmentSelection(
     companyId: string,
@@ -811,6 +900,79 @@ export function agentRoutes(
     });
     if (decision.allowed) return;
     throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+  }
+
+  // The single owner-authorization helper for the three adapter login routes. It
+  // requires a board actor, company access, and the same configuration
+  // permission as the adapter Test route (`agents:create`). It returns the
+  // immutable owner identifier: the board user that starts, reads, or cancels the
+  // session. The start route persists this identifier; the status and cancel
+  // routes compare it to the session owner and return 404 on a mismatch, so a
+  // non-owner cannot enumerate a session.
+  async function assertCanManageAdapterLogin(
+    req: Request,
+    companyId: string,
+  ): Promise<string> {
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "agents:create",
+      resource: { type: "company", companyId },
+    });
+    if (!decision.allowed) {
+      throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    }
+    const userId = req.actor.userId;
+    if (!userId) {
+      throw forbidden(
+        "A board user identity is required to manage an adapter login session.",
+      );
+    }
+    return userId;
+  }
+
+  // The device-login flow supports only the Codex adapter. Reject any other type.
+  function assertCodexLoginAdapter(type: string): void {
+    if (type !== CODEX_DEVICE_LOGIN_ADAPTER_TYPE) {
+      throw badRequest(`Adapter "${type}" does not support a device login.`);
+    }
+  }
+
+  // The environment-eligibility guard for an adapter login. A device login runs
+  // only in an active sandbox environment. This reuses the shared environment
+  // selection guard, so it rejects a missing, archived (inactive), local, SSH, or
+  // plugin environment the same way the agent configuration routes do.
+  async function assertSandboxLoginEnvironment(
+    companyId: string,
+    environmentId: string,
+  ): Promise<void> {
+    await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
+      allowedDrivers: ["sandbox"],
+    });
+  }
+
+  // Read a login session for its owner. The durable row is the authority for the
+  // company and the owner. This returns null when the row is absent, when it
+  // belongs to another company or adapter, or when the requesting user is not the
+  // owner. So a non-owner and a cross-company caller both receive a 404 and cannot
+  // enumerate a session. Only the owner path reads the one-time prompt.
+  async function readOwnerLoginSession(
+    companyId: string,
+    adapterType: string,
+    sessionId: string,
+    requestingUserId: string,
+  ): Promise<AdapterAuthSessionOwnerResponse | null> {
+    const row = await adapterLoginStore.get(sessionId);
+    if (
+      !row ||
+      row.companyId !== companyId ||
+      row.adapterType !== adapterType ||
+      row.startedByUserId !== requestingUserId
+    ) {
+      return null;
+    }
+    return adapterLoginService.readOwnerSession(sessionId, requestingUserId);
   }
 
   async function assertCanReadConfigurations(req: Request, companyId: string) {
@@ -1998,6 +2160,119 @@ export function agentRoutes(
       } finally {
         await release(releaseStatus);
       }
+    },
+  );
+
+  // Start a company-scoped adapter device login. The create form has no agent
+  // identifier, so the route keys on the company and the adapter. The owner
+  // helper requires a board actor with the configuration permission, and it
+  // returns the immutable owner identifier that the service persists on the row.
+  router.post(
+    "/companies/:companyId/adapters/:type/login-sessions",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const type = req.params.type as string;
+      const startedByUserId = await assertCanManageAdapterLogin(req, companyId);
+      assertCodexLoginAdapter(type);
+
+      const environmentId =
+        typeof req.body?.environmentId === "string" && req.body.environmentId.trim().length > 0
+          ? (req.body.environmentId as string)
+          : null;
+      if (!environmentId) {
+        throw badRequest("A sandbox environment is required to start a device login.");
+      }
+      const ttlSeconds =
+        typeof req.body?.ttlSeconds === "number" && Number.isFinite(req.body.ttlSeconds)
+          ? (req.body.ttlSeconds as number)
+          : undefined;
+
+      // Reject a non-sandbox or inactive environment before the service starts.
+      await assertSandboxLoginEnvironment(companyId, environmentId);
+
+      const controller = new AbortController();
+      let result: Awaited<ReturnType<typeof adapterLoginService.start>>;
+      try {
+        result = await adapterLoginService.start({
+          companyId,
+          environmentId,
+          adapterType: type,
+          startedByUserId,
+          ttlSeconds,
+          signal: controller.signal,
+        });
+      } catch (error) {
+        // A second active login for the same company and adapter loses the
+        // credential slot. Map the service conflict to a 409 response.
+        if (error instanceof AdapterAuthSessionConflictError) {
+          throw conflict(error.message);
+        }
+        throw error;
+      }
+
+      // Keep the controller so the cancel route can abort the in-flight run.
+      // Drop it when the run ends. The completion runs the terminal handling in
+      // the background; the response returns the initial session at once.
+      const startedSessionId = result.session.sessionId;
+      adapterLoginAbortControllers.set(startedSessionId, controller);
+      void result.completed
+        .catch(() => {})
+        .finally(() => {
+          adapterLoginAbortControllers.delete(startedSessionId);
+        });
+
+      res.status(201).json(result.session);
+    },
+  );
+
+  // Read a login session. The owner receives the status and the one-time prompt.
+  // A non-owner or a cross-company caller receives a 404.
+  router.get(
+    "/companies/:companyId/adapters/:type/login-sessions/:sessionId",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const type = req.params.type as string;
+      const sessionId = req.params.sessionId as string;
+      const ownerUserId = await assertCanManageAdapterLogin(req, companyId);
+      assertCodexLoginAdapter(type);
+
+      const owner = await readOwnerLoginSession(companyId, type, sessionId, ownerUserId);
+      if (!owner) {
+        res.status(404).json({ error: "Adapter login session not found" });
+        return;
+      }
+      res.json(owner);
+    },
+  );
+
+  // Cancel a login session. The owner aborts the in-flight run. A non-owner or a
+  // cross-company caller receives a 404.
+  router.post(
+    "/companies/:companyId/adapters/:type/login-sessions/:sessionId/cancel",
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const type = req.params.type as string;
+      const sessionId = req.params.sessionId as string;
+      const ownerUserId = await assertCanManageAdapterLogin(req, companyId);
+      assertCodexLoginAdapter(type);
+
+      // Scope the cancel to this company, adapter, and owner. A non-owner and a
+      // cross-company caller both receive a 404 and cannot cancel a session.
+      const owner = await readOwnerLoginSession(companyId, type, sessionId, ownerUserId);
+      if (!owner) {
+        res.status(404).json({ error: "Adapter login session not found" });
+        return;
+      }
+      // Durably release the company slot. The durable write terminates the row
+      // even when this process does not own the in-flight run, so a cross-process
+      // cancel or a cancel after a restart does not leave the slot held until the
+      // expiry. The reaper deletes the sandbox and finalizes the terminal.
+      const cancelled = await adapterLoginService.cancelOwnerSession(sessionId, ownerUserId);
+      // Abort the in-flight run this process owns, so the local login stops at
+      // once instead of waiting for the reaper. A run in another process, or an
+      // already-terminal run, has no controller here.
+      adapterLoginAbortControllers.get(sessionId)?.abort();
+      res.json(cancelled ?? owner);
     },
   );
 
