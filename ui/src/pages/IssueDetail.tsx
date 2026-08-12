@@ -2009,9 +2009,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         onSubmitInteractionVerdicts={onSubmitInteractionVerdicts}
         issueWorkMode={issueWorkMode}
         onWorkModeChange={onWorkModeChange}
-        onCancelRun={interruptibleIssueRun && onPauseWorkRun
+        onCancelRun={interruptibleIssueRun
           ? async () => {
-              await onPauseWorkRun(interruptibleIssueRun.id);
+              await onInterruptQueued(interruptibleIssueRun.id);
             }
           : undefined}
         onImageClick={onImageClick}

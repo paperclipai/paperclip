@@ -2461,6 +2461,29 @@ function IssueChatAssistantMessage({
               {isStoppingRun ? stoppingRunLabel : stopRunLabel}
             </DropdownMenuItem>
           ) : null}
+          {canStopRun && runId
+            ? runFinalizationActions.map((action) => (
+              <DropdownMenuItem
+                key={action.id}
+                disabled={isStoppingRun || action.isPending || action.disabled}
+                className={cn(
+                  action.id === "cancel"
+                    ? "text-red-700 focus:text-red-800 dark:text-red-300 dark:focus:text-red-200"
+                    : "text-green-700 focus:text-green-800 dark:text-green-300 dark:focus:text-green-200",
+                )}
+                onSelect={() => {
+                  void action.onSelect(runId);
+                }}
+              >
+                {action.id === "cancel" ? (
+                  <Square className="mr-2 h-3.5 w-3.5 fill-current" />
+                ) : (
+                  <Check className="mr-2 h-3.5 w-3.5" />
+                )}
+                {action.isPending ? action.pendingLabel : action.label}
+              </DropdownMenuItem>
+            ))
+            : null}
           {runHref ? (
             <DropdownMenuItem asChild>
               <Link to={runHref} target="_blank" rel="noreferrer noopener">

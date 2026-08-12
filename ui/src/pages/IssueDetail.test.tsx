@@ -252,6 +252,7 @@ vi.mock("../components/IssueChatThread", () => ({
     issueWorkMode?: string;
     onAdd?: (body: string) => Promise<void>;
     onInterruptQueued?: (runId: string) => Promise<void>;
+    onCancelRun?: () => Promise<void>;
     onStopRun?: (runId: string) => Promise<void>;
     stopRunLabel?: string;
     stoppingRunLabel?: string;
@@ -269,6 +270,11 @@ vi.mock("../components/IssueChatThread", () => ({
         {props.onStopRun ? (
           <button type="button" onClick={() => void props.onStopRun?.("run-active-1")}>
             {props.stopRunLabel ?? "Stop run"}
+          </button>
+        ) : null}
+        {props.onCancelRun ? (
+          <button type="button" onClick={() => void props.onCancelRun?.()}>
+            Cancel run
           </button>
         ) : null}
         {props.runFinalizationActions?.map((action) => (
@@ -2156,6 +2162,57 @@ describe("IssueDetail", () => {
     expect(mockHeartbeatsApi.cancel).toHaveBeenCalledTimes(2);
     expect(mockHeartbeatsApi.cancel.mock.invocationCallOrder[1])
       .toBeLessThan(mockIssuesApi.update.mock.invocationCallOrder[1]);
+  });
+
+  it("interrupts only the active run from the chat cancel control", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "in_progress",
+      assigneeAgentId: "agent-1",
+      executionRunId: "run-active-1",
+    }));
+    mockHeartbeatsApi.cancel.mockResolvedValue(undefined);
+    mockHeartbeatsApi.activeRunForIssue.mockResolvedValue({
+      id: "run-active-1",
+      status: "running",
+      invocationSource: "issue",
+      triggerDetail: null,
+      contextCommentId: null,
+      contextWakeCommentId: null,
+      startedAt: "2026-04-21T00:00:00.000Z",
+      finishedAt: null,
+      createdAt: "2026-04-21T00:00:00.000Z",
+      agentId: "agent-1",
+      agentName: "Coder",
+      adapterType: "codex_local",
+      issueId: "issue-1",
+    });
+    mockAgentsApi.list.mockResolvedValue([createAgent()]);
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { userId: "user-1" },
+      user: { id: "user-1" },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const cancelRunButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Cancel run");
+    expect(cancelRunButton).toBeTruthy();
+    const treeHoldCallCount = mockIssuesApi.createTreeHold.mock.calls.length;
+
+    await act(async () => {
+      cancelRunButton!.click();
+    });
+    await flushReact();
+
+    expect(mockHeartbeatsApi.cancel).toHaveBeenCalledWith("run-active-1");
+    expect(mockIssuesApi.createTreeHold).toHaveBeenCalledTimes(treeHoldCallCount);
   });
 
   it("reports partial success when run finalization stops the run but task status update fails", async () => {
