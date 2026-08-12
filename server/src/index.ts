@@ -799,7 +799,10 @@ export async function startServer(): Promise<StartedServer> {
   });
   process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
-  process.env.PAPERCLIP_RUNTIME_API_URL = runtimeApiUrl;
+  // The control plane injects this into every agent run. Agent execution shares
+  // the host network namespace, so a public/container-gateway address is both
+  // unnecessary and less reliable than the canonical loopback endpoint.
+  process.env.PAPERCLIP_RUNTIME_API_URL = "http://127.0.0.1:3100";
   process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
   process.env.PAPERCLIP_API_URL = configuredApiUrl;
   
