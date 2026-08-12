@@ -680,7 +680,11 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
 }
 
 export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup }) {
+  // The database queued-wake check is authoritative across processes. This
+  // bounded cache only covers the enqueue/mutation race in the current
+  // process; failed or deferred enqueue attempts are deliberately not cached.
   const locallyRequeuedReviewRuns = new Set<string>();
+  const localReviewWakeCacheLimit = 1024;
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -3921,7 +3925,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           result.skipped += 1;
           continue;
         }
-
         if (await isInvocationBudgetBlocked(issue, participantAgentId)) {
           result.skipped += 1;
           continue;
@@ -3941,8 +3944,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now, or mark the issue blocked with the exact unblock action.",
           },
         });
-        locallyRequeuedReviewRuns.add(participantLatestRun.id);
         if (queued) {
+          locallyRequeuedReviewRuns.add(participantLatestRun.id);
+          if (locallyRequeuedReviewRuns.size > localReviewWakeCacheLimit) {
+            const oldest = locallyRequeuedReviewRuns.values().next().value;
+            if (oldest) locallyRequeuedReviewRuns.delete(oldest);
+          }
           result.reviewParticipantRequeued += 1;
           result.issueIds.push(issue.id);
         } else {

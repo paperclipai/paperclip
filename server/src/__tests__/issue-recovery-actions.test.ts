@@ -414,9 +414,11 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const wakeCount = enqueueWakeup.mock.calls.length;
 
     const secondPostRestore = await recovery.reconcileStrandedAssignedIssues();
-    expect(secondPostRestore.reviewParticipantRequeued).toBe(0);
+    // A null enqueue result is deferred, not a durable wake. The next scan
+    // must remain eligible to retry recovery.
+    expect(secondPostRestore.reviewParticipantRequeued).toBe(1);
     expect(secondPostRestore.changesRequestedRepaired).toBe(0);
-    expect(enqueueWakeup).toHaveBeenCalledTimes(wakeCount);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(wakeCount + 1);
   });
 
   it("rejects a stale repair candidate restored to a pending reviewer before CAS", async () => {
