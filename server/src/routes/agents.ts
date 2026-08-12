@@ -205,6 +205,21 @@ export function agentRoutes(
      * The caller registers the startup reaper and the graceful-shutdown cleanup.
      */
     onSetupTokenLoginService?: (service: SetupTokenSessionService) => void;
+    /**
+     * Binds the live setup-token login transport. When the caller provides it,
+     * the session route is the live login path: the start route acquires a real
+     * sandbox lease through `leases` and drives one live login process through
+     * `factory`. When the caller omits it, the start route fails closed with the
+     * fixed no-secret error, because the sandbox pseudo-terminal transport is not
+     * bound yet. A test injects a fake factory and a fake lease manager to drive
+     * the full route path.
+     */
+    setupTokenLogin?: {
+      factory: SetupTokenLoginProcessFactory;
+      leases: SetupTokenLeaseManager;
+      /** The durable cleanup store. Defaults to the in-memory record store. */
+      store?: SetupTokenCleanupStore;
+    };
   } = {},
 ) {
   // Legacy hardcoded maps — used as fallback when adapter module does not
@@ -259,14 +274,14 @@ export function agentRoutes(
   //
   // The service owns a company-scoped, owner-bound login session, the
   // confidential transport guard (SR-6, SR-7), the session caps, and the start
-  // rate limit. This phase delivers the session contract and the route. The
-  // live sandbox pseudo-terminal binding, the durable database-backed cleanup
-  // store, and the real sandbox-lease acquisition bind at a later transport call
-  // site. Until that call site lands, `SETUP_TOKEN_LOGIN_TRANSPORT_READY` is
-  // false, so the start route returns the fixed no-secret error and the login
-  // never spawns a process or holds a lease. The full session state machine, the
-  // cleanup order, and the reaper are covered by setup-token-session.test.ts.
-  const SETUP_TOKEN_LOGIN_TRANSPORT_READY = false;
+  // rate limit. The `options.setupTokenLogin` transport binds the live sandbox
+  // pseudo-terminal login process and the real sandbox-lease acquisition. When a
+  // caller provides the transport, the session route is the live login path and
+  // `SETUP_TOKEN_LOGIN_TRANSPORT_READY` is true. When a caller omits it, the
+  // start route returns the fixed no-secret error and the login never spawns a
+  // process or holds a lease. The full session state machine, the cleanup order,
+  // and the reaper are covered by setup-token-session.test.ts.
+  const SETUP_TOKEN_LOGIN_TRANSPORT_READY = options.setupTokenLogin != null;
 
   const setupTokenConfidentialConfig: ConfidentialTransportConfig = {
     deploymentMode: options.deploymentMode ?? "local_trusted",
@@ -276,10 +291,13 @@ export function agentRoutes(
   // Rate-limit the start route: a small window per company and owner (SR-4).
   const setupTokenRateLimiter = createInviteRateLimiter({ windowMs: 60_000, maxRequests: 5 });
 
-  const setupTokenLeaseManager: SetupTokenLeaseManager = {
+  // The deferred lease manager. It fails closed on acquire until a caller binds
+  // the live transport. It still releases a lease by handle or by id, so a
+  // reaper or a shutdown can free a lease that an injected transport acquired.
+  const deferredSetupTokenLeaseManager: SetupTokenLeaseManager = {
     async acquire(): Promise<SetupTokenLease> {
-      // Deferred: the real sandbox-lease acquisition binds at the transport call
-      // site. Until then the start route fails closed before it reaches here.
+      // The real sandbox-lease acquisition binds through `options.setupTokenLogin`.
+      // Until then the start route fails closed before it reaches here.
       throw new SetupTokenSessionError(503, SETUP_TOKEN_START_FAILED);
     },
     async release(lease): Promise<void> {
@@ -290,10 +308,10 @@ export function agentRoutes(
     },
   };
 
-  // The non-secret cleanup record store. The durable database-backed store binds
-  // at the transport call site, when the login flow first acquires a real lease.
+  // The in-memory non-secret cleanup record store. It is the default store when a
+  // caller does not inject a durable database-backed store.
   const setupTokenCleanupRows = new Map<string, SetupTokenCleanupRecord>();
-  const setupTokenCleanupStore: SetupTokenCleanupStore = {
+  const inMemorySetupTokenCleanupStore: SetupTokenCleanupStore = {
     async record(record): Promise<void> {
       setupTokenCleanupRows.set(record.sessionId, { ...record });
     },
@@ -309,10 +327,20 @@ export function agentRoutes(
     },
   };
 
-  const setupTokenLoginFactory: SetupTokenLoginProcessFactory = () => {
-    // Deferred: the runner-over-pseudo-terminal binding is the later call site.
+  const deferredSetupTokenLoginFactory: SetupTokenLoginProcessFactory = () => {
+    // The runner-over-pseudo-terminal binding arrives through
+    // `options.setupTokenLogin`. Until then the start route fails closed.
     throw new SetupTokenSessionError(503, SETUP_TOKEN_START_FAILED);
   };
+
+  // Resolve the transport: use the injected factory, lease manager, and store
+  // when a caller binds them; otherwise use the deferred, fail-closed defaults.
+  const setupTokenLoginFactory =
+    options.setupTokenLogin?.factory ?? deferredSetupTokenLoginFactory;
+  const setupTokenLeaseManager =
+    options.setupTokenLogin?.leases ?? deferredSetupTokenLeaseManager;
+  const setupTokenCleanupStore =
+    options.setupTokenLogin?.store ?? inMemorySetupTokenCleanupStore;
 
   const setupTokenLoginService = new SetupTokenSessionService({
     factory: setupTokenLoginFactory,
