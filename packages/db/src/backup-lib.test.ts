@@ -237,7 +237,7 @@ describe("runDatabaseBackup preflight", () => {
         }));
 
       const { runDatabaseBackup: runDatabaseBackupWithMocks } = await importBackupLibWithMocks({
-        spawn: spawn as typeof import("node:child_process").spawn,
+        spawn: spawn as unknown as typeof import("node:child_process").spawn,
       });
 
       await expect(runDatabaseBackupWithMocks({
