@@ -129,8 +129,11 @@ describe("TaskChatThread live transcript", () => {
 
     const tail = container.querySelector('[data-testid="task-chat-live-transcript"]');
     expect(tail).not.toBeNull();
-    // Clean content survives: streamed reply markdown + tool row.
+    // Clean content survives: streamed reply markdown + compact phase summary.
     expect(tail!.textContent).toContain("Streaming through the shared renderer");
+    const phaseSummary = tail!.querySelector<HTMLButtonElement>('[data-testid="task-chat-phase-summary"]');
+    expect(phaseSummary?.getAttribute("aria-expanded")).toBe("false");
+    flushSync(() => phaseSummary!.click());
     expect(tail!.textContent).toContain("src/app.ts");
     // None of the debug plumbing reaches the thread.
     for (const noise of ["INITMARKER", "SYSTEMNOISE", "STDOUTNOISE", "STDERRNOISE"]) {
