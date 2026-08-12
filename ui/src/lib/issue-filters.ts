@@ -1,4 +1,6 @@
 import type { ExternalObjectSummary, Issue } from "@paperclipai/shared";
+import { t } from "@/i18n";
+
 
 export type IssueFilterWorkspaceLookup = {
   mode?: string | null;
@@ -63,13 +65,13 @@ export const externalObjectFilterOrder = [
 ];
 
 const EXTERNAL_OBJECT_FILTER_LABELS: Record<string, string> = {
-  failed: "Any failed",
-  waiting: "Any waiting",
-  running: "Any running",
-  auth_required: "Auth required",
-  unreachable: "Unreachable",
-  stale: "Stale",
-  none: "No external objects",
+  failed: t("filter.externalAnyFailed", { defaultValue: "Any failed" }),
+  waiting: t("filter.externalAnyWaiting", { defaultValue: "Any waiting" }),
+  running: t("filter.externalAnyRunning", { defaultValue: "Any running" }),
+  auth_required: t("filter.externalAuthRequired", { defaultValue: "Auth required" }),
+  unreachable: t("filter.externalUnreachable", { defaultValue: "Unreachable" }),
+  stale: t("filter.externalStale", { defaultValue: "Stale" }),
+  none: t("filter.externalNone", { defaultValue: "No external objects" }),
 };
 
 export function externalObjectFilterLabel(value: string): string {
@@ -80,13 +82,21 @@ export const issueStatusOrder = ["in_progress", "todo", "backlog", "in_review", 
 export const issuePriorityOrder = ["critical", "high", "medium", "low"];
 
 export const issueQuickFilterPresets = [
-  { label: "All", statuses: [] as string[] },
-  { label: "Active", statuses: ["todo", "in_progress", "in_review", "blocked"] },
-  { label: "Backlog", statuses: ["backlog"] },
-  { label: "Done", statuses: ["done", "cancelled"] },
+  { label: t("filter.all", { defaultValue: "All" }), statuses: [] as string[] },
+  { label: t("filter.active", { defaultValue: "Active" }), statuses: ["todo", "in_progress", "in_review", "blocked"] },
+  { label: t("filter.backlog", { defaultValue: "Backlog" }), statuses: ["backlog"] },
+  { label: t("filter.done", { defaultValue: "Done" }), statuses: ["done", "cancelled"] },
 ];
 
 export function issueFilterLabel(value: string): string {
+  if (value === "__unassigned") return t("filter.unassigned", { defaultValue: "Unassigned" });
+  if (value === "__me") return t("filter.me", { defaultValue: "Me" });
+  const key = `status.${value}`;
+  const statusTranslated = t(key);
+  if (statusTranslated !== key) return statusTranslated;
+  const priorityKey = `priority.${value}`;
+  const priorityTranslated = t(priorityKey);
+  if (priorityTranslated !== priorityKey) return priorityTranslated;
   return value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 

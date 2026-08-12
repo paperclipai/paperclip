@@ -34,6 +34,7 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { t, useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -179,7 +180,7 @@ export function validateDraftRows(rows: DraftRow[], fields: PipelineIntakeField[
     const rowErrors: FieldErrors = {};
     for (const field of fields) {
       if (field.required && isBlank(row.values[field.key])) {
-        rowErrors[field.key] = `${field.label} is required.`;
+        rowErrors[field.key] = t("pages.pipelines.draftRequiredField", { defaultValue: "{{field}} is required.", field: field.label });
       }
     }
     if (Object.keys(rowErrors).length > 0) {
@@ -207,25 +208,25 @@ export function buildBatchPayload(rows: DraftRow[], fields: PipelineIntakeField[
 export function plainBatchError(result: Extract<PipelineBatchIngestResult, { ok: false }>) {
   const details = result.error?.details ?? {};
   if (details.code === "required_field" && typeof details.label === "string") {
-    return `${details.label} is required.`;
+    return t("pages.pipelines.batchRequiredField", { defaultValue: "{{field}} is required.", field: details.label });
   }
   if (details.code === "invalid_select_value" && typeof details.label === "string") {
-    return `${details.label} needs one of the available choices.`;
+    return t("pages.pipelines.batchInvalidSelectValue", { defaultValue: "{{field}} needs one of the available choices.", field: details.label });
   }
   if (details.code === "duplicate_batch_key") {
-    return "This item duplicates another row.";
+    return t("pages.pipelines.batchDuplicateRow", { defaultValue: "This item duplicates another row." });
   }
   if (details.code === "blocker_cycle") {
-    return "This item waits on another row that also waits on it.";
+    return t("pages.pipelines.batchBlockerCycle", { defaultValue: "This item waits on another row that also waits on it." });
   }
   if (typeof result.error?.message === "string" && result.error.message.trim()) {
     return result.error.message.replace(/^Pipeline\s+/i, "");
   }
-  return "This item needs attention before it can be submitted.";
+  return t("pages.pipelines.batchNeedsAttention", { defaultValue: "This item needs attention before it can be submitted." });
 }
 
 function itemCountLabel(count: number) {
-  return `${count} ${count === 1 ? "item" : "items"}`;
+  return t("pages.pipelines.itemCount", { defaultValue: "{{count}} items", count });
 }
 
 function currentStageAutomation(stage: PipelineStage) {
@@ -289,29 +290,29 @@ function retryCleanupItems(plan: PipelineAutomationRetryPlan): Array<{
   return [
     {
       id: "retireDirectChildren",
-      label: "Retire direct child items",
-      description: "Hide child outputs from normal pipeline boards and parent rollups.",
+      label: t("pages.pipelines.retryCleanupRetireChildren", { defaultValue: "Retire direct child items" }),
+      description: t("pages.pipelines.retryCleanupRetireChildrenDesc", { defaultValue: "Hide child outputs from normal pipeline boards and parent rollups." }),
       count: plan.effectCounts.directChildren,
       disabled: plan.effectCounts.directChildren === 0,
     },
     {
       id: "retireDescendants",
-      label: "Retire descendants",
-      description: "Hide downstream output items under those children.",
+      label: t("pages.pipelines.retryCleanupRetireDescendants", { defaultValue: "Retire descendants" }),
+      description: t("pages.pipelines.retryCleanupRetireDescendantsDesc", { defaultValue: "Hide downstream output items under those children." }),
       count: plan.effectCounts.descendants,
       disabled: plan.effectCounts.descendants === 0,
     },
     {
       id: "cancelLinkedAutomationIssues",
-      label: "Cancel linked automation tasks",
-      description: "Cancel unfinished automation tasks superseded by the fresh retry.",
+      label: t("pages.pipelines.retryCleanupCancelLinkedTasks", { defaultValue: "Cancel linked automation tasks" }),
+      description: t("pages.pipelines.retryCleanupCancelLinkedTasksDesc", { defaultValue: "Cancel unfinished automation tasks superseded by the fresh retry." }),
       count: plan.effectCounts.linkedAutomationIssues,
       disabled: plan.effectCounts.linkedAutomationIssues === 0,
     },
     {
       id: "keepAuditHistory",
-      label: "Keep audit trail visible in item history",
-      description: "Record retry and retired outputs as history instead of deleting records.",
+      label: t("pages.pipelines.retryCleanupKeepAuditHistory", { defaultValue: "Keep audit trail visible in item history" }),
+      description: t("pages.pipelines.retryCleanupKeepAuditHistoryDesc", { defaultValue: "Record retry and retired outputs as history instead of deleting records." }),
       required: true,
       disabled: true,
     },
@@ -337,9 +338,15 @@ function retryCleanupFromIds(ids: Set<string>): PipelineAutomationRetryCleanupOp
 function retryPrimaryActionLabel(plan: PipelineAutomationRetryPlan) {
   const retiredOutputCount = plan.effectCounts.directChildren + plan.effectCounts.descendants;
   if (retiredOutputCount > 0 && (plan.defaultCleanup.retireDirectChildren || plan.defaultCleanup.retireDescendants)) {
-    return `Retry and retire ${formatNumber(retiredOutputCount)} ${retiredOutputCount === 1 ? "item" : "items"}`;
+    return t("pages.pipelines.retryAndRetireCount", {
+      defaultValue: "Retry and retire {{countFormatted}} items",
+      count: retiredOutputCount,
+      countFormatted: formatNumber(retiredOutputCount),
+    });
   }
-  return plan.scope === "previous_stage" ? "Retry previous step" : "Re-run this step";
+  return plan.scope === "previous_stage"
+    ? t("pages.pipelines.retryPreviousStep", { defaultValue: "Retry previous step" })
+    : t("pages.pipelines.rerunThisStep", { defaultValue: "Re-run this step" });
 }
 
 export function Pipelines() {
@@ -419,7 +426,11 @@ function descendantActiveWorkCount(value: { descendantActiveWorkCount?: number |
 }
 
 function formatLiveDownstream(count: number) {
-  return `${formatNumber(count)} live downstream`;
+  return t("pages.pipelines.liveDownstreamCount", {
+    defaultValue: "{{countFormatted}} live downstream",
+    count,
+    countFormatted: formatNumber(count),
+  });
 }
 
 function pipelineActivityTime(pipeline: PipelineListItem) {
@@ -430,11 +441,11 @@ type PipelineSortField = "name" | "activity" | "review" | "inMotion" | "openItem
 type PipelineSortDir = "asc" | "desc";
 
 const PIPELINE_SORT_OPTIONS: ReadonlyArray<readonly [PipelineSortField, string]> = [
-  ["name", "Name"],
-  ["activity", "Last activity"],
-  ["review", "Most to review"],
-  ["inMotion", "Most in motion"],
-  ["openItems", "Most open items"],
+  ["name", t("pages.pipelines.sortName", { defaultValue: "Name" })],
+  ["activity", t("pages.pipelines.sortLastActivity", { defaultValue: "Last activity" })],
+  ["review", t("pages.pipelines.sortMostToReview", { defaultValue: "Most to review" })],
+  ["inMotion", t("pages.pipelines.sortMostInMotion", { defaultValue: "Most in motion" })],
+  ["openItems", t("pages.pipelines.sortMostOpenItems", { defaultValue: "Most open items" })],
 ];
 
 function comparePipelinesBySort(field: PipelineSortField, dir: PipelineSortDir) {
@@ -563,28 +574,35 @@ export function buildPipelineTableRows(
 }
 
 function formatOpenItems(count: number) {
-  return `${formatNumber(count)} open`;
+  return t("pages.pipelines.openItemsCount", {
+    defaultValue: "{{countFormatted}} open",
+    count,
+    countFormatted: formatNumber(count),
+  });
 }
 
 function formatPipelineActivity(value: string | Date | null) {
-  if (!value) return "No activity";
+  if (!value) return t("pages.pipelines.noActivity", { defaultValue: "No activity" });
   const then = new Date(value).getTime();
-  if (!Number.isFinite(then)) return "No activity";
+  if (!Number.isFinite(then)) return t("pages.pipelines.noActivity", { defaultValue: "No activity" });
   const diffSeconds = Math.max(0, Math.round((Date.now() - then) / 1000));
-  if (diffSeconds < 60) return "just now";
+  if (diffSeconds < 60) return t("pages.pipelines.activityJustNow", { defaultValue: "just now" });
   const diffMinutes = Math.round(diffSeconds / 60);
-  if (diffMinutes < 60) return `${diffMinutes} min ago`;
+  if (diffMinutes < 60) return t("pages.pipelines.activityMinutesAgo", { defaultValue: "{{count}} min ago", count: diffMinutes });
   const diffHours = Math.round(diffMinutes / 60);
-  if (diffHours < 24) return diffHours === 1 ? "1 hr ago" : `${diffHours} hr ago`;
+  if (diffHours < 24) return diffHours === 1
+    ? t("pages.pipelines.activityOneHourAgo", { defaultValue: "1 hr ago" })
+    : t("pages.pipelines.activityHoursAgo", { defaultValue: "{{count}} hr ago", count: diffHours });
   const diffDays = Math.round(diffHours / 24);
-  if (diffDays === 1) return "yesterday";
-  if (diffDays < 7) return `${diffDays} days ago`;
-  if (diffDays < 14) return "last week";
-  if (diffDays < 30) return `${Math.round(diffDays / 7)} weeks ago`;
+  if (diffDays === 1) return t("pages.pipelines.activityYesterday", { defaultValue: "yesterday" });
+  if (diffDays < 7) return t("pages.pipelines.activityDaysAgo", { defaultValue: "{{count}} days ago", count: diffDays });
+  if (diffDays < 14) return t("pages.pipelines.activityLastWeek", { defaultValue: "last week" });
+  if (diffDays < 30) return t("pages.pipelines.activityWeeksAgo", { defaultValue: "{{count}} weeks ago", count: Math.round(diffDays / 7) });
   return new Date(value).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
 function PipelineStatusChip({ archivedAt }: { archivedAt: Date | string | null }) {
+  const { t } = useTranslation();
   const paused = Boolean(archivedAt);
   return (
     <Badge variant="outline"
@@ -595,7 +613,7 @@ function PipelineStatusChip({ archivedAt }: { archivedAt: Date | string | null }
           : "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300",
       )}
     >
-      {paused ? "Paused" : "Active"}
+      {paused ? t("status.paused") : t("status.active")}
     </Badge>
   );
 }
@@ -617,6 +635,7 @@ export function PipelinesIndexTable({
   search,
   onSearchChange,
 }: PipelinesIndexTableProps) {
+  const { t } = useTranslation();
   const [collapsedPipelineIds, setCollapsedPipelineIds] = useState<Set<string>>(() => new Set());
   const [sortField, setSortField] = useState<PipelineSortField>("name");
   const [sortDir, setSortDir] = useState<PipelineSortDir>("asc");
@@ -661,12 +680,12 @@ export function PipelinesIndexTable({
     <div className="space-y-4">
       <div className="flex flex-col gap-3 border-y border-border py-4 lg:flex-row lg:items-center lg:justify-between">
         <label className="relative block w-full max-w-md">
-          <span className="sr-only">Search pipelines</span>
+          <span className="sr-only">{t("pages.pipelines.searchPipelines", { defaultValue: "Search pipelines" })}</span>
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={search}
             onChange={(event) => onSearchChange(event.target.value)}
-            placeholder="Search pipelines"
+            placeholder={t("pages.pipelines.searchPipelines", { defaultValue: "Search pipelines" })}
             className="h-10 pl-9"
           />
         </label>
@@ -682,7 +701,7 @@ export function PipelinesIndexTable({
               )}
               disabled={!connectionsAvailable}
               onClick={() => onViewModeChange("nested")}
-              title="Nested view"
+              title={t("pages.pipelines.nestedView", { defaultValue: "Nested view" })}
             >
               <ListTree className="h-3.5 w-3.5" />
             </button>
@@ -695,7 +714,7 @@ export function PipelinesIndexTable({
                   : "text-muted-foreground hover:text-foreground",
               )}
               onClick={() => onViewModeChange("flat")}
-              title="Flat list"
+              title={t("pages.pipelines.flatList", { defaultValue: "Flat list" })}
             >
               <List className="h-3.5 w-3.5" />
             </button>
@@ -703,7 +722,7 @@ export function PipelinesIndexTable({
 
           <Popover>
             <PopoverTrigger asChild>
-              <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Sort">
+              <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title={t("pages.pipelines.sort", { defaultValue: "Sort" })}>
                 <ArrowUpDown className="h-3.5 w-3.5" />
               </Button>
             </PopoverTrigger>
@@ -732,17 +751,17 @@ export function PipelinesIndexTable({
       </div>
 
       {rows.length === 0 ? (
-        <EmptyState icon={Hexagon} message="No pipelines match your search." />
+        <EmptyState icon={Hexagon} message={t("pages.pipelines.noPipelinesMatchSearch", { defaultValue: "No pipelines match your search." })} />
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-(--sz-780px) border-collapse text-sm">
             <thead>
               <tr className="border-b border-border text-left text-(length:--text-micro) font-semibold uppercase tracking-widest text-muted-foreground">
-                <th className="py-2 pl-3 pr-4">Name</th>
-                <th className="px-4 py-2">Attention</th>
-                <th className="px-4 py-2">Open items</th>
-                <th className="px-4 py-2">Status</th>
-                <th className="px-4 py-2">Last activity</th>
+                <th className="py-2 pl-3 pr-4">{t("pages.pipelines.columnName", { defaultValue: "Name" })}</th>
+                <th className="px-4 py-2">{t("pages.pipelines.columnAttention", { defaultValue: "Attention" })}</th>
+                <th className="px-4 py-2">{t("pages.pipelines.columnOpenItems", { defaultValue: "Open items" })}</th>
+                <th className="px-4 py-2">{t("nav.status")}</th>
+                <th className="px-4 py-2">{t("pages.pipelines.columnLastActivity", { defaultValue: "Last activity" })}</th>
               </tr>
             </thead>
             <tbody>
@@ -758,7 +777,9 @@ export function PipelinesIndexTable({
                           <button
                             type="button"
                             className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent/60 hover:text-foreground"
-                            aria-label={row.expanded ? `Collapse ${row.pipeline.name}` : `Expand ${row.pipeline.name}`}
+                            aria-label={row.expanded
+                              ? t("pages.pipelines.collapsePipeline", { defaultValue: "Collapse {{name}}", name: row.pipeline.name })
+                              : t("pages.pipelines.expandPipeline", { defaultValue: "Expand {{name}}", name: row.pipeline.name })}
                             onClick={() => togglePipeline(row.pipeline.id)}
                           >
                             {row.expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
@@ -774,9 +795,13 @@ export function PipelinesIndexTable({
                             {row.pipeline.name}
                           </Link>
                           {row.parentPipelineName ? (
-                            <span className="ml-2 text-muted-foreground">under {row.parentPipelineName}</span>
+                            <span className="ml-2 text-muted-foreground">
+                              {t("pages.pipelines.underPipeline", { defaultValue: "under {{name}}", name: row.parentPipelineName })}
+                            </span>
                           ) : row.pipeline.description ? (
-                            <span className="ml-2 text-muted-foreground">- {row.pipeline.description}</span>
+                            <span className="ml-2 text-muted-foreground">
+                              {t("pages.pipelines.pipelineDescription", { defaultValue: "- {{description}}", description: row.pipeline.description })}
+                            </span>
                           ) : null}
                         </div>
                       </div>
@@ -786,12 +811,12 @@ export function PipelinesIndexTable({
                         {attentionCount > 0 ? (
                           <span className="inline-flex items-center gap-1.5 font-semibold text-red-700 dark:text-red-400">
                             <span className="h-2 w-2 rounded-full bg-red-600" aria-hidden="true" />
-                            {formatNumber(attentionCount)} to review
+                            {t("pages.pipelines.toReviewCount", { defaultValue: "{{count}} to review", count: formatNumber(attentionCount) })}
                           </span>
                         ) : null}
                         {inMotionCount > 0 ? (
                           <span className="text-muted-foreground">
-                            {formatNumber(inMotionCount)} in motion
+                            {t("pages.pipelines.inMotionCount", { defaultValue: "{{count}} in motion", count: formatNumber(inMotionCount) })}
                           </span>
                         ) : null}
                         {liveDownstreamCount > 0 ? (
@@ -811,7 +836,11 @@ export function PipelinesIndexTable({
             </tbody>
           </table>
           <p className="mt-4 text-sm text-muted-foreground">
-            Showing {formatNumber(rows.length)} of {formatNumber(filteredPipelines.length)}.
+            {t("pages.pipelines.showingCounts", {
+              defaultValue: "Showing {{shown}} of {{total}}.",
+              shown: formatNumber(rows.length),
+              total: formatNumber(filteredPipelines.length),
+            })}
           </p>
         </div>
       )}
@@ -832,6 +861,7 @@ function NewPipelineDialog({
   pending: boolean;
   error: string | null;
 }) {
+  const { t } = useTranslation();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
 
@@ -854,16 +884,16 @@ function NewPipelineDialog({
       <DialogContent>
         <form onSubmit={submit} className="space-y-4">
           <DialogHeader>
-            <DialogTitle>New pipeline</DialogTitle>
-            <DialogDescription>Name the pipeline and add a short description.</DialogDescription>
+            <DialogTitle>{t("pages.pipelines.newPipeline", { defaultValue: "New pipeline" })}</DialogTitle>
+            <DialogDescription>{t("pages.pipelines.newPipelineDescription", { defaultValue: "Name the pipeline and add a short description." })}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <label className="block space-y-1.5 text-sm font-medium">
-              <span>Name</span>
+              <span>{t("pages.pipelines.nameLabel", { defaultValue: "Name" })}</span>
               <Input value={name} onChange={(event) => setName(event.target.value)} autoFocus />
             </label>
             <label className="block space-y-1.5 text-sm font-medium">
-              <span>Description</span>
+              <span>{t("pages.pipelines.descriptionLabel", { defaultValue: "Description" })}</span>
               <Textarea
                 value={description}
                 onChange={(event) => setDescription(event.target.value)}
@@ -874,10 +904,12 @@ function NewPipelineDialog({
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>
-              Cancel
+              {t("pages.pipelines.cancel", { defaultValue: "Cancel" })}
             </Button>
             <Button type="submit" disabled={pending || !name.trim()}>
-              {pending ? "Creating..." : "Create pipeline"}
+              {pending
+                ? t("pages.pipelines.creating", { defaultValue: "Creating..." })
+                : t("pages.pipelines.createPipeline", { defaultValue: "Create pipeline" })}
             </Button>
           </DialogFooter>
         </form>
@@ -897,6 +929,7 @@ export function pipelineKeyFromName(name: string) {
 }
 
 function PipelinesIndex() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
@@ -905,7 +938,7 @@ function PipelinesIndex() {
   const [viewMode, setViewMode] = useState<PipelineViewMode>("nested");
   const [newPipelineOpen, setNewPipelineOpen] = useState(false);
 
-  useEffect(() => setBreadcrumbs([{ label: "Pipelines" }]), [setBreadcrumbs]);
+  useEffect(() => setBreadcrumbs([{ label: t("nav.pipelines") }]), [setBreadcrumbs, t]);
 
   const pipelinesQuery = useQuery({
     queryKey: selectedCompanyId ? queryKeys.pipelines.list(selectedCompanyId) : ["pipelines", "missing-company"],
@@ -941,7 +974,7 @@ function PipelinesIndex() {
   });
 
   if (!selectedCompanyId) {
-    return <div className="mx-auto max-w-3xl py-10 text-sm text-muted-foreground">Select a company to view pipelines.</div>;
+    return <div className="mx-auto max-w-3xl py-10 text-sm text-muted-foreground">{t("pages.pipelines.selectCompany", { defaultValue: "Select a company to view pipelines." })}</div>;
   }
   if (pipelinesQuery.isLoading) return <PageSkeleton />;
 
@@ -952,27 +985,33 @@ function PipelinesIndex() {
     <div className="w-full max-w-6xl px-6 py-8">
       <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Work</p>
-          <h1 className="text-2xl font-semibold text-foreground">Pipelines</h1>
+          <p className="text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{t("nav.work")}</p>
+          <h1 className="text-2xl font-semibold text-foreground">{t("nav.pipelines")}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {formatNumber(pipelines.length)} pipeline{pipelines.length === 1 ? "" : "s"}. Connected ones are grouped from upstream work into downstream work.
+            {t("pages.pipelines.indexDescription", {
+              defaultValue: "{{count}} {{pipelineWord}}. Connected ones are grouped from upstream work into downstream work.",
+              count: formatNumber(pipelines.length),
+              pipelineWord: pipelines.length === 1
+                ? t("pages.pipelines.pipelineWord", { defaultValue: "pipeline" })
+                : t("pages.pipelines.pipelineWordPlural", { defaultValue: "pipelines" }),
+            })}
           </p>
         </div>
         <Button onClick={() => setNewPipelineOpen(true)}>
           <Plus className="mr-2 h-4 w-4" />
-          New pipeline
+          {t("pages.pipelines.newPipeline", { defaultValue: "New pipeline" })}
         </Button>
       </div>
 
       {pipelinesQuery.error ? (
-        <p className="mb-4 text-sm text-destructive">Could not load pipelines.</p>
+        <p className="mb-4 text-sm text-destructive">{t("pages.pipelines.couldNotLoadPipelines", { defaultValue: "Could not load pipelines." })}</p>
       ) : null}
 
       {pipelines.length === 0 && !pipelinesQuery.error ? (
         <EmptyState
           icon={Hexagon}
-          message="No pipelines yet."
-          action="New pipeline"
+          message={t("pages.pipelines.noPipelinesYet", { defaultValue: "No pipelines yet." })}
+          action={t("pages.pipelines.newPipeline", { defaultValue: "New pipeline" })}
           onAction={() => setNewPipelineOpen(true)}
         />
       ) : (
@@ -994,7 +1033,7 @@ function PipelinesIndex() {
         }}
         onSubmit={(data) => createPipeline.mutate(data)}
         pending={createPipeline.isPending}
-        error={createPipeline.error ? "Could not create the pipeline. Try a different name." : null}
+        error={createPipeline.error ? t("pages.pipelines.createPipelineError", { defaultValue: "Could not create the pipeline. Try a different name." }) : null}
       />
     </div>
   );
@@ -1005,7 +1044,7 @@ function PipelinesIndex() {
 // ---------------------------------------------------------------------------
 
 const UNASSIGNED_STAGE_ID = "__pipeline_unassigned_stage";
-const UNASSIGNED_STAGE_NAME = "Unassigned";
+const UNASSIGNED_STAGE_NAME = t("pages.pipelines.unassignedStageName", { defaultValue: "Unassigned" });
 
 type BoardCase = PipelineCase & {
   activeWork?: PipelineCaseActiveWork | null;
@@ -1065,7 +1104,7 @@ export function getCaseTitle(caseItem: BoardCase) {
     const value = asText(fields[key]);
     if (value) return value;
   }
-  return "Untitled item";
+  return t("pages.pipelines.untitledItem", { defaultValue: "Untitled item" });
 }
 
 export function isWorkingCase(caseItem: BoardCase) {
@@ -1196,7 +1235,7 @@ export function groupCasesByBuiltFor(cases: BoardCase[]) {
     const key = parent?.case.id ?? PIPELINE_BOARD_UNGROUPED_KEY;
     const group = groups.get(key) ?? {
       key,
-      label: parent ? `${parent.pipeline.name}: ${parent.case.title}` : "No built-for item",
+      label: parent ? `${parent.pipeline.name}: ${parent.case.title}` : t("pages.pipelines.noBuiltForItem", { defaultValue: "No built-for item" }),
       href: parent ? `/pipelines/${parent.case.pipelineId}/items/${parent.case.id}` : null,
       cases: [],
     };
@@ -1214,6 +1253,7 @@ function PipelineCaseCard({
   caseItem: BoardCase;
   isOverlay?: boolean;
 }) {
+  const { t } = useTranslation();
   const title = getCaseTitle(caseItem);
   const isWorking = isWorkingCase(caseItem);
   const blockerCount = getOpenBlockerCount(caseItem);
@@ -1257,17 +1297,17 @@ function PipelineCaseCard({
           {isWorking ? (
             <Badge variant="outline" className="relative border-emerald-400/40 bg-emerald-50 text-(length:--text-nano) text-emerald-700 dark:border-emerald-300/30 dark:bg-emerald-900/30 dark:text-emerald-300">
               <span className="absolute -left-1 -top-1 h-2 w-2 animate-pulse rounded-full bg-emerald-500"></span>
-              Working
+              {t("pages.pipelines.working", { defaultValue: "Working" })}
             </Badge>
           ) : null}
           {hasNeedsAttention ? (
             <Badge variant="outline" className="border-amber-400/40 bg-amber-50 text-(length:--text-nano) text-amber-700 dark:border-amber-300/30 dark:bg-amber-900/25 dark:text-amber-300">
-              Needs attention
+              {t("pages.pipelines.needsAttention", { defaultValue: "Needs attention" })}
             </Badge>
           ) : null}
           {hasChangedNotice ? (
             <Badge variant="outline" className="border-indigo-400/40 bg-indigo-50 text-(length:--text-nano) text-indigo-700 dark:border-indigo-300/30 dark:bg-indigo-900/25 dark:text-indigo-300">
-              This changed
+              {t("pages.pipelines.thisChanged", { defaultValue: "This changed" })}
             </Badge>
           ) : null}
           {liveDownstreamCount > 0 ? (
@@ -1279,7 +1319,7 @@ function PipelineCaseCard({
         </div>
         {childrenSummary != null ? (
           <p className="mt-1.5 text-xs text-muted-foreground">
-            Built from {formatNumber(childrenSummary)} {childrenSummary === 1 ? "item" : "items"}
+            {t("pages.pipelines.builtFromCount", { defaultValue: "Built from {{count}} items", count: formatNumber(childrenSummary) })}
           </p>
         ) : null}
       </Link>
@@ -1312,6 +1352,7 @@ function PipelineBoardColumn({
   isDragTargeted?: boolean;
   isDragBlocked?: boolean;
 }) {
+  const { t } = useTranslation();
   const { setNodeRef, isOver } = useDroppable({ id: stage.id });
 
   const tone = getPipelineStageColumnTone(stage.kind);
@@ -1324,7 +1365,7 @@ function PipelineBoardColumn({
   return (
     <div
       key={stage.id}
-      aria-label={`${stage.name} column`}
+      aria-label={t("pages.pipelines.stageColumnAria", { defaultValue: "{{name}} column", name: stage.name })}
       className={cn(
         "flex min-w-(--sz-260px) max-w-(--sz-320px) shrink-0 flex-col rounded-md border",
         tone.outer,
@@ -1337,8 +1378,8 @@ function PipelineBoardColumn({
           {settingsHref ? (
             <Link
               to={settingsHref}
-              aria-label={`Edit ${stage.name} stage`}
-              title={`Edit ${stage.name} stage`}
+              aria-label={t("pages.pipelines.editStageAria", { defaultValue: "Edit {{name}} stage", name: stage.name })}
+              title={t("pages.pipelines.editStageAria", { defaultValue: "Edit {{name}} stage", name: stage.name })}
               className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/stage-header:opacity-100"
             >
               <Settings className="h-3.5 w-3.5" />
@@ -1346,11 +1387,11 @@ function PipelineBoardColumn({
           ) : null}
         </div>
         <span className="ml-2 flex shrink-0 items-center gap-2 text-xs">
-          <span>{cases.length} item{cases.length === 1 ? "" : "s"}</span>
+          <span>{t("pages.pipelines.itemCount", { defaultValue: "{{count}} items", count: cases.length })}</span>
           {warningCount ? (
             <span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-300">
               <AlertTriangle className="h-3.5 w-3.5" />
-              {warningCount} warning{warningCount === 1 ? "" : "s"}
+              {t("pages.pipelines.warningCount", { defaultValue: "{{count}} warnings", count: warningCount })}
             </span>
           ) : null}
         </span>
@@ -1361,7 +1402,7 @@ function PipelineBoardColumn({
             <Link
               to={automationHref}
               className="inline-flex max-w-full items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs font-medium text-muted-foreground hover:text-foreground"
-              title={`Edit ${stage.name} automation`}
+              title={t("pages.pipelines.editStageAutomation", { defaultValue: "Edit {{name}} automation", name: stage.name })}
             >
               <AgentIcon icon={automationAgent.icon} className="h-3.5 w-3.5 shrink-0" />
               <span className="truncate">{automationAgent.name}</span>
@@ -1371,10 +1412,10 @@ function PipelineBoardColumn({
             <Link
               to={`/pipelines/${breakdownTarget.pipelineId}`}
               className="inline-flex max-w-full items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs font-medium text-muted-foreground hover:text-foreground"
-              title={`Breaks into ${breakdownTarget.name}`}
+              title={t("pages.pipelines.breaksInto", { defaultValue: "Breaks into {{name}}", name: breakdownTarget.name })}
             >
               <span className="shrink-0">→</span>
-              <span className="truncate">Breaks into {breakdownTarget.name}</span>
+              <span className="truncate">{t("pages.pipelines.breaksInto", { defaultValue: "Breaks into {{name}}", name: breakdownTarget.name })}</span>
             </Link>
           ) : null}
         </div>
@@ -1388,7 +1429,7 @@ function PipelineBoardColumn({
       >
         {isBlockedDropTarget ? (
           <p className="rounded border border-red-200 bg-red-50 px-3 py-2 text-(length:--text-micro) text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-200">
-            This move skips the normal flow
+            {t("pages.pipelines.moveSkipsNormalFlow", { defaultValue: "This move skips the normal flow" })}
           </p>
         ) : null}
         <SortableContext items={sortableCaseIds} strategy={verticalListSortingStrategy}>
@@ -1404,7 +1445,7 @@ function PipelineBoardColumn({
                     ) : (
                       <span className="min-w-0 truncate">{group.label}</span>
                     )}
-                    <span className="shrink-0">{group.cases.length} item{group.cases.length === 1 ? "" : "s"}</span>
+                    <span className="shrink-0">{t("pages.pipelines.itemCount", { defaultValue: "{{count}} items", count: group.cases.length })}</span>
                   </div>
                 ) : null}
                 {group.cases.map((item) => <PipelineCaseCard key={item.id} caseItem={item} />)}
@@ -1412,7 +1453,7 @@ function PipelineBoardColumn({
             ))
           ) : (
             <div className="rounded-md border border-dashed border-border px-3 py-8 text-center text-xs text-muted-foreground">
-              {onColumnEmpty ? onColumnEmpty(stage) : "Empty"}
+              {onColumnEmpty ? onColumnEmpty(stage) : t("pages.pipelines.empty", { defaultValue: "Empty" })}
             </div>
           )}
         </SortableContext>
@@ -1422,6 +1463,7 @@ function PipelineBoardColumn({
 }
 
 function PipelineBoard({ pipelineId }: { pipelineId: string }) {
+  const { t } = useTranslation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
   const { selectedCompanyId } = useCompany();
@@ -1630,11 +1672,11 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
     },
     onError: (error) => {
       pushToast({
-        title: "Move blocked",
+        title: t("pages.pipelines.moveBlocked", { defaultValue: "Move blocked" }),
         body:
           error instanceof ApiError && error.status === 409
-            ? "This item changed while you were looking. The board has been refreshed."
-            : "The item could not be moved.",
+            ? t("pages.pipelines.moveBlockedStale", { defaultValue: "This item changed while you were looking. The board has been refreshed." })
+            : t("pages.pipelines.moveFailed", { defaultValue: "The item could not be moved." }),
         tone: "error",
       });
       queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.detail(pipelineId) });
@@ -1691,10 +1733,10 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Pipelines", href: "/pipelines" },
-      { label: pipeline?.name ?? "Pipeline" },
+      { label: t("nav.pipelines"), href: "/pipelines" },
+      { label: pipeline?.name ?? t("pages.pipelines.pipelineTitle", { defaultValue: "Pipeline" }) },
     ]);
-  }, [pipeline?.name, setBreadcrumbs]);
+  }, [pipeline?.name, setBreadcrumbs, t]);
 
   useEffect(() => {
     setGroupByState({ pipelineId, value: readStoredPipelineBoardGroupBy(pipelineId) });
@@ -1702,21 +1744,21 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
 
   if (pipelineQuery.isLoading || casesQuery.isLoading) return <PageSkeleton />;
   if (!pipeline) {
-    return <div className="mx-auto max-w-3xl py-10 text-sm text-muted-foreground">Pipeline not found.</div>;
+    return <div className="mx-auto max-w-3xl py-10 text-sm text-muted-foreground">{t("pages.pipelines.pipelineNotFound", { defaultValue: "Pipeline not found." })}</div>;
   }
 
   if (orderedStages.length === 0) {
     return (
       <div className="mx-auto max-w-6xl space-y-4 px-6 py-8">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Pipeline</p>
+          <p className="text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{t("pages.pipelines.pipelineTitle", { defaultValue: "Pipeline" })}</p>
           <h1 className="text-2xl font-semibold text-foreground">{pipeline.name}</h1>
-          <p className="text-sm text-muted-foreground">No stages are set up for this pipeline yet.</p>
+          <p className="text-sm text-muted-foreground">{t("pages.pipelines.noStagesYet", { defaultValue: "No stages are set up for this pipeline yet." })}</p>
         </div>
         <EmptyState
           icon={Hexagon}
-          message="Add stages in pipeline settings to enable the board."
-          action="Open settings"
+          message={t("pages.pipelines.noStagesMessage", { defaultValue: "Add stages in pipeline settings to enable the board." })}
+          action={t("pages.pipelines.openSettings", { defaultValue: "Open settings" })}
           onAction={() => navigate(`/pipelines/${pipelineId}/settings`)}
         />
       </div>
@@ -1729,10 +1771,12 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
     <div className="w-full space-y-4 px-6 py-8">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Pipeline</p>
+          <p className="text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{t("pages.pipelines.pipelineTitle", { defaultValue: "Pipeline" })}</p>
           <h1 className="text-2xl font-semibold text-foreground">{pipeline.name}</h1>
           {pipeline.description ? <p className="mt-1 text-sm text-muted-foreground">{pipeline.description}</p> : null}
-          <p className="mt-1 text-xs text-muted-foreground">{cases.length} total item{cases.length === 1 ? "" : "s"}</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {t("pages.pipelines.totalItemCount", { defaultValue: "{{count}} total items", count: cases.length })}
+          </p>
           {fedByPipelines.length > 0 ? (
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
               {fedByPipelines.map((source) => (
@@ -1740,10 +1784,10 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
                   key={source.id}
                   to={`/pipelines/${source.id}`}
                   className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs font-medium text-muted-foreground hover:text-foreground"
-                  title={`Fed by ${source.name}`}
+                  title={t("pages.pipelines.fedBy", { defaultValue: "Fed by {{name}}", name: source.name })}
                 >
                   <span className="shrink-0">←</span>
-                  <span className="truncate">Fed by {source.name}</span>
+                  <span className="truncate">{t("pages.pipelines.fedBy", { defaultValue: "Fed by {{name}}", name: source.name })}</span>
                 </Link>
               ))}
             </div>
@@ -1751,23 +1795,23 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
           <Select value={groupBy} onValueChange={handleGroupByChange}>
-            <SelectTrigger className="h-9 w-(--sz-148px)" aria-label="Group by" title="Group by">
+            <SelectTrigger className="h-9 w-(--sz-148px)" aria-label={t("pages.pipelines.groupBy", { defaultValue: "Group by" })} title={t("pages.pipelines.groupBy", { defaultValue: "Group by" })}>
               <Layers className="h-4 w-4 text-muted-foreground" />
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="none">None</SelectItem>
-              <SelectItem value="builtFor">Built for</SelectItem>
+              <SelectItem value="none">{t("status.none")}</SelectItem>
+              <SelectItem value="builtFor">{t("pages.pipelines.builtFor", { defaultValue: "Built for" })}</SelectItem>
             </SelectContent>
           </Select>
           <Button asChild>
             <Link to={`/pipelines/${pipelineId}/add`}>
               <Plus className="mr-2 h-4 w-4" />
-              Add items
+              {t("pages.pipelines.addItems", { defaultValue: "Add items" })}
             </Link>
           </Button>
           <Button variant="outline" size="icon" asChild>
-            <Link to={`/pipelines/${pipelineId}/settings`} aria-label="Pipeline settings" title="Pipeline settings">
+            <Link to={`/pipelines/${pipelineId}/settings`} aria-label={t("pages.pipelines.pipelineSettings", { defaultValue: "Pipeline settings" })} title={t("pages.pipelines.pipelineSettings", { defaultValue: "Pipeline settings" })}>
               <Settings className="h-4 w-4" />
             </Link>
           </Button>
@@ -1797,7 +1841,7 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
               const automationAgent = automationAssigneeAgentId
                 ? agentById.get(automationAssigneeAgentId) ?? {
                     id: automationAssigneeAgentId,
-                    name: `Agent ${automationAssigneeAgentId.slice(0, 8)}`,
+                    name: t("pages.pipelines.agentFallbackName", { defaultValue: "Agent {{id}}", id: automationAssigneeAgentId.slice(0, 8) }),
                     icon: null,
                     urlKey: automationAssigneeAgentId,
                   }
@@ -1824,7 +1868,9 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
                   isDragTargeted={isDragTargeted}
                   isDragBlocked={isDragBlocked}
                   onColumnEmpty={(columnStage) =>
-                    columnStage.id === UNASSIGNED_STAGE_ID ? "Unassigned items" : "Drop items here"
+                    columnStage.id === UNASSIGNED_STAGE_ID
+                      ? t("pages.pipelines.unassignedItems", { defaultValue: "Unassigned items" })
+                      : t("pages.pipelines.dropItemsHere", { defaultValue: "Drop items here" })
                   }
                 />
               );
@@ -1849,24 +1895,35 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {pendingMove?.allowed ? `Move ${pendingMove.itemTitle}?` : "This skips the normal flow"}
+              {pendingMove?.allowed
+                ? t("pages.pipelines.moveItemTitle", { defaultValue: "Move {{title}}?", title: pendingMove.itemTitle })
+                : t("pages.pipelines.skipsNormalFlowTitle", { defaultValue: "This skips the normal flow" })}
             </DialogTitle>
             <DialogDescription>
               {pendingMove?.allowed
-                ? `Move ${pendingMove.itemTitle} to ${pendingMove.targetName} yourself? Usually the agent suggests this when it is ready.`
+                ? t("pages.pipelines.moveItemDescription", {
+                    defaultValue: "Move {{title}} to {{target}} yourself? Usually the agent suggests this when it is ready.",
+                    title: pendingMove.itemTitle,
+                    target: pendingMove.targetName,
+                  })
                 : pendingMove
-                  ? `${pendingMove.itemTitle} would jump from ${pendingMove.sourceName} to ${pendingMove.targetName}. Add a reason before overriding.`
-                  : "Review this move before continuing."}
+                  ? t("pages.pipelines.overrideDescription", {
+                      defaultValue: "{{title}} would jump from {{source}} to {{target}}. Add a reason before overriding.",
+                      title: pendingMove.itemTitle,
+                      source: pendingMove.sourceName,
+                      target: pendingMove.targetName,
+                    })
+                  : t("pages.pipelines.reviewMoveBeforeContinue", { defaultValue: "Review this move before continuing." })}
             </DialogDescription>
           </DialogHeader>
           {pendingMove && !pendingMove.allowed ? (
             <label className="block space-y-1.5 text-sm font-medium">
-              <span>Reason</span>
+              <span>{t("pages.pipelines.reasonLabel", { defaultValue: "Reason" })}</span>
               <Textarea
                 value={overrideReason}
                 onChange={(event) => setOverrideReason(event.target.value)}
                 rows={3}
-                placeholder="Explain why this item should skip the normal flow."
+                placeholder={t("pages.pipelines.skipFlowPlaceholder", { defaultValue: "Explain why this item should skip the normal flow." })}
                 autoFocus
               />
             </label>
@@ -1881,7 +1938,7 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
                 setOverrideReason("");
               }}
             >
-              Cancel
+              {t("pages.pipelines.cancel", { defaultValue: "Cancel" })}
             </Button>
             {pendingMove?.allowed ? (
               <Button
@@ -1895,7 +1952,7 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
                   })
                 }
               >
-                Move it
+                {t("pages.pipelines.moveIt", { defaultValue: "Move it" })}
               </Button>
             ) : pendingMove ? (
               <Button
@@ -1912,7 +1969,7 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
                   })
                 }
               >
-                Override and move
+                {t("pages.pipelines.overrideAndMove", { defaultValue: "Override and move" })}
               </Button>
             ) : null}
           </DialogFooter>
@@ -1933,7 +1990,7 @@ function NavigateToItem({ pipelineId, caseId }: { pipelineId: string; caseId: st
 }
 
 function NavigateMissingItem() {
-  return <div className="mx-auto max-w-3xl py-10 text-sm text-muted-foreground">Item not found.</div>;
+  return <div className="mx-auto max-w-3xl py-10 text-sm text-muted-foreground">{t("pages.pipelines.itemNotFound", { defaultValue: "Item not found." })}</div>;
 }
 
 function LinkRedirect({ to }: { to: string }) {
@@ -1951,6 +2008,7 @@ export function PipelineItemDetail() {
 }
 
 export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: string; caseId: string }) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
@@ -2152,10 +2210,10 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
       options.push({ id: `agent:${agent.id}`, label: agent.name });
     }
     if (currentUserId) {
-      options.push({ id: `user:${currentUserId}`, label: "Me" });
+      options.push({ id: `user:${currentUserId}`, label: t("pages.pipelines.me", { defaultValue: "Me" }) });
     }
     return options;
-  }, [agents, companyMembers?.users, currentUserId]);
+  }, [agents, companyMembers?.users, currentUserId, t]);
   const actualAssigneeValue = useMemo(
     () => assigneeValueFromSelection(activeConversationIssue ?? {}),
     [activeConversationIssue],
@@ -2284,11 +2342,11 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Pipelines", href: "/pipelines" },
-      { label: pipeline.data?.name ?? detail?.pipeline.name ?? "Pipeline", href: `/pipelines/${pipelineId}` },
-      { label: detail?.case.title ?? "Item" },
+      { label: t("nav.pipelines"), href: "/pipelines" },
+      { label: pipeline.data?.name ?? detail?.pipeline.name ?? t("pages.pipelines.pipelineTitle", { defaultValue: "Pipeline" }), href: `/pipelines/${pipelineId}` },
+      { label: detail?.case.title ?? t("pages.pipelines.itemTitle", { defaultValue: "Item" }) },
     ]);
-  }, [detail?.case.title, detail?.pipeline.name, pipeline.data?.name, pipelineId, setBreadcrumbs]);
+  }, [detail?.case.title, detail?.pipeline.name, pipeline.data?.name, pipelineId, setBreadcrumbs, t]);
 
   const invalidateItem = useCallback(async () => {
     await Promise.all([
@@ -2306,9 +2364,9 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     },
     onSuccess: async () => {
       await invalidateItem();
-      pushToast({ title: "Conversation started", tone: "success" });
+      pushToast({ title: t("pages.pipelines.conversationStarted", { defaultValue: "Conversation started" }), tone: "success" });
     },
-    onError: () => pushToast({ title: "Could not start the conversation", tone: "error" }),
+    onError: () => pushToast({ title: t("pages.pipelines.couldNotStartConversation", { defaultValue: "Could not start the conversation" }), tone: "error" }),
   });
 
   // Body-document selection → "Start conversation & comment": returns the created issue so the
@@ -2319,10 +2377,10 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
       await invalidateItem();
       return ("issue" in result ? result.issue : null) ?? null;
     } catch {
-      pushToast({ title: "Could not start the conversation", tone: "error" });
+      pushToast({ title: t("pages.pipelines.couldNotStartConversation", { defaultValue: "Could not start the conversation" }), tone: "error" });
       return null;
     }
-  }, [caseId, invalidateItem, pushToast]);
+  }, [caseId, invalidateItem, pushToast, t]);
 
   const invalidateConversation = useCallback(async () => {
     if (!conversationIssueId) return;
@@ -2470,20 +2528,22 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     onSuccess: async (_result, variables) => {
       await invalidateItem();
       pushToast({
-        title: variables.resolution === "accept" ? "Move approved" : "Suggestion dismissed",
+        title: variables.resolution === "accept"
+          ? t("pages.pipelines.moveApproved", { defaultValue: "Move approved" })
+          : t("pages.pipelines.suggestionDismissed", { defaultValue: "Suggestion dismissed" }),
         tone: "success",
       });
     },
-    onError: () => pushToast({ title: "Could not resolve the suggestion", tone: "error" }),
+    onError: () => pushToast({ title: t("pages.pipelines.couldNotResolveSuggestion", { defaultValue: "Could not resolve the suggestion" }), tone: "error" }),
   });
 
   const acknowledgeChange = useMutation({
     mutationFn: () => pipelinesApi.acknowledgeDrift(caseId, { expectedVersion: detail?.case.version }),
     onSuccess: async () => {
       await invalidateItem();
-      pushToast({ title: "Change acknowledged", tone: "success" });
+      pushToast({ title: t("pages.pipelines.changeAcknowledged", { defaultValue: "Change acknowledged" }), tone: "success" });
     },
-    onError: () => pushToast({ title: "Could not acknowledge the change", tone: "error" }),
+    onError: () => pushToast({ title: t("pages.pipelines.couldNotAcknowledgeChange", { defaultValue: "Could not acknowledge the change" }), tone: "error" }),
   });
 
   const previousRetryAvailability = useQuery({
@@ -2532,12 +2592,12 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     onSuccess: async () => {
       setRetryDialogScope(null);
       await invalidateItem();
-      pushToast({ title: "Step automation re-run started", tone: "success" });
+      pushToast({ title: t("pages.pipelines.stepAutomationRerunStarted", { defaultValue: "Step automation re-run started" }), tone: "success" });
     },
     onError: (error: unknown) => {
-      const message = error instanceof ApiError && error.message ? error.message : "Could not re-run this step.";
+      const message = error instanceof ApiError && error.message ? error.message : t("pages.pipelines.couldNotRerunStep", { defaultValue: "Could not re-run this step." });
       setRetryDialogError(message);
-      pushToast({ title: "Could not re-run this step", tone: "error" });
+      pushToast({ title: t("pages.pipelines.couldNotRerunStep", { defaultValue: "Could not re-run this step" }), tone: "error" });
     },
   });
 
@@ -2557,12 +2617,12 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
         queryClient.invalidateQueries({ queryKey: ["pipelines", "item", caseId, "automation-retry-plan"] }),
         queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.caseChildren(caseId) }),
       ]);
-      pushToast({ title: "Retry started", tone: "success" });
+      pushToast({ title: t("pages.pipelines.retryStarted", { defaultValue: "Retry started" }), tone: "success" });
     },
     onError: (error: unknown) => {
-      const message = error instanceof ApiError && error.message ? error.message : "Could not retry this automation.";
+      const message = error instanceof ApiError && error.message ? error.message : t("pages.pipelines.couldNotRetryAutomation", { defaultValue: "Could not retry this automation." });
       setRetryDialogError(message);
-      pushToast({ title: "Could not retry this automation", tone: "error" });
+      pushToast({ title: t("pages.pipelines.couldNotRetryAutomation", { defaultValue: "Could not retry this automation" }), tone: "error" });
     },
   });
 
@@ -2599,14 +2659,14 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     onMutate: () => setLivenessRetryError(null),
     onSuccess: async () => {
       await invalidateItem();
-      pushToast({ title: "Retry started", tone: "success" });
+      pushToast({ title: t("pages.pipelines.retryStarted", { defaultValue: "Retry started" }), tone: "success" });
     },
     onError: (error: unknown) => {
       const message = error instanceof ApiError && error.message
         ? error.message
-        : "Could not retry. Please try again.";
+        : t("pages.pipelines.couldNotRetryPleaseTryAgain", { defaultValue: "Could not retry. Please try again." });
       setLivenessRetryError(message);
-      pushToast({ title: "Could not retry the automation", tone: "error" });
+      pushToast({ title: t("pages.pipelines.couldNotRetryAutomation", { defaultValue: "Could not retry the automation" }), tone: "error" });
     },
   });
 
@@ -2638,9 +2698,9 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
       setMoveDialogOpen(false);
       setMoveStageKey("");
       await invalidateItem();
-      pushToast({ title: "Item moved", tone: "success" });
+      pushToast({ title: t("pages.pipelines.itemMoved", { defaultValue: "Item moved" }), tone: "success" });
     },
-    onError: () => pushToast({ title: "Could not move the item", tone: "error" }),
+    onError: () => pushToast({ title: t("pages.pipelines.couldNotMoveItem", { defaultValue: "Could not move the item" }), tone: "error" }),
   });
   const removeItem = useMutation({
     mutationFn: () => {
@@ -2654,10 +2714,10 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     onSuccess: async () => {
       setRemoveDialogOpen(false);
       await invalidateItem();
-      pushToast({ title: "Item removed", tone: "success" });
+      pushToast({ title: t("pages.pipelines.itemRemoved", { defaultValue: "Item removed" }), tone: "success" });
       navigate(`/pipelines/${pipelineId}`);
     },
-    onError: () => pushToast({ title: "Could not remove the item", tone: "error" }),
+    onError: () => pushToast({ title: t("pages.pipelines.couldNotRemoveItem", { defaultValue: "Could not remove the item" }), tone: "error" }),
   });
 
   const reviewConfig = useMemo(
@@ -2715,12 +2775,12 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
       });
       if (nextHref) navigate(nextHref);
     },
-    onError: () => pushToast({ title: "Could not update the review", tone: "error" }),
+    onError: () => pushToast({ title: t("pages.pipelines.couldNotUpdateReview", { defaultValue: "Could not update the review" }), tone: "error" }),
   });
 
   if (pipeline.isLoading || item.isLoading) return <PageSkeleton />;
   if (!detail || !pipeline.data) {
-    return <div className="mx-auto max-w-3xl py-10 text-sm text-muted-foreground">Item not found.</div>;
+    return <div className="mx-auto max-w-3xl py-10 text-sm text-muted-foreground">{t("pages.pipelines.itemNotFound", { defaultValue: "Item not found." })}</div>;
   }
 
   const workReferences = extractWorkReferences(detail.case);
@@ -2761,14 +2821,16 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
         <Button asChild>
           <Link to={conversationIssuePath!} state={conversationIssueState} issuePrefetch={conversationIssueDetail.data ?? null}>
             <MessageSquare className="mr-2 h-4 w-4" />
-            Open conversation
+            {t("pages.pipelines.openConversation", { defaultValue: "Open conversation" })}
           </Link>
         </Button>
       )
     : (
         <Button onClick={() => startConversation.mutate()} disabled={startConversation.isPending}>
           <MessageSquare className="mr-2 h-4 w-4" />
-          {startConversation.isPending ? "Starting..." : "Start a conversation"}
+          {startConversation.isPending
+            ? t("pages.pipelines.starting", { defaultValue: "Starting..." })
+            : t("pages.pipelines.startConversation", { defaultValue: "Start a conversation" })}
         </Button>
       );
   const reviewPanel = detail.stage.kind === "review" && reviewConfig ? (
@@ -2789,7 +2851,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
       <div className="mb-6 grid gap-5 lg:grid-cols-(--gtc-45) lg:items-start lg:gap-8">
         <div className="min-w-0">
           <div className="mb-2 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-            <Link to="/pipelines" className="hover:text-foreground">Pipelines</Link>
+            <Link to="/pipelines" className="hover:text-foreground">{t("nav.pipelines")}</Link>
             <ChevronRight className="h-3.5 w-3.5" />
             <Link to={`/pipelines/${pipelineId}`} className="hover:text-foreground">{pipeline.data.name}</Link>
           </div>
@@ -2799,12 +2861,12 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
               {statusLabel}
             </span>
             <div className="flex items-center gap-1 text-sm text-muted-foreground">
-              Stage: <span className="font-medium text-foreground">{detail.stage.name}</span>
+              {t("pages.pipelines.stageLabel", { defaultValue: "Stage:" })} <span className="font-medium text-foreground">{detail.stage.name}</span>
             </div>
           </div>
           {detail.parentCase ? (
             <p className="mt-2 text-sm text-muted-foreground">
-              Built for{" "}
+              {t("pages.pipelines.builtFor", { defaultValue: "Built for" })}{" "}
               <Link
                 to={`/pipelines/${detail.parentCase.case.pipelineId}/items/${detail.parentCase.case.id}`}
                 className="font-medium text-foreground hover:underline"
@@ -2815,7 +2877,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
           ) : null}
           {detail.builtFromAutomation ? (
             <p className="mt-1 text-sm text-muted-foreground">
-              Built from{" "}
+              {t("pages.pipelines.builtFrom", { defaultValue: "Built from" })}{" "}
               <Link
                 to={detail.builtFromAutomation.stage
                   ? pipelineStageAutomationSettingsHref(
@@ -2827,7 +2889,12 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                 title={detail.builtFromAutomation.routine.title}
               >
                 {detail.builtFromAutomation.pipeline.name}
-                {detail.builtFromAutomation.stage ? `: ${detail.builtFromAutomation.stage.name} automation` : " automation"}
+                {detail.builtFromAutomation.stage
+                  ? t("pages.pipelines.automationSuffix", {
+                      defaultValue: ": {{name}} automation",
+                      name: detail.builtFromAutomation.stage.name,
+                    })
+                  : t("pages.pipelines.automationWord", { defaultValue: " automation" })}
               </Link>
             </p>
           ) : null}
@@ -2837,14 +2904,14 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
             {primaryAction}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="icon" aria-label="Item actions">
+                <Button variant="outline" size="icon" aria-label={t("pages.pipelines.itemActions", { defaultValue: "Item actions" })}>
                   <MoreHorizontal className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem
                   disabled={!stageAutomation || rerunCurrentStageAutomation.isPending || rerunBlockedByPermission}
-                  title={rerunBlockedByPermission ? "Permission still missing — request access first" : undefined}
+                  title={rerunBlockedByPermission ? t("pages.pipelines.permissionMissing", { defaultValue: "Permission still missing — request access first" }) : undefined}
                   onSelect={(event) => {
                     event.preventDefault();
                     setRetryTargetStageId(null);
@@ -2856,7 +2923,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                   ) : (
                     <CircleDot className="h-4 w-4" />
                   )}
-                  Re-run this step
+                  {t("pages.pipelines.rerunThisStep", { defaultValue: "Re-run this step" })}
                 </DropdownMenuItem>
                 {previousRetryPlan?.allowed ? (
                   <DropdownMenuItem
@@ -2872,7 +2939,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                     ) : (
                       <ArrowUpDown className="h-4 w-4" />
                     )}
-                    Retry previous step...
+                    {t("pages.pipelines.retryPreviousStepEllipsis", { defaultValue: "Retry previous step..." })}
                   </DropdownMenuItem>
                 ) : null}
                 <DropdownMenuItem
@@ -2884,7 +2951,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                   }}
                 >
                   <ArrowUpDown className="h-4 w-4" />
-                  Move to stage...
+                  {t("pages.pipelines.moveToStageEllipsis", { defaultValue: "Move to stage..." })}
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   variant="destructive"
@@ -2895,7 +2962,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                   }}
                 >
                   <Trash2 className="h-4 w-4" />
-                  Remove item
+                  {t("pages.pipelines.removeItem", { defaultValue: "Remove item" })}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -2906,10 +2973,9 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
       <Dialog open={moveDialogOpen} onOpenChange={setMoveDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Move to stage</DialogTitle>
+            <DialogTitle>{t("pages.pipelines.moveToStage", { defaultValue: "Move to stage" })}</DialogTitle>
             <DialogDescription>
-              Manual moves can bypass the normal agent handoff for this item. Let automation move work when possible;
-              use this override only when the board needs to correct the item state.
+              {t("pages.pipelines.moveToStageDescription", { defaultValue: "Manual moves can bypass the normal agent handoff for this item. Let automation move work when possible; use this override only when the board needs to correct the item state." })}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
@@ -2917,16 +2983,15 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
               <div className="flex gap-2">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                 <p>
-                  Moving this item may skip stage automation, review expectations, and configured transition paths.
-                  Paperclip will still enforce blockers and other hard safety checks.
+                  {t("pages.pipelines.moveToStageWarning", { defaultValue: "Moving this item may skip stage automation, review expectations, and configured transition paths. Paperclip will still enforce blockers and other hard safety checks." })}
                 </p>
               </div>
             </div>
             <label className="block space-y-2">
-              <span className="text-sm font-medium text-foreground">Stage</span>
+              <span className="text-sm font-medium text-foreground">{t("pages.pipelines.stageField", { defaultValue: "Stage" })}</span>
               <Select value={moveStageKey} onValueChange={setMoveStageKey}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Choose a stage" />
+                  <SelectValue placeholder={t("pages.pipelines.chooseStage", { defaultValue: "Choose a stage" })} />
                 </SelectTrigger>
                 <SelectContent>
                   {moveStageOptions.map((stage) => (
@@ -2945,14 +3010,19 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
               onClick={() => setMoveDialogOpen(false)}
               disabled={moveItemToStage.isPending}
             >
-              Cancel
+              {t("pages.pipelines.cancel", { defaultValue: "Cancel" })}
             </Button>
             <Button
               type="button"
               onClick={() => moveItemToStage.mutate()}
               disabled={!selectedMoveStage || moveItemToStage.isPending}
             >
-              {moveItemToStage.isPending ? "Moving..." : `Move to ${selectedMoveStage?.name ?? "stage"}`}
+              {moveItemToStage.isPending
+                ? t("pages.pipelines.moving", { defaultValue: "Moving..." })
+                : t("pages.pipelines.moveToStageName", {
+                    defaultValue: "Move to {{stage}}",
+                    stage: selectedMoveStage?.name ?? t("pages.pipelines.stageWord", { defaultValue: "stage" }),
+                  })}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2966,38 +3036,40 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
       }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{retryDialogScope === "previous_stage" ? "Retry previous step" : "Re-run this step"}</DialogTitle>
+            <DialogTitle>{retryDialogScope === "previous_stage"
+              ? t("pages.pipelines.retryPreviousStep", { defaultValue: "Retry previous step" })
+              : t("pages.pipelines.rerunThisStep", { defaultValue: "Re-run this step" })}</DialogTitle>
             <DialogDescription>
-              Review the automation preflight before Paperclip dispatches a fresh run.
+              {t("pages.pipelines.retryPreflightDescription", { defaultValue: "Review the automation preflight before Paperclip dispatches a fresh run." })}
             </DialogDescription>
           </DialogHeader>
           {retryPlan.isLoading ? (
             <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
-              Checking retry safety...
+              {t("pages.pipelines.checkingRetrySafety", { defaultValue: "Checking retry safety..." })}
             </div>
           ) : retryPlan.error ? (
             <div className="rounded-sm border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
               {retryPlan.error instanceof ApiError && retryPlan.error.message
                 ? retryPlan.error.message
-                : "Could not check whether this automation can be retried."}
+                : t("pages.pipelines.couldNotCheckRetry", { defaultValue: "Could not check whether this automation can be retried." })}
             </div>
           ) : retryPlan.data ? (
             <div className="space-y-4 py-2">
               <div className="grid gap-3 text-sm sm:grid-cols-2">
                 <div>
-                  <div className="text-xs font-medium uppercase text-muted-foreground">From</div>
+                  <div className="text-xs font-medium uppercase text-muted-foreground">{t("pages.pipelines.retryFrom", { defaultValue: "From" })}</div>
                   <div className="mt-1 font-medium text-foreground">{retryPlan.data.currentStage.name}</div>
                 </div>
                 <div>
-                  <div id="retry-runs-at-label" className="text-xs font-medium uppercase text-muted-foreground">Runs at</div>
+                  <div id="retry-runs-at-label" className="text-xs font-medium uppercase text-muted-foreground">{t("pages.pipelines.retryRunsAt", { defaultValue: "Runs at" })}</div>
                   {retryShowTargetDropdown ? (
                     <Select
                       value={retrySelectedTargetId}
                       onValueChange={(value) => setRetryTargetStageId(value)}
                     >
                       <SelectTrigger className="mt-1 w-full" aria-labelledby="retry-runs-at-label">
-                        <SelectValue placeholder="Choose a step" />
+                        <SelectValue placeholder={t("pages.pipelines.chooseStep", { defaultValue: "Choose a step" })} />
                       </SelectTrigger>
                       <SelectContent>
                         {retryAvailableTargets.map((stage) => (
@@ -3008,11 +3080,11 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                       </SelectContent>
                     </Select>
                   ) : (
-                    <div className="mt-1 font-medium text-foreground">{retryPlan.data.targetStage?.name ?? "No retryable step"}</div>
+                    <div className="mt-1 font-medium text-foreground">{retryPlan.data.targetStage?.name ?? t("pages.pipelines.noRetryableStep", { defaultValue: "No retryable step" })}</div>
                   )}
                 </div>
                 <div className="sm:col-span-2">
-                  <div className="text-xs font-medium uppercase text-muted-foreground">Automation</div>
+                  <div className="text-xs font-medium uppercase text-muted-foreground">{t("pages.pipelines.retryAutomation", { defaultValue: "Automation" })}</div>
                   <div className="mt-1 flex flex-wrap items-center gap-x-1 gap-y-1 text-foreground">
                     {retryPlan.data.routine ? (
                       <>
@@ -3022,7 +3094,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                         >
                           {retryPlan.data.routine.title}
                         </Link>
-                        <span className="text-muted-foreground">assigned to</span>
+                        <span className="text-muted-foreground">{t("pages.pipelines.assignedTo", { defaultValue: "assigned to" })}</span>
                         {retryPlan.data.routine.assigneeAgent ? (
                           <Link
                             to={`/agents/${retryPlan.data.routine.assigneeAgent.id}`}
@@ -3031,11 +3103,11 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                             {retryPlan.data.routine.assigneeAgent.name}
                           </Link>
                         ) : (
-                          <span className="font-medium text-muted-foreground">No responsible</span>
+                          <span className="font-medium text-muted-foreground">{t("pages.pipelines.noResponsible", { defaultValue: "No responsible" })}</span>
                         )}
                       </>
                     ) : (
-                      "No routine configured"
+                      t("pages.pipelines.noRoutineConfigured", { defaultValue: "No routine configured" })
                     )}
                   </div>
                 </div>
@@ -3045,15 +3117,15 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                 {retryPreflightRefreshing ? (
                   <div className="absolute inset-0 z-10 flex items-center justify-center gap-2 rounded-sm bg-background/70 text-sm text-muted-foreground">
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    Checking retry safety...
+                    {t("pages.pipelines.checkingRetrySafety", { defaultValue: "Checking retry safety..." })}
                   </div>
                 ) : null}
                 <div className={cn("space-y-4", retryPreflightRefreshing && "opacity-50")}>
                   <div className="grid gap-2 text-sm sm:grid-cols-4">
-                    <RetryMetric label="children" value={retryPlan.data.effectCounts.directChildren} />
-                    <RetryMetric label="descendants" value={retryPlan.data.effectCounts.descendants} />
-                    <RetryMetric label="linked tasks" value={retryPlan.data.effectCounts.linkedAutomationIssues} />
-                    <RetryMetric label="active work" value={retryPlan.data.effectCounts.activeDescendants} tone={retryPlan.data.effectCounts.activeDescendants > 0 ? "warning" : "default"} />
+                    <RetryMetric label={t("pages.pipelines.metricChildren", { defaultValue: "children" })} value={retryPlan.data.effectCounts.directChildren} />
+                    <RetryMetric label={t("pages.pipelines.metricDescendants", { defaultValue: "descendants" })} value={retryPlan.data.effectCounts.descendants} />
+                    <RetryMetric label={t("pages.pipelines.metricLinkedTasks", { defaultValue: "linked tasks" })} value={retryPlan.data.effectCounts.linkedAutomationIssues} />
+                    <RetryMetric label={t("pages.pipelines.metricActiveWork", { defaultValue: "active work" })} value={retryPlan.data.effectCounts.activeDescendants} tone={retryPlan.data.effectCounts.activeDescendants > 0 ? "warning" : "default"} />
                   </div>
 
                   {retryPlan.data.blockers.length > 0 ? (
@@ -3075,7 +3147,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
 
                   {retryIsNonImmediateTarget ? (
                     <p className="text-xs text-muted-foreground">
-                      Re-running from an earlier step affects more downstream items.
+                      {t("pages.pipelines.retryEarlierStepWarning", { defaultValue: "Re-running from an earlier step affects more downstream items." })}
                     </p>
                   ) : null}
 
@@ -3129,7 +3201,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
               onClick={() => setRetryDialogScope(null)}
               disabled={rerunCurrentStageAutomation.isPending || retryStageAutomation.isPending}
             >
-              Cancel
+              {t("pages.pipelines.cancel", { defaultValue: "Cancel" })}
             </Button>
             <Button
               type="button"
@@ -3146,8 +3218,8 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
               }}
             >
               {(rerunCurrentStageAutomation.isPending || retryStageAutomation.isPending)
-                ? "Starting..."
-                : retryPlan.data ? retryPrimaryActionLabel(retryPlan.data) : "Retry"}
+                ? t("pages.pipelines.starting", { defaultValue: "Starting..." })
+                : retryPlan.data ? retryPrimaryActionLabel(retryPlan.data) : t("pages.pipelines.retry", { defaultValue: "Retry" })}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -3167,7 +3239,9 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
       {banner.visible ? (
         <section className="mb-5 flex flex-col gap-3 border-y border-border bg-muted/20 py-4 md:flex-row md:items-center md:justify-between">
           <div>
-            <h2 className="text-sm font-semibold text-foreground">Ready to move to {banner.stageName}?</h2>
+            <h2 className="text-sm font-semibold text-foreground">
+              {t("pages.pipelines.readyToMoveTo", { defaultValue: "Ready to move to {{stage}}?", stage: banner.stageName })}
+            </h2>
             {banner.rationale ? <p className="mt-1 text-sm text-muted-foreground">{banner.rationale}</p> : null}
           </div>
           {banner.suggestionId ? (
@@ -3178,7 +3252,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                 disabled={resolveSuggestion.isPending}
               >
                 <Check className="mr-2 h-4 w-4" />
-                Approve
+                {t("pages.pipelines.approve", { defaultValue: "Approve" })}
               </Button>
               <Button
                 size="sm"
@@ -3187,7 +3261,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                 disabled={resolveSuggestion.isPending}
               >
                 <X className="mr-2 h-4 w-4" />
-                Not yet
+                {t("pages.pipelines.notYet", { defaultValue: "Not yet" })}
               </Button>
             </div>
           ) : null}
@@ -3209,19 +3283,29 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
             onClick={() => acknowledgeChange.mutate()}
             disabled={acknowledgeChange.isPending}
           >
-            Acknowledge
+            {t("pages.pipelines.acknowledge", { defaultValue: "Acknowledge" })}
           </Button>
         </section>
       ) : null}
 
       {(childrenGate || (breakdown?.waitForPieces ?? false)) && waitingChildren.length > 0 ? (
-        <section aria-label="Waiting child items" className="mb-5 border-y border-border px-4 py-4">
+        <section aria-label={t("pages.pipelines.waitingChildItems", { defaultValue: "Waiting child items" })} className="mb-5 border-y border-border px-4 py-4">
           <div className="flex flex-col gap-2">
             <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
               <ListTree className="h-4 w-4 text-muted-foreground" />
               {breakdown
-                ? `Waiting on ${waitingChildren.length} of ${pieceCountTotal} ${pieceLabel(pieceCountTotal)} · ${pieceCountDone} finished`
-                : `Waiting on ${waitingChildren.length} of ${pieceCountTotal} child ${pieceCountTotal === 1 ? "item" : "items"}`}
+                ? t("pages.pipelines.waitingOnPieces", {
+                    defaultValue: "Waiting on {{waiting}} of {{total}} {{noun}} · {{done}} finished",
+                    waiting: waitingChildren.length,
+                    total: pieceCountTotal,
+                    noun: pieceLabel(pieceCountTotal),
+                    done: pieceCountDone,
+                  })
+                : t("pages.pipelines.waitingOnChildItems", {
+                    defaultValue: "Waiting on {{waiting}} of {{total}} child items",
+                    waiting: waitingChildren.length,
+                    total: pieceCountTotal,
+                  })}
             </div>
             <ul className="divide-y divide-border">
               {waitingChildren.map((row) => (
@@ -3253,9 +3337,9 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
             <details className="group rounded-md border border-border">
               <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm font-semibold text-foreground [&::-webkit-details-marker]:hidden">
                 <ChevronRight className="h-3.5 w-3.5 text-muted-foreground transition-transform group-open:rotate-90" />
-                More details
+                {t("pages.pipelines.moreDetails", { defaultValue: "More details" })}
                 <span className="text-(length:--text-micro) font-normal text-muted-foreground">
-                  {mainPaneFields.length} {mainPaneFields.length === 1 ? "field" : "fields"}
+                  {t("pages.pipelines.fieldCount", { defaultValue: "{{count}} field(s)", count: mainPaneFields.length })}
                 </span>
               </summary>
               <div className="space-y-5 border-t border-border px-3 py-3">
@@ -3280,7 +3364,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
             onRetry={() => outputs.refetch()}
           />
 
-          <DetailSection title="Conversation">
+          <DetailSection title={t("pages.pipelines.conversation", { defaultValue: "Conversation" })}>
             {activeConversationIssue ? (
               <div className="py-3">
                 <IssueChatThread
@@ -3335,10 +3419,12 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
               </div>
             ) : (
               <div className="flex flex-col items-start gap-3 py-3 text-sm text-muted-foreground">
-                <p>No active conversation yet.</p>
+                <p>{t("pages.pipelines.noActiveConversationYet", { defaultValue: "No active conversation yet." })}</p>
                 <Button size="sm" variant="outline" onClick={() => startConversation.mutate()} disabled={startConversation.isPending}>
                   <MessageSquare className="mr-2 h-4 w-4" />
-                  {startConversation.isPending ? "Starting..." : "Start a conversation"}
+                  {startConversation.isPending
+                    ? t("pages.pipelines.starting", { defaultValue: "Starting..." })
+                    : t("pages.pipelines.startConversation", { defaultValue: "Start a conversation" })}
                 </Button>
               </div>
             )}
@@ -3348,7 +3434,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
         <aside className="min-w-0 space-y-8">
           {reviewPanel}
 
-          <DetailSection title="Linked work">
+          <DetailSection title={t("pages.pipelines.linkedWork", { defaultValue: "Linked work" })}>
             <PipelineWorkReferences references={workReferences} />
           </DetailSection>
 
@@ -3356,19 +3442,37 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
             title={
               breakdown
                 ? pieceCountTotal > 0
-                  ? `Built from ${pieceCountTotal} ${pieceLabel(pieceCountTotal)}`
-                  : `No ${pieceNounPluralLabel} needed`
-                : `Built from ${pieceCountTotal} ${pieceCountTotal === 1 ? "item" : "items"}`
+                  ? t("pages.pipelines.builtFromCount", {
+                      defaultValue: "Built from {{count}} {{noun}}",
+                      count: pieceCountTotal,
+                      noun: pieceLabel(pieceCountTotal),
+                    })
+                  : t("pages.pipelines.noPiecesNeeded", { defaultValue: "No {{noun}} needed", noun: pieceNounPluralLabel })
+                : t("pages.pipelines.builtFromCount", {
+                    defaultValue: "Built from {{count}} {{noun}}",
+                    count: pieceCountTotal,
+                    noun: pieceCountTotal === 1
+                      ? t("pages.pipelines.itemWord", { defaultValue: "item" })
+                      : t("pages.pipelines.itemsWord", { defaultValue: "items" }),
+                  })
             }
           >
             {breakdown && pieceCountTotal > 0 ? (
               <p className="py-2 text-sm text-muted-foreground">
-                {pieceCountDone} of {pieceCountTotal} {pieceLabel(pieceCountTotal)} finished
+                {t("pages.pipelines.piecesFinished", {
+                  defaultValue: "{{done}} of {{total}} {{noun}} finished",
+                  done: pieceCountDone,
+                  total: pieceCountTotal,
+                  noun: pieceLabel(pieceCountTotal),
+                })}
               </p>
             ) : null}
             {breakdown && pieceCountTotal === 0 ? (
               <p className="py-2 text-sm text-muted-foreground">
-                Nothing was worth splitting — this case moved straight ahead without creating any {pieceNounPluralLabel}.
+                {t("pages.pipelines.nothingWorthSplitting", {
+                  defaultValue: "Nothing was worth splitting — this case moved straight ahead without creating any {{noun}}.",
+                  noun: pieceNounPluralLabel,
+                })}
               </p>
             ) : (
               <BuiltFromTree rows={childRows} />
@@ -3378,12 +3482,12 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                 to={`/pipelines/${breakdown.targetPipelineId}`}
                 className="mt-2 inline-block text-sm font-medium text-foreground hover:underline"
               >
-                Open all {pieceNounPluralLabel} →
+                {t("pages.pipelines.openAllPieces", { defaultValue: "Open all {{noun}}", noun: pieceNounPluralLabel })}{" "}→
               </Link>
             ) : null}
           </DetailSection>
 
-          <DetailSection title="Details">
+          <DetailSection title={t("pages.pipelines.details", { defaultValue: "Details" })}>
             {itemFields.length > 0 ? (
               <dl className="divide-y divide-border">
                 {itemFields.map((field) => (
@@ -3394,11 +3498,11 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                 ))}
               </dl>
             ) : (
-              <p className="py-3 text-sm text-muted-foreground">No added details.</p>
+              <p className="py-3 text-sm text-muted-foreground">{t("pages.pipelines.noAddedDetails", { defaultValue: "No added details." })}</p>
             )}
           </DetailSection>
 
-          <DetailSection title="Activity">
+          <DetailSection title={t("pages.pipelines.activity", { defaultValue: "Activity" })}>
             {eventRows.length > 0 ? (
               <ol className="divide-y divide-border">
                 {eventRows.map((event) => (
@@ -3411,7 +3515,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                 ))}
               </ol>
             ) : (
-              <p className="py-3 text-sm text-muted-foreground">No activity yet.</p>
+              <p className="py-3 text-sm text-muted-foreground">{t("pages.pipelines.noActivityYet", { defaultValue: "No activity yet." })}</p>
             )}
           </DetailSection>
         </aside>
@@ -3420,15 +3524,15 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
       <Dialog open={removeDialogOpen} onOpenChange={setRemoveDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Remove item</DialogTitle>
+            <DialogTitle>{t("pages.pipelines.removeItem", { defaultValue: "Remove item" })}</DialogTitle>
             <DialogDescription>
-              This moves the item out of active work. It stays visible in the pipeline history.
+              {t("pages.pipelines.removeItemDescription", { defaultValue: "This moves the item out of active work. It stays visible in the pipeline history." })}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRemoveDialogOpen(false)}>Keep item</Button>
+            <Button variant="outline" onClick={() => setRemoveDialogOpen(false)}>{t("pages.pipelines.keepItem", { defaultValue: "Keep item" })}</Button>
             <Button variant="destructive" onClick={() => removeItem.mutate()} disabled={removeItem.isPending || !removeStage}>
-              {removeItem.isPending ? "Removing..." : "Remove item"}
+              {removeItem.isPending ? t("pages.pipelines.removing", { defaultValue: "Removing..." }) : t("pages.pipelines.removeItem", { defaultValue: "Remove item" })}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -3438,11 +3542,16 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
 }
 
 function ActivePipelineWorkBanner({ activeWork }: { activeWork: PipelineCaseActiveWork }) {
+  const { t } = useTranslation();
   const isAutomation = activeWork.issueRole === "automation";
-  const title = isAutomation ? "Automation is running" : "Linked work is running";
+  const title = isAutomation
+    ? t("pages.pipelines.automationIsRunning", { defaultValue: "Automation is running" })
+    : t("pages.pipelines.linkedWorkIsRunning", { defaultValue: "Linked work is running" });
   const issueLabel = activeWork.issueIdentifier ?? activeWork.issueTitle;
   const issuePath = createIssueDetailPath(activeWork.issueIdentifier ?? activeWork.issueId);
-  const startedLabel = activeWork.startedAt ? `Started ${relativeTime(activeWork.startedAt)}` : null;
+  const startedLabel = activeWork.startedAt
+    ? t("pages.pipelines.startedAt", { defaultValue: "Started {{time}}", time: relativeTime(activeWork.startedAt) })
+    : null;
 
   return (
     <section
@@ -3460,7 +3569,7 @@ function ActivePipelineWorkBanner({ activeWork }: { activeWork: PipelineCaseActi
             <Link to={issuePath} className="font-medium underline-offset-2 hover:underline">
               {issueLabel}
             </Link>{" "}
-            is active with {activeWork.agentName}
+            {t("pages.pipelines.isActiveWith", { defaultValue: "is active with {{agentName}}", agentName: activeWork.agentName })}
             {startedLabel ? ` · ${startedLabel}` : ""}.
           </p>
         </div>
@@ -3473,7 +3582,7 @@ function ActivePipelineWorkBanner({ activeWork }: { activeWork: PipelineCaseActi
       >
         <Link to={issuePath}>
           <ExternalLink className="mr-2 h-4 w-4" />
-          Open task
+          {t("pages.pipelines.openTask", { defaultValue: "Open task" })}
         </Link>
       </Button>
     </section>
@@ -3504,6 +3613,7 @@ function WaitingChildRow({
     descendantActiveWorkCount?: number | null;
   };
 }) {
+  const { t } = useTranslation();
   const liveDownstreamCount = descendantActiveWorkCount(row);
 
   return (
@@ -3520,7 +3630,7 @@ function WaitingChildRow({
               {row.activeWork ? (
                 <span className="inline-flex items-center gap-1.5 text-emerald-700 dark:text-emerald-300">
                   <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" aria-hidden="true" />
-                  Live with {row.activeWork.agentName}
+                  {t("pages.pipelines.liveWith", { defaultValue: "Live with {{agentName}}", agentName: row.activeWork.agentName })}
                 </span>
               ) : null}
               {liveDownstreamCount > 0 ? (
@@ -3583,7 +3693,7 @@ function reviewDecisionActions(
   if (config.approveToStageKey) {
     actions.push({
       decision: "approve",
-      label: "Approve",
+      label: t("pages.pipelines.approve", { defaultValue: "Approve" }),
       targetStageKey: config.approveToStageKey,
       targetStageName: stageLookup.get(config.approveToStageKey) ?? humanizePipelineItemStatus(config.approveToStageKey),
       requireReason: false,
@@ -3593,7 +3703,7 @@ function reviewDecisionActions(
   if (config.requestChangesToStageKey) {
     actions.push({
       decision: "request_changes",
-      label: "Request changes",
+      label: t("pages.pipelines.requestChanges", { defaultValue: "Request changes" }),
       targetStageKey: config.requestChangesToStageKey,
       targetStageName: stageLookup.get(config.requestChangesToStageKey) ?? humanizePipelineItemStatus(config.requestChangesToStageKey),
       requireReason: config.requireRequestChangesReason,
@@ -3603,7 +3713,7 @@ function reviewDecisionActions(
   if (config.rejectToStageKey) {
     actions.push({
       decision: "reject",
-      label: "Reject",
+      label: t("pages.pipelines.reject", { defaultValue: "Reject" }),
       targetStageKey: config.rejectToStageKey,
       targetStageName: stageLookup.get(config.rejectToStageKey) ?? humanizePipelineItemStatus(config.rejectToStageKey),
       requireReason: config.requireRejectReason,
@@ -3615,11 +3725,13 @@ function reviewDecisionActions(
 
 function reviewDecisionToastTitle(decision: PipelineReviewDecision, movedToNextItem: boolean) {
   const prefix = decision === "approve"
-    ? "Item approved"
+    ? t("pages.pipelines.itemApproved", { defaultValue: "Item approved" })
     : decision === "request_changes"
-      ? "Changes requested"
-      : "Item rejected";
-  return movedToNextItem ? `${prefix}; moved to the next review` : prefix;
+      ? t("pages.pipelines.changesRequested", { defaultValue: "Changes requested" })
+      : t("pages.pipelines.itemRejected", { defaultValue: "Item rejected" });
+  return movedToNextItem
+    ? t("pages.pipelines.movedToNextReview", { defaultValue: "{{prefix}}; moved to the next review", prefix })
+    : prefix;
 }
 
 function ReviewDecisionPanel({
@@ -3641,30 +3753,35 @@ function ReviewDecisionPanel({
   onNoteChange: (value: string) => void;
   onDecide: (decision: PipelineReviewDecision) => void;
 }) {
+  const { t } = useTranslation();
   const trimmedNote = note.trim();
 
   return (
     <section>
-      <h2 className="mb-3 text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Review</h2>
+      <h2 className="mb-3 text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+        {t("pages.pipelines.review", { defaultValue: "Review" })}
+      </h2>
       <div className="border-y border-amber-300 bg-amber-50/70 p-5 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100 sm:p-6">
         <div className="space-y-5">
           <div className="flex items-start gap-3">
             <AlertTriangle className="mt-1 h-5 w-5 shrink-0" />
             <div>
-              <p className="text-2xl font-semibold leading-tight">In review</p>
+              <p className="text-2xl font-semibold leading-tight">{t("pages.pipelines.inReview", { defaultValue: "In review" })}</p>
               <p className="mt-1 text-sm opacity-80">
-                Decide where this item goes next.
+                {t("pages.pipelines.decideWhereThisItemGoesNext", { defaultValue: "Decide where this item goes next." })}
               </p>
             </div>
           </div>
 
           <label className="block space-y-1.5 text-sm font-medium">
-            <span>Reason</span>
+            <span>{t("pages.pipelines.reason", { defaultValue: "Reason" })}</span>
             <Textarea
               value={note}
               onChange={(event) => onNoteChange(event.target.value)}
               rows={4}
-              placeholder={requireReason ? "Required for changes or rejection." : "Optional note."}
+              placeholder={requireReason
+                ? t("pages.pipelines.requiredForChangesOrRejection", { defaultValue: "Required for changes or rejection." })
+                : t("pages.pipelines.optionalNote", { defaultValue: "Optional note." })}
               className="bg-background/90 text-foreground"
             />
           </label>
@@ -3679,7 +3796,11 @@ function ReviewDecisionPanel({
                   type="button"
                   variant={action.variant}
                   className="h-auto min-h-14 w-full justify-start px-4 py-3 text-left"
-                  aria-label={`${action.label} and move to ${action.targetStageName}`}
+                  aria-label={t("pages.pipelines.actionAndMoveTo", {
+                    defaultValue: "{{label}} and move to {{stage}}",
+                    label: action.label,
+                    stage: action.targetStageName,
+                  })}
                   disabled={pending || reasonMissing}
                   onClick={() => onDecide(action.decision)}
                 >
@@ -3693,7 +3814,7 @@ function ReviewDecisionPanel({
                   <span className="min-w-0 flex-1">
                     <span className="block">{action.label}</span>
                     <span className="block truncate text-xs font-normal opacity-75">
-                      Move to {action.targetStageName}
+                      {t("pages.pipelines.moveTo", { defaultValue: "Move to {{stage}}", stage: action.targetStageName })}
                     </span>
                   </span>
                 </Button>
@@ -3703,10 +3824,12 @@ function ReviewDecisionPanel({
 
           {nextItemTitle ? (
             <p className="text-xs opacity-75">
-              Next in this review queue: <span className="font-medium">{nextItemTitle}</span>
+              {t("pages.pipelines.nextInReviewQueue", { defaultValue: "Next in this review queue: {{title}}", title: nextItemTitle })}
             </p>
           ) : (
-            <p className="text-xs opacity-75">No other item is waiting in this pipeline review queue.</p>
+            <p className="text-xs opacity-75">
+              {t("pages.pipelines.noOtherItemWaiting", { defaultValue: "No other item is waiting in this pipeline review queue." })}
+            </p>
           )}
         </div>
       </div>
@@ -3723,13 +3846,14 @@ function PipelineEventText({
   pipelineId: string;
   stages: Map<string, string>;
 }) {
+  const { t } = useTranslation();
   const kind = event.type.startsWith("case.") ? event.type.slice("case.".length) : event.type;
   if (kind === "automation_executed" && event.automation) {
-    const routineName = event.automation.routine?.title ?? "the automation";
+    const routineName = event.automation.routine?.title ?? t("pages.pipelines.theAutomation", { defaultValue: "the automation" });
     const issue = event.automation.issue;
     return (
       <>
-        Automation completed — ran <span className="font-medium">{routineName}</span>
+        {t("pages.pipelines.automationCompleted", { defaultValue: "Automation completed — ran {{routine}}", routine: routineName })}
         {issue ? (
           <>
             {" -> "}
@@ -3754,7 +3878,7 @@ function PipelineEventText({
           <>
             {" "}
             <Link to={pipelineStageAutomationSettingsHref(pipelineId, stageId)} className="font-medium text-foreground hover:underline">
-              Fix stage settings
+              {t("pages.pipelines.fixStageSettings", { defaultValue: "Fix stage settings" })}
             </Link>
           </>
         ) : null}
@@ -3785,19 +3909,19 @@ function DetailSection({
 }
 
 const DELIVERABLE_OUTPUT_PATTERNS: Array<[RegExp, string]> = [
-  [/brief/i, "Brief"],
-  [/spec/i, "Spec"],
-  [/report/i, "Report"],
-  [/design/i, "Design"],
-  [/summary/i, "Summary"],
-  [/plan/i, "Plan"],
+  [/brief/i, t("pages.pipelines.deliverableBrief", { defaultValue: "Brief" })],
+  [/spec/i, t("pages.pipelines.deliverableSpec", { defaultValue: "Spec" })],
+  [/report/i, t("pages.pipelines.deliverableReport", { defaultValue: "Report" })],
+  [/design/i, t("pages.pipelines.deliverableDesign", { defaultValue: "Design" })],
+  [/summary/i, t("pages.pipelines.deliverableSummary", { defaultValue: "Summary" })],
+  [/plan/i, t("pages.pipelines.deliverablePlan", { defaultValue: "Plan" })],
 ];
 
 const OUTPUT_SOURCE_ROLE_LABELS: Record<string, string> = {
-  origin: "Origin",
-  conversation: "Conversation",
-  work: "Work",
-  automation: "Automation",
+  origin: t("pages.pipelines.outputSourceOrigin", { defaultValue: "Origin" }),
+  conversation: t("pages.pipelines.outputSourceConversation", { defaultValue: "Conversation" }),
+  work: t("pages.pipelines.outputSourceWork", { defaultValue: "Work" }),
+  automation: t("pages.pipelines.outputSourceAutomation", { defaultValue: "Automation" }),
 };
 
 function deliverableDocumentLabel(item: PipelineCaseDocumentOutputItem): string | null {
@@ -3810,7 +3934,7 @@ function deliverableDocumentLabel(item: PipelineCaseDocumentOutputItem): string 
 
 function humanizeOutputStatus(status: string) {
   const normalized = status.trim().toLowerCase();
-  if (!normalized) return "Unknown";
+  if (!normalized) return t("pages.pipelines.outputStatusUnknown", { defaultValue: "Unknown" });
   return normalized.charAt(0).toUpperCase() + normalized.slice(1).replace(/_/g, " ");
 }
 
@@ -3864,9 +3988,10 @@ function OutputDeliverableTag({ label }: { label: string }) {
 }
 
 function OutputUnverifiedTag() {
+  const { t } = useTranslation();
   return (
     <Badge variant="outline" className="border-border px-1.5 text-(length:--text-nano) font-semibold uppercase text-muted-foreground">
-      Unverified
+      {t("pages.pipelines.unverified", { defaultValue: "Unverified" })}
     </Badge>
   );
 }
@@ -3880,6 +4005,7 @@ function OutputPreview({ text, dimmed }: { text: string; dimmed: boolean }) {
 }
 
 function ItemOutputMeta({ item, children }: { item: PipelineCaseOutputItem; children?: ReactNode }) {
+  const { t } = useTranslation();
   const statusClass = issueStatusText[item.sourceIssueStatus] ?? issueStatusTextDefault;
   const roleLabel = OUTPUT_SOURCE_ROLE_LABELS[item.sourceRole] ?? humanizeOutputStatus(item.sourceRole);
   return (
@@ -3889,7 +4015,7 @@ function ItemOutputMeta({ item, children }: { item: PipelineCaseOutputItem; chil
         className="font-mono text-(length:--text-micro) text-muted-foreground hover:text-foreground hover:underline"
         title={item.sourceIssueTitle}
       >
-        {item.sourceIssueIdentifier ?? "Source task"}
+        {item.sourceIssueIdentifier ?? t("pages.pipelines.sourceTask", { defaultValue: "Source task" })}
       </Link>
       <OutputMetaDot />
       <span>{roleLabel}</span>
@@ -3906,6 +4032,7 @@ function ItemOutputMeta({ item, children }: { item: PipelineCaseOutputItem; chil
 }
 
 function ItemOutputDocumentRow({ item }: { item: PipelineCaseDocumentOutputItem }) {
+  const { t } = useTranslation();
   const deliverable = deliverableDocumentLabel(item);
   const lowTrust = isLowTrustOutput(item);
   const href = documentAnchorPath(item);
@@ -3928,8 +4055,8 @@ function ItemOutputDocumentRow({ item }: { item: PipelineCaseDocumentOutputItem 
       <Link
         to={href}
         className="inline-flex h-(--sz-30px) w-(--sz-30px) shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
-        aria-label={`Open ${item.title}`}
-        title="Open document"
+        aria-label={t("pages.pipelines.openOutput", { defaultValue: "Open {{title}}", title: item.title })}
+        title={t("pages.pipelines.openDocument", { defaultValue: "Open document" })}
       >
         <ArrowUpRight className="h-4 w-4" />
       </Link>
@@ -3938,6 +4065,7 @@ function ItemOutputDocumentRow({ item }: { item: PipelineCaseDocumentOutputItem 
 }
 
 function ItemOutputWorkProductRow({ item }: { item: PipelineCaseWorkProductOutputItem }) {
+  const { t } = useTranslation();
   const lowTrust = isLowTrustOutput(item);
   const href = item.url ?? issueDetailPath({ id: item.sourceIssueId, identifier: item.sourceIssueIdentifier });
   return (
@@ -3956,8 +4084,8 @@ function ItemOutputWorkProductRow({ item }: { item: PipelineCaseWorkProductOutpu
       <OutputLink
         to={href}
         className="inline-flex h-(--sz-30px) w-(--sz-30px) shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
-        ariaLabel={`Open ${item.title}`}
-        title="Open work product"
+        ariaLabel={t("pages.pipelines.openOutput", { defaultValue: "Open {{title}}", title: item.title })}
+        title={t("pages.pipelines.openWorkProduct", { defaultValue: "Open work product" })}
       >
         <ArrowUpRight className="h-4 w-4" />
       </OutputLink>
@@ -3966,7 +4094,8 @@ function ItemOutputWorkProductRow({ item }: { item: PipelineCaseWorkProductOutpu
 }
 
 function ItemOutputAttachmentRow({ item }: { item: PipelineCaseAttachmentOutputItem }) {
-  const filename = item.filename ?? item.title ?? "Attachment";
+  const { t } = useTranslation();
+  const filename = item.filename ?? item.title ?? t("pages.pipelines.attachment", { defaultValue: "Attachment" });
   const isImage = item.contentType?.startsWith("image/");
   return (
     <div
@@ -3979,7 +4108,7 @@ function ItemOutputAttachmentRow({ item }: { item: PipelineCaseAttachmentOutputI
           target="_blank"
           rel="noreferrer"
           className="mt-0.5 block h-(--sz-30px) w-10 shrink-0 overflow-hidden rounded-sm border border-border bg-accent/10"
-          aria-label={`Open ${filename}`}
+          aria-label={t("pages.pipelines.openAttachment", { defaultValue: "Open {{filename}}", filename })}
         >
           <img src={item.contentPath} alt={filename} className="h-full w-full object-cover" loading="lazy" />
         </a>
@@ -4009,16 +4138,16 @@ function ItemOutputAttachmentRow({ item }: { item: PipelineCaseAttachmentOutputI
           target="_blank"
           rel="noreferrer"
           className="inline-flex h-(--sz-30px) w-(--sz-30px) items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
-          aria-label={`Open ${filename}`}
-          title="Open"
+          aria-label={t("pages.pipelines.openAttachment", { defaultValue: "Open {{filename}}", filename })}
+          title={t("pages.pipelines.open", { defaultValue: "Open" })}
         >
           <ArrowUpRight className="h-4 w-4" />
         </a>
         <a
           href={item.downloadPath}
           className="inline-flex h-(--sz-30px) w-(--sz-30px) items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
-          aria-label={`Download ${filename}`}
-          title="Download"
+          aria-label={t("pages.pipelines.downloadAttachment", { defaultValue: "Download {{filename}}", filename })}
+          title={t("pages.pipelines.download", { defaultValue: "Download" })}
         >
           <Download className="h-4 w-4" />
         </a>
@@ -4038,6 +4167,7 @@ function ItemOutputsSection({
   error: boolean;
   onRetry: () => void;
 }) {
+  const { t } = useTranslation();
   if (!loading && !error && items.length === 0) return null;
 
   const documents = items.filter((item): item is PipelineCaseDocumentOutputItem => item.kind === "document");
@@ -4048,7 +4178,7 @@ function ItemOutputsSection({
   if (documents.length > 0) {
     groups.push({
       key: "document",
-      label: "Documents",
+      label: t("pages.pipelines.outputDocuments", { defaultValue: "Documents" }),
       icon: <FileText className="h-4 w-4 text-muted-foreground" />,
       rows: documents.map((item) => <ItemOutputDocumentRow key={item.id} item={item} />),
     });
@@ -4056,7 +4186,7 @@ function ItemOutputsSection({
   if (workProducts.length > 0) {
     groups.push({
       key: "work_product",
-      label: "Work products",
+      label: t("pages.pipelines.outputWorkProducts", { defaultValue: "Work products" }),
       icon: <Package className="h-4 w-4 text-muted-foreground" />,
       rows: workProducts.map((item) => <ItemOutputWorkProductRow key={item.id} item={item} />),
     });
@@ -4064,7 +4194,7 @@ function ItemOutputsSection({
   if (attachments.length > 0) {
     groups.push({
       key: "attachment",
-      label: "Attachments",
+      label: t("pages.pipelines.outputAttachments", { defaultValue: "Attachments" }),
       icon: <Paperclip className="h-4 w-4 text-muted-foreground" />,
       rows: attachments.map((item) => <ItemOutputAttachmentRow key={item.id} item={item} />),
     });
@@ -4072,7 +4202,7 @@ function ItemOutputsSection({
 
   return (
     <DetailSection
-      title="Item outputs"
+      title={t("pages.pipelines.itemOutputs", { defaultValue: "Item outputs" })}
       trailing={
         loading ? null : (
           <Badge variant="ghost" className="bg-muted text-(length:--text-micro) normal-case tracking-normal text-muted-foreground">
@@ -4093,13 +4223,13 @@ function ItemOutputsSection({
       ) : error ? (
         <div className="flex items-center gap-2 py-2.5 text-xs text-destructive">
           <AlertTriangle className="h-4 w-4 shrink-0" />
-          <span>Couldn't load item outputs.</span>
+          <span>{t("pages.pipelines.couldNotLoadOutputs", { defaultValue: "Couldn't load item outputs." })}</span>
           <button
             type="button"
             onClick={onRetry}
             className="ml-auto rounded-sm border border-border px-2 py-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
           >
-            Retry
+            {t("pages.pipelines.retry", { defaultValue: "Retry" })}
           </button>
         </div>
       ) : (
@@ -4125,8 +4255,9 @@ function BuiltFromTree({
 }: {
   rows: Array<{ case: PipelineCase; stage: PipelineStage }>;
 }) {
+  const { t } = useTranslation();
   if (rows.length === 0) {
-    return <p className="py-3 text-sm text-muted-foreground">No built-from items.</p>;
+    return <p className="py-3 text-sm text-muted-foreground">{t("pages.pipelines.noBuiltFromItems", { defaultValue: "No built-from items." })}</p>;
   }
   return (
     <ul className="divide-y divide-border">
@@ -4141,7 +4272,13 @@ function BuiltFromTree({
               <span className="block truncate font-medium text-foreground">{row.case.title}</span>
               {(row.case.childCount ?? 0) > 0 ? (
                 <span className="block text-xs text-muted-foreground">
-                  {row.case.childCount} nested {(row.case.childCount ?? 0) === 1 ? "item" : "items"} hidden
+                  {t("pages.pipelines.nestedItemsHidden", {
+                    defaultValue: "{{count}} nested {{item}} hidden",
+                    count: row.case.childCount ?? 0,
+                    item: (row.case.childCount ?? 0) === 1
+                      ? t("pages.pipelines.nestedItemWord", { defaultValue: "item" })
+                      : t("pages.pipelines.nestedItemsWord", { defaultValue: "items" }),
+                  })}
                 </span>
               ) : null}
             </span>
@@ -4169,6 +4306,7 @@ function PipelineAddItems({ pipelineId }: { pipelineId: string }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { t } = useTranslation();
   const [rows, setRows] = useState<DraftRow[]>(() => [newDraftRow(true)]);
 
   const pipeline = useQuery({
@@ -4182,11 +4320,11 @@ function PipelineAddItems({ pipelineId }: { pipelineId: string }) {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Pipelines", href: "/pipelines" },
-      { label: pipeline.data?.name ?? "Pipeline", href: `/pipelines/${pipelineId}` },
-      { label: "Add items" },
+      { label: t("nav.pipelines"), href: "/pipelines" },
+      { label: pipeline.data?.name ?? t("pages.pipelines.pipeline", { defaultValue: "Pipeline" }), href: `/pipelines/${pipelineId}` },
+      { label: t("pages.pipelines.addItemsBreadcrumb", { defaultValue: "Add items" }) },
     ]);
-  }, [pipeline.data?.name, pipelineId, setBreadcrumbs]);
+  }, [pipeline.data?.name, pipelineId, setBreadcrumbs, t]);
 
   const fields = intake.data?.fields ?? [];
   const errors = useMemo(() => validateDraftRows(rows, fields), [fields, rows]);
@@ -4213,34 +4351,34 @@ function PipelineAddItems({ pipelineId }: { pipelineId: string }) {
         queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.detail(pipelineId) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.cases(pipelineId) }),
       ]);
-      pushToast({ title: `${itemCountLabel(rows.length)} submitted`, tone: "success" });
+      pushToast({ title: t("pages.pipelines.itemsSubmitted", { defaultValue: "{{items}} submitted", items: itemCountLabel(rows.length) }), tone: "success" });
       navigate(`/pipelines/${pipelineId}`);
     },
   });
 
   if (pipeline.isLoading || intake.isLoading) return <PageSkeleton />;
   if (!pipeline.data || !intake.data) {
-    return <div className="mx-auto max-w-3xl py-10 text-sm text-muted-foreground">Pipeline not found.</div>;
+    return <div className="mx-auto max-w-3xl py-10 text-sm text-muted-foreground">{t("pages.pipelines.pipelineNotFound", { defaultValue: "Pipeline not found." })}</div>;
   }
 
-  const firstStageName = intake.data.stageName ?? pipeline.data.stages[0]?.name ?? "first stage";
+  const firstStageName = intake.data.stageName ?? pipeline.data.stages[0]?.name ?? t("pages.pipelines.firstStage", { defaultValue: "first stage" });
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-8">
       <div className="mb-6">
         <p className="text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-          Add to {pipeline.data.name}
+          {t("pages.pipelines.addToPipeline", { defaultValue: "Add to {{pipeline}}", pipeline: pipeline.data.name })}
         </p>
-        <h1 className="text-2xl font-semibold text-foreground">Build your list, then submit it all at once</h1>
+        <h1 className="text-2xl font-semibold text-foreground">{t("pages.pipelines.buildYourList", { defaultValue: "Build your list, then submit it all at once" })}</h1>
         <p className="text-sm text-muted-foreground">
-          Items will be added to the first stage ({firstStageName}).
+          {t("pages.pipelines.itemsAddedToFirstStage", { defaultValue: "Items will be added to the first stage ({{stage}}).", stage: firstStageName })}
         </p>
       </div>
 
       <div className="mb-5 flex items-center gap-2 border border-border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
         <Info className="h-4 w-4 shrink-0" />
         <span>
-          These fields come from <span className="font-medium text-foreground">Pipeline settings -&gt; {firstStageName} stage</span>.
+          {t("pages.pipelines.fieldsComeFrom", { defaultValue: "These fields come from" })} <span className="font-medium text-foreground">{t("pages.pipelines.pipelineSettingsStage", { defaultValue: "Pipeline settings -> {{stage}} stage", stage: firstStageName })}</span>.
         </span>
       </div>
 
@@ -4275,20 +4413,24 @@ function PipelineAddItems({ pipelineId }: { pipelineId: string }) {
           onClick={() => setRows((current) => [...current, newDraftRow(false)])}
         >
           <Plus className="mr-2 h-4 w-4" />
-          Add another item
+          {t("pages.pipelines.addAnotherItem", { defaultValue: "Add another item" })}
         </button>
       </div>
 
       <div className="mt-10 flex items-center justify-between border-t border-border pt-5">
         <Button variant="outline" onClick={() => navigate(`/pipelines/${pipelineId}`)}>
-          Cancel
+          {t("pages.pipelines.cancel", { defaultValue: "Cancel" })}
         </Button>
         <div className="flex items-center gap-4">
           <span className="text-sm text-muted-foreground">
-            {rows.length === 0 ? "Add at least one item." : "Count updates live."}
+            {rows.length === 0
+              ? t("pages.pipelines.addAtLeastOneItem", { defaultValue: "Add at least one item." })
+              : t("pages.pipelines.countUpdatesLive", { defaultValue: "Count updates live." })}
           </span>
           <Button disabled={invalid || submit.isPending} onClick={() => submit.mutate()}>
-            {submit.isPending ? "Submitting..." : `Submit ${itemCountLabel(rows.length)}`}
+            {submit.isPending
+              ? t("pages.pipelines.submitting", { defaultValue: "Submitting..." })
+              : t("pages.pipelines.submitItems", { defaultValue: "Submit {{items}}", items: itemCountLabel(rows.length) })}
           </Button>
         </div>
       </div>
@@ -4315,7 +4457,8 @@ function DraftItemRow({
   onRemove: () => void;
   onChange: (fieldKey: string, value: string) => void;
 }) {
-  const title = row.values.title?.trim() || `Item ${index + 1}`;
+  const { t } = useTranslation();
+  const title = row.values.title?.trim() || t("pages.pipelines.itemNumber", { defaultValue: "Item {{number}}", number: index + 1 });
   const preview = fields
     .filter((field) => field.key !== "title")
     .map((field) => row.values[field.key])
@@ -4327,16 +4470,18 @@ function DraftItemRow({
     <section className={cn("border border-border bg-background", row.expanded && "border-primary")}>
       <div className="grid grid-cols-(--gtc-17) items-center gap-3 px-4 py-3">
         <button type="button" className="min-w-0 text-left" onClick={onToggle}>
-          <span className="block text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Item {index + 1}</span>
+          <span className="block text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{t("pages.pipelines.itemNumber", { defaultValue: "Item {{number}}", number: index + 1 })}</span>
           <span className="block truncate text-sm font-semibold text-foreground">{title}</span>
           {!row.expanded && preview ? <span className="block truncate text-xs text-muted-foreground">{preview}</span> : null}
           {!row.expanded && row.serverError ? <span className="block text-xs text-destructive">{row.serverError}</span> : null}
         </button>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="icon" onClick={onToggle} aria-label={row.expanded ? "Collapse item" : "Expand item"}>
+          <Button variant="outline" size="icon" onClick={onToggle} aria-label={row.expanded
+            ? t("pages.pipelines.collapseItem", { defaultValue: "Collapse item" })
+            : t("pages.pipelines.expandItem", { defaultValue: "Expand item" })}>
             {row.expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </Button>
-          <Button variant="outline" size="icon" onClick={onRemove} aria-label="Remove item">
+          <Button variant="outline" size="icon" onClick={onRemove} aria-label={t("pages.pipelines.removeItem", { defaultValue: "Remove item" })}>
             <Trash2 className="h-4 w-4" />
           </Button>
         </div>
@@ -4357,10 +4502,10 @@ function DraftItemRow({
             {row.serverError ? <p className="md:col-span-2 text-sm text-destructive">{row.serverError}</p> : null}
           </div>
           <aside className="border border-border p-4 text-sm">
-            <p className="mb-3 text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Preview</p>
+            <p className="mb-3 text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{t("pages.pipelines.preview", { defaultValue: "Preview" })}</p>
             <p className="font-semibold text-foreground">{title}</p>
-            <p className="mt-3 text-xs text-muted-foreground">First stage on submit:</p>
-            <p className="font-semibold text-foreground">{intake.stageName ?? "First stage"}</p>
+            <p className="mt-3 text-xs text-muted-foreground">{t("pages.pipelines.firstStageOnSubmit", { defaultValue: "First stage on submit:" })}</p>
+            <p className="font-semibold text-foreground">{intake.stageName ?? t("pages.pipelines.firstStage", { defaultValue: "First stage" })}</p>
           </aside>
         </div>
       ) : null}
@@ -4379,17 +4524,18 @@ export function GeneratedField({
   error?: string;
   onChange: (value: string) => void;
 }) {
+  const { t } = useTranslation();
   const inputId = `pipeline-intake-${field.key}`;
   return (
     <label className={cn("block space-y-1", field.type === "multiline" && "md:col-span-2")}>
       <span className="text-sm font-medium text-foreground">
         {field.label}
-        {field.required ? <span className="ml-1 font-normal text-destructive">required</span> : null}
+        {field.required ? <span className="ml-1 font-normal text-destructive">{t("pages.pipelines.required", { defaultValue: "required" })}</span> : null}
       </span>
       {field.type === "select" ? (
         <Select value={value} onValueChange={onChange}>
           <SelectTrigger id={inputId} aria-invalid={Boolean(error)} className="w-full">
-            <SelectValue placeholder="Choose..." />
+            <SelectValue placeholder={t("pages.pipelines.choose", { defaultValue: "Choose..." })} />
           </SelectTrigger>
           <SelectContent>
             {(field.options ?? []).map((option) => (
@@ -4429,11 +4575,14 @@ export interface ReviewQueueRow {
   fields: Record<string, unknown> | null;
 }
 
-const REVIEW_QUEUE_SECTION_LABELS: Record<ReviewQueueKind, string> = {
-  suggestion: "Suggestions to review",
-  review: "Final calls",
-  headsUp: "Heads-up",
-};
+function reviewQueueSectionLabel(kind: ReviewQueueKind) {
+  const labels: Record<ReviewQueueKind, string> = {
+    suggestion: t("pages.pipelines.reviewQueueSuggestions", { defaultValue: "Suggestions to review" }),
+    review: t("pages.pipelines.reviewQueueFinalCalls", { defaultValue: "Final calls" }),
+    headsUp: t("pages.pipelines.reviewQueueHeadsUp", { defaultValue: "Heads-up" }),
+  };
+  return labels[kind];
+}
 
 const REVIEW_QUEUE_SECTION_ORDER: ReviewQueueKind[] = ["suggestion", "review", "headsUp"];
 
@@ -4468,7 +4617,11 @@ export function buildReviewQueueRows({
       title: entry.case.title,
       prompt:
         entry.suggestion.rationale?.trim() ||
-        `${entry.case.pipeline.name} thinks ${entry.case.title} is ready to move forward.`,
+        t("pages.pipelines.reviewPromptSuggestion", {
+          defaultValue: "{{pipeline}} thinks {{title}} is ready to move forward.",
+          pipeline: entry.case.pipeline.name,
+          title: entry.case.title,
+        }),
       kind: "suggestion",
       createdAt: entry.suggestion.createdAt ?? entry.case.updatedAt ?? null,
       expectedVersion: entry.case.version ?? null,
@@ -4489,7 +4642,10 @@ export function buildReviewQueueRows({
       title: entry.case.title,
       prompt:
         entry.case.summary?.trim() ||
-        `Decide whether ${entry.case.title} is ready to move forward.`,
+        t("pages.pipelines.reviewPromptDecide", {
+          defaultValue: "Decide whether {{title}} is ready to move forward.",
+          title: entry.case.title,
+        }),
       kind: "review",
       createdAt: entry.case.updatedAt ?? entry.case.createdAt ?? null,
       expectedVersion: entry.review.expectedVersion ?? entry.case.version ?? null,
@@ -4510,8 +4666,14 @@ export function buildReviewQueueRows({
       pipelineName: entry.case.pipeline.name,
       title: entry.case.title,
       prompt: upstreamTitle
-        ? `${upstreamTitle} changed upstream. Take a quick look before work continues.`
-        : `${entry.case.title} needs a quick look before work continues.`,
+        ? t("pages.pipelines.reviewPromptHeadsUpChanged", {
+            defaultValue: "{{upstream}} changed upstream. Take a quick look before work continues.",
+            upstream: upstreamTitle,
+          })
+        : t("pages.pipelines.reviewPromptHeadsUpLook", {
+            defaultValue: "{{title}} needs a quick look before work continues.",
+            title: entry.case.title,
+          }),
       kind: "headsUp",
       createdAt: entry.drift.createdAt ?? entry.case.updatedAt ?? null,
       expectedVersion: entry.case.version ?? null,
@@ -4542,7 +4704,10 @@ export function buildReviewQueueRows({
       prompt:
         pendingSuggestion?.rationale?.trim() ||
         entry.case.summary?.trim() ||
-        `Decide whether ${entry.case.title} is ready to move forward.`,
+        t("pages.pipelines.reviewPromptDecide", {
+          defaultValue: "Decide whether {{title}} is ready to move forward.",
+          title: entry.case.title,
+        }),
       kind: "review",
       createdAt: entry.case.updatedAt ?? entry.case.createdAt ?? null,
       expectedVersion: typeof entry.case.version === "number" ? entry.case.version : null,
@@ -4561,11 +4726,12 @@ export function buildReviewQueueRows({
 }
 
 function ReviewQueueStatusChip({ failed }: { failed: boolean }) {
+  const { t } = useTranslation();
   if (!failed) return null;
   return (
     <Badge variant="outline" className="border-amber-200 bg-amber-50 font-semibold text-amber-800 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-300">
       <AlertTriangle className="h-3 w-3" />
-      Needs attention
+      {t("pages.pipelines.needsAttention", { defaultValue: "Needs attention" })}
     </Badge>
   );
 }
@@ -4592,6 +4758,7 @@ function ReviewQueueDetailDialog({
   onApprove: (note: string) => void;
   onRequestChanges: (note: string) => void;
 }) {
+  const { t } = useTranslation();
   const [note, setNote] = useState("");
 
   useEffect(() => {
@@ -4607,20 +4774,25 @@ function ReviewQueueDetailDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>{row?.title ?? "Review item"}</DialogTitle>
+          <DialogTitle>{row?.title ?? t("pages.pipelines.reviewItem", { defaultValue: "Review item" })}</DialogTitle>
           <DialogDescription>
-            {row ? `${row.pipelineName} is waiting for your decision.` : "Review the item and decide what happens next."}
+            {row
+              ? t("pages.pipelines.pipelineWaitingForDecision", {
+                  defaultValue: "{{pipeline}} is waiting for your decision.",
+                  pipeline: row.pipelineName,
+                })
+              : t("pages.pipelines.reviewAndDecide", { defaultValue: "Review the item and decide what happens next." })}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-5">
           <section className="space-y-2">
-            <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">What is being decided</p>
+            <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">{t("pages.pipelines.whatIsBeingDecided", { defaultValue: "What is being decided" })}</p>
             <p className="text-sm text-foreground">{row?.prompt}</p>
           </section>
 
           <section className="space-y-2">
-            <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Item preview</p>
+            <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">{t("pages.pipelines.itemPreview", { defaultValue: "Item preview" })}</p>
             {fields.length > 0 ? (
               <div className="divide-y divide-border rounded-md border border-border">
                 {fields.map(([key, value]) => (
@@ -4632,7 +4804,7 @@ function ReviewQueueDetailDialog({
               </div>
             ) : (
               <p className="rounded-md border border-border px-3 py-3 text-sm text-muted-foreground">
-                No preview details yet.
+                {t("pages.pipelines.noPreviewDetailsYet", { defaultValue: "No preview details yet." })}
               </p>
             )}
           </section>
@@ -4643,18 +4815,20 @@ function ReviewQueueDetailDialog({
               className="inline-block text-sm font-medium text-primary hover:underline"
               onClick={() => onOpenChange(false)}
             >
-              Open the full item
+              {t("pages.pipelines.openFullItem", { defaultValue: "Open the full item" })}
             </Link>
           ) : null}
 
           {canDecide ? (
             <label className="block space-y-1.5 text-sm font-medium">
-              <span>Note</span>
+              <span>{t("pages.pipelines.note", { defaultValue: "Note" })}</span>
               <Textarea
                 value={note}
                 onChange={(event) => setNote(event.target.value)}
                 rows={3}
-                placeholder={requestChangesRequiresNote ? "Required when requesting changes." : "Optional note."}
+                placeholder={requestChangesRequiresNote
+                  ? t("pages.pipelines.requiredWhenRequestingChanges", { defaultValue: "Required when requesting changes." })
+                  : t("pages.pipelines.optionalNote", { defaultValue: "Optional note." })}
               />
             </label>
           ) : null}
@@ -4662,7 +4836,7 @@ function ReviewQueueDetailDialog({
 
         <DialogFooter className="gap-2 sm:gap-2">
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={pending}>
-            Cancel
+            {t("pages.pipelines.cancel", { defaultValue: "Cancel" })}
           </Button>
           {canDecide ? (
             <>
@@ -4672,11 +4846,13 @@ function ReviewQueueDetailDialog({
                 onClick={() => onRequestChanges(trimmedNote)}
                 disabled={pending || (requestChangesRequiresNote && !trimmedNote)}
               >
-                {row?.kind === "suggestion" ? "Not yet" : "Request changes"}
+                {row?.kind === "suggestion"
+                  ? t("pages.pipelines.notYet", { defaultValue: "Not yet" })
+                  : t("pages.pipelines.requestChanges", { defaultValue: "Request changes" })}
               </Button>
               <Button type="button" onClick={() => onApprove(trimmedNote)} disabled={pending}>
                 {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-                Approve
+                {t("pages.pipelines.approve", { defaultValue: "Approve" })}
               </Button>
             </>
           ) : null}
@@ -4715,13 +4891,14 @@ function ReviewQueueSection({
   onRequestChanges: (row: ReviewQueueRow) => void;
   onOpenItem: (row: ReviewQueueRow) => void;
 }) {
+  const { t } = useTranslation();
   if (rows.length === 0) return null;
 
   return (
     <section className="space-y-2">
       <div className="flex items-baseline justify-between border-b border-border pb-2">
         <h2 className="text-sm font-semibold text-foreground">{title}</h2>
-        <span className="text-xs text-muted-foreground">{formatNumber(rows.length)} item{rows.length === 1 ? "" : "s"}</span>
+        <span className="text-xs text-muted-foreground">{t("pages.pipelines.queueItemCount", { defaultValue: "{{count}} item(s)", count: formatNumber(rows.length) })}</span>
       </div>
       <div className="divide-y divide-border">
         {rows.map((row) => {
@@ -4757,7 +4934,7 @@ function ReviewQueueSection({
                 {showSelection ? (
                   <input
                     type="checkbox"
-                    aria-label={`Select ${row.title}`}
+                    aria-label={t("pages.pipelines.selectItem", { defaultValue: "Select {{title}}", title: row.title })}
                     checked={selected}
                     disabled={!selectable || pending}
                     onClick={(event) => event.stopPropagation()}
@@ -4779,7 +4956,7 @@ function ReviewQueueSection({
 
               <div className="flex items-center gap-2">
                 <span className="hidden whitespace-nowrap text-xs text-muted-foreground sm:inline">
-                  {row.createdAt ? relativeTime(row.createdAt) : "recently"}
+                  {row.createdAt ? relativeTime(row.createdAt) : t("pages.pipelines.recently", { defaultValue: "recently" })}
                 </span>
                 {row.kind === "suggestion" ? (
                   <>
@@ -4787,13 +4964,13 @@ function ReviewQueueSection({
                       event.stopPropagation();
                       onApprove(row);
                     }}>
-                      Approve
+                      {t("pages.pipelines.approve", { defaultValue: "Approve" })}
                     </Button>
                     <Button type="button" size="sm" variant="outline" disabled={pending} onClick={(event) => {
                       event.stopPropagation();
                       onDecline(row);
                     }}>
-                      Not yet
+                      {t("pages.pipelines.notYet", { defaultValue: "Not yet" })}
                     </Button>
                   </>
                 ) : row.kind === "review" ? (
@@ -4802,13 +4979,13 @@ function ReviewQueueSection({
                       event.stopPropagation();
                       onApprove(row);
                     }}>
-                      Approve
+                      {t("pages.pipelines.approve", { defaultValue: "Approve" })}
                     </Button>
                     <Button type="button" size="sm" variant="outline" disabled={pending} onClick={(event) => {
                       event.stopPropagation();
                       onRequestChanges(row);
                     }}>
-                      Request changes
+                      {t("pages.pipelines.requestChanges", { defaultValue: "Request changes" })}
                     </Button>
                   </>
                 ) : null}
@@ -4826,6 +5003,7 @@ export function ReviewQueue() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { t } = useTranslation();
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(() => new Set());
   const [hiddenRowIds, setHiddenRowIds] = useState<Set<string>>(() => new Set());
   const [failedRowIds, setFailedRowIds] = useState<Set<string>>(() => new Set());
@@ -4834,8 +5012,8 @@ export function ReviewQueue() {
   const [detailRow, setDetailRow] = useState<ReviewQueueRow | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Review queue" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("pages.pipelines.reviewQueueTitle", { defaultValue: "Review queue" }) }]);
+  }, [setBreadcrumbs, t]);
 
   const attentionQuery = useQuery({
     queryKey: selectedCompanyId ? queryKeys.pipelines.attention(selectedCompanyId) : ["pipelines", "attention", "none"],
@@ -5046,7 +5224,7 @@ export function ReviewQueue() {
   }, [activeRowId, decideRow, openItem, visibleRows]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Hexagon} message="Select a company to view the review queue." />;
+    return <EmptyState icon={Hexagon} message={t("pages.pipelines.selectCompanyToViewReviewQueue", { defaultValue: "Select a company to view the review queue." })} />;
   }
 
   if (attentionQuery.isLoading || reviewCasesQuery.isLoading) {
@@ -5059,9 +5237,9 @@ export function ReviewQueue() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-normal text-foreground">Review queue</h1>
+          <h1 className="text-2xl font-semibold tracking-normal text-foreground">{t("pages.pipelines.reviewQueueTitle", { defaultValue: "Review queue" })}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Needs your attention ({formatNumber(visibleRows.length)})
+            {t("pages.pipelines.needsYourAttention", { defaultValue: "Needs your attention ({{count}})", count: formatNumber(visibleRows.length) })}
           </p>
         </div>
         <Button
@@ -5070,22 +5248,22 @@ export function ReviewQueue() {
           onClick={() => bulkApprove.mutate(selectedRows)}
         >
           {bulkApprove.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-          Approve {formatNumber(selectedCount)} item{selectedCount === 1 ? "" : "s"}
+          {t("pages.pipelines.approveItems", { defaultValue: "Approve {{count}} item(s)", count: formatNumber(selectedCount) })}
         </Button>
       </div>
 
       {attentionQuery.error || reviewCasesQuery.error ? (
-        <p className="text-sm text-amber-700 dark:text-amber-300">Some items need attention. Try again in a moment.</p>
+        <p className="text-sm text-amber-700 dark:text-amber-300">{t("pages.pipelines.someItemsNeedAttention", { defaultValue: "Some items need attention. Try again in a moment." })}</p>
       ) : null}
 
       {visibleRows.length === 0 ? (
-        <EmptyState icon={Check} message="Nothing needs you right now." />
+        <EmptyState icon={Check} message={t("pages.pipelines.nothingNeedsYouRightNow", { defaultValue: "Nothing needs you right now." })} />
       ) : (
         <div className="space-y-6">
           {groupedRows.map((group) => (
             <ReviewQueueSection
               key={group.kind}
-              title={REVIEW_QUEUE_SECTION_LABELS[group.kind]}
+              title={reviewQueueSectionLabel(group.kind)}
               rows={group.rows}
               activeRowId={activeRowId}
               failedRowIds={failedRowIds}
@@ -5111,7 +5289,7 @@ export function ReviewQueue() {
       )}
 
       <p className="text-xs text-muted-foreground">
-        Shortcuts: <span className="font-semibold">j</span>/<span className="font-semibold">k</span> or arrow keys move, <span className="font-semibold">Enter</span> opens item, <span className="font-semibold">a</span> approves.
+        {t("pages.pipelines.shortcuts", { defaultValue: "Shortcuts: {{j}}/{{k}} or arrow keys move, {{enter}} opens item, {{a}} approves.", j: "j", k: "k", enter: "Enter", a: "a" })}
       </p>
 
       <ReviewQueueDetailDialog
@@ -5150,11 +5328,12 @@ const LEARNING_EVENT_TYPES = "review_decided,transition_forced";
 export function Learnings() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { t } = useTranslation();
   const [offset, setOffset] = useState(0);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Learnings" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("pages.pipelines.learningsTitle", { defaultValue: "Learnings" }) }]);
+  }, [setBreadcrumbs, t]);
 
   const learningsQuery = useQuery({
     queryKey: selectedCompanyId
@@ -5170,7 +5349,7 @@ export function Learnings() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={BookOpenText} message="Select a company to view learnings." />;
+    return <EmptyState icon={BookOpenText} message={t("pages.pipelines.selectCompanyToViewLearnings", { defaultValue: "Select a company to view learnings." })} />;
   }
 
   if (learningsQuery.isLoading && !learningsQuery.data) {
@@ -5188,26 +5367,26 @@ export function Learnings() {
   return (
     <div className="space-y-6">
       <div className="border-b border-border pb-5">
-        <h1 className="text-2xl font-semibold tracking-normal text-foreground">Learnings</h1>
+        <h1 className="text-2xl font-semibold tracking-normal text-foreground">{t("pages.pipelines.learningsTitle", { defaultValue: "Learnings" })}</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Patterns from review decisions and hand moves, in plain words.
+          {t("pages.pipelines.learningsDescription", { defaultValue: "Patterns from review decisions and hand moves, in plain words." })}
         </p>
       </div>
 
       <div className="flex items-center justify-end">
         <p className="text-sm text-muted-foreground">
           {learningsQuery.isFetching
-            ? "Refreshing..."
+            ? t("pages.pipelines.refreshing", { defaultValue: "Refreshing..." })
             : events.length > 0
               ? `${formatNumber(firstVisible)}-${formatNumber(lastVisible)}`
-              : "No rows"}
+              : t("pages.pipelines.noRows", { defaultValue: "No rows" })}
         </p>
       </div>
 
       {learningsQuery.error ? (
-        <p className="text-sm text-destructive">Could not load learnings.</p>
+        <p className="text-sm text-destructive">{t("pages.pipelines.couldNotLoadLearnings", { defaultValue: "Could not load learnings." })}</p>
       ) : groups.length === 0 ? (
-        <EmptyState icon={BookOpenText} message="No learnings yet." />
+        <EmptyState icon={BookOpenText} message={t("pages.pipelines.noLearningsYet", { defaultValue: "No learnings yet." })} />
       ) : (
         <div className="space-y-6">
           {groups.map((group) => (
@@ -5255,10 +5434,10 @@ export function Learnings() {
           disabled={!canGoPrevious}
           onClick={() => setOffset((current) => Math.max(0, current - LEARNINGS_PAGE_SIZE))}
         >
-          Previous
+          {t("pages.pipelines.previous", { defaultValue: "Previous" })}
         </Button>
         <span className="text-sm text-muted-foreground">
-          {events.length > 0 ? `${formatNumber(firstVisible)}-${formatNumber(lastVisible)}` : "No rows"}
+          {events.length > 0 ? `${formatNumber(firstVisible)}-${formatNumber(lastVisible)}` : t("pages.pipelines.noRows", { defaultValue: "No rows" })}
         </span>
         <Button
           type="button"
@@ -5266,7 +5445,7 @@ export function Learnings() {
           disabled={!canGoNext}
           onClick={() => setOffset((current) => pagination?.nextOffset ?? current + LEARNINGS_PAGE_SIZE)}
         >
-          Next
+          {t("pages.pipelines.next", { defaultValue: "Next" })}
         </Button>
       </div>
     </div>

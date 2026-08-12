@@ -47,6 +47,7 @@ import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
 import { AgentCapsule } from "./AgentCapsule";
+import { LocaleSwitcher } from "./LocaleSwitcher";
 import { Badge } from "@/components/ui/badge";
 import {
   Building2,
@@ -801,6 +802,10 @@ export function OnboardingWizard() {
             <X className="h-5 w-5" />
             <span className="sr-only">Close</span>
           </button>
+
+          <div className="absolute top-4 right-4 z-10">
+            <LocaleSwitcher compact />
+          </div>
 
           {/* Step 0: Front Door — full-screen choice */}
           {step === 0 && (

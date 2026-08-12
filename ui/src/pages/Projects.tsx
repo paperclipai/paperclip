@@ -20,6 +20,7 @@ import {
   useResourceMembershipMutation,
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
+import { t, useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ArrowUpDown, Check, Hexagon, Plus } from "lucide-react";
@@ -29,10 +30,10 @@ type ProjectSortField = "name" | "updated" | "created" | "targetDate";
 type ProjectSortDir = "asc" | "desc";
 
 const PROJECT_SORT_OPTIONS: Array<{ field: ProjectSortField; label: string }> = [
-  { field: "name", label: "Name" },
-  { field: "updated", label: "Updated" },
-  { field: "created", label: "Created" },
-  { field: "targetDate", label: "Target date" },
+  { field: "name", label: t("pages.projects.sort.name", { defaultValue: "Name" }) },
+  { field: "updated", label: t("pages.projects.sort.updated", { defaultValue: "Updated" }) },
+  { field: "created", label: t("pages.projects.sort.created", { defaultValue: "Created" }) },
+  { field: "targetDate", label: t("pages.projects.sort.targetDate", { defaultValue: "Target date" }) },
 ];
 
 function compareProjectNames(left: Project, right: Project) {
@@ -82,10 +83,11 @@ export function Projects() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const [sortField, setSortField] = useState<ProjectSortField>("name");
   const [sortDir, setSortDir] = useState<ProjectSortDir>("asc");
+  const { t } = useTranslation();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Projects" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("nav.projects") }]);
+  }, [setBreadcrumbs, t]);
 
   const { data: allProjects, isLoading, error } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
@@ -116,10 +118,10 @@ export function Projects() {
 
     return groups;
   }, [membershipsQuery.data, sortedProjects]);
-  const sortLabel = PROJECT_SORT_OPTIONS.find((option) => option.field === sortField)?.label ?? "Name";
+  const sortLabel = PROJECT_SORT_OPTIONS.find((option) => option.field === sortField)?.label ?? t("pages.projects.sort.name", { defaultValue: "Name" });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Hexagon} message="Select a company to view projects." />;
+    return <EmptyState icon={Hexagon} message={t("pages.projects.selectCompany", { defaultValue: "Select a company to view projects." })} />;
   }
 
   if (isLoading) {
@@ -131,9 +133,9 @@ export function Projects() {
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <Popover>
           <PopoverTrigger asChild>
-            <Button variant="ghost" size="sm" className="w-fit text-xs" title="Sort">
+            <Button variant="ghost" size="sm" className="w-fit text-xs" title={t("pages.projects.sortTitle", { defaultValue: "Sort" })}>
               <ArrowUpDown className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-              <span>Sort: {sortLabel}</span>
+              <span>{t("pages.projects.sortLabel", { defaultValue: "Sort: {{label}}", label: sortLabel })}</span>
             </Button>
           </PopoverTrigger>
           <PopoverContent align="start" className="w-44 p-0">
@@ -160,7 +162,9 @@ export function Projects() {
                   {sortField === option.field ? (
                     <span className="flex items-center gap-1 text-xs text-muted-foreground">
                       <Check className="h-3 w-3" />
-                      {sortDir === "asc" ? "Asc" : "Desc"}
+                      {sortDir === "asc"
+                        ? t("pages.projects.sort.asc", { defaultValue: "Asc" })
+                        : t("pages.projects.sort.desc", { defaultValue: "Desc" })}
                     </span>
                   ) : null}
                 </button>
@@ -170,7 +174,7 @@ export function Projects() {
         </Popover>
         <Button size="sm" variant="outline" onClick={openNewProject}>
           <Plus className="h-4 w-4 mr-1" />
-          Add Project
+          {t("pages.projects.addProject", { defaultValue: "Add Project" })}
         </Button>
       </div>
 
@@ -179,8 +183,8 @@ export function Projects() {
       {!isLoading && projects.length === 0 && (
         <EmptyState
           icon={Hexagon}
-          message="No projects yet."
-          action="Add Project"
+          message={t("pages.projects.empty", { defaultValue: "No projects yet." })}
+          action={t("pages.projects.addProject", { defaultValue: "Add Project" })}
           onAction={openNewProject}
         />
       )}
@@ -188,8 +192,8 @@ export function Projects() {
       {projects.length > 0 && (
         <div className="space-y-6">
           {([
-            ["My Projects", groupedProjects.mine],
-            ["Other Projects", groupedProjects.other],
+            [t("pages.projects.myProjects", { defaultValue: "My Projects" }), groupedProjects.mine],
+            [t("pages.projects.otherProjects", { defaultValue: "Other Projects" }), groupedProjects.other],
           ] as const).map(([label, sectionProjects]) => {
             if (sectionProjects.length === 0) return null;
 
@@ -198,7 +202,11 @@ export function Projects() {
                 <div className="flex items-center justify-between">
                   <h2 className="text-sm font-medium">{label}</h2>
                   <span className="text-xs text-muted-foreground">
-                    {sectionProjects.length} project{sectionProjects.length === 1 ? "" : "s"}
+                    {t("pages.projects.projectCount", {
+                      defaultValue_one: "{{count}} project",
+                      defaultValue_other: "{{count}} projects",
+                      count: sectionProjects.length,
+                    })}
                   </span>
                 </div>
                 <Card className="block py-0 overflow-hidden divide-y divide-border">
@@ -210,6 +218,12 @@ export function Projects() {
                     const starPending = pending && membershipMutation.variables?.starred !== undefined;
                     const joinLeavePending = pending && membershipMutation.variables?.starred === undefined;
                     const starred = isStarred(membershipsQuery.data, "project", project.id);
+                    const taskCountLabel = t("pages.projects.taskCount", {
+                      defaultValue_one: "{{countFormatted}} task",
+                      defaultValue_other: "{{countFormatted}} tasks",
+                      count: project.taskCount ?? 0,
+                      countFormatted: formatNumber(project.taskCount ?? 0),
+                    });
                     return (
                       <EntityRow
                         key={project.id}
@@ -223,9 +237,9 @@ export function Projects() {
                           <div className="flex items-center gap-3">
                             <span
                               className="hidden text-xs text-muted-foreground tabular-nums sm:inline"
-                              title={`${formatNumber(project.taskCount ?? 0)} task${(project.taskCount ?? 0) === 1 ? "" : "s"}`}
+                              title={taskCountLabel}
                             >
-                              {formatNumber(project.taskCount ?? 0)} task{(project.taskCount ?? 0) === 1 ? "" : "s"}
+                              {taskCountLabel}
                             </span>
                             {project.budget && (
                               <span className="hidden text-xs text-muted-foreground tabular-nums sm:inline">

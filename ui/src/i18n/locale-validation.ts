@@ -68,7 +68,17 @@ function validateString(path: string[], candidateValue: string, englishValue: st
   }
 }
 
-function validateNode(path: string[], candidate: unknown, englishReference: unknown, errors: string[]) {
+interface LocaleValidationOptions {
+  allowMissing?: boolean;
+}
+
+function validateNode(
+  path: string[],
+  candidate: unknown,
+  englishReference: unknown,
+  errors: string[],
+  options: LocaleValidationOptions,
+) {
   if (typeof englishReference === "string") {
     if (typeof candidate !== "string") {
       errors.push(`${formatPath(path)} must be a string`);
@@ -93,8 +103,10 @@ function validateNode(path: string[], candidate: unknown, englishReference: unkn
   const missingKeys = englishKeys.filter((key) => !candidateKeys.includes(key));
   const extraKeys = candidateKeys.filter((key) => !englishKeys.includes(key));
 
-  for (const key of missingKeys) {
-    errors.push(`${formatPath([...path, key])} is missing`);
+  if (!options.allowMissing) {
+    for (const key of missingKeys) {
+      errors.push(`${formatPath([...path, key])} is missing`);
+    }
   }
   for (const key of extraKeys) {
     errors.push(`${formatPath([...path, key])} is not defined in English`);
@@ -102,19 +114,27 @@ function validateNode(path: string[], candidate: unknown, englishReference: unkn
 
   for (const key of englishKeys) {
     if (key in candidate) {
-      validateNode([...path, key], candidate[key], englishReference[key], errors);
+      validateNode([...path, key], candidate[key], englishReference[key], errors, options);
     }
   }
 }
 
-export function validateLocaleMessages(candidate: unknown, englishReference: unknown = en) {
+export function validateLocaleMessages(
+  candidate: unknown,
+  englishReference: unknown = en,
+  options: LocaleValidationOptions = {},
+) {
   const errors: string[] = [];
-  validateNode([], candidate, englishReference, errors);
+  validateNode([], candidate, englishReference, errors, options);
   return errors;
 }
 
-export function assertValidLocaleMessages(candidate: unknown, englishReference: unknown = en) {
-  const errors = validateLocaleMessages(candidate, englishReference);
+export function assertValidLocaleMessages(
+  candidate: unknown,
+  englishReference: unknown = en,
+  options: LocaleValidationOptions = {},
+) {
+  const errors = validateLocaleMessages(candidate, englishReference, options);
   if (errors.length > 0) {
     throw new Error(`Invalid locale messages:\n${errors.join("\n")}`);
   }

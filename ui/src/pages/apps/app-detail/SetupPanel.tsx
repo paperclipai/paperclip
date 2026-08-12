@@ -6,6 +6,7 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { appDefinitionSlug } from "../app-definition-display";
 import type { AppDetailSectionProps } from "./types";
 import { googleSheetsConfigWithAllowlist, parseGoogleSheetIds } from "../google-sheets";
+import { useTranslation } from "@/i18n";
 
 export function SetupPanel({
   connection,
@@ -239,6 +240,7 @@ export function QuarantinedActionsReview({
   disabled: boolean;
   onSubmit: (enabledIds: string[]) => void;
 }) {
+  const { t } = useTranslation();
   const [enabledIds, setEnabledIds] = useState<Set<string>>(new Set());
   const count = entries.length;
   const selectedIds = entries.filter((entry) => enabledIds.has(entry.id)).map((entry) => entry.id);
@@ -303,10 +305,16 @@ export function QuarantinedActionsReview({
       </div>
       <div className="flex items-center justify-between gap-3 px-4 py-3">
         <span className="text-xs text-amber-700 dark:text-amber-300">
-          {selectedIds.length} of {count} will be on
+          {t("pages.apps.selectedActionsEnabled", {
+            defaultValue: "{{selected}} of {{total}} will be on",
+            selected: selectedIds.length,
+            total: count,
+          })}
         </span>
         <Button size="sm" disabled={disabled} onClick={() => onSubmit(selectedIds)}>
-          {disabled ? "Saving…" : "Save choices"}
+          {disabled
+            ? t("pages.apps.saving", { defaultValue: "Saving…" })
+            : t("pages.apps.saveChoices", { defaultValue: "Save choices" })}
         </Button>
       </div>
     </section>
