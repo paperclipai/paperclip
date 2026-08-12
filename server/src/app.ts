@@ -392,6 +392,13 @@ export async function createApp(
     .split(",")
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
+  // The production server does not bind `setupTokenLogin` yet, so the start route
+  // fails closed with a fixed no-secret 503 and the login never spawns a process
+  // or holds a lease. This is a deliberate staged rollout: the live transport
+  // needs a real sandbox-lease manager, a live pseudo-terminal factory over the
+  // sandbox provider, and a durable cleanup store (the in-router default store is
+  // in-memory only). Each of those is a separate follow-up that goes through its
+  // own security review before the production server binds `setupTokenLogin`.
   api.use(
     agentRoutes(db, {
       pluginWorkerManager: workerManager,

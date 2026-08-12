@@ -474,12 +474,26 @@ describe("setup-token login route — SR-6 and SR-7 (fail-closed transport guard
     expect(spoofRes.body.error).toBe(SETUP_TOKEN_TRANSPORT_INSECURE);
     expectNoSecret(JSON.stringify(spoofRes.body));
 
-    // Complete the login, then prove receive-token also fails closed over plain
-    // HTTP and leaks no token.
+    // submit-code over plain HTTP → the guard fails closed. The browser code is
+    // the confidential OAuth secret, so it must never ride an untrusted transport.
+    // A spoofed forwarded protocol does not unlock it either. The code never
+    // reaches the transport.
     const codeRes = await request(app).post(`${BASE}/${sessionId}/code`).send({ browserCode: BROWSER_CODE });
-    expect(codeRes.status).toBe(200);
-    await settle();
+    expect(codeRes.status).toBe(403);
+    expect(codeRes.body.error).toBe(SETUP_TOKEN_TRANSPORT_INSECURE);
+    expectNoSecret(JSON.stringify(codeRes.body));
 
+    const spoofCodeRes = await request(app)
+      .post(`${BASE}/${sessionId}/code`)
+      .set("X-Forwarded-Proto", "https")
+      .send({ browserCode: BROWSER_CODE });
+    expect(spoofCodeRes.status).toBe(403);
+    expect(spoofCodeRes.body.error).toBe(SETUP_TOKEN_TRANSPORT_INSECURE);
+    expectNoSecret(JSON.stringify(spoofCodeRes.body));
+
+    expect(transport.submittedCodes).toEqual([]);
+
+    // receive-token over plain HTTP also fails closed and leaks no token.
     const tokenRes = await request(app)
       .post(`${BASE}/${sessionId}/token`)
       .set("X-Forwarded-Proto", "https")

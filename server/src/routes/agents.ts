@@ -4034,6 +4034,10 @@ export function agentRoutes(
     const scope = buildSetupTokenScope(req, agent);
     const browserCode = typeof req.body?.browserCode === "string" ? req.body.browserCode : null;
     res.setHeader("Cache-Control", "no-store");
+    // SR-6 and SR-7: the browser code is the confidential OAuth authorization
+    // secret. Enforce the fail-closed confidential transport guard before the
+    // route reads it, so the code never rides an untrusted transport.
+    if (!enforceSetupTokenTransport(req, res)) return;
     if (!browserCode) {
       // The route echoes no input; it returns fixed error text only (SR-1).
       res.status(400).json({ error: "A browserCode is required." });
