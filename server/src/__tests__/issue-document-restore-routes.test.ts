@@ -90,6 +90,7 @@ function registerModuleMocks() {
   }));
 
   vi.doMock("../services/documents.js", () => ({
+    deliveryAttestationService: () => ({ listForIssue: async () => [] }),
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => mockDocumentsService,
   }));
@@ -119,6 +120,7 @@ function registerModuleMocks() {
     companySkillService: () => ({
       completeTestRunForIssue: vi.fn(async () => null),
     }),
+    deliveryAttestationService: () => ({ listForIssue: async () => [] }),
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => mockDocumentsService,
     executionWorkspaceService: () => ({}),

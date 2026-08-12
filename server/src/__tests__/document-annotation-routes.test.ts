@@ -129,6 +129,7 @@ function registerModuleMocks() {
       completeTestRunForIssue: vi.fn(async () => null),
     }),
     companyService: () => ({ getById: vi.fn(async () => ({ id: companyId, attachmentMaxBytes: 10_000_000 })) }),
+    deliveryAttestationService: () => ({ listForIssue: async () => [] }),
     documentAnnotationService: () => mockAnnotationService,
     documentService: () => mockDocumentService,
     environmentService: () => ({}),

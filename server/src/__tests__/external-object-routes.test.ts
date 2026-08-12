@@ -55,6 +55,7 @@ function registerRouteMocks() {
       getById: vi.fn(async () => null),
     }),
     companySearchService: () => ({}),
+    deliveryAttestationService: () => ({ listForIssue: async () => [] }),
     documentAnnotationService: () => ({}),
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),

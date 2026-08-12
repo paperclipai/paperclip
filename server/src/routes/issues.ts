@@ -136,6 +136,7 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
+import { deliveryAttestationService } from "../services/delivery-attestations.js";
 import { buildPlanReviewContext } from "../services/plan-review-context.js";
 import {
   decideIssueReviewPathRecovery,
@@ -2739,6 +2740,7 @@ export function issueRoutes(
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
   const workProductsSvc = workProductService(db);
+  const deliveryAttestationsSvc = deliveryAttestationService(db);
   const documentsSvc = documentService(db);
   const companySkillsSvc = companySkillService(db);
   const documentAnnotationsSvc = documentAnnotationService(db);
@@ -6409,6 +6411,15 @@ export function issueRoutes(
     res.json(workProducts);
   });
 
+  router.get("/issues/:id/delivery-attestations", async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    const attestations = await deliveryAttestationsSvc.listForIssue(issue.id, issue.companyId);
+    res.json(attestations);
+  });
+
   router.get("/issues/:id/external-objects", async (req, res) => {
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
@@ -9005,6 +9016,7 @@ export function issueRoutes(
       ...updateFields,
       actorAgentId: actor.agentId ?? null,
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      ...(actor.runId ? { actorRunId: actor.runId } : {}),
     };
     const shouldCollectCompletionPublication =
       actor.actorType === "user" && existing.status !== "done" && updateFields.status === "done";

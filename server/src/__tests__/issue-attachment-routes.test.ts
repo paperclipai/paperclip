@@ -55,6 +55,7 @@ function registerRouteMocks() {
     }),
     companySkillService: () => ({}),
     companyService: () => mockCompanyService,
+    deliveryAttestationService: () => ({ listForIssue: async () => [] }),
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
