@@ -22,9 +22,9 @@ describe("PWA install mode", () => {
     const html = readFileSync(resolve(uiRoot, "index.html"), "utf8");
 
     // Browsers fetch <link rel="manifest"> in "omit credentials" mode unless
-    // the link opts in. Same-origin that opt-in is a no-op, but behind an
-    // authenticating reverse proxy (e.g. a managed-hosting front door) the
-    // cookie-less fetch is rejected on every page load.
+    // the link opts in. Behind an authenticating reverse proxy (e.g. a
+    // managed-hosting front door), the cookie-less request is rejected on
+    // every page load.
     expect(html).toContain('rel="manifest" href="/site.webmanifest" crossorigin="use-credentials"');
   });
 });
