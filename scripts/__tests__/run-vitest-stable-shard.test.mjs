@@ -77,9 +77,37 @@ test("a route/authz suite never leaks into the general-server shards", () => {
   }
 });
 
-test("shard flags are rejected for the parallel workspace groups", () => {
-  const result = dryRun(["--mode", "general", "--group", "general-workspaces-a", "--shard-index", "0", "--shard-count", "3"]);
-  assert.notEqual(result.status, 0, "workspace groups must not accept shard flags");
+test("shard flags are rejected for the workspaces-b group", () => {
+  const result = dryRun(["--mode", "general", "--group", "general-workspaces-b", "--shard-index", "0", "--shard-count", "3"]);
+  assert.notEqual(result.status, 0, "workspaces-b must not accept shard flags");
+});
+
+test("workspaces-a shards map to Vitest native --shard slices over a stable project list", () => {
+  const shards = [0, 1].map((index) =>
+    dryRunJson([
+      "--mode", "general", "--group", "general-workspaces-a",
+      "--shard-index", String(index), "--shard-count", "2",
+    ]),
+  );
+
+  assert.deepEqual(
+    shards.map((shard) => shard.workspacesVitestShard),
+    ["1/2", "2/2"],
+    "each matrix job must pass its own --shard slice to vitest",
+  );
+  // Vitest's --shard partitions each project's file list deterministically, so
+  // an identical project list across jobs is what guarantees complete,
+  // non-overlapping coverage of the lane.
+  assert.deepEqual(shards[0].workspaceProjects, shards[1].workspaceProjects);
+  assert.ok(shards[0].workspaceProjects.length > 0, "workspaces-a must run at least one project");
+
+  const unsharded = dryRunJson(["--mode", "general", "--group", "general-workspaces-a"]);
+  assert.deepEqual(
+    unsharded.workspaceProjects,
+    shards[0].workspaceProjects,
+    "sharding must not change which projects the lane covers",
+  );
+  assert.equal(unsharded.workspacesVitestShard, null);
 });
 
 test("duration-aware partition balances skewed weights better than round-robin", () => {

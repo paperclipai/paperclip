@@ -40,6 +40,10 @@ interface TaskChatThreadViewProps {
    * fixtures omit it and the bubbles render actionless.
    */
   renderMessageActions?: (item: TaskChatMessageItem) => ReactNode;
+  /** Content appended inside the transcript scroller after the settled thread. */
+  tail?: ReactNode;
+  /** Optional streaming-aware key when `tail` changes without changing `items`. */
+  contentKey?: number;
   className?: string;
   /** When false, render the list without the scroll container (e.g. previews). */
   scroll?: boolean;
@@ -128,6 +132,8 @@ export function TaskChatThreadView({
   renderInteraction,
   renderBrief,
   renderMessageActions,
+  tail,
+  contentKey,
   className,
   scroll = true,
 }: TaskChatThreadViewProps) {
@@ -143,12 +149,17 @@ export function TaskChatThreadView({
           {renderItem(item, onApprovalDecision, renderInteraction, renderBrief, renderMessageActions)}
         </div>
       ))}
+      {tail}
     </div>
   );
 
   if (!scroll) return body;
 
-  return <TaskMessageScroller contentKey={taskChatContentKey(items)}>{body}</TaskMessageScroller>;
+  return (
+    <TaskMessageScroller contentKey={contentKey ?? taskChatContentKey(items)}>
+      {body}
+    </TaskMessageScroller>
+  );
 }
 
 // Cheap content signature so streaming growth (text lengthening without the

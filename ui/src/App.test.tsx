@@ -252,3 +252,12 @@ describe("Apps routes", () => {
     expect(appSource).toContain('<Route path="apps/connect/:appKey/:stage" element={<Navigate to="/apps" replace />} />');
   });
 });
+
+describe("Decisions routes", () => {
+  it("does not register decision-training views", () => {
+    expect(appSource).not.toContain('path="decisions/training"');
+    expect(appSource).not.toContain('path="decisions/training/:id"');
+    expect(appSource).not.toContain('path="training"');
+    expect(appSource).not.toContain('path="training/:id"');
+  });
+});

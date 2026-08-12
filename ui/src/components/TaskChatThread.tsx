@@ -1,14 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, type ComponentProps } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { IssueChatThread } from "@/components/IssueChatThread";
-import { useLiveRunTranscripts, type RunTranscriptSource } from "@/components/transcript/useLiveRunTranscripts";
+import {
+  useLiveRunTranscripts,
+  type RunTranscriptSource,
+} from "@/components/transcript/useLiveRunTranscripts";
+import { TaskChatLiveTail } from "@/components/task-chat/TaskChatLiveTail";
 import { commentsToTaskChatItems } from "@/components/task-chat/task-chat-adapter";
 import {
   assembleThreadItems,
   attachSettledTurns,
   buildTurnSummary,
   coalesceSettledTurns,
-  deriveRunStatusLabel,
-  isNestableLiveChild,
   isTerminalRunStatus,
   prependIssueBrief,
   settledRunChildren,
@@ -16,6 +18,10 @@ import {
   type SettledTurnMergeMeta,
 } from "@/components/task-chat/transcript-adapter";
 import { TaskChatDescriptionBubble } from "@/components/task-chat/TaskChatDescriptionBubble";
+import {
+  TaskChatLiveRunPill,
+  toolCountSummaryFromEntries,
+} from "@/components/task-chat/TaskChatLiveRunPill";
 import type {
   TaskChatInteractionItem,
   TaskChatItem,
@@ -23,6 +29,11 @@ import type {
   TaskChatTurnItem,
 } from "@/components/task-chat/task-chat-model";
 import { TaskChatInteractionCard } from "@/components/task-chat/TaskChatInteractionCard";
+import {
+  interactionThreadAnchorMs,
+  isSuppressedThreadInteraction,
+} from "@/components/task-chat/interaction-thread-order";
+import { shouldHideInteractionCard } from "@/lib/issue-thread-interactions";
 import { TaskChatBubbleActions } from "@/components/task-chat/TaskChatBubbleActions";
 import type { FeedbackVoteValue } from "@paperclipai/shared";
 import { TaskChatThreadView, taskChatContentKey } from "@/components/task-chat/TaskChatThreadView";
@@ -42,32 +53,30 @@ function toMs(value: Date | string | null | undefined): number {
   return Number.isNaN(ms) ? 0 : ms;
 }
 
+// PAP-462 B4: backstop for how long the just-settled run's transcript stays
+// mounted when neither a settled turn nor a reply comment ever arrives to hand
+// off to (e.g. a stopped run with no tool activity). Normal completions hand off
+// well within this as soon as the settled turn/comment lands.
+const SETTLING_TAIL_MAX_MS = 15_000;
+
 export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread>;
 
 /**
- * Task Chat Redesign thread (experimental flag: `enableTaskChatRedesign`).
+ * Chat-style task thread — the default task detail experience.
  *
- * Renders the redesigned, Claude-Code-style thread for the live task. It shares
+ * Renders the Claude-Code-style thread for the live task. It shares
  * IssueChatThread's exact prop type — so the IssueDetail seam ternary
- * (`redesign ? TaskChatThread : IssueChatThread`) type-checks with no casts.
+ * (`classic ? IssueChatThread : TaskChatThread`, flag:
+ * `enableClassicTaskInterface`) type-checks with no casts.
  *
  * Two data sources feed the render layer, both reused from the existing thread:
  *   - the comment stream (incl. optimistic echoes) → author-typed bubbles, and
  *   - the live run transcript (useLiveRunTranscripts, the same poll+websocket
- *     source the current thread uses) → the in-flight turn streams
- *     thinking → tool → diff → responding, capped by a live "running" status
- *     pill.
+ *     source the current thread uses) → clean TaskChatLiveTail rows (tool cards,
+ *     diffs, streamed reply markdown) while in flight, via the same
+ *     transcriptToTaskChatItems converter the settled turns use (PAP-463).
  *
- * Run activity is grouped into TaskChatTurnItem: the in-flight run renders as
- * ONE expandable parent row — its status line (whimsy gerund or in-flight
- * tool state + elapsed + tokens) is the turn's single visible line, with the
- * chronological tool activity nested behind an expand (PAP-354). Mid-run
- * agent text (interstitial updates between tool calls) is ephemeral
- * (PAP-361, round 9): while one streams it occupies a dedicated one-line row
- * PERMANENTLY RESERVED above the status line (so the layout above never
- * jumps), and when it finishes the text slides out and the slot sits empty —
- * nothing persists; the run log and the classic transcript remain the
- * archive. When the run terminates, its settled turn anchors after the run's
+ * Once a run terminates, its settled turn anchors after the run's
  * last comment (comment.runId linkage) and — when it directly follows that
  * reply bubble — attaches to it: the "✓ Worked · …" summary renders appended
  * to the bubble's always-visible timestamp line (round 9), still expandable
@@ -229,6 +238,15 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       entries.push({ ms: toMs(comment.createdAt), order: 1, id: item.id, item });
     });
     for (const interaction of interactions ?? []) {
+      // Withdrawn/superseded confirmations are retracted calls to action — drop
+      // them so a dead card never stacks above the one that replaced it
+      // (PAP-416).
+      if (isSuppressedThreadInteraction(interaction)) continue;
+      // A never-rendered card — a degenerate `ask_user_questions` (e.g. the
+      // onboarding `Test / A` placeholder) or a stale sibling superseded by a
+      // newer question (PAP-437) — is filtered here so it leaves no empty slot
+      // or gap in the ordered backbone (PAP-424, plan from PAP-420).
+      if (shouldHideInteractionCard(interaction)) continue;
       const createdAtMs = toMs(interaction.createdAt);
       const handoffAtMs =
         interaction.kind === "request_confirmation" && interaction.sourceRunId
@@ -243,7 +261,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           : null;
       const id = `interaction:${interaction.id}`;
       entries.push({
-        ms: handoffAtMs ?? createdAtMs,
+        // A resolved card settles at its resolution time so it never reads
+        // above a message written before the user answered (PAP-416); pending
+        // cards keep the request-time (handoff/createdAt) slot.
+        ms: interactionThreadAnchorMs(interaction, handoffAtMs ?? createdAtMs),
         order: 2,
         id,
         item: { id, kind: "interaction", interaction },
@@ -274,7 +295,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // heavy assembly memo doesn't recompute on every parent render.
   const hasBrief = Boolean(issueBrief);
 
-  const items = useMemo<TaskChatItem[]>(() => {
+  const { items, settledRunIds } = useMemo<{ items: TaskChatItem[]; settledRunIds: Set<string> }>(() => {
+    // Runs whose settled turn made it into the assembled thread — the live tail
+    // hands off to this as its "the settled turn has rendered" signal (PAP-462
+    // B4), so the transcript stays mounted through the settle gap without ever
+    // double-rendering beside its own settled turn.
+    const settledRunIds = new Set<string>();
     // Settled turns for every terminal run whose transcript we have. Messages
     // and thinking are excluded entirely (PAP-361): the final reply already
     // landed as the run's comment bubble, interstitial updates are ephemeral
@@ -303,6 +329,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       });
       const children = settledRunChildren(parsed);
       if (children.length === 0) continue;
+      settledRunIds.add(source.id);
       const failed = source.status !== "succeeded";
       const startSlotRaw = meta?.startedAt ?? meta?.createdAt;
       turnMergeMetaById.set(`${source.id}:turn`, {
@@ -347,56 +374,132 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     // (PAP-367).
     const out = assembleThreadItems(orderedEntries, turnsByAnchor, unanchored);
 
-    if (liveRun) {
-      const entries = transcriptByRun.get(liveRun.id) ?? [];
-      const parsed = transcriptToTaskChatItems(entries, {
-        runId: liveRun.id,
-        agentName: liveRun.agentName,
-        running: true,
-      });
-      // Parent-row model (PAP-354): the run's status line IS the live turn —
-      // one expandable row owning the activity. Only tool/usage rows nest
-      // inside it; a streaming interstitial update renders in the reserved row
-      // above the status line (liveStatus.selfTalk, PAP-361/round 9) and
-      // vanishes when it completes. The parent row sits last; on settle its
-      // summary attaches to the reply bubble's timestamp line.
-      const children = parsed.filter(isNestableLiveChild);
-      const startedAt = liveRun.startedAt ? new Date(liveRun.startedAt).getTime() : null;
-      const queued = liveRun.status === "queued";
-      const status = queued
-        ? { label: "Queued", detail: "Waiting to start", toolName: undefined, selfTalk: undefined }
-        : deriveRunStatusLabel(entries);
-      out.push({
-        id: `${liveRun.id}:turn`,
-        kind: "turn",
-        settled: false,
-        items: children,
-        summary: buildTurnSummary(entries),
-        liveStatus: {
-          id: `${liveRun.id}:status`,
-          kind: "status",
-          status: "running",
-          label: status.label,
-          detail: status.detail,
-          toolName: status.toolName,
-          selfTalk: status.selfTalk,
-          startedAtMs: startedAt ?? undefined,
-        },
-      });
-    }
     // PAP-362: two runs replying back-to-back (same agent, nothing but the
     // agent's own bubbles between) fold into ONE "Worked" row below the last
-    // reply; a user message, interaction, or the live turn keeps them apart.
+    // reply; a user message or interaction keeps them apart.
     // Round 9: a settled turn directly following its own agent's reply bubble
     // then attaches to that bubble — the "Worked · …" summary renders on the
     // bubble's always-visible timestamp line instead of as a standalone row.
     // PAP-375: the description-as-first-bubble placeholder prepends LAST, after
     // every assembly/merge pass, so nothing can ever sort above it.
-    return prependIssueBrief(
-      attachSettledTurns(coalesceSettledTurns(out, turnMergeMetaById), turnMergeMetaById),
-      hasBrief,
-    );
+    return {
+      items: prependIssueBrief(
+        attachSettledTurns(coalesceSettledTurns(out, turnMergeMetaById), turnMergeMetaById),
+        hasBrief,
+      ),
+      settledRunIds,
+    };
   }, [orderedEntries, runs, liveRun, transcriptByRun, linkedRunMetaById, lastCommentIdByRun, hasBrief]);
+
+  // PAP-462 B4: the moment a run settles, `liveRun` flips to null — but its
+  // settled turn (or reply comment) can take seconds to arrive on the next
+  // comment refetch. Without a handoff the whole transcript unmounts that frame,
+  // blinking out already-streamed output before its settled form renders. Snapshot
+  // the just-settled run so its now-static transcript stays mounted through the gap.
+  const [settlingRun, setSettlingRun] = useState<{ id: string; startedAtMs: number | null } | null>(null);
+  const prevLiveRunRef = useRef<typeof liveRun>(null);
+  // Layout effect (not passive): snapshot the settled run before the browser
+  // paints the `liveRun === null` frame, so the tail never blinks empty for a
+  // frame between the run stopping and this snapshot committing.
+  useLayoutEffect(() => {
+    if (liveRun) {
+      prevLiveRunRef.current = liveRun;
+      // A fresh live run supersedes any lingering settled remnant.
+      setSettlingRun((current) => (current && current.id !== liveRun.id ? null : current));
+      return;
+    }
+    const prev = prevLiveRunRef.current;
+    prevLiveRunRef.current = null;
+    if (!prev) return;
+    setSettlingRun({
+      id: prev.id,
+      startedAtMs: (prev.startedAt ? toMs(prev.startedAt) : null) ?? toMs(prev.createdAt),
+    });
+  }, [liveRun]);
+
+  // Hand off once the settled turn or its reply comment is in the thread; a
+  // stopped run that yields neither is released by the backstop timeout so the
+  // tail never lingers indefinitely.
+  const settledRunRendered =
+    settlingRun != null &&
+    (settledRunIds.has(settlingRun.id) ||
+      comments.some((comment) => comment.runId === settlingRun.id && !comment.deletedAt));
+  useEffect(() => {
+    if (!settlingRun) return;
+    if (settledRunRendered) {
+      setSettlingRun(null);
+      return;
+    }
+    const timer = window.setTimeout(() => setSettlingRun(null), SETTLING_TAIL_MAX_MS);
+    return () => window.clearTimeout(timer);
+  }, [settlingRun, settledRunRendered]);
+
+  // The tail streams the live run, or — through the settle gap — the last run's
+  // now-static transcript until its settled form renders (PAP-462 B4).
+  const showSettlingTail =
+    !liveRun &&
+    settlingRun != null &&
+    !settledRunRendered &&
+    (transcriptByRun.get(settlingRun.id)?.length ?? 0) > 0;
+  const tailRunId = liveRun ? liveRun.id : showSettlingTail ? settlingRun!.id : null;
+  const tailStreaming = Boolean(liveRun);
+  const tailEntries = tailRunId ? (transcriptByRun.get(tailRunId) ?? []) : [];
+  const tailContentKey = tailEntries.reduce((total, entry) => {
+    if ("text" in entry) return total + entry.text.length;
+    if ("content" in entry) return total + entry.content.length;
+    return total + entry.kind.length;
+  }, tailEntries.length);
+  const threadContentKey = taskChatContentKey(items) + tailContentKey;
+
+  // Status-pill inputs for the tail (PAP-461, A1): the run's start, its finish
+  // (once terminal), and the "called N tools" summary. Memoized on the
+  // transcript content key so the O(n) tool count is not re-walked every render
+  // while the pill's own second-tick keeps the elapsed readout moving. Through
+  // the settle gap the run reads terminal, so the pill lands on its "Worked"
+  // state instead of flipping back to a spinner.
+  const settlingFinishedAt = settlingRun ? linkedRunMetaById.get(settlingRun.id)?.finishedAt : undefined;
+  const tailStatus = liveRun
+    ? liveRun.status
+    : runs.find((run) => run.id === settlingRun?.id)?.status ?? "succeeded";
+  const tailStartedAtMs = liveRun
+    ? (liveRun.startedAt ? toMs(liveRun.startedAt) : null) ?? toMs(liveRun.createdAt)
+    : settlingRun?.startedAtMs ?? null;
+  const tailFinishedAtMs = liveRun
+    ? liveRun.finishedAt
+      ? toMs(liveRun.finishedAt)
+      : null
+    : settlingFinishedAt
+      ? toMs(settlingFinishedAt)
+      : null;
+  const tailToolSummary = useMemo(
+    () => (tailRunId ? toolCountSummaryFromEntries(tailEntries) : null),
+    // tailEntries is a fresh array each render; tailContentKey tracks its content.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tailRunId, tailContentKey],
+  );
+
+  // The tail's clean rows (PAP-463 C1): the streaming transcript parsed through
+  // the SAME transcriptToTaskChatItems converter the settled turns use, which
+  // drops the debug plumbing (init/stdout/stderr/system) so RunTranscriptView's
+  // noise can never reach the thread. Memoized on the content key (tailEntries
+  // is a fresh array each render) so the O(n) parse is not re-walked while the
+  // pill's own second-tick keeps the elapsed readout moving. `running` follows
+  // tailStreaming: true while live, false through the settle gap — so the tail
+  // renders identically either side of the run finishing.
+  const tailAgentName = liveRun?.agentName ?? linkedRunMetaById.get(tailRunId ?? "")?.agentName;
+  const tailItems = useMemo(
+    () =>
+      tailRunId
+        ? transcriptToTaskChatItems(tailEntries, {
+            runId: tailRunId,
+            agentName: tailAgentName,
+            running: tailStreaming,
+          })
+        : [],
+    // tailEntries is a fresh array each render; tailContentKey tracks its content.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tailRunId, tailContentKey, tailStreaming, tailAgentName],
+  );
 
   // Feedback votes keyed by the comment they target (targetType
   // "issue_comment"), mirroring IssueChatThread — the redesign attaches the
@@ -471,7 +574,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // in document flow instead (the same scroll={false} path the previews use)
   // and track auto-follow against window scroll. Desktop stays byte-identical.
   const { isMobile } = useSidebar();
-  useWindowAutoFollow(isMobile ? taskChatContentKey(items) : 0, isMobile);
+  useWindowAutoFollow(isMobile ? threadContentKey : 0, isMobile);
 
   return (
     <div
@@ -479,7 +582,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       data-testid="task-chat-thread"
     >
       <div className={cn("flex flex-col", !isMobile && "min-h-0 flex-1")}>
-        {items.length === 0 ? (
+        {items.length === 0 && !tailRunId ? (
           <div className={isMobile ? undefined : "min-h-0 flex-1 overflow-y-auto"}>
             {threadHeader ? (
               <div
@@ -498,6 +601,25 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             renderInteraction={renderInteraction}
             renderBrief={issueBrief ? () => <TaskChatDescriptionBubble brief={issueBrief} /> : undefined}
             renderMessageActions={renderMessageActions}
+            tail={tailRunId ? (
+              <div data-testid="task-chat-live-transcript">
+                <TaskChatLiveRunPill
+                  status={tailStatus}
+                  startedAtMs={tailStartedAtMs}
+                  finishedAtMs={tailFinishedAtMs}
+                  toolSummary={tailToolSummary}
+                />
+                <TaskChatLiveTail
+                  items={tailItems}
+                  emptyMessage={
+                    tailStatus === "queued"
+                      ? "Waiting to start..."
+                      : "Waiting for transcript..."
+                  }
+                />
+              </div>
+            ) : null}
+            contentKey={threadContentKey}
             scroll={!isMobile}
           />
         )}

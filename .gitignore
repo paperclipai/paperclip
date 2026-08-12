@@ -60,6 +60,7 @@ tests/e2e/test-results/
 tests/e2e/playwright-report/
 tests/release-smoke/test-results/
 tests/release-smoke/playwright-report/
+test-results/issue-detail-perf/
 tests/storybook-visual/.cache/
 tests/storybook-visual/.snapshots/
 tests/storybook-visual/baseline-review/

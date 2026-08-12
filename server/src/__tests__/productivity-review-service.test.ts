@@ -505,6 +505,28 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(hold.held).toBe(false);
   });
 
+  it("skips a long-active candidate while its assignee is paused and reviews it once unpaused", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, seeded.coderId));
+    const service = productivityReviewService(db);
+
+    const pausedResult = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(pausedResult.created).toBe(0);
+    expect(pausedResult.skipped).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+
+    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, seeded.coderId));
+    const unpausedResult = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(unpausedResult.created).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(1);
+  });
+
   it("creates a high-churn review even when every sampled run has a progress comment", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();

@@ -481,7 +481,7 @@ describe("IssueProperties", () => {
   it("keeps the Plan tab visible for a planning-mode issue without a plan document", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableTaskWatchdogs: false,
-      enableTaskChatRedesign: true,
+      enableClassicTaskInterface: false,
     });
     mockIssuesApi.listInteractions.mockResolvedValue([
       {

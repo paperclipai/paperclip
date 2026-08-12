@@ -3,7 +3,6 @@ import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
 import { Layout } from "./components/Layout";
 import { ConferenceRoomChatGate } from "./components/ConferenceRoomChatGate";
-import { TaskChatRedesignGate } from "./components/TaskChatRedesignGate";
 import { TaskChatLab } from "./pages/TaskChatLab";
 import { PipelinesExperimentalGate } from "./components/PipelinesExperimentalGate";
 import { CasesExperimentalGate } from "./components/CasesExperimentalGate";
@@ -45,7 +44,6 @@ import { CompanyActivity } from "./pages/audit/CompanyActivity";
 import { Inbox } from "./pages/Inbox";
 import { WhatNeedsMe } from "./pages/WhatNeedsMe";
 import { DecisionQueuePage } from "./pages/DecisionQueuePage";
-import { TrainingInspector, TrainingLibrary } from "./pages/Training";
 import { BoardChat } from "./pages/BoardChat";
 import { CompanySettings } from "./pages/CompanySettings";
 import { CompanyEnvironments } from "./pages/CompanyEnvironments";
@@ -276,20 +274,12 @@ function boardRoutes() {
         <Route path="board-chat" element={<BoardChat />} />
         <Route path="artifacts" element={<Artifacts />} />
       </Route>
-      {/* Task Chat Redesign dev harness — dev builds only, and additionally
-          gated by enableTaskChatRedesign (redirects to /dashboard when the
-          flag is off). */}
+      {/* Task chat dev harness — dev builds only. */}
       {import.meta.env.DEV ? (
-        <Route element={<TaskChatRedesignGate />}>
-          <Route path="dev/task-chat-lab" element={<TaskChatLab />} />
-        </Route>
+        <Route path="dev/task-chat-lab" element={<TaskChatLab />} />
       ) : null}
       <Route path="decisions" element={<WhatNeedsMe />} />
       <Route path="decisions/queues/:key" element={<DecisionQueuePage />} />
-      <Route path="decisions/training" element={<TrainingLibrary />} />
-      <Route path="decisions/training/:id" element={<TrainingInspector />} />
-      <Route path="training" element={<Navigate to="/decisions/training" replace />} />
-      <Route path="training/:id" element={<LegacyTrainingRedirect />} />
       <Route path="inbox" element={<InboxRootRedirect />} />
       <Route path="inbox/mine" element={<Inbox />} />
       <Route path="inbox/recent" element={<Inbox />} />
@@ -315,11 +305,6 @@ function AppsConnectEntryRoute() {
 
 function InboxRootRedirect() {
   return <Navigate to={`/inbox/${loadLastInboxTab()}`} replace />;
-}
-
-function LegacyTrainingRedirect() {
-  const { id } = useParams<{ id: string }>();
-  return <Navigate to={id ? `/decisions/training/${id}` : "/decisions/training"} replace />;
 }
 
 function LegacySkillStudioRedirect() {

@@ -1843,7 +1843,7 @@ socket.on("close", () => {
 `;
 }
 
-function getProcessSessionRemoteSource(input?: { outputToStdout?: boolean }): string {
+export function getProcessSessionRemoteSource(input?: { outputToStdout?: boolean }): string {
   return input?.outputToStdout === true
     ? getProcessSessionRemoteStreamSource()
     : getProcessSessionRemoteEventFileSource();
@@ -1855,15 +1855,61 @@ function getProcessSessionRemoteSource(input?: { outputToStdout?: boolean }): st
 // event, so the wrapper installs a no-op handler at the call site.
 const PROCESS_SESSION_STDIN_POLL_TAIL = `child.stdin.on("error", () => {});
 
+// A stdin file can appear before the host finishes the write. An empty read is
+// the non-atomic-write window; a partial read makes JSON.parse throw. The
+// poller must not delete a file before it validates the content. So read and
+// parse each file first, and delete it only after a successful parse. The files
+// sort in send order. If an earlier file is not readable yet, stop the cycle and
+// keep the order: a later file (for example stdinEnd) must not run ahead of it.
+// Retry the earlier file on a later cycle. After the retry limit, drop the file
+// and write an error event, so a lost message fails loud, and let later files
+// run.
+const stdinMaxParseRetries = (() => {
+  const raw = Number.parseInt(process.env.PAPERCLIP_PROCESS_SESSION_STDIN_MAX_RETRIES || "", 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 100;
+})();
+const stdinParseRetries = new Map();
+
 async function pollStdin() {
   while (!stdinClosed) {
     const entries = (await fs.readdir(stdinDir).catch(() => [])).filter((name) => name.endsWith(".json")).sort();
     for (const name of entries) {
+      if (stdinClosed) break;
       const file = path.posix.join(stdinDir, name);
-      const raw = await fs.readFile(file, "utf8").catch(() => null);
+      let message;
+      try {
+        const raw = await fs.readFile(file, "utf8");
+        // An empty read means the content is not on disk yet. Treat it the same
+        // as a parse failure: keep the file and retry on a later cycle.
+        if (!raw) throw new Error("stdin file is empty");
+        message = JSON.parse(raw);
+      } catch (error) {
+        const retries = (stdinParseRetries.get(name) || 0) + 1;
+        if (retries >= stdinMaxParseRetries) {
+          // The retry limit is reached. Drop the file and write an error event,
+          // so the lost message fails loud. The file is resolved now, so let the
+          // loop go on to the next entry.
+          stdinParseRetries.delete(name);
+          await fs.rm(file, { force: true }).catch(() => undefined);
+          await writeEvent({
+            type: "error",
+            message:
+              "Dropped unreadable stdin file after " + stdinMaxParseRetries + " retries: " + name + ": " +
+              (error instanceof Error ? error.message : String(error)),
+          });
+          continue;
+        }
+        // The file is not readable yet and is not past the retry limit. Keep it
+        // and stop this cycle to hold the send order. A later file (for example
+        // stdinEnd) must not run before this earlier file. A later cycle reads
+        // from the start again.
+        stdinParseRetries.set(name, retries);
+        break;
+      }
+      // The parse succeeded, so the content is complete. Delete the file first,
+      // then act on the message. A later cycle never re-reads a handled file.
+      stdinParseRetries.delete(name);
       await fs.rm(file, { force: true }).catch(() => undefined);
-      if (!raw) continue;
-      const message = JSON.parse(raw);
       if (message.type === "stdin" && typeof message.data === "string") {
         if (!stdinClosed) child.stdin.write(Buffer.from(message.data, "base64"));
       } else if (message.type === "stdinEnd") {

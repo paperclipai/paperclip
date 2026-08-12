@@ -438,7 +438,7 @@ export const AgingShelf: Story = {
 
 /**
  * Screen 2 — a queue page. The queue carries the same toolbar as
- * the desk (filter / group / sort / training), the date-range chips, the arrival
+ * the desk (filter / group / sort), the date-range chips, the arrival
  * timeline groupings ("Decide now" / "New today" / "Earlier") and the aging
  * shelf, above the seed-rules card (with its rewritten copy) and the per-item
  * Exclude-with-reason affordance. Each source-native decision still resolves per
