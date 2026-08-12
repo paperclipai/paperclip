@@ -5,18 +5,23 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanySecret, EnvSecretRefBinding } from "@paperclipai/shared";
 
-// Stub SecretBindingPicker so the editor renders without CompanyContext /
-// react-query. The stub exposes a button that binds a fixed secret.
-vi.mock("./SecretBindingPicker", () => ({
-  SecretBindingPicker: ({
-    onChange,
-  }: {
-    onChange: (next: { secretId: string; version?: number | "latest" } | null) => void;
-  }) => (
-    <button type="button" data-testid="pick-secret" onClick={() => onChange({ secretId: "s1", version: "latest" })}>
-      pick
-    </button>
-  ),
+const mockSecretPickerRender = vi.hoisted(() => vi.fn());
+
+// Keep this component test focused on access-row behavior while asserting that
+// the editor routes selection through the shared, folder-aware env picker.
+vi.mock("./environment-variables-editor/SecretPicker", () => ({
+  SecretPicker: (props: {
+    secretId: string;
+    secrets: readonly CompanySecret[];
+    onSelect: (secretId: string) => void;
+  }) => {
+    mockSecretPickerRender(props);
+    return (
+      <button type="button" data-testid="pick-secret" onClick={() => props.onSelect("s1")}>
+        pick
+      </button>
+    );
+  },
 }));
 
 import {
@@ -155,6 +160,9 @@ describe("AgentSecretAccessEditor component", () => {
 
     // Bind a secret via the stubbed picker.
     const pick = container.querySelector<HTMLButtonElement>('[data-testid="pick-secret"]')!;
+    expect(mockSecretPickerRender).toHaveBeenLastCalledWith(
+      expect.objectContaining({ secretId: "", secrets }),
+    );
     flushSync(() => pick.click());
 
     const last = emitted.at(-1)!;

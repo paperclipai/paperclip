@@ -3,12 +3,21 @@ import { describe, expect, it, vi } from "vitest";
 
 import { queryKeys } from "../lib/queryKeys";
 import {
+  AGENT_DETAIL_TABS,
   buildHeartbeatProgressLogLine,
   heartbeatProgressLogLineKey,
+  parseAgentDetailView,
   runDetailRefetchIntervalMs,
   shouldPollRunShellLog,
   syncAgentRouteAfterRename,
 } from "./AgentDetail";
+
+describe("agent detail tabs", () => {
+  it("exposes Secrets as its own route-backed tab", () => {
+    expect(AGENT_DETAIL_TABS.map((tab) => tab.label)).toContain("Secrets");
+    expect(parseAgentDetailView("secrets")).toBe("secrets");
+  });
+});
 
 describe("buildHeartbeatProgressLogLine", () => {
   it("renders progress messages with phase prefixes as system log lines", () => {

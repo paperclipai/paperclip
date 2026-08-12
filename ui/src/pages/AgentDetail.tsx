@@ -275,11 +275,24 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "tools" | "runs" | "audit" | "budget";
+type AgentDetailView = "dashboard" | "instructions" | "configuration" | "secrets" | "skills" | "tools" | "runs" | "audit" | "budget";
 
-function parseAgentDetailView(value: string | null): AgentDetailView {
+export const AGENT_DETAIL_TABS: ReadonlyArray<{ value: AgentDetailView; label: string }> = [
+  { value: "dashboard", label: "Dashboard" },
+  { value: "instructions", label: "Instructions" },
+  { value: "skills", label: "Skills" },
+  { value: "configuration", label: "Configuration" },
+  { value: "secrets", label: "Secrets" },
+  { value: "tools", label: "Tools" },
+  { value: "runs", label: "Runs" },
+  { value: "audit", label: "Audit" },
+  { value: "budget", label: "Budget" },
+];
+
+export function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "instructions" || value === "prompts") return "instructions";
   if (value === "configure" || value === "configuration") return "configuration";
+  if (value === "secrets") return "secrets";
   if (value === "skills") return "skills";
   if (value === "tools") return "tools";
   if (value === "budget") return "budget";
@@ -907,17 +920,19 @@ export function AgentDetail() {
         ? "instructions"
         : activeView === "configuration"
           ? "configuration"
-          : activeView === "skills"
-            ? "skills"
-            : activeView === "tools"
-              ? "tools"
-              : activeView === "runs"
-                ? "runs"
-                : activeView === "audit"
-                  ? "audit"
-                  : activeView === "budget"
-                    ? "budget"
-              : "dashboard";
+          : activeView === "secrets"
+            ? "secrets"
+            : activeView === "skills"
+              ? "skills"
+              : activeView === "tools"
+                ? "tools"
+                : activeView === "runs"
+                  ? "runs"
+                  : activeView === "audit"
+                    ? "audit"
+                    : activeView === "budget"
+                      ? "budget"
+                      : "dashboard";
     if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
       navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
       return;
@@ -1018,6 +1033,8 @@ export function AgentDetail() {
         crumbs.push({ label: "Instructions" });
       } else if (activeView === "configuration") {
         crumbs.push({ label: "Configuration" });
+      } else if (activeView === "secrets") {
+        crumbs.push({ label: "Secrets" });
       // } else if (activeView === "skills") { // TODO: bring back later
       //   crumbs.push({ label: "Skills" });
       } else if (activeView === "tools") {
@@ -1065,7 +1082,9 @@ export function AgentDetail() {
   const isPendingApproval = agent.status === "pending_approval";
   const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
   const pausedEscalationWarning = !hasInvalidOrgChain ? agent.orgChainHealth?.escalationWarning ?? null : null;
-  const showConfigActionBar = (activeView === "configuration" || activeView === "instructions") && (configDirty || configSaving);
+  const showConfigActionBar = (
+    activeView === "configuration" || activeView === "instructions" || activeView === "secrets"
+  ) && (configDirty || configSaving);
   const showLeftAgentNotice = agentMembershipState === "left" && !dismissedLeftAgentIds.has(agent.id);
   const agentMembershipPending =
     membershipMutation.isPending &&
@@ -1271,16 +1290,7 @@ export function AgentDetail() {
           onValueChange={(value) => navigate(`/agents/${canonicalAgentRef}/${value}`)}
         >
           <PageTabBar
-            items={[
-              { value: "dashboard", label: "Dashboard" },
-              { value: "instructions", label: "Instructions" },
-              { value: "skills", label: "Skills" },
-              { value: "configuration", label: "Configuration" },
-              { value: "tools", label: "Tools" },
-              { value: "runs", label: "Runs" },
-              { value: "audit", label: "Audit" },
-              { value: "budget", label: "Budget" },
-            ]}
+            items={AGENT_DETAIL_TABS}
             value={activeView}
             onValueChange={(value) => navigate(`/agents/${canonicalAgentRef}/${value}`)}
           />
@@ -1386,6 +1396,21 @@ export function AgentDetail() {
           onSavingChange={setConfigSaving}
           updatePermissions={updatePermissions}
         />
+      )}
+
+      {activeView === "secrets" && (
+        <div className="max-w-3xl">
+          <ConfigurationTab
+            agent={agent}
+            companyId={resolvedCompanyId ?? undefined}
+            onDirtyChange={setConfigDirty}
+            onSaveActionChange={setSaveConfigAction}
+            onCancelActionChange={setCancelConfigAction}
+            onSavingChange={setConfigSaving}
+            updatePermissions={updatePermissions}
+            content="secrets"
+          />
+        </div>
       )}
 
       {activeView === "skills" && (
@@ -1935,6 +1960,7 @@ function ConfigurationTab({
   updatePermissions,
   hidePromptTemplate,
   hideInstructionsFile,
+  content = "configuration",
 }: {
   agent: AgentDetailRecord;
   companyId?: string;
@@ -1945,6 +1971,7 @@ function ConfigurationTab({
   updatePermissions: { mutate: (permissions: AgentPermissionUpdate) => void; isPending: boolean };
   hidePromptTemplate?: boolean;
   hideInstructionsFile?: boolean;
+  content?: "configuration" | "secrets";
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -1959,7 +1986,7 @@ function ConfigurationTab({
         ? queryKeys.agents.adapterModels(companyId, agent.adapterType)
         : ["agents", "none", "adapter-models", agent.adapterType],
     queryFn: () => agentsApi.adapterModels(companyId!, agent.adapterType),
-    enabled: Boolean(companyId),
+    enabled: Boolean(companyId) && content === "configuration",
   });
 
   const lowTrustSelected = getTrustPreset(agent.permissions) === "low_trust_review";
@@ -1967,7 +1994,7 @@ function ConfigurationTab({
   const { data: boundaryProjects, isLoading: boundaryProjectsLoading } = useQuery({
     queryKey: companyId ? queryKeys.projects.list(companyId) : ["projects", "__low-trust-disabled"],
     queryFn: () => projectsApi.list(companyId!),
-    enabled: Boolean(companyId && lowTrustSelected),
+    enabled: Boolean(companyId && lowTrustSelected) && content === "configuration",
   });
 
   const { data: boundaryIssues, isLoading: boundaryIssuesLoading } = useQuery({
@@ -1975,7 +2002,7 @@ function ConfigurationTab({
       ? [...queryKeys.issues.list(companyId), "low-trust-boundary-candidates"]
       : ["issues", "__low-trust-disabled"],
     queryFn: () => issuesApi.list(companyId!, { limit: 100, sortField: "updated", sortDir: "desc" }),
-    enabled: Boolean(companyId && lowTrustSelected),
+    enabled: Boolean(companyId && lowTrustSelected) && content === "configuration",
   });
 
   const updateAgent = useMutation({
@@ -1987,7 +2014,7 @@ function ConfigurationTab({
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(agent.companyId) });
-      if (!syncAgentRouteAfterRename(queryClient, navigate, agent, updated, urlTab ?? "configuration")) {
+      if (!syncAgentRouteAfterRename(queryClient, navigate, agent, updated, urlTab ?? content)) {
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       }
       pushToast({ title: "Agent saved", tone: "success" });
@@ -2046,13 +2073,16 @@ function ConfigurationTab({
         hideInlineSave
         hidePromptTemplate={hidePromptTemplate}
         hideInstructionsFile={hideInstructionsFile}
+        content={content}
         sectionLayout="cards"
       />
-      <p className="text-xs text-muted-foreground">
-        Saved adapter config affects the next run. Active runs keep the config they started with, and config changes may start a fresh adapter session.
-      </p>
+      {content === "configuration" ? (
+        <p className="text-xs text-muted-foreground">
+          Saved adapter config affects the next run. Active runs keep the config they started with, and config changes may start a fresh adapter session.
+        </p>
+      ) : null}
 
-      <TrustPresetSection
+      {content === "configuration" ? <TrustPresetSection
         permissions={agent.permissions}
         disabled={updatePermissions.isPending}
         companyId={companyId}
@@ -2073,9 +2103,9 @@ function ConfigurationTab({
             ...buildPermissionsForTrustPreset(nextPermissions, nextPermissions.trustPreset === "low_trust_review" ? "low_trust_review" : "standard"),
           })
         }
-      />
+      /> : null}
 
-      <div>
+      {content === "configuration" ? <div>
         <h3 className="text-sm font-medium mb-3">Permissions</h3>
         <div className="border border-border rounded-lg p-4 space-y-4">
           <div className="flex items-center justify-between gap-4 text-sm">
@@ -2136,7 +2166,7 @@ function ConfigurationTab({
             />
           </div>
         </div>
-      </div>
+      </div> : null}
     </div>
   );
 }

@@ -102,6 +102,8 @@ type AgentConfigFormProps = {
   hideInstructionsFile?: boolean;
   /** Hide the prompt template field from the Identity section (used when it's shown in a separate Prompts tab). */
   hidePromptTemplate?: boolean;
+  /** Render the main configuration sections or the dedicated edit-only Secrets surface. */
+  content?: "configuration" | "secrets";
   /** "cards" renders each section as heading + bordered card (for settings pages). Default: "inline" (border-b dividers). */
   sectionLayout?: "inline" | "cards";
 } & (
@@ -1051,6 +1053,43 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     });
   }
 
+  if (!isCreate && props.content === "secrets") {
+    return (
+      <div className={cn("relative", cards && "space-y-6")}>
+        {isDirty && !props.hideInlineSave && (
+          <div className="sticky top-0 z-10 flex items-center justify-end border-b border-primary/20 bg-background/90 px-4 py-2 backdrop-blur-sm">
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-muted-foreground">Unsaved changes</span>
+              <Button size="sm" onClick={handleSave} disabled={props.isSaving}>
+                {props.isSaving ? "Saving..." : "Save"}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        <div className={cn(!cards && "border-b border-border")}>
+          {cards
+            ? <h3 className="mb-3 text-sm font-medium">Secret access</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Secret access</div>
+          }
+          <div className={cn(cards ? "space-y-3 rounded-lg border border-border p-4" : "space-y-3 px-4 pb-3")}>
+            <p className="text-xs text-muted-foreground">{help.secretAccess}</p>
+            <AgentSecretAccessEditor
+              config={{ ...config, ...overlay.adapterConfig }}
+              secrets={availableSecrets}
+              onChange={applyAccessGrants}
+              onCreateSecret={(name, value) => createSecret.mutateAsync({ name, value })}
+              proposals={agentBindingProposals}
+              onApproveProposal={proposalReview.requestApprove}
+              onRejectProposal={proposalReview.requestReject}
+            />
+            {proposalReview.dialogs}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={cn("relative", cards && "space-y-6")}>
       {/* ---- Floating Save button (edit mode, when dirty) ---- */}
@@ -1537,20 +1576,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   }
                 />
               </Field>
-
-              {!isCreate && (
-                <Field label="Secret access" hint={help.secretAccess}>
-                  <AgentSecretAccessEditor
-                    config={{ ...config, ...overlay.adapterConfig }}
-                    secrets={availableSecrets}
-                    onChange={applyAccessGrants}
-                    proposals={agentBindingProposals}
-                    onApproveProposal={proposalReview.requestApprove}
-                    onRejectProposal={proposalReview.requestReject}
-                  />
-                  {proposalReview.dialogs}
-                </Field>
-              )}
 
               {/* Edit-only: timeout + grace period */}
               {!isCreate && (

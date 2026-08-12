@@ -205,7 +205,10 @@ function setInputValue(input: HTMLInputElement, value: string) {
 async function renderForm(
   environments: Environment[],
   agentOverrides: Partial<Agent> = {},
-  options: { showAdapterTestEnvironmentButton?: boolean } = {},
+  options: {
+    showAdapterTestEnvironmentButton?: boolean;
+    content?: "configuration" | "secrets";
+  } = {},
 ) {
   mockEnvironmentsApi.list.mockResolvedValue(environments);
 
@@ -229,6 +232,7 @@ async function renderForm(
               agent={makeAgent(agentOverrides)}
               onSave={vi.fn()}
               hidePromptTemplate
+              content={options.content}
               showAdapterTypeField={false}
               showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
             />
@@ -416,6 +420,28 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(result.container.textContent).not.toContain("Environment override");
     expect(result.container.querySelector("select")).toBeNull();
+  });
+
+  it("keeps secret access out of the main Configuration content", async () => {
+    const result = await renderForm([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ]);
+    roots.push(result.root);
+
+    expect(result.container.textContent).not.toContain("Secret access");
+  });
+
+  it("renders secret access as dedicated form content", async () => {
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      {},
+      { content: "secrets" },
+    );
+    roots.push(result.root);
+
+    expect(result.container.textContent).toContain("Secret access");
+    expect(result.container.textContent).toContain("No secrets are bound to this agent yet.");
+    expect(result.container.textContent).not.toContain("Environment variables");
   });
 
   it("shows concise Environment copy when one runnable non-local environment exists", async () => {
