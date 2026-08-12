@@ -1,6 +1,10 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
-import { generateSummarySlotSchema, writeSummarySlotSchema } from "@paperclipai/shared";
+import {
+  claimRoutineSummaryRefreshSlotsSchema,
+  generateSummarySlotSchema,
+  writeSummarySlotSchema,
+} from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { forbidden, notFound } from "../errors.js";
 import { accessService, heartbeatService, instanceSettingsService, logActivity } from "../services/index.js";
@@ -54,7 +58,7 @@ export function summarySlotRoutes(db: Db) {
     req: Request,
     input: {
       companyId: string;
-      action: "summary_slot.generate_requested" | "summary_slot.write";
+      action: "summary_slot.generate_requested" | "summary_slot.routine_refresh_claimed" | "summary_slot.write";
       slotId: string;
       details: Record<string, unknown>;
     },
@@ -98,6 +102,45 @@ export function summarySlotRoutes(db: Db) {
     });
     res.json(result);
   });
+
+  router.post(
+    "/companies/:companyId/summary-slots/routine-refresh/claim",
+    validate(claimRoutineSummaryRefreshSlotsSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      await assertSummariesEnabled();
+      if (req.actor.type !== "agent") {
+        throw forbidden("Only the Summarizer refresh routine may claim summary slots");
+      }
+      const actor = getActorInfo(req);
+      const result = await svc.claimRoutineRefreshSlots(
+        {
+          companyId,
+          generationIssueId: req.body.generationIssueId,
+          staleAfterHours: req.body.staleAfterHours,
+          maxSlots: req.body.maxSlots,
+          scopeKinds: req.body.scopeKinds,
+        },
+        { agentId: actor.agentId, runId: actor.runId ?? null },
+      );
+      for (const claimed of result.slots) {
+        await logSummaryMutation(req, {
+          companyId,
+          action: "summary_slot.routine_refresh_claimed",
+          slotId: claimed.slot.id,
+          details: {
+            scopeKind: claimed.slot.scopeKind,
+            scopeId: claimed.slot.scopeId,
+            slotKey: claimed.slot.slotKey,
+            generatingIssueId: req.body.generationIssueId,
+            baseRevisionId: claimed.document.latestRevisionId,
+          },
+        });
+      }
+      res.json(result);
+    },
+  );
 
   router.post(
     "/companies/:companyId/summary-slots/:scopeKind/:slotKey/generate",

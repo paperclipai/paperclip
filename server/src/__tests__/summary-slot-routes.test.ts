@@ -22,6 +22,7 @@ const mockSummarySlotService = vi.hoisted(() => ({
   getSlot: vi.fn(),
   listRevisions: vi.fn(),
   generate: vi.fn(),
+  claimRoutineRefreshSlots: vi.fn(),
   write: vi.fn(),
 }));
 
@@ -120,6 +121,12 @@ describe("summary slot routes", () => {
       slot: slot({ status: "generating", generatingIssueId }),
       generatingIssue: generatingIssue(),
       alreadyGenerating: false,
+    });
+    mockSummarySlotService.claimRoutineRefreshSlots.mockResolvedValue({
+      slots: [{
+        slot: slot({ status: "generating", generatingIssueId }),
+        document: { id: "doc-1", companyId, latestRevisionId: "rev-1", format: "markdown", body: "# Old" },
+      }],
     });
     mockSummarySlotService.write.mockResolvedValue({
       slot: slot({ documentId: "doc-1", status: "idle" }),
@@ -244,6 +251,36 @@ describe("summary slot routes", () => {
       ).send({});
       expect(res.status, JSON.stringify(res.body)).toBe(404);
       expect(mockSummarySlotService.generate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("routine refresh claim route", () => {
+    it("lets an agent routine claim a bounded changed-stale set and logs each binding", async () => {
+      const app = await createApp(agentActor);
+      const res = await request(app)
+        .post(`/api/companies/${companyId}/summary-slots/routine-refresh/claim`)
+        .send({ generationIssueId: generatingIssueId, staleAfterHours: 24, maxSlots: 10, scopeKinds: "project" });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockSummarySlotService.claimRoutineRefreshSlots).toHaveBeenCalledWith({
+        companyId,
+        generationIssueId: generatingIssueId,
+        staleAfterHours: 24,
+        maxSlots: 10,
+        scopeKinds: "project",
+      }, { agentId, runId: "run-123" });
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: "summary_slot.routine_refresh_claimed", entityId: slotId }),
+      );
+    });
+
+    it("rejects board actors before claiming routine slots", async () => {
+      const app = await createApp(boardActor);
+      const res = await request(app)
+        .post(`/api/companies/${companyId}/summary-slots/routine-refresh/claim`)
+        .send({ generationIssueId: generatingIssueId, staleAfterHours: 24, maxSlots: 10, scopeKinds: "all" });
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(mockSummarySlotService.claimRoutineRefreshSlots).not.toHaveBeenCalled();
     });
   });
 

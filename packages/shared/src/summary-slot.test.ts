@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { API } from "./api.js";
 import {
+  claimRoutineSummaryRefreshSlotsSchema,
   summarySlotScopeSelectorSchema,
   writeSummarySlotSchema,
 } from "./validators/summary-slot.js";
@@ -17,6 +18,9 @@ describe("summary slot shared contract", () => {
     );
     expect(API.summarySlotGenerate).toBe(
       "/api/companies/:companyId/summary-slots/:scopeKind/:slotKey/generate",
+    );
+    expect(API.summarySlotRoutineRefreshClaim).toBe(
+      "/api/companies/:companyId/summary-slots/routine-refresh/claim",
     );
   });
 
@@ -88,5 +92,25 @@ describe("summary slot shared contract", () => {
     });
 
     expect(() => writeSummarySlotSchema.parse({ markdown: "   " })).toThrow();
+  });
+
+  it("bounds routine refresh claims", () => {
+    expect(claimRoutineSummaryRefreshSlotsSchema.parse({
+      generationIssueId: issueId,
+      staleAfterHours: 24,
+      maxSlots: 10,
+      scopeKinds: "project",
+    })).toEqual({
+      generationIssueId: issueId,
+      staleAfterHours: 24,
+      maxSlots: 10,
+      scopeKinds: "project",
+    });
+    expect(() => claimRoutineSummaryRefreshSlotsSchema.parse({
+      generationIssueId: issueId,
+      staleAfterHours: 24,
+      maxSlots: 51,
+      scopeKinds: "all",
+    })).toThrow();
   });
 });

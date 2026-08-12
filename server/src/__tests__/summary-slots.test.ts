@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  builtInManagedResources,
   companies,
   createDb,
   documentRevisions,
@@ -13,6 +14,7 @@ import {
   issues,
   projectWorkspaces,
   projects,
+  routines,
   summarySlots,
 } from "@paperclipai/db";
 import {
@@ -47,10 +49,12 @@ describeEmbeddedPostgres("summary slot service", () => {
 
   afterEach(async () => {
     await db.delete(summarySlots);
+    await db.delete(builtInManagedResources);
     await db.delete(documentRevisions);
     await db.delete(documents);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
+    await db.delete(routines);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -631,6 +635,106 @@ describeEmbeddedPostgres("summary slot service", () => {
           { agentId: summarizerAgentId, runId: randomUUID() },
         ),
       ).rejects.toMatchObject({ status: 403 });
+    });
+
+    it("lets a checked-out refresh routine claim and update a changed stale slot but rejects an unrelated slot", async () => {
+      const companyId = await seedCompany();
+      const changedProjectId = await seedProject(companyId);
+      const unrelatedProjectId = await seedProject(companyId);
+      const summarizerAgentId = await seedSummarizer(companyId);
+      const svc = summarySlotService(db);
+
+      const seedSummary = async (projectId: string) => {
+        const generated = await svc.generate(projectSelector(companyId, projectId), { userId: "board-user" });
+        const runId = await seedRun(companyId, summarizerAgentId);
+        await db.update(issues).set({ checkoutRunId: runId }).where(eq(issues.id, generated.generatingIssue.id));
+        return svc.write(
+          { ...projectSelector(companyId, projectId), markdown: "# Previous summary", generationIssueId: generated.generatingIssue.id },
+          { agentId: summarizerAgentId, runId },
+        );
+      };
+      const changedPrevious = await seedSummary(changedProjectId);
+      await seedSummary(unrelatedProjectId);
+      const staleAt = new Date(Date.now() - 48 * 60 * 60 * 1_000);
+      await db.update(summarySlots).set({ lastGeneratedAt: staleAt }).where(eq(summarySlots.companyId, companyId));
+      await db.update(projects).set({ updatedAt: new Date(staleAt.getTime() - 60 * 60 * 1_000) }).where(eq(projects.companyId, companyId));
+      await db.update(issues).set({ updatedAt: new Date(staleAt.getTime() - 60 * 60 * 1_000) }).where(eq(issues.companyId, companyId));
+      await db.insert(issues).values({
+        companyId,
+        projectId: changedProjectId,
+        title: "Changed after the previous summary",
+        status: "in_progress",
+        priority: "medium",
+        updatedAt: new Date(),
+      });
+
+      const [routine] = await db.insert(routines).values({
+        companyId,
+        title: "Refresh stale summary slots",
+        assigneeAgentId: summarizerAgentId,
+        status: "paused",
+      }).returning();
+      await db.insert(builtInManagedResources).values({
+        companyId,
+        bundleKey: "summarizer",
+        resourceKind: "routine",
+        resourceKey: "refresh-stale-summaries",
+        resourceId: routine!.id,
+        stockVersion: "test",
+        stockHash: "test",
+        defaultsJson: { issueTemplate: { modelProfile: "cheap" } },
+      });
+      const routineRunId = await seedRun(companyId, summarizerAgentId);
+      const [routineIssue] = await db.insert(issues).values({
+        companyId,
+        title: "Refresh stale summary slots",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: summarizerAgentId,
+        checkoutRunId: routineRunId,
+        originKind: "routine_execution",
+        originId: routine!.id,
+      }).returning();
+
+      const claimed = await svc.claimRoutineRefreshSlots({
+        companyId,
+        generationIssueId: routineIssue!.id,
+        staleAfterHours: 24,
+        maxSlots: 10,
+        scopeKinds: "project",
+      }, { agentId: summarizerAgentId, runId: routineRunId });
+
+      expect(claimed.slots).toHaveLength(1);
+      expect(claimed.slots[0]).toMatchObject({
+        slot: {
+          scopeId: changedProjectId,
+          status: "generating",
+          generatingIssueId: routineIssue!.id,
+        },
+        document: { latestRevisionId: changedPrevious.revision.id },
+      });
+      await expect(svc.write({
+        ...projectSelector(companyId, unrelatedProjectId),
+        markdown: "# Unauthorized refresh",
+        generationIssueId: routineIssue!.id,
+      }, { agentId: summarizerAgentId, runId: routineRunId })).rejects.toMatchObject({ status: 403 });
+
+      await expect(svc.write({
+        ...projectSelector(companyId, changedProjectId),
+        markdown: "# Stale write",
+        baseRevisionId: randomUUID(),
+        generationIssueId: routineIssue!.id,
+      }, { agentId: summarizerAgentId, runId: routineRunId })).rejects.toMatchObject({ status: 409 });
+
+      const refreshed = await svc.write({
+        ...projectSelector(companyId, changedProjectId),
+        markdown: "# Refreshed summary",
+        baseRevisionId: changedPrevious.revision.id,
+        generationIssueId: routineIssue!.id,
+        model: "claude-haiku-4-5",
+      }, { agentId: summarizerAgentId, runId: routineRunId });
+      expect(refreshed.revision.revisionNumber).toBe(2);
+      expect(refreshed.slot).toMatchObject({ status: "idle", generatingIssueId: null });
     });
   });
 });

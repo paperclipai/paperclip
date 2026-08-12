@@ -57,6 +57,7 @@ Use these routes directly. Do not guess unscoped `/api/issues` or alternate summ
 - Gather project issues: `GET /api/companies/{companyId}/issues?projectId=...`
 - Gather execution-workspace issues: `GET /api/companies/{companyId}/issues?executionWorkspaceId=...`
 - Write the new revision: `PUT /api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}` with `scopeId`, `markdown`, `changeSummary`, `baseRevisionId`, `generationIssueId`, and `model` in the JSON body.
+- Routine refresh only: first claim the bounded changed/stale set with `POST /api/companies/{companyId}/summary-slots/routine-refresh/claim`. Use the returned document revision as each write's `baseRevisionId`; the routine task can write only the slots that endpoint bound to it.
 
 For `workspaces_overview`, omit `scopeId` from the read query and send it as `null` in the write body. All calls use the run-scoped Paperclip API URL and bearer token already present in the environment.
 
