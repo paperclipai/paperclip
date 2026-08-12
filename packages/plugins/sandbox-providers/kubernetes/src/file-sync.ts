@@ -347,6 +347,21 @@ export function parseTarVerboseListingLine(line: string): { typeFlag: string; re
 }
 
 /**
+ * Split a verbose-listing link field (`<name><delimiter><target>`) exactly
+ * once. The sandbox controls both halves, so a field with zero or multiple
+ * delimiter occurrences is unresolvable: a link name that itself contains the
+ * delimiter shifts the split point, and taking the first (or last) occurrence
+ * would let a crafted name or target hide an escaping link target from the
+ * confinement check. Returns null so callers fail closed.
+ */
+export function splitLinkEntryOnce(field: string, delimiter: string): { name: string; target: string } | null {
+  const first = field.indexOf(delimiter);
+  if (first === -1) return null;
+  if (field.indexOf(delimiter, first + delimiter.length) !== -1) return null;
+  return { name: field.slice(0, first), target: field.slice(first + delimiter.length) };
+}
+
+/**
  * Reject a sandbox-authored tarball before extraction if any member would land
  * outside the extraction dir. The archive is produced by the (untrusted) sandbox,
  * so host-side `tar -xf` must never be handed an archive whose entries carry
@@ -369,15 +384,15 @@ async function assertTarballEntriesConfined(archivePath: string): Promise<void> 
     let name = parsed.rest;
     let linkTarget: string | null = null;
     if (typeFlag === "l") {
-      const idx = name.indexOf(" -> ");
-      if (idx === -1) throw new Error(`Kubernetes syncOut refusing unparseable symlink entry: ${line}`);
-      linkTarget = name.slice(idx + " -> ".length);
-      name = name.slice(0, idx);
+      const split = splitLinkEntryOnce(name, " -> ");
+      if (!split) throw new Error(`Kubernetes syncOut refusing unparseable or ambiguous symlink entry: ${line}`);
+      name = split.name;
+      linkTarget = split.target;
     } else if (typeFlag === "h") {
-      const idx = name.indexOf(" link to ");
-      if (idx === -1) throw new Error(`Kubernetes syncOut refusing unparseable hardlink entry: ${line}`);
-      linkTarget = name.slice(idx + " link to ".length);
-      name = name.slice(0, idx);
+      const split = splitLinkEntryOnce(name, " link to ");
+      if (!split) throw new Error(`Kubernetes syncOut refusing unparseable or ambiguous hardlink entry: ${line}`);
+      name = split.name;
+      linkTarget = split.target;
     }
     const cleanName = name.replace(/\/+$/, "");
     if (cleanName.length > 0 && posixPathEscapes(cleanName)) {

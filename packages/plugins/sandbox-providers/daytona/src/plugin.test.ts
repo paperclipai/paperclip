@@ -37,7 +37,7 @@ import plugin, {
 } from "./plugin.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import manifest from "./manifest.js";
-import { parseTarVerboseListingLine } from "./file-sync.js";
+import { parseTarVerboseListingLine, splitLinkEntryOnce } from "./file-sync.js";
 
 function createMockSandbox(overrides: {
   id?: string;
@@ -3938,6 +3938,48 @@ describe("daytona native file-sync hooks", () => {
     await expect(fs.stat(restored)).rejects.toThrow();
   });
 
+  it("syncOut refuses a symlink whose name embeds the listing delimiter (ambiguous split hides the real target)", async () => {
+    const hostRoot = await makeHostDir();
+    const restored = path.join(hostRoot, "restored");
+    const sandbox = createMockSandbox();
+    sandbox.fs.downloadFiles.mockImplementation(async (requests: Array<{ source: string; destination?: string }>) => {
+      return Promise.all(
+        requests.map(async (req) => {
+          // A symlink literally named "evil -> decoy" with an escaping target
+          // lists as "evil -> decoy -> ../../outside.txt"; splitting at the
+          // first delimiter would validate "decoy -> ../../outside.txt" (which
+          // normalizes in-tree) while tar extracts the real escaping link.
+          const staging = await fs.mkdtemp(path.join(os.tmpdir(), "daytona-evil-"));
+          tempDirs.push(staging);
+          await fs.mkdir(path.join(staging, "sub"), { recursive: true });
+          await fs.symlink("../../outside.txt", path.join(staging, "sub", "evil -> decoy"));
+          execFileSync("tar", ["-cf", req.destination!, "-C", path.join(staging, "sub"), "evil -> decoy"]);
+          return { source: req.source, result: req.destination };
+        }),
+      );
+    });
+    mockGet.mockResolvedValue(sandbox);
+
+    await expect(
+      plugin.definition.onEnvironmentSyncOut?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: syncLease(),
+        operations: [
+          {
+            operationId: "sync-op-out-ambiguous-symlink",
+            files: [{ sourcePath: `${REMOTE_DIR}/proj`, targetPath: restored, kind: "directory" }],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/ambiguous symlink entry/);
+
+    // Fail-closed: the confinement check runs before extraction touches disk.
+    await expect(fs.stat(restored)).rejects.toThrow();
+  });
+
   it("round-trips a directory (syncIn then syncOut) preserving contents, a 0600 file, and a preserved symlink", async () => {
     const hostRoot = await makeHostDir();
     const source = path.join(hostRoot, "src");
@@ -4484,5 +4526,26 @@ describe("parseTarVerboseListingLine", () => {
     // Device nodes carry "major,minor" instead of a byte count in both dialects.
     expect(parseTarVerboseListingLine("crw-rw-rw- root/root 1,3 2026-08-11 21:43 dev/null")).toBeNull();
     expect(parseTarVerboseListingLine("crw-rw-rw-  0 root wheel  1,3 Aug 11 21:43 dev/null")).toBeNull();
+  });
+});
+
+describe("splitLinkEntryOnce", () => {
+  it("splits a clean single-delimiter link field", () => {
+    expect(splitLinkEntryOnce("shortcut -> nested/data.txt", " -> ")).toEqual({
+      name: "shortcut",
+      target: "nested/data.txt",
+    });
+    expect(splitLinkEntryOnce("copy.txt link to data.txt", " link to ")).toEqual({
+      name: "copy.txt",
+      target: "data.txt",
+    });
+  });
+
+  it("returns null (fail closed) when the delimiter is absent or appears more than once", () => {
+    expect(splitLinkEntryOnce("no delimiter here", " -> ")).toBeNull();
+    // A link name or target embedding the delimiter makes the split point
+    // unresolvable; either split choice can hide an escaping target.
+    expect(splitLinkEntryOnce("evil -> decoy -> ../../outside.txt", " -> ")).toBeNull();
+    expect(splitLinkEntryOnce("a link to b link to ../../outside.txt", " link to ")).toBeNull();
   });
 });
