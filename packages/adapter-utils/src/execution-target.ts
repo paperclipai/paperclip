@@ -1742,23 +1742,36 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     // persistent session so the provider streams the wrapper stdout back through
     // `onLog`. On resolve, the terminal re-parse fills any frames the live stream
     // missed; on reject, deliver one error frame so the local proxy fails loud.
-    void runner
-      .execute({
-        command: shellCommand,
-        args: shellCommandArgs(`node ${shellQuote(remoteScriptPath)}`),
-        cwd: target.remoteCwd,
-        env: {
-          PAPERCLIP_PROCESS_SESSION_DIR: sessionDir,
-          PAPERCLIP_PROCESS_SESSION_COMMAND_B64: streamCommandPayload,
-          PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge",
-        },
-        timeoutMs,
-        useSession: true,
-        onLog: async (stream, chunk) => {
-          if (stream === "stdout") ingestStreamChunk(chunk);
-        },
-      })
-      .then((result) => {
+    //
+    // Wrap the launch in a `sandbox.agentProcess` span. `runRuntimeWork` parents
+    // it to the LIVE RUN root (`task.run` at launch time — no turn has started
+    // yet), not to the ephemeral `bridge.process-session` bring-up step, and it
+    // stays open for the whole process lifetime. The inner `sandbox.exec` nests
+    // under it. Without the wrapper the raw exec's span inherits the ~2.28s
+    // bring-up step as its parent and then dangles ~50s past it, overlapping
+    // `agent.turn` — a child outliving its parent. As a run-scoped span it reads
+    // instead as a resource that OVERLAPS the sibling `agent.turn`, which is the
+    // correct shape (the persistent process hosts the turn; it is not a child of
+    // it, and on multi-turn runs one process spans several turns). `runRuntimeWork`
+    // is voided, not awaited, so bring-up never blocks on the long-lived command,
+    // and it defaults to a no-op parent when no span runner is injected.
+    void runRuntimeWork("sandbox.agentProcess", async () => {
+      try {
+        const result = await runner.execute({
+          command: shellCommand,
+          args: shellCommandArgs(`node ${shellQuote(remoteScriptPath)}`),
+          cwd: target.remoteCwd,
+          env: {
+            PAPERCLIP_PROCESS_SESSION_DIR: sessionDir,
+            PAPERCLIP_PROCESS_SESSION_COMMAND_B64: streamCommandPayload,
+            PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge",
+          },
+          timeoutMs,
+          useSession: true,
+          onLog: async (stream, chunk) => {
+            if (stream === "stdout") ingestStreamChunk(chunk);
+          },
+        });
         ingestFinalText(result.stdout);
         if (!sawTerminal && !stopping) {
           deliverRemoteEvent({
@@ -1766,15 +1779,15 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
             code: typeof result.exitCode === "number" ? result.exitCode : null,
           });
         }
-      })
-      .catch((error) => {
+      } catch (error) {
         if (!stopping) {
           deliverRemoteEvent({
             type: "error",
             message: error instanceof Error ? error.message : String(error),
           });
         }
-      });
+      }
+    });
   } else {
     schedulePoll();
   }

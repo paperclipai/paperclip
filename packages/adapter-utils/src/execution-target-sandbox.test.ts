@@ -23,12 +23,54 @@ import {
   startAdapterExecutionTargetPaperclipBridge,
   type AdapterSandboxExecutionTarget,
 } from "./execution-target.js";
-import { getActiveStepContext } from "./acpx-engine/startup-timing.js";
+import {
+  createRuntimeSpanRunner,
+  getActiveStepContext,
+  type StartupSpan,
+  type StartupTraceContext,
+  type StartupTracer,
+} from "./acpx-engine/startup-timing.js";
 import { createSandboxRunLogTailFactory } from "./sandbox-run-log-stream.js";
 import { runChildProcess } from "./server-utils.js";
 import { shellQuote } from "./ssh.js";
 
 const execFileAsync = promisify(execFile);
+
+type RecordedSpan = { name: string; parentName: string | null; ended: boolean };
+
+/**
+ * A structural tracer that records each opened span's name, parent, and end
+ * state, so a test can assert the trace shape a runtime span runner produces.
+ * Mirrors the recorder used for the `pack`/`stage.sync` nesting tests.
+ */
+function createRecordingTraceContext(): {
+  traceContext: StartupTraceContext;
+  spans: RecordedSpan[];
+} {
+  const spans: RecordedSpan[] = [];
+  const byHandle = new WeakMap<StartupSpan, RecordedSpan>();
+  const tracer: StartupTracer = {
+    startSpan(name, _options, context) {
+      const parent = context as RecordedSpan | undefined;
+      const record: RecordedSpan = { name, parentName: parent?.name ?? null, ended: false };
+      spans.push(record);
+      const handle: StartupSpan = {
+        setAttribute() {},
+        setStatus() {},
+        end() {
+          record.ended = true;
+        },
+      };
+      byHandle.set(handle, record);
+      return handle;
+    },
+  };
+  const traceContext: StartupTraceContext = {
+    tracer,
+    contextWithSpan: (span) => byHandle.get(span),
+  };
+  return { traceContext, spans };
+}
 
 describe("sandbox adapter execution targets", () => {
   const cleanupDirs: string[] = [];
@@ -945,6 +987,117 @@ describe("sandbox adapter execution targets", () => {
         expect(result.code).toBe(0);
         expect(result.stdout).toBe("out:hello\n");
         expect(result.stderr).toBe("err:hello\n");
+      } finally {
+        await bridge?.stop();
+      }
+    });
+
+    it("wraps the long-lived streamed launch in a sandbox.agentProcess span", async () => {
+      // The streamed launch is fire-and-forget and lives for the whole run, so
+      // its span must open under the live run root (not the ephemeral bring-up
+      // step) and stay open around the launch. Record the opened span names and
+      // prove `sandbox.agentProcess` is among them, and that a normal exchange
+      // still works through the wrap.
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stream-span-"));
+      cleanupDirs.push(rootDir);
+      const childPath = path.join(rootDir, "echo-acp-child.mjs");
+      await writeFile(
+        childPath,
+        [
+          "process.stdin.on('data', (chunk) => {",
+          "  process.stdout.write('out:' + chunk.toString());",
+          "});",
+        ].join("\n"),
+        "utf8",
+      );
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-test",
+        remoteCwd: rootDir,
+        timeoutMs: 30_000,
+        runner: createLocalSandboxRunner(),
+      };
+
+      const spanNames: string[] = [];
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-stream-span",
+        target,
+        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+        adapterKey: "acpx",
+        command: process.execPath,
+        args: [childPath],
+        cwd: rootDir,
+        env: {},
+        timeoutSec: 5,
+        onLog: async () => {},
+        streamOutputViaSession: true,
+        // Record each wrapper span name, then run the wrapped work.
+        runtimeSpan: async (name, work) => {
+          spanNames.push(name);
+          return work();
+        },
+      });
+      expect(bridge).not.toBeNull();
+
+      try {
+        // The launch span opens synchronously as the bridge starts, before any
+        // frame flows, so it is observable as soon as the handle resolves.
+        expect(spanNames).toContain("sandbox.agentProcess");
+        const result = await runProxyWithInput(bridge!.agentCommand, "hello\n");
+        expect(result.code).toBe(0);
+        expect(result.stdout).toBe("out:hello\n");
+      } finally {
+        await bridge?.stop();
+      }
+    });
+
+    it("parents the sandbox.agentProcess span to the live run root, not the bring-up step", async () => {
+      // The launch runs for the whole run, so its span must parent to the live
+      // run root (here a stand-in `task.run`) rather than the ephemeral
+      // `bridge.process-session` bring-up step — otherwise it dangles past its
+      // parent and overlaps `agent.turn`. Build the real run-rooted runner from a
+      // recording trace context and assert the recorded parent.
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stream-parent-"));
+      cleanupDirs.push(rootDir);
+      const childPath = path.join(rootDir, "noop-acp-child.mjs");
+      await writeFile(childPath, "process.stdin.on('data', () => {});\n", "utf8");
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-test",
+        remoteCwd: rootDir,
+        timeoutMs: 30_000,
+        runner: createLocalSandboxRunner(),
+      };
+
+      const { traceContext, spans } = createRecordingTraceContext();
+      // The run root stands in for `task.run` — the parent the run-rooted runner
+      // resolves at launch time, since no turn has started yet.
+      const runRoot = traceContext.tracer.startSpan("task.run", undefined, undefined);
+      const runRootContext = traceContext.contextWithSpan(runRoot);
+      const runtimeSpan = createRuntimeSpanRunner(traceContext, () => runRootContext);
+
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-stream-parent",
+        target,
+        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+        adapterKey: "acpx",
+        command: process.execPath,
+        args: [childPath],
+        cwd: rootDir,
+        env: {},
+        timeoutSec: 5,
+        onLog: async () => {},
+        streamOutputViaSession: true,
+        runtimeSpan,
+      });
+      expect(bridge).not.toBeNull();
+
+      try {
+        const agentProcess = spans.find((span) => span.name === "sandbox.agentProcess");
+        expect(agentProcess).toBeDefined();
+        expect(agentProcess!.parentName).toBe("task.run");
       } finally {
         await bridge?.stop();
       }
