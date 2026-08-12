@@ -76,7 +76,7 @@ function createDbStub() {
   };
 }
 
-async function createApp() {
+async function createApp(routeOpts: { authPublicBaseUrl?: string } = {}) {
   const [{ accessRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/access.js"),
     import("../middleware/index.js"),
@@ -99,6 +99,7 @@ async function createApp() {
       deploymentExposure: "private",
       bindHost: "127.0.0.1",
       allowedHostnames: [],
+      authPublicBaseUrl: routeOpts.authPublicBaseUrl,
     }),
   );
   app.use(errorHandler);
@@ -133,5 +134,31 @@ describe("POST /companies/:companyId/invites", () => {
     expect(res.body.companyName).toBe("Acme Robotics");
     expect(res.body.invitePath).toMatch(/^\/invite\/pcp_invite_/);
     expect(res.body.inviteUrl).toMatch(/^https:\/\/paperclip\.example\/invite\/pcp_invite_/);
+  });
+
+  it("prefers configured authPublicBaseUrl over request host so 127.0.0.1 callers get a shareable URL", async () => {
+    const app = await createApp({
+      authPublicBaseUrl: "https://desktop-9tgto0t.tail302fee.ts.net/",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/invites")
+      // UI talks to the loopback API; without the override the response
+      // would echo http://127.0.0.1 back as the invite host.
+      .set("host", "127.0.0.1:3100")
+      .send({
+        allowedJoinTypes: "human",
+        humanRole: "viewer",
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.inviteUrl).toMatch(
+      /^https:\/\/desktop-9tgto0t\.tail302fee\.ts\.net\/invite\/pcp_invite_/,
+    );
+    expect(res.body.onboardingTextUrl).toMatch(
+      /^https:\/\/desktop-9tgto0t\.tail302fee\.ts\.net\/api\/invites\/pcp_invite_[^/]+\/onboarding\.txt$/,
+    );
+    // No double slash from the trimmed trailing "/" in the override.
+    expect(res.body.inviteUrl).not.toContain(".net//");
   });
 });
