@@ -99,7 +99,7 @@ absent, never a misleading `0`.
 | `sandbox.agentSession.sendInput` | One outbound ACP message to the agent — the socket handler's one `writeTextFile` exec. | the active run span |
 | `sandbox.agentSession.pollOutput` | One 100 ms poll tick — `list`, then `read`+`remove` per file found (`1 + 2n` execs). | the active run span |
 | `sandbox.callbackBridge.relayRequest` | One Paperclip-API callback request — read the request, write the response, remove it. | the active run span |
-| `sandbox.agentProcess` | The persistent streamed agent process the process-session bridge launches; open for the whole process lifetime. | the active run span |
+| `sandbox.agentProcess` | The persistent streamed agent process the process-session bridge launches; open until the process settles or the bridge tears down, whichever comes first. | the active run span |
 | `sandbox.exec` | One host-to-sandbox execution. | the active step or wrapper span |
 
 A step span name is the step name. The `sandbox.exec` span parents to the step
@@ -116,9 +116,13 @@ unparented.
 
 `sandbox.agentProcess` wraps the persistent streamed agent process. The
 process-session bridge launches it during `bridge.process-session`, so it opens
-under `task.run` — no turn has started yet — and stays open for the whole process
-lifetime. It therefore overlaps the sibling `agent.turn` rather than nesting
-under it or dangling off the short-lived bring-up step.
+under `task.run` — no turn has started yet. It therefore overlaps the sibling
+`agent.turn` rather than nesting under it or dangling off the short-lived bring-up
+step. The span ends when the process settles or when the bridge tears down,
+whichever comes first. The bridge tears down before the run root span ends, so
+the span never outlives `task.run` even when the process lingers past teardown
+(the sandbox `execute` has no cancel, so a lingering process cannot be forced to
+resolve).
 
 The root span sets the error status when the bring-up fails. Each step span sets
 the error status when its step fails. The `sandbox.exec` span sets the error

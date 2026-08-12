@@ -1103,6 +1103,76 @@ describe("sandbox adapter execution targets", () => {
       }
     });
 
+    it("ends the sandbox.agentProcess span at stop() even when the process lingers", async () => {
+      // The span must not outlive the run root. When the remote process lingers
+      // past bridge teardown (`execute` has no cancel), the span still has to end
+      // at `stop()`, which the caller awaits before it ends `task.run`. Use a
+      // child that ignores stdin and never exits on its own, so the launch
+      // command stays pending across `stop()`, and prove the span ends anyway.
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stream-linger-"));
+      cleanupDirs.push(rootDir);
+      const childPath = path.join(rootDir, "linger-acp-child.mjs");
+      await writeFile(
+        childPath,
+        [
+          "process.stdin.on('data', () => {});",
+          // Stay alive well past the assertions, then self-exit so the test
+          // leaves no lingering process.
+          "setTimeout(() => process.exit(0), 3000);",
+        ].join("\n"),
+        "utf8",
+      );
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-test",
+        remoteCwd: rootDir,
+        timeoutMs: 30_000,
+        runner: createLocalSandboxRunner(),
+      };
+
+      // Track when each wrapper span's work settles (i.e. when its span ends).
+      const spanRecords: Array<{ name: string; ended: boolean }> = [];
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-stream-linger",
+        target,
+        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+        adapterKey: "acpx",
+        command: process.execPath,
+        args: [childPath],
+        cwd: rootDir,
+        env: {},
+        timeoutSec: 10,
+        onLog: async () => {},
+        streamOutputViaSession: true,
+        runtimeSpan: (name, work) => {
+          const record = { name, ended: false };
+          spanRecords.push(record);
+          const promise = work();
+          void promise.then(
+            () => {
+              record.ended = true;
+            },
+            () => {
+              record.ended = true;
+            },
+          );
+          return promise;
+        },
+      });
+      expect(bridge).not.toBeNull();
+
+      const record = spanRecords.find((span) => span.name === "sandbox.agentProcess");
+      expect(record).toBeDefined();
+      // The launch command is still running, so the span is still open.
+      expect(record!.ended).toBe(false);
+
+      // Teardown ends the span promptly, without waiting for the lingering command.
+      await bridge!.stop();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(record!.ended).toBe(true);
+    });
+
     it("buffers streamed output until the local proxy connects", async () => {
       const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stream-buffer-"));
       cleanupDirs.push(rootDir);
