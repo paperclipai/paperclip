@@ -366,7 +366,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       },
     }).where(eq(issues.id, sourceIssueId));
 
-    const enqueueWakeup = vi.fn(async () => null);
+    const enqueueWakeup = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue({ id: randomUUID() } as never);
     const recovery = recoveryService(db, { enqueueWakeup });
     expect((await recovery.reconcileStrandedAssignedIssues()).changesRequestedRepaired).toBe(2);
 
@@ -415,7 +417,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     const secondPostRestore = await recovery.reconcileStrandedAssignedIssues();
     // A null enqueue result is deferred, not a durable wake. The next scan
-    // must remain eligible to retry recovery.
+    // must remain eligible to retry recovery and count only the durable wake.
     expect(secondPostRestore.reviewParticipantRequeued).toBe(1);
     expect(secondPostRestore.changesRequestedRepaired).toBe(0);
     expect(enqueueWakeup).toHaveBeenCalledTimes(wakeCount + 1);
