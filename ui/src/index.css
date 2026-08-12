@@ -265,6 +265,13 @@
   /* Redesigned chat-shell column cap (phase 2c): one token caps the page
      wrapper, thread body, and pinned composer so they widen in lockstep. */
   --tc-shell-max-w: 60rem;
+
+  /* Mobile pinned-composer bottom offset (PAP-495). Default clears just the
+     safe-area inset (+20px); Layout raises it to the bottom-nav height
+     (--sz-calc-14) while the auto-hiding mobile nav is on screen, so the
+     composer's action row never hides behind the nav. Desktop and the classic
+     thread never override it and fall through to the safe-area default. */
+  --tc-composer-bottom: var(--sz-calc-8);
 }
 
 .dark {

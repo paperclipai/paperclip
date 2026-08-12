@@ -9,12 +9,13 @@ import { ThemeProvider } from "@/context/ThemeContext";
 import { TaskChatThread } from "./TaskChatThread";
 
 const transcriptState = vi.hoisted(() => ({ transcriptByRun: new Map() }));
+const sidebarState = vi.hoisted(() => ({ isMobile: false }));
 
 vi.mock("@/components/transcript/useLiveRunTranscripts", () => ({
   useLiveRunTranscripts: () => transcriptState,
 }));
 vi.mock("@/context/SidebarContext", () => ({
-  useSidebar: () => ({ isMobile: false }),
+  useSidebar: () => ({ isMobile: sidebarState.isMobile }),
 }));
 vi.mock("@/hooks/useIssuePlanDocument", () => ({
   useIssuePlanDocument: () => ({ data: null }),
@@ -35,6 +36,7 @@ let root: Root | null = null;
 beforeEach(() => {
   localStorage.clear();
   transcriptState.transcriptByRun.clear();
+  sidebarState.isMobile = false;
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -65,6 +67,25 @@ describe("TaskChatThread draft pass-through", () => {
 
     expect(container.querySelector('[data-testid="mock-editor"]')?.textContent)
       .toBe("half-written thought");
+  });
+});
+
+describe("TaskChatThread mobile composer dock (PAP-495)", () => {
+  it("pins the composer to the nav-aware bottom offset so its action row clears the auto-hiding bottom nav", () => {
+    sidebarState.isMobile = true;
+
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} draftKey="task-chat-draft:issue-mobile" />);
+
+    const dock = container
+      .querySelector('[data-testid="mock-editor"]')
+      ?.closest("div.sticky") as HTMLElement | null;
+
+    expect(dock).not.toBeNull();
+    // Bottom offset comes from --tc-composer-bottom (Layout raises it to the nav
+    // height while the nav is on screen) — NOT the raw safe-area dock, which is
+    // what let the nav occlude the action row before PAP-495.
+    expect(dock?.className).toContain("bottom-(--tc-composer-bottom)");
+    expect(dock?.className).not.toContain("bottom-(--sz-calc-8)");
   });
 });
 

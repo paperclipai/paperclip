@@ -613,9 +613,17 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           className={cn(
             "sticky",
             // Mobile mirrors the flag-off thread's dock: lifted above the
-            // safe-area inset (and clear of the auto-hiding bottom nav), above
-            // page content in the document-flow stacking context.
-            isMobile ? "bottom-(--sz-calc-8) z-20" : "bottom-0 z-10",
+            // safe-area inset and clear of the auto-hiding bottom nav, above
+            // page content in the document-flow stacking context. The bottom
+            // offset (--tc-composer-bottom) tracks the nav: Layout raises it to
+            // the nav height while the nav is visible so the composer's action
+            // row is never occluded, and drops it back to the safe-area dock
+            // when the nav auto-hides (PAP-495). transition-[bottom] rides the
+            // nav's own 200ms slide; the offset only changes on nav toggles, so
+            // it never animates mid-scroll.
+            isMobile
+              ? "bottom-(--tc-composer-bottom) z-20 transition-[bottom] duration-200 ease-out"
+              : "bottom-0 z-10",
             // Match the thread column's px-4 gutter so the composer card lines
             // up with the conversation's content edges instead of reading wider.
             "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 bg-background/80 px-4 pb-2 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60",
