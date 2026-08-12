@@ -780,16 +780,45 @@ async function resolveBuiltInAgentProvisionInput(
   return { ...input, adapterConfig };
 }
 
-// The environment an agent will actually run under. The claude_local execution path spreads an
-// agent's `adapterConfig.env` over `process.env`, so an agent can name its own AWS region, and that
-// region is the one its model must resolve in.
-function adapterExecutionEnv(adapterConfig: unknown): BedrockEnv {
-  if (!isPlainRecord(adapterConfig) || !isPlainRecord(adapterConfig.env)) return process.env;
-  const overrides: BedrockEnv = {};
-  for (const [key, value] of Object.entries(adapterConfig.env)) {
-    if (typeof value === "string") overrides[key] = value;
+// Keys whose value decides which region a model must resolve in. If any of them is bound to a
+// secret, the effective region cannot be read at setup time, and the region check is skipped rather
+// than guessed.
+const REGION_DECIDING_ENV_KEYS: readonly string[] = [
+  "AWS_REGION",
+  "AWS_DEFAULT_REGION",
+  "CLAUDE_CODE_USE_BEDROCK",
+  "ANTHROPIC_BEDROCK_BASE_URL",
+];
+
+// A bare string, and `{ type: "plain", value }`, carry their value inline. A `secret_ref` or a
+// `user_secret_ref` only names a secret, which the runtime resolves, so it has no value here.
+function inlineEnvBindingValue(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (!isPlainRecord(value) || value.type !== "plain") return null;
+  return typeof value.value === "string" ? value.value : null;
+}
+
+// The environment an agent will actually run under. `resolveAdapterConfigForRuntime` resolves an
+// agent's `adapterConfig.env` bindings to strings, and the claude_local execution path then spreads
+// the result over `process.env`, so an agent can name its own AWS region, and that region is the one
+// its model must resolve in.
+//
+// The values here are env bindings, not plain strings, so an inline binding is read and a secret
+// binding is not. A secret binding also hides the server's value for that key, because the agent
+// replaces it at execution with something this process cannot see. `regionIsKnown` is false when
+// such a binding decides the region, so the caller can decline to judge it.
+function adapterExecutionEnv(adapterConfig: unknown): { env: BedrockEnv; regionIsKnown: boolean } {
+  if (!isPlainRecord(adapterConfig) || !isPlainRecord(adapterConfig.env)) {
+    return { env: process.env, regionIsKnown: true };
   }
-  return { ...process.env, ...overrides };
+  const overrides: BedrockEnv = {};
+  let regionIsKnown = true;
+  for (const [key, value] of Object.entries(adapterConfig.env)) {
+    const inline = inlineEnvBindingValue(value);
+    overrides[key] = inline ?? undefined;
+    if (inline === null && REGION_DECIDING_ENV_KEYS.includes(key)) regionIsKnown = false;
+  }
+  return { env: { ...process.env, ...overrides }, regionIsKnown };
 }
 
 async function assertKnownBuiltInAgentModel(
@@ -815,7 +844,10 @@ async function assertKnownBuiltInAgentModel(
   // environment, which the agent's own `env` overrides at execution, so a listed ID is not evidence
   // that the ID resolves where the agent will run.
   if (adapterType === "claude_local" && isBedrockModelId(model)) {
-    const executionEnv = adapterExecutionEnv(adapterConfig);
+    const { env: executionEnv, regionIsKnown } = adapterExecutionEnv(adapterConfig);
+    // A secret decides the region, so this process cannot tell whether the profile matches. Accept
+    // it, on the same rule as any other case with no region evidence.
+    if (!regionIsKnown) return;
     if (isBedrockModelUsableInConfiguredRegion(model, executionEnv)) return;
     const region = configuredAwsRegion(executionEnv);
     throw unprocessable(

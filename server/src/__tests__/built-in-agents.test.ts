@@ -13,6 +13,11 @@ import {
   builtInManagedResources,
   companies,
   companyMemberships,
+  companySecretBindings,
+  companySecretProposals,
+  companySecretProviderConfigs,
+  companySecretVersions,
+  companySecrets,
   companySkillVersions,
   companySkills,
   createDb,
@@ -21,6 +26,7 @@ import {
   principalPermissionGrants,
   routines,
   routineTriggers,
+  secretAccessEvents,
 } from "@paperclipai/db";
 import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import {
@@ -40,6 +46,7 @@ import {
 } from "../services/built-in-agents.ts";
 import { readBuiltInAgentMarker, withBuiltInAgentMarker } from "../services/built-in-agent-metadata.ts";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.ts";
+import { secretService } from "../services/secrets.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -146,6 +153,16 @@ describeEmbeddedPostgres("built-in agents", () => {
     await db.delete(approvals);
     await db.delete(agents);
     await db.delete(budgetPolicies);
+    // Tests that bind adapterConfig.env to a secret write these, and every one of them references a
+    // company, so the companies delete below fails on a foreign key without them. Deleted in
+    // dependency order: events and bindings and versions reference a secret, a secret references its
+    // provider config.
+    await db.delete(secretAccessEvents);
+    await db.delete(companySecretBindings);
+    await db.delete(companySecretVersions);
+    await db.delete(companySecretProposals);
+    await db.delete(companySecrets);
+    await db.delete(companySecretProviderConfigs);
     await db.delete(companies);
     // Some tests drop the built-in marker unique index to simulate legacy
     // (pre-migration 0192) duplicates; restore it now that all rows are gone.
@@ -527,6 +544,91 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
 
     expect(await db.select().from(agents).where(eq(agents.companyId, usCompanyId))).toHaveLength(0);
+  });
+
+  it("reads an inline env binding, not only a bare string", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    process.env.AWS_REGION = "us-east-1";
+    const service = builtInAgentService(db);
+
+    // adapterConfig.env holds env bindings. A { type: "plain" } binding carries its value inline, so
+    // it decides the region exactly as a bare string does.
+    const okCompanyId = await seedCompany();
+    const state = await service.ensure(okCompanyId, "summarizer", {
+      adapterType: "claude_local",
+      adapterConfig: {
+        model: "eu.anthropic.claude-sonnet-5",
+        env: { AWS_REGION: { type: "plain", value: "eu-west-1" } },
+      },
+    });
+    expect(state.agent?.adapterConfig).toMatchObject({ model: "eu.anthropic.claude-sonnet-5" });
+
+    const badCompanyId = await seedCompany();
+    await expect(service.ensure(badCompanyId, "summarizer", {
+      adapterType: "claude_local",
+      adapterConfig: {
+        model: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        env: { AWS_REGION: { type: "plain", value: "eu-west-1" } },
+      },
+    })).rejects.toMatchObject({
+      status: 422,
+      details: { code: "built_in_agent_model_region_mismatch", region: "eu-west-1" },
+    });
+
+    expect(await db.select().from(agents).where(eq(agents.companyId, badCompanyId))).toHaveLength(0);
+  });
+
+  it("does not judge the region when a secret decides it", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    process.env.AWS_REGION = "us-east-1";
+    const service = builtInAgentService(db);
+
+    // Only the runtime resolves a secret binding, so this process cannot read the region the agent
+    // will run in. The server's own us-east-1 is not that region, so it must not be used to reject an
+    // eu. profile. Accept, on the same rule as any other case with no region evidence.
+    // A `user_secret_ref` takes the same branch, because anything that is not a string and not a
+    // `plain` binding carries no value here. It is not covered separately, because it needs a user
+    // secret declaration fixture to persist, and it exercises no different code.
+    const companyId = await seedCompany();
+    const secret = await secretService(db).create(companyId, {
+      name: `agent-region-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "eu-west-1",
+    });
+    const state = await service.ensure(companyId, "summarizer", {
+      adapterType: "claude_local",
+      adapterConfig: {
+        model: "eu.anthropic.claude-sonnet-5",
+        env: { AWS_REGION: { type: "secret_ref", secretId: secret.id } },
+      },
+    });
+    expect(state.agent?.adapterConfig).toMatchObject({ model: "eu.anthropic.claude-sonnet-5" });
+  });
+
+  it("does not fall back to the server region when a secret hides the agent's", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    process.env.AWS_REGION = "eu-west-1";
+    const service = builtInAgentService(db);
+
+    // The server is in eu-west-1, which would reject a us. profile. The agent binds AWS_REGION to a
+    // secret, so the server's region is not the one that applies, and rejecting on it would block a
+    // profile that may well be correct.
+    const companyId = await seedCompany();
+    const secret = await secretService(db).create(companyId, {
+      name: `agent-region-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "us-east-1",
+    });
+    const state = await service.ensure(companyId, "summarizer", {
+      adapterType: "claude_local",
+      adapterConfig: {
+        model: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        env: { AWS_REGION: { type: "secret_ref", secretId: secret.id } },
+      },
+    });
+    expect(state.agent?.adapterConfig).toMatchObject({
+      model: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    });
   });
 
   it("accepts Bedrock ids that the configured region cannot rule out", async () => {
