@@ -14,13 +14,19 @@ vi.mock("./environment-variables-editor/SecretPicker", () => ({
     secretId: string;
     secrets: readonly CompanySecret[];
     onSelect: (secretId: string) => void;
+    onCreateNew?: (query: string) => void;
   }) => {
     mockSecretPickerRender(props);
-    return (
+    return <>
       <button type="button" data-testid="pick-secret" onClick={() => props.onSelect("s1")}>
         pick
       </button>
-    );
+      {props.onCreateNew ? (
+        <button type="button" data-testid="create-secret" onClick={() => props.onCreateNew?.("new_secret")}>
+          create
+        </button>
+      ) : null}
+    </>;
   },
 }));
 
@@ -167,6 +173,34 @@ describe("AgentSecretAccessEditor component", () => {
 
     const last = emitted.at(-1)!;
     expect(last).toEqual({ STRIPE: { type: "secret_ref", secretId: "s1", version: "latest" } });
+  });
+
+  it("keeps the create form open when focus returns to the shared picker anchor", async () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <AgentSecretAccessEditor
+          config={{ "access.STRIPE": { type: "secret_ref", secretId: "s1" } }}
+          secrets={secrets}
+          onChange={() => {}}
+          onCreateSecret={async () => secrets[0]!}
+        />,
+      );
+
+      const createButton = container.querySelector<HTMLButtonElement>('[data-testid="create-secret"]')!;
+      flushSync(() => createButton.click());
+      flushSync(() => vi.runAllTimers());
+      expect(document.body.textContent).toContain("Create secret");
+
+      const pickerButton = container.querySelector<HTMLButtonElement>('[data-testid="pick-secret"]')!;
+      pickerButton.focus();
+      flushSync(() => {});
+
+      expect(document.body.textContent).toContain("Create secret");
+      expect(document.querySelector('input[aria-label="Secret name"]')).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("renders pending binding proposals as Proposed rows with approve/reject", () => {

@@ -214,6 +214,7 @@ export function AgentSecretAccessEditor({
 
   const [rows, setRows] = useState<AccessRow[]>(() => entriesToRows(apiBindings));
   const [createRequest, setCreateRequest] = useState<{ rowId: string; name: string } | null>(null);
+  const pickerAnchorRefs = useRef(new Map<string, HTMLDivElement>());
   const lastEmittedKeyRef = useRef(incomingKey);
   const lastIncomingKeyRef = useRef(incomingKey);
 
@@ -372,7 +373,13 @@ export function AgentSecretAccessEditor({
                         }}
                       >
                         <PopoverAnchor asChild>
-                          <div className="min-w-0 flex-1">
+                          <div
+                            ref={(node) => {
+                              if (node) pickerAnchorRefs.current.set(row.id, node);
+                              else pickerAnchorRefs.current.delete(row.id);
+                            }}
+                            className="min-w-0 flex-1"
+                          >
                             <SecretPicker
                               secretId={row.secretId}
                               secrets={secrets}
@@ -401,7 +408,19 @@ export function AgentSecretAccessEditor({
                             />
                           </div>
                         </PopoverAnchor>
-                        <PopoverContent align="start" className="w-auto p-3">
+                        <PopoverContent
+                          align="start"
+                          className="w-auto p-3"
+                          onInteractOutside={(event) => {
+                            // Closing the picker returns focus to its trigger inside
+                            // this popover's anchor. Keep that focus restoration from
+                            // dismissing the create form that just opened.
+                            const target = event.detail.originalEvent.target as Node | null;
+                            if (target && pickerAnchorRefs.current.get(row.id)?.contains(target)) {
+                              event.preventDefault();
+                            }
+                          }}
+                        >
                           {createRequest?.rowId === row.id && onCreateSecret ? (
                             <CreateSecretPopover
                               initialName={createRequest.name}

@@ -4,7 +4,9 @@ import { describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
 import {
   AGENT_DETAIL_TABS,
+  DISCARD_AGENT_CONFIG_CHANGES_MESSAGE,
   buildHeartbeatProgressLogLine,
+  confirmAgentConfigNavigation,
   heartbeatProgressLogLineKey,
   parseAgentDetailView,
   runDetailRefetchIntervalMs,
@@ -16,6 +18,18 @@ describe("agent detail tabs", () => {
   it("exposes Secrets as its own route-backed tab", () => {
     expect(AGENT_DETAIL_TABS.map((tab) => tab.label)).toContain("Secrets");
     expect(parseAgentDetailView("secrets")).toBe("secrets");
+  });
+
+  it("requires confirmation before navigation can discard unsaved configuration", () => {
+    const confirm = vi.fn().mockReturnValue(false);
+
+    expect(confirmAgentConfigNavigation(true, confirm)).toBe(false);
+    expect(confirm).toHaveBeenCalledWith(DISCARD_AGENT_CONFIG_CHANGES_MESSAGE);
+
+    confirm.mockReturnValue(true);
+    expect(confirmAgentConfigNavigation(true, confirm)).toBe(true);
+    expect(confirmAgentConfigNavigation(false, confirm)).toBe(true);
+    expect(confirm).toHaveBeenCalledTimes(2);
   });
 });
 
