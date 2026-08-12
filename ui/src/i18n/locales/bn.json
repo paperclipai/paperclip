@@ -33,7 +33,8 @@
     "general": "General",
     "instanceSettings": "Instance settings",
     "newAgent": "New agent",
-    "browseAgents": "Browse agents"
+    "browseAgents": "Browse agents",
+    "companySettings": "Company settings"
   },
   "pages": {
     "inbox": {

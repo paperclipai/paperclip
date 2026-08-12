@@ -114,6 +114,7 @@ describe("locale validation", () => {
     expect(t("nav.tasks")).toBe("Aufgaben");
     expect(t("nav.agents")).toBe("Agenten");
     expect(t("nav.settings")).toBe("Einstellungen");
+    expect(t("nav.companySettings")).toBe("Unternehmenseinstellungen");
     expect(t("pages.companies.newCompany")).toBe("Neues Unternehmen");
     setAppLocale("en");
   });

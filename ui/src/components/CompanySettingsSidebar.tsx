@@ -98,7 +98,7 @@ export function CompanySettingsSidebar() {
 
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide px-3 py-2">
         <div className="px-3 pb-1 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-          {t("pages.settings.title", { defaultValue: "Settings" })}
+          {t("nav.companySettings", { defaultValue: "Company settings" })}
         </div>
         <div className="flex flex-col gap-0.5">
           <SidebarNavItem to="/company/settings" label={t("nav.general", { defaultValue: "General" })} icon={SlidersHorizontal} end />

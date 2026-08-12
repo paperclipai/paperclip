@@ -33,7 +33,8 @@
     "general": "Allgemein",
     "instanceSettings": "Instanz-Einstellungen",
     "newAgent": "Neuer Agent",
-    "browseAgents": "Agenten durchsuchen"
+    "browseAgents": "Agenten durchsuchen",
+    "companySettings": "Unternehmenseinstellungen"
   },
   "pages": {
     "inbox": {
