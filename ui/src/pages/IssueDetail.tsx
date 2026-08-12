@@ -2612,6 +2612,49 @@ export function IssueDetail() {
     updateChildIssue.mutate({ id, data });
   }, [updateChildIssue]);
 
+  // PAP-496: the chat shell no longer renders a sub-task section in the center
+  // column (that block is gated off below). Instead we build the full tree here
+  // — where the child data lives — and hand it to IssueProperties, which hosts
+  // it as a dedicated "Sub-tasks" pane tab. This restores the constantly-used
+  // task tree in one consolidated home (the Properties pane) without the slim
+  // pill row. Classic mode keeps its own center-column tree and ignores this.
+  const subTasksTree = useMemo(
+    () =>
+      taskChatShellEnabled && issue ? (
+        <IssuesList
+          issues={childIssues}
+          isLoading={childIssuesLoading}
+          agents={agents}
+          projects={projects}
+          liveIssueIds={liveIssueIds}
+          projectId={issue.projectId ?? undefined}
+          viewStateKey={`paperclip:issue-detail:${issue.id}:subissues-view`}
+          issueLinkState={resolvedIssueDetailState ?? location.state}
+          searchFilters={{ descendantOf: issue.id, includeBlockedBy: true }}
+          searchWithinLoadedIssues
+          baseCreateIssueDefaults={buildSubIssueDefaultsForViewer(issue, currentUserId)}
+          createIssueLabel="Sub-task"
+          defaultSortField="workflow"
+          showProgressSummary
+          parentIssueIdForCostSummary={issue.id}
+          onUpdateIssue={handleChildIssueUpdate}
+        />
+      ) : null,
+    [
+      taskChatShellEnabled,
+      issue,
+      childIssues,
+      childIssuesLoading,
+      agents,
+      projects,
+      liveIssueIds,
+      resolvedIssueDetailState,
+      location.state,
+      currentUserId,
+      handleChildIssueUpdate,
+    ],
+  );
+
   const checkIssueMonitorNow = useMutation({
     mutationFn: () => issuesApi.checkMonitorNow(issueId!),
     onSuccess: () => {
@@ -3440,6 +3483,7 @@ export function IssueDetail() {
         issue={panelIssue}
         childIssues={panelChildIssues}
         onAddSubIssue={openNewSubIssue}
+        subTasksTree={subTasksTree}
         onUpdate={handleIssuePropertiesUpdate}
         hasActiveRun={resolvedHasActiveRun}
         externalObjects={externalObjectsState.isEnabled ? externalObjectsState.groups : undefined}
@@ -3456,6 +3500,7 @@ export function IssueDetail() {
     handleIssuePropertiesUpdate,
     issuePanelKey,
     openNewSubIssue,
+    subTasksTree,
     openPanel,
     panelChildIssues,
     panelIssue,
@@ -5444,6 +5489,7 @@ export function IssueDetail() {
                 issue={issue}
                 childIssues={childIssues}
                 onAddSubIssue={openNewSubIssue}
+                subTasksTree={subTasksTree}
                 onUpdate={(data) => updateIssue.mutate(data)}
                 inline
                 hasActiveRun={resolvedHasActiveRun}
