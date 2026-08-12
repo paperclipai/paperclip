@@ -256,7 +256,10 @@ export function approvalRoutes(
     const parsedOffset = rawOffset !== undefined && /^\d+$/.test(rawOffset)
       ? Number.parseInt(rawOffset, 10)
       : null;
-    if (rawOffset !== undefined && parsedOffset === null) {
+    // isSafeInteger, not just a digit check: `?offset=99999999999999999999` parses
+    // to an imprecise float that Postgres rejects, turning a malformed request into
+    // a 500 instead of the 400 this endpoint documents.
+    if (rawOffset !== undefined && (parsedOffset === null || !Number.isSafeInteger(parsedOffset))) {
       res.status(400).json({ error: "offset must be a non-negative integer" });
       return;
     }

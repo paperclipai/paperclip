@@ -196,6 +196,10 @@ describe("GET /companies/:companyId/approvals query params", () => {
       ["limit=abc", "limit must be"],
       ["limit=100000", "limit must be"],
       ["offset=abc&limit=5", "offset must be"],
+      // Digit-only but past Number.MAX_SAFE_INTEGER: parseInt yields an imprecise
+      // float that Postgres rejects outright, so an unguarded value 500s instead of
+      // returning the documented 400.
+      ["offset=99999999999999999999&limit=5", "offset must be"],
     ])("rejects ?%s", async (query, expectedError) => {
       const app = await createApp();
       const res = await request(app).get(`${LIST_PATH}?${query}`);

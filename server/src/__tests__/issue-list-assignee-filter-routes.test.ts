@@ -1062,6 +1062,21 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       expect(res.body.error).toContain("offset=");
     });
 
+    // Number.isInteger(1e20) is true, so a digit-only offset past MAX_SAFE_INTEGER
+    // cleared the guard and reached Postgres, which rejects it outright — a 500
+    // where this endpoint documents a 400.
+    it("rejects an offset past the safe-integer range instead of failing in the database", async () => {
+      const companyId = await seedCompanyWithIssues(["Alpha"]);
+
+      const app = createApp(companyId);
+      const res = await request(app)
+        .get(`/api/companies/${companyId}/issues`)
+        .query({ offset: "99999999999999999999", limit: "5" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(res.body.error).toContain("offset must be");
+    });
+
     it("lists every unsupported param and advertises the supported set", async () => {
       const companyId = await seedCompanyWithIssues(["Alpha"]);
 

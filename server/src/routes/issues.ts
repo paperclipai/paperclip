@@ -5408,7 +5408,10 @@ export function issueRoutes(
       res.status(400).json({ error: `limit must be a positive integer up to ${ISSUE_LIST_MAX_LIMIT}` });
       return;
     }
-    if (rawOffset !== undefined && (parsedOffset === null || !Number.isInteger(parsedOffset) || parsedOffset < 0)) {
+    // isSafeInteger, not isInteger: Number.isInteger(1e20) is true, so a digit-only
+    // offset past MAX_SAFE_INTEGER cleared this guard and reached Postgres, which
+    // rejects it — a 500 where the endpoint documents a 400.
+    if (rawOffset !== undefined && (parsedOffset === null || !Number.isSafeInteger(parsedOffset) || parsedOffset < 0)) {
       res.status(400).json({ error: "offset must be a non-negative integer" });
       return;
     }
