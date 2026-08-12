@@ -224,6 +224,22 @@ export function onboardingSeedService(db: Db) {
 
     // 3. First task → an issue in the Onboarding project, assigned to the
     //    lead so the dashboard opens with work on it.
+    //
+    //    No-first-task contract (PAP-67 r17.4): on the Cloud walk this branch
+    //    never runs. The seed Cloud sends is mission-only — `agent` and
+    //    `firstTask` are unpopulated by the signup wizard and a paperclip-cloud
+    //    `node:test` in `src/onboarding/` pins that — so `firstTaskTitle` is
+    //    null here and the first task stays owned by the tenant's own
+    //    server-owned onboarding path (`POST /issues` with
+    //    `onboardingFirstTask: true`). That path is the only one that stamps
+    //    `ONBOARDING_FIRST_TASK_ORIGIN_KIND` and races safely on the partial
+    //    unique index `issues_onboarding_first_task_uq`. If this receiver ever
+    //    created the first task on the cloud walk it would produce a *second*,
+    //    unstamped one: no agent-authored greeting, the brief rendered as a
+    //    right-aligned user bubble, and two onboarding tasks — silently,
+    //    because the uq index only guards origin-stamped rows. The branch is
+    //    retained for the endpoint's documented body contract, but the
+    //    mission-only seed is what keeps it inert on the cloud path.
     let issueId = existing?.issueId ?? null;
     if (firstTaskTitle) {
       if (await issueStillExists(companyId, issueId)) {
