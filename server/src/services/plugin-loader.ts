@@ -118,8 +118,27 @@ const K8S_IN_CLUSTER_ENV_PASSTHROUGH = [
   "KUBERNETES_SERVICE_PORT_HTTPS",
 ];
 
+/**
+ * Each bundled sandbox provider's documented credential fallback env var.
+ * Environment rows may omit `config.apiKey` (managed/platform-provisioned
+ * rows always do — see `managed-environments.ts`), in which case the
+ * provider reads its documented process env var. That fallback executes
+ * inside the plugin worker, whose environment is scrubbed, so the
+ * deployment-level var must be forwarded explicitly. Keyed by the
+ * manifest's declared `environmentDrivers[].driverKey` so a worker only
+ * ever receives its own provider's credential.
+ */
+const SANDBOX_PROVIDER_CREDENTIAL_ENV_PASSTHROUGH: Record<string, readonly string[]> = {
+  daytona: ["DAYTONA_API_KEY"],
+  e2b: ["E2B_API_KEY"],
+  "exe-dev": ["EXE_API_KEY"],
+  novita: ["NOVITA_API_KEY"],
+};
+
 export function buildPluginWorkerEnv(input: {
-  manifest: Pick<PaperclipPluginManifestV1, "capabilities">;
+  manifest: Pick<PaperclipPluginManifestV1, "capabilities"> & {
+    environmentDrivers?: ReadonlyArray<{ driverKey: string }>;
+  };
   instanceInfo: { deploymentMode?: string | null; deploymentExposure?: string | null };
   processEnv?: NodeJS.ProcessEnv;
 }): Record<string, string> {
@@ -132,7 +151,10 @@ export function buildPluginWorkerEnv(input: {
     && input.manifest.capabilities.includes("environment.drivers.register");
   if (!canRegisterEnvironmentDrivers) return env;
 
-  for (const key of [...ADAPTER_ENV_PASSTHROUGH, ...K8S_IN_CLUSTER_ENV_PASSTHROUGH]) {
+  const credentialKeys = (input.manifest.environmentDrivers ?? []).flatMap(
+    (driver) => SANDBOX_PROVIDER_CREDENTIAL_ENV_PASSTHROUGH[driver.driverKey] ?? [],
+  );
+  for (const key of [...ADAPTER_ENV_PASSTHROUGH, ...K8S_IN_CLUSTER_ENV_PASSTHROUGH, ...credentialKeys]) {
     const value = processEnv[key];
     if (value && value.trim().length > 0) {
       env[key] = value;

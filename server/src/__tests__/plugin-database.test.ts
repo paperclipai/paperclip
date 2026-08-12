@@ -202,6 +202,45 @@ describe("buildPluginWorkerEnv", () => {
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
     });
   });
+
+  it("passes a sandbox provider's documented credential env var to its own worker", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: {
+        capabilities: ["environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "daytona" }],
+      },
+      instanceInfo,
+      processEnv: {
+        DAYTONA_API_KEY: "daytona-token",
+        NOVITA_API_KEY: "novita-token",
+        E2B_API_KEY: " ",
+      },
+    });
+
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      DAYTONA_API_KEY: "daytona-token",
+    });
+  });
+
+  it("does not pass provider credential env vars to plugins that declare no matching driver", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: {
+        capabilities: ["environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "kubernetes" }],
+      },
+      instanceInfo,
+      processEnv: {
+        DAYTONA_API_KEY: "daytona-token",
+      },
+    });
+
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+    });
+  });
 });
 
 describeEmbeddedPostgres("plugin database namespaces", () => {
