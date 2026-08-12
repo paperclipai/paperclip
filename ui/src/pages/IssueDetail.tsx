@@ -2610,7 +2610,7 @@ export function IssueDetail() {
   });
   const handleChildIssueUpdate = useCallback((id: string, data: Record<string, unknown>) => {
     updateChildIssue.mutate({ id, data });
-  }, [updateChildIssue]);
+  }, [updateChildIssue.mutate]);
 
   // PAP-496: the chat shell no longer renders a sub-task section in the center
   // column (that block is gated off below). Instead we build the full tree here

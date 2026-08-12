@@ -1118,6 +1118,35 @@ describe("IssueDetail", () => {
     ).toBe(false);
   });
 
+  it("keeps the properties panel stable across unrelated chat-detail renders", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    const detail = (
+      <QueryClientProvider client={queryClient}>
+        <IssueDetail />
+      </QueryClientProvider>
+    );
+
+    await act(async () => {
+      root.render(detail);
+    });
+    await flushReact();
+    await flushReact();
+
+    const panelOpenCount = mockOpenPanel.mock.calls.length;
+    expect(panelOpenCount).toBeGreaterThan(0);
+
+    // React Query returns a new mutation result object on render. The sub-task
+    // tree and panel effect must depend on the stable mutate function rather
+    // than that wrapper object, or openPanel's state update recursively renders
+    // IssueDetail until React throws "Maximum update depth exceeded".
+    await act(async () => {
+      root.render(detail);
+    });
+    await flushReact();
+
+    expect(mockOpenPanel).toHaveBeenCalledTimes(panelOpenCount);
+  });
+
   it("does not load or render decision sections in the issue header", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue({
       status: "in_review",
