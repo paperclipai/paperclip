@@ -616,7 +616,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             // safe-area inset (and clear of the auto-hiding bottom nav), above
             // page content in the document-flow stacking context.
             isMobile ? "bottom-(--sz-calc-8) z-20" : "bottom-0 z-10",
-            "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 bg-background/80 px-1 pb-2 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60",
+            // Match the thread column's px-4 gutter so the composer card lines
+            // up with the conversation's content edges instead of reading wider.
+            "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 bg-background/80 px-4 pb-2 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60",
           )}
         >
           {composerAccessory}
