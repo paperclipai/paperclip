@@ -216,6 +216,11 @@ Required controls:
   secret refs are remapped and validated.
 - Imported profiles/bindings/policies become active only when referenced
   principals and connections resolve inside the destination company.
+- Repository export includes only secret-free catalog identity plus portable
+  project/agent relationships. It excludes connection ids, provider setup,
+  provider metadata, and clone credentials. Provider-backed repositories import
+  as disconnected manual metadata until the destination authorizes and syncs
+  its own provider connection.
 
 ## Required Negative Tests
 

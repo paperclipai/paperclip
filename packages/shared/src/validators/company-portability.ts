@@ -135,6 +135,23 @@ export const portabilityProjectManifestEntrySchema = z.object({
   metadata: z.record(z.string(), z.unknown()).nullable(),
 });
 
+export const portabilityRepositoryManifestEntrySchema = z.object({
+  key: z.string().min(1),
+  provider: z.string().min(1),
+  providerRepositoryId: z.string().nullable(),
+  host: z.string().min(1),
+  owner: z.string().min(1),
+  name: z.string().min(1),
+  cloneUrl: z.string().min(1),
+  webUrl: z.string().nullable(),
+  defaultBranch: z.string().nullable(),
+  visibility: z.string().min(1),
+  state: z.string().min(1),
+  disconnected: z.boolean(),
+  projectSlugs: z.array(z.string().min(1)).default([]),
+  directAgentSlugs: z.array(z.string().min(1)).default([]),
+});
+
 export const portabilityIssueRoutineTriggerManifestEntrySchema = z.object({
   kind: z.string().min(1),
   label: z.string().nullable(),
@@ -254,6 +271,7 @@ export const portabilityManifestSchema = z.object({
   agents: z.array(portabilityAgentManifestEntrySchema),
   skills: z.array(portabilitySkillManifestEntrySchema).default([]),
   projects: z.array(portabilityProjectManifestEntrySchema).default([]),
+  repositories: z.array(portabilityRepositoryManifestEntrySchema).default([]),
   issues: z.array(portabilityIssueManifestEntrySchema).default([]),
   envInputs: z.array(portabilityEnvInputSchema).default([]),
 });

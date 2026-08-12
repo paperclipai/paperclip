@@ -1076,6 +1076,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             pauseReason: null,
             pausedAt: null,
             executionWorkspacePolicy: null,
+            repositoryHints: [],
             codebase: {
               workspaceId: null,
               repoUrl: null,

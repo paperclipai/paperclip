@@ -42,6 +42,15 @@ import {
   updateProjectSchema,
   createProjectWorkspaceSchema,
   updateProjectWorkspaceSchema,
+  // Repository catalog
+  attachProjectRepositorySchema,
+  beginRepositoryConnectionSchema,
+  completeRepositoryConnectionSchema,
+  createManualRepositorySchema,
+  createRepositoryConnectionSchema,
+  grantAgentRepositorySchema,
+  importRepositoriesSchema,
+  updateRepositorySchema,
   // Company
   createCompanySchema,
   updateCompanySchema,
@@ -765,6 +774,26 @@ const BOARD_ONLY_PREFIXES = [
 ];
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "GET /api/companies/{companyId}/repositories",
+  "POST /api/companies/{companyId}/repositories",
+  "GET /api/companies/{companyId}/repository-providers",
+  "GET /api/repositories/{repositoryId}",
+  "GET /api/repositories/{repositoryId}/relationships",
+  "PATCH /api/repositories/{repositoryId}",
+  "DELETE /api/repositories/{repositoryId}",
+  "GET /api/companies/{companyId}/repository-connections",
+  "POST /api/companies/{companyId}/repository-connections",
+  "GET /api/repository-connections/{connectionId}",
+  "POST /api/repository-connections/{connectionId}/sync",
+  "DELETE /api/repository-connections/{connectionId}",
+  "POST /api/companies/{companyId}/repository-connections/{provider}/install",
+  "POST /api/companies/{companyId}/repository-connections/{provider}/callback",
+  "GET /api/repository-connections/{connectionId}/discover",
+  "POST /api/repository-connections/{connectionId}/import",
+  "PUT /api/projects/{projectId}/repositories/{repositoryId}",
+  "DELETE /api/projects/{projectId}/repositories/{repositoryId}",
+  "PUT /api/agents/{agentId}/repositories/{repositoryId}",
+  "DELETE /api/agents/{agentId}/repositories/{repositoryId}",
   "GET /api/cloud/stacks",
   "GET /api/companies",
   "POST /api/companies",
@@ -2699,6 +2728,254 @@ registry.registerPath({
   summary: "Delete a project workspace",
   request: { params: z.object({ id: z.string(), workspaceId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+// ─── Repository catalog ─────────────────────────────────────────────────────
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/repositories",
+  tags: ["repositories"],
+  summary: "List repositories in a company",
+  query: z.object({ includeArchived: z.enum(["true", "false"]).optional() }).strict(),
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/repositories",
+  tags: ["repositories"],
+  summary: "Add a manual repository to the company catalog",
+  body: createManualRepositorySchema,
+  responses: {
+    200: r.ok(),
+    201: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/repository-providers",
+  tags: ["repositories"],
+  summary: "List repository providers available to a company",
+  responses: {
+    200: r.ok(z.object({
+      providers: z.array(z.object({
+        provider: z.string(),
+        host: z.string(),
+        displayName: z.string(),
+      }).passthrough()),
+    })),
+    401: r.unauthorized,
+  },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/repositories/{repositoryId}",
+  tags: ["repositories"],
+  summary: "Get a repository",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/repositories/{repositoryId}/relationships",
+  tags: ["repositories"],
+  summary: "List a repository's project and agent relationships",
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/repositories/{repositoryId}",
+  tags: ["repositories"],
+  summary: "Update repository metadata",
+  body: updateRepositorySchema,
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/repositories/{repositoryId}",
+  tags: ["repositories"],
+  summary: "Archive a repository while retaining its relationships",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/repository-connections",
+  tags: ["repository-connections"],
+  summary: "List repository provider connections in a company",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/repository-connections",
+  tags: ["repository-connections"],
+  summary: "Create repository provider connection metadata",
+  body: createRepositoryConnectionSchema,
+  responses: {
+    200: r.ok(),
+    201: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/repository-connections/{connectionId}",
+  tags: ["repository-connections"],
+  summary: "Get a repository provider connection",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/repository-connections/{connectionId}/sync",
+  tags: ["repository-connections"],
+  summary: "Synchronize a repository provider connection",
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/repository-connections/{connectionId}",
+  tags: ["repository-connections"],
+  summary: "Disconnect a repository provider connection",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/repository-connections/{provider}/install",
+  tags: ["repository-connections"],
+  summary: "Begin repository provider authorization",
+  query: z.object({ host: z.string().optional() }).strict(),
+  body: beginRepositoryConnectionSchema,
+  responses: {
+    201: r.ok(z.object({
+      provider: z.string(),
+      installUrl: z.string().url(),
+      state: z.string(),
+      expiresAt: z.string().datetime(),
+    })),
+    400: r.badRequest,
+    401: r.unauthorized,
+    422: r.unprocessable,
+  },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/repository-connections/{provider}/callback",
+  tags: ["repository-connections"],
+  summary: "Complete repository provider authorization",
+  query: z.object({ host: z.string().optional() }).strict(),
+  body: completeRepositoryConnectionSchema,
+  responses: {
+    200: r.ok(),
+    201: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/repository-connections/{connectionId}/discover",
+  tags: ["repository-connections"],
+  summary: "Discover repositories available through a provider connection",
+  query: z.object({
+    query: z.string().optional(),
+    cursor: z.string().optional(),
+    pageSize: z.string().optional(),
+  }).strict(),
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/repository-connections/{connectionId}/import",
+  tags: ["repository-connections"],
+  summary: "Import selected repositories from a provider connection",
+  body: importRepositoriesSchema,
+  responses: {
+    200: r.ok(),
+    201: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+    422: r.unprocessable,
+  },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/repositories/{repositoryId}/clone-credential",
+  tags: ["repositories"],
+  summary: "Resolve a short-lived clone credential for an accessible repository",
+  responses: {
+    200: r.ok(z.object({
+      username: z.string(),
+      token: z.string(),
+      authenticatedCloneUrl: z.string(),
+      expiresAt: z.string().datetime(),
+    })),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    422: r.unprocessable,
+  },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/projects/{projectId}/repositories",
+  tags: ["repositories"],
+  summary: "List repository hints attached to a project",
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/projects/{projectId}/repositories/{repositoryId}",
+  tags: ["repositories"],
+  summary: "Attach a repository hint to a project",
+  body: attachProjectRepositorySchema,
+  responses: { 200: r.ok(), 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/projects/{projectId}/repositories/{repositoryId}",
+  tags: ["repositories"],
+  summary: "Detach a repository hint from a project",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/agents/{agentId}/repositories",
+  tags: ["repositories"],
+  summary: "List an agent's direct or effective repository access",
+  query: z.object({ effective: z.enum(["true", "false"]).optional() }).strict(),
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/agents/{agentId}/repositories/{repositoryId}",
+  tags: ["repositories"],
+  summary: "Grant an agent direct repository access",
+  body: grantAgentRepositorySchema,
+  responses: { 200: r.ok(), 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/agents/{agentId}/repositories/{repositoryId}",
+  tags: ["repositories"],
+  summary: "Revoke an agent's direct repository grant",
 });
 
 // ─── Routines ────────────────────────────────────────────────────────────────

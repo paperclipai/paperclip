@@ -26,6 +26,10 @@ import {
   ROUTINE_TRIGGER_SIGNING_MODES,
   ISSUE_SURFACE_VISIBILITIES,
 } from "../constants.js";
+import {
+  normalizeRepositoryProviderHost,
+  normalizeRepositoryProviderKey,
+} from "../repository-provider-identity.js";
 import { routineVariableSchema } from "./routine.js";
 import { externalObjectProviderKeySchema, externalObjectTypeSchema } from "./external-object.js";
 
@@ -665,6 +669,32 @@ export type PluginObjectReferenceProviderDeclarationInput = z.infer<
   typeof pluginObjectReferenceProviderDeclarationSchema
 >;
 
+/**
+ * A repository provider declaration names the connector identity
+ * (`providerKey` + normalized `host`) a trusted extension may serve. The host
+ * refuses to register anything the manifest did not declare, so this schema is
+ * the outer edge of the deny-by-default boundary.
+ */
+export const pluginRepositoryProviderDeclarationSchema = z.object({
+  providerKey: z.string().trim().min(1).max(64).transform((value) => value.toLowerCase()).refine(
+    (value) => normalizeRepositoryProviderKey(value) != null,
+    { message: "providerKey must be lowercase alphanumeric with dots, hyphens, or underscores" },
+  ),
+  displayName: z.string().min(1).max(100),
+  description: z.string().max(500).optional(),
+  host: z.string().trim().min(1).max(255).refine(
+    (value) => normalizeRepositoryProviderHost(value) != null && value !== "*",
+    { message: "host must be a bare host or host:port with no scheme, credentials, path, query, or fragment" },
+  ).transform((value) => normalizeRepositoryProviderHost(value)!),
+  supportsDiscovery: z.boolean().optional(),
+  supportsCloneCredentials: z.boolean().optional(),
+  documentationUrl: z.string().url().max(500).optional(),
+});
+
+export type PluginRepositoryProviderDeclarationInput = z.infer<
+  typeof pluginRepositoryProviderDeclarationSchema
+>;
+
 // ---------------------------------------------------------------------------
 // Plugin Manifest V1 schema
 // ---------------------------------------------------------------------------
@@ -745,6 +775,7 @@ export const pluginManifestV1Schema = z.object({
   skills: z.array(pluginManagedSkillDeclarationSchema).optional(),
   localFolders: z.array(pluginLocalFolderDeclarationSchema).optional(),
   objectReferences: z.array(pluginObjectReferenceProviderDeclarationSchema).optional(),
+  repositoryProviders: z.array(pluginRepositoryProviderDeclarationSchema).optional(),
   launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   ui: z.object({
     slots: z.array(pluginUiSlotDeclarationSchema).min(1).optional(),
@@ -799,6 +830,30 @@ export const pluginManifestV1Schema = z.object({
         code: z.ZodIssueCode.custom,
         message: "Capability 'environment.drivers.register' is required when environmentDrivers are declared",
         path: ["capabilities"],
+      });
+    }
+  }
+
+  // repository providers require repository.providers.register
+  if (manifest.repositoryProviders && manifest.repositoryProviders.length > 0) {
+    if (!manifest.capabilities.includes("repository.providers.register")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Capability 'repository.providers.register' is required when repositoryProviders are declared",
+        path: ["capabilities"],
+      });
+    }
+
+    // Connector identity is provider + normalized host; two declarations that
+    // collapse to the same identity would make registration order decide which
+    // one answers, so reject them outright.
+    const identities = manifest.repositoryProviders.map((entry) => `${entry.providerKey}@${entry.host}`);
+    const duplicates = identities.filter((identity, i) => identities.indexOf(identity) !== i);
+    if (duplicates.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Duplicate repositoryProviders identities: ${[...new Set(duplicates)].join(", ")}`,
+        path: ["repositoryProviders"],
       });
     }
   }

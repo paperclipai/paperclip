@@ -48,6 +48,7 @@ const apiPrefixes: Record<string, string> = {
   "plugin-ui-static.ts": "/api",
   "plugins.ts": "/api",
   "projects.ts": "/api",
+  "repositories.ts": "/api",
   "resource-memberships.ts": "/api",
   "routines.ts": "/api",
   "secrets.ts": "/api",
@@ -204,6 +205,16 @@ describe("openapi routes", () => {
     });
     expect(res.body.paths["/api/companies/{companyId}/folders"].post.responses["201"]).toBeDefined();
     expect(
+      res.body.paths["/api/companies/{companyId}/repositories"].post.requestBody.content["application/json"].schema,
+    ).toMatchObject({
+      type: "object",
+      required: ["cloneUrl"],
+    });
+    expect(
+      res.body.paths["/api/companies/{companyId}/repository-connections/{provider}/install"].post.responses["201"],
+    ).toBeDefined();
+    expect(res.body.paths["/api/repositories/{repositoryId}/clone-credential"].post.responses["422"]).toBeDefined();
+    expect(
       res.body.paths["/api/issues/{id}/interactions/{interactionId}/withdraw"].post.summary,
     ).toBe("Withdraw a pending issue thread interaction");
     expect(res.body.paths["/api/companies/{companyId}/folders/items/move"].post.summary).toBe(
@@ -272,5 +283,14 @@ describe("openapi routes", () => {
     expect(spec.paths["/api/invites/{token}/accept"].post.responses["202"]).toBeDefined();
     expect(spec.paths["/api/board-api-keys"].post.responses["201"]).toBeDefined();
     expect(spec.paths["/api/companies/import"].post.responses["202"]).toBeDefined();
+    expect(spec.paths["/api/companies/{companyId}/repositories"].get["x-paperclip-authorization"]).toEqual({
+      actor: "board",
+    });
+    expect(spec.paths["/api/projects/{projectId}/repositories"].get["x-paperclip-authorization"]).toEqual({
+      actor: "board_or_agent",
+    });
+    expect(spec.paths["/api/repositories/{repositoryId}/clone-credential"].post.security).toContainEqual({
+      AgentBearerAuth: [],
+    });
   });
 });

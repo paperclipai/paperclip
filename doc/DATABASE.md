@@ -178,6 +178,19 @@ These rows are company-scoped and user-scoped. A missing row means the user is j
 
 Both tables use a unique key on `(company_id, user_id, resource_id)` and keep `state` as `joined` or `left`. Join/leave mutations are idempotent board-user `/me` operations and write activity entries when the effective state changes.
 
+## Repository catalog and access
+
+First-class repositories use four company-scoped tables:
+
+- `repository_connections` stores provider/host installation identity, connection health, and sync cursors. It contains no plaintext credential; durable credentials stay in the secret subsystem.
+- `repositories` stores normalized catalog identity and secret-free provider metadata. `(company_id, identity_key)` is unique, with an additional partial provider identity index for provider repository ids.
+- `project_repositories` stores ordered many-to-many project hints. Its unique company/project/repository key prevents duplicate hints.
+- `agent_repository_grants` stores explicit direct grants. Its unique company/agent/repository key prevents duplicate grants.
+
+Every relationship repeats `company_id` for scoped lookup and requires service-level validation that both endpoints belong to that company. Project visibility contributes inherited effective access only after `project:read` authorization; a relationship row is not itself an authorization bypass.
+
+`project_workspaces.repository_id` is nullable and uses `ON DELETE SET NULL`. It can identify the catalog repository behind a concrete execution workspace, but the inverse is not true: catalog entries and project hints do not create workspaces or choose a runtime `cwd`. The `0213_lowly_chameleon.sql` backfill normalizes valid legacy workspace `repo_url` values into manual catalog rows, links the original workspace, and adds its project hint while rejecting credential-bearing or malformed URLs.
+
 ## Decision training snapshot retention
 
 `decision_training_examples` stores a point-in-time copy of an issue, its comments, relevant runs, and the selected decision. Each row carries the `scrub_deleted_comments_v1` retention policy marker, and JSONL exports include that marker alongside the snapshot.

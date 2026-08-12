@@ -21,13 +21,13 @@ my-company/
 │   └── review/SKILL.md
 ├── tasks/
 │   └── onboarding/TASK.md
-└── .paperclip.yaml     # Adapter config, env inputs, routines
+└── .paperclip.yaml     # Adapter config, repositories, env inputs, routines
 ```
 
 - **COMPANY.md** defines company name, description, and metadata.
 - **AGENT.md** files contain agent identity, role, and instructions.
 - **SKILL.md** files are compatible with the Agent Skills ecosystem.
-- **.paperclip.yaml** holds Paperclip-specific config (adapter types, env inputs, budgets) as an optional sidecar.
+- **.paperclip.yaml** holds Paperclip-specific config (adapter types, repository relationships, env inputs, budgets) as an optional sidecar.
 
 ## Export & Import in the App
 
@@ -75,11 +75,14 @@ paperclipai company export abc123 --out ./skills-only --include skills --skills 
 - Company name, description, and metadata
 - Agent names, roles, reporting structure, and instructions
 - Project definitions and workspace config
+- Company repository catalog metadata, project hints, and direct agent grants
 - Task/issue descriptions (when included)
 - Skill packages (as references or vendored content)
 - Adapter type and env input declarations in `.paperclip.yaml`
 
 Secret values, machine-local paths, and database IDs are **never** exported.
+
+Repository provider installations are environment-local and are never portable. Exported repository entries contain only secret-free identity/clone metadata and portable project or agent slugs. They do not contain connection ids, installation configuration, provider metadata, tokens, secret refs, or clone credentials.
 
 ## Importing a Company
 
@@ -146,7 +149,11 @@ The preview shows:
 - **Package contents** — How many agents, projects, tasks, and skills are in the source
 - **Import plan** — What will be created, renamed, skipped, or replaced
 - **Env inputs** — Environment variables that may need values after import
-- **Warnings** — Potential issues like missing skills or unresolved references
+- **Warnings** — Potential issues like missing skills, disconnected repository providers, or unresolved project/agent mappings
+
+Provider-backed repositories always import as disconnected manual catalog metadata. Re-authorize the provider on the destination and sync it there before expecting provider refresh or clone credentials. Resolvable project hints and direct agent grants are restored; unresolved slugs stay visible in preview and are skipped during apply.
+
+Repository hints and execution workspaces are intentionally different. A project hint says which repository the work may touch. A workspace is an actual checkout/runtime location. Import recreates only workspaces explicitly declared in the package. Legacy packages that mention a repository only through a workspace `repoUrl` recover a manual catalog row and project hint, but Paperclip does not create any additional workspace from that hint.
 
 Imported agents always land with timer heartbeats disabled. Assignment/on-demand wake behavior from the package is preserved, but scheduled runs stay off until a board operator re-enables them.
 

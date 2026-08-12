@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 
-import { webcrypto } from "node:crypto";
 import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -10,10 +9,26 @@ import { ApiError } from "../api/client";
 import type { CompanyImportJobAccepted } from "../api/companies";
 import { CompanyImport } from "./CompanyImport";
 
-// jsdom's crypto has no SubtleCrypto; the chunked transfer path hashes parts
-// with WebCrypto, so back the global with Node's implementation.
+// jsdom's crypto has no SubtleCrypto. The chunked transfer tests only need a
+// stable 32-byte digest to exercise declaration, slicing, and resume behavior;
+// keep that test seam browser-compatible instead of importing node:crypto.
 if (!globalThis.crypto?.subtle) {
-  vi.stubGlobal("crypto", webcrypto);
+  vi.stubGlobal("crypto", {
+    subtle: {
+      digest: async (_algorithm: AlgorithmIdentifier, source: BufferSource) => {
+        const bytes = ArrayBuffer.isView(source)
+          ? new Uint8Array(source.buffer, source.byteOffset, source.byteLength)
+          : new Uint8Array(source);
+        const digest = new Uint8Array(32);
+
+        for (let index = 0; index < bytes.length; index += 1) {
+          digest[index % digest.length] = (digest[index % digest.length] + bytes[index] + index) & 0xff;
+        }
+
+        return digest.buffer;
+      },
+    },
+  } satisfies { subtle: Pick<SubtleCrypto, "digest"> });
 }
 
 const mockCompaniesApi = vi.hoisted(() => ({
@@ -219,6 +234,7 @@ function buildImportResult(): CompanyPortabilityImportResult {
     agents: [{ slug: "coder", id: "agent-1", action: "created", name: "Coder", reason: null }],
     skills: [],
     projects: [],
+    repositories: [],
     routines: [{ slug: "weekly-report", id: "routine-1", action: "created", title: "Weekly Report", status: "paused" }],
     envInputs: [],
     warnings: [],

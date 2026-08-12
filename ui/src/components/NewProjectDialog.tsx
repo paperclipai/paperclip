@@ -37,6 +37,8 @@ import { cn } from "../lib/utils";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
 import { ChoosePathButton } from "./PathInstructionsModal";
+import { RepositoryPicker } from "./RepositoryPicker";
+import { buildNewProjectRequests } from "../lib/new-project-requests";
 
 const projectStatuses = [
   { value: "backlog", label: "Backlog" },
@@ -57,7 +59,7 @@ export function NewProjectDialog() {
   const [targetDate, setTargetDate] = useState("");
   const [expanded, setExpanded] = useState(false);
   const [workspaceLocalPath, setWorkspaceLocalPath] = useState("");
-  const [workspaceRepoUrl, setWorkspaceRepoUrl] = useState("");
+  const [repositoryIds, setRepositoryIds] = useState<string[]>([]);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
 
   const [statusOpen, setStatusOpen] = useState(false);
@@ -109,75 +111,36 @@ export function NewProjectDialog() {
     setTargetDate("");
     setExpanded(false);
     setWorkspaceLocalPath("");
-    setWorkspaceRepoUrl("");
+    setRepositoryIds([]);
     setWorkspaceError(null);
   }
 
   const isAbsolutePath = (value: string) => value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value);
 
-  const looksLikeRepoUrl = (value: string) => {
-    try {
-      const parsed = new URL(value);
-      if (parsed.protocol !== "https:") return false;
-      const segments = parsed.pathname.split("/").filter(Boolean);
-      return segments.length >= 2;
-    } catch {
-      return false;
-    }
-  };
-
-  const deriveWorkspaceNameFromPath = (value: string) => {
-    const normalized = value.trim().replace(/[\\/]+$/, "");
-    const segments = normalized.split(/[\\/]/).filter(Boolean);
-    return segments[segments.length - 1] ?? "Local folder";
-  };
-
-  const deriveWorkspaceNameFromRepo = (value: string) => {
-    try {
-      const parsed = new URL(value);
-      const segments = parsed.pathname.split("/").filter(Boolean);
-      const repo = segments[segments.length - 1]?.replace(/\.git$/i, "") ?? "";
-      return repo || "GitHub repo";
-    } catch {
-      return "GitHub repo";
-    }
-  };
-
   async function handleSubmit() {
     if (!selectedCompanyId || !name.trim()) return;
     const localPath = workspaceLocalPath.trim();
-    const repoUrl = workspaceRepoUrl.trim();
 
     if (localPath && !isAbsolutePath(localPath)) {
       setWorkspaceError("Local folder must be a full absolute path.");
       return;
     }
-    if (repoUrl && !looksLikeRepoUrl(repoUrl)) {
-      setWorkspaceError("Repo must use a valid GitHub or GitHub Enterprise repo URL.");
-      return;
-    }
-
     setWorkspaceError(null);
 
     try {
-      const created = await createProject.mutateAsync({
-        name: name.trim(),
-        description: description.trim() || undefined,
+      const requests = buildNewProjectRequests({
+        name,
+        description,
         status,
-        // No color is sent — new projects persist color = null (neutral gray). See PAP-68.
-        ...(goalIds.length > 0 ? { goalIds } : {}),
-        ...(targetDate ? { targetDate } : {}),
+        goalIds,
+        targetDate,
+        repositoryIds,
+        workspaceLocalPath,
       });
+      const created = await createProject.mutateAsync(requests.project);
 
-      if (localPath || repoUrl) {
-        const workspacePayload: Record<string, unknown> = {
-          name: localPath
-            ? deriveWorkspaceNameFromPath(localPath)
-            : deriveWorkspaceNameFromRepo(repoUrl),
-          ...(localPath ? { cwd: localPath } : {}),
-          ...(repoUrl ? { repoUrl } : {}),
-        };
-        await projectsApi.createWorkspace(created.id, workspacePayload);
+      if (requests.workspace) {
+        await projectsApi.createWorkspace(created.id, requests.workspace);
       }
 
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(selectedCompanyId) });
@@ -280,37 +243,28 @@ export function NewProjectDialog() {
         </div>
 
         <div className="px-4 pt-3 pb-3 space-y-3 border-t border-border">
-          <div>
-            <div className="mb-1 flex items-center gap-1.5">
-              <label className="block text-xs text-muted-foreground">Repo URL</label>
-              <span className="text-xs text-muted-foreground/50">optional</span>
-              <Tooltip delayDuration={300}>
-                <TooltipTrigger asChild>
-                  <HelpCircle className="h-3 w-3 text-muted-foreground/50 cursor-help" />
-                </TooltipTrigger>
-                <TooltipContent side="top" className="max-w-(--sz-240px) text-xs">
-                  Link a GitHub repository so agents can clone, read, and push code for this project.
-                </TooltipContent>
-              </Tooltip>
+          {selectedCompanyId ? (
+            <div className="space-y-1.5">
+              <div>
+                <p className="text-xs text-muted-foreground">Repository hints</p>
+                <p className="text-(length:--text-micro) text-muted-foreground">
+                  Add the repositories this project will most likely touch. Agents may use other accessible repositories.
+                </p>
+              </div>
+              <RepositoryPicker companyId={selectedCompanyId} value={repositoryIds} onChange={setRepositoryIds} />
             </div>
-            <input
-              className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
-              value={workspaceRepoUrl}
-              onChange={(e) => { setWorkspaceRepoUrl(e.target.value); setWorkspaceError(null); }}
-              placeholder="https://github.com/org/repo"
-            />
-          </div>
+          ) : null}
 
-          <div>
+          <div className="border-t border-border pt-3">
             <div className="mb-1 flex items-center gap-1.5">
-              <label className="block text-xs text-muted-foreground">Local folder</label>
+              <label className="block text-xs text-muted-foreground">Execution workspace</label>
               <span className="text-xs text-muted-foreground/50">optional</span>
               <Tooltip delayDuration={300}>
                 <TooltipTrigger asChild>
                   <HelpCircle className="h-3 w-3 text-muted-foreground/50 cursor-help" />
                 </TooltipTrigger>
                 <TooltipContent side="top" className="max-w-(--sz-240px) text-xs">
-                  Set an absolute path on this machine where local agents will read and write files for this project.
+                  This local folder is managed separately from repository hints and controls where local agents write files.
                 </TooltipContent>
               </Tooltip>
             </div>

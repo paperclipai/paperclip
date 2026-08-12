@@ -35,6 +35,19 @@ const projectSvc = {
   listWorkspaces: vi.fn(),
 };
 
+const repositorySvc = {
+  list: vi.fn(),
+  createManual: vi.fn(),
+  archive: vi.fn(),
+};
+
+const repositoryAccessSvc = {
+  listProjectRepositories: vi.fn(),
+  listDirectGrants: vi.fn(),
+  attachProjectRepository: vi.fn(),
+  grantAgentRepository: vi.fn(),
+};
+
 const issueSvc = {
   list: vi.fn(),
   listComments: vi.fn(),
@@ -114,6 +127,14 @@ vi.mock("../services/projects.js", () => ({
   projectService: () => projectSvc,
 }));
 
+vi.mock("../services/repositories.js", () => ({
+  repositoryService: () => repositorySvc,
+}));
+
+vi.mock("../services/repository-access.js", () => ({
+  repositoryAccessService: () => repositoryAccessSvc,
+}));
+
 vi.mock("../services/issues.js", () => ({
   issueService: () => issueSvc,
 }));
@@ -176,6 +197,16 @@ describe("company portability", () => {
       config,
       secretKeys: new Set<string>(),
     }));
+    repositorySvc.list.mockResolvedValue([]);
+    repositorySvc.createManual.mockResolvedValue({
+      repository: { id: "repository-imported" },
+      created: true,
+    });
+    repositorySvc.archive.mockResolvedValue({ id: "repository-imported", state: "archived" });
+    repositoryAccessSvc.listProjectRepositories.mockResolvedValue([]);
+    repositoryAccessSvc.listDirectGrants.mockResolvedValue([]);
+    repositoryAccessSvc.attachProjectRepository.mockResolvedValue({ created: true });
+    repositoryAccessSvc.grantAgentRepository.mockResolvedValue({ created: true });
     issueSvc.listComments.mockResolvedValue([]);
     issueSvc.addComment.mockResolvedValue({
       id: "comment-imported",
@@ -1258,6 +1289,15 @@ describe("company portability", () => {
       repoRef: "main",
       defaultRef: "main",
       visibility: "default",
+    }));
+    expect(projectSvc.createWorkspace).toHaveBeenCalledTimes(1);
+    expect(repositorySvc.createManual).toHaveBeenCalledWith("company-imported", expect.objectContaining({
+      cloneUrl: "https://github.com/paperclipai/paperclip.git",
+    }));
+    expect(repositoryAccessSvc.attachProjectRepository).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company-imported",
+      projectId: "project-imported",
+      repositoryId: "repository-imported",
     }));
     expect(projectSvc.update).toHaveBeenCalledWith("project-imported", expect.objectContaining({
       executionWorkspacePolicy: expect.objectContaining({
@@ -3528,6 +3568,177 @@ describe("company portability", () => {
     expect(lastCreateInput.adapterConfig?.dangerouslyBypassApprovalsAndSandbox).toBeUndefined();
   });
 
+  it("round-trips repository relationships as disconnected secret-free metadata", async () => {
+    const portability = companyPortabilityService({} as any);
+    const projects = [
+      {
+        id: "project-1",
+        name: "Launch",
+        urlKey: "launch",
+        description: null,
+        leadAgentId: null,
+        targetDate: null,
+        color: null,
+        icon: null,
+        status: "active",
+        executionWorkspacePolicy: null,
+        workspaces: [],
+      },
+      {
+        id: "project-2",
+        name: "Docs",
+        urlKey: "docs",
+        description: null,
+        leadAgentId: null,
+        targetDate: null,
+        color: null,
+        icon: null,
+        status: "active",
+        executionWorkspacePolicy: null,
+        workspaces: [],
+      },
+    ];
+    const agent = {
+      id: "agent-1",
+      name: "ClaudeCoder",
+      status: "idle",
+      role: "engineer",
+      title: "Software Engineer",
+      icon: "code",
+      reportsTo: null,
+      capabilities: "Writes code",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      budgetMonthlyCents: 0,
+      permissions: {},
+      metadata: null,
+    };
+    const repository = {
+      id: "repository-1",
+      companyId: "company-1",
+      connectionId: "connection-1",
+      provider: "github",
+      providerRepositoryId: "12345",
+      host: "github.com",
+      owner: "paperclipai",
+      name: "paperclip",
+      cloneUrl: "git@github.com:paperclipai/paperclip.git",
+      webUrl: "https://github.com/paperclipai/paperclip",
+      defaultBranch: "master",
+      visibility: "private",
+      state: "active",
+      unavailableReason: null,
+      providerMetadata: {
+        installationToken: "never-export-this-secret",
+        privateKey: "never-export-this-key",
+      },
+      archivedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      projectCount: 2,
+      directGrantCount: 1,
+    };
+
+    agentSvc.list.mockResolvedValue([agent]);
+    projectSvc.list.mockResolvedValue(projects);
+    repositorySvc.list.mockResolvedValue([repository]);
+    repositoryAccessSvc.listProjectRepositories.mockImplementation(async (_companyId, projectId) => (
+      projects.some((project) => project.id === projectId)
+        ? [{ repository, link: { projectId, repositoryId: repository.id } }]
+        : []
+    ));
+    repositoryAccessSvc.listDirectGrants.mockImplementation(async (_companyId, agentId) => (
+      agentId === agent.id
+        ? [{ repository, grant: { agentId, repositoryId: repository.id } }]
+        : []
+    ));
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: true, projects: true, issues: false },
+    });
+
+    expect(exported.manifest.repositories).toEqual([
+      expect.objectContaining({
+        provider: "github",
+        providerRepositoryId: "12345",
+        cloneUrl: "git@github.com:paperclipai/paperclip.git",
+        disconnected: true,
+        projectSlugs: ["docs", "launch"],
+        directAgentSlugs: ["claudecoder"],
+      }),
+    ]);
+    const extension = asTextFile(exported.files[".paperclip.yaml"]);
+    expect(extension).not.toContain("connection-1");
+    expect(extension).not.toContain("never-export-this-secret");
+    expect(extension).not.toContain("never-export-this-key");
+    expect(extension).not.toContain("providerMetadata");
+
+    const unresolvedPreview = await portability.previewImport({
+      source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: false, agents: false, projects: false, issues: false },
+      target: { mode: "new_company", newCompanyName: "Portable Paperclip" },
+      agents: "all",
+      collisionStrategy: "rename",
+    });
+    expect(unresolvedPreview.plan.repositoryPlans).toEqual([
+      expect.objectContaining({
+        action: "create",
+        disconnectedProvider: "github",
+        unresolvedProjectSlugs: ["docs", "launch"],
+        unresolvedAgentSlugs: ["claudecoder"],
+      }),
+    ]);
+
+    companySvc.getById.mockResolvedValue({
+      id: "company-1",
+      name: "Paperclip",
+      description: null,
+      issuePrefix: "PAP",
+      brandColor: "#5c5fff",
+      logoAssetId: null,
+      logoUrl: null,
+      requireBoardApprovalForNewAgents: false,
+    });
+    agentSvc.list.mockResolvedValue([agent]);
+    projectSvc.list.mockResolvedValue(projects);
+    repositorySvc.list.mockResolvedValue([]);
+
+    const imported = await portability.importBundle({
+      source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: false, agents: false, projects: true, issues: false },
+      target: { mode: "existing_company", companyId: "company-1" },
+      agents: "all",
+      collisionStrategy: "skip",
+    }, "user-1");
+
+    expect(repositorySvc.createManual).toHaveBeenCalledWith("company-1", {
+      cloneUrl: "git@github.com:paperclipai/paperclip.git",
+      webUrl: "https://github.com/paperclipai/paperclip",
+      defaultBranch: "master",
+      visibility: "private",
+    });
+    expect(repositoryAccessSvc.attachProjectRepository).toHaveBeenCalledTimes(2);
+    expect(repositoryAccessSvc.attachProjectRepository).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company-1",
+      projectId: "project-1",
+      repositoryId: "repository-imported",
+    }));
+    expect(repositoryAccessSvc.attachProjectRepository).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company-1",
+      projectId: "project-2",
+      repositoryId: "repository-imported",
+    }));
+    expect(repositoryAccessSvc.grantAgentRepository).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company-1",
+      agentId: "agent-1",
+      repositoryId: "repository-imported",
+    }));
+    expect(imported.repositories).toEqual([
+      expect.objectContaining({ key: expect.any(String), id: "repository-imported", action: "created" }),
+    ]);
+  });
+
   it("carries labels by name through export and import round-trip", async () => {
     const portability = companyPortabilityService({} as any);
 
@@ -3579,8 +3790,8 @@ describe("company portability", () => {
     expect(extension).not.toContain("labelIds");
     expect(extension).not.toContain("label-a");
     // Fresh exports declare the current bundle shape end-to-end.
-    expect(extension).toContain("schemaVersion: 7");
-    expect(exported.manifest.schemaVersion).toBe(7);
+    expect(extension).toContain("schemaVersion: 8");
+    expect(exported.manifest.schemaVersion).toBe(8);
     expect(exported.manifest.labels).toEqual([
       { name: "bug", color: "#ff0000" },
       { name: "urgent", color: "#00ff00" },
@@ -4098,7 +4309,7 @@ describe("company portability", () => {
     });
 
     const extension = asTextFile(exported.files[".paperclip.yaml"]);
-    expect(extension).toContain("schemaVersion: 7");
+    expect(extension).toContain("schemaVersion: 8");
     expect(extension).toContain('parent: "pap-1"');
     expect(extension).toContain('createdAt: "2026-01-01T00:00:00.000Z"');
     expect(exported.warnings).toContain(
@@ -4875,7 +5086,7 @@ describe("company portability", () => {
     const portability = companyPortabilityService({} as any);
 
     await expect(portability.importBundle({
-      source: { type: "inline", rootPath: "future-package", files: legacyPackageFiles(["schemaVersion: 8"]) },
+      source: { type: "inline", rootPath: "future-package", files: legacyPackageFiles(["schemaVersion: 9"]) },
       include: { company: true, agents: false, projects: false, issues: true },
       target: { mode: "new_company", newCompanyName: "Future Import" },
       agents: "all",

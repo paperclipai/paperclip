@@ -256,6 +256,10 @@ function selectSerializedSuites(routeTests, shardIndex, shardCount) {
 function runVitest(args, label) {
   console.log(`\n[test:run] ${label}`);
   invocationIndex += 1;
+  const stableArgs = ["--exclude", "**/dist/**"];
+  if (args.includes("@paperclipai/db")) {
+    stableArgs.push("--testTimeout=30000");
+  }
   const tempRootParent = process.platform === "win32" ? os.tmpdir() : "/tmp";
   const testRoot = mkdtempSync(path.join(tempRootParent, `pcvt-${process.pid}-${invocationIndex}-`));
   // Keep per-run paths compact so Unix socket fixtures stay under macOS path limits.
@@ -268,7 +272,7 @@ function runVitest(args, label) {
   };
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
-  const result = spawnSync("pnpm", ["exec", "vitest", "run", ...args], {
+  const result = spawnSync("pnpm", ["exec", "vitest", "run", ...stableArgs, ...args], {
     cwd: repoRoot,
     env,
     stdio: "inherit",

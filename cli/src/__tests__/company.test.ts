@@ -325,6 +325,7 @@ describe("renderCompanyImportPreview", () => {
         projectPlans: [
           { slug: "alpha", action: "create", plannedName: "Alpha", existingProjectId: null, reason: null },
         ],
+        repositoryPlans: [],
         issuePlans: [
           { slug: "kickoff", action: "create", plannedTitle: "Kickoff", reason: null },
         ],
@@ -416,6 +417,7 @@ describe("renderCompanyImportPreview", () => {
             metadata: null,
           },
         ],
+        repositories: [],
         issues: [
           {
             slug: "kickoff",
@@ -520,6 +522,7 @@ describe("renderCompanyImportResult", () => {
           { slug: "ops", id: "project-2", action: "updated", name: "Operations", reason: "replace strategy" },
           { slug: "archive", id: null, action: "skipped", name: "Archive", reason: "skip strategy" },
         ],
+        repositories: [],
         routines: [
           { slug: "weekly-report", id: "routine-1", action: "created", title: "Weekly report", status: "paused" },
         ],
@@ -564,6 +567,7 @@ describe("import selection catalog", () => {
         companyAction: "create",
         agentPlans: [],
         projectPlans: [],
+        repositoryPlans: [],
         issuePlans: [],
       },
       manifest: {
@@ -653,6 +657,7 @@ describe("import selection catalog", () => {
             metadata: null,
           },
         ],
+        repositories: [],
         issues: [
           {
             slug: "kickoff",
@@ -741,6 +746,7 @@ describe("import selection catalog", () => {
         companyAction: "create",
         agentPlans: [],
         projectPlans: [],
+        repositoryPlans: [],
         issuePlans: [],
       },
       manifest: {
@@ -777,6 +783,7 @@ describe("import selection catalog", () => {
         agents: [],
         skills: [],
         projects: [],
+        repositories: [],
         issues: [],
         envInputs: [],
       },
@@ -822,6 +829,7 @@ describe("default adapter overrides", () => {
         companyAction: "none",
         agentPlans: [],
         projectPlans: [],
+        repositoryPlans: [],
         issuePlans: [],
       },
       manifest: {
@@ -881,6 +889,7 @@ describe("default adapter overrides", () => {
         ],
         skills: [],
         projects: [],
+        repositories: [],
         issues: [],
         envInputs: [],
       },

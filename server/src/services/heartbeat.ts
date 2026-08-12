@@ -18,10 +18,12 @@ import {
   type ExecutionWorkspace,
   type ExecutionWorkspaceConfig,
   type HeartbeatRunStatusPhase,
+  type EffectiveRepositoryContext,
   type IssueExecutionMonitorClearReason,
   type IssueExecutionMonitorPolicy,
   type IssueExecutionMonitorRecoveryPolicy,
   type ModelProfileKey,
+  type ProjectRepositoryHint,
   type RequestConfirmationResult,
   type RoutineRevisionSnapshotV1,
   type RunLivenessState,
@@ -152,6 +154,8 @@ import {
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
+import { repositoryAccessService, toEffectiveRepositoryContext } from "./repository-access.js";
+import { toRepositoryContext } from "./repositories.js";
 import { createToolGatewayService } from "./tool-gateway.js";
 import { toolAccessService } from "./tool-access.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
@@ -6084,6 +6088,8 @@ export function buildPaperclipTaskMarkdown(input: {
     status?: string | null;
   } | null;
   acceptedPlanContinuation?: boolean;
+  projectRepositoryHints?: ProjectRepositoryHint[] | null;
+  effectiveRepositories?: EffectiveRepositoryContext[] | null;
   // false builds the compact variant used for resume deltas, where the session
   // already received the description with the assignment.
   includeDescription?: boolean;
@@ -6173,6 +6179,40 @@ export function buildPaperclipTaskMarkdown(input: {
   }
   if (wakeComment?.body.trim()) {
     lines.push("", "Latest wake comment:", fenceTaskText(wakeComment.body.trim()));
+  }
+  const repositoryHints = [...new Map(
+    (input.projectRepositoryHints ?? []).map((repository) => [repository.id, repository] as const),
+  ).values()].sort((left, right) =>
+    left.displayOrder - right.displayOrder
+    || left.host.localeCompare(right.host)
+    || left.owner.localeCompare(right.owner)
+    || left.name.localeCompare(right.name)
+    || left.id.localeCompare(right.id),
+  );
+  if (repositoryHints.length > 0) {
+    lines.push(
+      "",
+      "## Repository hints (not hard boundaries)",
+      "These repositories are likely relevant to this project. They do not limit other authorized repository access.",
+    );
+    for (const repository of repositoryHints) {
+      const branch = repository.defaultBranch ? ` (default branch: ${repository.defaultBranch})` : "";
+      const locator = repository.cloneUrl ? ` — ${repository.cloneUrl}` : "";
+      const state = repository.state === "active" ? "" : ` [${repository.state}]`;
+      lines.push(`- ${repository.host}/${repository.owner}/${repository.name}${state}${branch}${locator}`);
+    }
+  }
+  const hintedRepositoryIds = new Set(repositoryHints.map((repository) => repository.id));
+  const additionalDirectRepositories = [...new Map(
+    (input.effectiveRepositories ?? [])
+      .filter((repository) => repository.sources.direct && !hintedRepositoryIds.has(repository.id))
+      .map((repository) => [repository.id, repository] as const),
+  ).values()];
+  if (additionalDirectRepositories.length > 0) {
+    lines.push("", "## Additional direct repository access");
+    for (const repository of additionalDirectRepositories) {
+      lines.push(`- ${repository.host}/${repository.owner}/${repository.name}`);
+    }
   }
   lines.push("", "Use this task context as the current assignment.");
   return lines.join("\n");
@@ -6622,6 +6662,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const secretsSvc = secretService(db);
   const companySkills = companySkillService(db);
   const issuesSvc = issueService(db);
+  const repositoryAccess = repositoryAccessService(db);
+  const authorization = authorizationService(db);
   const treeControlSvc = issueTreeControlService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const environmentsSvc = environmentService(db);
@@ -13691,6 +13733,41 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(and(eq(projects.id, executionProjectId), eq(projects.companyId, agent.companyId)))
           .then((rows) => rows[0] ?? null)
       : null;
+    const projectRepositoryHints: ProjectRepositoryHint[] = executionProjectId
+      ? ((await repositoryAccess.listProjectRepositories(agent.companyId, executionProjectId)) ?? [])
+        .map((entry) => ({
+          ...toRepositoryContext(entry.repository),
+          displayOrder: entry.link.displayOrder,
+        }))
+      : [];
+    const effectiveRepositories = (
+      await repositoryAccess.listEffectiveRepositories({
+        companyId: agent.companyId,
+        agentId: agent.id,
+        canAccessProject: async (project) => {
+          const decision = await authorization.decide({
+            actor: {
+              type: "agent",
+              agentId: agent.id,
+              companyId: agent.companyId,
+              source: "agent_key",
+            },
+            action: "project:read",
+            resource: { type: "project", companyId: agent.companyId, projectId: project.id },
+            scope: { projectId: project.id },
+          });
+          return decision.allowed;
+        },
+      })
+    )?.map(toEffectiveRepositoryContext) ?? [];
+    context.project = {
+      id: executionProjectId ?? null,
+      repositoryHints: projectRepositoryHints,
+    };
+    context.agent = {
+      id: agent.id,
+      effectiveRepositories,
+    };
     const acceptedPlanContinuationWake = issueContext
       ? readNonEmptyString(context.workspaceRefreshReason) === "accepted_plan_confirmation"
         || (
@@ -13894,6 +13971,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       acceptedPlanContinuation:
         readNonEmptyString(context.workspaceRefreshReason) === "accepted_plan_confirmation"
         && Object.keys(parseObject(context.acceptedPlanWakeRouting)).length === 0,
+      projectRepositoryHints,
+      effectiveRepositories,
     };
     const taskMarkdown = buildPaperclipTaskMarkdown(taskMarkdownInput);
     const taskMarkdownCompact = buildPaperclipTaskMarkdown({ ...taskMarkdownInput, includeDescription: false });

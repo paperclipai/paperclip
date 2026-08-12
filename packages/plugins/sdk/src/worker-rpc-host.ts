@@ -100,6 +100,13 @@ import type {
   PluginEnvironmentCaptureTemplateParams,
   PluginEnvironmentCancelInteractiveSetupParams,
   PluginEnvironmentDeleteTemplateParams,
+  PluginRepositoryProviderBeginInstallationParams,
+  PluginRepositoryProviderCompleteInstallationParams,
+  PluginRepositoryProviderDisconnectParams,
+  PluginRepositoryProviderDiscoverParams,
+  PluginRepositoryProviderRefreshMetadataParams,
+  PluginRepositoryProviderResolveCloneCredentialParams,
+  PluginRepositoryProviderSyncParams,
   PluginInvocationContext,
   WorkerToHostMethodName,
   WorkerToHostMethods,
@@ -1582,6 +1589,35 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       case "environmentDeleteTemplate":
         return handleEnvironmentDeleteTemplate(params as PluginEnvironmentDeleteTemplateParams);
 
+      case "repositoryProviderBeginInstallation":
+        return handleRepositoryProviderBeginInstallation(
+          params as PluginRepositoryProviderBeginInstallationParams,
+        );
+
+      case "repositoryProviderCompleteInstallation":
+        return handleRepositoryProviderCompleteInstallation(
+          params as PluginRepositoryProviderCompleteInstallationParams,
+        );
+
+      case "repositoryProviderDiscover":
+        return handleRepositoryProviderDiscover(params as PluginRepositoryProviderDiscoverParams);
+
+      case "repositoryProviderRefreshMetadata":
+        return handleRepositoryProviderRefreshMetadata(
+          params as PluginRepositoryProviderRefreshMetadataParams,
+        );
+
+      case "repositoryProviderSync":
+        return handleRepositoryProviderSync(params as PluginRepositoryProviderSyncParams);
+
+      case "repositoryProviderDisconnect":
+        return handleRepositoryProviderDisconnect(params as PluginRepositoryProviderDisconnectParams);
+
+      case "repositoryProviderResolveCloneCredential":
+        return handleRepositoryProviderResolveCloneCredential(
+          params as PluginRepositoryProviderResolveCloneCredentialParams,
+        );
+
       default:
         throw Object.assign(
           new Error(`Unknown method: ${method}`),
@@ -1633,6 +1669,13 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onEnvironmentCaptureTemplate) supportedMethods.push("environmentCaptureTemplate");
     if (plugin.definition.onEnvironmentCancelInteractiveSetup) supportedMethods.push("environmentCancelInteractiveSetup");
     if (plugin.definition.onEnvironmentDeleteTemplate) supportedMethods.push("environmentDeleteTemplate");
+    if (plugin.definition.onRepositoryProviderBeginInstallation) supportedMethods.push("repositoryProviderBeginInstallation");
+    if (plugin.definition.onRepositoryProviderCompleteInstallation) supportedMethods.push("repositoryProviderCompleteInstallation");
+    if (plugin.definition.onRepositoryProviderDiscover) supportedMethods.push("repositoryProviderDiscover");
+    if (plugin.definition.onRepositoryProviderRefreshMetadata) supportedMethods.push("repositoryProviderRefreshMetadata");
+    if (plugin.definition.onRepositoryProviderSync) supportedMethods.push("repositoryProviderSync");
+    if (plugin.definition.onRepositoryProviderDisconnect) supportedMethods.push("repositoryProviderDisconnect");
+    if (plugin.definition.onRepositoryProviderResolveCloneCredential) supportedMethods.push("repositoryProviderResolveCloneCredential");
 
     return { ok: true, supportedMethods };
   }
@@ -1979,6 +2022,63 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       throw methodNotImplemented("environmentDeleteTemplate");
     }
     return plugin.definition.onEnvironmentDeleteTemplate(params);
+  }
+
+  async function handleRepositoryProviderBeginInstallation(
+    params: PluginRepositoryProviderBeginInstallationParams,
+  ) {
+    if (!plugin.definition.onRepositoryProviderBeginInstallation) {
+      throw methodNotImplemented("repositoryProviderBeginInstallation");
+    }
+    return plugin.definition.onRepositoryProviderBeginInstallation(params);
+  }
+
+  async function handleRepositoryProviderCompleteInstallation(
+    params: PluginRepositoryProviderCompleteInstallationParams,
+  ) {
+    if (!plugin.definition.onRepositoryProviderCompleteInstallation) {
+      throw methodNotImplemented("repositoryProviderCompleteInstallation");
+    }
+    return plugin.definition.onRepositoryProviderCompleteInstallation(params);
+  }
+
+  async function handleRepositoryProviderDiscover(params: PluginRepositoryProviderDiscoverParams) {
+    if (!plugin.definition.onRepositoryProviderDiscover) {
+      throw methodNotImplemented("repositoryProviderDiscover");
+    }
+    return plugin.definition.onRepositoryProviderDiscover(params);
+  }
+
+  async function handleRepositoryProviderRefreshMetadata(
+    params: PluginRepositoryProviderRefreshMetadataParams,
+  ) {
+    if (!plugin.definition.onRepositoryProviderRefreshMetadata) {
+      throw methodNotImplemented("repositoryProviderRefreshMetadata");
+    }
+    return plugin.definition.onRepositoryProviderRefreshMetadata(params);
+  }
+
+  async function handleRepositoryProviderSync(params: PluginRepositoryProviderSyncParams) {
+    if (!plugin.definition.onRepositoryProviderSync) {
+      throw methodNotImplemented("repositoryProviderSync");
+    }
+    return plugin.definition.onRepositoryProviderSync(params);
+  }
+
+  async function handleRepositoryProviderDisconnect(params: PluginRepositoryProviderDisconnectParams) {
+    if (!plugin.definition.onRepositoryProviderDisconnect) {
+      throw methodNotImplemented("repositoryProviderDisconnect");
+    }
+    return plugin.definition.onRepositoryProviderDisconnect(params);
+  }
+
+  async function handleRepositoryProviderResolveCloneCredential(
+    params: PluginRepositoryProviderResolveCloneCredentialParams,
+  ) {
+    if (!plugin.definition.onRepositoryProviderResolveCloneCredential) {
+      throw methodNotImplemented("repositoryProviderResolveCloneCredential");
+    }
+    return plugin.definition.onRepositoryProviderResolveCloneCredential(params);
   }
 
   // -----------------------------------------------------------------------

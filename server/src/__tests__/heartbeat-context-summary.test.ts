@@ -155,6 +155,69 @@ describe("buildPaperclipTaskMarkdown", () => {
     expect(commentWake).toContain("Update the plan only. Do not write code or perform implementation work.");
     expect(commentWake).not.toContain("Create child issues from the approved plan only");
   });
+
+  it("keeps zero-repository context quiet and emits stable deduplicated repository guidance", () => {
+    const issue = {
+      id: "issue-repositories",
+      identifier: "PAP-17067",
+      title: "Use repository context",
+      workMode: "standard",
+      description: "Repository work",
+    };
+    const quiet = buildPaperclipTaskMarkdown({ issue });
+    expect(quiet).not.toContain("Repository hints");
+    expect(quiet).not.toContain("Additional direct repository access");
+
+    const hint = {
+      id: "repo-hint",
+      provider: "manual" as const,
+      host: "github.com",
+      owner: "paperclipai",
+      name: "paperclip",
+      state: "active" as const,
+      unavailableReason: null,
+      cloneUrl: "https://github.com/paperclipai/paperclip.git",
+      webUrl: "https://github.com/paperclipai/paperclip",
+      defaultBranch: "master",
+      displayOrder: 0,
+    };
+    const direct = {
+      id: "repo-direct",
+      provider: "manual" as const,
+      host: "github.com",
+      owner: "paperclipai",
+      name: "docs",
+      state: "active" as const,
+      unavailableReason: null,
+      cloneUrl: "https://github.com/paperclipai/docs.git",
+      webUrl: "https://github.com/paperclipai/docs",
+      defaultBranch: "main",
+      sources: { direct: true, projects: [] },
+    };
+    const full = buildPaperclipTaskMarkdown({
+      issue,
+      projectRepositoryHints: [hint, hint],
+      effectiveRepositories: [
+        { ...hint, sources: { direct: true, projects: [{ id: "project-1", name: "Paperclip" }] } },
+        direct,
+        direct,
+      ],
+    });
+    expect(full?.match(/github\.com\/paperclipai\/paperclip \(default branch: master\)/g)).toHaveLength(1);
+    expect(full?.match(/github\.com\/paperclipai\/docs/g)).toHaveLength(1);
+    expect(full).toContain("## Repository hints (not hard boundaries)");
+    expect(full).toContain("## Additional direct repository access");
+
+    const compact = buildPaperclipTaskMarkdown({
+      issue,
+      includeDescription: false,
+      projectRepositoryHints: [hint],
+      effectiveRepositories: [direct],
+    });
+    expect(compact).not.toContain("Repository work");
+    expect(compact).toContain("github.com/paperclipai/paperclip");
+    expect(compact).toContain("github.com/paperclipai/docs");
+  });
 });
 
 describe("mergeCoalescedContextSnapshot", () => {

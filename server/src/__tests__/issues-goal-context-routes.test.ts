@@ -131,6 +131,12 @@ vi.mock("../services/index.js", () => ({
   issueService: () => mockIssueService,
   logActivity: mockLogActivity,
   projectService: () => mockProjectService,
+  repositoryAccessService: () => ({
+    listEffectiveRepositories: vi.fn(async () => []),
+  }),
+  authorizationService: () => ({
+    decide: vi.fn(async () => ({ allowed: true })),
+  }),
   routineService: () => mockRoutineService,
   workProductService: () => mockWorkProductService,
 }));
@@ -436,6 +442,10 @@ describe.sequential("issue goal context routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.issue.goalId).toBe(projectGoal.id);
     expect(res.body.issue.workMode).toBe("planning");
+    expect(res.body.agent).toEqual({
+      id: legacyProjectLinkedIssue.assigneeAgentId,
+      effectiveRepositories: [],
+    });
     expect(res.body.goal).toEqual(
       expect.objectContaining({
         id: projectGoal.id,

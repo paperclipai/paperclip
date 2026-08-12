@@ -433,6 +433,7 @@ Example uses:
 - budgets
 - approval policies
 - project execution workspace policies
+- repository catalog metadata and portable project/agent relationships
 - issue/task Paperclip-only metadata
 
 Rules:
@@ -470,12 +471,21 @@ routines:
       - kind: schedule
         cronExpression: "0 9 * * 1"
         timezone: America/Chicago
+repositories:
+  github-com-paperclipai-paperclip:
+    provider: github
+    cloneUrl: git@github.com:paperclipai/paperclip.git
+    webUrl: https://github.com/paperclipai/paperclip
+    disconnected: true
+    projects: [launch, docs]
+    directAgentGrants: [claudecoder]
 ```
 
 Additional rules for Paperclip exporters:
 
 - do not duplicate `promptTemplate` when `AGENTS.md` already contains the agent instructions
 - do not export provider-specific secret bindings such as `secretId`, `version`, or `type: secret_ref`
+- do not export repository connection ids, provider installation configuration, provider metadata, clone credentials, or tokens; provider-backed repositories must be marked disconnected
 - export env inputs as portable declarations with `required` or `optional` semantics and optional defaults
 - warn on system-dependent values such as absolute commands and absolute `PATH` overrides
 - omit empty and default-valued Paperclip fields when possible
@@ -541,7 +551,7 @@ Paperclip can map this spec to its runtime model like this:
   - `SKILL.md` -> imported skill package
   - `sources[]` -> provenance and pinned upstream refs
 - Paperclip extension:
-  - `.paperclip.yaml` -> adapter config, runtime config, env input declarations, permissions, budgets, routine triggers, and other Paperclip-specific fidelity
+  - `.paperclip.yaml` -> adapter config, runtime config, repository catalog relationships, env input declarations, permissions, budgets, routine triggers, and other Paperclip-specific fidelity
 
 Inline Paperclip-only metadata that must live inside a shared markdown file should use:
 

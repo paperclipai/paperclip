@@ -30,6 +30,7 @@ import type {
   CompanyPortabilityPreviewResult,
   CompanyPortabilityProjectManifestEntry,
   CompanyPortabilityProjectWorkspaceManifestEntry,
+  CompanyPortabilityRepositoryManifestEntry,
   CompanyPortabilityIssueRoutineManifestEntry,
   CompanyPortabilityIssueRoutineTriggerManifestEntry,
   CompanyPortabilityIssueDocumentManifestEntry,
@@ -50,6 +51,7 @@ import {
   ISSUE_STATUSES,
   PROJECT_ICON_NAMES,
   PROJECT_STATUSES,
+  REPOSITORY_VISIBILITIES,
   ROUTINE_CATCH_UP_POLICIES,
   ROUTINE_CONCURRENCY_POLICIES,
   ROUTINE_STATUSES,
@@ -86,6 +88,9 @@ import { validateCron } from "./cron.js";
 import { documentService } from "./documents.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
+import { repositoryAccessService } from "./repository-access.js";
+import { repositoryService } from "./repositories.js";
+import { normalizeRepositoryLocator } from "./repository-normalization.js";
 import { workProductService } from "./work-products.js";
 import { routineService } from "./routines.js";
 import { secretService } from "./secrets.js";
@@ -162,9 +167,9 @@ const DEFAULT_COLLISION_STRATEGY: CompanyPortabilityCollisionStrategy = "rename"
 // The bundle shape this build reads and writes. Bundles began declaring
 // their schemaVersion in the .paperclip.yaml extension at 6; undeclared
 // bundles are read as 5, the last unstamped shape. 7 adds preserved task
-// timestamps and parent links; 5/6 bundles still import, with those fields
-// falling back to import-time defaults.
-const BUNDLE_SCHEMA_VERSION = 7;
+// timestamps and parent links. 8 adds portable repository metadata and
+// relationships. Older bundles still import with safe defaults.
+const BUNDLE_SCHEMA_VERSION = 8;
 const UNSTAMPED_BUNDLE_SCHEMA_VERSION = 5;
 const DEFAULT_IMPORTED_LABEL_COLOR = "#6366f1";
 // Blob entries are content-addressed by sha256; the store itself is
@@ -636,6 +641,7 @@ type PaperclipExtensionDoc = {
   company?: Record<string, unknown> | null;
   agents?: Record<string, Record<string, unknown>> | null;
   projects?: Record<string, Record<string, unknown>> | null;
+  repositories?: Record<string, Record<string, unknown>> | null;
   tasks?: Record<string, Record<string, unknown>> | null;
   routines?: Record<string, Record<string, unknown>> | null;
 };
@@ -1286,6 +1292,38 @@ function normalizePortableProjectWorkspaceExtension(
     metadata: isPlainRecord(value.metadata) ? value.metadata : null,
     isPrimary: asBoolean(value.isPrimary) ?? false,
   };
+}
+
+function normalizePortableRepositoryExtension(
+  repositoryKey: string,
+  value: unknown,
+): CompanyPortabilityRepositoryManifestEntry | null {
+  if (!isPlainRecord(value)) return null;
+  const key = normalizeAgentUrlKey(repositoryKey) ?? repositoryKey.trim();
+  const cloneUrl = asString(value.cloneUrl);
+  if (!key || !cloneUrl) return null;
+  try {
+    const normalized = normalizeRepositoryLocator(cloneUrl);
+    const provider = asString(value.provider) ?? "manual";
+    return {
+      key,
+      provider,
+      providerRepositoryId: asString(value.providerRepositoryId),
+      host: asString(value.host) ?? normalized.host,
+      owner: asString(value.owner) ?? normalized.owner,
+      name: asString(value.name) ?? normalized.name,
+      cloneUrl: normalized.cloneUrl,
+      webUrl: asString(value.webUrl) ?? normalized.webUrl,
+      defaultBranch: asString(value.defaultBranch),
+      visibility: asString(value.visibility) ?? "unknown",
+      state: asString(value.state) ?? "active",
+      disconnected: asBoolean(value.disconnected) ?? provider !== "manual",
+      projectSlugs: normalizePortableSlugList(value.projects ?? value.projectSlugs),
+      directAgentSlugs: normalizePortableSlugList(value.directAgentGrants ?? value.directAgentSlugs),
+    };
+  } catch {
+    return null;
+  }
 }
 
 function derivePortableProjectWorkspaceKey(
@@ -2019,6 +2057,21 @@ function filterPortableExtensionYaml(
       parsed[section] = filteredEntries;
     } else {
       delete parsed[section];
+    }
+  }
+
+  const repositorySection = parsed.repositories;
+  if (isPlainRecord(repositorySection)) {
+    for (const repository of Object.values(repositorySection)) {
+      if (!isPlainRecord(repository)) continue;
+      const projectSlugs = normalizePortableSlugList(repository.projects)
+        .filter((slug) => selected.projects.has(slug));
+      const directAgentSlugs = normalizePortableSlugList(repository.directAgentGrants)
+        .filter((slug) => selected.agents.has(slug));
+      if (projectSlugs.length > 0) repository.projects = projectSlugs;
+      else delete repository.projects;
+      if (directAgentSlugs.length > 0) repository.directAgentGrants = directAgentSlugs;
+      else delete repository.directAgentGrants;
     }
   }
 
@@ -3044,6 +3097,7 @@ function buildManifestFromPackageFiles(
   const paperclipEmbeddedAssets = normalizePortableEmbeddedAssets(paperclipExtension.embeddedAssets);
   const paperclipAgents = isPlainRecord(paperclipExtension.agents) ? paperclipExtension.agents : {};
   const paperclipProjects = isPlainRecord(paperclipExtension.projects) ? paperclipExtension.projects : {};
+  const paperclipRepositories = isPlainRecord(paperclipExtension.repositories) ? paperclipExtension.repositories : {};
   const paperclipTasks = isPlainRecord(paperclipExtension.tasks) ? paperclipExtension.tasks : {};
   const paperclipRoutines = isPlainRecord(paperclipExtension.routines) ? paperclipExtension.routines : {};
   const companyName =
@@ -3130,6 +3184,7 @@ function buildManifestFromPackageFiles(
     agents: [],
     skills: [],
     projects: [],
+    repositories: [],
     issues: [],
     envInputs: [],
   };
@@ -3333,6 +3388,57 @@ function buildManifestFromPackageFiles(
     }
   }
 
+  for (const [repositoryKey, value] of Object.entries(paperclipRepositories)) {
+    const repository = normalizePortableRepositoryExtension(repositoryKey, value);
+    if (!repository) {
+      warnings.push(`Repository ${repositoryKey} was ignored because its portable metadata is invalid.`);
+      continue;
+    }
+    manifest.repositories.push(repository);
+  }
+
+  // Compatibility for pre-repository bundles: a workspace repoUrl is enough
+  // to recover company repository metadata and the project hint. The importer
+  // still creates only the workspaces explicitly present in the legacy
+  // package; repository hints never synthesize execution workspaces.
+  if (manifest.repositories.length === 0) {
+    const byCloneUrl = new Map<string, CompanyPortabilityRepositoryManifestEntry>();
+    const usedRepositoryKeys = new Set<string>();
+    for (const project of manifest.projects) {
+      for (const workspace of project.workspaces) {
+        if (!workspace.repoUrl) continue;
+        try {
+          const normalized = normalizeRepositoryLocator(workspace.repoUrl);
+          let repository = byCloneUrl.get(normalized.cloneUrl);
+          if (!repository) {
+            const baseKey = normalizeAgentUrlKey(`${normalized.host}-${normalized.owner}-${normalized.name}`) ?? "repository";
+            repository = {
+              key: uniqueSlug(baseKey, usedRepositoryKeys),
+              provider: "manual",
+              providerRepositoryId: null,
+              host: normalized.host,
+              owner: normalized.owner,
+              name: normalized.name,
+              cloneUrl: normalized.cloneUrl,
+              webUrl: normalized.webUrl,
+              defaultBranch: workspace.defaultRef ?? workspace.repoRef,
+              visibility: "unknown",
+              state: "active",
+              disconnected: false,
+              projectSlugs: [],
+              directAgentSlugs: [],
+            };
+            byCloneUrl.set(normalized.cloneUrl, repository);
+            manifest.repositories.push(repository);
+          }
+          if (!repository.projectSlugs.includes(project.slug)) repository.projectSlugs.push(project.slug);
+        } catch {
+          warnings.push(`Project ${project.slug} workspace ${workspace.key} has an invalid repoUrl and could not be mapped to a repository.`);
+        }
+      }
+    }
+  }
+
   for (const taskPath of taskPaths) {
     const markdownRaw = readPortableTextFile(normalizedFiles, taskPath);
     if (typeof markdownRaw !== "string") {
@@ -3484,6 +3590,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   const secrets = secretService(db);
   const documentsSvc = documentService(db);
   const workProductsSvc = workProductService(db);
+  const repositoryCatalog = repositoryService(db);
+  const repositoryAccess = repositoryAccessService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
   const defaultSecretProvider = getConfiguredSecretProvider();
 
@@ -4062,6 +4170,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
     const paperclipAgentsOut: Record<string, Record<string, unknown>> = {};
     const paperclipProjectsOut: Record<string, Record<string, unknown>> = {};
+    const paperclipRepositoriesOut: Record<string, Record<string, unknown>> = {};
     const paperclipTasksOut: Record<string, Record<string, unknown>> = {};
     const unportableTaskWorkspaceRefs = new Map<string, { workspaceId: string; taskSlugs: string[] }>();
     const paperclipRoutinesOut: Record<string, Record<string, unknown>> = {};
@@ -4237,6 +4346,59 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         };
       }
       paperclipProjectsOut[slug] = isPlainRecord(extension) ? extension : {};
+    }
+
+    if (include.company) {
+      const catalog = await repositoryCatalog.list(companyId, { includeArchived: true });
+      const projectSlugsByRepositoryId = new Map<string, string[]>();
+      await Promise.all(selectedProjectRows.map(async (project) => {
+        const projectSlug = projectSlugById.get(project.id);
+        if (!projectSlug) return;
+        for (const entry of (await repositoryAccess.listProjectRepositories(companyId, project.id)) ?? []) {
+          const slugs = projectSlugsByRepositoryId.get(entry.repository.id) ?? [];
+          slugs.push(projectSlug);
+          projectSlugsByRepositoryId.set(entry.repository.id, slugs);
+        }
+      }));
+      const directAgentSlugsByRepositoryId = new Map<string, string[]>();
+      await Promise.all(agentRows.map(async (agent) => {
+        const agentSlug = idToSlug.get(agent.id);
+        if (!agentSlug) return;
+        for (const entry of (await repositoryAccess.listDirectGrants(companyId, agent.id)) ?? []) {
+          const slugs = directAgentSlugsByRepositoryId.get(entry.repository.id) ?? [];
+          slugs.push(agentSlug);
+          directAgentSlugsByRepositoryId.set(entry.repository.id, slugs);
+        }
+      }));
+
+      const usedRepositoryKeys = new Set<string>();
+      for (const repository of catalog) {
+        let normalized;
+        try {
+          normalized = normalizeRepositoryLocator(repository.cloneUrl);
+        } catch {
+          warnings.push(`Repository ${repository.host}/${repository.owner}/${repository.name} was omitted because its clone URL is invalid or contains credentials.`);
+          continue;
+        }
+        const baseKey = normalizeAgentUrlKey(`${repository.host}-${repository.owner}-${repository.name}`) ?? "repository";
+        const key = uniqueSlug(baseKey, usedRepositoryKeys);
+        const portableRepository = stripEmptyValues({
+          provider: repository.provider,
+          providerRepositoryId: repository.providerRepositoryId,
+          host: normalized.host,
+          owner: normalized.owner,
+          name: normalized.name,
+          cloneUrl: normalized.cloneUrl,
+          webUrl: repository.webUrl,
+          defaultBranch: repository.defaultBranch,
+          visibility: repository.visibility,
+          state: repository.state,
+          disconnected: repository.provider !== "manual" ? true : undefined,
+          projects: (projectSlugsByRepositoryId.get(repository.id) ?? []).sort(),
+          directAgentGrants: (directAgentSlugsByRepositoryId.get(repository.id) ?? []).sort(),
+        });
+        paperclipRepositoriesOut[key] = isPlainRecord(portableRepository) ? portableRepository : {};
+      }
     }
 
     const referencedLabelIds = new Set<string>();
@@ -4577,6 +4739,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const paperclipProjects = Object.fromEntries(
       Object.entries(paperclipProjectsOut).filter(([, value]) => isPlainRecord(value) && Object.keys(value).length > 0),
     );
+    const paperclipRepositories = Object.fromEntries(
+      Object.entries(paperclipRepositoriesOut).filter(([, value]) => isPlainRecord(value) && Object.keys(value).length > 0),
+    );
     const paperclipTasks = Object.fromEntries(
       Object.entries(paperclipTasksOut).filter(([, value]) => isPlainRecord(value) && Object.keys(value).length > 0),
     );
@@ -4603,6 +4768,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         embeddedAssets: embeddedAssetIndex.length > 0 ? embeddedAssetIndex : undefined,
         agents: Object.keys(paperclipAgents).length > 0 ? paperclipAgents : undefined,
         projects: Object.keys(paperclipProjects).length > 0 ? paperclipProjects : undefined,
+        repositories: Object.keys(paperclipRepositories).length > 0 ? paperclipRepositories : undefined,
         tasks: Object.keys(paperclipTasks).length > 0 ? paperclipTasks : undefined,
         routines: Object.keys(paperclipRoutines).length > 0 ? paperclipRoutines : undefined,
       },
@@ -4869,9 +5035,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const existingAgentIds = new Set<string>();
     const existingSlugs = new Set<string>();
     const projectPlans: CompanyPortabilityPreviewResult["plan"]["projectPlans"] = [];
+    const repositoryPlans: CompanyPortabilityPreviewResult["plan"]["repositoryPlans"] = [];
     const issuePlans: CompanyPortabilityPreviewResult["plan"]["issuePlans"] = [];
     const existingProjectSlugToProject = new Map<string, { id: string; name: string }>();
     const existingProjectSlugs = new Set<string>();
+    const existingRepositoryByCloneUrl = new Map<string, { id: string }>();
 
     if (input.target.mode === "existing_company") {
       const existingAgents = await agents.list(input.target.companyId);
@@ -4887,6 +5055,13 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           existingProjectSlugToProject.set(existing.urlKey, { id: existing.id, name: existing.name });
         }
         existingProjectSlugs.add(existing.urlKey);
+      }
+      for (const existing of await repositoryCatalog.list(input.target.companyId, { includeArchived: true })) {
+        try {
+          existingRepositoryByCloneUrl.set(normalizeRepositoryLocator(existing.cloneUrl).cloneUrl, { id: existing.id });
+        } catch {
+          // Invalid legacy rows cannot be safe collision targets.
+        }
       }
 
       const existingSkills = await companySkills.listFull(input.target.companyId);
@@ -5011,6 +5186,34 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       }
     }
 
+    const agentPlanSlugs = new Set(agentPlans.map((entry) => entry.slug));
+    const projectPlanSlugs = new Set(projectPlans.map((entry) => entry.slug));
+    for (const repository of manifest.repositories) {
+      const existing = existingRepositoryByCloneUrl.get(repository.cloneUrl) ?? null;
+      const unresolvedProjectSlugs = repository.projectSlugs.filter(
+        (slug) => !projectPlanSlugs.has(slug) && !existingProjectSlugToProject.has(slug),
+      );
+      const unresolvedAgentSlugs = repository.directAgentSlugs.filter(
+        (slug) => !agentPlanSlugs.has(slug) && !existingSlugToAgent.has(slug),
+      );
+      const disconnectedProvider = repository.provider === "manual" ? null : repository.provider;
+      if (disconnectedProvider) {
+        warnings.push(`Repository ${repository.key} from provider ${repository.provider} will import as disconnected manual metadata; re-authorize that provider on the destination before requesting credentials.`);
+      }
+      if (unresolvedProjectSlugs.length > 0 || unresolvedAgentSlugs.length > 0) {
+        warnings.push(`Repository ${repository.key} has unresolved mappings: projects [${unresolvedProjectSlugs.join(", ") || "none"}], direct agents [${unresolvedAgentSlugs.join(", ") || "none"}].`);
+      }
+      repositoryPlans.push({
+        key: repository.key,
+        action: existing ? "reuse" : "create",
+        existingRepositoryId: existing?.id ?? null,
+        disconnectedProvider,
+        unresolvedProjectSlugs,
+        unresolvedAgentSlugs,
+        reason: existing ? "A repository with the same normalized clone URL already exists." : null,
+      });
+    }
+
     // Apply user-specified name overrides (keyed by slug)
     if (input.nameOverrides) {
       for (const ap of agentPlans) {
@@ -5072,6 +5275,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             : "none",
         agentPlans,
         projectPlans,
+        repositoryPlans,
         issuePlans,
       },
       manifest,
@@ -5356,6 +5560,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
       const resultAgents: CompanyPortabilityImportResult["agents"] = [];
       const resultProjects: CompanyPortabilityImportResult["projects"] = [];
+      const resultRepositories: CompanyPortabilityImportResult["repositories"] = [];
       const resultRoutines: CompanyPortabilityImportResult["routines"] = [];
       const importedSlugToAgentId = new Map<string, string>();
       const existingSlugToAgentId = new Map<string, string>();
@@ -5730,6 +5935,60 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             });
           }
         }
+      }
+
+      for (const repositoryPlan of plan.preview.plan.repositoryPlans) {
+        const manifestRepository = sourceManifest.repositories.find((entry) => entry.key === repositoryPlan.key);
+        if (!manifestRepository) continue;
+        let repositoryId = repositoryPlan.existingRepositoryId;
+        let action: "created" | "reused" = repositoryId ? "reused" : "created";
+        if (!repositoryId) {
+          try {
+            const created = await repositoryCatalog.createManual(targetCompany.id, {
+              cloneUrl: manifestRepository.cloneUrl,
+              webUrl: manifestRepository.webUrl,
+              defaultBranch: manifestRepository.defaultBranch,
+              visibility: REPOSITORY_VISIBILITIES.includes(manifestRepository.visibility as any)
+                ? manifestRepository.visibility as typeof REPOSITORY_VISIBILITIES[number]
+                : "unknown",
+            });
+            repositoryId = created.repository.id;
+            action = created.created ? "created" : "reused";
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            warnings.push(`Repository ${manifestRepository.key} was skipped: ${reason}`);
+            resultRepositories.push({ key: manifestRepository.key, id: null, action: "skipped", reason });
+            continue;
+          }
+        }
+
+        for (const projectSlug of manifestRepository.projectSlugs) {
+          const projectId = importedSlugToProjectId.get(projectSlug) ?? existingProjectSlugToId.get(projectSlug) ?? null;
+          if (!projectId) continue;
+          await repositoryAccess.attachProjectRepository({
+            companyId: targetCompany.id,
+            projectId,
+            repositoryId,
+            displayOrder: 0,
+            createdByAgentId: null,
+            createdByUserId: actorUserId ?? null,
+          });
+        }
+        for (const agentSlug of manifestRepository.directAgentSlugs) {
+          const agentId = importedSlugToAgentId.get(agentSlug) ?? existingSlugToAgentId.get(agentSlug) ?? null;
+          if (!agentId) continue;
+          await repositoryAccess.grantAgentRepository({
+            companyId: targetCompany.id,
+            agentId,
+            repositoryId,
+            grantedByAgentId: null,
+            grantedByUserId: actorUserId ?? null,
+          });
+        }
+        if (manifestRepository.state === "archived") {
+          await repositoryCatalog.archive(targetCompany.id, repositoryId);
+        }
+        resultRepositories.push({ key: manifestRepository.key, id: repositoryId, action, reason: repositoryPlan.reason });
       }
 
       if (include.issues) {
@@ -6283,6 +6542,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           reason: result.reason,
         })),
         projects: resultProjects,
+        repositories: resultRepositories,
         routines: resultRoutines,
         envInputs: sourceManifest.envInputs ?? [],
         warnings,

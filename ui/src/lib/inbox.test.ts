@@ -229,6 +229,7 @@ function makeProjectWorkspace(overrides: Partial<ProjectWorkspace> = {}): Projec
     id: "project-workspace-1",
     companyId: "company-1",
     projectId: "project-1",
+    repositoryId: null,
     name: "Primary workspace",
     sourceType: "local_path",
     cwd: "/tmp/project",

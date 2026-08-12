@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   projects,
@@ -8,7 +8,9 @@ import {
   budgetPolicies,
   pluginManagedResources,
   plugins,
+  projectRepositories,
   projectWorkspaces,
+  repositories,
   workspaceRuntimeServices,
 } from "@paperclipai/db";
 import {
@@ -22,6 +24,7 @@ import {
   type ProjectExecutionWorkspacePolicy,
   type ProjectGoalRef,
   type ProjectManagedByPlugin,
+  type ProjectRepositoryHint,
   type ProjectWorkspaceRuntimeConfig,
   type ProjectWorkspace,
   type WorkspaceRuntimeService,
@@ -29,9 +32,11 @@ import {
   type PluginManagedProjectResolution,
 } from "@paperclipai/shared";
 import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
+import { unprocessable } from "../errors.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { toRepository, toRepositoryContext } from "./repositories.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -39,6 +44,7 @@ type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 type CreateWorkspaceInput = {
   name?: string | null;
+  repositoryId?: string | null;
   sourceType?: string | null;
   cwd?: string | null;
   repoUrl?: string | null;
@@ -61,6 +67,7 @@ interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> 
   goalIds: string[];
   goals: ProjectGoalRef[];
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
+  repositoryHints: ProjectRepositoryHint[];
   codebase: ProjectCodebase;
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;
@@ -85,15 +92,29 @@ async function attachGoals(db: Db, rows: ProjectRow[]): Promise<ProjectWithGoals
   const projectIds = rows.map((r) => r.id);
 
   // Fetch join rows + goal titles in one query
-  const links = await db
-    .select({
-      projectId: projectGoals.projectId,
-      goalId: projectGoals.goalId,
-      goalTitle: goals.title,
-    })
-    .from(projectGoals)
-    .innerJoin(goals, eq(projectGoals.goalId, goals.id))
-    .where(inArray(projectGoals.projectId, projectIds));
+  const [links, repositoryLinks] = await Promise.all([
+    db
+      .select({
+        projectId: projectGoals.projectId,
+        goalId: projectGoals.goalId,
+        goalTitle: goals.title,
+      })
+      .from(projectGoals)
+      .innerJoin(goals, eq(projectGoals.goalId, goals.id))
+      .where(inArray(projectGoals.projectId, projectIds)),
+    db
+      .select({ link: projectRepositories, repository: repositories })
+      .from(projectRepositories)
+      .innerJoin(repositories, eq(projectRepositories.repositoryId, repositories.id))
+      .where(inArray(projectRepositories.projectId, projectIds))
+      .orderBy(
+        asc(projectRepositories.displayOrder),
+        asc(repositories.host),
+        asc(repositories.owner),
+        asc(repositories.name),
+        asc(repositories.id),
+      ),
+  ]);
 
   const map = new Map<string, ProjectGoalRef[]>();
   for (const link of links) {
@@ -104,6 +125,15 @@ async function attachGoals(db: Db, rows: ProjectRow[]): Promise<ProjectWithGoals
     }
     arr.push({ id: link.goalId, title: link.goalTitle });
   }
+  const repositoriesByProjectId = new Map<string, ProjectRepositoryHint[]>();
+  for (const row of repositoryLinks) {
+    const hints = repositoriesByProjectId.get(row.link.projectId) ?? [];
+    hints.push({
+      ...toRepositoryContext(toRepository(row.repository)),
+      displayOrder: row.link.displayOrder,
+    });
+    repositoriesByProjectId.set(row.link.projectId, hints);
+  }
 
   return rows.map((r) => {
     const g = map.get(r.id) ?? [];
@@ -112,6 +142,7 @@ async function attachGoals(db: Db, rows: ProjectRow[]): Promise<ProjectWithGoals
       urlKey: deriveProjectUrlKey(r.name, r.id),
       goalIds: g.map((x) => x.id),
       goals: g,
+      repositoryHints: repositoriesByProjectId.get(r.id) ?? [],
       executionWorkspacePolicy: parseProjectExecutionWorkspacePolicy(r.executionWorkspacePolicy),
     } as ProjectWithGoals;
   });
@@ -157,6 +188,7 @@ function toWorkspace(
     id: row.id,
     companyId: row.companyId,
     projectId: row.projectId,
+    repositoryId: row.repositoryId ?? null,
     name: row.name,
     sourceType: row.sourceType as ProjectWorkspace["sourceType"],
     cwd: normalizeWorkspaceCwd(row.cwd),
@@ -541,11 +573,84 @@ async function ensureSinglePrimaryWorkspace(
 }
 
 export function projectService(db: Db) {
+  type RepositoryAttribution = {
+    createdByAgentId?: string | null;
+    createdByUserId?: string | null;
+  };
+
+  async function syncRepositoryLinks(
+    dbOrTx: Db,
+    input: {
+      companyId: string;
+      projectId: string;
+      repositoryIds: string[];
+      attribution?: RepositoryAttribution;
+    },
+  ) {
+    const repositoryIds = [...new Set(input.repositoryIds)];
+    const activeRepositories = repositoryIds.length === 0
+      ? []
+      : await dbOrTx
+        .select({ id: repositories.id })
+        .from(repositories)
+        .where(and(
+          eq(repositories.companyId, input.companyId),
+          eq(repositories.state, "active"),
+          inArray(repositories.id, repositoryIds),
+        ));
+    if (activeRepositories.length !== repositoryIds.length) {
+      throw unprocessable("One or more repositories are unavailable for this company");
+    }
+
+    const relationshipScope = and(
+      eq(projectRepositories.companyId, input.companyId),
+      eq(projectRepositories.projectId, input.projectId),
+    );
+    if (repositoryIds.length === 0) {
+      await dbOrTx.delete(projectRepositories).where(relationshipScope);
+      return;
+    }
+
+    await dbOrTx
+      .delete(projectRepositories)
+      .where(and(relationshipScope, notInArray(projectRepositories.repositoryId, repositoryIds)));
+    const now = new Date();
+    for (const [displayOrder, repositoryId] of repositoryIds.entries()) {
+      await dbOrTx
+        .insert(projectRepositories)
+        .values({
+          companyId: input.companyId,
+          projectId: input.projectId,
+          repositoryId,
+          displayOrder,
+          createdByAgentId: input.attribution?.createdByAgentId ?? null,
+          createdByUserId: input.attribution?.createdByUserId ?? null,
+        })
+        .onConflictDoUpdate({
+          target: [
+            projectRepositories.companyId,
+            projectRepositories.projectId,
+            projectRepositories.repositoryId,
+          ],
+          set: { displayOrder, updatedAt: now },
+        });
+    }
+  }
+
   const createProject = async (
     companyId: string,
-    data: Omit<typeof projects.$inferInsert, "companyId"> & { goalIds?: string[] },
+    data: Omit<typeof projects.$inferInsert, "companyId"> & {
+      goalIds?: string[];
+      repositoryIds?: string[];
+      repositoryAttribution?: RepositoryAttribution;
+    },
   ): Promise<ProjectWithGoals> => {
-    const { goalIds: inputGoalIds, ...projectData } = data;
+    const {
+      goalIds: inputGoalIds,
+      repositoryIds,
+      repositoryAttribution,
+      ...projectData
+    } = data;
     const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
 
     // Note: color is intentionally NOT auto-assigned. New projects default to
@@ -560,15 +665,26 @@ export function projectService(db: Db) {
     // Also write goalId to the legacy column (first goal or null)
     const legacyGoalId = ids && ids.length > 0 ? ids[0] : projectData.goalId ?? null;
 
-    const row = await db
-      .insert(projects)
-      .values({ ...projectData, goalId: legacyGoalId, companyId })
-      .returning()
-      .then((rows) => rows[0]);
+    const row = await db.transaction(async (tx) => {
+      const inserted = await tx
+        .insert(projects)
+        .values({ ...projectData, goalId: legacyGoalId, companyId })
+        .returning()
+        .then((rows) => rows[0]!);
 
-    if (ids && ids.length > 0) {
-      await syncGoalLinks(db, row.id, companyId, ids);
-    }
+      if (ids && ids.length > 0) {
+        await syncGoalLinks(tx as unknown as Db, inserted.id, companyId, ids);
+      }
+      if (repositoryIds !== undefined) {
+        await syncRepositoryLinks(tx as unknown as Db, {
+          companyId,
+          projectId: inserted.id,
+          repositoryIds,
+          attribution: repositoryAttribution,
+        });
+      }
+      return inserted;
+    });
 
     const [withGoals] = await attachGoals(db, [row]);
     const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
@@ -784,9 +900,18 @@ export function projectService(db: Db) {
 
     update: async (
       id: string,
-      data: Partial<typeof projects.$inferInsert> & { goalIds?: string[] },
+      data: Partial<typeof projects.$inferInsert> & {
+        goalIds?: string[];
+        repositoryIds?: string[];
+        repositoryAttribution?: RepositoryAttribution;
+      },
     ): Promise<ProjectWithGoals | null> => {
-      const { goalIds: inputGoalIds, ...projectData } = data;
+      const {
+        goalIds: inputGoalIds,
+        repositoryIds,
+        repositoryAttribution,
+        ...projectData
+      } = data;
       const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
       const existingProject = await db
         .select({ id: projects.id, companyId: projects.companyId, name: projects.name })
@@ -818,17 +943,29 @@ export function projectService(db: Db) {
         updates.goalId = ids.length > 0 ? ids[0] : null;
       }
 
-      const row = await db
-        .update(projects)
-        .set(updates)
-        .where(eq(projects.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      if (!row) return null;
+      const row = await db.transaction(async (tx) => {
+        const updated = await tx
+          .update(projects)
+          .set(updates)
+          .where(eq(projects.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!updated) return null;
 
-      if (ids !== undefined) {
-        await syncGoalLinks(db, id, row.companyId, ids);
-      }
+        if (ids !== undefined) {
+          await syncGoalLinks(tx as unknown as Db, id, updated.companyId, ids);
+        }
+        if (repositoryIds !== undefined) {
+          await syncRepositoryLinks(tx as unknown as Db, {
+            companyId: updated.companyId,
+            projectId: id,
+            repositoryIds,
+            attribution: repositoryAttribution,
+          });
+        }
+        return updated;
+      });
+      if (!row) return null;
 
       const [withGoals] = await attachGoals(db, [row]);
       const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
@@ -907,8 +1044,21 @@ export function projectService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!project) return null;
 
+      const linkedRepository = data.repositoryId
+        ? await db
+          .select({ id: repositories.id, cloneUrl: repositories.cloneUrl })
+          .from(repositories)
+          .where(and(
+            eq(repositories.id, data.repositoryId),
+            eq(repositories.companyId, project.companyId),
+            eq(repositories.state, "active"),
+          ))
+          .then((rows) => rows[0] ?? null)
+        : null;
+      if (data.repositoryId && !linkedRepository) return null;
+
       const cwd = normalizeWorkspaceCwd(data.cwd);
-      const repoUrl = readNonEmptyString(data.repoUrl);
+      const repoUrl = linkedRepository?.cloneUrl ?? readNonEmptyString(data.repoUrl);
       const sourceType = readNonEmptyString(data.sourceType) ?? (repoUrl ? "git_repo" : cwd ? "local_path" : "remote_managed");
       const remoteWorkspaceRef = readNonEmptyString(data.remoteWorkspaceRef);
       if (sourceType === "remote_managed") {
@@ -948,6 +1098,7 @@ export function projectService(db: Db) {
           .values({
             companyId: project.companyId,
             projectId,
+            repositoryId: data.repositoryId ?? null,
             name,
             sourceType,
             cwd: cwd ?? null,
@@ -994,12 +1145,30 @@ export function projectService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!existing) return null;
 
+      const nextRepositoryId = data.repositoryId !== undefined ? data.repositoryId : existing.repositoryId;
+      const linkedRepository = nextRepositoryId
+        ? await db
+          .select({ id: repositories.id, cloneUrl: repositories.cloneUrl, state: repositories.state })
+          .from(repositories)
+          .where(and(
+            eq(repositories.id, nextRepositoryId),
+            eq(repositories.companyId, existing.companyId),
+          ))
+          .then((rows) => rows[0] ?? null)
+        : null;
+      const isChangingRepository = nextRepositoryId !== existing.repositoryId;
+      if (nextRepositoryId && (!linkedRepository || (isChangingRepository && linkedRepository.state !== "active"))) {
+        return null;
+      }
+
       const nextCwd =
         data.cwd !== undefined
           ? normalizeWorkspaceCwd(data.cwd)
           : normalizeWorkspaceCwd(existing.cwd);
       const nextRepoUrl =
-        data.repoUrl !== undefined
+        linkedRepository
+          ? linkedRepository.cloneUrl
+          : data.repoUrl !== undefined
           ? readNonEmptyString(data.repoUrl)
           : readNonEmptyString(existing.repoUrl);
       const nextSourceType =
@@ -1024,7 +1193,10 @@ export function projectService(db: Db) {
         patch.name = deriveWorkspaceName({ cwd: nextCwd, repoUrl: nextRepoUrl });
       }
       if (data.cwd !== undefined) patch.cwd = nextCwd ?? null;
-      if (data.repoUrl !== undefined) patch.repoUrl = nextRepoUrl ?? null;
+      if (data.repositoryId !== undefined) patch.repositoryId = data.repositoryId;
+      if (data.repoUrl !== undefined || data.repositoryId !== undefined || existing.repositoryId) {
+        patch.repoUrl = nextRepoUrl ?? null;
+      }
       if (data.repoRef !== undefined) patch.repoRef = readNonEmptyString(data.repoRef);
       if (data.sourceType !== undefined && nextSourceType) patch.sourceType = nextSourceType;
       if (data.defaultRef !== undefined) patch.defaultRef = readNonEmptyString(data.defaultRef);

@@ -5,6 +5,7 @@ export { accessApi } from "./access";
 export { companiesApi } from "./companies";
 export { agentsApi } from "./agents";
 export { projectsApi } from "./projects";
+export { repositoriesApi } from "./repositories";
 export { issuesApi } from "./issues";
 export { externalObjectsApi } from "./externalObjects";
 export { routinesApi } from "./routines";

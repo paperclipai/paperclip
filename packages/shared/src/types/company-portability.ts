@@ -113,6 +113,30 @@ export interface CompanyPortabilityProjectWorkspaceManifestEntry {
   isPrimary: boolean;
 }
 
+/**
+ * Secret-free repository metadata carried by `.paperclip.yaml`.
+ *
+ * Provider connections are intentionally not portable. `provider` and
+ * `providerRepositoryId` describe source identity only; import materializes a
+ * disconnected manual repository until the destination authorizes a provider.
+ */
+export interface CompanyPortabilityRepositoryManifestEntry {
+  key: string;
+  provider: string;
+  providerRepositoryId: string | null;
+  host: string;
+  owner: string;
+  name: string;
+  cloneUrl: string;
+  webUrl: string | null;
+  defaultBranch: string | null;
+  visibility: string;
+  state: string;
+  disconnected: boolean;
+  projectSlugs: string[];
+  directAgentSlugs: string[];
+}
+
 export interface CompanyPortabilityIssueRoutineTriggerManifestEntry {
   kind: string;
   label: string | null;
@@ -269,6 +293,7 @@ export interface CompanyPortabilityManifest {
   agents: CompanyPortabilityAgentManifestEntry[];
   skills: CompanyPortabilitySkillManifestEntry[];
   projects: CompanyPortabilityProjectManifestEntry[];
+  repositories: CompanyPortabilityRepositoryManifestEntry[];
   issues: CompanyPortabilityIssueManifestEntry[];
   envInputs: CompanyPortabilityEnvInput[];
 }
@@ -367,6 +392,16 @@ export interface CompanyPortabilityPreviewIssuePlan {
   reason: string | null;
 }
 
+export interface CompanyPortabilityPreviewRepositoryPlan {
+  key: string;
+  action: "create" | "reuse" | "skip";
+  existingRepositoryId: string | null;
+  disconnectedProvider: string | null;
+  unresolvedProjectSlugs: string[];
+  unresolvedAgentSlugs: string[];
+  reason: string | null;
+}
+
 export interface CompanyPortabilityPreviewResult {
   include: CompanyPortabilityInclude;
   targetCompanyId: string | null;
@@ -377,6 +412,7 @@ export interface CompanyPortabilityPreviewResult {
     companyAction: "none" | "create" | "update";
     agentPlans: CompanyPortabilityPreviewAgentPlan[];
     projectPlans: CompanyPortabilityPreviewProjectPlan[];
+    repositoryPlans: CompanyPortabilityPreviewRepositoryPlan[];
     issuePlans: CompanyPortabilityPreviewIssuePlan[];
   };
   manifest: CompanyPortabilityManifest;
@@ -424,6 +460,12 @@ export interface CompanyPortabilityImportResult {
     id: string | null;
     action: "created" | "updated" | "skipped";
     name: string;
+    reason: string | null;
+  }[];
+  repositories: {
+    key: string;
+    id: string | null;
+    action: "created" | "reused" | "skipped";
     reason: string | null;
   }[];
   routines: {

@@ -325,6 +325,7 @@ function createProject(overrides: Partial<Project> = {}): Project {
     id: "workspace-main",
     companyId: "company-1",
     projectId: "project-1",
+    repositoryId: null,
     name: "Main",
     sourceType: "local_path" as const,
     cwd: "/tmp/paperclip",

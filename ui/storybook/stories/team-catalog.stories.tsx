@@ -85,6 +85,7 @@ function makePreview(errors: string[] = []): CatalogTeamImportPreviewResult {
         projectPlans: [
           { slug: "launch", action: "create", plannedName: "Launch", existingProjectId: null, reason: null },
         ],
+        repositoryPlans: [],
         issuePlans: [
           { slug: "kickoff", action: "skip", plannedTitle: "Kickoff", reason: "Starter tasks not selected" },
         ],
@@ -103,6 +104,7 @@ function makePreview(errors: string[] = []): CatalogTeamImportPreviewResult {
         ],
         skills: [],
         projects: [],
+        repositories: [],
         issues: [],
         envInputs: [],
       },
@@ -354,6 +356,7 @@ export const InstallSuccess: Story = {
             ],
             skills: [],
             projects: [{ slug: "launch", id: "p1", action: "created", name: "Launch", reason: null }],
+            repositories: [],
             routines: [],
             envInputs: [],
             warnings: [],

@@ -297,6 +297,7 @@ export {
   portabilitySidebarOrderSchema,
   portabilityAgentManifestEntrySchema,
   portabilitySkillManifestEntrySchema,
+  portabilityRepositoryManifestEntrySchema,
   portabilityManifestSchema,
   portabilitySourceSchema,
   portabilityTargetSchema,
@@ -761,6 +762,7 @@ export {
   pluginManagedSkillFileDeclarationSchema,
   pluginManagedSkillDeclarationSchema,
   pluginApiRouteDeclarationSchema,
+  pluginRepositoryProviderDeclarationSchema,
   pluginManifestV1Schema,
   installPluginSchema,
   upsertPluginConfigSchema,
@@ -921,3 +923,4 @@ export {
 } from "./tool-access.js";
 export * from "./skill-policy.js";
 export * from "./app-definition.js";
+export * from "./repository.js";

@@ -328,6 +328,11 @@ export {
   GOAL_LEVELS,
   GOAL_STATUSES,
   PROJECT_STATUSES,
+  REPOSITORY_PROVIDERS,
+  REPOSITORY_STATES,
+  REPOSITORY_VISIBILITIES,
+  REPOSITORY_CONNECTION_STATUSES,
+  REPOSITORY_SYNC_STATUSES,
   ENVIRONMENT_DRIVERS,
   ENVIRONMENT_STATUSES,
   ENVIRONMENT_LEASE_STATUSES,
@@ -1139,6 +1144,7 @@ export type {
   CompanyPortabilitySkillManifestEntry,
   CompanyPortabilityProjectManifestEntry,
   CompanyPortabilityProjectWorkspaceManifestEntry,
+  CompanyPortabilityRepositoryManifestEntry,
   CompanyPortabilityIssueRoutineTriggerManifestEntry,
   CompanyPortabilityIssueRoutineManifestEntry,
   CompanyPortabilityIssueCommentManifestEntry,
@@ -1158,6 +1164,7 @@ export type {
   CompanyPortabilityPreviewRequest,
   CompanyPortabilityPreviewAgentPlan,
   CompanyPortabilityPreviewProjectPlan,
+  CompanyPortabilityPreviewRepositoryPlan,
   CompanyPortabilityPreviewIssuePlan,
   CompanyPortabilityPreviewResult,
   CompanyPortabilityAdapterOverride,
@@ -1385,6 +1392,7 @@ export type {
   PluginApiRouteDeclaration,
   PluginObjectReferenceRefreshPolicy,
   PluginObjectReferenceProviderDeclaration,
+  PluginRepositoryProviderDeclaration,
   PaperclipPluginManifestV1,
   PluginRecord,
   PluginDatabaseNamespaceRecord,
@@ -1437,6 +1445,13 @@ export {
   type VerifyDocumentAnchorSelectorInput,
   type VerifyDocumentAnchorSelectorResult,
 } from "./document-anchors.js";
+
+export {
+  REPOSITORY_PROVIDER_ANY_HOST,
+  normalizeRepositoryProviderHost,
+  normalizeRepositoryProviderKey,
+  repositoryProviderIdentityKey,
+} from "./repository-provider-identity.js";
 
 export {
   formatExternalObjectMentionSourceLabel,
@@ -2159,6 +2174,7 @@ export {
   portabilityCompanyManifestEntrySchema,
   portabilitySidebarOrderSchema,
   portabilityAgentManifestEntrySchema,
+  portabilityRepositoryManifestEntrySchema,
   portabilityManifestSchema,
   portabilitySourceSchema,
   portabilityTargetSchema,
@@ -2181,6 +2197,7 @@ export {
   pluginLauncherDeclarationSchema,
   pluginDatabaseDeclarationSchema,
   pluginApiRouteDeclarationSchema,
+  pluginRepositoryProviderDeclarationSchema,
   pluginManifestV1Schema,
   installPluginSchema,
   upsertPluginConfigSchema,
@@ -2372,6 +2389,34 @@ export {
   type EnvironmentCustomImageTerminalSessionToken,
 } from "./validators/environment-custom-images.js";
 export * from "./validators/skill-policy.js";
+export * from "./validators/repository.js";
+export type {
+  RepositoryProvider,
+  RepositoryState,
+  RepositoryVisibility,
+  Repository,
+  RepositoryCatalogItem,
+  RepositoryConnectionStatus,
+  RepositoryConnectionSyncStatus,
+  RepositoryConnection,
+  ProjectRepositoryLink,
+  ProjectRepositoryEntry,
+  AgentRepositoryGrant,
+  AgentRepositoryGrantEntry,
+  EffectiveRepositoryProjectSource,
+  EffectiveRepositoryAccess,
+  RepositoryDiscoveryItem,
+  RepositoryDiscoveryPage,
+  BeginRepositoryConnectionResult,
+  CompleteRepositoryConnectionResult,
+  ImportRepositoriesResult,
+  RepositoryContext,
+  ProjectRepositoryHint,
+  EffectiveRepositoryContext,
+  RepositoryRelationshipProject,
+  RepositoryRelationshipAgent,
+  RepositoryRelationships,
+} from "./types/repository.js";
 export {
   FEATURE_TIERS,
   INSTANCE_FEATURE_CATALOG,

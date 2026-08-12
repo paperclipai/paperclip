@@ -520,6 +520,12 @@ export const PROJECT_STATUSES = [
 ] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
+export const REPOSITORY_PROVIDERS = ["manual", "github"] as const;
+export const REPOSITORY_STATES = ["active", "unavailable", "archived"] as const;
+export const REPOSITORY_VISIBILITIES = ["public", "private", "internal", "unknown"] as const;
+export const REPOSITORY_CONNECTION_STATUSES = ["active", "error", "disconnected"] as const;
+export const REPOSITORY_SYNC_STATUSES = ["idle", "syncing", "succeeded", "failed"] as const;
+
 export const ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox", "plugin"] as const;
 export type EnvironmentDriver = (typeof ENVIRONMENT_DRIVERS)[number];
 
@@ -1342,6 +1348,11 @@ export const PLUGIN_CAPABILITIES = [
   "http.outbound",
   "secrets.read-ref",
   "environment.drivers.register",
+  // Register a first-class repository provider connector (installation flow,
+  // discovery, sync, short-lived clone credentials) with the host registry.
+  // Trusted-extension surface: the host still owns persistence, company
+  // scoping, and secret redaction; the plugin only answers provider questions.
+  "repository.providers.register",
   "local.folders",
   // Agent Tools
   "agent.tools.register",

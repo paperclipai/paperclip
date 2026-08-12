@@ -218,6 +218,24 @@ Invariant:
 
 Routine execution issues add a routine-scoped env overlay after project env and before Paperclip runtime-owned keys. Routine env uses the same secret-aware binding format, is stored on `routines.env`, is snapshotted in routine revisions, and resolves secret refs against the routine binding target so routine-owned secrets do not require direct bindings on the executing agent.
 
+### Repository catalog and execution boundaries
+
+Repositories are company-scoped work objects, not project-owned workspaces:
+
+- `repository_connections` records provider installations and sync state. Provider credentials remain behind secret references and are never repository metadata.
+- `repositories` is the company catalog. A row may be entered manually or synchronized from a provider connection; normalized identity prevents duplicate catalog entries inside one company.
+- `project_repositories` is a many-to-many, ordered hint that a project is likely to touch a repository. A hint is non-exclusive and does not grant access by itself beyond the actor's existing `project:read` authorization.
+- `agent_repository_grants` is an explicit direct grant. An agent's effective repository set is the union of direct grants and hints from projects that agent may read.
+
+These concepts stay separate:
+
+- **Repository availability** means a catalog row is `active`; `unavailable` and `archived` rows cannot resolve clone credentials or accept new relationships.
+- **Project work-object visibility** is decided through `project:read`; it controls which project-derived repository hints contribute to an agent's effective set.
+- **Repository hints** are secret-free identity and clone metadata supplied for planning and context. They do not select a checkout or working directory.
+- **Execution workspaces** are concrete runtime locations and lifecycle records. A workspace may reference a catalog repository, but attaching a repository to a project never creates a workspace, and repository portability never synthesizes one from a hint.
+
+All repository, connection, relationship, credential, and effective-access APIs derive and enforce company scope. Mutations are board-only and activity-logged. Agent-readable project and effective-access endpoints still apply project/agent authorization. Clone credentials are short-lived, returned with `Cache-Control: no-store`, and available only for an active provider-backed repository in the caller's effective access set.
+
 ## 7.6 `issues` (core task entity)
 
 - `id` uuid pk
@@ -454,6 +472,7 @@ The current implementation includes additional V1-control-plane tables beyond th
 - Issue structure and review: `issue_relations` for blockers, `labels`/`issue_labels`, `issue_thread_interactions`, `issue_approvals`, `issue_execution_decisions`, `issue_work_products`, `issue_inbox_archives`, `issue_read_states`, and issue reference mention indexes.
 - Execution and workspace control: `execution_workspaces`, `project_workspaces`, `workspace_runtime_services`, `workspace_operations`, `environments`, `environment_leases`, `agent_task_sessions`, `agent_runtime_state`, `agent_wakeup_requests`, heartbeat events, and watchdog decision tables.
 - Plugins and routines: `plugins`, plugin config/state/entities/jobs/logs/webhooks, plugin database namespaces/migrations, plugin company settings, `routines`, `routine_revisions`, `routine_triggers`, and `routine_runs`.
+- Repository catalog and access: `repository_connections`, `repositories`, `project_repositories`, and `agent_repository_grants`; `project_workspaces.repository_id` is an optional execution link, not ownership of the catalog row.
 - Access and operations: company memberships, instance roles, principal permission grants, invites, join requests, board API keys, CLI auth challenges, budget policies/incidents, feedback exports/votes, company skills, sidebar preferences, and company logos.
 
 Decision-desk triage uses company-scoped sidecars rather than adding queue fields to every attention source:
@@ -1388,13 +1407,17 @@ Export/import behavior in V1:
 - projects and starter tasks are opt-in export content rather than default package content
 - recurring `TASK.md` entries use `recurring: true` in the base package and Paperclip routine fidelity in `.paperclip.yaml`
 - Paperclip imports recurring task packages as routines instead of downgrading them to one-time issues
-- export strips environment-specific paths (`cwd`, local instruction file paths, inline prompt duplication) while preserving portable project repo/workspace metadata such as `repoUrl`, refs, and workspace-policy references keyed in `.paperclip.yaml`
+- export strips environment-specific paths (`cwd`, local instruction file paths, inline prompt duplication) while preserving portable execution-workspace metadata such as `repoUrl`, refs, and workspace-policy references keyed in `.paperclip.yaml`
+- `.paperclip.yaml` schema version 8 carries secret-free repository catalog entries plus project-slug and direct-agent-slug relationships; it never carries connection ids, provider credentials, provider configuration, secret refs, or provider metadata
 - export never includes secret values; env inputs are reported as portable declarations instead
 - export preserves explicit company skill policy and retained legacy skill grants in `.paperclip.yaml`; absence of policy remains the open default
 - import supports target modes:
   - create a new company
   - import into an existing company
 - import recreates exported project workspaces and remaps portable workspace keys back to target-local workspace ids
+- import matches repositories by normalized clone URL, recreates them as manual metadata, restores resolvable project/direct-agent relationships, and reports unresolved mappings in preview
+- provider-backed source repositories are previewed and imported as disconnected manual metadata pending destination re-authorization; an import cannot resurrect the source provider connection
+- pre-version-8 packages with only project-workspace `repoUrl` values recover deduplicated manual catalog entries and project hints without creating any workspace not explicitly declared by the package
 - import forces imported agent timer heartbeats off so packages never start scheduled runs implicitly
 - import supports collision strategies: `rename`, `skip`, `replace`
 - import supports preview (dry-run) before apply

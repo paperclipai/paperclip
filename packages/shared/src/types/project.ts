@@ -5,6 +5,7 @@ import type {
   WorkspaceRuntimeService,
 } from "./workspace-runtime.js";
 import type { AgentEnvConfig } from "./secrets.js";
+import type { ProjectRepositoryHint } from "./repository.js";
 
 export type ProjectWorkspaceSourceType = "local_path" | "git_repo" | "remote_managed" | "non_git_path";
 export type ProjectWorkspaceVisibility = "default" | "advanced";
@@ -29,6 +30,7 @@ export interface ProjectWorkspace {
   id: string;
   companyId: string;
   projectId: string;
+  repositoryId: string | null;
   name: string;
   sourceType: ProjectWorkspaceSourceType;
   cwd: string | null;
@@ -94,6 +96,8 @@ export interface Project {
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
+  /** Non-exclusive guidance about the repositories this project is likely to touch. */
+  repositoryHints?: ProjectRepositoryHint[];
   codebase: ProjectCodebase;
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;

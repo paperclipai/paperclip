@@ -7,6 +7,7 @@ function createProjectWorkspace(overrides: Partial<ProjectWorkspace>): ProjectWo
     id: overrides.id ?? "workspace-default",
     companyId: overrides.companyId ?? "company-1",
     projectId: overrides.projectId ?? "project-1",
+    repositoryId: overrides.repositoryId ?? null,
     name: overrides.name ?? "paperclip",
     sourceType: overrides.sourceType ?? "local_path",
     cwd: overrides.cwd ?? "/repo",

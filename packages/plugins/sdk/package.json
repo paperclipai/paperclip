@@ -42,6 +42,10 @@
       "types": "./dist/testing.d.ts",
       "import": "./dist/testing.js"
     },
+    "./repository-provider-conformance": {
+      "types": "./dist/repository-provider-conformance.d.ts",
+      "import": "./dist/repository-provider-conformance.js"
+    },
     "./bundlers": {
       "types": "./dist/bundlers.d.ts",
       "import": "./dist/bundlers.js"
@@ -84,6 +88,10 @@
       "./testing": {
         "types": "./dist/testing.d.ts",
         "import": "./dist/testing.js"
+      },
+      "./repository-provider-conformance": {
+        "types": "./dist/repository-provider-conformance.d.ts",
+        "import": "./dist/repository-provider-conformance.js"
       },
       "./bundlers": {
         "types": "./dist/bundlers.d.ts",

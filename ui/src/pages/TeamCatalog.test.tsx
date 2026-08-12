@@ -168,6 +168,7 @@ function makePreview(): CatalogTeamImportPreviewResult {
         projectPlans: [
           { slug: "launch", action: "create", plannedName: "Launch", existingProjectId: null, reason: null },
         ],
+        repositoryPlans: [],
         issuePlans: [],
       },
       manifest: {
@@ -180,6 +181,7 @@ function makePreview(): CatalogTeamImportPreviewResult {
         agents: [],
         skills: [],
         projects: [],
+        repositories: [],
         issues: [],
         envInputs: [],
       },

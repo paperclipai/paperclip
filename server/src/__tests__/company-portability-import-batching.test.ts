@@ -157,7 +157,7 @@ interface SyntheticBundleOptions {
   documentsPerIssue: number;
 }
 
-/** Build an inline import bundle with the requested shape, valid at schemaVersion 7. */
+/** Build an inline import bundle with the requested shape, valid at the current schema version. */
 function buildSyntheticBundle(options: SyntheticBundleOptions): {
   rootPath: string;
   files: Record<string, CompanyPortabilityFileEntry>;
@@ -193,7 +193,7 @@ function buildSyntheticBundle(options: SyntheticBundleOptions): {
     };
   }
 
-  files[".paperclip.yaml"] = renderPaperclipYaml({ schemaVersion: 7, tasks });
+  files[".paperclip.yaml"] = renderPaperclipYaml({ schemaVersion: 8, tasks });
 
   return { rootPath: "batching-bench", files };
 }
@@ -223,7 +223,7 @@ function buildTouchedIssuesBundle(issueCount: number): {
     };
   }
 
-  files[".paperclip.yaml"] = renderPaperclipYaml({ schemaVersion: 7, tasks });
+  files[".paperclip.yaml"] = renderPaperclipYaml({ schemaVersion: 8, tasks });
   return { rootPath: "inbox-flood", files };
 }
 
@@ -431,7 +431,7 @@ describeEmbeddedPostgres("company import batches inserts", () => {
     files["tasks/m-grandchild/TASK.md"] = taskFile("Grandchild");
     files["tasks/z-parent/TASK.md"] = taskFile("Parent");
     files[".paperclip.yaml"] = renderPaperclipYaml({
-      schemaVersion: 7,
+      schemaVersion: 8,
       tasks: {
         // The child slug sorts before its parent so the importer's
         // parents-first row ordering (not manifest order) must satisfy the

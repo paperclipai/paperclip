@@ -1,5 +1,6 @@
 import { Plus } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import type { Ref } from "react";
 import { Button } from "@/components/ui/button";
 
 interface EmptyStateProps {
@@ -11,6 +12,7 @@ interface EmptyStateProps {
   description?: string;
   action?: string;
   onAction?: () => void;
+  actionRef?: Ref<HTMLButtonElement>;
   /** Hide the leading "+" glyph on the action button (e.g. for a "Set up" CTA). */
   hideActionIcon?: boolean;
 }
@@ -22,6 +24,7 @@ export function EmptyState({
   description,
   action,
   onAction,
+  actionRef,
   hideActionIcon = false,
 }: EmptyStateProps) {
   return (
@@ -41,7 +44,7 @@ export function EmptyState({
         </>
       )}
       {action && onAction && (
-        <Button onClick={onAction}>
+        <Button ref={actionRef} onClick={onAction}>
           {!hideActionIcon && <Plus className="h-4 w-4 mr-1.5" />}
           {action}
         </Button>

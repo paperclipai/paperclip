@@ -133,10 +133,13 @@ import {
   logActivity,
   publishActivity,
   projectService,
+  repositoryAccessService,
+  authorizationService,
   routineService,
   workProductService,
 } from "../services/index.js";
 import { buildPlanReviewContext } from "../services/plan-review-context.js";
+import { toEffectiveRepositoryContext } from "../services/repository-access.js";
 import {
   decideIssueReviewPathRecovery,
   ISSUE_REVIEW_PATH_LOST_WAKE_REASON,
@@ -5125,6 +5128,7 @@ export function issueRoutes(
       pauseReason: project.pauseReason,
       pausedAt: project.pausedAt,
       executionWorkspacePolicy: project.executionWorkspacePolicy,
+      repositoryHints: project.repositoryHints,
       codebase: project.codebase,
       workspaces: (project.workspaces ?? []).map(compactIssueProjectWorkspace),
       primaryWorkspace: compactIssueProjectWorkspace(project.primaryWorkspace),
@@ -5822,6 +5826,26 @@ export function issueRoutes(
       issueWorkMode: issue.workMode,
       includeForIssueComment: wakeCommentId !== null,
     });
+    const effectiveRepositories = issue.assigneeAgentId
+      ? ((await repositoryAccessService(db).listEffectiveRepositories({
+          companyId: issue.companyId,
+          agentId: issue.assigneeAgentId,
+          canAccessProject: async (candidate) => {
+            const decision = await authorizationService(db).decide({
+              actor: {
+                type: "agent",
+                agentId: issue.assigneeAgentId,
+                companyId: issue.companyId,
+                source: "agent_key",
+              },
+              action: "project:read",
+              resource: { type: "project", companyId: issue.companyId, projectId: candidate.id },
+              scope: { projectId: candidate.id },
+            });
+            return decision.allowed;
+          },
+        })) ?? []).map(toEffectiveRepositoryContext)
+      : [];
 
     const response = {
       issue: {
@@ -5861,7 +5885,11 @@ export function issueRoutes(
             name: project.name,
             status: project.status,
             targetDate: project.targetDate,
+            repositoryHints: project.repositoryHints,
           }
+        : null,
+      agent: issue.assigneeAgentId
+        ? { id: issue.assigneeAgentId, effectiveRepositories }
         : null,
       goal: goal
         ? {

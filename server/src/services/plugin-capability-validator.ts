@@ -147,6 +147,15 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "environment.captureTemplate": ["environment.drivers.register"],
   "environment.cancelInteractiveSetup": ["environment.drivers.register"],
   "environment.deleteTemplate": ["environment.drivers.register"],
+
+  // First-class repository providers contributed by trusted extensions
+  "repository.provider.beginInstallation": ["repository.providers.register"],
+  "repository.provider.completeInstallation": ["repository.providers.register"],
+  "repository.provider.discover": ["repository.providers.register"],
+  "repository.provider.refreshMetadata": ["repository.providers.register"],
+  "repository.provider.sync": ["repository.providers.register"],
+  "repository.provider.disconnect": ["repository.providers.register"],
+  "repository.provider.resolveCloneCredential": ["repository.providers.register"],
 };
 
 /**
@@ -204,6 +213,7 @@ const FEATURE_CAPABILITIES: Record<string, PluginCapability> = {
   webhooks: "webhooks.receive",
   database: "database.namespace.migrate",
   environmentDrivers: "environment.drivers.register",
+  repositoryProviders: "repository.providers.register",
   agents: "agents.managed",
   projects: "projects.managed",
   routines: "routines.managed",
