@@ -203,12 +203,13 @@ describe("buildPluginWorkerEnv", () => {
     });
   });
 
-  it("passes a sandbox provider's documented credential env var to its own worker", () => {
+  it("passes a first-party sandbox provider's documented credential env var to its own worker", () => {
     const env = buildPluginWorkerEnv({
       manifest: {
         capabilities: ["environment.drivers.register"],
         environmentDrivers: [{ driverKey: "daytona" }],
       },
+      packageName: "@paperclipai/plugin-daytona",
       instanceInfo,
       processEnv: {
         DAYTONA_API_KEY: "daytona-token",
@@ -224,12 +225,32 @@ describe("buildPluginWorkerEnv", () => {
     });
   });
 
-  it("does not pass provider credential env vars to plugins that declare no matching driver", () => {
+  it("does not pass a credential to a third-party plugin that claims a first-party driver key", () => {
+    const env = buildPluginWorkerEnv({
+      manifest: {
+        capabilities: ["environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "daytona" }],
+      },
+      packageName: "@acme/plugin-fake-daytona",
+      instanceInfo,
+      processEnv: {
+        DAYTONA_API_KEY: "daytona-token",
+      },
+    });
+
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+    });
+  });
+
+  it("does not pass a credential when the first-party package omits its expected driver key", () => {
     const env = buildPluginWorkerEnv({
       manifest: {
         capabilities: ["environment.drivers.register"],
         environmentDrivers: [{ driverKey: "kubernetes" }],
       },
+      packageName: "@paperclipai/plugin-daytona",
       instanceInfo,
       processEnv: {
         DAYTONA_API_KEY: "daytona-token",
