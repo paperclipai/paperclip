@@ -299,6 +299,12 @@ export function confirmAgentConfigNavigation(
   return !dirty || confirm(DISCARD_AGENT_CONFIG_CHANGES_MESSAGE);
 }
 
+export function agentConfigHistoryRestoreDelta(currentIndex: unknown, nextIndex: unknown): number | null {
+  if (typeof currentIndex !== "number" || typeof nextIndex !== "number") return null;
+  const delta = currentIndex - nextIndex;
+  return delta === 0 ? null : delta;
+}
+
 export function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "instructions" || value === "prompts") return "instructions";
   if (value === "configure" || value === "configuration") return "configuration";
@@ -1120,6 +1126,33 @@ export function AgentDetail() {
 
     document.addEventListener("click", handleDocumentClick, true);
     return () => document.removeEventListener("click", handleDocumentClick, true);
+  }, [configDirty]);
+
+  useEffect(() => {
+    if (!configDirty) return;
+
+    // BrowserRouter updates after popstate. Run first in the capture phase so a
+    // rejected Back/Forward navigation can be restored before React Router
+    // consumes it and unmounts the route-backed form.
+    const currentIndex = window.history.state?.idx;
+    let restoring = false;
+
+    function handlePopState(event: PopStateEvent) {
+      if (restoring) {
+        restoring = false;
+        return;
+      }
+
+      const restoreDelta = agentConfigHistoryRestoreDelta(currentIndex, event.state?.idx);
+      if (restoreDelta === null || confirmAgentConfigNavigation(true)) return;
+
+      event.stopImmediatePropagation();
+      restoring = true;
+      window.history.go(restoreDelta);
+    }
+
+    window.addEventListener("popstate", handlePopState, true);
+    return () => window.removeEventListener("popstate", handlePopState, true);
   }, [configDirty]);
 
   if (isLoading) return <PageSkeleton variant="detail" />;

@@ -5,6 +5,7 @@ import { queryKeys } from "../lib/queryKeys";
 import {
   AGENT_DETAIL_TABS,
   DISCARD_AGENT_CONFIG_CHANGES_MESSAGE,
+  agentConfigHistoryRestoreDelta,
   buildHeartbeatProgressLogLine,
   confirmAgentConfigNavigation,
   heartbeatProgressLogLineKey,
@@ -30,6 +31,13 @@ describe("agent detail tabs", () => {
     expect(confirmAgentConfigNavigation(true, confirm)).toBe(true);
     expect(confirmAgentConfigNavigation(false, confirm)).toBe(true);
     expect(confirm).toHaveBeenCalledTimes(2);
+  });
+
+  it("restores the prior history entry when Back or Forward navigation is rejected", () => {
+    expect(agentConfigHistoryRestoreDelta(4, 2)).toBe(2);
+    expect(agentConfigHistoryRestoreDelta(2, 4)).toBe(-2);
+    expect(agentConfigHistoryRestoreDelta(2, 2)).toBeNull();
+    expect(agentConfigHistoryRestoreDelta(undefined, 1)).toBeNull();
   });
 });
 
