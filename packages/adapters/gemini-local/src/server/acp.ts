@@ -70,6 +70,15 @@ export function resolveGeminiExecutionEngine(config: Record<string, unknown>): G
 export async function resolveGeminiExecutionEngineForRun(
   input: GeminiEngineResolutionInput,
 ): Promise<GeminiEngineSelection> {
+  // agy has no ACP server (no `agy --acp`), so cliCompat="agy" pins the CLI
+  // lane whenever the user did not explicitly request ACP. This prevents auto
+  // engine selection from silently running Gemini ACP and bypassing the agy
+  // command/flags/parser entirely.
+  const rawEngine = typeof input.config.engine === "string" ? input.config.engine.trim().toLowerCase() : "";
+  const cliCompat = typeof input.config.cliCompat === "string" ? input.config.cliCompat.trim().toLowerCase() : "";
+  if (cliCompat === "agy" && rawEngine !== "acp") {
+    return { engine: "cli", explicit: true };
+  }
   const selection = normalizeEngine(input.config.engine);
   if (selection.explicit || selection.engine !== "acp") return selection;
 

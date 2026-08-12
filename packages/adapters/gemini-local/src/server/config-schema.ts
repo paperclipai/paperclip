@@ -31,7 +31,7 @@ export function getConfigSchema(): AdapterConfigSchema {
           { value: "gemini", label: "Gemini CLI" },
           { value: "agy", label: "Antigravity CLI (agy)" },
         ],
-        hint: "When using the CLI lane, adapt flag/output parsing to the target CLI. agy shares stream-json/--prompt with Gemini but uses --dangerously-skip-permissions instead of --approval-mode yolo.",
+        hint: "When using the CLI lane, adapt flag/output parsing to the target CLI. agy shares stream-json/--prompt with Gemini but uses --dangerously-skip-permissions instead of --approval-mode yolo. Selecting agy forces the CLI lane (agy has no ACP server).",
       },
       {
         key: "agentCommand",

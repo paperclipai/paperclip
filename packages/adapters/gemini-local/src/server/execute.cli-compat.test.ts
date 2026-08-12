@@ -51,6 +51,10 @@ vi.mock("./acp.js", () => ({
   formatGeminiAcpFallbackMessage: (reason: string) =>
     `[paperclip] Gemini ACP default unavailable; falling back to Gemini CLI. ${reason} Set engine=acp to require ACP or engine=cli to silence this fallback.\n`,
   resolveGeminiExecutionEngineForRun: async (ctx: { config: Record<string, unknown> }) => {
+    // Mirrors acp.ts: cliCompat="agy" pins the CLI lane unless engine=acp.
+    const cliCompat = typeof ctx.config.cliCompat === "string" ? ctx.config.cliCompat.trim().toLowerCase() : "";
+    const rawEngine = typeof ctx.config.engine === "string" ? ctx.config.engine.trim().toLowerCase() : "";
+    if (cliCompat === "agy" && rawEngine !== "acp") return { engine: "cli", explicit: true };
     if (ctx.config.engine === "cli") return { engine: "cli", explicit: true };
     if (ctx.config.engine === "acp") return { engine: "acp", explicit: true };
     return { engine: "acp", explicit: false };
@@ -161,6 +165,20 @@ describe("gemini_local cliCompat=agy CLI lane", () => {
     expect(args).toContain("yolo");
     expect(args).toContain("--sandbox=none");
     expect(args).not.toContain("--dangerously-skip-permissions");
+  });
+
+  it("forces the CLI lane when cliCompat=agy and engine is auto", async () => {
+    // engine left unset (auto): agy has no ACP server, so the run must go
+    // through the CLI lane with agy flags instead of Gemini ACP.
+    const ctx = buildContext({ cliCompat: "agy", command: "agy", engine: undefined });
+
+    const result = await execute(ctx as never);
+
+    expect(executeGeminiAcp).not.toHaveBeenCalled();
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+    const [, , , args] = vi.mocked(runAdapterExecutionTargetProcess).mock.calls[0] as unknown as [unknown, unknown, unknown, string[]];
+    expect(args).toContain("--dangerously-skip-permissions");
+    expect(result.exitCode).toBe(0);
   });
 
   it("passes through extraArgs in agy mode", async () => {

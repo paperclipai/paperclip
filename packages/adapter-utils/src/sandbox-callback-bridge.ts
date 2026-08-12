@@ -1039,10 +1039,15 @@ export async function startSandboxCallbackBridgeServer(input: {
   // `nohup ... &` are killed when the SSH session that spawned them closes
   // (MSYS process model). Launch the bridge through a wrapper .cmd file
   // registered as a one-shot schtasks task instead, so the node process
-  // detaches from the parent SSH session and survives it.
+  // detaches from the parent SSH session and survives it. The wrapper uses
+  // PowerShell Start-Process -PassThru so the real Windows PID lands in the
+  // pid file (git bash `kill` cannot address Windows PIDs), and the task name
+  // is persisted so stop() can end/delete the task and kill the process.
   const winTaskName = `paperclip-bridge-${Math.random().toString(36).slice(2, 10)}`;
   const wrapperCmdPath = path.posix.join(directories.rootDir, `start-${winTaskName}.cmd`);
   const wrapperWinPath = `C:${wrapperCmdPath.replace(/\//g, "\\")}`;
+  const taskNameFile = path.posix.join(directories.rootDir, "task-name.txt");
+  const windowsStderrLogFile = `${directories.logFile}.err`;
   const startScript = [
     `mkdir -p ${shellQuote(directories.requestsDir)} ${shellQuote(directories.responsesDir)} ${shellQuote(directories.logsDir)}`,
     `rm -f ${shellQuote(directories.readyFile)} ${shellQuote(directories.pidFile)}`,
@@ -1053,6 +1058,9 @@ export async function startSandboxCallbackBridgeServer(input: {
     `  NODE_WIN="$(cygpath -w "$NODE_BIN" 2>/dev/null || echo "$NODE_BIN")"`,
     `  ENTRY_WIN="$(cygpath -w ${shellQuote(remoteEntrypoint)} 2>/dev/null || echo ${shellQuote(remoteEntrypoint)})"`,
     `  LOG_WIN="$(cygpath -w ${shellQuote(directories.logFile)} 2>/dev/null || echo ${shellQuote(directories.logFile)})"`,
+    `  ERR_WIN="$(cygpath -w ${shellQuote(windowsStderrLogFile)} 2>/dev/null || echo ${shellQuote(windowsStderrLogFile)})"`,
+    `  PID_WIN="$(cygpath -w ${shellQuote(directories.pidFile)} 2>/dev/null || echo ${shellQuote(directories.pidFile)})"`,
+    `  CWD_WIN="$(cygpath -w ${shellQuote(input.remoteCwd)} 2>/dev/null || echo ${shellQuote(input.remoteCwd)})"`,
     `  WRAPPER_WIN="$(cygpath -w ${shellQuote(wrapperCmdPath)} 2>/dev/null || echo ${shellQuote(wrapperWinPath)})"`,
     `  QUEUE_WIN="$(cygpath -w ${shellQuote(String(env.PAPERCLIP_BRIDGE_QUEUE_DIR ?? input.queueDir))} 2>/dev/null || echo ${shellQuote(String(env.PAPERCLIP_BRIDGE_QUEUE_DIR ?? input.queueDir))})"`,
     // Bridge env vars must be baked into the wrapper because schtasks
@@ -1065,9 +1073,10 @@ export async function startSandboxCallbackBridgeServer(input: {
       `    printf 'set %s=%s\\r\\n' ${shellQuote(key)} ${shellQuote(String(value).replace(/\r?\n/g, " "))}`,
     ).join("\n"),
     `    printf 'set PAPERCLIP_BRIDGE_QUEUE_DIR=%s\\r\\n' "$QUEUE_WIN"`,
-    `    printf '"%s" "%s" >> "%s" 2>&1\\r\\n' "$NODE_WIN" "$ENTRY_WIN" "$LOG_WIN"`,
+    `    printf 'powershell -NoProfile -ExecutionPolicy Bypass -Command "$p = Start-Process -FilePath ''%s'' -ArgumentList ''%s'' -WorkingDirectory ''%s'' -WindowStyle Hidden -RedirectStandardOutput ''%s'' -RedirectStandardError ''%s'' -PassThru; $p.Id | Out-File -FilePath ''%s'' -Encoding ascii"\\r\\n' "$NODE_WIN" "$ENTRY_WIN" "$CWD_WIN" "$LOG_WIN" "$ERR_WIN" "$PID_WIN"`,
     `  } > ${shellQuote(wrapperCmdPath)}`,
-    `  MSYS_NO_PATHCONV=1 cmd.exe /c "schtasks /create /tn ${winTaskName} /tr \\"$WRAPPER_WIN\\" /sc once /st 23:59 /f" >/dev/null 2>&1 || true`,
+    `  printf '%s' ${shellQuote(winTaskName)} > ${shellQuote(taskNameFile)}`,
+    `  MSYS_NO_PATHCONV=1 cmd.exe /c "schtasks /create /tn ${winTaskName} /tr \"$WRAPPER_WIN\" /sc once /st 23:59 /f" >/dev/null 2>&1 || true`,
     `  MSYS_NO_PATHCONV=1 cmd.exe /c "schtasks /run /tn ${winTaskName}" >/dev/null 2>&1`,
     `  echo '{"pid":0}'`,
     `else`,
@@ -1100,9 +1109,14 @@ export async function startSandboxCallbackBridgeServer(input: {
       `    cat ${shellQuote(directories.readyFile)}`,
       "    exit 0",
       "  fi",
-      `  if [ -s ${shellQuote(directories.logFile)} ] && ! kill -0 \"$(cat ${shellQuote(directories.pidFile)} 2>/dev/null)\" 2>/dev/null; then`,
-      `    cat ${shellQuote(directories.logFile)} >&2`,
-      "    exit 1",
+      // git bash `kill -0` cannot address Windows PIDs, so the liveness
+      // check is skipped on MSYS/Cygwin/Windows targets; readiness is
+      // signalled by the ready file alone there.
+      `  if uname -s 2>/dev/null | grep -qiE 'mingw|msys|cygwin|^nt'; then :; else`,
+      `    if [ -s ${shellQuote(directories.logFile)} ] && ! kill -0 \"$(cat ${shellQuote(directories.pidFile)} 2>/dev/null)\" 2>/dev/null; then`,
+      `      cat ${shellQuote(directories.logFile)} >&2`,
+      "      exit 1",
+      "    fi",
       "  fi",
       "  i=$((i + 1))",
       "  sleep 0.05",
@@ -1148,16 +1162,36 @@ export async function startSandboxCallbackBridgeServer(input: {
         command: shellCommand,
         args: shellCommandArgs(
           [
-            `if [ -s ${shellQuote(directories.pidFile)} ]; then`,
-            `  pid="$(cat ${shellQuote(directories.pidFile)})"`,
-            "  kill \"$pid\" 2>/dev/null || true",
-            "  i=0",
-            "  while kill -0 \"$pid\" 2>/dev/null && [ \"$i\" -lt 40 ]; do",
-            "    i=$((i + 1))",
-            "    sleep 0.05",
-            "  done",
+            // On Windows targets the bridge runs as a schtasks one-shot task
+            // with a real Windows PID (written by the wrapper's PowerShell
+            // Start-Process -PassThru). git bash `kill` cannot address Windows
+            // PIDs, so teardown ends/deletes the scheduled task and uses
+            // taskkill on the recorded PID.
+            `if uname -s 2>/dev/null | grep -qiE 'mingw|msys|cygwin|^nt'; then`,
+            `  TASK="$(cat ${shellQuote(taskNameFile)} 2>/dev/null || true)"`,
+            `  if [ -n "$TASK" ]; then`,
+            `    MSYS_NO_PATHCONV=1 cmd.exe /c "schtasks /end /tn $TASK" >/dev/null 2>&1 || true`,
+            `    MSYS_NO_PATHCONV=1 cmd.exe /c "schtasks /delete /tn $TASK /f" >/dev/null 2>&1 || true`,
+            "  fi",
+            `  if [ -s ${shellQuote(directories.pidFile)} ]; then`,
+            `    WINPID="$(cat ${shellQuote(directories.pidFile)} 2>/dev/null || true)"`,
+            `    if [ -n "$WINPID" ]; then`,
+            `      MSYS_NO_PATHCONV=1 cmd.exe /c "taskkill /PID $WINPID /T /F" >/dev/null 2>&1 || true`,
+            "    fi",
+            "  fi",
+            `  rm -f ${shellQuote(directories.pidFile)} ${shellQuote(directories.readyFile)} ${shellQuote(taskNameFile)}`,
+            "else",
+            `  if [ -s ${shellQuote(directories.pidFile)} ]; then`,
+            `    pid="$(cat ${shellQuote(directories.pidFile)})"`,
+            "    kill \"$pid\" 2>/dev/null || true",
+            "    i=0",
+            "    while kill -0 \"$pid\" 2>/dev/null && [ \"$i\" -lt 40 ]; do",
+            "      i=$((i + 1))",
+            "      sleep 0.05",
+            "    done",
+            "  fi",
+            `  rm -f ${shellQuote(directories.pidFile)} ${shellQuote(directories.readyFile)}`,
             "fi",
-            `rm -f ${shellQuote(directories.pidFile)} ${shellQuote(directories.readyFile)}`,
           ].join("\n"),
         ),
         cwd: input.remoteCwd,

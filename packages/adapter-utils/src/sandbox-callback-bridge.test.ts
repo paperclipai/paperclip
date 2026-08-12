@@ -1523,13 +1523,29 @@ describe("sandbox callback bridge", () => {
     const startScript = capturedScripts.join("\n");
     // Windows (MSYS/git bash) detection gate (uname -s matched case-insensitively).
     expect(startScript).toContain("mingw|msys|cygwin|^nt");
-    // Wrapper .cmd generation: crlf header, env baking, node invocation.
+    // Wrapper .cmd generation: crlf header, env baking, PowerShell Start-Process
+    // (writes the real Windows PID so teardown can taskkill it), and a persisted
+    // task name so stop() can end/delete the scheduled task.
     expect(startScript).toContain("printf '@echo off");
     expect(startScript).toContain("PAPERCLIP_BRIDGE_QUEUE_DIR");
+    expect(startScript).toContain("Start-Process");
+    expect(startScript).toContain("-PassThru");
+    expect(startScript).toContain("task-name.txt");
     // schtasks one-shot registration + run (detaches the process from the SSH session).
     expect(startScript).toContain("schtasks /create");
     expect(startScript).toContain("schtasks /run");
     // POSIX fallback is preserved for non-Windows targets.
     expect(startScript).toContain("nohup");
+
+    // Tear down explicitly so the Windows stop branch runs and is captured
+    // (afterEach would otherwise stop the bridge after the assertions).
+    await bridge.stop();
+
+    const stopScript = capturedScripts.join("\n");
+    // stop() must tear down the Windows bridge via schtasks /end + /delete and
+    // taskkill (git bash kill cannot address Windows PIDs).
+    expect(stopScript).toContain("schtasks /end");
+    expect(stopScript).toContain("schtasks /delete");
+    expect(stopScript).toContain("taskkill /PID");
   });
 });
