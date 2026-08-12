@@ -41,6 +41,7 @@ function buildContext(
 
 async function createMockGatewayServer(options?: {
   waitPayload?: Record<string, unknown>;
+  assistantDeltas?: string[];
 }) {
   const server = createServer();
   const wss = new WebSocketServer({ server });
@@ -106,32 +107,22 @@ async function createMockGatewayServer(options?: {
           }),
         );
 
-        socket.send(
-          JSON.stringify({
-            type: "event",
-            event: "agent",
-            payload: {
-              runId,
-              seq: 1,
-              stream: "assistant",
-              ts: Date.now(),
-              data: { delta: "cha" },
-            },
-          }),
-        );
-        socket.send(
-          JSON.stringify({
-            type: "event",
-            event: "agent",
-            payload: {
-              runId,
-              seq: 2,
-              stream: "assistant",
-              ts: Date.now(),
-              data: { delta: "chacha" },
-            },
-          }),
-        );
+        const assistantDeltas = options?.assistantDeltas ?? ["cha", "chacha"];
+        assistantDeltas.forEach((delta, index) => {
+          socket.send(
+            JSON.stringify({
+              type: "event",
+              event: "agent",
+              payload: {
+                runId,
+                seq: index + 1,
+                stream: "assistant",
+                ts: Date.now(),
+                data: { delta },
+              },
+            }),
+          );
+        });
         return;
       }
 
@@ -560,6 +551,39 @@ describe("openclaw gateway adapter execute", () => {
           status: "running",
         }),
       ]);
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("prefers the well-formed payload summary over a torn stream fragment", async () => {
+    // Regression for upstream paperclipai/paperclip#11265: a stream torn down
+    // mid-delta leaves a lone "{" as the accumulated assistant text. That
+    // fragment must not shadow the well-formed payload summary.
+    const gateway = await createMockGatewayServer({
+      assistantDeltas: ["{"],
+      waitPayload: {
+        runId: "run-123",
+        status: "ok",
+        startedAt: 1,
+        endedAt: 2,
+        summary: "Payload summary text.",
+      },
+    });
+
+    try {
+      const result = await execute(
+        buildContext({
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          waitTimeoutMs: 2000,
+        }),
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.summary).toBe("Payload summary text.");
     } finally {
       await gateway.close();
     }

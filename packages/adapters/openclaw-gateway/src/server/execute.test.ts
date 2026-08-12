@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildAgentParams, resolveClaimedApiKeyPath, resolveSessionKey } from "./execute.js";
+import {
+  buildAgentParams,
+  isPublishableRunSummary,
+  resolveClaimedApiKeyPath,
+  resolveSessionKey,
+  selectRunSummary,
+} from "./execute.js";
 
 describe("resolveSessionKey", () => {
   it("prefixes run-scoped session keys with the configured agent", () => {
@@ -121,5 +127,116 @@ describe("resolveClaimedApiKeyPath", () => {
   it("falls back to the shared default when value is not a string", () => {
     expect(resolveClaimedApiKeyPath(42)).toBe(DEFAULT_PATH);
     expect(resolveClaimedApiKeyPath({})).toBe(DEFAULT_PATH);
+  });
+});
+
+describe("isPublishableRunSummary", () => {
+  it("rejects torn-stream structural fragments", () => {
+    expect(isPublishableRunSummary("{")).toBe(false);
+    expect(isPublishableRunSummary("}")).toBe(false);
+    expect(isPublishableRunSummary("[{")).toBe(false);
+    expect(isPublishableRunSummary("...")).toBe(false);
+    expect(isPublishableRunSummary('{"summary": "partial resu')).toBe(false);
+  });
+
+  it("keeps short answers and complete JSON publishable", () => {
+    expect(isPublishableRunSummary("Done.")).toBe(true);
+    expect(isPublishableRunSummary("OK — merged.")).toBe(true);
+    expect(isPublishableRunSummary('{"summary": "done"}')).toBe(true);
+    expect(isPublishableRunSummary("All done { see notes }")).toBe(true);
+  });
+});
+
+describe("selectRunSummary", () => {
+  it("prefers the stream summary on a normal end", () => {
+    expect(
+      selectRunSummary({
+        summaryFromEvents: "Final answer.",
+        summaryFromPayload: "Payload text.",
+        streamEndedAbnormally: false,
+      }),
+    ).toBe("Final answer.");
+  });
+
+  it("falls back to the payload summary when the stream produced nothing", () => {
+    expect(
+      selectRunSummary({
+        summaryFromEvents: "",
+        summaryFromPayload: "Payload text.",
+        streamEndedAbnormally: false,
+      }),
+    ).toBe("Payload text.");
+  });
+
+  it("falls through to the payload when the stream summary is a torn fragment", () => {
+    expect(
+      selectRunSummary({
+        summaryFromEvents: "{",
+        summaryFromPayload: "Payload text.",
+        streamEndedAbnormally: false,
+      }),
+    ).toBe("Payload text.");
+    expect(
+      selectRunSummary({
+        summaryFromEvents: '{"summary": "cut of',
+        summaryFromPayload: "Payload text.",
+        streamEndedAbnormally: false,
+      }),
+    ).toBe("Payload text.");
+  });
+
+  // Complete JSON from the stream is well-formed output, not a torn fragment.
+  it("keeps a complete JSON stream summary on a normal end", () => {
+    expect(
+      selectRunSummary({
+        summaryFromEvents: '{"summary": "done"}',
+        summaryFromPayload: "Payload text.",
+        streamEndedAbnormally: false,
+      }),
+    ).toBe('{"summary": "done"}');
+  });
+
+  it("prefers the payload summary when the stream ended abnormally", () => {
+    expect(
+      selectRunSummary({
+        summaryFromEvents: "Partial sentence that got cut",
+        summaryFromPayload: "Payload summary.",
+        streamEndedAbnormally: true,
+      }),
+    ).toBe("Payload summary.");
+  });
+
+  it("keeps a publishable stream summary on abnormal end only when no payload exists", () => {
+    expect(
+      selectRunSummary({
+        summaryFromEvents: "Recovered and finished.",
+        summaryFromPayload: null,
+        streamEndedAbnormally: true,
+      }),
+    ).toBe("Recovered and finished.");
+  });
+
+  it("returns null instead of emitting garbage", () => {
+    expect(
+      selectRunSummary({
+        summaryFromEvents: "{",
+        summaryFromPayload: null,
+        streamEndedAbnormally: true,
+      }),
+    ).toBeNull();
+    expect(
+      selectRunSummary({
+        summaryFromEvents: "",
+        summaryFromPayload: null,
+        streamEndedAbnormally: false,
+      }),
+    ).toBeNull();
+    expect(
+      selectRunSummary({
+        summaryFromEvents: "[{",
+        summaryFromPayload: "[",
+        streamEndedAbnormally: false,
+      }),
+    ).toBeNull();
   });
 });

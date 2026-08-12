@@ -1008,6 +1008,61 @@ function extractRuntimeServicesFromMeta(meta: Record<string, unknown> | null): A
   return reports;
 }
 
+/**
+ * Structural-garbage gate for run summaries (defence in depth for upstream
+ * paperclipai/paperclip#11265). Duplicated from the server's
+ * heartbeat-run-summary predicate because the dependency direction is
+ * server -> adapter; the adapter package cannot import server code. It targets
+ * torn-stream fragments (a lone `{`), NOT brevity: short answers such as
+ * "Done." stay publishable and there is deliberately no length floor.
+ */
+export function isPublishableRunSummary(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return false;
+
+  // Pure whitespace/punctuation fragments ("{", "}", "[{", "...") carry no
+  // publishable content: require at least one letter or digit.
+  if (!/[\p{L}\p{N}]/u.test(trimmed)) return false;
+
+  // Text that starts like a JSON object/array must actually be complete,
+  // parseable JSON. A truncated stream fragment (`{"summary": "par`) fails
+  // here; a COMPLETE JSON document is deliberately kept publishable because
+  // it is well-formed output rather than torn-stream garbage.
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      JSON.parse(trimmed);
+    } catch {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Chooses the run summary between the accumulated stream deltas and the
+ * well-formed payload text. On a normal end the stream still wins (it is the
+ * richer final answer), but a torn-stream fragment never shadows the payload,
+ * and an abnormal stream end always prefers the payload.
+ */
+export function selectRunSummary(input: {
+  summaryFromEvents: string | null;
+  summaryFromPayload: string | null;
+  streamEndedAbnormally: boolean;
+}): string | null {
+  const fromEvents = input.summaryFromEvents?.trim() || null;
+  const fromPayload = input.summaryFromPayload?.trim() || null;
+  const ordered = input.streamEndedAbnormally
+    ? [fromPayload, fromEvents]
+    : [fromEvents, fromPayload];
+  for (const candidate of ordered) {
+    if (candidate !== null && isPublishableRunSummary(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 function extractResultText(value: unknown): string | null {
   const record = asRecord(value);
   if (!record) return null;
@@ -1368,7 +1423,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         extractResultText(acceptedPayload) ??
         extractResultText(asRecord(latestResultPayload)) ??
         null;
-      const summary = summaryFromEvents || summaryFromPayload || null;
+      // The timeout/error wait statuses return early above, so the reachable
+      // abnormal-end marker here is a lifecycle/error event captured from the
+      // stream while the run still finished "ok".
+      const summary = selectRunSummary({
+        summaryFromEvents,
+        summaryFromPayload,
+        streamEndedAbnormally: lifecycleError !== null,
+      });
 
       const acceptedResult = asRecord(acceptedPayload?.result);
       const latestPayload = asRecord(latestResultPayload);

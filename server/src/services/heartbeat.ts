@@ -108,6 +108,7 @@ import {
   HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS,
   HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES,
   mergeHeartbeatRunResultJson,
+  readHeartbeatRunCommentCandidate,
 } from "./heartbeat-run-summary.js";
 import {
   buildHeartbeatRunStopMetadata,
@@ -15938,6 +15939,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               const issueComment = buildHeartbeatRunIssueComment(persistedResultJson);
               if (issueComment) {
                 await issuesSvc.addComment(issueId, issueComment, { agentId: agent.id, runId: livenessRun.id });
+              } else {
+                // Distinguish "no result text at all" (preserve historical
+                // behavior exactly) from "a candidate existed but was rejected
+                // as non-publishable" (torn-stream fragments such as a lone
+                // "{", see upstream paperclipai/paperclip#11265): surface the
+                // rejection explicitly as an error-level run event instead of
+                // silently posting garbage.
+                const rejectedCandidate = readHeartbeatRunCommentCandidate(persistedResultJson);
+                if (rejectedCandidate !== null) {
+                  await appendRunEvent(livenessRun, await nextRunEventSeq(livenessRun.id), {
+                    eventType: "lifecycle",
+                    stream: "system",
+                    level: "error",
+                    message: "Suppressed non-publishable run summary fragment; no issue comment was posted",
+                    payload: {
+                      reason: "non_publishable_run_summary",
+                      suppressedFragment: rejectedCandidate.slice(0, 200),
+                      suppressedFragmentLength: rejectedCandidate.length,
+                    },
+                  });
+                }
               }
             }
           } catch (err) {

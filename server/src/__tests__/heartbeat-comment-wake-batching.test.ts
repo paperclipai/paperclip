@@ -8,6 +8,7 @@ import {
   agentWakeupRequests,
   companies,
   createDb,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issues,
@@ -43,7 +44,9 @@ async function closeDbClient(db: ReturnType<typeof createDb> | undefined) {
   await db?.$client?.end?.({ timeout: 0 });
 }
 
-async function createControlledGatewayServer() {
+async function createControlledGatewayServer(options?: {
+  waitPayloadExtra?: Record<string, unknown>;
+}) {
   const server = createServer();
   const wss = new WebSocketServer({ server });
   const agentPayloads: Array<Record<string, unknown>> = [];
@@ -129,6 +132,7 @@ async function createControlledGatewayServer() {
               status: "ok",
               startedAt: 1,
               endedAt: 2,
+              ...(options?.waitPayloadExtra ?? {}),
             },
           }),
         );
@@ -1685,6 +1689,120 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         retryReason: "missing_issue_comment",
         modelProfile: "cheap",
       });
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 20_000);
+
+  it("suppresses a non-publishable run summary fragment instead of posting it as an issue comment", async () => {
+    // Regression for upstream paperclipai/paperclip#11265: a run torn down
+    // mid-stream can persist a lone "{" as its result text. That fragment must
+    // never be published as an issue comment; instead the run gets an
+    // error-level run event naming the suppressed fragment.
+    const gateway = await createControlledGatewayServer({
+      waitPayloadExtra: { message: "{" },
+    });
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Gateway Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          payloadTemplate: {
+            message: "wake now",
+          },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Suppress garbage summary",
+        status: "todo",
+        priority: "medium",
+        responsibleUserId: "responsible-user",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      const firstRun = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_assigned",
+        },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+      });
+
+      expect(firstRun).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+      gateway.releaseFirstWait();
+
+      // Once the source run reaches a terminal issue-comment status, the
+      // comment publication step has already run for it.
+      await waitFor(async () => {
+        const sourceRun = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, firstRun!.id))
+          .then((rows) => rows[0] ?? null);
+        return (
+          sourceRun?.status === "succeeded" &&
+          sourceRun.issueCommentStatus !== null &&
+          sourceRun.issueCommentStatus !== "pending"
+        );
+      });
+
+      const comments = await db
+        .select()
+        .from(issueComments)
+        .where(eq(issueComments.issueId, issueId));
+      expect(comments.filter((comment) => comment.body.trim() === "{")).toHaveLength(0);
+      expect(comments).toHaveLength(0);
+
+      const suppressionEvents = await db
+        .select()
+        .from(heartbeatRunEvents)
+        .where(and(eq(heartbeatRunEvents.runId, firstRun!.id), eq(heartbeatRunEvents.level, "error")));
+      expect(suppressionEvents.length).toBeGreaterThan(0);
+      const suppressionEvent = suppressionEvents.find((event) => {
+        const payload = (event.payload ?? {}) as Record<string, unknown>;
+        return payload.reason === "non_publishable_run_summary";
+      });
+      expect(suppressionEvent).toBeTruthy();
+      expect(suppressionEvent?.message).toContain("Suppressed non-publishable run summary");
+      expect((suppressionEvent?.payload as Record<string, unknown>).suppressedFragment).toBe("{");
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
