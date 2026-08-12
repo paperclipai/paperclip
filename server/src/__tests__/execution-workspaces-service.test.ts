@@ -544,6 +544,35 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(workspace).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
   }, 20_000);
 
+  it("skips a sweep that starts while another sweep runs", async () => {
+    // The scheduler can start a second sweep before the first one finishes. The
+    // sweeps share the cursor and the boundary. A concurrent sweep must skip
+    // instead of running, so it cannot corrupt the shared rotation state.
+    const seeded = await seedAncestryTerminalWorkspace();
+
+    // Start the first sweep and do not wait. An async function runs its body up
+    // to the first await, so the in-progress flag is set before the second call
+    // starts. The second call sees the flag and returns without a scan.
+    const firstSweepPromise = svc.sweepTerminalWorkspaces();
+    const concurrentSweep = await svc.sweepTerminalWorkspaces();
+    const firstSweep = await firstSweepPromise;
+
+    // The concurrent sweep inspected no candidate and changed no state.
+    expect(concurrentSweep).toMatchObject({ checked: 0, archived: 0, eligible: 0 });
+    // The first sweep archived the eligible workspace.
+    expect(firstSweep.archived).toBe(1);
+
+    const [workspace] = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    expect(workspace?.status).toBe("archived");
+
+    // The flag resets after the first sweep, so a later sweep runs its scan.
+    const laterSweep = await svc.sweepTerminalWorkspaces();
+    expect(laterSweep).toMatchObject({ archived: 0 });
+  }, 20_000);
+
   it("archives an eligible workspace behind a full page of skipped candidates", async () => {
     // Seed more skipped candidates than the sweep page holds, each older than
     // the eligible workspace. A skipped candidate keeps its updatedAt, so a

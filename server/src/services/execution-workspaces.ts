@@ -1078,6 +1078,13 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   // are revisited on the next rotation. The next rotation captures a new bound,
   // so candidates updated after the previous bound enter the scan then.
   let terminalSweepBoundary: Date | null = null;
+  // The scheduler starts a sweep on each tick and does not wait for the previous
+  // sweep to finish. A sweep that outlasts the tick interval overlaps the next
+  // sweep. Both sweeps share the cursor and the boundary above. Interleaved
+  // reads and writes can leave a non-null cursor with a null boundary, which
+  // removes the upper bound and makes the scan chase newer churn again. This
+  // flag lets only one sweep run at a time, so one sweep owns the shared state.
+  let terminalSweepInProgress = false;
 
   async function listWorkspaceIssueTree(workspace: Pick<ExecutionWorkspaceRow, "companyId" | "sourceIssueId">) {
     if (!workspace.sourceIssueId) return [];
@@ -2049,6 +2056,23 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     },
 
     sweepTerminalWorkspaces: async (limit = 50) => {
+      // Skip this sweep while another sweep runs. A concurrent sweep would share
+      // the cursor and the boundary and could corrupt the rotation state. A
+      // skipped tick is safe: the next tick runs the sweep with intact state.
+      if (terminalSweepInProgress) {
+        return {
+          checked: 0,
+          eligible: 0,
+          archived: 0,
+          cleanupFailed: 0,
+          skippedActiveRun: 0,
+          skippedNonTerminalTree: 0,
+          skippedUndelivered: 0,
+          skippedRace: 0,
+        };
+      }
+      terminalSweepInProgress = true;
+      try {
       const baseCandidateFilter = and(
         inArray(executionWorkspaces.status, ["active", "idle", "in_review"]),
         isNull(executionWorkspaces.closedAt),
@@ -2232,6 +2256,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         }
       }
       return result;
+      } finally {
+        terminalSweepInProgress = false;
+      }
     },
 
     create: async (data: typeof executionWorkspaces.$inferInsert) => {
