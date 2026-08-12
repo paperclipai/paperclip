@@ -40,6 +40,7 @@ interface TaskChatThreadViewProps {
    * fixtures omit it and the bubbles render actionless.
    */
   renderMessageActions?: (item: TaskChatMessageItem) => ReactNode;
+  liveTurnActions?: ReactNode;
   className?: string;
   /** When false, render the list without the scroll container (e.g. previews). */
   scroll?: boolean;
@@ -51,6 +52,7 @@ function renderItem(
   renderInteraction?: (item: TaskChatInteractionItem) => ReactNode,
   renderBrief?: () => ReactNode,
   renderMessageActions?: (item: TaskChatMessageItem) => ReactNode,
+  liveTurnActions?: ReactNode,
 ) {
   switch (item.kind) {
     case "message": {
@@ -105,6 +107,7 @@ function renderItem(
         <TaskChatTurn
           item={item}
           renderChild={(child) => renderItem(child, onApprovalDecision)}
+          liveActions={!item.settled ? liveTurnActions : undefined}
         />
       );
     default: {
@@ -128,6 +131,7 @@ export function TaskChatThreadView({
   renderInteraction,
   renderBrief,
   renderMessageActions,
+  liveTurnActions,
   className,
   scroll = true,
 }: TaskChatThreadViewProps) {
@@ -140,7 +144,7 @@ export function TaskChatThreadView({
       ) : null}
       {items.map((item) => (
         <div key={item.id}>
-          {renderItem(item, onApprovalDecision, renderInteraction, renderBrief, renderMessageActions)}
+          {renderItem(item, onApprovalDecision, renderInteraction, renderBrief, renderMessageActions, liveTurnActions)}
         </div>
       ))}
     </div>

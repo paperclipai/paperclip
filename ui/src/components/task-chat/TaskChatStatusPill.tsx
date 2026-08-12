@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { ChevronRight, Loader2, ShieldQuestion, OctagonX, Ban, Scissors } from "lucide-react";
 import type { TaskChatStatusItem } from "./task-chat-model";
@@ -274,6 +274,7 @@ interface TaskChatStatusPillProps {
    * header read as covering two unrelated lines.
    */
   onToggle?: () => void;
+  liveActions?: ReactNode;
 }
 
 /**
@@ -288,6 +289,7 @@ export function TaskChatStatusPill({
   onApprovalDecision,
   chevronOpen,
   onToggle,
+  liveActions,
 }: TaskChatStatusPillProps) {
   const { Icon, spin, tone } = CONFIG[item.status];
   const awaiting = item.status === "awaiting_approval";
@@ -346,6 +348,7 @@ export function TaskChatStatusPill({
             </span>
           ) : null}
         </span>
+        {liveActions ? <span className="flex shrink-0 items-center gap-1">{liveActions}</span> : null}
         {chevronOpen !== undefined ? (
           <ChevronRight
             className={cn("h-3 w-3 shrink-0 transition-transform", chevronOpen ? "rotate-90" : null)}

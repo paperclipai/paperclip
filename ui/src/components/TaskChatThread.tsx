@@ -30,6 +30,7 @@ import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
 import { useWindowAutoFollow } from "@/components/task-chat/useWindowAutoFollow";
 import { useSidebar } from "@/context/SidebarContext";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { latestSameRunHandoffTimestamp, type IssueChatComment } from "@/lib/issue-chat-messages";
 import { isLiveIssueRun, isTerminalIssueStatus } from "@/lib/liveIssueIds";
@@ -121,6 +122,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     feedbackTermsUrl = null,
     onVote,
     draftKey,
+    onCancelRun,
+    runFinalizationActions = [],
   } = props;
 
   const linkedRunMetaById = useMemo(() => {
@@ -469,6 +472,31 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     ],
   );
 
+  const liveTurnActions = useMemo(() => {
+    if (!liveRun) return null;
+    const cancelTaskAction = runFinalizationActions.find((action) => action.id === "cancel");
+    return (
+      <>
+        {onCancelRun ? (
+          <Button type="button" size="sm" variant="outline" onClick={() => void onCancelRun()}>
+            Interrupt
+          </Button>
+        ) : null}
+        {cancelTaskAction ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="destructive"
+            disabled={cancelTaskAction.disabled || cancelTaskAction.isPending}
+            onClick={() => void cancelTaskAction.onSelect(liveRun.id)}
+          >
+            {cancelTaskAction.isPending ? cancelTaskAction.pendingLabel : "Cancel task"}
+          </Button>
+        ) : null}
+      </>
+    );
+  }, [liveRun, onCancelRun, runFinalizationActions]);
+
   // Mobile (PAP-360): the app shell scrolls the DOCUMENT (Layout's main is
   // overflow-visible with auto height), so the desktop bounded h-dvh chain
   // collapses the absolute-inset transcript viewport to 0px. Render the thread
@@ -502,6 +530,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             renderInteraction={renderInteraction}
             renderBrief={issueBrief ? () => <TaskChatDescriptionBubble brief={issueBrief} /> : undefined}
             renderMessageActions={renderMessageActions}
+            liveTurnActions={liveTurnActions}
             scroll={!isMobile}
           />
         )}

@@ -20,6 +20,7 @@ interface TaskChatTurnProps {
    * tool history expands beneath it, instead of drifting to the fold's center.
    */
   leading?: ReactNode;
+  liveActions?: ReactNode;
 }
 
 /** Metric segments after the label: "38s · 3 tools · +34 −3 · 12.3k total (…breakdown…)". */
@@ -57,7 +58,7 @@ export function turnSummaryText(summary: TaskChatTurnItem["summary"]): string {
  * `liveStatus` (harness fixtures) renders its children expanded with no header
  * and folds when it settles.
  */
-export function TaskChatTurn({ item, renderChild, timestampPrefix, leading }: TaskChatTurnProps) {
+export function TaskChatTurn({ item, renderChild, timestampPrefix, leading, liveActions }: TaskChatTurnProps) {
   const parentRow = !item.settled && item.liveStatus != null;
   // Parent-row live turns and settled turns start as their one-line header;
   // only the headerless legacy live turn starts expanded.
@@ -110,6 +111,7 @@ export function TaskChatTurn({ item, renderChild, timestampPrefix, leading }: Ta
       item={item.liveStatus!}
       chevronOpen={expandable ? open : undefined}
       onToggle={expandable ? () => setOpen((o) => !o) : undefined}
+      liveActions={liveActions}
     />
   ) : null;
 
