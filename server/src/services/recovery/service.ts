@@ -129,6 +129,19 @@ export const STRANDED_RECENT_PROGRESS_EXEMPTION_MS = Math.max(
   Number(process.env.STRANDED_RECENT_PROGRESS_EXEMPTION_MS) || 30 * 60 * 1000,
 );
 
+// SPC-21314: cap re-escalation for the `successful_run_missing_state` recovery
+// cause. The flap on SPC-21292 (2026-07-11) burned ~1 wake/min for 17+ minutes
+// when an owner PATCHed `in_progress` on every recovery wake without recording a
+// valid disposition, and `reconcileStrandedAssignedIssues` re-escalated on every
+// tick because the exhausted-handoff path never consulted the existing active
+// recovery action's attemptCount (it was left unbounded, maxAttempts=null). Cap
+// re-escalation at 3 attempts so the reconciler surfaces the loop for
+// intervention instead of enqueuing another wake.
+export const SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS = Math.max(
+  1,
+  Number(process.env.SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS) || 3,
+);
+
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
@@ -2701,7 +2714,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       monitorPolicy: isProviderQuotaWait
         ? { type: "wait_recovery", retryAgentId: routing.returnOwnerAgentId }
         : null,
-      maxAttempts: null,
+      // SPC-21314: carry the missing-disposition attempt cap on the row itself so
+      // the reconciler gate (and any future consumer) can bound re-escalation.
+      maxAttempts: recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
+        ? SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS
+        : null,
       lastAttemptAt: now,
     });
 
@@ -4627,6 +4644,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
         if (!handoffEvidence.exhausted) {
+          result.skipped += 1;
+          continue;
+        }
+
+        // SPC-21314: same-cause re-escalation cap. When a prior
+        // `successful_run_missing_state` recovery action is still active and has
+        // already hit its attempt cap, stop re-escalating. Without this gate the
+        // reconciler re-escalates every tick (owner PATCHes `in_progress` on each
+        // recovery wake without recording a valid disposition), producing an
+        // unbounded ~1 wake/min flap (observed attemptCount=30 in 17min on
+        // SPC-21292). The exhausted action stays as first-class evidence for
+        // board/human intervention.
+        const existingActive = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id);
+        if (
+          existingActive &&
+          existingActive.cause === SUCCESSFUL_RUN_MISSING_STATE_REASON &&
+          existingActive.attemptCount >= SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS
+        ) {
+          logger.warn(
+            {
+              issueId: issue.id,
+              actionId: existingActive.id,
+              attemptCount: existingActive.attemptCount,
+              maxAttempts: existingActive.maxAttempts ?? SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS,
+            },
+            "recovery.stranded.repeated_missing_disposition — skipping re-escalation",
+          );
           result.skipped += 1;
           continue;
         }

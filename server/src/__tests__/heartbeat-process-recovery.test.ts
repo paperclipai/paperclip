@@ -124,6 +124,7 @@ import {
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
 } from "@paperclipai/adapter-utils/server-utils";
+import { SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS } from "../services/recovery/service.ts";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -1005,6 +1006,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     kind?: string;
     previousOwnerAgentId?: string | null;
     returnOwnerAgentId?: string | null;
+    maxAttempts?: number | null;
   }) {
     const action = await waitForValue(async () =>
       db.select().from(issueRecoveryActions).where(
@@ -1028,7 +1030,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       returnOwnerAgentId: input.returnOwnerAgentId ?? input.agentId,
       cause: input.cause ?? "stranded_assigned_issue",
       attemptCount: 1,
-      maxAttempts: null,
+      maxAttempts: input.maxAttempts ?? null,
     });
     expect(action.evidence).toMatchObject({
       sourceIssueId: input.issueId,
@@ -4001,6 +4003,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryReason: null,
       cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
       kind: "missing_disposition",
+      maxAttempts: SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS,
     });
     expect(recoveryAction.evidence).toMatchObject({
       sourceRunId,
@@ -4090,12 +4093,74 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryReason: null,
       cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
       kind: "missing_disposition",
+      maxAttempts: SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS,
     });
     expect(recoveryAction.evidence).toMatchObject({
       sourceRunId,
       latestRunStatus: "succeeded",
       missingDisposition: "clear_next_step",
     });
+  });
+
+  it("caps re-escalation once the same-cause missing-disposition recovery action hits the attempt cap (SPC-21314)", async () => {
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+    });
+    const sourceRunId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "finish_successful_run_handoff",
+          sourceRunId,
+          resumeFromRunId: sourceRunId,
+          handoffRequired: true,
+          handoffReason: "successful_run_missing_state",
+          missingDisposition: "clear_next_step",
+          handoffAttempt: 1,
+          maxHandoffAttempts: 1,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    // First reconcile escalates once and opens the missing-disposition action.
+    const firstResult = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(firstResult.successfulRunHandoffEscalated).toBe(1);
+    const action = await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "in_progress",
+      retryReason: null,
+      cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      kind: "missing_disposition",
+      maxAttempts: SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS,
+    });
+
+    // Simulate the flap: the action has re-escalated up to its cap and the owner
+    // has PATCHed the issue back to in_progress without recording a disposition.
+    await db
+      .update(issueRecoveryActions)
+      .set({ attemptCount: SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS })
+      .where(eq(issueRecoveryActions.id, action.id));
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
+
+    // Second reconcile must NOT re-escalate — the same-cause cap short-circuits.
+    const secondResult = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(secondResult.successfulRunHandoffEscalated).toBe(0);
+
+    const after = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id))
+      .then((rows) => rows[0] ?? null);
+    expect(after?.attemptCount).toBe(SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS);
   });
 
   it("converts a continuation parked for review into a dependency wait on its open sub-tasks", async () => {
