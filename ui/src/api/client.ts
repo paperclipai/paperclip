@@ -17,6 +17,8 @@ export class ApiError extends Error {
 export interface RequestOptions {
   /** Abort signal wired through to `fetch` and coalescing (per-caller). */
   signal?: AbortSignal;
+  /** Extra request headers (e.g. the async-import opt-in). Mutations only. */
+  headers?: Record<string, string>;
 }
 
 function abortError(): DOMException {
@@ -146,11 +148,31 @@ function isRequestOptions(value: unknown): value is RequestOptions {
 export const api = {
   get: <T>(path: string, options?: RequestOptions) => coalescedGet<T>(path, options),
   post: <T>(path: string, body: unknown, options?: RequestOptions) =>
-    request<T>(path, { method: "POST", body: JSON.stringify(body), signal: options?.signal }),
+    request<T>(path, {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal: options?.signal,
+      ...(options?.headers ? { headers: options.headers } : {}),
+    }),
   postForm: <T>(path: string, body: FormData, options?: RequestOptions) =>
-    request<T>(path, { method: "POST", body, signal: options?.signal }),
+    request<T>(path, {
+      method: "POST",
+      body,
+      signal: options?.signal,
+      // Never set Content-Type here — the browser sets multipart/form-data with
+      // the boundary. Extra headers (e.g. an async opt-in) may still ride along.
+      ...(options?.headers ? { headers: options.headers } : {}),
+    }),
   put: <T>(path: string, body: unknown, options?: RequestOptions) =>
     request<T>(path, { method: "PUT", body: JSON.stringify(body), signal: options?.signal }),
+  /** Raw binary upload (e.g. one chunked import-transfer part); the body travels as-is. */
+  putRaw: <T>(path: string, body: Blob, options?: RequestOptions) =>
+    request<T>(path, {
+      method: "PUT",
+      body,
+      signal: options?.signal,
+      headers: { "Content-Type": "application/octet-stream", ...(options?.headers ?? {}) },
+    }),
   patch: <T>(path: string, body: unknown, options?: RequestOptions) =>
     request<T>(path, { method: "PATCH", body: JSON.stringify(body), signal: options?.signal }),
   delete: <T>(path: string, bodyOrOptions?: unknown, options?: RequestOptions) => {

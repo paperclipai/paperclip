@@ -25,6 +25,7 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import {
   collectSecretRefPaths,
   isUuidSecretRef,
+  parseSecretRefBindingObject,
   readConfigValueAtPath,
   writeConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
@@ -76,6 +77,7 @@ const fakeSandboxEnvironmentConfigSchema = z.object({
     .default("ubuntu:24.04"),
   reuseLease: z.boolean().optional().default(false),
   streamRunLogs: z.boolean().optional(),
+  streamAgentSessionOutput: z.boolean().optional(),
   archiveOnRelease: z.boolean().optional(),
 }).strict();
 
@@ -92,6 +94,7 @@ const pluginSandboxEnvironmentConfigSchema = z.object({
   timeoutMs: z.coerce.number().int().min(1).max(86_400_000).optional(),
   reuseLease: z.boolean().optional().default(false),
   streamRunLogs: z.boolean().optional(),
+  streamAgentSessionOutput: z.boolean().optional(),
   archiveOnRelease: z.boolean().optional(),
 }).catchall(z.unknown());
 
@@ -200,6 +203,25 @@ async function createEnvironmentSecret(input: {
   };
 }
 
+/**
+ * Secret pickers submit `{ type: "secret_ref", secretId, version }` binding
+ * objects for `format: "secret-ref"` fields, while persisted configs store the
+ * bare secret id. Collapse binding objects to the secret id so every consumer
+ * downstream deals with one shape. Sandbox provider references always resolve
+ * the latest version, so pinned bindings are rejected rather than silently
+ * resolved to a different version than the caller asked for.
+ */
+function canonicalizeSecretRefValue(value: unknown, path: string): unknown {
+  const binding = parseSecretRefBindingObject(value);
+  if (!binding) return value;
+  if (binding.version !== "latest") {
+    throw unprocessable(
+      `Secret binding at ${path} pins version ${binding.version}; sandbox provider secret references always resolve the latest version.`,
+    );
+  }
+  return binding.secretId;
+}
+
 async function persistConfigSecretRefs(input: {
   db: Db;
   companyId: string;
@@ -212,7 +234,7 @@ async function persistConfigSecretRefs(input: {
 }): Promise<Record<string, unknown>> {
   let nextConfig = { ...input.config };
   for (const path of collectSecretRefPaths(input.schema)) {
-    const rawValue = readConfigValueAtPath(nextConfig, path);
+    const rawValue = canonicalizeSecretRefValue(readConfigValueAtPath(nextConfig, path), path);
     if (typeof rawValue !== "string") continue;
     const trimmed = rawValue.trim();
     if (trimmed.length === 0) {
@@ -252,7 +274,7 @@ async function resolveConfigSecretRefsForRuntime(input: {
   const secrets = secretService(input.db);
   let nextConfig = { ...input.config };
   for (const path of collectSecretRefPaths(input.schema)) {
-    const current = readConfigValueAtPath(nextConfig, path);
+    const current = canonicalizeSecretRefValue(readConfigValueAtPath(nextConfig, path), path);
     if (typeof current !== "string") continue;
     const trimmed = current.trim();
     if (!isUuidSecretRef(trimmed)) continue;
@@ -291,7 +313,7 @@ async function resolveConfigSecretRefsForProbe(input: {
   const secrets = secretService(input.db);
   let nextConfig = { ...input.config };
   for (const path of collectSecretRefPaths(input.schema)) {
-    const current = readConfigValueAtPath(nextConfig, path);
+    const current = canonicalizeSecretRefValue(readConfigValueAtPath(nextConfig, path), path);
     if (typeof current !== "string") continue;
     const trimmed = current.trim();
     if (!isUuidSecretRef(trimmed)) continue;
@@ -332,6 +354,11 @@ export async function collectEnvironmentSecretRefs(input: {
     const refs: Array<{ secretId: string; configPath: string; versionSelector?: SecretVersionSelector }> = [];
     for (const path of collectSecretRefPaths(schema)) {
       const current = readConfigValueAtPath(parsed.config as Record<string, unknown>, path);
+      const binding = parseSecretRefBindingObject(current);
+      if (binding) {
+        refs.push({ secretId: binding.secretId, configPath: path, versionSelector: binding.version });
+        continue;
+      }
       if (typeof current === "string" && isUuidSecretRef(current.trim())) {
         refs.push({ secretId: current.trim(), configPath: path, versionSelector: "latest" });
       }
@@ -344,6 +371,30 @@ export async function collectEnvironmentSecretRefs(input: {
 export function stripSandboxProviderEnvelope(config: SandboxEnvironmentConfig): Record<string, unknown> {
   const { provider: _provider, ...driverConfig } = config as Record<string, unknown>;
   return driverConfig;
+}
+
+// The host owns these sandbox run-behavior flags, not the provider plugin. The
+// host reads them to select the run-log stream and the ACP session output
+// stream. The host passes the whole config to the plugin, so a plugin that
+// allowlists its own driver fields drops these flags from its normalized
+// config. Re-apply them from the parsed envelope after the plugin normalizes,
+// or a saved environment loses the operator opt-in and the stream never starts.
+const HOST_OWNED_SANDBOX_STREAM_FLAGS = [
+  "streamRunLogs",
+  "streamAgentSessionOutput",
+] as const;
+
+function applyHostOwnedSandboxStreamFlags(
+  normalizedConfig: Record<string, unknown>,
+  envelope: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...normalizedConfig };
+  for (const key of HOST_OWNED_SANDBOX_STREAM_FLAGS) {
+    if (envelope[key] !== undefined) {
+      merged[key] = envelope[key];
+    }
+  }
+  return merged;
 }
 
 export function normalizeEnvironmentConfig(input: {
@@ -433,7 +484,7 @@ export function normalizeEnvironmentConfigForProbe(input: {
       ...(await resolveConfigSecretRefsForProbe({
         db: input.db,
         companyId: input.companyId,
-        config: validated.normalizedConfig,
+        config: applyHostOwnedSandboxStreamFlags(validated.normalizedConfig, parsed.data),
         accessContext: input.accessContext,
         schema:
           validated.driver.configSchema &&
@@ -525,7 +576,7 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
       secretProvider: input.secretProvider,
       config: {
         provider: parsed.data.provider,
-        ...validated.normalizedConfig,
+        ...applyHostOwnedSandboxStreamFlags(validated.normalizedConfig, parsed.data),
       },
       schema:
         validated.driver.configSchema && typeof validated.driver.configSchema === "object" && !Array.isArray(validated.driver.configSchema)
@@ -623,7 +674,7 @@ export async function resolveEnvironmentDriverConfigForRuntime(
     } else {
       for (const path of collectSecretRefPaths(schema)) {
         const current = readConfigValueAtPath(parsed.config as Record<string, unknown>, path);
-        if (typeof current === "string" && isUuidSecretRef(current.trim())) {
+        if (parseSecretRefBindingObject(current) || (typeof current === "string" && isUuidSecretRef(current.trim()))) {
           throw unprocessable("Runtime secret resolution requires a companyId context");
         }
       }

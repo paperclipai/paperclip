@@ -7,11 +7,67 @@ import { promisify } from "node:util";
 import type { FileDownloadRequest, FileDownloadResponse, FileUpload, Sandbox } from "@daytonaio/sdk";
 import type {
   PluginEnvironmentSyncResult,
+  PluginPostUploadCommand,
   PluginSyncFileMapping,
   PluginSyncOperation,
 } from "@paperclipai/plugin-sdk";
+import { getPluginTracer } from "./plugin.js";
 
 const execFileAsync = promisify(execFile);
+
+// The span-attribute names. They mirror the host span-attribute contract by
+// value. The plugin ships bundled, so it stays free of the host packages and
+// repeats these strings; the host re-clamps a provider span by these exact keys.
+const SPAN_ATTR_PREFIX = "paperclip.sandbox.startup.";
+const SPAN_ATTR = {
+  provider: `${SPAN_ATTR_PREFIX}provider`,
+  packWallMs: `${SPAN_ATTR_PREFIX}pack.wall_ms`,
+  transferWallMs: `${SPAN_ATTR_PREFIX}transfer.wall_ms`,
+  transferGuardCount: `${SPAN_ATTR_PREFIX}transfer.guard.count`,
+} as const;
+
+/** The value of `SpanStatusCode.ERROR` in `@opentelemetry/api`. The plugin stays
+ * OpenTelemetry-free, so it uses the numeric value directly. */
+const SPAN_STATUS_CODE_ERROR = 2;
+
+/**
+ * Run one span-wrapped step through the plugin tracer. The pack step, the
+ * transfer step, and each command round trip share this helper. It seeds the
+ * provider family, runs the step, marks a thrown step failed, and always ends
+ * the span. The host records the span with its true wall-clock width from the
+ * worker timestamps, so the span shows real time in the trace. The tracer is a
+ * no-op until the host injects a live tracer, so the span never changes the sync
+ * control flow.
+ *
+ * `wallMsAttr` is optional. The `pack` and `transfer` spans pass it to keep
+ * their existing `*.wall_ms` attribute. A per-round-trip span omits it, so it
+ * carries no `*.wall_ms` attribute and relies on the native span width.
+ */
+export async function withProviderSpan<T>(input: {
+  name: string;
+  wallMsAttr?: string;
+  attributes?: Record<string, string | number | boolean>;
+  run: () => Promise<T>;
+}): Promise<T> {
+  const span = getPluginTracer().startSpan(input.name, {
+    attributes: { [SPAN_ATTR.provider]: "daytona", ...(input.attributes ?? {}) },
+  });
+  const startedAtMs = Date.now();
+  try {
+    return await input.run();
+  } catch (error) {
+    span.setStatus({ code: SPAN_STATUS_CODE_ERROR });
+    throw error;
+  } finally {
+    if (input.wallMsAttr) span.setAttribute(input.wallMsAttr, Date.now() - startedAtMs);
+    span.end();
+  }
+}
+
+/** Convert a millisecond timeout to the whole-seconds value the Daytona SDK expects. */
+function toTimeoutSeconds(timeoutMs: number): number {
+  return Math.max(1, Math.ceil(timeoutMs / 1000));
+}
 
 // Reserved scratch-name stem for staged uploads/downloads and remote tarballs.
 // The runtime's base64 fallback stages to `<path>.paperclip-upload`; the native
@@ -398,28 +454,50 @@ async function syncInFileMappings(input: {
     bytesTransferred += (await fs.stat(mapping.sourcePath)).size;
   }
 
+  // Count the serial guard round trips before the transfer, so the transfer span
+  // records how much of the wall time is guard cost.
+  let guardRoundTrips = 0;
+
   // Ensure every target directory exists before the bulk upload writes its temp.
   const mkdirCommand = [...parentDirs].map((dir) => `mkdir -p ${shellQuote(dir)}`).join(" && ");
-  await assertSandboxCommandOk(sandbox, mkdirCommand, timeoutSeconds, "syncIn mkdir");
+  // `ensureDirectory` span: `mkdir -p` — ensure a directory exists before a write.
+  await withProviderSpan({
+    name: "ensureDirectory",
+    run: () => assertSandboxCommandOk(sandbox, mkdirCommand, timeoutSeconds, "syncIn mkdir"),
+  });
+  guardRoundTrips += 1;
 
   // Defense-in-depth beyond the lexical `assertConfinedSandboxPath`: a sandbox
   // can replace a target parent with a symlink to `/etc` so the string check
   // passes but the upload + `mv -f` resolve through it. Canonicalize every parent
   // dir (now materialized) and fail closed if any escapes, BEFORE any bytes land.
-  await assertSandboxPathsConfined({
-    sandbox,
-    remoteDir,
-    paths: [...parentDirs],
-    timeoutSeconds,
-    label: "inbound symlink-escape guard",
+  // `checkSymlinkEscape` span: re-check a path resolves inside the workspace root
+  // before use.
+  await withProviderSpan({
+    name: "checkSymlinkEscape",
+    run: () =>
+      assertSandboxPathsConfined({
+        sandbox,
+        remoteDir,
+        paths: [...parentDirs],
+        timeoutSeconds,
+        label: "inbound symlink-escape guard",
+      }),
   });
+  guardRoundTrips += 1;
 
   // A failed upload or a mid-batch `mv -f` failure leaves reserved temps (some
   // targets promoted, others not) — sweep every staged temp on any error so a
   // retry never accumulates stale `.paperclip-upload-*` scratch.
   try {
     // One batched bulk upload (single /files/bulk-upload) for all file mappings.
-    await sandbox.fs.uploadFiles(uploads, timeoutSeconds);
+    // `transfer` span: the real byte upload — `sandbox.fs.uploadFiles`.
+    await withProviderSpan({
+      name: "transfer",
+      wallMsAttr: SPAN_ATTR.transferWallMs,
+      attributes: { [SPAN_ATTR.transferGuardCount]: guardRoundTrips },
+      run: () => sandbox.fs.uploadFiles(uploads, timeoutSeconds),
+    });
 
     // Apply the requested mode on the temp file BEFORE the rename so the target
     // never appears at a widened window — a secret lands `0600` at targetPath from
@@ -460,12 +538,18 @@ async function syncInFileMappings(input: {
         `exec 8>&-;`,
       );
     }
-    await assertSandboxCommandOk(
-      sandbox,
-      `sh -c ${shellQuote(renameScript.join("\n"))}`,
-      timeoutSeconds,
-      "syncIn rename",
-    );
+    // `promote` span: atomically move the staged temp onto its target via a
+    // pinned dir handle.
+    await withProviderSpan({
+      name: "promote",
+      run: () =>
+        assertSandboxCommandOk(
+          sandbox,
+          `sh -c ${shellQuote(renameScript.join("\n"))}`,
+          timeoutSeconds,
+          "syncIn rename",
+        ),
+    });
   } catch (error) {
     await removeSandboxScratch(sandbox, renames.map((rename) => rename.temp), timeoutSeconds);
     throw error;
@@ -484,34 +568,64 @@ async function syncInDirectoryMapping(input: {
   assertConfinedSandboxPath(remoteDir, mapping.targetPath, "target");
   return withHostTempDir(async (tmp) => {
     const archivePath = path.join(tmp, "sync-in.tar");
-    await createHostTarball({
-      localDir: mapping.sourcePath,
-      archivePath,
-      exclude: mapping.exclude,
-      followSymlinks: mapping.followSymlinks,
+    // The pack step is host-local: it builds the tarball and makes no sandbox
+    // round trip. The `pack` span records its wall time.
+    // `pack` span: build a tarball on the host — no sandbox round trip.
+    await withProviderSpan({
+      name: "pack",
+      wallMsAttr: SPAN_ATTR.packWallMs,
+      run: () => createHostTarball({
+        localDir: mapping.sourcePath,
+        archivePath,
+        exclude: mapping.exclude,
+        followSymlinks: mapping.followSymlinks,
+      }),
     });
     const bytesTransferred = (await fs.stat(archivePath)).size;
     // The tar bytes ride the native bulk channel (string source ⇒ streamed);
     // only the extract/cleanup control commands use exec.
     const remoteTar = path.posix.join(remoteDir, scratchName(".tar"));
+    // Count the serial guard round trips before the transfer, so the transfer
+    // span records how much of the wall time is guard cost.
+    let guardRoundTrips = 0;
     // Materialize the target dir first so the realpath guard resolves real
     // components, then confirm it (and any existing parent) canonicalizes inside
     // the remote dir — `tar -C` would otherwise follow a sandbox-planted symlink
     // and extract our archive outside the workspace root.
-    await assertSandboxCommandOk(
-      sandbox,
-      `mkdir -p ${shellQuote(mapping.targetPath)}`,
-      timeoutSeconds,
-      "syncIn mkdir",
-    );
-    await assertSandboxPathsConfined({
-      sandbox,
-      remoteDir,
-      paths: [mapping.targetPath],
-      timeoutSeconds,
-      label: "inbound symlink-escape guard",
+    // `ensureDirectory` span: `mkdir -p` — ensure a directory exists before a write.
+    await withProviderSpan({
+      name: "ensureDirectory",
+      run: () =>
+        assertSandboxCommandOk(
+          sandbox,
+          `mkdir -p ${shellQuote(mapping.targetPath)}`,
+          timeoutSeconds,
+          "syncIn mkdir",
+        ),
     });
-    await sandbox.fs.uploadFiles([{ source: archivePath, destination: remoteTar }], timeoutSeconds);
+    guardRoundTrips += 1;
+    // `checkSymlinkEscape` span: re-check a path resolves inside the workspace
+    // root before use.
+    await withProviderSpan({
+      name: "checkSymlinkEscape",
+      run: () =>
+        assertSandboxPathsConfined({
+          sandbox,
+          remoteDir,
+          paths: [mapping.targetPath],
+          timeoutSeconds,
+          label: "inbound symlink-escape guard",
+        }),
+    });
+    guardRoundTrips += 1;
+    // `transfer` span: the real byte upload — `sandbox.fs.uploadFiles`.
+    await withProviderSpan({
+      name: "transfer",
+      wallMsAttr: SPAN_ATTR.transferWallMs,
+      attributes: { [SPAN_ATTR.transferGuardCount]: guardRoundTrips },
+      run: () =>
+        sandbox.fs.uploadFiles([{ source: archivePath, destination: remoteTar }], timeoutSeconds),
+    });
     // Bind validation and extraction into ONE sandbox invocation, then extract into
     // an OPEN directory inode rather than a path string. `exec 9<"$_pc_real"` itself
     // walks every ancestor of `$_pc_real` during the `open()` syscall, so a sandbox
@@ -538,15 +652,86 @@ async function syncInDirectoryMapping(input: {
       `exec 9>&-;`,
       `rm -f ${shellQuote(remoteTar)};`,
     ].join("\n");
-    await assertSandboxCommandOk(
-      sandbox,
-      `sh -c ${shellQuote(extractScript)}`,
-      timeoutSeconds,
-      "syncIn extract",
-    );
+    // `extractTarball` span: one round trip — re-check the path, `tar -xf`, and
+    // remove the scratch tarball.
+    await withProviderSpan({
+      name: "extractTarball",
+      run: () =>
+        assertSandboxCommandOk(
+          sandbox,
+          `sh -c ${shellQuote(extractScript)}`,
+          timeoutSeconds,
+          "syncIn extract",
+        ),
+    });
     const filesTransferred = await countHostFiles(mapping.sourcePath, mapping.exclude);
     return { filesTransferred, bytesTransferred };
   });
+}
+
+/**
+ * Execute an operation's ordered `postUploadCommands` in-sandbox AFTER its files
+ * have landed (Phase 3 / Security Conditions C1–C4). Commands run in array order,
+ * fail-fast: the first non-zero exit or timeout throws and stops the rest — no
+ * silent partial fallback (C4). Each `command` string is executed VERBATIM via the
+ * exec seam; the provider never rewrites, concatenates, or appends a shell fragment
+ * to it (C1/C3) — the working directory rides `executeCommand`'s structured `cwd`
+ * argument, never a `cd &&` prefix on the command. Before exec, a present `cwd` is
+ * re-validated under the workspace remote dir with the same lexical
+ * ({@link assertConfinedSandboxPath}) + realpath/symlink ({@link assertSandboxPathsConfined})
+ * guards used for file placement (C2): `..`, absolute-escape, and symlink-escape
+ * are rejected fail-closed before any command runs. An absent `cwd` defaults to the
+ * provider-resolved remote dir — never a process default cwd.
+ *
+ * Shared by the file- and directory-mapping paths: it runs once per operation,
+ * after every mapping of that operation has been placed.
+ */
+async function runPostUploadCommands(input: {
+  sandbox: Sandbox;
+  commands: PluginPostUploadCommand[];
+  remoteDir: string;
+  timeoutSeconds: number;
+}): Promise<void> {
+  const { sandbox, commands, remoteDir, timeoutSeconds } = input;
+  for (const command of commands) {
+    // C2: re-confine the command cwd before exec. Absent → the remote dir (never a
+    // process default cwd); the remote dir is the confinement root itself, so only
+    // an explicit cwd carries untrusted input worth re-validating.
+    let cwd = remoteDir;
+    if (command.cwd != null) {
+      assertConfinedSandboxPath(remoteDir, command.cwd, "post-upload command cwd");
+      // `checkSymlinkEscape` span: re-check a path resolves inside the workspace
+      // root before use.
+      await withProviderSpan({
+        name: "checkSymlinkEscape",
+        run: () =>
+          assertSandboxPathsConfined({
+            sandbox,
+            remoteDir,
+            paths: [command.cwd as string],
+            timeoutSeconds,
+            label: "post-upload command cwd symlink-escape guard",
+          }),
+      });
+      cwd = command.cwd;
+    }
+    // C1/C3: run the command VERBATIM with a structured cwd (no string rewrite).
+    // C4: first non-zero exit or timeout throws and aborts the remaining commands.
+    const commandTimeoutSeconds =
+      command.timeoutMs != null ? toTimeoutSeconds(command.timeoutMs) : timeoutSeconds;
+    // `postUploadCommand` span: run one caller-supplied post-upload command.
+    const result = await withProviderSpan({
+      name: "postUploadCommand",
+      run: () =>
+        sandbox.process.executeCommand(command.command, cwd, undefined, commandTimeoutSeconds),
+    });
+    if ((result.exitCode ?? 1) !== 0) {
+      const detail = (result.result ?? result.artifacts?.stdout ?? "").toString().trim();
+      throw new Error(
+        `Daytona post-upload command failed (exit ${result.exitCode ?? "unknown"})${detail ? `: ${detail}` : ""}`,
+      );
+    }
+  }
 }
 
 export async function performSyncIn(input: {
@@ -582,6 +767,16 @@ export async function performSyncIn(input: {
       filesTransferred += dirResult.filesTransferred;
       bytesTransferred += dirResult.bytesTransferred;
     }
+
+    // Run the operation's ordered post-upload commands AFTER every file/directory
+    // mapping of this operation has landed (Phase 3 / C1–C4). Absent/empty → no
+    // extra exec, byte-identical to a pre-contract operation.
+    await runPostUploadCommands({
+      sandbox: input.sandbox,
+      commands: operation.postUploadCommands ?? [],
+      remoteDir: input.remoteDir,
+      timeoutSeconds: input.timeoutSeconds,
+    });
 
     operations.push({ operationId: operation.operationId, filesTransferred, bytesTransferred });
   }

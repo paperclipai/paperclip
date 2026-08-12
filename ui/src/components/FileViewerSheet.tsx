@@ -40,6 +40,7 @@ import { cn } from "@/lib/utils";
 import { fileResourcesApi } from "@/api/file-resources";
 import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import {
   useRequiredFileViewer,
   type FileViewerUrlState,
@@ -113,27 +114,6 @@ function isMarkdownResource(resource: ResolvedWorkspaceResource): boolean {
   if (contentType.includes("markdown")) return true;
   const path = (resource.displayPath || resource.title).toLowerCase();
   return /\.(md|markdown|mdown|mkdn|mkd)$/.test(path);
-}
-
-async function copyTextWithFallback(text: string) {
-  if (navigator.clipboard && window.isSecureContext) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.style.position = "fixed";
-  textarea.style.left = "-9999px";
-  document.body.appendChild(textarea);
-
-  try {
-    textarea.select();
-    const success = document.execCommand("copy");
-    if (!success) throw new Error("execCommand copy failed");
-  } finally {
-    document.body.removeChild(textarea);
-  }
 }
 
 export function describeDenial(code: string, fallback: string): { title: string; body: string; icon: ReactNode } {
@@ -660,7 +640,7 @@ export function FileViewerSheet({
   const copyToClipboard = useCallback(async (value: string, field: "content" | "link", message: string) => {
     try {
       setCopyingField(field);
-      await copyTextWithFallback(value);
+      await copyTextToClipboard(value);
       showCopyFeedback(field, message);
     } catch {
       showCopyFeedback(null, "Copy failed");

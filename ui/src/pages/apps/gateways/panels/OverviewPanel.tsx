@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useToast } from "@/context/ToastContext";
 import { cn } from "@/lib/utils";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import {
   activeTokenCount,
   allowedToolsLabel,
@@ -52,7 +53,7 @@ export function OverviewPanel({
 
   async function copy(value: string, label: string) {
     try {
-      await navigator.clipboard.writeText(value);
+      await copyTextToClipboard(value);
       pushToast({ title: "Copied", body: label, tone: "success" });
     } catch {
       pushToast({ title: "Copy failed", body: "Clipboard access is unavailable.", tone: "error" });

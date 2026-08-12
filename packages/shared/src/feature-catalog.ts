@@ -50,6 +50,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableManagedSandboxOnly: {
+    title: "Managed Sandbox Only",
+    description:
+      "Hide the local environment and run all agents in the platform-managed sandbox environment.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableIsolatedWorkspaces: {
     title: "Isolated Workspaces",
     description:
@@ -96,6 +104,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableClassicTaskInterface: {
+    title: "Classic Task Interface",
+    description:
+      "Restore the pre-chat task detail page: the page-level header with inline description editor, the plain comment thread, and the fixed Properties sidebar. Chat-only features (streaming activity folding, inline plan/question cards, the three-mode composer) are unavailable in the classic view.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableTaskWatchdogs: {
     title: "Task Watchdogs",
     description:
@@ -127,14 +143,6 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
-  enableCloudSync: {
-    title: "Cloud Sync",
-    description:
-      "Show local Paperclip Cloud upstream connection, preview, push, retry, and activation review surfaces.",
-    tier: "managed",
-    cloudDefault: false,
-    selfHostedDefault: false,
-  },
   enableExternalObjects: {
     title: "External Objects",
     description:
@@ -159,6 +167,13 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableBetaSkills: {
+    title: "Beta skills",
+    description: "Allow agents to pin beta releases of the Paperclip core skill.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableSummaries: {
     title: "Summaries",
     description:
@@ -178,6 +193,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
   enableGoalsSidebarLink: {
     title: "Goals Sidebar Link",
     description: "Restore the Goals item in the main sidebar while the goals surface is being evaluated.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableSimplifiedEnglishInteractions: {
+    title: "Simplified English Interactions",
+    description:
+      "Instruct agents to write user interactions (confirmations, questions, suggested tasks) in ASD-STE100 Simplified Technical English with brief decision context.",
     tier: "preference",
     cloudDefault: false,
     selfHostedDefault: false,
@@ -221,6 +244,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     tier: "managed",
     cloudDefault: true,
     selfHostedDefault: true,
+  },
+  enableOwnerInstanceAdmin: {
+    title: "Owner Instance Admin",
+    description:
+      "On cloud-managed instances, grant the stack owner instance-admin access to their own dedicated instance. Elevation is computed at the trusted-header auth boundary; no instance admin role rows are created. Inert on self-hosted instances.",
+    tier: "managed",
+    cloudDefault: true,
+    selfHostedDefault: false,
   },
   enableWorktreeRunExecution: {
     title: "Worktree Run Execution",

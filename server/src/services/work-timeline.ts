@@ -471,8 +471,8 @@ export function workTimelineService(db: Db) {
     const accessibleIssues = await filterReadableIssues(userScopedIssues, input.canReadIssue);
     const sortedIssues = accessibleIssues.sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
     const pagedIssues = sortedIssues.slice(offset, offset + limit);
-    const issueById = new Map(pagedIssues.map((issue) => [issue.id, issue]));
-    const readableIssueIds = Array.from(issueById.keys());
+    const issueById = new Map(sortedIssues.map((issue) => [issue.id, issue]));
+    const readableIssueIds = pagedIssues.map((issue) => issue.id);
 
     if (readableIssueIds.length === 0) {
       return {

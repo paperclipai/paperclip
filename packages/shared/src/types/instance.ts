@@ -46,28 +46,49 @@ export interface InstanceGeneralSettings {
 
 export interface InstanceExperimentalSettings {
   enableEnvironments: boolean;
+  /**
+   * Hide the local environment and run all agents in the platform-managed
+   * sandbox environment. Run selection refuses local while this is on.
+   */
+  enableManagedSandboxOnly: boolean;
   enableIsolatedWorkspaces: boolean;
   enableStreamlinedLeftNavigation: boolean;
   enableApps: boolean;
   enablePipelines: boolean;
   enableCases: boolean;
   enableConferenceRoomChat: boolean;
+  enableClassicTaskInterface: boolean;
   enableTaskWatchdogs: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
-  enableCloudSync: boolean;
   enableExternalObjects: boolean;
   enableSmokeLab: boolean;
   enableBuiltInAgents: boolean;
+  enableBetaSkills: boolean;
   enableSummaries: boolean;
   enableStatusCards: boolean;
   enableDecisions: boolean;
   enableGoalsSidebarLink: boolean;
   enableServerInfoDebugView: boolean;
+  /**
+   * Instructs agents to write user-interaction content (confirmations,
+   * questions, suggested tasks, checkbox prompts) in ASD-STE100 Simplified
+   * Technical English with brief decision context. Prompt-side only; no
+   * behavior change outside interaction wording.
+   */
+  enableSimplifiedEnglishInteractions: boolean;
   autoRestartDevServerWhenIdle: boolean;
   enableIssueGraphLivenessAutoRecovery: boolean;
   enableWorkspaceBranchReconcileForward: boolean;
   enableWorkspaceDirtyQuarantineRepair: boolean;
+  /**
+   * On cloud-managed instances, grant the stack owner instance-admin access
+   * to their own dedicated instance. Elevation is computed per request at the
+   * trusted-header auth boundary (owner stack role + this flag); no
+   * `instance_user_roles` row is ever written. Inert on self-hosted
+   * instances, which have no trusted cloud tenant path.
+   */
+  enableOwnerInstanceAdmin: boolean;
   /**
    * Worktree preview instances (`PAPERCLIP_IN_WORKTREE=true`) suppress the
    * heartbeat run engine by default so previews never self-execute tasks. When

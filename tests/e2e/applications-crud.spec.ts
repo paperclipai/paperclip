@@ -57,7 +57,7 @@ async function createConnection(
 }
 
 async function gotoApps(page: Page, prefix: string) {
-  await page.goto(`/${prefix}/apps`);
+  await page.goto(`/${prefix}/apps/connections`);
   await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 30_000 });
 }
 
@@ -84,23 +84,40 @@ test.describe.serial("applications lifecycle", () => {
 
     await gotoApps(page, seed.prefix);
 
+    // The connected app starts with a "Healthy" pill and an "Open" action. A
+    // background health sweep then probes the connection endpoint. The test
+    // endpoint is an unreachable fixture URL, so the probe fails and the pill
+    // becomes "Needs attention" and the action becomes "Reconnect". Both are
+    // connected states that navigate to the same provider setup page. This test
+    // proves the connected-vs-not-connected split, not the transient health
+    // label, so accept either connected state instead of the racy exact label.
+    // The pill is derived from two react-query fetches (applications +
+    // connections), so keep the same generous window the rest of this spec uses.
     const connectedRow = page.locator("tbody tr", { hasText: connectedName });
     await expect(connectedRow).toBeVisible();
-    await expect(connectedRow.getByText("Healthy")).toBeVisible();
-    await expect(connectedRow.getByRole("button", { name: "Open" })).toBeVisible();
+    await expect(connectedRow.getByText(/^(Healthy|Needs attention)$/)).toBeVisible({ timeout: 30_000 });
+    await expect(connectedRow.getByRole("button", { name: /^(Open|Reconnect)$/ })).toBeVisible();
 
+    // The not-connected app has no connection, so the health sweep never touches
+    // it and its "Not connected" pill and "Connect" action stay deterministic.
     const notConnectedRow = page.locator("tbody tr", { hasText: notConnectedName });
     await expect(notConnectedRow).toBeVisible();
-    await expect(notConnectedRow.getByText("Not connected")).toBeVisible();
+    await expect(notConnectedRow.getByText("Not connected")).toBeVisible({ timeout: 30_000 });
     await expect(notConnectedRow.getByRole("button", { name: "Connect" })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-current-list.png`, fullPage: true });
 
-    await connectedRow.getByRole("button", { name: "Open" }).click();
-    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/${connected.id}`), { timeout: 20_000 });
+    await connectedRow.getByRole("button", { name: /^(Open|Reconnect)$/ }).click();
+    await expect(page).toHaveURL(
+      new RegExp(`/${seed.prefix}/apps/app/${connected.applicationId}/setup$`),
+      { timeout: 20_000 },
+    );
 
     await gotoApps(page, seed.prefix);
     await notConnectedRow.getByRole("button", { name: "Connect" }).click();
-    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/app/${notConnected.id}`), { timeout: 20_000 });
+    await expect(page).toHaveURL(
+      new RegExp(`/${seed.prefix}/apps/app/${notConnected.id}/setup$`),
+      { timeout: 20_000 },
+    );
   });
 
   test("connected app detail supports pause, rename, and removal", async ({ page, request }) => {
@@ -132,8 +149,9 @@ test.describe.serial("applications lifecycle", () => {
     await expect(page.getByRole("button", { name: "Yes, remove it" })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-current-remove-connected.png`, fullPage: true });
     await page.getByRole("button", { name: "Yes, remove it" }).click();
-    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`), { timeout: 20_000 });
+    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/connections$`), { timeout: 20_000 });
     await expect(page.getByText("App removed").first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible();
     await expect(page.locator("tbody tr", { hasText: renamed })).toHaveCount(0);
   });
 
@@ -147,8 +165,9 @@ test.describe.serial("applications lifecycle", () => {
     await page.getByRole("button", { name: "Remove app", exact: true }).click();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-current-remove-not-connected.png`, fullPage: true });
     await page.getByRole("button", { name: "Yes, remove it" }).click();
-    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`), { timeout: 20_000 });
+    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/connections$`), { timeout: 20_000 });
     await expect(page.getByText("App removed").first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible();
     await expect(page.locator("tbody tr", { hasText: cleanAppName })).toHaveCount(0);
   });
 });

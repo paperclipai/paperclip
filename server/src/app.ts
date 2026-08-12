@@ -11,7 +11,14 @@ import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { applyTrustProxy, parseTrustProxyEnv } from "./middleware/trust-proxy.js";
+import {
+  IMPORT_TRANSFER_SPOOL_SWEEP_INTERVAL_MS,
+  resolveDefaultImportTransferSpoolRoot,
+  sweepAbandonedImportTransferSpools,
+} from "./services/company-import-transfers.js";
+import { companyTransferRunService } from "./services/company-transfer-runs.js";
 import { healthRoutes } from "./routes/health.js";
+import { cloudRoutes } from "./routes/cloud.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { companySkillPolicyRoutes } from "./routes/company-skill-policy.js";
@@ -42,6 +49,9 @@ import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { attentionRoutes } from "./routes/attention.js";
 import { decisionTrainingRoutes } from "./routes/decision-training.js";
+import { decisionRoutes } from "./routes/decisions.js";
+import { decisionQueueRoutes } from "./routes/decision-queues.js";
+import type { DecisionServiceOptions } from "./services/decisions.js";
 import { userProfileRoutes } from "./routes/user-profiles.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
@@ -64,7 +74,7 @@ import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
-import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
+import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader, type PluginLoader } from "./services/plugin-loader.js";
 import {
   SELF_HOSTED_AUTO_INSTALL_KEYS,
   ensureBundledPlugins,
@@ -148,6 +158,87 @@ export function shouldEnablePrivateHostnameGuard(opts: {
   );
 }
 
+export function createManagedBundledPluginWorkerRecovery(input: {
+  managedBundledPluginKeys: readonly string[];
+  workerManager: Pick<PluginWorkerManager, "getWorker" | "isRunning" | "stopWorker">;
+  getLoader: () => Pick<PluginLoader, "loadSingle"> | null;
+}): (plugin: { id: string; pluginKey: string }) => Promise<boolean> {
+  const recoverablePluginKeys = new Set(input.managedBundledPluginKeys);
+  const inFlightStarts = new Map<string, Promise<boolean>>();
+
+  // A failed attempt can leave behind the dead handle it registered (e.g. the
+  // worker process died during initialize, which kills the process without
+  // scheduling a restart). No pre-existing handle survives to a recovery
+  // attempt — recovery only starts when getWorker() was empty — so discarding
+  // the dead handle lets a later capability request retry instead of being
+  // blocked by the handle-presence gate until the process restarts. Handles
+  // in starting/running/backoff states belong to the worker manager's own
+  // lifecycle and are left alone.
+  const discardDeadRecoveryHandle = async (plugin: { id: string; pluginKey: string }) => {
+    const handle = input.workerManager.getWorker(plugin.id);
+    if (!handle || (handle.status !== "crashed" && handle.status !== "stopped")) return;
+    try {
+      await input.workerManager.stopWorker(plugin.id);
+    } catch (err) {
+      logger.warn(
+        {
+          pluginId: plugin.id,
+          pluginKey: plugin.pluginKey,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "failed to discard dead plugin worker handle after recovery failure",
+      );
+    }
+  };
+
+  return async (plugin) => {
+    if (!recoverablePluginKeys.has(plugin.pluginKey)) return false;
+
+    const inFlight = inFlightStarts.get(plugin.id);
+    if (inFlight) return inFlight;
+
+    const startPromise = (async () => {
+      if (input.workerManager.getWorker(plugin.id)) {
+        return input.workerManager.isRunning(plugin.id);
+      }
+
+      const loader = input.getLoader();
+      if (!loader) return false;
+
+      try {
+        const result = await loader.loadSingle(plugin.id, {
+          markErrorOnFailure: false,
+        });
+        if (result.success === true || input.workerManager.isRunning(plugin.id)) {
+          return true;
+        }
+        await discardDeadRecoveryHandle(plugin);
+        return false;
+      } catch (err) {
+        logger.warn(
+          {
+            pluginId: plugin.id,
+            pluginKey: plugin.pluginKey,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "managed bundled plugin lazy worker recovery failed",
+        );
+        await discardDeadRecoveryHandle(plugin);
+        throw err;
+      }
+    })();
+
+    inFlightStarts.set(plugin.id, startPromise);
+    try {
+      return await startPromise;
+    } finally {
+      if (inFlightStarts.get(plugin.id) === startPromise) {
+        inFlightStarts.delete(plugin.id);
+      }
+    }
+  };
+}
+
 export async function createApp(
   db: Db,
   opts: {
@@ -175,6 +266,7 @@ export async function createApp(
     localPluginDir?: string;
     pluginMigrationDb?: Db;
     pluginWorkerManager?: PluginWorkerManager;
+    decisionServiceOptions: DecisionServiceOptions;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
     /**
@@ -238,6 +330,34 @@ export async function createApp(
 
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
+  const managedAutoInstallKeys = opts.managedPluginAutoInstall ?? null;
+  const bundledCatalogRoot =
+    opts.bundledPluginCatalogRoot ?? resolveBundledCatalogRoot(process.env);
+  const bundledPluginInstalls = resolveBundledPluginInstalls(
+    managedAutoInstallKeys ?? SELF_HOSTED_AUTO_INSTALL_KEYS,
+    {
+      catalogRoot: bundledCatalogRoot,
+      env: process.env,
+      enforceCatalogRoot: managedAutoInstallKeys !== null,
+    },
+  );
+  const managedBundledPluginKeys =
+    managedAutoInstallKeys !== null
+      ? bundledPluginInstalls.map((install) => install.pluginKey)
+      : [];
+  let runtimePluginLoader: Pick<PluginLoader, "loadSingle"> | null = null;
+  // A sibling process can install a managed bundled plugin while this process
+  // skips the mid-install row, then finish the row after this process's
+  // loadAll() pass. The capabilities route may recover only those managed
+  // bundles by starting their ready-but-unstarted worker lazily.
+  const recoverManagedBundledPluginWorker =
+    managedAutoInstallKeys !== null
+      ? createManagedBundledPluginWorkerRecovery({
+          managedBundledPluginKeys,
+          workerManager,
+          getLoader: () => runtimePluginLoader,
+        })
+      : undefined;
 
   // Mount API routes
   const api = Router();
@@ -253,6 +373,7 @@ export async function createApp(
     }),
   );
   api.use(openApiRoutes());
+  api.use("/cloud", cloudRoutes());
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));
   api.use(folderRoutes(db));
@@ -271,7 +392,15 @@ export async function createApp(
   api.use(fileResourceRoutes(db));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(pipelineRoutes(db));
-  api.use(environmentRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(environmentRoutes(db, {
+    pluginWorkerManager: workerManager,
+    recoverMissingPluginWorker: recoverManagedBundledPluginWorker
+      ? {
+        pluginKeys: managedBundledPluginKeys,
+        startWorker: recoverManagedBundledPluginWorker,
+      }
+      : undefined,
+  }));
   api.use(executionWorkspaceRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(goalRoutes(db));
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
@@ -286,6 +415,8 @@ export async function createApp(
   api.use(dashboardRoutes(db));
   api.use(attentionRoutes(db));
   api.use(decisionTrainingRoutes(db));
+  api.use(decisionRoutes(db, opts.decisionServiceOptions));
+  api.use(decisionQueueRoutes(db));
   api.use(userProfileRoutes(db));
   api.use(sidebarBadgeRoutes(db));
   api.use(sidebarPreferenceRoutes(db));
@@ -380,6 +511,7 @@ export async function createApp(
       },
     },
   );
+  runtimePluginLoader = loader;
   api.use(
     toolGatewayRoutes(db, toolGateway),
   );
@@ -546,6 +678,48 @@ export async function createApp(
   if (opts.feedbackExportService) {
     void flushPendingFeedbackExports();
   }
+  // Abandoned chunked-import spool sweep: hourly (plus once at startup),
+  // deleting spool dirs whose transfer saw no activity for 24h and cancelling
+  // their still-open ledger runs. Same setInterval + unref + shutdown-clear
+  // shape as the feedback export flush above.
+  const importTransferSpoolRoot = resolveDefaultImportTransferSpoolRoot();
+  const sweepImportTransferSpools = () => {
+    sweepAbandonedImportTransferSpools(db, importTransferSpoolRoot)
+      .then((result) => {
+        if (result.swept > 0) {
+          logger.info(result, "swept abandoned company import transfer spools");
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "abandoned company import transfer spool sweep failed");
+      });
+  };
+  let importTransferSweepTimer: ReturnType<typeof setInterval> | null = setInterval(
+    sweepImportTransferSpools,
+    IMPORT_TRANSFER_SPOOL_SWEEP_INTERVAL_MS,
+  );
+  importTransferSweepTimer.unref?.();
+  // Startup only (never on the hourly interval — that would kill live
+  // applies): apply jobs are in-memory in this single process, so any run
+  // still "applying" now was interrupted by the previous shutdown and would
+  // otherwise 409 every retry forever. Fail those stranded runs — their
+  // spooled parts stay reusable — then run the normal sweep once.
+  void companyTransferRunService
+    .recoverStrandedApplyingRuns(db)
+    .then((recovered) => {
+      if (recovered.length > 0) {
+        logger.warn(
+          { count: recovered.length, runIds: recovered },
+          "failed company transfer runs stranded in applying by a restart",
+        );
+      }
+    })
+    .catch((err) => {
+      logger.error({ err }, "stranded company transfer apply recovery failed");
+    })
+    .finally(() => {
+      sweepImportTransferSpools();
+    });
   void toolDispatcher.initialize().catch((err) => {
     logger.error({ err }, "Failed to initialize plugin tool dispatcher");
   });
@@ -570,27 +744,22 @@ export async function createApp(
   // drive the key list from the control plane; self-hosted instances keep
   // the pre-existing behavior of ensuring only the kubernetes bundle.
   //
-  // Resolution below is deliberately synchronous and NOT fail-safe: an
+  // Resolution is deliberately synchronous and NOT fail-safe: an
   // unknown key or a path escaping the bundled catalog root throws out of
   // createApp so a managed instance refuses to start (positive allowlist,
   // fail closed).
-  const managedAutoInstallKeys = opts.managedPluginAutoInstall ?? null;
-  const bundledCatalogRoot =
-    opts.bundledPluginCatalogRoot ?? resolveBundledCatalogRoot(process.env);
-  const bundledPluginInstalls = resolveBundledPluginInstalls(
-    managedAutoInstallKeys ?? SELF_HOSTED_AUTO_INSTALL_KEYS,
-    {
-      catalogRoot: bundledCatalogRoot,
-      env: process.env,
-      enforceCatalogRoot: managedAutoInstallKeys !== null,
-    },
-  );
   // SAFETY: installation is fully fail-safe. Any failure
   // (missing bundle, install error, load error) is caught, logged, and
   // swallowed per plugin so the server ALWAYS finishes booting. A degraded
   // boot (a provider unavailable, some agents cannot run) is strictly
   // preferable to a crash loop.
-  void ensureBundledPlugins(
+  //
+  // The chain is not awaited here (createApp stays fast), but the settled
+  // promise is exposed via `app.locals.bundledPluginsStartup` so boot steps
+  // that must not outrun plugin availability — managed sandbox environments
+  // (`applyManagedEnvironments`) run before the heartbeat resumes queued
+  // runs — can sequence on it. It never rejects.
+  const bundledPluginsStartup = ensureBundledPlugins(
     bundledPluginInstalls,
     { registry: pluginRegistry, loader, lifecycle, logger },
     // Managed mode reinstalls soft-uninstalled bundles (the control plane
@@ -609,11 +778,16 @@ export async function createApp(
   }).catch((err) => {
     logger.error({ err }, "Failed to load ready plugins on startup");
   });
+  app.locals.bundledPluginsStartup = bundledPluginsStartup;
   let appServicesShutdown = false;
   const shutdownAppServices = () => {
     if (appServicesShutdown) return;
     appServicesShutdown = true;
     disableFeedbackExportFlushes();
+    if (importTransferSweepTimer) {
+      clearInterval(importTransferSweepTimer);
+      importTransferSweepTimer = null;
+    }
     devWatcher?.close();
     viteHtmlRenderer?.dispose();
     hostServiceCleanup.disposeAll();

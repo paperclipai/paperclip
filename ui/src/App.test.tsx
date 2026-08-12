@@ -242,3 +242,22 @@ describe("Skill Studio routes", () => {
     expect(createIndexes[1]).toBeLessThan(detailIndexes[1]!);
   });
 });
+
+describe("Apps routes", () => {
+  it("uses browse as the Apps landing page and gives connections a canonical URL", () => {
+    expect(appSource).toContain('<Route path="apps" element={<Browse />} />');
+    expect(appSource).toContain('<Route path="apps/browse" element={<Navigate to="/apps" replace />} />');
+    expect(appSource).toContain('<Route path="apps/connections" element={<Connections />} />');
+    expect(appSource).toContain('<Route path="apps/connect/:appKey" element={<Navigate to="/apps" replace />} />');
+    expect(appSource).toContain('<Route path="apps/connect/:appKey/:stage" element={<Navigate to="/apps" replace />} />');
+  });
+});
+
+describe("Decisions routes", () => {
+  it("does not register decision-training views", () => {
+    expect(appSource).not.toContain('path="decisions/training"');
+    expect(appSource).not.toContain('path="decisions/training/:id"');
+    expect(appSource).not.toContain('path="training"');
+    expect(appSource).not.toContain('path="training/:id"');
+  });
+});

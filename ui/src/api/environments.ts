@@ -58,11 +58,22 @@ function customImageCompanyQuery(companyId: string): string {
   return `companyId=${encodeURIComponent(companyId)}`;
 }
 
+export interface EnvironmentSecretRefDescriptor {
+  configPath: string;
+  secretId: string;
+  name: string;
+  status: string;
+  companyId: string;
+  companyName: string | null;
+}
+
 export const environmentsApi = {
   list: (companyId: string) => api.get<Environment[]>(`/companies/${companyId}/environments`),
   capabilities: (companyId: string) =>
     api.get<EnvironmentCapabilities>(`/companies/${companyId}/environments/capabilities`),
   lease: (leaseId: string) => api.get<EnvironmentLease>(`/environment-leases/${leaseId}`),
+  secretRefs: (environmentId: string) =>
+    api.get<{ refs: EnvironmentSecretRefDescriptor[] }>(`/environments/${environmentId}/secret-refs`),
   create: (companyId: string, body: {
     name: string;
     description?: string | null;
@@ -76,6 +87,9 @@ export const environmentsApi = {
     driver?: "local" | "ssh" | "sandbox" | "plugin";
     status?: "active" | "archived";
     config?: Record<string, unknown>;
+    // The only field accepted on platform-managed environments (the server
+    // write floor admits envVars-only patches there).
+    envVars?: Environment["envVars"];
     metadata?: Record<string, unknown> | null;
   }) => api.patch<EnvironmentUpdateResult>(`/environments/${environmentId}`, body),
   probe: (environmentId: string, companyId?: string | null) =>

@@ -16,7 +16,6 @@ import {
   heartbeatRuns,
   instanceSettings,
   issueInboxArchives,
-  issueReadStates,
   issues,
   projectWorkspaces,
   projects,
@@ -64,7 +63,6 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     }
     await db.delete(activityLog);
     await db.delete(issueInboxArchives);
-    await db.delete(issueReadStates);
     await db.delete(secretAccessEvents);
     await db.delete(companySecretBindings);
     await db.delete(routineRuns);
@@ -429,7 +427,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(agentId).not.toBe(otherAgentId);
   });
 
-  it("fires for a human comment and ignores pure-read activity", async () => {
+  it("fires for a human comment and ignores inbox bookkeeping activity", async () => {
     const { companyId, projectId, routine, svc } = await seedFixture();
     const windowStart = new Date(Date.now() - 60_000);
     const now = new Date();
@@ -454,6 +452,15 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         entityType: "issue",
         entityId: issueId,
         createdAt: new Date(windowStart.getTime() + 2_000),
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: "user-1",
+        action: "issue.inbox_touched",
+        entityType: "issue",
+        entityId: issueId,
+        createdAt: new Date(windowStart.getTime() + 3_000),
       },
     ]);
 
@@ -481,6 +488,15 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         entityType: "issue",
         entityId: issueId,
         createdAt: new Date(windowStart.getTime() + 2_000),
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: "user-1",
+        action: "issue.inbox_touched",
+        entityType: "issue",
+        entityId: issueId,
+        createdAt: new Date(windowStart.getTime() + 3_000),
       },
     ]);
 
@@ -1240,12 +1256,15 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       db.select().from(issueInboxArchives).where(eq(issueInboxArchives.issueId, previousIssue.id)),
     ).resolves.toHaveLength(0);
     await expect(
-      db.select().from(issueReadStates).where(eq(issueReadStates.issueId, previousIssue.id)),
+      db.select().from(activityLog).where(eq(activityLog.entityId, previousIssue.id)),
     ).resolves.toEqual([
       expect.objectContaining({
         companyId,
-        issueId: previousIssue.id,
-        userId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.inbox_touched",
+        entityType: "issue",
+        entityId: previousIssue.id,
       }),
     ]);
 
@@ -1323,12 +1342,15 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       db.select().from(issueInboxArchives).where(eq(issueInboxArchives.issueId, previousIssue.id)),
     ).resolves.toHaveLength(0);
     await expect(
-      db.select().from(issueReadStates).where(eq(issueReadStates.issueId, previousIssue.id)),
+      db.select().from(activityLog).where(eq(activityLog.entityId, previousIssue.id)),
     ).resolves.toEqual([
       expect.objectContaining({
         companyId,
-        issueId: previousIssue.id,
-        userId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.inbox_touched",
+        entityType: "issue",
+        entityId: previousIssue.id,
       }),
     ]);
 

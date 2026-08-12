@@ -42,7 +42,7 @@ export interface PaperclipInstallStartedDimensions {
 export interface PaperclipInteractionResolvedDimensions {
 interaction_kind: ("suggest_tasks" | "ask_user_questions" | "request_confirmation" | "request_checkbox_confirmation" | "other")
 status: ("accepted" | "rejected" | "answered" | "cancelled" | "expired" | "failed" | "other")
-resolution_reason?: ("accepted" | "rejected" | "stale_target" | "superseded_by_comment" | "expired" | "cancelled" | "other")
+resolution_reason?: ("accepted" | "rejected" | "stale_target" | "superseded_by_comment" | "superseded_by_newer_request" | "expired" | "cancelled" | "other")
 resolved_by_kind: ("user" | "agent" | "system" | "other")
 created_by_kind?: ("agent" | "user" | "other")
 creator_agent_role?: ("ceo" | "cto" | "cmo" | "cfo" | "security" | "engineer" | "designer" | "pm" | "qa" | "devops" | "researcher" | "general" | "other")
@@ -255,6 +255,7 @@ export const PAPERCLIP_ENUM_DESCRIPTIONS = {
       "rejected": "Stored result outcome says the interaction was rejected.",
       "stale_target": "Bound target, such as an issue document revision, was no longer current.",
       "superseded_by_comment": "A later user or board comment superseded the pending confirmation.",
+      "superseded_by_newer_request": "A newer confirmation from the same agent superseded the pending confirmation.",
       "expired": "Interaction expired for a generic expiration reason.",
       "cancelled": "Interaction was explicitly cancelled.",
       "other": "Fallback when the resolution reason is unknown or not represented by the tracked enum."

@@ -18,6 +18,7 @@ import {
   issueInboxArchives,
   issueDocuments,
   issuePlanDecompositions,
+  issueReadStates,
   issueRelations,
   issueThreadInteractions,
   issues,
@@ -308,6 +309,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(issueRelations);
     await db.delete(issueDocuments);
     await db.delete(issueInboxArchives);
+    await db.delete(issueReadStates);
     await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(documents);
@@ -335,6 +337,70 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
     return companyId;
   }
+
+  it("does not treat passive issue activity as touching it, but includes real user mutations", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issueId = randomUUID();
+    const userId = "board-user";
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Issue viewed without participation",
+      status: "todo",
+      priority: "medium",
+    });
+    await svc.markRead(companyId, issueId, userId);
+    await db.insert(activityLog).values([
+      {
+        companyId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.read_marked",
+        entityType: "issue",
+        entityId: issueId,
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.file_resource_content_read",
+        entityType: "issue",
+        entityId: issueId,
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.file_resource_download_denied",
+        entityType: "issue",
+        entityId: issueId,
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.tree_control_previewed",
+        entityType: "issue",
+        entityId: issueId,
+      },
+    ]);
+
+    await expect(svc.list(companyId, { touchedByUserId: userId })).resolves.toEqual([]);
+
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "user",
+      actorId: userId,
+      action: "issue.comment_cancelled",
+      entityType: "issue",
+      entityId: issueId,
+    });
+
+    await expect(svc.list(companyId, { touchedByUserId: userId })).resolves.toEqual([
+      expect.objectContaining({ id: issueId }),
+    ]);
+  });
 
   function agentRow(companyId: string, input: {
     id: string;
@@ -462,6 +528,170 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       assigneeAgentId: null,
       status: "todo",
     });
+  });
+
+  it("expires pending thread interactions on any service-level terminal transition", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issue = await svc.create(companyId, {
+      title: "Close me with a pending card",
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId: issue.id,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "scope",
+          prompt: "Pick one",
+          selectionMode: "single",
+          options: [{ id: "a", label: "A" }],
+        }],
+      } as never,
+    });
+
+    // Direct service callers (tree control, recovery, pipelines, status cards)
+    // never pass through the HTTP routes, so the expiry must fire here.
+    const updated = await svc.update(issue.id, { status: "cancelled", actorUserId: "local-board" });
+    expect(updated?.status).toBe("cancelled");
+
+    const interaction = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId))
+      .then((rows) => rows[0] ?? null);
+    expect(interaction).toMatchObject({
+      status: "expired",
+      resolvedByUserId: "local-board",
+    });
+    expect(interaction?.result).toMatchObject({ version: 1, outcome: "issue_closed" });
+    expect(interaction?.resolvedAt).not.toBeNull();
+
+    const logged = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.thread_interaction_expired"));
+    expect(logged).toHaveLength(1);
+    // details.source is dot-separated and trips the JWT-shaped redaction
+    // heuristic in sanitizeRecord, so assert the identifying fields instead.
+    expect(logged[0]?.details).toMatchObject({
+      interactionId,
+      interactionKind: "ask_user_questions",
+      interactionStatus: "expired",
+    });
+  });
+
+  it("expires superseded interactions when human comments are added through the service", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issue = await svc.create(companyId, {
+      title: "Answer with a comment",
+      description: null,
+      status: "in_review",
+      priority: "medium",
+    });
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId: issue.id,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        supersedeOnUserComment: true,
+        questions: [{
+          id: "scope",
+          prompt: "Pick one",
+          selectionMode: "single",
+          options: [{ id: "a", label: "A" }],
+        }],
+      } as never,
+    });
+
+    const comment = await svc.addComment(issue.id, "Use option A", { userId: "local-board" });
+
+    const interaction = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId))
+      .then((rows) => rows[0] ?? null);
+    expect(interaction).toMatchObject({
+      status: "expired",
+      resolvedByUserId: "local-board",
+    });
+    expect(interaction?.result).toMatchObject({
+      expirationReason: "superseded_by_comment",
+      commentId: comment.id,
+    });
+
+    const logged = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.thread_interaction_expired"));
+    expect(logged).toHaveLength(1);
+    expect(logged[0]?.details).toMatchObject({
+      interactionId,
+      interactionKind: "ask_user_questions",
+      interactionStatus: "expired",
+    });
+  });
+
+  it("keeps interactions pending when the board concierge adds a comment", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issue = await svc.create(companyId, {
+      title: "Concierge reply",
+      description: null,
+      status: "in_review",
+      priority: "medium",
+    });
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId: issue.id,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        supersedeOnUserComment: true,
+        questions: [{
+          id: "scope",
+          prompt: "Pick one",
+          selectionMode: "single",
+          options: [{ id: "a", label: "A" }],
+        }],
+      } as never,
+    });
+
+    await svc.addComment(issue.id, "Automated concierge reply", {
+      userId: "board-concierge",
+    });
+
+    const interaction = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId))
+      .then((rows) => rows[0] ?? null);
+    expect(interaction).toMatchObject({
+      status: "pending",
+      resolvedByUserId: null,
+      result: null,
+    });
+
+    const logged = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.thread_interaction_expired"));
+    expect(logged).toHaveLength(0);
   });
 
   it("rejects moving an existing terminated assignment into progress without clearing it", async () => {
@@ -2393,6 +2623,127 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
   });
 });
 
+describeEmbeddedPostgres("issueService.findOpenAncestorCreatedByAgent", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-ancestor-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issues);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedChain() {
+    const companyId = randomUUID();
+    const delegatorId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Chain Co",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: delegatorId,
+      companyId,
+      name: "Delegator",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const rootId = randomUUID();
+    const midId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: rootId,
+        companyId,
+        title: "Root task",
+        status: "in_progress",
+        priority: "medium",
+        issueNumber: 1,
+        identifier: "CHAIN-1",
+      },
+      {
+        id: midId,
+        companyId,
+        title: "Delegated review",
+        status: "in_progress",
+        priority: "medium",
+        parentId: rootId,
+        createdByAgentId: delegatorId,
+        issueNumber: 2,
+        identifier: "CHAIN-2",
+      },
+    ]);
+    return { companyId, delegatorId, rootId, midId };
+  }
+
+  it("finds an open ancestor created by the agent, at any depth", async () => {
+    const { delegatorId, midId } = await seedChain();
+
+    const direct = await svc.findOpenAncestorCreatedByAgent(midId, delegatorId);
+    expect(direct?.id).toBe(midId);
+
+    const other = await svc.findOpenAncestorCreatedByAgent(midId, randomUUID());
+    expect(other).toBeNull();
+  });
+
+  it("ignores closed ancestors created by the agent", async () => {
+    const { delegatorId, midId } = await seedChain();
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, midId));
+
+    expect(await svc.findOpenAncestorCreatedByAgent(midId, delegatorId)).toBeNull();
+  });
+
+  it("finds the ancestor through an arbitrarily deep chain", async () => {
+    const { companyId, delegatorId, midId } = await seedChain();
+    // Extend the chain 60 levels below the delegator-created ancestor so the
+    // match sits far above the new child's parent.
+    let parentId = midId;
+    for (let index = 0; index < 60; index += 1) {
+      const childId = randomUUID();
+      await db.insert(issues).values({
+        id: childId,
+        companyId,
+        title: `Deep child ${index}`,
+        status: "in_progress",
+        priority: "medium",
+        parentId,
+        issueNumber: index + 10,
+        identifier: `CHAIN-${index + 10}`,
+      });
+      parentId = childId;
+    }
+
+    const found = await svc.findOpenAncestorCreatedByAgent(parentId, delegatorId);
+    expect(found?.id).toBe(midId);
+  });
+
+  it("terminates on a corrupted parent-graph cycle", async () => {
+    const { delegatorId, rootId, midId } = await seedChain();
+    // Corrupt the graph: root's parent points back at mid.
+    await db.update(issues).set({ parentId: midId }).where(eq(issues.id, rootId));
+
+    const found = await svc.findOpenAncestorCreatedByAgent(midId, delegatorId);
+    expect(found?.id).toBe(midId);
+    expect(await svc.findOpenAncestorCreatedByAgent(midId, randomUUID())).toBeNull();
+  });
+});
+
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;
@@ -3417,6 +3768,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         id: blockerId,
         companyId,
         projectId,
+        identifier: "PAP-15043",
         title: "Predecessor",
         status: "done",
         priority: "medium",
@@ -3426,6 +3778,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         id: dependentId,
         companyId,
         projectId,
+        identifier: "PAP-15046",
         title: "Dependent",
         status: "blocked",
         priority: "medium",
@@ -3435,6 +3788,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         id: foreignIssueId,
         companyId,
         projectId,
+        identifier: "PAP-15125",
         title: "Foreign in-flight issue",
         status: "in_progress",
         priority: "medium",
@@ -3454,6 +3808,68 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       foreignIssueId,
     };
   }
+
+  it("returns authoritative update receipts for row fields and blocker relations", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const blockerId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        title: "Receipt issue",
+        description: "old description",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: blockerId,
+        companyId,
+        title: "Blocker",
+        status: "todo",
+        priority: "high",
+      },
+    ]);
+
+    const fieldUpdate = await svc.update(issueId, {
+      title: "Receipt issue",
+      priority: "high",
+      description: "new description",
+    });
+    expect(fieldUpdate?.changes).toEqual({
+      priority: { from: "medium", to: "high" },
+      description: { from: "old description", to: "new description", updated: true },
+    });
+
+    const blockersSet = await svc.update(issueId, { blockedByIssueIds: [blockerId, blockerId] });
+    expect(blockersSet?.blockedByIssueIds).toEqual([blockerId]);
+    expect(blockersSet?.changes.blockedByIssueIds).toEqual({ from: [], to: [blockerId] });
+
+    const blockersCleared = await svc.update(issueId, { blockedByIssueIds: [] });
+    expect(blockersCleared?.blockedByIssueIds).toEqual([]);
+    expect(blockersCleared?.changes.blockedByIssueIds).toEqual({ from: [blockerId], to: [] });
+
+    await db.update(issues).set({
+      title: "Concurrent receipt issue",
+      priority: "medium",
+    }).where(eq(issues.id, issueId));
+    const [titleUpdate, priorityUpdate] = await Promise.all([
+      svc.update(issueId, { title: "Concurrent title" }),
+      svc.update(issueId, { priority: "high" }),
+    ]);
+    expect(titleUpdate?.changes).toEqual({
+      title: { from: "Concurrent receipt issue", to: "Concurrent title" },
+    });
+    expect(priorityUpdate?.changes).toEqual({
+      priority: { from: "medium", to: "high" },
+    });
+  });
 
   it("persists blocked-by relations and exposes both blockedBy and blocks summaries", async () => {
     const companyId = randomUUID();
@@ -3803,6 +4219,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       executionWorkspaceId,
       blockerId,
       dependentId,
+      foreignIssueId,
       assigneeAgentId,
     } = await seedSharedWorkspaceDependency();
 
@@ -3834,13 +4251,36 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       startedAt: new Date("2026-05-23T22:05:00.000Z"),
     });
     expect(await svc.listWakeableBlockedDependents(blockerId)).toEqual([]);
+    const pendingDependent = (await svc.list(companyId, { status: "blocked" }))
+      .find((issue) => issue.id === dependentId);
+    expect(pendingDependent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      unresolvedBlockerCount: 1,
+      attentionBlockerCount: 1,
+      pendingFinalizeBlockerIssueIds: [blockerId],
+      sampleBlockerIdentifier: "PAP-15043",
+    });
+    await expect(
+      svc.checkout(dependentId, assigneeAgentId, ["blocked"], null),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: {
+        unresolvedBlockerIssueIds: [blockerId],
+        unresolvedBlockers: [{
+          issueId: blockerId,
+          identifier: "PAP-15043",
+          title: "Predecessor",
+          reason: "pending_finalize",
+        }],
+      },
+    });
 
-    // Once a workspace_finalize succeeded row lands AFTER the failed one,
-    // the gate opens and the dependent is wakeable.
+    // A later successful finalize on the same workspace, even when attributed
+    // to another issue, proves the shared branch is coherent past the failure.
     await db.insert(workspaceOperations).values({
       companyId,
       executionWorkspaceId,
-      issueId: blockerId,
+      issueId: foreignIssueId,
       phase: "workspace_finalize",
       status: "succeeded",
       startedAt: new Date("2026-05-23T22:10:00.000Z"),
@@ -4023,7 +4463,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     const blockerId = randomUUID();
     const blockedId = randomUUID();
     await db.insert(issues).values([
-      { id: blockerId, companyId, title: "Blocker", status: "todo", priority: "medium" },
+      { id: blockerId, companyId, identifier: "PAP-1", title: "Blocker", status: "todo", priority: "medium" },
       {
         id: blockedId,
         companyId,
@@ -4041,7 +4481,18 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
 
     await expect(
       svc.checkout(blockedId, assigneeAgentId, ["todo", "blocked"], null),
-    ).rejects.toMatchObject({ status: 422 });
+    ).rejects.toMatchObject({
+      status: 422,
+      details: {
+        unresolvedBlockerIssueIds: [blockerId],
+        unresolvedBlockers: [{
+          issueId: blockerId,
+          identifier: "PAP-1",
+          title: "Blocker",
+          reason: "not_done",
+        }],
+      },
+    });
   });
 
   it("wakes parents only when all direct children are terminal", async () => {
@@ -4696,6 +5147,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       config: {
         environmentId: null,
         provisionCommand: "bash ./scripts/provision-new.sh",
+        runtimeProvisionCommand: null,
         teardownCommand: "bash ./scripts/teardown-new.sh",
         cleanupCommand: null,
         workspaceRuntime: { profile: "new" },
@@ -4784,6 +5236,94 @@ describeEmbeddedPostgres("issueService.findMentionedProjectIds", () => {
       titleProjectId,
       commentProjectId,
     ]);
+  });
+
+  it("returns multiple same-company mentions in order, deduped", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const firstProjectId = randomUUID();
+    const secondProjectId = randomUUID();
+    const thirdProjectId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(projects).values([
+      { id: firstProjectId, companyId, name: "First project", status: "in_progress" },
+      { id: secondProjectId, companyId, name: "Second project", status: "in_progress" },
+      { id: thirdProjectId, companyId, name: "Third project", status: "in_progress" },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title:
+        `See [First](${buildProjectMentionHref(firstProjectId)}) and ` +
+        `[Second](${buildProjectMentionHref(secondProjectId)})`,
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      // Repeats the first mention (deduped) and introduces a third.
+      body:
+        `Also [First again](${buildProjectMentionHref(firstProjectId)}) and ` +
+        `[Third](${buildProjectMentionHref(thirdProjectId)})`,
+    });
+
+    expect(await svc.findMentionedProjectIds(issueId)).toEqual([
+      firstProjectId,
+      secondProjectId,
+      thirdProjectId,
+    ]);
+  });
+
+  it("filters out a mention from another company", async () => {
+    const companyId = randomUUID();
+    const foreignCompanyId = randomUUID();
+    const issueId = randomUUID();
+    const sameCompanyProjectId = randomUUID();
+    const foreignProjectId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: foreignCompanyId,
+        name: "Other company",
+        issuePrefix: `F${foreignCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    await db.insert(projects).values([
+      { id: sameCompanyProjectId, companyId, name: "Same-company project", status: "in_progress" },
+      { id: foreignProjectId, companyId: foreignCompanyId, name: "Foreign project", status: "in_progress" },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title:
+        `Ours [Same](${buildProjectMentionHref(sameCompanyProjectId)}) and ` +
+        `theirs [Foreign](${buildProjectMentionHref(foreignProjectId)})`,
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+
+    expect(await svc.findMentionedProjectIds(issueId)).toEqual([sameCompanyProjectId]);
   });
 });
 

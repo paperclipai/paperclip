@@ -2,6 +2,7 @@
 
 Paperclip CLI now supports both:
 
+- installation and lifecycle management (`install`, `uninstall`, `update`, `upgrade`, `service`)
 - instance setup/diagnostics (`onboard`, `doctor`, `configure`, `env`, `allowed-hostname`, `env-lab`)
 - control-plane client operations (issues, approvals, agents, activity, dashboard)
 
@@ -13,7 +14,26 @@ Use repo script in development:
 pnpm paperclipai --help
 ```
 
-First-time local bootstrap + run:
+Recommended installation and interactive onboarding:
+
+```sh
+curl -fsSLO https://paperclip.ing/install.sh
+curl -fsSLO https://paperclip.ing/install.sh.sha256
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256sum -c install.sh.sha256
+else
+  shasum -a 256 -c install.sh.sha256
+fi
+bash install.sh
+```
+
+The checksum detects transfer or publishing mistakes but is served from the
+same origin as the installer. Use a release-tag or commit-pinned GitHub copy
+when you need an independently hosted source. Piped installs require supported
+Node.js, npm, and npx to already be installed; download the script first before
+allowing it to bootstrap Node.js with privileged package-manager commands.
+
+First-time local bootstrap from a source checkout:
 
 ```sh
 pnpm paperclipai run
@@ -24,6 +44,60 @@ Choose local instance:
 ```sh
 pnpm paperclipai run --instance dev
 ```
+
+## Install, Update, And Uninstall
+
+Managed installs keep CLI payloads under `~/.paperclip/cli`, expose a stable
+`~/.local/bin/paperclipai` shim, switch versions atomically, and retain two
+previous payloads for rollback.
+
+```sh
+paperclipai install
+paperclipai install --canary
+paperclipai install --version <version>
+paperclipai install --ref <branch|tag|sha> [--repo owner/repo]
+paperclipai update
+paperclipai update --latest|--canary|--version <version>
+paperclipai update --rollback
+paperclipai upgrade
+paperclipai uninstall
+```
+
+`upgrade` aliases `update`. `uninstall` removes managed code and the shim but
+preserves instance data under `~/.paperclip/instances/`. See
+`doc/INSTALLING.md` for installation methods, security notes, PATH setup, and
+the complete update and rollback behavior.
+
+## Onboarding And Service Management
+
+Interactive onboarding offers to install a background service on supported
+platforms. `--yes` never installs it implicitly; automation must opt in.
+
+```sh
+paperclipai onboard
+paperclipai onboard --yes
+paperclipai onboard --yes --install-service
+paperclipai onboard --yes --no-install-service
+```
+
+Service lifecycle commands remain under the `service` namespace:
+
+```sh
+paperclipai service install [--no-start-now] [--no-start-on-login]
+paperclipai service uninstall
+paperclipai service start
+paperclipai service stop
+paperclipai service restart [--wait]
+paperclipai service status [--json]
+paperclipai service logs [-f]
+```
+
+Every service verb supports `--instance <id>` and `--json`. Linux and WSL2 use
+a systemd user unit when available; macOS uses a LaunchAgent. Unsupported
+environments receive foreground `paperclipai run` guidance.
+
+`paperclipai doctor` includes managed-install and service-health diagnostics in
+addition to configuration, storage, database, logging, and port checks.
 
 ## Deployment Modes
 
@@ -291,7 +365,7 @@ pnpm paperclipai agent runtime-state <agent-id>
 pnpm paperclipai agent runtime-state:reset-session <agent-id> [--task-key <key>]
 pnpm paperclipai agent task-sessions <agent-id>
 pnpm paperclipai agent skills <agent-id>
-pnpm paperclipai agent skills:sync <agent-id> --desired-skills paperclip,github
+pnpm paperclipai agent skills:sync <agent-id> --desired-skills paperclip,github --mode add
 pnpm paperclipai agent instructions-path:update <agent-id> --payload-json '{"path":"/path/to/AGENTS.md"}'
 pnpm paperclipai agent instructions-bundle <agent-id>
 pnpm paperclipai agent instructions-bundle:update <agent-id> --payload-json '{"mode":"managed"}'
@@ -391,9 +465,10 @@ By default the command creates a `todo` issue assigned to the target agent and w
 1. **Company install** — adds or updates a row in `company_skills` for the
    whole company. This is what `skills install`, `skills import`, `skills create`,
    and `skills scan-projects` do.
-2. **Agent attach** — replaces an agent's *desired* company skill set
-   (`skills agent sync`/`clear`). This is a desired-state operation on the
-   agent's adapter config; it does not change the company library.
+2. **Agent attach** — merges an agent's *desired* company skill set with an
+   explicit `add`, `remove`, or `replace` mode (`skills agent sync`/`clear`).
+   This is a desired-state operation on the agent's adapter config; it does not
+   change the company library.
 3. **Adapter runtime sync** — the adapter reconciles the desired skill set
    with files on disk and reports an `AgentSkillSnapshot` (`skills agent list`).
    `skills agent sync` triggers this automatically after updating desired state.
@@ -490,12 +565,14 @@ maintenance loop for catalog-installed skills:
 
 ```sh
 pnpm paperclipai skills agent list <agent-id-or-shortname> --company-id <company-id>
-pnpm paperclipai skills agent sync <agent-id-or-shortname> --skill <skill-id-or-key-or-slug> [--skill <skill-id-or-key-or-slug>...] --company-id <company-id>
+pnpm paperclipai skills agent sync <agent-id-or-shortname> --skill <skill-id-or-key-or-slug> [--skill <skill-id-or-key-or-slug>...] --mode <add|remove|replace> --company-id <company-id>
 pnpm paperclipai skills agent clear <agent-id-or-shortname> --yes --company-id <company-id>
 ```
 
-`skills agent sync` replaces the agent's non-required desired skill set (it is
-not additive) and returns the resulting adapter `AgentSkillSnapshot`.
+`skills agent sync` requires a merge mode and returns the resulting adapter
+`AgentSkillSnapshot`. `add` preserves all unnamed assignments, `remove` deletes
+only named assignments, and `replace` destructively overwrites the complete
+non-required desired skill set.
 `skills agent clear` sends an empty desired list. Required Paperclip skills are
 still enforced by the server in both cases.
 

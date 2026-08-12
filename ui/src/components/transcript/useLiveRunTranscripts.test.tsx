@@ -63,6 +63,11 @@ class FakeWebSocket {
     this.readyState = FakeWebSocket.OPEN;
     this.onopen?.(new Event("open"));
   }
+
+  triggerClose() {
+    this.readyState = FakeWebSocket.CLOSED;
+    this.onclose?.(new CloseEvent("close"));
+  }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -514,5 +519,200 @@ describe("useLiveRunTranscripts", () => {
       root.unmount();
     });
     container.remove();
+  });
+
+  it("retains an accumulated buffer through a transient empty poll (PAP-462 B3)", async () => {
+    const ts = "2026-08-08T00:00:00.000Z";
+    const row = JSON.stringify({
+      ts,
+      stream: "stdout",
+      chunk: '{"type":"acpx.text_delta","text":"hello"}\n',
+      seq: 1,
+    });
+    // Serve the buffered chunk on the FIRST persisted-log read only; every later
+    // read (including after the run reappears) returns nothing new. So the chunk
+    // can only be present the second time if the buffer survived the gap.
+    logMock.mockResolvedValue({ runId: "run-1", store: "memory", logRef: "log-1", content: "", nextOffset: 100 });
+    logMock.mockResolvedValueOnce({ runId: "run-1", store: "memory", logRef: "log-1", content: `${row}\n`, nextOffset: 100 });
+
+    const captured: { value: ReturnType<typeof useLiveRunTranscripts> | null } = { value: null };
+    function Harness({ runs }: { runs: Array<{ id: string; status: string; adapterType: string }> }) {
+      captured.value = useLiveRunTranscripts({ companyId: "company-1", runs, enableRealtimeUpdates: false });
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const runList = [{ id: "run-1", status: "running", adapterType: "gemini_local" }];
+
+    await act(async () => {
+      root.render(<Harness runs={runList} />);
+      await Promise.resolve();
+    });
+    expect(captured.value?.transcriptByRun.get("run-1")).toHaveLength(1);
+
+    // Transient empty poll: run momentarily absent from the list.
+    await act(async () => {
+      root.render(<Harness runs={[]} />);
+      await Promise.resolve();
+    });
+
+    // Run reappears within the grace window — the buffer must survive rather than
+    // re-hydrate from a (now empty) truncated read.
+    await act(async () => {
+      root.render(<Harness runs={runList} />);
+      await Promise.resolve();
+    });
+    expect(captured.value?.transcriptByRun.get("run-1")).toHaveLength(1);
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("prunes a buffer once a run stays absent past the grace window (PAP-462 B3)", async () => {
+    vi.useFakeTimers();
+    try {
+      const ts = "2026-08-08T00:00:00.000Z";
+      const row = JSON.stringify({
+        ts,
+        stream: "stdout",
+        chunk: '{"type":"acpx.text_delta","text":"hello"}\n',
+        seq: 1,
+      });
+      logMock.mockResolvedValue({ runId: "run-1", store: "memory", logRef: "log-1", content: "", nextOffset: 100 });
+      logMock.mockResolvedValueOnce({ runId: "run-1", store: "memory", logRef: "log-1", content: `${row}\n`, nextOffset: 100 });
+
+      const captured: { value: ReturnType<typeof useLiveRunTranscripts> | null } = { value: null };
+      function Harness({ runs }: { runs: Array<{ id: string; status: string; adapterType: string }> }) {
+        captured.value = useLiveRunTranscripts({ companyId: "company-1", runs, enableRealtimeUpdates: false });
+        return null;
+      }
+
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+      const root = createRoot(container);
+      const runList = [{ id: "run-1", status: "running", adapterType: "gemini_local" }];
+
+      await act(async () => {
+        root.render(<Harness runs={runList} />);
+        await Promise.resolve();
+      });
+      expect(captured.value?.transcriptByRun.get("run-1")).toHaveLength(1);
+
+      await act(async () => {
+        root.render(<Harness runs={[]} />);
+        await Promise.resolve();
+      });
+
+      // Stay absent long enough for the grace window to lapse and the deferred
+      // prune to fire.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(25_000);
+      });
+
+      // On reappear the buffer is gone, so the (now empty) read rebuilds nothing.
+      await act(async () => {
+        root.render(<Harness runs={runList} />);
+        await Promise.resolve();
+      });
+      expect(captured.value?.transcriptByRun.get("run-1") ?? []).toHaveLength(0);
+
+      act(() => {
+        root.unmount();
+      });
+      container.remove();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("backs off exponentially when the live event socket keeps failing", async () => {
+    vi.useFakeTimers();
+    try {
+      function Harness({ lastOutputBytes }: { lastOutputBytes?: number }) {
+        useLiveRunTranscripts({
+          companyId: "company-1",
+          runs: [{ id: "run-1", status: "running", adapterType: "codex_local", lastOutputBytes }],
+        });
+        return null;
+      }
+
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+      const root = createRoot(container);
+
+      await act(async () => {
+        root.render(<Harness />);
+        await Promise.resolve();
+      });
+      expect(FakeWebSocket.instances).toHaveLength(1);
+
+      // Cold backend: every handshake fails. Delays must grow 1.5s → 3s → 6s
+      // instead of hammering a flat interval.
+      await act(async () => {
+        FakeWebSocket.instances[0].triggerClose();
+        await vi.advanceTimersByTimeAsync(1_499);
+      });
+      expect(FakeWebSocket.instances).toHaveLength(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(FakeWebSocket.instances).toHaveLength(2);
+
+      await act(async () => {
+        FakeWebSocket.instances[1].triggerClose();
+        await vi.advanceTimersByTimeAsync(2_999);
+      });
+      expect(FakeWebSocket.instances).toHaveLength(2);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(FakeWebSocket.instances).toHaveLength(3);
+
+      await act(async () => {
+        FakeWebSocket.instances[2].triggerClose();
+        await vi.advanceTimersByTimeAsync(5_999);
+      });
+      expect(FakeWebSocket.instances).toHaveLength(3);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(FakeWebSocket.instances).toHaveLength(4);
+
+      // Run-metadata changes restart the socket effect; the progressed delay
+      // must survive the restart instead of resetting to the base delay.
+      await act(async () => {
+        root.render(<Harness lastOutputBytes={512} />);
+        await Promise.resolve();
+      });
+      expect(FakeWebSocket.instances).toHaveLength(5);
+      await act(async () => {
+        FakeWebSocket.instances[4].triggerClose();
+        await vi.advanceTimersByTimeAsync(11_999);
+      });
+      expect(FakeWebSocket.instances).toHaveLength(5);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(FakeWebSocket.instances).toHaveLength(6);
+
+      // A successful connection resets the backoff to the base delay.
+      await act(async () => {
+        FakeWebSocket.instances[5].triggerOpen();
+        FakeWebSocket.instances[5].triggerClose();
+        await vi.advanceTimersByTimeAsync(1_500);
+      });
+      expect(FakeWebSocket.instances).toHaveLength(7);
+
+      act(() => {
+        root.unmount();
+      });
+      container.remove();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
