@@ -41,7 +41,7 @@ const input = {
   mediaType: "application/javascript",
   contentPath: retainedBuildOutputPath,
   retention: {
-    locator: "/api/attachments/b8267c0c-6fbb-4181-b491-0ef3d8a5f5d7/content",
+    locator: "/api/attachments/92f92a99-87aa-49e9-9968-7a234595eada/content",
     mediaType: "application/javascript",
   },
   buildExecutionId: `build-eco-1123-${manifest.sourceRevision.commit}`,
@@ -153,12 +153,12 @@ describe("babysitter artifact provenance", () => {
     expect(manifest.artifactInstance.contentPath).toBe(retainedBuildOutputPath);
     expect(manifest.artifactInstance.contentLength).toBe(retainedBuildOutputBytes.length);
     expect(manifest.artifactInstance.retention).toEqual({
-      locator: "/api/attachments/b8267c0c-6fbb-4181-b491-0ef3d8a5f5d7/content",
+      locator: "/api/attachments/92f92a99-87aa-49e9-9968-7a234595eada/content",
       mediaType: input.mediaType,
     });
     expect(manifest.retainedAttachments).toEqual([
       {
-        id: "8f160181-e76a-4b74-a836-b98bc4203a75",
+        id: "6be16e9d-8c4f-42c7-b7af-b43e08d6f35f",
         role: "source-revision",
         path: reviewedSourcePath,
         mediaType: "application/javascript",
@@ -166,7 +166,7 @@ describe("babysitter artifact provenance", () => {
         buildExecutionId: manifest.buildExecution.id,
       },
       {
-        id: "b8267c0c-6fbb-4181-b491-0ef3d8a5f5d7",
+        id: "92f92a99-87aa-49e9-9968-7a234595eada",
         role: "build-output",
         path: retainedBuildOutputPath,
         mediaType: input.mediaType,
