@@ -100,7 +100,8 @@ vi.mock("./DocumentAnnotationLayer", () => ({
   DocumentAnnotationLayer: (props: {
     newCommentDisabled?: boolean;
     onPendingAnchorChange: (anchor: typeof mockPendingAnchor | null) => void;
-    onRequestComment: (anchor: typeof mockPendingAnchor) => void;
+    onRequestComment: (anchor: typeof mockPendingAnchor, rect: { top: number; left: number; width: number; height: number }) => void;
+    onThreadFocus: (threadId: string, rect: { top: number; left: number; width: number; height: number }) => void;
   }) => (
     <>
       <button
@@ -109,11 +110,18 @@ vi.mock("./DocumentAnnotationLayer", () => ({
         disabled={props.newCommentDisabled}
         onClick={() => {
           props.onPendingAnchorChange(mockPendingAnchor);
-          props.onRequestComment(mockPendingAnchor);
+          props.onRequestComment(mockPendingAnchor, { top: 24, left: 32, width: 80, height: 18 });
           props.onPendingAnchorChange(null);
         }}
       >
         Mock selection
+      </button>
+      <button
+        type="button"
+        data-testid="mock-annotation-thread"
+        onClick={() => props.onThreadFocus("thread-1", { top: 42, left: 48, width: 90, height: 18 })}
+      >
+        Mock thread
       </button>
       <button
         type="button"
@@ -294,7 +302,7 @@ function Harness({
   historicalPreview?: boolean;
   locationHash?: string;
   initialPanelOpen?: boolean;
-  panelPlacement?: "floating" | "inline";
+  panelPlacement?: "floating" | "inline" | "popover";
 }) {
   const [open, setOpen] = useState(initialPanelOpen);
   return (
@@ -395,6 +403,31 @@ describe("IssueDocumentAnnotations", () => {
     expect(inlinePanel).not.toBeNull();
     expect(floatingAnchor).toBeNull();
     expect(panel?.className).toContain("w-full");
+  });
+
+  it("opens anchored compose and thread popovers in popover placement", async () => {
+    mockAnnotationsApi.list.mockResolvedValue([makeThread()]);
+    const root = createRoot(container);
+    const queryClient = makeQueryClient();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Harness doc={makeDoc()} panelPlacement="popover" />
+        </QueryClientProvider>,
+      );
+    });
+    await waitFor(() => expect(container.querySelector('[data-testid="mock-annotation-selection"]')).not.toBeNull());
+    await act(async () => (container.querySelector('[data-testid="mock-annotation-selection"]') as HTMLButtonElement).click());
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="document-annotation-popover"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="document-annotation-popover-composer"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="document-annotation-panel-inline"]')).toBeNull();
+    });
+    await act(async () => (container.querySelector('[aria-label="Add annotation comment"] button') as HTMLButtonElement).click());
+    await act(async () => (container.querySelector('[data-testid="mock-annotation-thread"]') as HTMLButtonElement).click());
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="document-annotation-popover"] [data-thread-id="thread-1"]')).not.toBeNull();
+    });
   });
 
   it("docks the desktop annotation panel into an in-flow gutter column beside the document", async () => {

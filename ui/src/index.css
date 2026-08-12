@@ -2340,6 +2340,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --tp-box-shadow: box-shadow; /* Extracted from ui/src/pages/ProjectDetail.tsx (transition-[box-shadow]). */
   --tp-transform-box-shadow: transform,box-shadow; /* Extracted from ui/src/pages/ProjectDetail.tsx (transition-[transform,box-shadow]). */
   --z-2: 2; /* Extracted from ui/src/components/DocumentAnnotationLayer.tsx (z-[2]). */
+  --z-20: 20; /* Anchored document annotation popover. */
   --z-60: 60; /* Extracted from ui/src/components/DocumentAnnotationPanel.tsx (z-[60]). */
   --z-1: 1; /* Extracted from ui/src/components/IssueDocumentAnnotations.tsx (z-[1]). */
   --z-200: 200; /* Extracted from ui/src/components/Layout.tsx (z-[200]). */

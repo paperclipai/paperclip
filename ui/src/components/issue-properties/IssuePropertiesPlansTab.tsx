@@ -113,7 +113,7 @@ export function IssuePropertiesPlansTab({ issue }: IssuePropertiesPlansTabProps)
             locationHash={location.hash}
             panelOpen={annotationPanelOpen}
             onPanelOpenChange={setAnnotationPanelOpen}
-            panelPlacement="inline"
+            panelPlacement="popover"
           >
             <MarkdownBody>{planDocument.body}</MarkdownBody>
           </IssueDocumentAnnotations>

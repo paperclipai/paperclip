@@ -12,8 +12,9 @@ import {
   isSelectionDebugEnabled,
   recordAnnotationCommit,
 } from "@/lib/document-annotation-debug";
-import { DocumentAnnotationLayer, type PendingAnchor } from "./DocumentAnnotationLayer";
+import { DocumentAnnotationLayer, type AnnotationAnchorRect, type PendingAnchor } from "./DocumentAnnotationLayer";
 import { DocumentAnnotationPanel } from "./DocumentAnnotationPanel";
+import { DocumentAnnotationPopover } from "./DocumentAnnotationPopover";
 import type { CompanyUserProfile } from "@/lib/company-members";
 
 // Width of the right-hand comment gutter on desktop (lg+). The gutter is an
@@ -43,7 +44,7 @@ export interface IssueDocumentAnnotationsProps {
   panelOpen: boolean;
   onPanelOpenChange: (open: boolean) => void;
   /** Keep the panel in document flow for narrow hosts such as the task properties pane. */
-  panelPlacement?: "floating" | "inline";
+  panelPlacement?: "floating" | "inline" | "popover";
   agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
   /** Seed which thread is focused on mount. Used by Storybook/screenshot harness. */
@@ -82,6 +83,7 @@ export function IssueDocumentAnnotations({
   const [focusedCommentId, setFocusedCommentId] = useState<string | null>(null);
   const [selectionAnchor, setSelectionAnchor] = useState<PendingAnchor | null>(null);
   const [composerAnchor, setComposerAnchor] = useState<PendingAnchor | null>(null);
+  const [popoverAnchorRect, setPopoverAnchorRect] = useState<AnnotationAnchorRect | null>(null);
   const [isMobile, setIsMobile] = useState(false);
   const hashHandledRef = useRef<string | null>(null);
   // Bus token to ask the body layer to capture the current selection into a pendingAnchor.
@@ -139,17 +141,26 @@ export function IssueDocumentAnnotations({
 
   const handleSelectionAnchorChange = useCallback((anchor: PendingAnchor | null) => {
     setSelectionAnchor(anchor);
-  }, []);
+    if (anchor && panelPlacement === "popover") {
+      setComposerAnchor(null);
+      setFocusedThreadId(null);
+      setPopoverAnchorRect(null);
+      onPanelOpenChange(false);
+    }
+  }, [onPanelOpenChange, panelPlacement]);
 
   const handleClearComposerAnchor = useCallback(() => {
     setSelectionAnchor(null);
     setComposerAnchor(null);
+    setPopoverAnchorRect(null);
   }, []);
 
-  const handleRequestComment = useCallback((anchor: PendingAnchor) => {
+  const handleRequestComment = useCallback((anchor: PendingAnchor, rect?: AnnotationAnchorRect) => {
     if (newCommentDisabled) return;
     setSelectionAnchor(null);
     setComposerAnchor(anchor);
+    setFocusedThreadId(null);
+    if (rect) setPopoverAnchorRect(rect);
     onPanelOpenChange(true);
   }, [newCommentDisabled, onPanelOpenChange]);
 
@@ -163,13 +174,19 @@ export function IssueDocumentAnnotations({
     onInitialComposerAnchorConsumed?.();
   }, [initialComposerAnchor, newCommentDisabled, onInitialComposerAnchorConsumed, onPanelOpenChange]);
 
-  const handleThreadFocus = useCallback((threadId: string | null) => {
+  const handleThreadFocus = useCallback((threadId: string | null, rect?: AnnotationAnchorRect) => {
     setFocusedThreadId(threadId);
     if (threadId) {
+      setComposerAnchor(null);
+      if (rect) setPopoverAnchorRect(rect);
       onPanelOpenChange(true);
       setFocusedCommentId(null);
     }
   }, [onPanelOpenChange]);
+
+  const handleAnchorRectChange = useCallback((rect: AnnotationAnchorRect | null) => {
+    setPopoverAnchorRect((current) => isSameAnchorRect(current, rect) ? current : rect);
+  }, []);
 
   const handleRequestCommentFromSelection = useCallback(() => {
     if (newCommentDisabled) return;
@@ -213,9 +230,12 @@ export function IssueDocumentAnnotations({
   );
 
   const isInlinePlacement = panelPlacement === "inline";
+  const isPopoverPlacement = panelPlacement === "popover";
+  const showPopover = panelOpen && isPopoverPlacement && !isMobile
+    && Boolean(popoverAnchorRect && (composerAnchor || focusedThread));
   // On desktop (lg+) the panel docks into an in-flow gutter column beside the
   // document so it scrolls with the doc rather than floating over the viewport.
-  const showDesktopGutter = panelOpen && !isInlinePlacement && !isMobile;
+  const showDesktopGutter = panelOpen && !isInlinePlacement && !isPopoverPlacement && !isMobile;
 
   const annotationPanel = panelOpen ? (
     <DocumentAnnotationPanel
@@ -248,7 +268,7 @@ export function IssueDocumentAnnotations({
       newCommentDisabled={newCommentDisabled}
       newCommentDisabledReason={newCommentDisabledReason}
       isMobile={isMobile}
-      inline={isInlinePlacement}
+      inline={isInlinePlacement || isPopoverPlacement}
       desktopWidth={showDesktopGutter ? DESKTOP_ANNOTATION_PANEL_WIDTH : undefined}
       agentMap={agentMap}
       userProfileMap={userProfileMap}
@@ -284,6 +304,9 @@ export function IssueDocumentAnnotations({
             pendingAnchor={selectionAnchor}
             onPendingAnchorChange={handleSelectionAnchorChange}
             onRequestComment={handleRequestComment}
+            onAnchorRectChange={isPopoverPlacement && panelOpen && (composerAnchor || focusedThreadId)
+              ? handleAnchorRectChange
+              : undefined}
             newCommentDisabled={newCommentDisabled}
             newCommentDisabledReason={newCommentDisabledReason}
             hideResolved
@@ -291,8 +314,37 @@ export function IssueDocumentAnnotations({
             pendingHighlightText={composerAnchor?.selectedText ?? null}
           />
         ) : null}
+        {showPopover && popoverAnchorRect ? (
+          <DocumentAnnotationPopover
+            anchorRect={popoverAnchorRect}
+            containerRef={containerRef}
+            target={target ?? { kind: "issue", issueId, documentKey: doc.key }}
+            documentKey={doc.key}
+            baseRevisionId={doc.latestRevisionId}
+            baseRevisionNumber={doc.latestRevisionNumber}
+            pendingAnchor={composerAnchor}
+            thread={focusedThread as DocumentAnnotationThreadWithComments | null}
+            focusedCommentId={focusedCommentId}
+            onFocusThread={setFocusedThreadId}
+            onClose={() => {
+              setComposerAnchor(null);
+              setFocusedThreadId(null);
+              setFocusedCommentId(null);
+              setPopoverAnchorRect(null);
+              onPanelOpenChange(false);
+            }}
+            onThreadCreated={() => {
+              setComposerAnchor(null);
+              setPopoverAnchorRect(null);
+              onPanelOpenChange(false);
+            }}
+            newCommentDisabled={newCommentDisabled}
+            agentMap={agentMap}
+            userProfileMap={userProfileMap}
+          />
+        ) : null}
       </section>
-      {panelOpen && isInlinePlacement && !isMobile ? (
+      {panelOpen && (isInlinePlacement || (isPopoverPlacement && !showPopover)) && !isMobile ? (
         <div className="mt-3" data-testid="document-annotation-panel-inline">
           {annotationPanel}
         </div>
@@ -319,6 +371,10 @@ export function IssueDocumentAnnotations({
       {content}
     </Profiler>
   ) : content;
+}
+
+function isSameAnchorRect(a: AnnotationAnchorRect | null, b: AnnotationAnchorRect | null): boolean {
+  return a === b || Boolean(a && b && a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height);
 }
 
 export interface DocumentAnnotationsCountChipProps {
