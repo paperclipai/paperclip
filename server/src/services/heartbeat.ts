@@ -385,6 +385,11 @@ export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
+// The wakeup *request* that carries a bounded transient retry is recorded under a
+// different reason than the run's `wakeReason`, and some runs copy that request
+// reason into their context snapshot. Both spellings therefore reach
+// `shouldForceFreshCodexSessionForWake` and both must force a fresh session.
+const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKEUP_REQUEST_REASON = "bounded_transient_heartbeat_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
 const CODEX_PROVIDER_BACKOFF_RETRY_REASON = "codex_provider_backoff";
 const CODEX_PROVIDER_BACKOFF_WAKE_REASON = "codex_provider_backoff";
@@ -4121,7 +4126,7 @@ export function shouldForceFreshCodexSessionForWake(
     wakeReason === "heartbeat_timer" ||
     wakeReason === "retry_failed_run" ||
     wakeReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON ||
-    wakeReason === "bounded_transient_heartbeat_retry" ||
+    wakeReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKEUP_REQUEST_REASON ||
     retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
   );
 }

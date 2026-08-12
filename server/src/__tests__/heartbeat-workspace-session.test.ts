@@ -2423,6 +2423,45 @@ describe("shouldForceFreshCodexSessionForWake", () => {
       }),
     ).toBe(false);
   });
+
+  // A bounded transient retry reaches the guard under three spellings, depending on
+  // which record the context snapshot was built from: the run's `retryReason`
+  // ("transient_failure"), the run's `wakeReason` ("transient_failure_retry"), and
+  // the wakeup request's own reason ("bounded_transient_heartbeat_retry"). All three
+  // must force a fresh session — a rename of one constant must not silently drop a
+  // branch, which is exactly what these cases pin.
+  it("forces fresh Codex sessions for bounded transient retries by retryReason", () => {
+    expect(
+      shouldForceFreshCodexSessionForWake("codex_local", {
+        retryReason: "transient_failure",
+      }),
+    ).toBe(true);
+  });
+
+  it("forces fresh Codex sessions for bounded transient retries by wakeReason", () => {
+    expect(
+      shouldForceFreshCodexSessionForWake("codex_local", {
+        wakeReason: "transient_failure_retry",
+      }),
+    ).toBe(true);
+  });
+
+  it("forces fresh Codex sessions for the wakeup-request retry reason spelling", () => {
+    expect(
+      shouldForceFreshCodexSessionForWake("codex_local", {
+        wakeReason: "bounded_transient_heartbeat_retry",
+      }),
+    ).toBe(true);
+  });
+
+  it("preserves Codex task sessions when a bounded transient retry names an issue task", () => {
+    expect(
+      shouldForceFreshCodexSessionForWake("codex_local", {
+        issueId: "issue-1",
+        retryReason: "transient_failure",
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("deriveTaskKeyWithHeartbeatFallback", () => {
