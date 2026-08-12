@@ -16,8 +16,9 @@ const tempRoots = new Set<string>();
 
 async function makeTempRoot(prefix: string): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  tempRoots.add(root);
-  return root;
+  const canonicalRoot = await fs.realpath(root);
+  tempRoots.add(canonicalRoot);
+  return canonicalRoot;
 }
 
 async function writeWorkspaceEnv(workspacePath: string, homeDir: string, instanceId: string): Promise<void> {

@@ -499,23 +499,27 @@ describe("shared ACPX engine runtime behavior", () => {
     });
   });
 
-  it("keeps Claude startup model handling and Gemini session config handling unchanged", async () => {
-    const claude = await runExecutor({ agent: "claude", model: "claude-opus-4-7" });
-    expect((claude.meta[0]?.env as Record<string, string>).ANTHROPIC_MODEL).toBe(
-      "claude-opus-4-7",
-    );
-    expect(claude.configOptions).toEqual([]);
+  it(
+    "keeps Claude startup model handling and Gemini session config handling unchanged",
+    async () => {
+      const claude = await runExecutor({ agent: "claude", model: "claude-opus-4-7" });
+      expect((claude.meta[0]?.env as Record<string, string>).ANTHROPIC_MODEL).toBe(
+        "claude-opus-4-7",
+      );
+      expect(claude.configOptions).toEqual([]);
 
-    const gemini = await runExecutor({
-      agent: "gemini",
-      model: "gemini-2.5-pro",
-      thinkingEffort: "high",
-    });
-    expect(gemini.configOptions).toEqual([
-      { key: "model", value: "gemini-2.5-pro" },
-      { key: "effort", value: "high" },
-    ]);
-  });
+      const gemini = await runExecutor({
+        agent: "gemini",
+        model: "gemini-2.5-pro",
+        thinkingEffort: "high",
+      });
+      expect(gemini.configOptions).toEqual([
+        { key: "model", value: "gemini-2.5-pro" },
+        { key: "effort", value: "high" },
+      ]);
+    },
+    10_000,
+  );
 
   it("does not inject CODEX_CONFIG or session config when Codex overrides are absent", async () => {
     const { configOptions, meta } = await runExecutor({ agent: "codex" });

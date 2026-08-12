@@ -114,6 +114,21 @@ pnpm dev:stop
 
 `pnpm dev:once` now tracks backend-relevant file changes and pending migrations. When the current boot is stale, the board UI shows a `Restart required` banner. You can also enable guarded auto-restart in `Instance Settings > Experimental`, which waits for queued/running local agent runs to finish before restarting the dev server.
 
+### macOS background-service safeguards
+
+The generated launchd service runs through a small supervisor. It refuses to
+start when the instance volume has less than 5 GB free, stops retrying after
+five exits within 60 seconds of startup, and rotates both service logs at 10 MB
+with three retained generations. The live and rotated logs are stored under
+`$PAPERCLIP_HOME/instances/<instance>/logs/`.
+
+When startup is refused or crash retries are capped, the operator-readable
+reason is written to
+`$PAPERCLIP_HOME/instances/<instance>/service-supervisor-status.json`.
+After correcting the cause, `paperclipai service start --instance <instance>`
+clears the early-failure counter and makes one new guarded start attempt. The
+disk floor is always rechecked and cannot be bypassed by restarting.
+
 ## Hot-Restart Deploys
 
 Primary-instance rebuilds that restart `paperclip.service` can request one-shot live-run adoption instead of using the normal graceful shutdown drain. Before restarting the service, write the marker from the newly staged app with the current service PID:

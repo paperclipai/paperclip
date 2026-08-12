@@ -2,8 +2,10 @@ import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync
 import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { open as openFile } from "node:fs/promises";
-import { pipeline } from "node:stream/promises";
+import type { Writable } from "node:stream";
+import { finished, pipeline } from "node:stream/promises";
 import { createGunzip, createGzip } from "node:zlib";
 import postgres from "postgres";
 
@@ -403,7 +405,20 @@ async function hasStatementBreakpoints(backupFile: string): Promise<boolean> {
   }
 }
 
-async function* readRestoreStatements(backupFile: string): AsyncGenerator<string> {
+function hasExecutableSql(statement: string): boolean {
+  return statement
+    .split(/\r?\n/)
+    .some((line) => line.trim().length > 0 && !line.trimStart().startsWith("--"));
+}
+
+function isCopyFromStdinStatement(line: string): boolean {
+  return /^COPY\s+.+\s+FROM\s+stdin;$/i.test(line.trim());
+}
+
+async function restoreBreakpointBackupWithJavascript(
+  sql: ReturnType<typeof postgres>,
+  backupFile: string,
+): Promise<void> {
   const raw = createReadStream(backupFile);
   const stream = backupFile.endsWith(".gz") ? raw.pipe(createGunzip()) : raw;
   stream.setEncoding("utf8");
@@ -412,30 +427,63 @@ async function* readRestoreStatements(backupFile: string): AsyncGenerator<string
     crlfDelay: Infinity,
   });
   let statementLines: string[] = [];
+  let copyWriter: Writable | null = null;
 
-  const flushStatement = () => {
+  const flushStatement = (): string => {
     const statement = statementLines.join("\n").trim();
     statementLines = [];
     return statement;
   };
 
+  const executeBufferedStatement = async (): Promise<void> => {
+    const statement = flushStatement();
+    if (hasExecutableSql(statement)) {
+      await sql.unsafe(statement).execute();
+    }
+  };
+
   try {
     for await (const line of reader) {
-      if (line === STATEMENT_BREAKPOINT) {
-        const statement = flushStatement();
-        if (statement.length > 0) {
-          yield statement;
+      if (copyWriter) {
+        if (line === "\\.") {
+          copyWriter.end();
+          await finished(copyWriter);
+          copyWriter = null;
+          continue;
+        }
+        if (line === STATEMENT_BREAKPOINT) {
+          throw new Error("COPY data ended without a \\. terminator");
+        }
+        if (!copyWriter.write(`${line}\n`)) {
+          await once(copyWriter, "drain");
         }
         continue;
       }
+
+      if (line === STATEMENT_BREAKPOINT) {
+        await executeBufferedStatement();
+        continue;
+      }
+
+      if (isCopyFromStdinStatement(line)) {
+        await executeBufferedStatement();
+        copyWriter = await sql.unsafe(line.trim().slice(0, -1)).writable();
+        continue;
+      }
+
       statementLines.push(line);
     }
 
-    const trailingStatement = flushStatement();
-    if (trailingStatement.length > 0) {
-      yield trailingStatement;
+    if (copyWriter) {
+      copyWriter.destroy(new Error("COPY data ended without a \\. terminator"));
+      throw new Error("COPY data ended without a \\. terminator");
     }
+    await executeBufferedStatement();
   } finally {
+    if (copyWriter && !copyWriter.destroyed) {
+      copyWriter.destroy();
+      await finished(copyWriter).catch(() => {});
+    }
     reader.close();
     stream.destroy();
     raw.destroy();
@@ -1008,9 +1056,7 @@ export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promi
 
   try {
     await sql`SELECT 1`;
-    for await (const statement of readRestoreStatements(opts.backupFile)) {
-      await sql.unsafe(statement).execute();
-    }
+    await restoreBreakpointBackupWithJavascript(sql, opts.backupFile);
   } catch (error) {
     const statementPreview = typeof error === "object" && error !== null && typeof (error as Record<string, unknown>).query === "string"
       ? String((error as Record<string, unknown>).query)

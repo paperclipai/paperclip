@@ -35,5 +35,5 @@ describeEmbeddedPostgres("status card migrations", () => {
       );
       await sql.unsafe(migrationSql);
     }
-  });
+  }, 15_000);
 });

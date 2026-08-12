@@ -19,8 +19,9 @@ afterEach(async () => {
 
 async function makeTempDir(prefix: string) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  cleanupDirs.add(dir);
-  return dir;
+  const canonicalDir = await fs.realpath(dir);
+  cleanupDirs.add(canonicalDir);
+  return canonicalDir;
 }
 
 async function writeSkillDir(skillDir: string, name: string) {

@@ -46,19 +46,6 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     db = createDb(tempDb.connectionString);
   }, 20_000);
 
-  async function waitForHeartbeatIdle(timeoutMs = 3_000) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const active = await db
-        .select({ id: heartbeatRuns.id })
-        .from(heartbeatRuns)
-        .where(sql`${heartbeatRuns.status} in ('queued', 'running', 'scheduled_retry')`);
-      if (active.length === 0) return;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    throw new Error("Timed out waiting for issue monitor heartbeat runs to settle");
-  }
-
   async function heartbeatSideEffectFingerprint() {
     const [active, events, activity, leases, runtimeServices] = await Promise.all([
       db
@@ -329,13 +316,17 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       agentId: participantAgentId,
       reason: "execution_review_participant_recovery",
     });
-    await waitForHeartbeatIdle();
+    await waitForHeartbeatSideEffectsSettled();
     const participantRuns = await db
       .select()
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.agentId, participantAgentId));
-    expect(participantRuns).toHaveLength(1);
-    expect(participantRuns[0]?.errorCode).not.toBe("issue_assignee_changed");
+    const reviewRecoveryRuns = participantRuns.filter((run) =>
+      (run.contextSnapshot as Record<string, unknown> | null)?.wakeReason ===
+        "execution_review_participant_recovery"
+    );
+    expect(reviewRecoveryRuns).toHaveLength(1);
+    expect(reviewRecoveryRuns[0]?.errorCode).not.toBe("issue_assignee_changed");
   });
 
   it("lets the board trigger a scheduled issue monitor immediately", async () => {

@@ -4,6 +4,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { resolvePaperclipHomeDir, resolvePaperclipInstanceId } from "../config/home.js";
+import { clearLaunchdServiceSafetyState } from "./launchd-service-supervisor.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -15,6 +16,7 @@ export type ServiceStatus = {
   active: boolean;
   enabled: boolean;
   pid: number | null;
+  supervisorPid?: number | null;
   detail?: string;
   linger?: boolean | null;
 };
@@ -107,7 +109,11 @@ WantedBy=default.target
 `;
 }
 
-export function renderLaunchdPlist(input: { instanceId: string; shimPath: string; homeDir: string; stdoutPath: string; stderrPath: string }): string {
+export function renderLaunchdPlist(input: {
+  instanceId: string;
+  shimPath: string;
+  homeDir: string;
+}): string {
   const label = launchdServiceName(input.instanceId);
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -116,7 +122,7 @@ export function renderLaunchdPlist(input: { instanceId: string; shimPath: string
   <key>Label</key><string>${escapeXml(label)}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${escapeXml(input.shimPath)}</string><string>run</string><string>--instance</string><string>${escapeXml(input.instanceId)}</string>
+    <string>${escapeXml(input.shimPath)}</string><string>_service-run</string><string>--instance</string><string>${escapeXml(input.instanceId)}</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -125,11 +131,14 @@ export function renderLaunchdPlist(input: { instanceId: string; shimPath: string
     <key>PAPERCLIP_HOME</key><string>${escapeXml(input.homeDir)}</string>
   </dict>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key><false/>
+  </dict>
   <key>ThrottleInterval</key><integer>5</integer>
   <key>ExitTimeOut</key><integer>300</integer>
-  <key>StandardOutPath</key><string>${escapeXml(input.stdoutPath)}</string>
-  <key>StandardErrorPath</key><string>${escapeXml(input.stderrPath)}</string>
+  <key>StandardOutPath</key><string>/dev/null</string>
+  <key>StandardErrorPath</key><string>/dev/null</string>
 </dict>
 </plist>
 `;
@@ -231,19 +240,28 @@ export class LaunchdServiceManager implements ServiceManager {
   private readonly domain = `gui/${process.getuid?.() ?? 0}`;
   private readonly stdoutPath: string;
   private readonly stderrPath: string;
+  private readonly instanceRoot: string;
 
   constructor(readonly instanceId: string, private readonly runner: CommandRunner = defaultCommandRunner, private readonly homeDir = resolvePaperclipHomeDir(), private readonly shimPath = resolveServiceShimPath(), userHomeDir = os.homedir()) {
     this.serviceName = launchdServiceName(instanceId);
     this.definitionPath = path.join(userHomeDir, "Library", "LaunchAgents", `${this.serviceName}.plist`);
-    const logDir = path.join(homeDir, "instances", instanceId, "logs");
+    this.instanceRoot = path.join(homeDir, "instances", instanceId);
+    const logDir = path.join(this.instanceRoot, "logs");
     this.stdoutPath = path.join(logDir, "service.log");
     this.stderrPath = path.join(logDir, "service.err.log");
   }
 
-  renderDefinition(): string { return renderLaunchdPlist({ instanceId: this.instanceId, shimPath: this.shimPath, homeDir: this.homeDir, stdoutPath: this.stdoutPath, stderrPath: this.stderrPath }); }
+  renderDefinition(): string {
+    return renderLaunchdPlist({
+      instanceId: this.instanceId,
+      shimPath: this.shimPath,
+      homeDir: this.homeDir,
+    });
+  }
 
   async install(options: ServiceInstallOptions): Promise<{ changed: boolean }> {
     await fs.mkdir(path.dirname(this.stdoutPath), { recursive: true });
+    if (options.startNow) await clearLaunchdServiceSafetyState(this.instanceRoot);
     const changed = await writeIfChanged(this.definitionPath, this.renderDefinition());
     if (changed) await this.runner("launchctl", ["bootout", `${this.domain}/${this.serviceName}`]).catch(() => undefined);
     await this.runner("launchctl", [options.startOnLogin ? "enable" : "disable", `${this.domain}/${this.serviceName}`]);
@@ -261,18 +279,70 @@ export class LaunchdServiceManager implements ServiceManager {
   }
   async start(): Promise<void> { await this.install({ startNow: true, startOnLogin: await this.isEnabled() }); }
   async stop(): Promise<void> { await this.runner("launchctl", ["bootout", `${this.domain}/${this.serviceName}`]); }
-  async restart(): Promise<void> { await writeIfChanged(this.definitionPath, this.renderDefinition()); await this.runner("launchctl", ["kickstart", "-k", `${this.domain}/${this.serviceName}`]); }
+  async restart(): Promise<void> {
+    const previousPid = (await this.status()).pid;
+    await clearLaunchdServiceSafetyState(this.instanceRoot);
+    await writeIfChanged(this.definitionPath, this.renderDefinition());
+    await this.runner("launchctl", ["kill", "SIGTERM", `${this.domain}/${this.serviceName}`]);
+    if (!previousPid) return;
+
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      const currentPid = (await this.status()).pid;
+      if (currentPid && currentPid !== previousPid) return;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(`Paperclip service did not replace server process ${previousPid} within 60 seconds.`);
+  }
 
   async status(): Promise<ServiceStatus> {
+    const supervisorStatus = await this.readSupervisorStatus();
     try {
       const result = await this.runner("launchctl", ["print", `${this.domain}/${this.serviceName}`]);
       const pidMatch = result.stdout.match(/\bpid\s*=\s*(\d+)/);
-      const pid = pidMatch ? Number(pidMatch[1]) : null;
-      return { platform: this.platform, serviceName: this.serviceName, installed: true, active: Boolean(pid), enabled: await this.isEnabled(), pid, detail: pid ? "running" : "loaded" };
+      const supervisorPid = pidMatch ? Number(pidMatch[1]) : null;
+      const statusChildPid = supervisorStatus?.childPid;
+      const childPid = supervisorStatus?.state === "running" && typeof statusChildPid === "number" && Number.isInteger(statusChildPid) && statusChildPid > 0
+        ? statusChildPid
+        : null;
+      return {
+        platform: this.platform,
+        serviceName: this.serviceName,
+        installed: true,
+        active: Boolean(supervisorPid),
+        enabled: await this.isEnabled(),
+        pid: childPid,
+        supervisorPid,
+        detail: supervisorStatus?.message ?? (supervisorPid ? "Supervisor is running." : "Service is loaded."),
+      };
     } catch {
       let installed = true;
       try { await fs.access(this.definitionPath); } catch { installed = false; }
-      return { platform: this.platform, serviceName: this.serviceName, installed, active: false, enabled: installed && await this.isEnabled(), pid: null };
+      return {
+        platform: this.platform,
+        serviceName: this.serviceName,
+        installed,
+        active: false,
+        enabled: installed && await this.isEnabled(),
+        pid: null,
+        supervisorPid: null,
+        detail: supervisorStatus?.message,
+      };
+    }
+  }
+
+  private async readSupervisorStatus(): Promise<{ state?: unknown; message?: string; childPid?: number } | null> {
+    try {
+      const parsed = JSON.parse(await fs.readFile(path.join(this.instanceRoot, "service-supervisor-status.json"), "utf8")) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+      const value = parsed as Record<string, unknown>;
+      return {
+        state: value.state,
+        message: typeof value.message === "string" ? value.message : undefined,
+        childPid: typeof value.childPid === "number" ? value.childPid : undefined,
+      };
+    } catch {
+      return null;
     }
   }
 

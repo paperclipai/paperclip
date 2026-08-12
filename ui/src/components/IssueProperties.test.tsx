@@ -2121,10 +2121,10 @@ describe("IssueProperties", () => {
   });
 
   it("renders scheduled, retrying, due, overdue, cleared, and empty monitor row states", async () => {
-    const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(new Date("2026-07-17T13:56:00.000Z").getTime());
+    const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(new Date("2026-07-17T13:56:00").getTime());
     const baseMonitorState = {
       status: "scheduled" as const,
-      nextCheckAt: "2026-07-17T16:08:00.000Z",
+      nextCheckAt: "2026-07-17T16:08:00",
       lastTriggeredAt: null,
       attemptCount: 1,
       notes: "Verify deployment",
@@ -2155,9 +2155,9 @@ describe("IssueProperties", () => {
     expect(monitorRowText()).toContain("Today, 4:08 PM · Attempt 1");
 
     renderMonitor(createIssue({
-      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T18:08:00.000Z" } }),
-      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T16:08:00.000Z" } }),
-      monitorNextCheckAt: new Date("2026-07-17T17:08:00.000Z"),
+      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T18:08:00" } }),
+      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T16:08:00" } }),
+      monitorNextCheckAt: new Date("2026-07-17T17:08:00"),
     }));
     await flush();
     expect(monitorRowText()).toContain("In 2h 12m");
@@ -2172,16 +2172,16 @@ describe("IssueProperties", () => {
     expect(monitorRowText()).toContain("Attempt 3");
 
     renderMonitor(createIssue({
-      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:56:00.000Z" } }),
-      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:56:00.000Z" } }),
+      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:56:00" } }),
+      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:56:00" } }),
     }));
     await flush();
     expect(monitorRowText()).toContain("Due now");
     expect(monitorRowText()).toContain("checking momentarily…");
 
     renderMonitor(createIssue({
-      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:38:00.000Z" } }),
-      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:38:00.000Z" } }),
+      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:38:00" } }),
+      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:38:00" } }),
     }));
     await flush();
     expect(monitorRowText()).toContain("Overdue by 18m");
@@ -2193,13 +2193,13 @@ describe("IssueProperties", () => {
         ...baseMonitorState,
         status: "cleared",
         nextCheckAt: null,
-        lastTriggeredAt: "2026-07-17T11:56:00.000Z",
+        lastTriggeredAt: "2026-07-17T11:56:00",
         attemptCount: 2,
-        clearedAt: "2026-07-17T12:00:00.000Z",
+        clearedAt: "2026-07-17T12:00:00",
         clearReason: "manual",
       } }),
       monitorAttemptCount: 2,
-      monitorLastTriggeredAt: new Date("2026-07-17T11:56:00.000Z"),
+      monitorLastTriggeredAt: new Date("2026-07-17T11:56:00"),
     }));
     await flush();
     expect(monitorRowText()).toContain("Cleared");

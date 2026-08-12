@@ -30,11 +30,11 @@ function update(overrides: Partial<StatusCardUpdate>): StatusCardUpdate {
   };
 }
 
+const fixtureNow = new Date("2026-07-23T12:00:00.000Z");
+
 function iso(daysAgo: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - daysAgo);
-  // Noon avoids DST/midnight edge cases in the local-day filter.
-  d.setHours(12, 0, 0, 0);
+  const d = new Date(fixtureNow);
+  d.setUTCDate(d.getUTCDate() - daysAgo);
   return d.toISOString();
 }
 
@@ -55,13 +55,16 @@ describe("rollupUpdates (lifetime)", () => {
 
 describe("rollupUpdatesToday", () => {
   it("only counts updates started today and drops older ledger rows", () => {
-    const rollup = rollupUpdatesToday([
-      update({ kind: "full", inputTokens: 2000, outputTokens: 600, costCents: 3, startedAt: iso(0) }),
-      update({ kind: "compile", inputTokens: 400, outputTokens: 100, costCents: 1, startedAt: iso(0) }),
-      // yesterday + last week — must not be counted as "today"
-      update({ kind: "full", inputTokens: 9999, outputTokens: 9999, costCents: 99, startedAt: iso(1) }),
-      update({ kind: "incremental", inputTokens: 9999, outputTokens: 9999, costCents: 99, startedAt: iso(7) }),
-    ]);
+    const rollup = rollupUpdatesToday(
+      [
+        update({ kind: "full", inputTokens: 2000, outputTokens: 600, costCents: 3, startedAt: iso(0) }),
+        update({ kind: "compile", inputTokens: 400, outputTokens: 100, costCents: 1, startedAt: iso(0) }),
+        // yesterday + last week — must not be counted as "today"
+        update({ kind: "full", inputTokens: 9999, outputTokens: 9999, costCents: 99, startedAt: iso(1) }),
+        update({ kind: "incremental", inputTokens: 9999, outputTokens: 9999, costCents: 99, startedAt: iso(7) }),
+      ],
+      fixtureNow,
+    );
     // Only today's full rebuild counts as an update (compile excluded).
     expect(rollup.updateCount).toBe(1);
     // Today's tokens/cost include today's compile but not older days.
