@@ -778,7 +778,7 @@ export function OnboardingWizard() {
               <FrontDoor onChoose={(path) => {
                 setOnboardingPath(path);
                 if (path === "template") {
-                  navigate(prefix ? `/${prefix}/teams-catalog` : "/teams-catalog");
+                  navigate(companyPrefix ? `/${companyPrefix}/teams-catalog` : "/teams-catalog");
                 } else {
                   setStep(1);
                 }
