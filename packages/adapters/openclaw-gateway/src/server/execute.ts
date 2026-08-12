@@ -9,6 +9,7 @@ import {
   buildPaperclipEnv,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
+  paperclipWakeToken,
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -1087,6 +1088,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // No heartbeat prompt template is sent over the gateway, so the wake prompt
   // must carry the execution contract itself.
   const structuredWakePrompt = renderPaperclipWakePrompt(ctx.context.paperclipWake, {
+    wakeToken: paperclipWakeToken(ctx.agent),
     includeExecutionContract: true,
   });
   const structuredWakeJson = stringifyPaperclipWakePayload(ctx.context.paperclipWake);

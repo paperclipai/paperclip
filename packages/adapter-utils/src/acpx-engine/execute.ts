@@ -47,6 +47,7 @@ import {
   parseObject,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
+  paperclipWakeToken,
   renderPaperclipWakePrompt,
   renderTemplate,
   resolvePaperclipInstanceRootForAdapter,
@@ -2322,6 +2323,7 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
       : "";
   const taskContextNote = selectPaperclipTaskMarkdown(context, { resumedSession });
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
+    wakeToken: paperclipWakeToken(agent),
     resumedSession,
     // The task-context markdown is the authoritative brief on this lane; keep
     // the wake prompt's description copy out so the prompt carries it once.

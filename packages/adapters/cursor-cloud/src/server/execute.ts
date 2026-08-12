@@ -18,6 +18,7 @@ import {
   joinPromptSections,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
+  paperclipWakeToken,
   renderPaperclipWakePrompt,
   isPaperclipRecoveryWakePayload,
   renderTemplate,
@@ -393,7 +394,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     context,
   };
   const instructions = await buildInstructionsPrefix(config, onLog);
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: canReuseSession });
+  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { wakeToken: paperclipWakeToken(agent), resumedSession: canReuseSession });
   const renderedBootstrapPrompt =
     !canReuseSession && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
