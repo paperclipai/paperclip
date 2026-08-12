@@ -70,6 +70,19 @@ describe("TaskChatThread draft pass-through", () => {
   });
 });
 
+describe("TaskChatThread composer alignment (PAP-498)", () => {
+  it("keeps the composer dock at 80% of the thread width", () => {
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} />);
+
+    const dock = container
+      .querySelector('[data-testid="mock-editor"]')
+      ?.closest("div.sticky") as HTMLElement | null;
+
+    expect(dock?.className).toContain("w-(--pct-80)");
+    expect(dock?.className).not.toContain("w-full");
+  });
+});
+
 describe("TaskChatThread mobile composer dock (PAP-495)", () => {
   it("pins the composer to the nav-aware bottom offset so its action row clears the auto-hiding bottom nav", () => {
     sidebarState.isMobile = true;

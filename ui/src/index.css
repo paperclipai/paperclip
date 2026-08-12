@@ -2203,6 +2203,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --rad-24: 24px; /* Extracted from ui/src/pages/InviteUxLab.tsx (rounded-[24px]). */
   --rad-32: 32px; /* Extracted from ui/src/pages/InviteUxLab.tsx (rounded-[32px]). */
   --pct-90: 90%; /* Extracted from ui/src/components/DocumentDiffModal.tsx (max-w-[90%]). */
+  --pct-80: 80%; /* TaskChatThread composer width (PAP-498 follow-up). */
   --pct-50: 50%; /* Extracted from ui/src/components/ImageGalleryModal.tsx (max-w-[50%]). */
   --pct-85: 85%; /* Extracted from ui/src/components/IssueChatThread.test.tsx (max-w-[85%]). */
   --pct-70: 70%; /* Extracted from ui/src/components/CaseFieldsPanel.tsx (max-w-[70%]). */
