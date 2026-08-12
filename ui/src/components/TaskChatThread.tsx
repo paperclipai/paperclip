@@ -31,12 +31,18 @@ import { useWindowAutoFollow } from "@/components/task-chat/useWindowAutoFollow"
 import { useSidebar } from "@/context/SidebarContext";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { latestSameRunHandoffTimestamp, type IssueChatComment } from "@/lib/issue-chat-messages";
 import { isLiveIssueRun, isTerminalIssueStatus } from "@/lib/liveIssueIds";
 import { workModeInEffectAt } from "@/lib/issue-timeline-events";
 import { workModeMetaFor } from "@/lib/work-mode-meta";
-import { Ban, Square } from "lucide-react";
+import { Ban, Check, MoreHorizontal, PauseCircle, Square } from "lucide-react";
 
 function toMs(value: Date | string | null | undefined): number {
   if (!value) return 0;
@@ -124,6 +130,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     onVote,
     draftKey,
     onCancelRun,
+    onStopRun,
+    stopRunLabel = "Pause work",
+    stopRunVariant = "pause",
     runFinalizationActions = [],
   } = props;
 
@@ -475,38 +484,50 @@ export function TaskChatThread(props: TaskChatThreadProps) {
 
   const liveTurnActions = useMemo(() => {
     if (!liveRun) return null;
-    const cancelTaskAction = runFinalizationActions.find((action) => action.id === "cancel");
     return (
-      <>
-        {onCancelRun ? (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
           <Button
             type="button"
             size="icon-xs"
             variant="ghost"
-            title="Interrupt run"
-            aria-label="Interrupt run"
-            onClick={() => void onCancelRun()}
+            title="Run actions"
+            aria-label="Run actions"
           >
-            <Square />
+            <MoreHorizontal />
           </Button>
-        ) : null}
-        {cancelTaskAction ? (
-          <Button
-            type="button"
-            size="icon-xs"
-            variant="ghost"
-            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-            title="Cancel task"
-            aria-label="Cancel task"
-            disabled={cancelTaskAction.disabled || cancelTaskAction.isPending}
-            onClick={() => void cancelTaskAction.onSelect(liveRun.id)}
-          >
-            <Ban className={cancelTaskAction.isPending ? "animate-pulse" : undefined} />
-          </Button>
-        ) : null}
-      </>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          {onCancelRun ? (
+            <DropdownMenuItem onSelect={() => void onCancelRun()}>
+              <Square className="mr-2 h-3.5 w-3.5 fill-current" />
+              Interrupt run
+            </DropdownMenuItem>
+          ) : null}
+          {onStopRun ? (
+            <DropdownMenuItem
+              className="text-amber-700 focus:text-amber-800 dark:text-amber-300 dark:focus:text-amber-200"
+              onSelect={() => void onStopRun(liveRun.id)}
+            >
+              {stopRunVariant === "pause" ? <PauseCircle className="mr-2 h-3.5 w-3.5" /> : <Square className="mr-2 h-3.5 w-3.5 fill-current" />}
+              {stopRunLabel}
+            </DropdownMenuItem>
+          ) : null}
+          {runFinalizationActions.map((action) => (
+            <DropdownMenuItem
+              key={action.id}
+              disabled={action.disabled || action.isPending}
+              className={action.id === "cancel" ? "text-red-700 focus:text-red-800 dark:text-red-300 dark:focus:text-red-200" : "text-green-700 focus:text-green-800 dark:text-green-300 dark:focus:text-green-200"}
+              onSelect={() => void action.onSelect(liveRun.id)}
+            >
+              {action.id === "cancel" ? <Ban className="mr-2 h-3.5 w-3.5" /> : <Check className="mr-2 h-3.5 w-3.5" />}
+              {action.isPending ? action.pendingLabel : action.label}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
     );
-  }, [liveRun, onCancelRun, runFinalizationActions]);
+  }, [liveRun, onCancelRun, onStopRun, runFinalizationActions, stopRunLabel, stopRunVariant]);
 
   // Mobile (PAP-360): the app shell scrolls the DOCUMENT (Layout's main is
   // overflow-visible with auto height), so the desktop bounded h-dvh chain
