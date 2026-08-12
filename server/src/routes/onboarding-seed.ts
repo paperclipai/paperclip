@@ -2,6 +2,7 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { applyOnboardingSeedSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/index.js";
+import { logger } from "../middleware/logger.js";
 import { logActivity } from "../services/index.js";
 import { onboardingSeedService } from "../services/onboarding-seed.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -40,23 +41,37 @@ export function onboardingSeedRoutes(db: Db) {
 
       if (result.changed) {
         const actor = getActorInfo(req);
-        await logActivity(db, {
-          companyId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          agentId: actor.agentId,
-          runId: actor.runId,
-          agentApiKeyId: actor.agentApiKeyId,
-          action: "company.onboarding_seed_applied",
-          entityType: "company",
-          entityId: companyId,
-          details: {
-            revision: result.revision,
-            goalId: result.goalId,
-            agentId: result.agentId,
-            issueId: result.issueId,
-          },
-        });
+        // Best-effort. The seed and its revision are already committed by the
+        // time we get here, and Cloud reads any 2xx as "applied" and stops
+        // retrying. If this audit write threw and we let it 500, the retry
+        // would come back `changed: false` and skip the log for good — the
+        // entry would be permanently absent *and* the caller would have seen a
+        // spurious failure for an application that succeeded. So a logging
+        // failure is recorded server-side and the request still answers 200.
+        try {
+          await logActivity(db, {
+            companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
+            action: "company.onboarding_seed_applied",
+            entityType: "company",
+            entityId: companyId,
+            details: {
+              revision: result.revision,
+              goalId: result.goalId,
+              agentId: result.agentId,
+              issueId: result.issueId,
+            },
+          });
+        } catch (err) {
+          logger.error(
+            { err, companyId, revision: result.revision },
+            "onboarding seed applied but its activity-log entry could not be written",
+          );
+        }
       }
 
       res.status(200).json({

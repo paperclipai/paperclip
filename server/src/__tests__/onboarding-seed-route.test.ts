@@ -286,4 +286,61 @@ describeEmbeddedPostgres("POST /api/companies/:companyId/onboarding-seed", () =>
     const companyIssues = await ctx.db.select().from(issues).where(eq(issues.companyId, companyId));
     expect(companyIssues[0]?.projectId).toBe(companyProjects[0]?.id);
   });
+
+  it("does not duplicate entities when two identical pushes race", async () => {
+    const { companyId, app } = await seedCompany();
+
+    // Cloud's reconcile runs off portfolio fetches that can overlap, so the
+    // same revision can be pushed twice at once. The per-company advisory lock
+    // must serialize them: without it both pass the revision check before
+    // either writes the seed record and each creates a goal, an agent, a
+    // project and a task.
+    const [first, second] = await Promise.all([
+      post(app, companyId, SEED),
+      post(app, companyId, SEED),
+    ]);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+
+    expect(await ctx.db.select().from(goals).where(eq(goals.companyId, companyId))).toHaveLength(1);
+    expect(await ctx.db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(1);
+    expect(await ctx.db.select().from(projects).where(eq(projects.companyId, companyId))).toHaveLength(1);
+    expect(await ctx.db.select().from(issues).where(eq(issues.companyId, companyId))).toHaveLength(1);
+    expect(await ctx.db.select().from(companyOnboardingSeeds)).toHaveLength(1);
+  });
+
+  it("refreshes a first task's assignee and goal when a later revision adds them", async () => {
+    const { companyId, app } = await seedCompany();
+
+    // First push seeds a task but no agent and no mission, so the issue is
+    // created unassigned and goal-less.
+    const taskOnly = await post(app, companyId, {
+      revision: "1".repeat(32),
+      firstTask: { title: "Draft the strategy" },
+    });
+    expect(taskOnly.status).toBe(200);
+
+    const beforeIssue = (await ctx.db.select().from(issues).where(eq(issues.companyId, companyId)))[0];
+    expect(beforeIssue?.assigneeAgentId).toBeNull();
+
+    // A later revision supplies the mission and the agent. The existing task is
+    // updated in place, and must pick up the newly-created assignee and goal
+    // rather than reporting them on the seed record while the issue row stays
+    // stale.
+    const withAgent = await post(app, companyId, {
+      revision: "2".repeat(32),
+      mission: "Make robotics boring enough to trust",
+      agent: { name: "Ada", role: "Chief of Staff" },
+      firstTask: { title: "Draft the strategy" },
+    });
+    expect(withAgent.status).toBe(200);
+
+    const companyIssues = await ctx.db.select().from(issues).where(eq(issues.companyId, companyId));
+    expect(companyIssues).toHaveLength(1);
+    const companyAgents = await ctx.db.select().from(agents).where(eq(agents.companyId, companyId));
+    const companyGoals = await ctx.db.select().from(goals).where(eq(goals.companyId, companyId));
+    expect(companyIssues[0]?.assigneeAgentId).toBe(companyAgents[0]?.id);
+    expect(companyIssues[0]?.goalId).toBe(companyGoals[0]?.id);
+  });
 });

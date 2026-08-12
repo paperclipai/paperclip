@@ -1,4 +1,4 @@
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, companyOnboardingSeeds, goals, issues, projects } from "@paperclipai/db";
 import type { ApplyOnboardingSeed } from "@paperclipai/shared";
@@ -62,22 +62,17 @@ export type OnboardingSeedApplication = {
 };
 
 export function onboardingSeedService(db: Db) {
-  const agentSvc = agentService(db);
-  const goalSvc = goalService(db);
-  const projectSvc = projectService(db);
-  const issueSvc = issueService(db);
-
-  async function readRecord(companyId: string) {
-    return db
+  async function readRecord(dbx: Db, companyId: string) {
+    return dbx
       .select()
       .from(companyOnboardingSeeds)
       .where(eq(companyOnboardingSeeds.companyId, companyId))
       .then((rows) => rows[0] ?? null);
   }
 
-  async function goalStillExists(companyId: string, goalId: string | null) {
+  async function goalStillExists(dbx: Db, companyId: string, goalId: string | null) {
     if (!goalId) return false;
-    return db
+    return dbx
       .select({ id: goals.id })
       .from(goals)
       .where(and(eq(goals.id, goalId), eq(goals.companyId, companyId)))
@@ -90,9 +85,9 @@ export function onboardingSeedService(db: Db) {
    * already has. Built-in agents are excluded — they are provisioned by the
    * platform and are not the customer's first hire.
    */
-  async function resolveTargetAgentId(companyId: string, recordedAgentId: string | null) {
+  async function resolveTargetAgentId(dbx: Db, companyId: string, recordedAgentId: string | null) {
     if (recordedAgentId) {
-      const recorded = await db
+      const recorded = await dbx
         .select({ id: agents.id })
         .from(agents)
         .where(and(eq(agents.id, recordedAgentId), eq(agents.companyId, companyId)))
@@ -100,7 +95,7 @@ export function onboardingSeedService(db: Db) {
       if (recorded) return recorded.id;
     }
 
-    const candidates = await db
+    const candidates = await dbx
       .select({ id: agents.id, metadata: agents.metadata })
       .from(agents)
       .where(and(
@@ -111,17 +106,22 @@ export function onboardingSeedService(db: Db) {
     return candidates.find((row) => !readBuiltInAgentMarker(row.metadata))?.id ?? null;
   }
 
-  async function issueStillExists(companyId: string, issueId: string | null) {
+  async function issueStillExists(dbx: Db, companyId: string, issueId: string | null) {
     if (!issueId) return false;
-    return db
+    return dbx
       .select({ id: issues.id })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
       .then((rows) => rows.length > 0);
   }
 
-  async function resolveOnboardingProjectId(companyId: string, goalId: string | null) {
-    const existing = await db
+  async function resolveOnboardingProjectId(
+    dbx: Db,
+    projectSvc: ReturnType<typeof projectService>,
+    companyId: string,
+    goalId: string | null,
+  ) {
+    const existing = await dbx
       .select({ id: projects.id, name: projects.name, status: projects.status })
       .from(projects)
       .where(eq(projects.companyId, companyId));
@@ -141,24 +141,22 @@ export function onboardingSeedService(db: Db) {
   }
 
   /**
-   * Apply an onboarding seed to a company.
-   *
-   * Idempotent per `revision`: a replay of the revision already stored is a
-   * no-op that still reports success, because Cloud reads any 2xx as "the
-   * tenant holds this content" and retries otherwise. A *different* revision
-   * (the customer edited their answers in Cloud) updates the goal, agent and
-   * task this seed previously created rather than creating a second set.
-   *
-   * Every write happens before the caller responds — Cloud records the applied
-   * revision only on a 2xx, and the redirect into the tenant dashboard is
-   * gated on it, so a partially-applied seed must surface as a failure rather
-   * than as an acknowledged one.
+   * The seed application proper, run inside the per-company transaction the
+   * public `apply` opens. Every read and write goes through `dbx` — the locked
+   * transaction — so it is serialized against a concurrent push for the same
+   * company. Services are reconstructed on `dbx` for the same reason.
    */
-  async function apply(
+  async function applyWithin(
+    dbx: Db,
     companyId: string,
     seed: ApplyOnboardingSeed,
   ): Promise<OnboardingSeedApplication> {
-    const existing = await readRecord(companyId);
+    const agentSvc = agentService(dbx);
+    const goalSvc = goalService(dbx);
+    const projectSvc = projectService(dbx);
+    const issueSvc = issueService(dbx);
+
+    const existing = await readRecord(dbx, companyId);
     if (existing && existing.revision === seed.revision) {
       return {
         revision: existing.revision,
@@ -179,7 +177,7 @@ export function onboardingSeedService(db: Db) {
     let goalId = existing?.goalId ?? null;
     if (mission) {
       const parsed = parseSeedMission(mission);
-      const target = (await goalStillExists(companyId, goalId))
+      const target = (await goalStillExists(dbx, companyId, goalId))
         ? goalId
         : (await goalSvc.getDefaultCompanyGoal(companyId))?.id ?? null;
       if (target) {
@@ -201,7 +199,7 @@ export function onboardingSeedService(db: Db) {
 
     // 2. Agent → the customer's first hire, the lead the first task is
     //    assigned to.
-    let agentId = await resolveTargetAgentId(companyId, existing?.agentId ?? null);
+    let agentId = await resolveTargetAgentId(dbx, companyId, existing?.agentId ?? null);
     if (agentName) {
       if (agentId) {
         await agentSvc.update(agentId, { name: agentName, title: agentRole });
@@ -242,13 +240,24 @@ export function onboardingSeedService(db: Db) {
     //    mission-only seed is what keeps it inert on the cloud path.
     let issueId = existing?.issueId ?? null;
     if (firstTaskTitle) {
-      if (await issueStillExists(companyId, issueId)) {
-        await issueSvc.update(issueId as string, {
-          title: firstTaskTitle,
-          description: firstTaskDetails,
-        });
+      if (await issueStillExists(dbx, companyId, issueId)) {
+        await issueSvc.update(
+          issueId as string,
+          {
+            title: firstTaskTitle,
+            description: firstTaskDetails,
+            // Keep the task's relationships in step with a later revision that
+            // supplied the agent or goal after the task already existed —
+            // otherwise the record would report an assignee/goal the issue row
+            // does not actually carry. Only set them when resolved, so an
+            // absent value never clears an assignment the tenant made.
+            ...(agentId ? { assigneeAgentId: agentId } : {}),
+            ...(goalId ? { goalId } : {}),
+          },
+          dbx,
+        );
       } else {
-        const projectId = await resolveOnboardingProjectId(companyId, goalId);
+        const projectId = await resolveOnboardingProjectId(dbx, projectSvc, companyId, goalId);
         // The idempotency key is what protects two pushes that arrive at once
         // — Cloud's reconcile runs off portfolio fetches, which can overlap.
         // It is deliberately not revision-scoped: if the recorded issue is
@@ -284,7 +293,7 @@ export function onboardingSeedService(db: Db) {
       appliedAt: now,
       updatedAt: now,
     };
-    await db
+    await dbx
       .insert(companyOnboardingSeeds)
       .values(values)
       .onConflictDoUpdate({
@@ -307,5 +316,40 @@ export function onboardingSeedService(db: Db) {
     return { revision: seed.revision, changed: true, goalId, agentId, issueId };
   }
 
-  return { apply, get: readRecord };
+  /**
+   * Apply an onboarding seed to a company.
+   *
+   * Idempotent per `revision`: a replay of the revision already stored is a
+   * no-op that still reports success, because Cloud reads any 2xx as "the
+   * tenant holds this content" and retries otherwise. A *different* revision
+   * (the customer edited their answers in Cloud) updates the goal, agent and
+   * task this seed previously created rather than creating a second set.
+   *
+   * Every write happens before the caller responds — Cloud records the applied
+   * revision only on a 2xx, and the redirect into the tenant dashboard is
+   * gated on it, so a partially-applied seed must surface as a failure rather
+   * than as an acknowledged one.
+   *
+   * Concurrency: Cloud's reconcile runs off portfolio fetches, which can
+   * overlap, so two pushes for the same company can arrive at once. Both would
+   * otherwise pass the revision check before either wrote the seed record and
+   * each create a company goal, a lead agent and an Onboarding project. A
+   * per-company advisory lock held for the transaction serializes them — the
+   * same idiom `folders` and `decision-queues` use — so the second push sees
+   * the first push's writes (the record, the reused goal/agent/project) and
+   * updates in place instead of duplicating.
+   */
+  async function apply(
+    companyId: string,
+    seed: ApplyOnboardingSeed,
+  ): Promise<OnboardingSeedApplication> {
+    return db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`paperclip:onboarding-seed:${companyId}`}, 0))`,
+      );
+      return applyWithin(tx as unknown as Db, companyId, seed);
+    });
+  }
+
+  return { apply, get: (companyId: string) => readRecord(db, companyId) };
 }
