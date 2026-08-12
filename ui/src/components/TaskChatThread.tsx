@@ -36,6 +36,7 @@ import { latestSameRunHandoffTimestamp, type IssueChatComment } from "@/lib/issu
 import { isLiveIssueRun, isTerminalIssueStatus } from "@/lib/liveIssueIds";
 import { workModeInEffectAt } from "@/lib/issue-timeline-events";
 import { workModeMetaFor } from "@/lib/work-mode-meta";
+import { Ban, Square } from "lucide-react";
 
 function toMs(value: Date | string | null | undefined): number {
   if (!value) return 0;
@@ -478,19 +479,29 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     return (
       <>
         {onCancelRun ? (
-          <Button type="button" size="sm" variant="outline" onClick={() => void onCancelRun()}>
-            Interrupt
+          <Button
+            type="button"
+            size="icon-xs"
+            variant="ghost"
+            title="Interrupt run"
+            aria-label="Interrupt run"
+            onClick={() => void onCancelRun()}
+          >
+            <Square />
           </Button>
         ) : null}
         {cancelTaskAction ? (
           <Button
             type="button"
-            size="sm"
-            variant="destructive"
+            size="icon-xs"
+            variant="ghost"
+            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+            title="Cancel task"
+            aria-label="Cancel task"
             disabled={cancelTaskAction.disabled || cancelTaskAction.isPending}
             onClick={() => void cancelTaskAction.onSelect(liveRun.id)}
           >
-            {cancelTaskAction.isPending ? cancelTaskAction.pendingLabel : "Cancel task"}
+            <Ban className={cancelTaskAction.isPending ? "animate-pulse" : undefined} />
           </Button>
         ) : null}
       </>
