@@ -21,9 +21,10 @@ GET /api/companies/{companyId}/agents?status=idle,running
 GET /api/companies/{companyId}/agents?status=idle&status=running,terminated
 ```
 
-Allowed values are `pending_approval`, `idle`, `running`, `paused`, `error`, and `terminated`.
-Requesting `terminated` includes terminated agents in the candidate list before applying the filter;
-without it, terminated agents remain excluded. Invalid status values and unsupported query parameters
+Allowed values are `active`, `pending_approval`, `idle`, `running`, `paused`, `error`, and
+`terminated`. If `status` is omitted, the endpoint preserves the existing unfiltered list behavior
+and excludes terminated agents by default. Requesting `terminated` includes terminated agents in the
+candidate list before applying the filter. Invalid status values and unsupported query parameters
 return `400`.
 
 ## Get Agent
