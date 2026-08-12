@@ -92,6 +92,37 @@ export function summarizeHeartbeatRunResultJson(
   return Object.keys(summary).length > 0 ? summary : null;
 }
 
+// SAG-722 regression guard: suppress a comment that is pure JSON (leaked tool-call payload).
+function isPureJson(text: string): boolean {
+  const t = text.trim();
+  if (t.length < 2) return false;
+  const first = t[0];
+  if (first !== "{" && first !== "[") return false;
+  try {
+    JSON.parse(t);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Same inline dialects the opencode-local adapter strips at the source (see
+// packages/adapters/opencode-local/src/server/parse.ts) — kept here too as a
+// defense-in-depth backstop for adapters that don't sanitize before summarizing.
+const INLINE_TOOL_CALL_PATTERNS: RegExp[] = [
+  // OpenAI-style: {"type":"function", ...}
+  /\{\s*"type"\s*:\s*"function"/i,
+  // Bare-name dialect (Llama/Qwen 8b): {"name":"<ident>", ..., "parameters"|"arguments": ...}
+  /\{\s*"name"\s*:\s*"[A-Za-z_][\w.\-]*"[\s\S]{0,200}?"(?:parameters|arguments)"\s*:/i,
+  // OpenCode bridge dialect: {"tool":"<ident>", ..., "args"|"input": ...}
+  /\{\s*"tool"\s*:\s*"[A-Za-z_][\w.\-]*"[\s\S]{0,200}?"(?:args|input|arguments|parameters)"\s*:/i,
+];
+
+function isLeakedToolCallJson(text: string): boolean {
+  if (isPureJson(text)) return true;
+  return INLINE_TOOL_CALL_PATTERNS.some((re) => re.test(text));
+}
+
 export function buildHeartbeatRunIssueComment(
   resultJson: Record<string, unknown> | null | undefined,
 ): string | null {
@@ -99,10 +130,17 @@ export function buildHeartbeatRunIssueComment(
     return null;
   }
 
-  return (
-    readCommentText(resultJson.summary)
-    ?? readCommentText(resultJson.result)
-    ?? readCommentText(resultJson.message)
-    ?? null
-  );
+  for (const field of ["summary", "result", "message"] as const) {
+    const candidate = readCommentText(resultJson[field]);
+    if (candidate === null) continue;
+    if (isLeakedToolCallJson(candidate)) {
+      console.error(
+        `[paperclip] SAG-722: Suppressed comment containing leaked tool-call JSON. First 200 chars: ${candidate.slice(0, 200)}`,
+      );
+      continue;
+    }
+    return candidate;
+  }
+
+  return null;
 }

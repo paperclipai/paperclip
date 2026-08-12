@@ -63,6 +63,48 @@ describe("buildHeartbeatRunIssueComment", () => {
   it("returns null when there is no usable final text", () => {
     expect(buildHeartbeatRunIssueComment({ costUsd: 1.2 })).toBeNull();
   });
+
+  // SAG-722 regression guard: pure JSON must never reach the comment body.
+  it("returns null and does not post when summary is pure tool-call JSON (AC5)", () => {
+    const leaked = JSON.stringify({ type: "function", name: "fetch_issue", parameters: { issue_id: "SAG-704" } });
+    expect(buildHeartbeatRunIssueComment({ summary: leaked })).toBeNull();
+  });
+
+  it("returns null when summary is a JSON array", () => {
+    expect(buildHeartbeatRunIssueComment({ summary: '[{"tool":"bash"}]' })).toBeNull();
+  });
+
+  // Greptile P2 (PR #8942): the guard must also catch inline leaks — prose
+  // followed by a tool-call payload — not just whole-string JSON.
+  it("returns null when a tool-call payload is embedded after prose", () => {
+    const leaked = `Sure, let me check that.\n${JSON.stringify({ name: "bash", arguments: { command: "ls" } })}`;
+    expect(buildHeartbeatRunIssueComment({ summary: leaked })).toBeNull();
+  });
+
+  it("returns null for the OpenCode bridge dialect embedded inline", () => {
+    const leaked = `Working on it.\n${JSON.stringify({ tool: "webfetch", args: { url: "https://example.com" } })}\nDone.`;
+    expect(buildHeartbeatRunIssueComment({ summary: leaked })).toBeNull();
+  });
+
+  it("passes through natural-language summaries unchanged", () => {
+    const text = "Moved issue to in_progress and posted update.";
+    expect(buildHeartbeatRunIssueComment({ summary: text })).toBe(text);
+  });
+
+  // Greptile (PR #8942): a leaked summary must not short-circuit the fallback —
+  // result/message should still be checked and used if they are clean.
+  it("falls back to result or message when summary is a leaked payload", () => {
+    const leaked = JSON.stringify({ type: "function", name: "fetch_issue", parameters: { issue_id: "SAG-704" } });
+    expect(buildHeartbeatRunIssueComment({ summary: leaked, result: "Moved issue to in_progress." }))
+      .toBe("Moved issue to in_progress.");
+    expect(buildHeartbeatRunIssueComment({ summary: leaked, message: "Posted update." }))
+      .toBe("Posted update.");
+  });
+
+  it("returns null when every candidate field is a leaked payload", () => {
+    const leaked = JSON.stringify({ type: "function", name: "fetch_issue", parameters: { issue_id: "SAG-704" } });
+    expect(buildHeartbeatRunIssueComment({ summary: leaked, result: leaked, message: leaked })).toBeNull();
+  });
 });
 
 describe("mergeHeartbeatRunResultJson", () => {
