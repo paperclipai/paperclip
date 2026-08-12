@@ -900,6 +900,9 @@ export const addIssueCommentSchema = z.object({
   // issue-level assigneeAdapterOverrides so a chat reply never changes the
   // agent's saved/default model or the rest of the task's runs.
   modelOverride: z.string().trim().min(1).max(200).optional().nullable(),
+  // The same one-run boundary as modelOverride. Its adapter-specific values
+  // are validated at the route and again before heartbeat dispatch.
+  thinkingEffortOverride: z.string().trim().min(1).max(32).optional().nullable(),
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),

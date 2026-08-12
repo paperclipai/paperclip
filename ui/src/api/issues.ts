@@ -350,6 +350,7 @@ export const issuesApi = {
     reopen?: boolean,
     interrupt?: boolean,
     modelOverride?: string,
+    thinkingEffortOverride?: string,
   ) =>
     api.post<IssueComment>(
       `/issues/${id}/comments`,
@@ -358,6 +359,7 @@ export const issuesApi = {
         ...(reopen === undefined ? {} : { reopen }),
         ...(interrupt === undefined ? {} : { interrupt }),
         ...(modelOverride ? { modelOverride } : {}),
+        ...(thinkingEffortOverride ? { thinkingEffortOverride } : {}),
       },
     ),
   cancelComment: (id: string, commentId: string) =>

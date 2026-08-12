@@ -78,6 +78,7 @@ import {
   updateIssueSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
+  isChatThinkingEffortSupported,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   type CompactIssue,
@@ -13664,27 +13665,29 @@ export function issueRoutes(
 
     const actor = getActorInfo(req);
     const requestedChatModelOverride = readNonEmptyString(req.body.modelOverride);
+    const requestedChatThinkingEffortOverride = readNonEmptyString(req.body.thinkingEffortOverride);
     let chatModelOverride: string | null = null;
-    if (requestedChatModelOverride) {
+    let chatThinkingEffortOverride: string | null = null;
+    if (requestedChatModelOverride || requestedChatThinkingEffortOverride) {
       if (req.actor.type !== "board") {
-        res.status(403).json({ error: "Only board operators can select a chat model override" });
+        res.status(403).json({ error: "Only board operators can select chat configuration overrides" });
         return;
       }
       if (!issue.assigneeAgentId) {
-        throw unprocessable("A chat model override requires an assigned agent", {
-          code: "chat_model_override_requires_agent",
+        throw unprocessable("A chat configuration override requires an assigned agent", {
+          code: "chat_configuration_override_requires_agent",
           issueId: issue.id,
         });
       }
       const assignee = await agentsSvc.getById(issue.assigneeAgentId);
       if (!assignee || assignee.companyId !== issue.companyId) {
-        throw unprocessable("The issue assignee is unavailable for a chat model override", {
-          code: "chat_model_override_assignee_unavailable",
+        throw unprocessable("The issue assignee is unavailable for a chat configuration override", {
+          code: "chat_configuration_override_assignee_unavailable",
           issueId: issue.id,
           assigneeAgentId: issue.assigneeAgentId,
         });
       }
-      if (!CHAT_MODEL_OVERRIDE_ADAPTER_TYPES.has(assignee.adapterType)) {
+      if (requestedChatModelOverride && !CHAT_MODEL_OVERRIDE_ADAPTER_TYPES.has(assignee.adapterType)) {
         throw unprocessable("The issue assignee's adapter does not support chat model overrides", {
           code: "chat_model_override_adapter_unsupported",
           issueId: issue.id,
@@ -13692,7 +13695,20 @@ export function issueRoutes(
           adapterType: assignee.adapterType,
         });
       }
+      if (requestedChatThinkingEffortOverride && !isChatThinkingEffortSupported(
+        assignee.adapterType,
+        requestedChatThinkingEffortOverride,
+      )) {
+        throw unprocessable("The requested thinking effort is not supported by the issue assignee's adapter", {
+          code: "chat_thinking_effort_override_unsupported",
+          issueId: issue.id,
+          assigneeAgentId: assignee.id,
+          adapterType: assignee.adapterType,
+          thinkingEffortOverride: requestedChatThinkingEffortOverride,
+        });
+      }
       chatModelOverride = requestedChatModelOverride;
+      chatThinkingEffortOverride = requestedChatThinkingEffortOverride;
     }
     const nextOwnerHandoffResolution = await preflightNextOwnerHandoff({
       companyId: issue.companyId,
@@ -14096,6 +14112,7 @@ export function issueRoutes(
         issueTitle: currentIssue.title,
         authorizationReason: commentAuthorizationReason,
         ...(chatModelOverride ? { chatModelOverride } : {}),
+        ...(chatThinkingEffortOverride ? { chatThinkingEffortOverride } : {}),
         ...(isDirectParentReportDecision(commentAccessDecision)
           ? { directParentReportGrant: true }
           : {}),
@@ -14117,7 +14134,7 @@ export function issueRoutes(
       },
     });
 
-    // Model identity is configuration metadata, not work for a coding agent.
+    // Chat configuration identity is metadata, not work for a coding agent.
     // Resolve it locally and return before the normal comment wake-up fan-out.
     // Restrict the shortcut to a plain board/user question: a resume, reopen,
     // or interrupt must always retain its normal execution semantics.
@@ -14127,6 +14144,7 @@ export function issueRoutes(
       !resumeRequested &&
       !interruptRequested &&
       !chatModelOverride &&
+      !chatThinkingEffortOverride &&
       currentIssue.assigneeAgentId
     ) {
       const assignee = await agentsSvc.getById(currentIssue.assigneeAgentId);
@@ -14223,19 +14241,21 @@ export function issueRoutes(
             : currentIssue.id;
         const key = `${agentId}:${wakeIssueId}`;
         const isDirectAssigneeChatWake =
-          Boolean(chatModelOverride) &&
+          Boolean(chatModelOverride || chatThinkingEffortOverride) &&
           agentId === currentIssue.assigneeAgentId &&
           wakeIssueId === currentIssue.id;
-        const attachChatModelOverride = (target: WakeupRequest): WakeupRequest => isDirectAssigneeChatWake
+        const attachChatConfigurationOverrides = (target: WakeupRequest): WakeupRequest => isDirectAssigneeChatWake
           ? {
               ...target,
               payload: {
                 ...(target.payload ?? {}),
-                chatModelOverride,
+                ...(chatModelOverride ? { chatModelOverride } : {}),
+                ...(chatThinkingEffortOverride ? { chatThinkingEffortOverride } : {}),
               },
               contextSnapshot: {
                 ...(target.contextSnapshot ?? {}),
-                chatModelOverride,
+                ...(chatModelOverride ? { chatModelOverride } : {}),
+                ...(chatThinkingEffortOverride ? { chatThinkingEffortOverride } : {}),
               },
             }
           : target;
@@ -14244,10 +14264,10 @@ export function issueRoutes(
           // A review-stage wake can be registered before the normal comment
           // wake. Preserve the explicit one-run choice when those paths
           // coalesce for the same assignee and issue.
-          existingWakeup.wakeup = attachChatModelOverride(existingWakeup.wakeup);
+          existingWakeup.wakeup = attachChatConfigurationOverrides(existingWakeup.wakeup);
           return;
         }
-        const effectiveWakeup = attachChatModelOverride(wakeup);
+        const effectiveWakeup = attachChatConfigurationOverrides(wakeup);
         wakeups.set(key, { agentId, wakeup: effectiveWakeup });
       };
       const addDependencyResolvedWakeup = async (input: {

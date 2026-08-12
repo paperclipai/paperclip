@@ -307,6 +307,48 @@ describe("TaskChatComposer", () => {
     expect(selector.textContent).toContain("Default · gpt-5.6-luna");
   });
 
+  it("applies selected thinking effort to one reply, then returns the control to Default", async () => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    render(
+      <TaskChatComposer
+        onAdd={onAdd}
+        workMode="standard"
+        defaultThinkingEffort="low"
+        thinkingEffortOptions={[{ id: "xhigh", label: "X-High" }]}
+      />,
+    );
+
+    const selector = container.querySelector('[data-testid="chat-thinking-effort-selector"]')!;
+    expect(selector.textContent).toContain("Default · Low");
+    const trigger = selector.querySelector<HTMLButtonElement>("button")!;
+    flushSync(() => {
+      trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    const effortOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[type="button"]'))
+      .find((node) => node.textContent?.includes("X-High"));
+    expect(effortOption).toBeTruthy();
+    flushSync(() => {
+      effortOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    typeText("think this through carefully");
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+    await flushAsync();
+
+    expect(onAdd).toHaveBeenCalledWith(
+      "think this through carefully",
+      undefined,
+      undefined,
+      undefined,
+      "xhigh",
+    );
+    expect(selector.textContent).toContain("Default · Low");
+  });
+
   it("does not submit on plain Enter or Shift+Enter (newline stays with the editor)", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     render(<TaskChatComposer onAdd={onAdd} workMode="standard" />);

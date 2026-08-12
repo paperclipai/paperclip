@@ -8,6 +8,7 @@ import {
   normalizeModelProfileWakeContext,
   resolveModelProfileApplication,
   resolveRunScopedChatModelOverride,
+  resolveRunScopedChatThinkingEffortOverride,
   isConfigurationIncompleteFailedRun,
 } from "../services/heartbeat.ts";
 
@@ -171,6 +172,29 @@ describe("heartbeat model profile application", () => {
       agentId: "agent-1",
       issueAssigneeAgentId: "agent-1",
       contextSnapshot: { chatModelOverride: "gpt-5.3-codex" },
+    })).toBeNull();
+  });
+
+  it("limits a chat thinking-effort override to the assigned agent and adapter values", () => {
+    expect(resolveRunScopedChatThinkingEffortOverride({
+      adapterType: "codex_local",
+      agentId: "agent-1",
+      issueAssigneeAgentId: "agent-1",
+      contextSnapshot: { chatThinkingEffortOverride: "xhigh" },
+    })).toBe("xhigh");
+
+    expect(resolveRunScopedChatThinkingEffortOverride({
+      adapterType: "claude_local",
+      agentId: "agent-1",
+      issueAssigneeAgentId: "agent-1",
+      contextSnapshot: { chatThinkingEffortOverride: "ultra" },
+    })).toBeNull();
+
+    expect(resolveRunScopedChatThinkingEffortOverride({
+      adapterType: "codex_local",
+      agentId: "agent-2",
+      issueAssigneeAgentId: "agent-1",
+      contextSnapshot: { chatThinkingEffortOverride: "xhigh" },
     })).toBeNull();
   });
 

@@ -10,9 +10,11 @@ import {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   MODEL_PROFILE_KEYS,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
+  chatThinkingEffortAdapterConfigKey,
   envBindingSchema,
   extractSkillMentionIds,
   isEnvironmentDriverSupportedForAdapter,
+  isChatThinkingEffortSupported,
   isUuidLike,
   type BillingType,
   type CostStatus,
@@ -3907,6 +3909,7 @@ export function summarizeHeartbeatRunContextSnapshot(
     "wakeTriggerDetail",
     "modelProfile",
     "chatModelOverride",
+    "chatThinkingEffortOverride",
   ] as const;
 
   for (const key of allowedKeys) {
@@ -4331,6 +4334,22 @@ export function resolveRunScopedChatModelOverride(input: {
   if (input.issueAssigneeAgentId !== input.agentId) return null;
   if (!supportsIssueAssigneeAdapterConfigOverrides(input.adapterType)) return null;
   return readNonEmptyString(input.contextSnapshot?.chatModelOverride);
+}
+
+/**
+ * Board chat can also select reasoning effort for exactly the run generated
+ * by that message. Keep the same identity and adapter checks as the model
+ * override, then validate the adapter-specific effort value defensively.
+ */
+export function resolveRunScopedChatThinkingEffortOverride(input: {
+  adapterType: string | null | undefined;
+  agentId: string;
+  issueAssigneeAgentId: string | null | undefined;
+  contextSnapshot: Record<string, unknown> | null | undefined;
+}): string | null {
+  if (input.issueAssigneeAgentId !== input.agentId) return null;
+  const effort = readNonEmptyString(input.contextSnapshot?.chatThinkingEffortOverride);
+  return isChatThinkingEffortSupported(input.adapterType, effort) ? effort : null;
 }
 
 export function resolveIssueAssigneeAdapterOverridesForRun(input: {
@@ -15775,6 +15794,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueAssigneeAgentId: issueContext?.assigneeAgentId,
       contextSnapshot: context,
     });
+    const chatThinkingEffortOverride = resolveRunScopedChatThinkingEffortOverride({
+      adapterType: agent.adapterType,
+      agentId: agent.id,
+      issueAssigneeAgentId: issueContext?.assigneeAgentId,
+      contextSnapshot: context,
+    });
     const modelProfileMetadata = modelProfileRunMetadata(modelProfileApplication);
     if (modelProfileMetadata) {
       context.paperclipModelProfile = modelProfileMetadata;
@@ -15795,6 +15820,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       context.paperclipChatModelOverride = chatModelOverride;
     } else {
       delete context.paperclipChatModelOverride;
+    }
+    const chatThinkingEffortConfigKey = chatThinkingEffortAdapterConfigKey(agent.adapterType);
+    if (chatThinkingEffortOverride && chatThinkingEffortConfigKey) {
+      // The selected effort is only carried by this wake context. Applying it
+      // after task overrides keeps a board's explicit chat choice scoped to
+      // this reply without persisting it to the issue or agent configuration.
+      mergedConfig[chatThinkingEffortConfigKey] = chatThinkingEffortOverride;
+      context.paperclipChatThinkingEffortOverride = chatThinkingEffortOverride;
+    } else {
+      delete context.paperclipChatThinkingEffortOverride;
     }
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
     let executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);

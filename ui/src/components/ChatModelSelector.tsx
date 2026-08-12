@@ -1,4 +1,5 @@
-import { Cpu } from "lucide-react";
+import { Cpu, Gauge } from "lucide-react";
+import { formatChatThinkingEffort } from "@paperclipai/shared";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 
 interface ChatModelSelectorProps {
@@ -42,6 +43,58 @@ export function ChatModelSelector({
           <>
             <Cpu className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
             <span className="max-w-44 truncate">{selected?.label ?? defaultLabel}</span>
+          </>
+        )}
+        renderOption={(option) => (
+          <span className="min-w-0 truncate">{option.label}</span>
+        )}
+      />
+    </span>
+  );
+}
+
+interface ChatThinkingEffortSelectorProps {
+  /** Empty means use the assignee's saved/default effort for this one reply. */
+  value: string;
+  options: InlineEntityOption[];
+  defaultEffort?: string | null;
+  onChange: (effort: string) => void;
+  className?: string;
+  disablePortal?: boolean;
+}
+
+/**
+ * A deliberately one-message reasoning-effort chooser for task chat. Like
+ * the model selector, the caller clears the value after a successful send.
+ */
+export function ChatThinkingEffortSelector({
+  value,
+  options,
+  defaultEffort,
+  onChange,
+  className,
+  disablePortal,
+}: ChatThinkingEffortSelectorProps) {
+  const defaultLabel = defaultEffort
+    ? `Default · ${formatChatThinkingEffort(defaultEffort)}`
+    : "Default";
+
+  return (
+    <span data-testid="chat-thinking-effort-selector" className="min-w-0">
+      <InlineEntitySelector
+        value={value}
+        options={options}
+        placeholder={defaultLabel}
+        noneLabel={defaultLabel}
+        searchPlaceholder="Search effort levels..."
+        emptyMessage="No effort levels found."
+        onChange={onChange}
+        className={className ?? "h-8 max-w-44 text-xs"}
+        disablePortal={disablePortal}
+        renderTriggerValue={(selected) => (
+          <>
+            <Gauge className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+            <span className="max-w-32 truncate">{selected?.label ?? defaultLabel}</span>
           </>
         )}
         renderOption={(option) => (

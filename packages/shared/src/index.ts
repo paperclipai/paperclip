@@ -1,5 +1,15 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
+  CHAT_THINKING_EFFORT_OPTIONS_BY_ADAPTER,
+  CHAT_THINKING_EFFORT_ADAPTER_CONFIG_KEYS,
+  chatThinkingEffortOptionsForAdapter,
+  chatThinkingEffortAdapterConfigKey,
+  isChatThinkingEffortSupported,
+  formatChatThinkingEffort,
+  type ChatThinkingEffortAdapterType,
+  type ChatThinkingEffort,
+} from "./chat-thinking-effort.js";
+export {
   createGithubConnectionSchema,
   updateGithubConnectionSchema,
   type CreateGithubConnection,

@@ -397,15 +397,24 @@ describe("issue validators", () => {
     expect(parsed.body).toBe("Progress update\n\nNext action.");
   });
 
-  it("accepts a bounded per-message model override", () => {
+  it("accepts bounded per-message chat configuration overrides", () => {
     expect(addIssueCommentSchema.parse({
       body: "Use the higher reasoning model for this analysis.",
       modelOverride: "  gpt-5.3-codex  ",
-    }).modelOverride).toBe("gpt-5.3-codex");
+      thinkingEffortOverride: "  xhigh  ",
+    })).toMatchObject({
+      modelOverride: "gpt-5.3-codex",
+      thinkingEffortOverride: "xhigh",
+    });
 
     expect(addIssueCommentSchema.safeParse({
       body: "No oversized model value",
       modelOverride: "x".repeat(201),
+    }).success).toBe(false);
+
+    expect(addIssueCommentSchema.safeParse({
+      body: "No oversized effort value",
+      thinkingEffortOverride: "x".repeat(33),
     }).success).toBe(false);
   });
 

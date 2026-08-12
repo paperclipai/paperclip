@@ -29,7 +29,7 @@ import { fileKindForName, formatFileSize } from "./task-chat-attachments";
 import { MarkdownEditor, type MarkdownEditorRef } from "@/components/MarkdownEditor";
 import { nextWorkMode, workModeMetaFor, workModeMetaList } from "@/lib/work-mode-meta";
 import type { InlineEntityOption } from "@/components/InlineEntitySelector";
-import { ChatModelSelector } from "@/components/ChatModelSelector";
+import { ChatModelSelector, ChatThinkingEffortSelector } from "@/components/ChatModelSelector";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import type { IssueAttachment, IssueWorkMode } from "@paperclipai/shared";
 
@@ -45,6 +45,7 @@ interface TaskChatComposerProps {
     reopen?: boolean,
     reassignment?: CommentReassignment,
     modelOverride?: string,
+    thinkingEffortOverride?: string,
   ) => Promise<void> | void;
   workMode: IssueWorkMode;
   onWorkModeChange?: (mode: IssueWorkMode) => Promise<void> | void;
@@ -67,6 +68,9 @@ interface TaskChatComposerProps {
   draftKey?: string;
   modelOptions?: InlineEntityOption[];
   defaultModel?: string | null;
+  /** One-message reasoning-effort choices for the current assignee's adapter. */
+  thinkingEffortOptions?: InlineEntityOption[];
+  defaultThinkingEffort?: string | null;
 }
 
 /** Per-mode hue token (see ui/src/index.css `--tc-mode-*`). */
@@ -161,12 +165,15 @@ export function TaskChatComposer({
   draftKey,
   modelOptions = [],
   defaultModel = null,
+  thinkingEffortOptions = [],
+  defaultThinkingEffort = null,
 }: TaskChatComposerProps) {
   const [body, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
   const [submitting, setSubmitting] = useState(false);
   const [pendingMode, setPendingMode] = useState<IssueWorkMode>(workMode);
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
   const [modelOverride, setModelOverride] = useState("");
+  const [thinkingEffortOverride, setThinkingEffortOverride] = useState("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
@@ -174,6 +181,8 @@ export function TaskChatComposer({
   pendingAssigneeRef.current = pendingAssignee;
   const modelOverrideRef = useRef(modelOverride);
   modelOverrideRef.current = modelOverride;
+  const thinkingEffortOverrideRef = useRef(thinkingEffortOverride);
+  thinkingEffortOverrideRef.current = thinkingEffortOverride;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const editorRef = useRef<MarkdownEditorRef>(null);
   const bodyRef = useRef(body);
@@ -218,7 +227,9 @@ export function TaskChatComposer({
   const effectivePlaceholder = placeholder ?? modePlaceholder(pendingMode, assigneeName);
 
   useEffect(() => {
-    if (hasPendingReassignment) setModelOverride("");
+    if (!hasPendingReassignment) return;
+    setModelOverride("");
+    setThinkingEffortOverride("");
   }, [hasPendingReassignment]);
 
   /** Upload an image and return its URL for inline `![](src)` markdown. */
@@ -337,6 +348,7 @@ export function TaskChatComposer({
     const submittedAttachments = attachmentsRef.current;
     const submittedAssignee = pendingAssigneeRef.current;
     const submittedModelOverride = modelOverrideRef.current;
+    const submittedThinkingEffortOverride = thinkingEffortOverrideRef.current;
     const trimmed = submittedBody.trim();
     if (
       (!trimmed && attachedRefs.length === 0) ||
@@ -359,10 +371,18 @@ export function TaskChatComposer({
       if (pendingMode !== workMode && onWorkModeChange) {
         await onWorkModeChange(pendingMode);
       }
-      if (reassignment || !submittedModelOverride) {
+      if (reassignment || (!submittedModelOverride && !submittedThinkingEffortOverride)) {
         await onAdd(fullBody, reopen, reassignment);
-      } else {
+      } else if (!submittedThinkingEffortOverride) {
         await onAdd(fullBody, reopen, reassignment, submittedModelOverride);
+      } else {
+        await onAdd(
+          fullBody,
+          reopen,
+          reassignment,
+          submittedModelOverride || undefined,
+          submittedThinkingEffortOverride || undefined,
+        );
       }
       if (bodyRef.current === submittedBody) {
         bodyRef.current = "";
@@ -385,6 +405,9 @@ export function TaskChatComposer({
       }
       if (modelOverrideRef.current === submittedModelOverride) {
         setModelOverride("");
+      }
+      if (thinkingEffortOverrideRef.current === submittedThinkingEffortOverride) {
+        setThinkingEffortOverride("");
       }
     } catch {
       // Keep the body and its draft available for retry.
@@ -552,6 +575,16 @@ export function TaskChatComposer({
             defaultModel={defaultModel}
             onChange={setModelOverride}
             className="h-8 max-w-56 text-xs"
+          />
+        ) : null}
+
+        {thinkingEffortOptions.length > 0 && !hasPendingReassignment ? (
+          <ChatThinkingEffortSelector
+            value={thinkingEffortOverride}
+            options={thinkingEffortOptions}
+            defaultEffort={defaultThinkingEffort}
+            onChange={setThinkingEffortOverride}
+            className="h-8 max-w-44 text-xs"
           />
         ) : null}
 

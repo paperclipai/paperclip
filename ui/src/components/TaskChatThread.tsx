@@ -105,6 +105,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     issueAssigneeAgentId = null,
     modelOptions,
     defaultModel,
+    thinkingEffortOptions,
+    defaultThinkingEffort,
     onAcceptInteraction,
     onRejectInteraction,
     onSubmitInteractionAnswers,
@@ -533,6 +535,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             draftKey={draftKey}
             modelOptions={modelOptions}
             defaultModel={defaultModel}
+            thinkingEffortOptions={thinkingEffortOptions}
+            defaultThinkingEffort={defaultThinkingEffort}
           />
           {footer}
         </div>

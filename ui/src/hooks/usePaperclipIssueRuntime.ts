@@ -16,6 +16,7 @@ export interface PaperclipIssueRuntimeSendOptions {
   reopen?: boolean;
   reassignment?: PaperclipIssueRuntimeReassignment;
   modelOverride?: string;
+  thinkingEffortOverride?: string;
 }
 
 interface UsePaperclipIssueRuntimeOptions {
@@ -81,6 +82,9 @@ export function usePaperclipIssueRuntime({
         reassignment,
         modelOverride: typeof custom?.modelOverride === "string" && custom.modelOverride.trim()
           ? custom.modelOverride.trim()
+          : undefined,
+        thinkingEffortOverride: typeof custom?.thinkingEffortOverride === "string" && custom.thinkingEffortOverride.trim()
+          ? custom.thinkingEffortOverride.trim()
           : undefined,
       });
     },

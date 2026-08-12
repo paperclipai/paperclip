@@ -25,7 +25,13 @@ function HookHarness({
 }: {
   messages: readonly ThreadMessage[];
   isRunning: boolean;
-  onSend: (options: { body: string; reopen?: boolean; reassignment?: { assigneeAgentId: string | null; assigneeUserId: string | null } }) => Promise<void>;
+  onSend: (options: {
+    body: string;
+    reopen?: boolean;
+    reassignment?: { assigneeAgentId: string | null; assigneeUserId: string | null };
+    modelOverride?: string;
+    thinkingEffortOverride?: string;
+  }) => Promise<void>;
   onCancel?: (() => Promise<void>) | undefined;
 }) {
   usePaperclipIssueRuntime({
@@ -170,6 +176,53 @@ describe("usePaperclipIssueRuntime", () => {
     expect(runtimeCalls.length).toBeGreaterThanOrEqual(2);
     const secondAdapter = runtimeCalls[1]![0];
     expect(secondAdapter).not.toBe(firstAdapter);
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("forwards one-message model and thinking-effort overrides from chat run config", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const onSend = vi.fn(async () => {});
+
+    act(() => {
+      root.render(
+        <HookHarness
+          messages={[]}
+          isRunning={false}
+          onSend={onSend}
+        />,
+      );
+    });
+
+    const runtimeCalls = useExternalStoreRuntimeMock.mock.calls as unknown as Array<
+      [ExternalStoreAdapter<ThreadMessage>]
+    >;
+    const adapter = runtimeCalls.at(-1)?.[0];
+    expect(adapter).toBeTruthy();
+    const message = createAppendMessage("Use the strongest reasoning for this one.");
+    message.runConfig = {
+      custom: {
+        modelOverride: " gpt-5.6-luna ",
+        thinkingEffortOverride: " xhigh ",
+      },
+    };
+
+    await act(async () => {
+      await adapter?.onNew?.(message);
+    });
+
+    expect(onSend).toHaveBeenCalledWith({
+      body: "Use the strongest reasoning for this one.",
+      reopen: undefined,
+      reassignment: undefined,
+      modelOverride: "gpt-5.6-luna",
+      thinkingEffortOverride: "xhigh",
+    });
 
     act(() => {
       root.unmount();

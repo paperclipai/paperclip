@@ -213,8 +213,12 @@ import {
 import { Badge } from "@/components/ui/badge";
 import {
   deriveOriginatingActor,
+  chatThinkingEffortAdapterConfigKey,
+  chatThinkingEffortOptionsForAdapter,
+  formatChatThinkingEffort,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
+  isChatThinkingEffortSupported,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   type BudgetPolicySummary,
   type AskUserQuestionsAnswer,
@@ -1422,6 +1426,7 @@ type IssueDetailChatTabProps = {
     reopen?: boolean,
     reassignment?: CommentReassignment,
     modelOverride?: string,
+    thinkingEffortOverride?: string,
   ) => Promise<void>;
   onImageUpload: (file: File) => Promise<string>;
   onAttachImage: (file: File) => Promise<IssueAttachment | void>;
@@ -1548,6 +1553,24 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const chatDefaultModel = typeof assigneeAgent?.adapterConfig?.model === "string"
     ? assigneeAgent.adapterConfig.model
     : null;
+  const chatThinkingEffortOptions = useMemo<InlineEntityOption[]>(
+    () => chatThinkingEffortOptionsForAdapter(chatModelAdapterType).map((effort) => ({
+      id: effort,
+      label: formatChatThinkingEffort(effort),
+      searchText: effort === "xhigh" ? "xhigh extra high" : effort,
+    })),
+    [chatModelAdapterType],
+  );
+  const chatDefaultThinkingEffort = useMemo(() => {
+    if (!assigneeAgent) return null;
+    const configKey = chatThinkingEffortAdapterConfigKey(chatModelAdapterType);
+    if (!configKey) return null;
+    const configured = configKey === "modelReasoningEffort"
+      ? assigneeAgent.adapterConfig.modelReasoningEffort ?? assigneeAgent.adapterConfig.reasoningEffort
+      : assigneeAgent.adapterConfig[configKey];
+    const effort = typeof configured === "string" ? configured.trim() : "";
+    return isChatThinkingEffortSupported(chatModelAdapterType, effort) ? effort : null;
+  }, [assigneeAgent, chatModelAdapterType]);
   const { data: chatAdapterModels } = useQuery({
     queryKey: chatModelAdapterType && chatModelOverrideSupported
       ? queryKeys.agents.adapterModels(companyId, chatModelAdapterType)
@@ -1752,9 +1775,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       reopen?: boolean,
       reassignment?: CommentReassignment,
       modelOverride?: string,
+      thinkingEffortOverride?: string,
     ) => {
       setCommentPageFromLatest(0);
-      await onAdd(body, reopen, reassignment, modelOverride);
+      await onAdd(body, reopen, reassignment, modelOverride, thinkingEffortOverride);
     },
     [onAdd],
   );
@@ -1960,6 +1984,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         composerHint={composerHint}
         modelOptions={chatModelOptions}
         defaultModel={chatDefaultModel}
+        thinkingEffortOptions={chatThinkingEffortOptions}
+        defaultThinkingEffort={chatDefaultThinkingEffort}
         onVote={onVote}
         onAdd={handleAddVisibleComment}
         imageUploadHandler={onImageUpload}
@@ -3330,12 +3356,14 @@ export function IssueDetail() {
       reopen,
       interrupt,
       modelOverride,
+      thinkingEffortOverride,
     }: {
       body: string;
       reopen?: boolean;
       interrupt?: boolean;
       modelOverride?: string;
-    }) => issuesApi.addComment(issueId!, body, reopen, interrupt, modelOverride),
+      thinkingEffortOverride?: string;
+    }) => issuesApi.addComment(issueId!, body, reopen, interrupt, modelOverride, thinkingEffortOverride),
     onMutate: async ({ body, reopen, interrupt }) => {
       await queryClient.cancelQueries({ queryKey: queryKeys.issues.comments(issueId!) });
       await queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(issueId!) });
@@ -4502,12 +4530,13 @@ export function IssueDetail() {
     reopen?: boolean,
     reassignment?: CommentReassignment,
     modelOverride?: string,
+    thinkingEffortOverride?: string,
   ) => {
     if (reassignment) {
       await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
       return;
     }
-    await addComment.mutateAsync({ body, reopen, modelOverride });
+    await addComment.mutateAsync({ body, reopen, modelOverride, thinkingEffortOverride });
   }, [addComment, addCommentAndReassign]);
   const handleCommentImageUpload = useCallback(async (file: File) => {
     const attachment = await uploadAttachment.mutateAsync(file);

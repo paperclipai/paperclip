@@ -120,7 +120,7 @@ import { WorkspaceFileMarkdownBody } from "./WorkspaceFileMarkdownBody";
 import { MarkdownEditor, type MentionOption, type MarkdownEditorRef } from "./MarkdownEditor";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
-import { ChatModelSelector } from "./ChatModelSelector";
+import { ChatModelSelector, ChatThinkingEffortSelector } from "./ChatModelSelector";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
 import { AgentIcon } from "./AgentIconPicker";
 import {
@@ -602,6 +602,8 @@ interface IssueChatComposerProps {
   onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
   modelOptions?: InlineEntityOption[];
   defaultModel?: string | null;
+  thinkingEffortOptions?: InlineEntityOption[];
+  defaultThinkingEffort?: string | null;
 }
 
 interface IssueChatThreadProps {
@@ -666,6 +668,7 @@ interface IssueChatThreadProps {
     reopen?: boolean,
     reassignment?: CommentReassignment,
     modelOverride?: string,
+    thinkingEffortOverride?: string,
   ) => Promise<void>;
   onCancelRun?: () => Promise<void>;
   onStopRun?: (runId: string) => Promise<void>;
@@ -687,6 +690,9 @@ interface IssueChatThreadProps {
   /** One-message model choices for the current assignee's supported adapter. */
   modelOptions?: InlineEntityOption[];
   defaultModel?: string | null;
+  /** One-message reasoning-effort choices for the current assignee's adapter. */
+  thinkingEffortOptions?: InlineEntityOption[];
+  defaultThinkingEffort?: string | null;
   showComposer?: boolean;
   showJumpToLatest?: boolean;
   autoScrollToLatestOnInitialLoad?: boolean;
@@ -4436,6 +4442,8 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   onWorkModeChange,
   modelOptions = [],
   defaultModel = null,
+  thinkingEffortOptions = [],
+  defaultThinkingEffort = null,
 }, forwardedRef) {
   const api = useAui();
   const [body, setBody] = useState("");
@@ -4451,6 +4459,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   const resolvedIssueWorkMode: IssueWorkMode = issueWorkMode ?? "standard";
   const [pendingWorkMode, setPendingWorkMode] = useState<IssueWorkMode>(resolvedIssueWorkMode);
   const [modelOverride, setModelOverride] = useState("");
+  const [thinkingEffortOverride, setThinkingEffortOverride] = useState("");
   const [workModeMenuOpen, setWorkModeMenuOpen] = useState(false);
   const hasPendingReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
   const canToggleWorkMode = typeof onWorkModeChange === "function";
@@ -4507,7 +4516,9 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   }, [resolvedIssueWorkMode]);
 
   useEffect(() => {
-    if (hasPendingReassignment) setModelOverride("");
+    if (!hasPendingReassignment) return;
+    setModelOverride("");
+    setThinkingEffortOverride("");
   }, [hasPendingReassignment]);
 
   useImperativeHandle(forwardedRef, () => ({
@@ -4569,6 +4580,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
             ...(reopen ? { reopen: true } : {}),
             ...(reassignment ? { reassignment } : {}),
             ...(modelOverride && !reassignment ? { modelOverride } : {}),
+            ...(thinkingEffortOverride && !reassignment ? { thinkingEffortOverride } : {}),
           },
         },
       });
@@ -4581,6 +4593,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       // Returning to Default prevents a high-cost analysis model becoming the
       // accidental setting for every later reply.
       setModelOverride("");
+      setThinkingEffortOverride("");
     } catch {
       setBody((current) =>
         restoreSubmittedCommentDraft({
@@ -5011,6 +5024,15 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
               className="h-8 max-w-56 text-xs"
             />
           ) : null}
+          {thinkingEffortOptions.length > 0 && !hasPendingReassignment ? (
+            <ChatThinkingEffortSelector
+              value={thinkingEffortOverride}
+              options={thinkingEffortOptions}
+              defaultEffort={defaultThinkingEffort}
+              onChange={setThinkingEffortOverride}
+              className="h-8 max-w-44 text-xs"
+            />
+          ) : null}
         </div>
 
         {enableReassign && reassignOptions.length > 0 ? (
@@ -5183,6 +5205,8 @@ export function IssueChatThread({
   onWorkModeChange,
   modelOptions = [],
   defaultModel = null,
+  thinkingEffortOptions = [],
+  defaultThinkingEffort = null,
   onRefreshLatestComments,
   initialScrollToLatestKey = null,
   assigneeUserId = null,
@@ -5400,9 +5424,9 @@ export function IssueChatThread({
   const runtime = usePaperclipIssueRuntime({
     messages,
     isRunning,
-    onSend: ({ body, reopen, reassignment, modelOverride }) => {
+    onSend: ({ body, reopen, reassignment, modelOverride, thinkingEffortOverride }) => {
       pendingSubmitScrollRef.current = true;
-      return onAdd(body, reopen, reassignment, modelOverride);
+      return onAdd(body, reopen, reassignment, modelOverride, thinkingEffortOverride);
     },
     onCancel: onCancelRun,
   });
@@ -6041,6 +6065,8 @@ export function IssueChatThread({
               onWorkModeChange={onWorkModeChange}
               modelOptions={modelOptions}
               defaultModel={defaultModel}
+              thinkingEffortOptions={thinkingEffortOptions}
+              defaultThinkingEffort={defaultThinkingEffort}
             />
           </div>
         ) : null}
