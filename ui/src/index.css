@@ -474,6 +474,13 @@
 .scrollbar-auto-hide::-webkit-scrollbar-thumb {
   background: transparent !important;
 }
+
+/* The task-chat shell owns its desktop scroll viewport. Release Layout's
+   otherwise-useful reserved main scrollbar gutter so that viewport can meet
+   the properties-pane border instead of stopping one scrollbar-width early. */
+#main-content:has([data-task-chat-shell]) {
+  scrollbar-gutter: auto;
+}
 /* Light mode scrollbar on hover */
 .scrollbar-auto-hide:hover {
   scrollbar-color: oklch(0.7 0 0) transparent;

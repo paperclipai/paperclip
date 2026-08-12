@@ -4836,6 +4836,7 @@ export function IssueDetail() {
   return (
     <FileViewerProvider issueId={issue.id} enabled={fileViewerEnabled}>
     <div
+      data-task-chat-shell={taskChatShellEnabled ? "" : undefined}
       className={
         taskChatShellEnabled
           ? isMobile
