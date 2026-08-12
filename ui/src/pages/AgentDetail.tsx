@@ -762,9 +762,7 @@ export function AgentDetail() {
   const setSaveConfigAction = useCallback((fn: (() => void) | null) => { saveConfigActionRef.current = fn; }, []);
   const setCancelConfigAction = useCallback((fn: (() => void) | null) => { cancelConfigActionRef.current = fn; }, []);
   const prepareAgentNavigation = useCallback(() => {
-    if (!confirmAgentConfigNavigation(configDirty)) return false;
-    cancelConfigActionRef.current?.();
-    return true;
+    return confirmAgentConfigNavigation(configDirty);
   }, [configDirty]);
 
   const { data: agent, isLoading, error } = useQuery<AgentDetailRecord>({
