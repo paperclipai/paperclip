@@ -144,8 +144,8 @@ function useStreamingReplay(
  * maps to a `[data-bubble-variant]` scope in index.css; "" is today's card.
  */
 const BUBBLE_VARIANTS = [
-  { id: "", label: "Current" },
-  { id: "darker", label: "A · Darker" },
+  { id: "", label: "Chosen · Darker" },
+  { id: "former", label: "Former" },
   { id: "hairline", label: "B · Hairline" },
   { id: "flush", label: "C · On bg" },
 ] as const;

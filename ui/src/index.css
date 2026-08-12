@@ -252,8 +252,10 @@
   --tc-mode-plan: var(--status-task-todo);
   --tc-mode-ask: #3b82f6;
 
-  /* Agent-comment bubble fill (v7 grammar): quiet gray card, no border. */
-  --bubble-agent: oklch(0.955 0 0);
+  /* Agent-comment bubble fill (v7 grammar): a quiet, borderless card that
+     stays close to the page surface so long responses do not read as a large
+     bright panel. */
+  --bubble-agent: oklch(0.97 0 0);
 
   /* Redesigned thread viewport bound: lets the thread own its scroll (auto-
      follow + pinned composer) inside the page flow. The issue header lives
@@ -283,7 +285,7 @@
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.922 0 0);
   --primary-foreground: oklch(0.205 0 0);
-  --bubble-agent: oklch(0.24 0 0);
+  --bubble-agent: oklch(0.185 0 0);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
@@ -599,16 +601,16 @@
 /* ────────────────────────────────────────────────────────────────────────
    Agent-bubble treatment explorations (PAP-501). Scoped to the TaskChatLab
    stage via [data-bubble-variant]; the live thread never sets that attribute,
-   so these overrides are lab-only until one is picked and its tokens are
-   promoted into --bubble-agent above. Feedback: the dark-mode agent card
-   (oklch 0.24) reads too light against the near-black page for the bulk of the
-   text. Each variant pairs a light-mode treatment with the dark one.
+   so these overrides remain lab-only comparisons. Feedback: the former
+   dark-mode agent card (oklch 0.24) read too light against the near-black page
+   for the bulk of the text. The darker treatment is now the production
+   default above; the alternatives remain available for future comparison.
    ──────────────────────────────────────────────────────────────────────── */
 
-/* A · Darker bubble — same card grammar, fill lowered so it recedes toward
-   the page instead of glowing above it. */
-[data-bubble-variant="darker"] { --bubble-agent: oklch(0.97 0 0); }
-.dark [data-bubble-variant="darker"] { --bubble-agent: oklch(0.185 0 0); }
+/* Former production treatment, retained as a direct before/after comparison
+   for the darker default. */
+[data-bubble-variant="former"] { --bubble-agent: oklch(0.955 0 0); }
+.dark [data-bubble-variant="former"] { --bubble-agent: oklch(0.24 0 0); }
 
 /* B · Hairline flush — near-page fill + a 1px hairline for gentle definition
    without any brightness lift. */
