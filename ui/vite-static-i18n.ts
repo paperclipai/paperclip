@@ -109,7 +109,7 @@ export function staticUiLocalization(): Plugin {
         markComponentOwner(node);
       }
 
-      function collectExpression(node: ts.Expression) {
+      function collectRenderedExpression(node: ts.Expression) {
         if (ts.isCallExpression(node)) {
           const name = callName(node.expression);
           if (name === "t" || name.endsWith(".t") || name === helper) return;
@@ -119,9 +119,40 @@ export function staticUiLocalization(): Plugin {
           return;
         }
         if (ts.isJsxElement(node) || ts.isJsxFragment(node) || ts.isJsxSelfClosingElement(node)) return;
-        ts.forEachChild(node, (child) => {
-          if (ts.isExpression(child)) collectExpression(child);
-        });
+        if (
+          ts.isParenthesizedExpression(node) ||
+          ts.isAsExpression(node) ||
+          ts.isTypeAssertionExpression(node) ||
+          ts.isNonNullExpression(node) ||
+          ts.isSatisfiesExpression(node)
+        ) {
+          collectRenderedExpression(node.expression);
+          return;
+        }
+        if (ts.isConditionalExpression(node)) {
+          collectRenderedExpression(node.whenTrue);
+          collectRenderedExpression(node.whenFalse);
+          return;
+        }
+        if (ts.isBinaryExpression(node)) {
+          const operator = node.operatorToken.kind;
+          if (operator === ts.SyntaxKind.AmpersandAmpersandToken) {
+            collectRenderedExpression(node.right);
+          } else if (
+            operator === ts.SyntaxKind.BarBarToken ||
+            operator === ts.SyntaxKind.QuestionQuestionToken ||
+            operator === ts.SyntaxKind.PlusToken
+          ) {
+            collectRenderedExpression(node.left);
+            collectRenderedExpression(node.right);
+          }
+          return;
+        }
+        if (ts.isArrayLiteralExpression(node)) {
+          node.elements.forEach((element) => {
+            if (ts.isExpression(element)) collectRenderedExpression(element);
+          });
+        }
       }
 
       function visit(node: ts.Node) {
@@ -152,11 +183,11 @@ export function staticUiLocalization(): Plugin {
               });
               markComponentOwner(node);
             } else if (ts.isJsxExpression(node.initializer) && node.initializer.expression) {
-              collectExpression(node.initializer.expression);
+              collectRenderedExpression(node.initializer.expression);
             }
           }
         } else if (ts.isJsxExpression(node) && node.expression && !ts.isJsxAttribute(node.parent)) {
-          collectExpression(node.expression);
+          collectRenderedExpression(node.expression);
         }
 
         ts.forEachChild(node, visit);
