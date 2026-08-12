@@ -42,10 +42,8 @@ import { useWindowAutoFollow } from "@/components/task-chat/useWindowAutoFollow"
 import { useSidebar } from "@/context/SidebarContext";
 import { cn } from "@/lib/utils";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
-import { latestSameRunHandoffTimestamp, type IssueChatComment } from "@/lib/issue-chat-messages";
+import { latestSameRunHandoffTimestamp } from "@/lib/issue-chat-messages";
 import { isLiveIssueRun, isTerminalIssueStatus } from "@/lib/liveIssueIds";
-import { workModeInEffectAt } from "@/lib/issue-timeline-events";
-import { workModeMetaFor } from "@/lib/work-mode-meta";
 
 function toMs(value: Date | string | null | undefined): number {
   if (!value) return 0;
@@ -119,7 +117,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     onSubmitInteractionVerdicts,
     externalReferences,
     threadHeader,
-    workModeChanges,
     issueBrief,
     feedbackVotes,
     feedbackDataSharingPreference = "prompt",
@@ -134,27 +131,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     return map;
   }, [linkedRuns]);
 
-  // Each agent reply is tagged with the mode its request ran under: the
-  // issue's work mode at the reply's run start (comment.runId linkage),
-  // reconstructed from the activity feed's work-mode switch history — not the
-  // issue's current mode, which the user may have changed since.
-  const agentModeLabelFor = useCallback(
-    (comment: IssueChatComment) => {
-      const runMeta = comment.runId ? linkedRunMetaById.get(comment.runId) : undefined;
-      const atMs = toMs(runMeta?.startedAt ?? runMeta?.createdAt ?? comment.createdAt);
-      return workModeMetaFor(workModeInEffectAt(workModeChanges ?? [], atMs, issueWorkMode)).label;
-    },
-    [linkedRunMetaById, workModeChanges, issueWorkMode],
-  );
   const commentItems = useMemo(
     () => commentsToTaskChatItems(comments, {
       agentMap,
       userLabelMap,
       currentUserId,
       issueAssigneeAgentId,
-      agentModeLabelFor,
     }),
-    [comments, agentMap, userLabelMap, currentUserId, issueAssigneeAgentId, agentModeLabelFor],
+    [comments, agentMap, userLabelMap, currentUserId, issueAssigneeAgentId],
   );
 
   // Every run we might need a transcript for (history + live), deduped by id.
