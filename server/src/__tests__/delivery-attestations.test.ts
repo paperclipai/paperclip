@@ -199,6 +199,7 @@ describeEmbeddedPostgres("delivery attestations", () => {
       const matches = await svc.findSucceededForIssue({
         companyId,
         issueId: issueA,
+        runId: runA,
         declarationRevision: 0,
       });
       expect(matches).toHaveLength(0);
@@ -219,6 +220,7 @@ describeEmbeddedPostgres("delivery attestations", () => {
       const matchesAfter = await svc.findSucceededForIssue({
         companyId,
         issueId: issueA,
+        runId: runA,
         declarationRevision: 0,
       });
       expect(matchesAfter.map((row) => row.id)).toEqual([own.id]);
@@ -256,7 +258,7 @@ describeEmbeddedPostgres("delivery attestations", () => {
         deliveryMethod: "commit",
       });
 
-      const updated = await svc.update(issueId, { status: "done" });
+      const updated = await svc.update(issueId, { status: "done", actorRunId: runId });
       expect(updated?.status).toBe("done");
       expect(updated?.completedAt).not.toBeNull();
     });
@@ -265,6 +267,7 @@ describeEmbeddedPostgres("delivery attestations", () => {
       const attestationSvc = deliveryAttestationService(db);
       const svc = issueService(db);
       const siblingRunId = await makeRun();
+      const currentRunId = await makeRun();
       const issueId = await makeIssue({ completionRequirement: "workspace_delivery", completionRequirementRevision: 0 });
       const siblingIssueId = await makeIssue({ completionRequirement: "workspace_delivery", completionRequirementRevision: 0 });
       const fingerprint = computeTargetFingerprint(companyId, "git", "https://example.com/acme/repo.git");
@@ -282,7 +285,7 @@ describeEmbeddedPostgres("delivery attestations", () => {
         deliveryMethod: "commit",
       });
 
-      await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      await expect(svc.update(issueId, { status: "done", actorRunId: currentRunId })).rejects.toMatchObject({
         status: 422,
         details: expect.objectContaining({ code: "delivery_attestation_required" }),
       });
@@ -308,7 +311,7 @@ describeEmbeddedPostgres("delivery attestations", () => {
         deliveryMethod: "commit",
       });
 
-      await expect(svc.update(issueId, { status: "done" })).rejects.toMatchObject({
+      await expect(svc.update(issueId, { status: "done", actorRunId: runId })).rejects.toMatchObject({
         status: 422,
         details: expect.objectContaining({ code: "delivery_attestation_required" }),
       });
@@ -346,7 +349,11 @@ describeEmbeddedPostgres("delivery attestations", () => {
         deliveryMethod: "commit",
       });
 
-      const updated = await svc.update(issueId, { status: "done", deliveryAttestationId: attestation.id });
+      const updated = await svc.update(issueId, {
+        status: "done",
+        actorRunId: runId,
+        deliveryAttestationId: attestation.id,
+      });
       expect(updated?.status).toBe("done");
     });
 
@@ -372,7 +379,66 @@ describeEmbeddedPostgres("delivery attestations", () => {
       });
 
       await expect(
-        svc.update(issueId, { status: "done", deliveryAttestationId: siblingAttestation.id }),
+        svc.update(issueId, { status: "done", actorRunId: runId, deliveryAttestationId: siblingAttestation.id }),
+      ).rejects.toMatchObject({
+        status: 422,
+        details: expect.objectContaining({ code: "delivery_attestation_required" }),
+      });
+    });
+
+    it("accepts multiple succeeded attestations from the current run", async () => {
+      const attestationSvc = deliveryAttestationService(db);
+      const svc = issueService(db);
+      const runId = await makeRun();
+      const issueId = await makeIssue({ completionRequirement: "workspace_delivery", completionRequirementRevision: 0 });
+      const fingerprint = computeTargetFingerprint(companyId, "git", "https://example.com/acme/repo.git");
+
+      for (const operationId of ["attempt-1", "attempt-2"]) {
+        await attestationSvc.record({
+          companyId,
+          issueId,
+          runId,
+          declarationId: `projectWorkspace:${issueId}`,
+          declarationRevision: 0,
+          targetKind: "repository_checkout",
+          targetFingerprint: fingerprint,
+          providerKey: "git",
+          outcome: "succeeded",
+          deliveryMethod: "commit",
+          operationId,
+        });
+      }
+
+      const updated = await svc.update(issueId, { status: "done", actorRunId: runId });
+      expect(updated?.status).toBe("done");
+    });
+
+    it("rejects an explicit attestation from a prior run of the same issue", async () => {
+      const attestationSvc = deliveryAttestationService(db);
+      const svc = issueService(db);
+      const priorRunId = await makeRun();
+      const currentRunId = await makeRun();
+      const issueId = await makeIssue({ completionRequirement: "workspace_delivery", completionRequirementRevision: 0 });
+      const fingerprint = computeTargetFingerprint(companyId, "git", "https://example.com/acme/repo.git");
+      const priorAttestation = await attestationSvc.record({
+        companyId,
+        issueId,
+        runId: priorRunId,
+        declarationId: `projectWorkspace:${issueId}`,
+        declarationRevision: 0,
+        targetKind: "repository_checkout",
+        targetFingerprint: fingerprint,
+        providerKey: "git",
+        outcome: "succeeded",
+        deliveryMethod: "commit",
+      });
+
+      await expect(
+        svc.update(issueId, {
+          status: "done",
+          actorRunId: currentRunId,
+          deliveryAttestationId: priorAttestation.id,
+        }),
       ).rejects.toMatchObject({
         status: 422,
         details: expect.objectContaining({ code: "delivery_attestation_required" }),

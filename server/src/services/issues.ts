@@ -5414,9 +5414,18 @@ export function issueService(db: Db) {
     issueId: string;
     completionRequirement: string | null;
     completionRequirementRevision: number;
+    expectedRunId: string | null;
     deliveryAttestationId?: string;
   }) {
     if (input.completionRequirement !== "workspace_delivery") return;
+
+    if (!input.expectedRunId) {
+      throw unprocessable("Delivery attestation is required to complete this issue", {
+        code: "delivery_attestation_required",
+        completionRequirementRevision: input.completionRequirementRevision,
+        reason: "delivery_run_required",
+      });
+    }
 
     if (input.deliveryAttestationId) {
       const attestation = await deliveryAttestations.getById(input.deliveryAttestationId, {
@@ -5426,6 +5435,7 @@ export function issueService(db: Db) {
       if (
         attestation &&
         attestation.outcome === "succeeded" &&
+        attestation.runId === input.expectedRunId &&
         attestation.declarationRevision === input.completionRequirementRevision
       ) {
         return;
@@ -5439,9 +5449,10 @@ export function issueService(db: Db) {
     const candidates = await deliveryAttestations.findSucceededForIssue({
       companyId: input.companyId,
       issueId: input.issueId,
+      runId: input.expectedRunId,
       declarationRevision: input.completionRequirementRevision,
     });
-    if (candidates.length === 1) return;
+    if (candidates.length > 0) return;
 
     throw unprocessable("Delivery attestation is required to complete this issue", {
       code: "delivery_attestation_required",
@@ -7525,6 +7536,7 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        actorRunId?: string | null;
         deliveryAttestationId?: string;
       },
       dbOrTx: any = db,
@@ -7544,6 +7556,7 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        actorRunId,
         deliveryAttestationId,
         ...issueData
       } = data;
@@ -7672,6 +7685,7 @@ export function issueService(db: Db) {
           issueId: existing.id,
           completionRequirement: existing.completionRequirement,
           completionRequirementRevision: existing.completionRequirementRevision,
+          expectedRunId: actorRunId ?? existing.executionRunId,
           deliveryAttestationId,
         });
       }

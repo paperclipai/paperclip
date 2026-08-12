@@ -9016,6 +9016,7 @@ export function issueRoutes(
       ...updateFields,
       actorAgentId: actor.agentId ?? null,
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      actorRunId: actor.runId ?? null,
     };
     const shouldCollectCompletionPublication =
       actor.actorType === "user" && existing.status !== "done" && updateFields.status === "done";

@@ -231,6 +231,7 @@ export function deliveryAttestationService(db: Db) {
     async findSucceededForIssue(input: {
       companyId: string;
       issueId: string;
+      runId: string;
       declarationRevision: number;
     }): Promise<DeliveryAttestationRow[]> {
       const rows = await db
@@ -240,6 +241,7 @@ export function deliveryAttestationService(db: Db) {
           and(
             eq(deliveryAttestations.companyId, input.companyId),
             eq(deliveryAttestations.issueId, input.issueId),
+            eq(deliveryAttestations.runId, input.runId),
             eq(deliveryAttestations.declarationRevision, input.declarationRevision),
             eq(deliveryAttestations.outcome, "succeeded"),
           ),
