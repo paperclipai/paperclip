@@ -371,7 +371,7 @@ export function TaskChatComposer({
   return (
     <div
       className={cn(
-        "rounded-xl border border-input bg-card p-7 shadow-(--shadow-extract-7) transition-[border-color,box-shadow] focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/15",
+        "rounded-xl border border-input bg-card p-(--sz-18px) shadow-(--shadow-extract-7) transition-[border-color,box-shadow] focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/15",
       )}
       onKeyDownCapture={(e) => {
         // Shift+Tab cycles the pending mode; captured on the wrapper so it
