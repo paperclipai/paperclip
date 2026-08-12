@@ -18,7 +18,7 @@ const execFile = promisify(execFileCallback);
 // predicate answers one question — "should the caller replace `destination`
 // with `source`?" — purely by argument order (first = source, second =
 // destination). For the copy-back the sandbox credential is the `source` and
-// the shared host credential is the `destination`, so exit 10 (use source)
+// the host-side source credential is the `destination`, so exit 10 (use source)
 // means "install the sandbox copy onto the host" and exit 20 (keep destination)
 // means "leave the host copy untouched". The predicate only ever reads the two
 // files and exits with a code; it never prints token bytes.
@@ -39,9 +39,9 @@ export interface CopyBackCodexAuthInput {
    */
   readSandboxAuth: () => Promise<Buffer>;
   /**
-   * Absolute path of the shared host credential to (maybe) overwrite — the
-   * symlink *source* the managed Codex homes point their `auth.json` at, never
-   * an in-sandbox or per-agent symlink.
+   * Absolute path of the host-side source credential to (maybe) overwrite —
+   * either the shared source for managed homes or an external CODEX_HOME auth
+   * source, never an in-sandbox or per-agent managed symlink.
    */
   hostAuthPath: string;
   /** Non-leaking progress sink: receives decision/outcome lines only. */
@@ -92,7 +92,7 @@ async function decideExitCode(sourcePath: string, destinationPath: string): Prom
 
 /**
  * Guards, locks, and atomically installs a strictly-newer sandbox Codex
- * `auth.json` onto the shared host credential at teardown.
+ * `auth.json` onto its host-side source credential at teardown.
  *
  * Sequence, all under `withDirectoryMergeLock` on the host target's directory
  * so a concurrent inbound restore or another copy-back can't interleave:

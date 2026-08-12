@@ -110,6 +110,26 @@ const executeCodexAcp = createCodexAcpExecutor();
 const CODEX_ROLLOUT_NOISE_RE =
   /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
 
+async function resolveCodexAuthCopyBackPath(input: {
+  configuredCodexHome: string | null;
+  configuredHomeIsManaged: boolean;
+  effectiveCodexHome: string;
+}): Promise<string> {
+  if (input.configuredCodexHome == null || input.configuredHomeIsManaged) {
+    return path.join(resolveSharedCodexHomeDir(process.env), "auth.json");
+  }
+
+  const externalAuthPath = path.join(input.effectiveCodexHome, "auth.json");
+  const entry = await fs.lstat(externalAuthPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!entry?.isSymbolicLink()) return externalAuthPath;
+
+  const target = await fs.readlink(externalAuthPath);
+  return path.resolve(path.dirname(externalAuthPath), target);
+}
+
 function stripCodexRolloutNoise(text: string): string {
   const parts = text.split(/\r?\n/);
   const kept: string[] = [];
@@ -759,6 +779,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // the single-use `auth.json`) are dereferenced to bytes. This drops the
           // large runtime state (`sessions/`, `*.sqlite`, `plugins/`, …) that the
           // 4-name denylist missed and that a sandbox run never needs.
+          const authCopyBackPath = await resolveCodexAuthCopyBackPath({
+            configuredCodexHome,
+            configuredHomeIsManaged,
+            effectiveCodexHome,
+          });
           stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId });
           return await prepareAdapterExecutionTargetRuntime({
             runId,
@@ -789,16 +814,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 // Outbound (sandbox→host) auth copy-back contribution: at
                 // teardown, read the sandbox's `auth.json` and — guarded by the
                 // same direction-agnostic decision predicate under a directory
-                // lock — atomically install it onto the shared host credential
-                // when it is a strictly-newer same-identity subscription copy.
+                // lock — atomically install it onto its host-side source
+                // credential when it is a strictly-newer same-identity copy.
                 // The sandbox core stays adapter-agnostic; it just awaits this
                 // generic `restore` seam per asset before destroying the sandbox.
-                // Target is the shared symlink SOURCE (what managed homes point
-                // `auth.json` at), not the in-sandbox symlink.
+                // Target is the actual host-side credential source for this
+                // binding: the shared source for managed homes, or the external
+                // CODEX_HOME auth source for a self-managed override. Never
+                // point copy-back at an in-sandbox or per-agent managed symlink.
                 restore: async ({ assetDir, readFile }) =>
                   void (await copyBackCodexAuth({
                     readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
-                    hostAuthPath: path.join(resolveSharedCodexHomeDir(process.env), "auth.json"),
+                    hostAuthPath: authCopyBackPath,
                     log: (line) => onLog("stdout", `${line}\n`),
                     // Additive cache write (sandbox to host): also cache the
                     // sandbox subscription credential in its per-identity slot,
