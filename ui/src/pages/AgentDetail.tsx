@@ -761,6 +761,11 @@ export function AgentDetail() {
   const canFetchAgent = routeAgentRef.length > 0 && (isUuidLike(routeAgentRef) || Boolean(lookupCompanyId));
   const setSaveConfigAction = useCallback((fn: (() => void) | null) => { saveConfigActionRef.current = fn; }, []);
   const setCancelConfigAction = useCallback((fn: (() => void) | null) => { cancelConfigActionRef.current = fn; }, []);
+  const prepareAgentNavigation = useCallback(() => {
+    if (!confirmAgentConfigNavigation(configDirty)) return false;
+    cancelConfigActionRef.current?.();
+    return true;
+  }, [configDirty]);
 
   const { data: agent, isLoading, error } = useQuery<AgentDetailRecord>({
     queryKey: [...queryKeys.agents.detail(routeAgentRef), lookupCompanyId ?? null],
@@ -1119,14 +1124,14 @@ export function AgentDetail() {
       ) {
         return;
       }
-      if (confirmAgentConfigNavigation(true)) return;
+      if (prepareAgentNavigation()) return;
       event.preventDefault();
       event.stopPropagation();
     }
 
     document.addEventListener("click", handleDocumentClick, true);
     return () => document.removeEventListener("click", handleDocumentClick, true);
-  }, [configDirty]);
+  }, [configDirty, prepareAgentNavigation]);
 
   useEffect(() => {
     if (!configDirty) return;
@@ -1144,7 +1149,7 @@ export function AgentDetail() {
       }
 
       const restoreDelta = agentConfigHistoryRestoreDelta(currentIndex, event.state?.idx);
-      if (restoreDelta === null || confirmAgentConfigNavigation(true)) return;
+      if (restoreDelta === null || prepareAgentNavigation()) return;
 
       event.stopImmediatePropagation();
       restoring = true;
@@ -1153,7 +1158,7 @@ export function AgentDetail() {
 
     window.addEventListener("popstate", handlePopState, true);
     return () => window.removeEventListener("popstate", handlePopState, true);
-  }, [configDirty]);
+  }, [configDirty, prepareAgentNavigation]);
 
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
@@ -1177,8 +1182,7 @@ export function AgentDetail() {
   const agentJoinLeavePending = agentMembershipPending && membershipMutation.variables?.starred === undefined;
 
   function handleAgentTabChange(value: string) {
-    if (value === activeView || !confirmAgentConfigNavigation(configDirty)) return;
-    cancelConfigActionRef.current?.();
+    if (value === activeView || !prepareAgentNavigation()) return;
     navigate(`/agents/${canonicalAgentRef}/${value}`);
   }
 
@@ -1290,6 +1294,7 @@ export function AgentDetail() {
             actionsDisabled={agentAction.isPending}
             workActionsDisabled={hasInvalidOrgChain}
             workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
+            onBeforeNavigate={prepareAgentNavigation}
             onActionError={setActionError}
             onTerminateSuccess={() => navigate("/agents/all", { replace: true })}
             hideTerminate={Boolean(builtInState)}

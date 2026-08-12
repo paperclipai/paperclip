@@ -165,6 +165,7 @@ export function AgentActionButtons({
   workActionsDisabled = false,
   workActionsDisabledReason,
   navigateToRunOnInvoke = true,
+  onBeforeNavigate,
   onActionError,
   onTerminateSuccess,
   pauseConfirm,
@@ -182,6 +183,8 @@ export function AgentActionButtons({
   workActionsDisabled?: boolean;
   workActionsDisabledReason?: string;
   navigateToRunOnInvoke?: boolean;
+  /** Return false to stop an action whose success would navigate away. */
+  onBeforeNavigate?: () => boolean;
   /**
    * When set, pausing prompts a confirmation dialog first (e.g. for built-in
    * agents that power a feature). Omit for the immediate-pause default.
@@ -299,9 +302,9 @@ export function AgentActionButtons({
     const nextName = duplicateAgentName(agent.name);
     const confirmed = window.confirm(`Duplicate ${agent.name} as ${nextName}?`);
     setMoreOpen(false);
-    if (!confirmed) return;
+    if (!confirmed || onBeforeNavigate?.() === false) return;
     duplicateAgent.mutate();
-  }, [agent.name, duplicateAgent]);
+  }, [agent.name, duplicateAgent, onBeforeNavigate]);
 
   const resetTaskSession = useMutation({
     mutationFn: () => agentsApi.resetSession(agent.id, null, resolvedCompanyId ?? undefined),
@@ -334,7 +337,10 @@ export function AgentActionButtons({
         <span className="hidden sm:inline">{assignLabel}</span>
       </Button>
       <RunButton
-        onClick={() => agentAction.mutate("invoke")}
+        onClick={() => {
+          if (navigateToRunOnInvoke && onBeforeNavigate?.() === false) return;
+          agentAction.mutate("invoke");
+        }}
         disabled={assignAndRunDisabled}
         label={runLabel}
         size={size}
@@ -423,8 +429,9 @@ export function AgentActionButtons({
             <button
               className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
               onClick={() => {
-                agentAction.mutate("terminate");
                 setMoreOpen(false);
+                if (onTerminateSuccess && onBeforeNavigate?.() === false) return;
+                agentAction.mutate("terminate");
               }}
             >
               <Trash2 className="h-3 w-3" />

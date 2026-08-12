@@ -205,4 +205,25 @@ describe("AgentActionButtons", () => {
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "detail", "alpha"] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "company-1"] });
   });
+
+  it("does not terminate when navigation away from a dirty detail page is rejected", async () => {
+    const onBeforeNavigate = vi.fn().mockReturnValue(false);
+    render(makeAgent(), { onBeforeNavigate, onTerminateSuccess: vi.fn() });
+    await flushReact();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')?.click();
+    });
+    await flushReact();
+
+    const terminateButton = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Terminate"));
+    await act(async () => {
+      terminateButton?.click();
+    });
+    await flushReact();
+
+    expect(onBeforeNavigate).toHaveBeenCalledOnce();
+    expect(mockAgentsApi.terminate).not.toHaveBeenCalled();
+  });
 });
