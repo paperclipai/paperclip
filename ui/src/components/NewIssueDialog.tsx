@@ -624,10 +624,16 @@ export function NewIssueDialog() {
       stagedFiles: pendingStagedFiles,
       ...data
     }: { companyId: string; stagedFiles: StagedIssueFile[] } & Record<string, unknown>) => {
-      const issue = await issuesApi.create(companyId, data);
+      // A board user deliberately creates work from this dialog. Title-based
+      // deduplication is useful for automated retries, but silently turns a
+      // valid human task into a 200 response for an older issue.
+      const issue = await issuesApi.create(companyId, { ...data, allowDuplicate: true });
       const failures: string[] = [];
 
-      for (const stagedFile of pendingStagedFiles) {
+      // An idempotent replay must never attach this form's files to an older
+      // issue. Human submissions above do not use title deduplication, but an
+      // explicit idempotency key can still replay safely.
+      for (const stagedFile of issue.deduplicated ? [] : pendingStagedFiles) {
         try {
           if (stagedFile.kind === "document") {
             const body = await stagedFile.file.text();
@@ -654,16 +660,30 @@ export function NewIssueDialog() {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
       if (draftTimer.current) clearTimeout(draftTimer.current);
-      if (failures.length > 0) {
-        const prefix = (companies.find((company) => company.id === companyId)?.issuePrefix ?? "").trim();
-        const issueRef = issue.identifier ?? issue.id;
+      const prefix = (companies.find((company) => company.id === companyId)?.issuePrefix ?? "").trim();
+      const issueRef = issue.identifier ?? issue.id;
+      const action = prefix
+        ? { label: `Open ${issueRef}`, href: `/${prefix}/issues/${issueRef}` }
+        : undefined;
+      if (issue.deduplicated) {
+        pushToast({
+          title: `${issueRef} already exists`,
+          body: "This request replayed an existing issue; no new task was created.",
+          tone: "info",
+          action,
+        });
+      } else if (failures.length > 0) {
         pushToast({
           title: `Created ${issueRef} with upload warnings`,
           body: `${failures.length} staged ${failures.length === 1 ? "file" : "files"} could not be added.`,
           tone: "warn",
-          action: prefix
-            ? { label: `Open ${issueRef}`, href: `/${prefix}/issues/${issueRef}` }
-            : undefined,
+          action,
+        });
+      } else {
+        pushToast({
+          title: `Created ${issueRef}`,
+          tone: "success",
+          action,
         });
       }
       clearDraft();

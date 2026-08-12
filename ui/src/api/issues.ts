@@ -38,6 +38,16 @@ export type IssueUpdateResponse = Issue & {
   blockedByIssueIds?: string[];
 };
 
+/**
+ * A create can safely replay an earlier request when it carries an idempotency
+ * key. Consumers need that signal so they do not present an existing issue as
+ * a newly-created one.
+ */
+export type IssueCreateResponse = Issue & {
+  deduplicated?: boolean;
+  deduplicationReason?: "idempotency_key" | "recent_open_title";
+};
+
 export type ResolveRecoveryActionResponse = {
   issue: Issue;
   recoveryAction: IssueRecoveryAction;
@@ -206,7 +216,7 @@ export const issuesApi = {
   unarchiveFromInbox: (id: string) =>
     api.delete<{ id: string; archivedAt: Date } | { ok: true }>(`/issues/${id}/inbox-archive`),
   create: (companyId: string, data: Record<string, unknown>) =>
-    api.post<Issue>(`/companies/${companyId}/issues`, data),
+    api.post<IssueCreateResponse>(`/companies/${companyId}/issues`, data),
   update: (id: string, data: Record<string, unknown>) =>
     api.patch<IssueUpdateResponse>(`/issues/${id}`, data),
   decideStalledReview: (id: string, data: StalledReviewDecision) =>

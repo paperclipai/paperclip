@@ -826,6 +826,36 @@ describe("NewIssueDialog", () => {
         title: "Typed issue",
         description: "Typed description",
         workMode: "standard",
+        allowDuplicate: true,
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
+  it("makes board-created tasks explicit duplicates instead of silently reusing a title match", async () => {
+    dialogState.newIssueDefaults = { title: "Same title is valid work" };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Same title is valid work",
+        allowDuplicate: true,
       }),
     );
 
