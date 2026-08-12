@@ -4,7 +4,11 @@
 # meaningfully text-merged — the id/prevId chain and schema state are computed,
 # so a line-level merge yields a snapshot matching no real `generate` run. The
 # only correct resolution is to renumber one migration and regenerate. Hence:
-#   linguist-generated=true  GitHub collapses the huge diff, excludes from stats
+#   linguist-generated=true  GitHub excludes them from language stats
+#   -diff                    git treats them as binary, so the huge line count
+#                            drops out of the PR +/- badge and GitHub shows
+#                            "Binary file not shown" instead of a 39k-line diff
 #   -merge                   git refuses to auto-merge and raises a loud conflict
 #                            instead of silently fabricating a bogus snapshot
-src/migrations/meta/** linguist-generated=true -merge
+# Note: -text is intentionally NOT set, so EOL normalization stays intact.
+src/migrations/meta/** linguist-generated=true -diff -merge
