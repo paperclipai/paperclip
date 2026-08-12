@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 
-import { useState } from "react";
-import { flushSync } from "react-dom";
+import { act, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -39,10 +38,6 @@ function typeCron(input: HTMLInputElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
   setter?.call(input, value);
   input.dispatchEvent(new Event("input", { bubbles: true }));
-}
-
-function act(callback: () => void) {
-  flushSync(callback);
 }
 
 describe("ScheduleEditor cron helpers", () => {
