@@ -1,8 +1,25 @@
 import { redactCommandText } from "@paperclipai/adapter-utils";
 
-const SECRET_FIELD_NAME_PATTERN =
-  String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)[A-Za-z0-9_-]*`;
+const SECRET_KEY_PATTERN = [
+  String.raw`api[-_]?key`,
+  String.raw`access[-_]?token`,
+  String.raw`auth(?:_?token)?`,
+  String.raw`token`,
+  String.raw`authorization`,
+  String.raw`bearer`,
+  String.raw`secret`,
+  String.raw`passwd`,
+  String.raw`password`,
+  String.raw`credential`,
+  String.raw`jwt`,
+  String.raw`private[-_]?key`,
+  String.raw`cookie`,
+  String.raw`connection[-_]?string`,
+  String.raw`(?:database|db|postgres|postgresql|pg)[-_]?(?:url|uri|dsn|connection[-_]?string|password|passwd|pwd)`,
+  String.raw`openbrain[-_A-Za-z0-9]*(?:url|uri|dsn|secret|token|key|password|passwd|pwd)`,
+].join("|");
 
+const SECRET_FIELD_NAME_PATTERN = String.raw`[A-Za-z0-9_-]*(?:${SECRET_KEY_PATTERN})[A-Za-z0-9_-]*`;
 const SECRET_PAYLOAD_KEY_RE = new RegExp(SECRET_FIELD_NAME_PATTERN, "i");
 // Authorization reasons are policy decision codes, not credentials. They must
 // remain visible in audit receipts even though the field name contains
@@ -35,6 +52,12 @@ const SECRET_TEXT_HINTS = [
   "private",
   "cookie",
   "connectionstring",
+  "connection",
+  "database",
+  "db_",
+  "postgres",
+  "pg",
+  "openbrain",
   "sk-",
   "ghp_",
   "gho_",
