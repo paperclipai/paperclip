@@ -3929,7 +3929,11 @@ export function agentRoutes(
   // including `TRUST_PROXY=true` and a hop-count value, does not satisfy the
   // guard. A direct TLS request is always valid; a non-TLS request is valid only
   // on a loopback peer in the `local_trusted` deployment mode.
-  const SETUP_TOKEN_LOGIN_BASE = "/agents/:id/setup-token-login-sessions";
+  //
+  // Each route below writes its full path as a plain string literal. The static
+  // OpenAPI coverage test reads the route paths from the source text; it does
+  // not evaluate a template variable. A shared base constant would leave the
+  // test with an unresolved path, so the routes repeat the base path instead.
 
   /**
    * Builds the immutable session scope from the authenticated owner user and the
@@ -3993,7 +3997,7 @@ export function agentRoutes(
     return agent;
   };
 
-  router.post(SETUP_TOKEN_LOGIN_BASE, async (req, res) => {
+  router.post("/agents/:id/setup-token-login-sessions", async (req, res) => {
     const agent = await resolveSetupTokenAgent(req, res);
     if (!agent) return;
     const scope = buildSetupTokenScope(req, agent);
@@ -4012,7 +4016,7 @@ export function agentRoutes(
     }
   });
 
-  router.get(`${SETUP_TOKEN_LOGIN_BASE}/:sessionId/prompt`, async (req, res) => {
+  router.get("/agents/:id/setup-token-login-sessions/:sessionId/prompt", async (req, res) => {
     const agent = await resolveSetupTokenAgent(req, res);
     if (!agent) return;
     const scope = buildSetupTokenScope(req, agent);
@@ -4028,7 +4032,7 @@ export function agentRoutes(
     }
   });
 
-  router.post(`${SETUP_TOKEN_LOGIN_BASE}/:sessionId/code`, async (req, res) => {
+  router.post("/agents/:id/setup-token-login-sessions/:sessionId/code", async (req, res) => {
     const agent = await resolveSetupTokenAgent(req, res);
     if (!agent) return;
     const scope = buildSetupTokenScope(req, agent);
@@ -4051,7 +4055,7 @@ export function agentRoutes(
     }
   });
 
-  router.post(`${SETUP_TOKEN_LOGIN_BASE}/:sessionId/cancel`, async (req, res) => {
+  router.post("/agents/:id/setup-token-login-sessions/:sessionId/cancel", async (req, res) => {
     const agent = await resolveSetupTokenAgent(req, res);
     if (!agent) return;
     const scope = buildSetupTokenScope(req, agent);
@@ -4063,7 +4067,7 @@ export function agentRoutes(
     }
   });
 
-  router.post(`${SETUP_TOKEN_LOGIN_BASE}/:sessionId/expire`, async (req, res) => {
+  router.post("/agents/:id/setup-token-login-sessions/:sessionId/expire", async (req, res) => {
     const agent = await resolveSetupTokenAgent(req, res);
     if (!agent) return;
     const scope = buildSetupTokenScope(req, agent);
@@ -4075,7 +4079,7 @@ export function agentRoutes(
     }
   });
 
-  router.post(`${SETUP_TOKEN_LOGIN_BASE}/:sessionId/token`, async (req, res) => {
+  router.post("/agents/:id/setup-token-login-sessions/:sessionId/token", async (req, res) => {
     const agent = await resolveSetupTokenAgent(req, res);
     if (!agent) return;
     const scope = buildSetupTokenScope(req, agent);
