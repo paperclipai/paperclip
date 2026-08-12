@@ -1190,6 +1190,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
     retry: false,
   });
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
+  const managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
 
   const { data: environments } = useQuery({
     queryKey: selectedCompanyId ? queryKeys.environments.list(selectedCompanyId) : ["environments", "none"],
@@ -1660,7 +1661,18 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                   defaultEnvironmentMutation.mutate(event.target.value || null)}
                 disabled={defaultEnvironmentMutation.isPending}
               >
-                <option value="">Local</option>
+                {managedSandboxOnly ? (
+                  // Managed-sandbox-only instances never execute locally, so
+                  // the implicit local fallback is not a legal default. The
+                  // placeholder only renders while no default is stamped yet.
+                  instanceDefaultEnvironmentId === "" ? (
+                    <option value="" disabled>
+                      Select environment
+                    </option>
+                  ) : null
+                ) : (
+                  <option value="">Local</option>
+                )}
                 {nonLocalEnvironments.map((environment) => (
                   <option key={environment.id} value={environment.id}>
                     {environment.name} · {environment.driver}

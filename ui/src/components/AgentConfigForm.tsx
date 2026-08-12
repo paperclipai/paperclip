@@ -490,9 +490,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     currentDefaultEnvironmentId.length > 0 ||
     runnableEnvironments.length >= 1
   );
+  const managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
   const inheritedEnvironmentLabel = instanceDefaultEnvironment
     ? `${instanceDefaultEnvironment.name} (${instanceDefaultEnvironment.driver})`
-    : "Local";
+    : managedSandboxOnly
+      ? "Managed sandbox"
+      : "Local";
 
   // Fetch adapter models for the effective adapter type
   const modelQueryKey = selectedCompanyId

@@ -1387,4 +1387,36 @@ describe("CompanyEnvironments — test provider button", () => {
       expect(mockEnvironmentsApi.disableCustomImageTemplate).toHaveBeenCalledExactlyOnceWith("env-1", "company-1");
     });
   });
+
+  it("offers the implicit Local option in the default picker by default", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    const options = Array.from(container.querySelectorAll("option"));
+    expect(options.some((option) => option.textContent?.trim() === "Local")).toBe(true);
+  });
+
+  it("hides the implicit Local option in the default picker under managed-sandbox-only", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableEnvironments: true,
+      enableManagedSandboxOnly: true,
+    });
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    const options = Array.from(container.querySelectorAll("option"));
+    expect(options.some((option) => option.textContent?.trim() === "Local")).toBe(false);
+    // Saved non-local environments remain selectable defaults.
+    expect(options.some((option) => option.textContent?.includes("Alpha"))).toBe(true);
+  });
 });
