@@ -3,9 +3,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  SETUP_TOKEN_AFTER_ANCHOR,
+  SETUP_TOKEN_BEFORE_ANCHOR,
+  SETUP_TOKEN_PREFIX,
   SETUP_TOKEN_PROMPT,
   SETUP_TOKEN_URL_PATH,
   SETUP_TOKEN_URL_QUERY_KEYS,
+  parseSetupTokenCredential,
   parseSetupTokenPrompt,
 } from "./setup-token-parse.js";
 
@@ -156,5 +160,136 @@ describe("parseSetupTokenPrompt", () => {
     for (const key of SETUP_TOKEN_URL_QUERY_KEYS) {
       expect(fixture).toContain(`\`${key}\``);
     }
+  });
+});
+
+// A synthetic OAuth token. The terminal wraps a real token across two physical
+// lines at the pseudo-terminal width. The two fragments join with no separator
+// to form the full token. The tail carries a `-` and a `_`, so the test proves
+// the parser does not stop at the first hyphen. No real token is present.
+const TOKEN_FRAGMENT_A = `${SETUP_TOKEN_PREFIX}AAAABBBBCCCCDDDDEEEE1111`;
+const TOKEN_FRAGMENT_B = "2222FFFFGGGG_HHHH-IIII";
+const FULL_TOKEN = `${TOKEN_FRAGMENT_A}${TOKEN_FRAGMENT_B}`;
+
+// Builds the success screen around a token body. The body holds the token
+// fragment lines, already split the way the terminal wraps them.
+function successScreen(body: string[]): string {
+  return [
+    "✓ Long-lived authentication token created successfully!",
+    "",
+    SETUP_TOKEN_BEFORE_ANCHOR,
+    "",
+    ...body,
+    "",
+    SETUP_TOKEN_AFTER_ANCHOR,
+    "",
+    "Use this token by setting: export CLAUDE_CODE_OAUTH_TOKEN=<token>",
+  ].join("\n");
+}
+
+describe("parseSetupTokenCredential", () => {
+  it("returns the de-wrapped token from the exact success record once", () => {
+    const text = successScreen([TOKEN_FRAGMENT_A, TOKEN_FRAGMENT_B]);
+    expect(parseSetupTokenCredential(text)).toBe(FULL_TOKEN);
+  });
+
+  it("returns a single-line token from the success record", () => {
+    const text = successScreen([FULL_TOKEN]);
+    expect(parseSetupTokenCredential(text)).toBe(FULL_TOKEN);
+  });
+
+  it("reads the token through ANSI color sequences", () => {
+    const cyan = "\x1b[36m";
+    const reset = "\x1b[0m";
+    const text = successScreen([`${cyan}${TOKEN_FRAGMENT_A}`, `${TOKEN_FRAGMENT_B}${reset}`]);
+    expect(parseSetupTokenCredential(text)).toBe(FULL_TOKEN);
+  });
+
+  it("returns null for a token-shaped value before submit", () => {
+    // The prompt screen holds a token-shaped value but no success anchors. The
+    // parser fails closed, so an early value never delivers.
+    const text = [
+      "Browser didn’t open? Use the url below to sign in (c to copy)",
+      VALID_URL,
+      "Paste code here if prompted >",
+      FULL_TOKEN,
+    ].join("\n");
+    expect(parseSetupTokenCredential(text)).toBeNull();
+  });
+
+  it("returns null for a token-shaped value in retry or error text", () => {
+    const text = [
+      "Invalid code. Please try again.",
+      `error context ${FULL_TOKEN} more context`,
+      "Paste code here if prompted >",
+    ].join("\n");
+    expect(parseSetupTokenCredential(text)).toBeNull();
+  });
+
+  it("returns null for a token-shaped value after cancellation", () => {
+    const text = ["Login cancelled.", FULL_TOKEN, "Goodbye."].join("\n");
+    expect(parseSetupTokenCredential(text)).toBeNull();
+  });
+
+  it("returns null when extra text sits on the token line", () => {
+    // The token line holds the token and extra prose. The parser reads only a
+    // token fragment on each line, so it fails closed.
+    const text = successScreen([`${FULL_TOKEN} keep this secret`]);
+    expect(parseSetupTokenCredential(text)).toBeNull();
+  });
+
+  it("returns null when a prose line sits between the anchors", () => {
+    const text = successScreen([TOKEN_FRAGMENT_A, "a stray note", TOKEN_FRAGMENT_B]);
+    expect(parseSetupTokenCredential(text)).toBeNull();
+  });
+
+  it("returns null for a duplicate success block", () => {
+    const text = `${successScreen([FULL_TOKEN])}\n${successScreen([FULL_TOKEN])}`;
+    expect(parseSetupTokenCredential(text)).toBeNull();
+  });
+
+  it("returns null when the after-anchor comes before the before-anchor", () => {
+    const text = [
+      SETUP_TOKEN_AFTER_ANCHOR,
+      "",
+      FULL_TOKEN,
+      "",
+      SETUP_TOKEN_BEFORE_ANCHOR,
+    ].join("\n");
+    expect(parseSetupTokenCredential(text)).toBeNull();
+  });
+
+  it("returns null when the before-anchor is absent", () => {
+    const text = [FULL_TOKEN, "", SETUP_TOKEN_AFTER_ANCHOR].join("\n");
+    expect(parseSetupTokenCredential(text)).toBeNull();
+  });
+
+  it("returns null when the after-anchor is absent", () => {
+    const text = [SETUP_TOKEN_BEFORE_ANCHOR, "", FULL_TOKEN].join("\n");
+    expect(parseSetupTokenCredential(text)).toBeNull();
+  });
+
+  it("returns null for a wrong token prefix between the anchors", () => {
+    const text = successScreen(["sk-ant-api03-AAAABBBBCCCCDDDDEEEE1111"]);
+    expect(parseSetupTokenCredential(text)).toBeNull();
+  });
+
+  it("returns null for a bare prefix with no opaque tail", () => {
+    const text = successScreen([SETUP_TOKEN_PREFIX]);
+    expect(parseSetupTokenCredential(text)).toBeNull();
+  });
+
+  it("returns null for a non-string input", () => {
+    expect(parseSetupTokenCredential(undefined as unknown as string)).toBeNull();
+    expect(parseSetupTokenCredential("")).toBeNull();
+  });
+
+  it("keeps its token contract in sync with the success fixture", () => {
+    // The success fixture records the anchor lines and the token prefix. This
+    // test fails if the token parser contract drifts from the fixture.
+    const fixture = readFixture("setup-token-success.md");
+    expect(fixture).toContain(SETUP_TOKEN_BEFORE_ANCHOR);
+    expect(fixture).toContain(SETUP_TOKEN_AFTER_ANCHOR);
+    expect(fixture).toContain(SETUP_TOKEN_PREFIX);
   });
 });

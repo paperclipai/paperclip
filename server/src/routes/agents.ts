@@ -4051,9 +4051,12 @@ export function agentRoutes(
     // SR-6 and SR-7: the token is a confidential response.
     if (!enforceSetupTokenTransport(req, res)) return;
     try {
-      // receive-token returns the fixed closed-gate error until a later phase
-      // enables token delivery.
-      setupTokenLoginService.receiveToken(req.params.sessionId as string, scope);
+      // The service returns the token one time from a completed session. It
+      // returns the fixed unavailable error when the token is not ready or the
+      // owner already received it. The full token rides only in this authorized
+      // owner response over the confidential transport (SR-5, SR-6, SR-7).
+      const result = setupTokenLoginService.receiveToken(req.params.sessionId as string, scope);
+      res.json({ token: result.token });
     } catch (err) {
       sendSetupTokenError(res, err);
     }

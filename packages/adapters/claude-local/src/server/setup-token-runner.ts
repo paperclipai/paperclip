@@ -1,26 +1,32 @@
-import { parseSetupTokenPrompt, type SetupTokenPrompt } from "./setup-token-parse.js";
+import {
+  parseSetupTokenCredential,
+  parseSetupTokenPrompt,
+  type SetupTokenPrompt,
+} from "./setup-token-parse.js";
 
 // The Claude `setup-token` login runner. It starts `claude setup-token` through
 // an injected {@link SetupTokenPtyDriver}, surfaces the sign-in prompt one time
-// in memory, accepts one browser code, and sends the code to the matched prompt.
-// It handles a timeout and a cancellation, and it stops the child for every
-// terminal state. This phase delivers no token.
+// in memory, accepts one browser code, sends the code to the matched prompt, and
+// delivers the minted OAuth token one time. It handles a timeout and a
+// cancellation, and it stops the child for every terminal state.
 //
 // Security (secret handling): the runner treats every byte of the terminal
 // stream as secret-bearing, untrusted input. It parses the stream in an in-memory
-// buffer only. It drops the buffer as soon as it finds the prompt. It never
-// forwards the raw text to a log or an artifact, and it never stores the raw text
-// on the result. The runner reports only a fixed, non-secret status. It passes
-// the prompt one time through the in-memory `onPrompt` callback. It reads the
-// browser code one time through the in-memory `provideCode` callback and writes
-// the code only to the child, only after it matches the prompt. The runner keeps
-// the URL, the code, and any token byte out of every log line and every thrown
-// error.
+// buffer only. It drops the prompt buffer as soon as it finds the prompt, and it
+// drops the token buffer as soon as it binds the token. It never forwards the raw
+// text to a log or an artifact, and it never stores the raw text on the result.
+// The runner reports only a fixed, non-secret status. It passes the prompt one
+// time through the in-memory `onPrompt` callback. It reads the browser code one
+// time through the in-memory `provideCode` callback and writes the code only to
+// the child, only after it matches the prompt. It delivers the token one time
+// through the in-memory `onCredential` callback. The runner keeps the URL, the
+// code, and any token byte out of every log line and every thrown error.
 //
-// Token delivery is a later phase. The `onCredential` seam stays closed behind
-// {@link SETUP_TOKEN_CREDENTIAL_RELEASE_GATE}. While the gate is closed the runner
-// never reads a credential and never invokes `onCredential`. A later phase binds
-// the token parser and opens the gate.
+// Token delivery binds to the success record. The runner scans the post-prompt
+// stream with {@link parseSetupTokenCredential}, which returns the token only
+// from the exact success record. The {@link SETUP_TOKEN_CREDENTIAL_RELEASE_GATE}
+// stays open only while a caller provides an `onCredential` sink; without a sink
+// the runner never scans for the token.
 
 /** The fixed Claude setup-token command. The login flow needs a PTY. */
 export const CLAUDE_SETUP_TOKEN_COMMAND = "claude setup-token";
@@ -44,12 +50,12 @@ export const CODE_SUBMISSION_TERMINATOR = "\r";
 export const CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS = 64 * 1024;
 
 /**
- * The release gate for the credential seam. This phase keeps the gate closed, so
- * the runner delivers no token. A later phase binds the setup-token parser and
- * opens the gate. The annotation keeps the type `boolean`, so the disabled seam
- * stays reachable to the type checker.
+ * The release gate for the credential seam. The gate is open, so the runner
+ * delivers the token that {@link parseSetupTokenCredential} binds from the
+ * success record. The runner still scans for the token only when a caller
+ * provides an `onCredential` sink.
  */
-export const SETUP_TOKEN_CREDENTIAL_RELEASE_GATE: boolean = false;
+export const SETUP_TOKEN_CREDENTIAL_RELEASE_GATE: boolean = true;
 
 /**
  * The child side of the setup-token run. The runner never spawns the PTY
@@ -89,8 +95,10 @@ export type SetupTokenPromptSink = (prompt: SetupTokenPrompt) => void;
 export type SetupTokenCodeProvider = (signal: AbortSignal) => Promise<string>;
 
 /**
- * Receives the credential bytes one time in memory on success. The seam stays
- * closed in this phase behind {@link SETUP_TOKEN_CREDENTIAL_RELEASE_GATE}.
+ * Receives the credential bytes one time in memory on success. The runner binds
+ * the token from the success record, then it invokes this sink one time with the
+ * token bytes. The runner never logs the bytes and never stores them on the
+ * result.
  */
 export type SetupTokenCredentialSink = (authBytes: Buffer) => void | Promise<void>;
 
@@ -102,7 +110,7 @@ export interface SetupTokenLoginResult {
   exitCode: number | null;
   promptSurfaced: boolean;
   codeSubmitted: boolean;
-  /** Always false in this phase. The credential seam stays closed. */
+  /** True when the runner bound the token and invoked `onCredential` one time. */
   credentialDelivered: boolean;
 }
 
@@ -113,7 +121,7 @@ export interface RunSetupTokenLoginOptions {
   onPrompt: SetupTokenPromptSink;
   /** Returns the one browser code. The runner writes it to the matched prompt. */
   provideCode: SetupTokenCodeProvider;
-  /** The closed credential seam. The runner never invokes it in this phase. */
+  /** The credential sink. The runner invokes it one time with the token bytes. */
   onCredential?: SetupTokenCredentialSink;
   /** The host-side timeout in milliseconds. */
   timeoutMs: number;
@@ -185,10 +193,11 @@ async function stopAndDispose(driver: SetupTokenPtyDriver, log: (line: string) =
 /**
  * Runs the setup-token login through `driver`. Surfaces the prompt one time
  * through `onPrompt`. Reads the browser code one time through `provideCode` and
- * writes it to the matched prompt. Returns a fixed status. Stops the child and
- * disposes the driver for every terminal state. Never logs the raw stream, and
- * never puts a URL, a code, or a token into a log line, the result, or a thrown
- * error. Delivers no token in this phase.
+ * writes it to the matched prompt. Binds the minted token from the success
+ * record and delivers it one time through `onCredential`. Returns a fixed status.
+ * Stops the child and disposes the driver for every terminal state. Never logs
+ * the raw stream, and never puts a URL, a code, or a token into a log line, the
+ * result, or a thrown error.
  */
 export async function runSetupTokenLogin(
   driver: SetupTokenPtyDriver,
@@ -210,11 +219,15 @@ export async function runSetupTokenLogin(
   let promptSurfaced = false;
   let codeSubmitted = false;
   let submitStarted = false;
+  let credentialDelivered = false;
   // The code-input routine runs beside the race. It is self-guarding and never
   // rejects, so an unresolved provider cannot become an unhandled rejection.
   let submitPromise: Promise<void> = Promise.resolve();
+  // The credential-delivery routine runs beside the race. It is self-guarding
+  // and never rejects, so an async sink cannot become an unhandled rejection.
+  let credentialPromise: Promise<void> = Promise.resolve();
 
-  // The in-memory parse buffer. The runner drops it as soon as it finds the
+  // The in-memory prompt buffer. The runner drops it as soon as it finds the
   // prompt, so the secret-bearing stream never lives longer than one parse. The
   // runner parses the full buffer, and it includes the whole new chunk. So a
   // prompt at the start of one large chunk still parses. The runner bounds only
@@ -222,6 +235,11 @@ export async function runSetupTokenLogin(
   // {@link CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS}. The runner keeps the trailing
   // window and drops the oldest characters.
   let buffer = "";
+  // The in-memory token buffer. The runner accumulates the post-prompt stream
+  // here, parses the full buffer before any truncation, and drops it as soon as
+  // it binds the token. It bounds the retained window the same way as the prompt
+  // buffer, so the secret-bearing stream never grows without a bound.
+  let tokenBuffer = "";
 
   // Reads the browser code and writes it to the matched prompt one time. The
   // routine never throws: it logs a fixed line on a provider error or a write
@@ -244,25 +262,57 @@ export async function runSetupTokenLogin(
     }
   };
 
+  // Binds the token from the token buffer and delivers it one time. The runner
+  // scans only when a caller provides an `onCredential` sink and the gate is
+  // open. It drops the token buffer as soon as the parser binds the token. It
+  // never logs the token and never puts it into a thrown error.
+  const captureCredential = (): void => {
+    if (!SETUP_TOKEN_CREDENTIAL_RELEASE_GATE || !onCredential || credentialDelivered) return;
+    const token = parseSetupTokenCredential(tokenBuffer);
+    if (!token) return;
+    credentialDelivered = true;
+    tokenBuffer = "";
+    const authBytes = Buffer.from(token, "utf8");
+    try {
+      credentialPromise = Promise.resolve(onCredential(authBytes)).catch(() => {
+        log("[paperclip] Setup-token login: the credential delivery step errored.");
+      });
+      log("[paperclip] Setup-token login: delivered the credential to the sink.");
+    } catch {
+      log("[paperclip] Setup-token login: the credential delivery step errored.");
+    }
+  };
+
   const onData = (chunk: string): void => {
-    if (promptSurfaced) return;
-    // Parse the full buffer before any truncation. This order finds an early
-    // prompt inside one large chunk, so the runner never drops it.
-    buffer += chunk;
-    const prompt = parseSetupTokenPrompt(buffer);
-    if (prompt) {
-      promptSurfaced = true;
-      buffer = "";
-      onPrompt(prompt);
-      log("[paperclip] Setup-token login: surfaced the sign-in prompt.");
-      if (!submitStarted) {
-        submitStarted = true;
-        submitPromise = submitCode();
+    if (!promptSurfaced) {
+      // Parse the full buffer before any truncation. This order finds an early
+      // prompt inside one large chunk, so the runner never drops it.
+      buffer += chunk;
+      const prompt = parseSetupTokenPrompt(buffer);
+      if (prompt) {
+        promptSurfaced = true;
+        buffer = "";
+        onPrompt(prompt);
+        log("[paperclip] Setup-token login: surfaced the sign-in prompt.");
+        if (!submitStarted) {
+          submitStarted = true;
+          submitPromise = submitCode();
+        }
+        return;
+      }
+      if (buffer.length > CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS) {
+        buffer = buffer.slice(buffer.length - CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS);
       }
       return;
     }
-    if (buffer.length > CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS) {
-      buffer = buffer.slice(buffer.length - CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS);
+    // The prompt already surfaced. Scan the post-prompt stream for the success
+    // token. The runner scans only when a caller provides an `onCredential`
+    // sink, so it never holds the secret-bearing stream without a need.
+    if (!SETUP_TOKEN_CREDENTIAL_RELEASE_GATE || !onCredential || credentialDelivered) return;
+    tokenBuffer += chunk;
+    captureCredential();
+    if (!credentialDelivered && tokenBuffer.length > CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS) {
+      tokenBuffer = tokenBuffer.slice(tokenBuffer.length - CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS);
     }
   };
 
@@ -271,7 +321,7 @@ export async function runSetupTokenLogin(
     exitCode,
     promptSurfaced,
     codeSubmitted,
-    credentialDelivered: false,
+    credentialDelivered,
   });
 
   try {
@@ -302,11 +352,10 @@ export async function runSetupTokenLogin(
       return result("failure", exitCode);
     }
 
-    if (SETUP_TOKEN_CREDENTIAL_RELEASE_GATE && onCredential) {
-      // The closed credential seam. A later phase binds the setup-token parser
-      // and reads the credential here, then it invokes `onCredential`. This phase
-      // keeps the gate closed, so the runner delivers no token.
-    }
+    // The runner captured the token from the stream during `onData` and
+    // delivered it through `onCredential`. Await a pending async sink, so the
+    // credential fully lands before the runner reports success.
+    await credentialPromise;
 
     log("[paperclip] Setup-token login command ended successfully.");
     return result("success", exitCode);

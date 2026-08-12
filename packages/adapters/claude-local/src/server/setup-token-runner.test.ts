@@ -28,6 +28,26 @@ const PROMPT_OUTPUT = [
 // contain this value.
 const BROWSER_CODE = "SENTINEL-CODE-9182";
 
+// A synthetic OAuth token, wrapped across two physical lines the way the
+// terminal wraps a real token. No real token is present.
+const TOKEN_FRAGMENT_A = "sk-ant-oat01-AAAABBBBCCCCDDDDEEEE1111";
+const TOKEN_FRAGMENT_B = "2222FFFFGGGG_HHHH-IIII";
+const FULL_TOKEN = `${TOKEN_FRAGMENT_A}${TOKEN_FRAGMENT_B}`;
+
+// The rendered success screen. The anchor lines bracket the wrapped token, the
+// same way the Phase 6a success record records them.
+const SUCCESS_OUTPUT = [
+  "✓ Long-lived authentication token created successfully!",
+  "",
+  "Your OAuth token (valid for 1 year):",
+  "",
+  TOKEN_FRAGMENT_A,
+  TOKEN_FRAGMENT_B,
+  "",
+  "Store this token securely. You won't be able to see it again.",
+  "",
+].join("\n");
+
 interface FakeDriverOptions {
   // The chunks the driver streams to the runner in order.
   chunks?: string[];
@@ -220,7 +240,9 @@ describe("runSetupTokenLogin", () => {
     expect(onPrompt).toHaveBeenCalledWith({ url: VALID_URL, prompt: SETUP_TOKEN_PROMPT });
   });
 
-  it("delivers no token while the release gate is closed", async () => {
+  it("delivers no token when the success stream has no token block", async () => {
+    // The stream holds only the prompt, so the token parser binds nothing. The
+    // runner delivers no credential and reports credentialDelivered false.
     const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT], exitCode: 0 });
     const onCredential = vi.fn();
     const result = await runSetupTokenLogin(fake.driver, {
@@ -234,6 +256,54 @@ describe("runSetupTokenLogin", () => {
     expect(result.credentialDelivered).toBe(false);
     expect(result).not.toHaveProperty("token");
     expect(result).not.toHaveProperty("credential");
+  });
+
+  it("delivers the de-wrapped token once through onCredential on a success stream", async () => {
+    const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT, SUCCESS_OUTPUT], exitCode: 0 });
+    const onCredential = vi.fn();
+    const result = await runSetupTokenLogin(fake.driver, {
+      onPrompt: () => {},
+      provideCode: async () => BROWSER_CODE,
+      onCredential,
+      timeoutMs: 1000,
+    });
+    expect(result.outcome).toBe("success");
+    expect(result.credentialDelivered).toBe(true);
+    expect(onCredential).toHaveBeenCalledTimes(1);
+    const bytes = onCredential.mock.calls[0][0] as Buffer;
+    expect(Buffer.isBuffer(bytes)).toBe(true);
+    expect(bytes.toString("utf8")).toBe(FULL_TOKEN);
+  });
+
+  it("keeps the token out of every log, result, and error field", async () => {
+    const logs: string[] = [];
+    const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT, SUCCESS_OUTPUT], exitCode: 0 });
+    const result = await runSetupTokenLogin(fake.driver, {
+      onPrompt: () => {},
+      provideCode: async () => BROWSER_CODE,
+      onCredential: () => {},
+      timeoutMs: 1000,
+      log: (line) => {
+        logs.push(line);
+      },
+    });
+    const haystack = `${logs.join("\n")}\n${JSON.stringify(result)}`;
+    expect(haystack).not.toContain(FULL_TOKEN);
+    expect(haystack).not.toContain(TOKEN_FRAGMENT_A);
+    expect(result.credentialDelivered).toBe(true);
+  });
+
+  it("never scans for the token when no onCredential sink is present", async () => {
+    // With no sink the runner never holds the post-prompt stream and delivers
+    // nothing, even when the success block is present.
+    const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT, SUCCESS_OUTPUT], exitCode: 0 });
+    const result = await runSetupTokenLogin(fake.driver, {
+      onPrompt: () => {},
+      provideCode: async () => BROWSER_CODE,
+      timeoutMs: 1000,
+    });
+    expect(result.outcome).toBe("success");
+    expect(result.credentialDelivered).toBe(false);
   });
 
   it("exposes the fixed setup-token command", () => {

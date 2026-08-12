@@ -1,15 +1,21 @@
-// The Claude `setup-token` prompt parser. It reads the interactive login
-// output of Claude Code and returns the authorization URL and the browser-code
-// prompt, or null. This phase adds a prompt parser and a URL parser only. It
-// adds no token parser: the success token is a later phase.
+// The Claude `setup-token` parsers. They read the interactive login output of
+// Claude Code. `parseSetupTokenPrompt` returns the authorization URL and the
+// browser-code prompt, or null. `parseSetupTokenCredential` returns the minted
+// OAuth token from the success screen, or null.
 //
-// Security (strict validation): the parser accepts only the exact origin and
-// path of the authorization URL, and only the exact set of query keys. It
+// Security (strict validation): the prompt parser accepts only the exact origin
+// and path of the authorization URL, and only the exact set of query keys. It
 // rejects any other origin, path, query, or fragment. It binds the browser-code
 // prompt to a dedicated line right after the URL line, so an unrelated code-like
 // value on the wrong line cannot form a prompt. It rejects an API-key-shaped
-// value inside the URL. The parser never logs any input byte, and it keeps every
-// input byte out of each thrown error. The parser is a pure function.
+// value inside the URL.
+//
+// The token parser binds the token to the exact success record: it requires the
+// before-anchor line and the after-anchor line, in that order, exactly one time
+// each, and it reads only the lines between them. It de-wraps the token across
+// the physical terminal lines. It fails closed for any other input. Both parsers
+// never log any input byte, and they keep every input byte out of each thrown
+// error. Both parsers are pure functions.
 
 export interface SetupTokenPrompt {
   // The validated authorization URL, exactly as the terminal emitted it.
@@ -233,4 +239,92 @@ export function parseSetupTokenPrompt(text: string): SetupTokenPrompt | null {
   const prompt = findBrowserCodePrompt(clean, urlEnd);
   if (!prompt) return null;
   return { url: urlMatch.url, prompt };
+}
+
+// --- The success token parser ------------------------------------------------
+
+// The literal prefix of the Claude setup-token OAuth token. The success screen
+// prints a token that starts with this exact prefix. The opaque tail follows.
+export const SETUP_TOKEN_PREFIX = "sk-ant-oat01-";
+
+// The line that introduces the token. The success screen prints this exact line
+// right before the token block. The token parser binds the token to this anchor.
+export const SETUP_TOKEN_BEFORE_ANCHOR = "Your OAuth token (valid for 1 year):";
+
+// The line that follows the token. The success screen prints this exact line
+// right after the token block. The token parser binds the token to this anchor.
+export const SETUP_TOKEN_AFTER_ANCHOR =
+  "Store this token securely. You won't be able to see it again.";
+
+// One physical line of the token. The terminal wraps the token at the
+// pseudo-terminal width, so one physical line holds one fragment of the token
+// character class. The token character class is `[A-Za-z0-9_-]`; the opaque tail
+// can contain `-`, so a line fragment can contain `-`.
+const TOKEN_FRAGMENT_RE = /^[A-Za-z0-9_-]+$/;
+
+// The full token shape after the parser joins the wrapped fragments. The token
+// starts with the exact prefix and continues over the token character class. The
+// minimum tail length rejects a bare prefix and a short, noisy candidate. A real
+// opaque tail is far longer than this floor.
+const FULL_TOKEN_RE = /^sk-ant-oat01-[A-Za-z0-9_-]{20,}$/;
+
+/**
+ * Returns the index of the one line that equals `anchor` after a trim. Returns
+ * null when no line matches. Returns null when more than one line matches, so a
+ * duplicate success block fails closed.
+ */
+function singleAnchorIndex(lines: string[], anchor: string): number | null {
+  let found: number | null = null;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (lines[i].trim() !== anchor) continue;
+    if (found !== null) return null;
+    found = i;
+  }
+  return found;
+}
+
+/**
+ * Parses the Claude `setup-token` success screen and returns the minted OAuth
+ * token, or null. The parser removes the terminal control sequences first, then
+ * binds the token to the exact success record. It requires the before-anchor
+ * line {@link SETUP_TOKEN_BEFORE_ANCHOR} and the after-anchor line
+ * {@link SETUP_TOKEN_AFTER_ANCHOR}, in that order, exactly one time each. It
+ * reads only the lines between the two anchors. It de-wraps the token: it joins
+ * the fragment lines with no separator, the same way the terminal split one
+ * token across the physical lines. It validates the joined value against the
+ * token shape.
+ *
+ * The parser fails closed for any other input. It returns null for a
+ * token-shaped value outside the two anchors (before submit, in retry or error
+ * text, or after a cancellation), a duplicate success block, an anchor out of
+ * order, a missing anchor, extra text on a token line, a stray prose line
+ * between the anchors, a wrong prefix, and a value that does not match the token
+ * shape. It never logs any input byte and never puts any input byte into a
+ * thrown error. The parser is a pure function.
+ */
+export function parseSetupTokenCredential(text: string): string | null {
+  if (typeof text !== "string" || text.length === 0) return null;
+  const clean = stripTerminalControls(text);
+  const lines = clean.split("\n");
+
+  const beforeIndex = singleAnchorIndex(lines, SETUP_TOKEN_BEFORE_ANCHOR);
+  const afterIndex = singleAnchorIndex(lines, SETUP_TOKEN_AFTER_ANCHOR);
+  if (beforeIndex === null || afterIndex === null) return null;
+  if (afterIndex <= beforeIndex) return null;
+
+  // Read only the non-blank lines strictly between the two anchors. Each line
+  // must be one token fragment. A stray prose line, or extra text on a token
+  // line, fails the fragment test and the parser returns null.
+  const fragments: string[] = [];
+  for (let i = beforeIndex + 1; i < afterIndex; i += 1) {
+    const trimmed = lines[i].trim();
+    if (trimmed.length === 0) continue;
+    if (!TOKEN_FRAGMENT_RE.test(trimmed)) return null;
+    fragments.push(trimmed);
+  }
+  if (fragments.length === 0) return null;
+
+  const token = fragments.join("");
+  if (!FULL_TOKEN_RE.test(token)) return null;
+  return token;
 }

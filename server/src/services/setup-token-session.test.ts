@@ -10,9 +10,10 @@ import {
   SETUP_TOKEN_SUBMIT_CONFLICT,
   SETUP_TOKEN_RATE_LIMITED,
   SETUP_TOKEN_CAP_EXCEEDED,
-  SETUP_TOKEN_TOKEN_GATE_CLOSED,
+  SETUP_TOKEN_TOKEN_UNAVAILABLE,
   type SetupTokenCleanupRecord,
   type SetupTokenCleanupStore,
+  type SetupTokenCredentialSink,
   type SetupTokenLease,
   type SetupTokenLeaseManager,
   type SetupTokenLoginOutcome,
@@ -27,6 +28,10 @@ import { sanitizeRecord } from "../redaction.js";
 
 const FULL_LOGIN_URL =
   "https://claude.com/cai/oauth/authorize?client_id=abc&code=SECRETCODE123&code_challenge=xyz&code_challenge_method=S256&redirect_uri=http%3A%2F%2Flocalhost&response_type=code&scope=org&state=STATEVALUE";
+
+// A synthetic token. The session passes the token through in memory; it does not
+// parse it. No real token is present.
+const SYNTH_TOKEN = "sk-ant-oat01-SYNTHETICSYNTHETICSYNTHETIC01";
 
 const OWNER_SCOPE: SetupTokenSessionScope = {
   companyId: "company-1",
@@ -44,6 +49,7 @@ class FakeProcess implements SetupTokenLoginProcess {
   constructor(
     readonly id: string,
     readonly onPrompt: SetupTokenPromptSink,
+    readonly onCredential: SetupTokenCredentialSink,
     private readonly events: string[],
   ) {
     this.done = new Promise((resolve) => {
@@ -52,6 +58,9 @@ class FakeProcess implements SetupTokenLoginProcess {
   }
   surfacePrompt(url: string): void {
     this.onPrompt({ url });
+  }
+  surfaceCredential(token: string): void {
+    this.onCredential(token);
   }
   finish(outcome: SetupTokenLoginOutcome): void {
     this.resolveDone(outcome);
@@ -124,14 +133,15 @@ function buildService(overrides: {
   rateLimiter?: SetupTokenRateLimiter;
   caps?: { perOwner: number; perAgent: number; perCompany: number };
   ttlMs?: number;
+  tokenRetentionMs?: number;
   now?: () => number;
 } = {}) {
   const events = overrides.events ?? [];
   const processes: FakeProcess[] = [];
   let processCounter = 0;
-  const factory: SetupTokenLoginProcessFactory = ({ onPrompt }) => {
+  const factory: SetupTokenLoginProcessFactory = ({ onPrompt, onCredential }) => {
     processCounter += 1;
-    const process = new FakeProcess(`p${processCounter}`, onPrompt, events);
+    const process = new FakeProcess(`p${processCounter}`, onPrompt, onCredential, events);
     processes.push(process);
     return process;
   };
@@ -144,6 +154,7 @@ function buildService(overrides: {
     rateLimiter: overrides.rateLimiter ?? allowAllRateLimiter(),
     caps: overrides.caps ?? { perOwner: 5, perAgent: 5, perCompany: 5 },
     ttlMs: overrides.ttlMs ?? 60_000,
+    tokenRetentionMs: overrides.tokenRetentionMs,
     now: overrides.now,
   });
   return { service, processes, leases, store, events };
@@ -337,19 +348,42 @@ describe("SetupTokenSessionService durable reaper", () => {
 });
 
 describe("SetupTokenSessionService.receiveToken", () => {
-  it("returns the fixed closed-gate error until token delivery is enabled", async () => {
+  it("returns the token once to the authorized owner after a successful login", async () => {
+    const { service, processes, leases } = buildService();
+    const { sessionId } = await service.start(OWNER_SCOPE);
+    processes[0].surfacePrompt(FULL_LOGIN_URL);
+    service.submitCode(sessionId, OWNER_SCOPE, "code");
+    processes[0].surfaceCredential(SYNTH_TOKEN);
+    processes[0].finish("success");
+    await new Promise((resolve) => setImmediate(resolve));
+    // The service releases the sandbox lease at once, but it retains the token
+    // for the owner to receive it one time.
+    expect(leases.released).toEqual(["lease-1"]);
+    const received = service.receiveToken(sessionId, OWNER_SCOPE);
+    expect(received.token).toBe(SYNTH_TOKEN);
+    // One-shot: a second receive returns the same not-found as a missing session.
+    expect(() => service.receiveToken(sessionId, OWNER_SCOPE)).toThrow(SETUP_TOKEN_SESSION_NOT_FOUND);
+  });
+
+  it("returns the fixed unavailable error before the token is delivered", async () => {
     const { service, processes } = buildService();
     const { sessionId } = await service.start(OWNER_SCOPE);
     processes[0].surfacePrompt(FULL_LOGIN_URL);
     service.submitCode(sessionId, OWNER_SCOPE, "code");
+    // The login has not delivered the token yet, so receive-token is unavailable.
+    expect(() => service.receiveToken(sessionId, OWNER_SCOPE)).toThrow(SETUP_TOKEN_TOKEN_UNAVAILABLE);
+  });
+
+  it("purges the retained token when the retention window ends", async () => {
+    const { service, processes } = buildService({ tokenRetentionMs: 5 });
+    const { sessionId } = await service.start(OWNER_SCOPE);
+    processes[0].surfacePrompt(FULL_LOGIN_URL);
+    service.submitCode(sessionId, OWNER_SCOPE, "code");
+    processes[0].surfaceCredential(SYNTH_TOKEN);
     processes[0].finish("success");
-    await new Promise((resolve) => setImmediate(resolve));
-    // The record is cleaned up, so the session is gone. Start a fresh session to
-    // prove the closed gate for a live session too.
-    const second = await service.start({ ...OWNER_SCOPE, ownerUserId: "user-2" });
-    expect(() => service.receiveToken(second.sessionId, { ...OWNER_SCOPE, ownerUserId: "user-2" })).toThrow(
-      SETUP_TOKEN_TOKEN_GATE_CLOSED,
-    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The retention timer purged the token, so the session is gone.
+    expect(() => service.receiveToken(sessionId, OWNER_SCOPE)).toThrow(SETUP_TOKEN_SESSION_NOT_FOUND);
   });
 });
 
@@ -360,10 +394,12 @@ describe("no secret reaches a sink (SR-1, SR-5)", () => {
     const { sessionId } = await service.start(OWNER_SCOPE);
     processes[0].surfacePrompt(FULL_LOGIN_URL);
     service.submitCode(sessionId, OWNER_SCOPE, "SECRETCODE123");
+    processes[0].surfaceCredential(SYNTH_TOKEN);
     const serialized = JSON.stringify([...store.rows.values()]);
     expect(serialized).not.toContain("SECRETCODE123");
     expect(serialized).not.toContain("STATEVALUE");
     expect(serialized).not.toContain("cai/oauth/authorize");
+    expect(serialized).not.toContain(SYNTH_TOKEN);
   });
 
   it("sanitizes the login URL to origin and path only", () => {
@@ -483,5 +519,29 @@ describe("confidential transport guard (SR-6, SR-7)", () => {
   it("fails closed at startup when no proxy allowlist is configured (SR-7)", () => {
     expect(assessConfidentialStartup(authenticatedNoProxy).proxyForwardingEnabled).toBe(false);
     expect(assessConfidentialStartup(authenticatedWithProxy).proxyForwardingEnabled).toBe(true);
+  });
+
+  it("denies a direct non-loopback HTTP receive-token request, so it delivers no token (SR-6)", () => {
+    // The route calls this guard before receive-token. A denied decision makes
+    // the route return the fixed no-secret error and never read the token.
+    const decision = evaluateConfidentialTransport(authenticatedNoProxy, {
+      socketEncrypted: false,
+      remoteAddress: "203.0.113.7",
+      forwardedProto: undefined,
+    });
+    expect(decision.allowed).toBe(false);
+  });
+
+  it("denies a spoofed forwarded HTTPS receive-token request under a broad proxy setting (SR-7)", () => {
+    // A broad `TRUST_PROXY=true` setting never populates the dedicated allowlist,
+    // so the guard reads an empty allowlist and fails closed on the forwarded
+    // protocol. The route returns the fixed no-secret error and delivers no
+    // token.
+    const decision = evaluateConfidentialTransport(authenticatedNoProxy, {
+      socketEncrypted: false,
+      remoteAddress: "203.0.113.7",
+      forwardedProto: "https",
+    });
+    expect(decision.allowed).toBe(false);
   });
 });
