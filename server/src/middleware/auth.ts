@@ -439,7 +439,33 @@ async function resolveOwnerInstanceAdmin(
   }
 }
 
-export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Request["actor"] | null> {
+/**
+ * Minimal header accessor `resolveCloudTenantActor` needs. Express `Request`
+ * satisfies it directly; websocket upgrade paths adapt a raw
+ * `IncomingMessage` with {@link cloudActorHeaderSourceFromHeaders} since
+ * trusted-header authentication must work identically for upgrades — a
+ * cloud-proxied browser has no local Better Auth session to fall back on.
+ */
+export interface CloudActorHeaderSource {
+  header(name: string): string | undefined;
+}
+
+/** Adapts a raw header map (e.g. `IncomingMessage.headers`) to {@link CloudActorHeaderSource}. */
+export function cloudActorHeaderSourceFromHeaders(
+  headers: Record<string, string | string[] | undefined>,
+): CloudActorHeaderSource {
+  return {
+    header(name: string) {
+      const value = headers[name.toLowerCase()];
+      return Array.isArray(value) ? value[0] : value;
+    },
+  };
+}
+
+export async function resolveCloudTenantActor(
+  db: Db,
+  req: CloudActorHeaderSource,
+): Promise<Express.Request["actor"] | null> {
   const expectedToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim();
   if (!expectedToken) return null;
 
@@ -614,7 +640,7 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
   };
 }
 
-function requiredCloudHeader(req: Request, name: string): string {
+function requiredCloudHeader(req: CloudActorHeaderSource, name: string): string {
   const value = req.header(name)?.trim();
   if (!value) {
     throw new Error(`Missing trusted Cloud tenant header ${name}`);
