@@ -199,6 +199,91 @@ export function parseGeminiJsonl(stdout: string) {
   };
 }
 
+/**
+ * Parse Google Antigravity CLI (agy) stream-json output.
+ *
+ * agy emits NDJSON lines shaped as:
+ *   {"event":"init","conversation_id":"...","init":{...}}
+ *   {"event":"step_update","step_update":{"conversation_id":"...","step_index":2,"state":"ACTIVE","step_type":"agent_response","text_delta":"..."}}
+ *   {"event":"result","result":{"conversation_id":"...","status":"SUCCESS","response":"...","usage":{"input_tokens":N,"output_tokens":N,"cache_read_tokens":N}}}
+ *
+ * This is structurally different from Gemini CLI's stream-json schema
+ * (top-level `type` events vs a nested `event` discriminator), so it gets a
+ * dedicated parser that returns the same shape as parseGeminiJsonl.
+ */
+export function parseAgyJsonl(stdout: string) {
+  let sessionId: string | null = null;
+  const textParts: string[] = [];
+  let errorMessage: string | null = null;
+  let costUsd: number | null = null;
+  let resultEvent: Record<string, unknown> | null = null;
+  let question: { prompt: string; choices: Array<{ key: string; label: string; description?: string }> } | null = null;
+  const usage = {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+  };
+
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const event = parseJson(line);
+    if (!event) continue;
+
+    const conversationId = asString(event.conversation_id, "").trim();
+    if (conversationId) sessionId = conversationId;
+
+    const eventType = asString(event.event, "").trim();
+
+    if (eventType === "step_update") {
+      const stepUpdate = parseObject(event.step_update);
+      const stepType = asString(stepUpdate.step_type, "").trim();
+      const state = asString(stepUpdate.state, "").trim();
+      if (stepType === "agent_response" && (state === "ACTIVE" || state === "DONE")) {
+        const delta = asString(stepUpdate.text_delta, "").trim();
+        if (delta) textParts.push(delta);
+      }
+      const stepUsage = stepUpdate.usage ?? event.usage;
+      if (stepUsage) accumulateUsage(usage, stepUsage);
+      continue;
+    }
+
+    if (eventType === "result") {
+      const result = parseObject(event.result);
+      resultEvent = { ...event, ...result };
+      const status = asString(result.status, "").toLowerCase();
+      if (status && status !== "success") {
+        const text = asErrorText(result.error ?? result.message ?? result.response).trim();
+        errorMessage = text || `Antigravity exited with status ${status}`;
+      }
+      const resultText = asString(result.response, "").trim();
+      if (resultText && textParts.length === 0) textParts.push(resultText);
+      const resultUsage = result.usage ?? event.usage;
+      if (resultUsage) accumulateUsage(usage, resultUsage);
+      costUsd =
+        asNumber(result.total_cost_usd, asNumber(result.cost_usd, asNumber(result.cost, costUsd ?? 0))) || costUsd;
+      continue;
+    }
+
+    if (eventType === "error") {
+      const text = asErrorText(event.error ?? event.message ?? event.detail).trim();
+      if (text) errorMessage = text;
+      continue;
+    }
+  }
+
+  return {
+    sessionId,
+    summary: textParts.join("").trim(),
+    usage,
+    costUsd,
+    errorMessage,
+    resultEvent,
+    question,
+  };
+}
+
 export function isGeminiSessionUnrecoverableError(stdout: string, stderr: string): boolean {
   const haystack = `${stdout}\n${stderr}`
     .split(/\r?\n/)

@@ -55,6 +55,7 @@ import {
   isGeminiTransientNetworkError,
   isGeminiTurnLimitResult,
   isGeminiSessionUnrecoverableError,
+  parseAgyJsonl,
   parseGeminiJsonl,
 } from "./parse.js";
 import { firstNonEmptyLine } from "./utils.js";
@@ -233,6 +234,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const command = asString(config.command, "gemini");
   const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
   const sandbox = asBoolean(config.sandbox, false);
+  // CLI compatibility mode: "gemini" (default) or "agy" (Google Antigravity CLI).
+  // agy shares the stream-json/--prompt shape with gemini but differs in the
+  // approval flag (--dangerously-skip-permissions vs --approval-mode yolo),
+  // sandbox flag syntax, resume flag (--conversation vs --resume), and its
+  // stream-json event schema.
+  const cliCompat = asString(config.cliCompat, "gemini").trim().toLowerCase() === "agy" ? "agy" : "gemini";
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -509,8 +516,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
   const commandNotes = (() => {
-    const notes: string[] = ["Prompt is passed to Gemini via --prompt for non-interactive execution."];
-    notes.push("Added --approval-mode yolo for unattended execution.");
+    const notes: string[] = []; 
+    if (cliCompat === "agy") {
+      notes.push("Prompt is passed to Antigravity CLI (agy) via --prompt for non-interactive execution.");
+      notes.push("Added --dangerously-skip-permissions for unattended execution.");
+    } else {
+      notes.push("Prompt is passed to Gemini via --prompt for non-interactive execution.");
+      notes.push("Added --approval-mode yolo for unattended execution.");
+    }
     notes.push("Set headless terminal/browser env so Gemini fails fast instead of opening interactive auth or color prompts.");
     if (executionTargetIsRemote) {
       notes.push("Set GEMINI_CLI_TRUST_WORKSPACE=true for remote headless execution.");
@@ -571,6 +584,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const buildArgs = (resumeSessionId: string | null) => {
+    if (cliCompat === "agy") {
+      const args = ["--output-format", "stream-json"];
+      if (resumeSessionId) args.push("--conversation", resumeSessionId);
+      if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
+      args.push("--dangerously-skip-permissions");
+      if (extraArgs.length > 0) args.push(...extraArgs);
+      args.push("--prompt", prompt);
+      return args;
+    }
     const args = ["--output-format", "stream-json"];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     if (model && model !== DEFAULT_GEMINI_LOCAL_MODEL) args.push("--model", model);
@@ -622,7 +644,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     });
     return {
       proc,
-      parsed: parseGeminiJsonl(proc.stdout),
+      parsed:
+        cliCompat === "agy"
+          ? parseAgyJsonl(proc.stdout)
+          : parseGeminiJsonl(proc.stdout),
     };
   };
 
