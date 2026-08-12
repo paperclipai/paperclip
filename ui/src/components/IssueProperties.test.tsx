@@ -789,7 +789,13 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("always exposes the add sub-issue action", async () => {
+  it("exposes the classic-layout add sub-issue pill action", async () => {
+    // The chat shell hosts the full tree in the center pane; the slim pill row
+    // + its Add sub-task button only render in the classic layout (PAP-496).
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: false,
+      enableClassicTaskInterface: true,
+    });
     const onAddSubIssue = vi.fn();
     const root = renderProperties(container, {
       issue: createIssue(),
@@ -797,10 +803,13 @@ describe("IssueProperties", () => {
       onAddSubIssue,
       onUpdate: vi.fn(),
     });
-    await flush();
+    // Wait for the classic-layout settings query to resolve (the pane starts in
+    // the chat shell until it does).
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Add sub-task");
+    });
 
     expect(container.textContent).toContain("Sub-tasks");
-    expect(container.textContent).toContain("Add sub-task");
 
     const addButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Add sub-task"));
@@ -811,6 +820,20 @@ describe("IssueProperties", () => {
     });
 
     expect(onAddSubIssue).toHaveBeenCalledTimes(1);
+
+    act(() => root.unmount());
+  });
+
+  it("does not duplicate sub-tasks in the properties pane in the chat shell", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue(),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    expect(container.textContent).not.toContain("Add sub-task");
+    expect(container.textContent).not.toContain("Sub-tasks");
 
     act(() => root.unmount());
   });
@@ -1114,6 +1137,12 @@ describe("IssueProperties", () => {
   });
 
   it("collapses long blocked-by and sub-task lists until the more button is clicked", async () => {
+    // The sub-task pill row (with its collapse control) is classic-layout only
+    // now — the chat shell promotes sub-tasks to their own pane tab (PAP-496).
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: false,
+      enableClassicTaskInterface: true,
+    });
     const blockedBy = Array.from({ length: 7 }, (_, index) => ({
       id: `blocker-${index + 1}`,
       identifier: `BLOCK-${index + 1}`,
@@ -1134,11 +1163,14 @@ describe("IssueProperties", () => {
       onUpdate: vi.fn(),
       inline: true,
     });
-    await flush();
+    // Wait for the classic-layout settings query to resolve so the sub-task
+    // pill row renders (the pane starts in the chat shell until it does).
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("SUB-5");
+    });
 
     expect(container.textContent).toContain("BLOCK-5");
     expect(container.textContent).not.toContain("BLOCK-6");
-    expect(container.textContent).toContain("SUB-5");
     expect(container.textContent).not.toContain("SUB-6");
     expect(
       Array.from(container.querySelectorAll("button")).filter((button) =>

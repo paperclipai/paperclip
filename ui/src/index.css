@@ -260,8 +260,11 @@
   --tc-mode-plan: var(--status-task-todo);
   --tc-mode-ask: #3b82f6;
 
-  /* Agent-comment bubble fill (v7 grammar): quiet gray card, no border. */
-  --bubble-agent: oklch(0.955 0 0);
+  /* Agent-comment comparison fill used by TaskChatLab. The chosen production
+     treatment sits directly on the page surface; this token keeps the darker
+     card available as an explicit lab alternative. */
+  --bubble-agent: oklch(0.97 0 0);
+  --bubble-agent-card-padding-inline: 0.875rem;
 
   /* Redesigned thread viewport bound: lets the thread own its scroll (auto-
      follow + pinned composer) inside the page flow. The issue header lives
@@ -273,6 +276,13 @@
   /* Redesigned chat-shell column cap (phase 2c): one token caps the page
      wrapper, thread body, and pinned composer so they widen in lockstep. */
   --tc-shell-max-w: 60rem;
+
+  /* Mobile pinned-composer bottom offset (PAP-495). Default clears just the
+     safe-area inset (+20px); Layout raises it to the bottom-nav height
+     (--sz-calc-14) while the auto-hiding mobile nav is on screen, so the
+     composer's action row never hides behind the nav. Desktop and the classic
+     thread never override it and fall through to the safe-area default. */
+  --tc-composer-bottom: var(--sz-calc-8);
 }
 
 .dark {
@@ -284,7 +294,7 @@
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.922 0 0);
   --primary-foreground: oklch(0.205 0 0);
-  --bubble-agent: oklch(0.24 0 0);
+  --bubble-agent: oklch(0.185 0 0);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
@@ -596,6 +606,43 @@
 .tc-approval { animation: tc-approval-pulse var(--motion-approval-pulse) var(--motion-ease-standard) infinite; }
 .tc-cursor { animation: tc-cursor-blink var(--motion-streaming-cursor-blink) step-end infinite; }
 .tc-enter-plan-entry { animation: tc-fade-rise var(--motion-plan-check) var(--motion-ease-out-expo) both; }
+
+/* ────────────────────────────────────────────────────────────────────────
+   Agent-bubble treatment explorations (PAP-501). Scoped to the TaskChatLab
+   stage via [data-bubble-variant]; the live thread never sets that attribute,
+   so these overrides remain lab-only comparisons. Feedback: the former
+   dark-mode agent card (oklch 0.24) read too light against the near-black page
+   for the bulk of the text. The production treatment now sits directly on
+   the page background; the card alternatives remain available for comparison.
+   ──────────────────────────────────────────────────────────────────────── */
+
+/* Former production treatment, retained as a direct before/after comparison
+   for the darker default. */
+[data-bubble-variant="former"] { --bubble-agent: oklch(0.955 0 0); }
+.dark [data-bubble-variant="former"] { --bubble-agent: oklch(0.24 0 0); }
+
+/* B · Hairline flush — near-page fill + a 1px hairline for gentle definition
+   without any brightness lift. */
+[data-bubble-variant="hairline"] { --bubble-agent: var(--background); }
+[data-bubble-variant="hairline"] [data-testid="task-chat-agent-bubble"] {
+  border: 1px solid var(--border);
+}
+.dark [data-bubble-variant="hairline"] { --bubble-agent: oklch(0.17 0 0); }
+.dark [data-bubble-variant="hairline"] [data-testid="task-chat-agent-bubble"] {
+  border-color: oklch(1 0 0 / 8%);
+}
+
+/* Card variants restore the shared card geometry that production no longer
+   applies to agent prose. */
+[data-bubble-variant="former"] [data-testid="task-chat-agent-bubble"],
+[data-bubble-variant="darker"] [data-testid="task-chat-agent-bubble"],
+[data-bubble-variant="hairline"] [data-testid="task-chat-agent-bubble"] {
+  background: var(--bubble-agent);
+  border-radius: var(--radius-2xl);
+  padding-left: var(--bubble-agent-card-padding-inline);
+  padding-right: var(--bubble-agent-card-padding-inline);
+  max-width: var(--pct-85);
+}
 /* Live-line viewport (PAP-361): exactly one line-height tall, clipping the
    wrapped interstitial block. On wrap, the inner block translates up whole
    line-heights (set inline as translateY(-(n−1)·1lh)) so the completed line

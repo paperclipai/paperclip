@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { Sidebar } from "./Sidebar";
@@ -637,6 +637,20 @@ export function Layout() {
               id="main-content"
               ref={mainContentRef}
               tabIndex={-1}
+              // Publish the pinned-composer bottom offset to descendants
+              // (PAP-495): while the auto-hiding mobile nav is on screen, raise
+              // it to the nav height so a sticky composer clears the nav; drop
+              // it back to the safe-area dock when the nav hides. Desktop leaves
+              // the token at its :root default.
+              style={
+                isMobile
+                  ? ({
+                      "--tc-composer-bottom": mobileNavVisible
+                        ? "var(--sz-calc-14)"
+                        : "var(--sz-calc-8)",
+                    } as CSSProperties)
+                  : undefined
+              }
               className={cn(
                 "flex-1 p-4 outline-none md:p-6",
                 // Reserve the scrollbar gutter on desktop so pages whose height

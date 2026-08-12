@@ -50,7 +50,7 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
         surface: "thread",
         items: [
           ...exchangePrefix(),
-          { id: "m-agent-1", kind: "message", author: "agent", authorName: AGENT, agentIcon: "bot", modeLabel: "Agent mode", text: "On it — I'll add a token-bucket limiter and wire it into the login route.", timestamp: "2:31 PM" },
+          { id: "m-agent-1", kind: "message", author: "agent", authorName: AGENT, agentIcon: "bot", text: "On it — I'll add a token-bucket limiter and wire it into the login route.", timestamp: "2:31 PM" },
         ],
       };
     case "thinking":
@@ -207,7 +207,6 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
             author: "agent",
             authorName: AGENT,
             agentIcon: "bot",
-            modeLabel: "Agent mode",
             text: "Done — added a per-account token-bucket limiter and wired it into the login route. Tests pass.",
             timestamp: "2:34 PM",
             attachedTurn: {
@@ -243,6 +242,43 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
           },
         ],
       };
+    case "activity-phases": {
+      const phase = (id: string, text: string | undefined, active: boolean, tools: TaskChatItem[]) => ({
+        id,
+        kind: "activity_phase" as const,
+        active,
+        interstitial: text ? { id: `${id}:message`, kind: "message" as const, author: "agent" as const, authorName: AGENT, text, interstitial: true } : undefined,
+        items: tools.filter((item): item is Extract<TaskChatItem, { kind: "tool" | "usage" }> => item.kind === "tool" || item.kind === "usage"),
+        summary: active ? "Ran 1 command, called 1 tool" : id.endsWith("opening") ? "Called 2 tools" : "Read 3 files, edited 1 file",
+      });
+      return {
+        surface: "thread",
+        items: [
+          ...exchangePrefix(),
+          {
+            id: "turn-long-run", kind: "turn", settled: false,
+            summary: { toolCount: 8, added: 4, removed: 1 },
+            liveStatus: { id: "long-status", kind: "status", status: "working", label: "Running tests", detail: "Bash · vitest", toolName: "Bash", startedAtMs: Date.now() - 48_000 },
+            items: [
+              phase("phase-opening", undefined, false, [
+                { id: "generic-1", kind: "tool", name: "Tool", rawName: "tool call", status: "completed" },
+                { id: "generic-2", kind: "tool", name: "Tool", rawName: "acp_tool", status: "failed", detail: "Adapter interrupted" },
+              ]),
+              phase("phase-read", "I found the relevant adapter and am tracing its render boundary.", false, [
+                { id: "read-1", kind: "tool", name: "Read", status: "completed", target: "ui/src/components/task-chat/transcript-adapter.ts" },
+                { id: "read-2", kind: "tool", name: "Read", status: "completed", target: "ui/src/components/task-chat/TaskChatTurn.tsx" },
+                { id: "read-3", kind: "tool", name: "Read", status: "completed", target: "ui/src/components/task-chat/TaskChatThreadView.tsx" },
+                { id: "edit-1", kind: "tool", name: "Edit", status: "completed", target: "ui/src/components/task-chat/task-chat-model.ts" },
+              ]),
+              phase("phase-active", "The grouping is wired; I’m running focused checks now.", true, [
+                { id: "bash-1", kind: "tool", name: "Bash", status: "in_progress", target: "vitest task-chat" },
+                { id: "mcp-1", kind: "tool", name: "Search", rawName: "mcp__docs__search", status: "completed" },
+              ]),
+            ],
+          },
+        ],
+      };
+    }
     case "plan-todo":
       return { surface: "plan", items: [], plan: SAMPLE_PLAN };
     case "interrupted":
