@@ -70,11 +70,6 @@ export interface TaskChatMessageItem {
   streaming?: boolean;
   /** Optimistic local echo state (matches IssueChatComment.clientStatus). */
   optimistic?: "pending" | "queued";
-  /**
-   * Per-message mode tag ("Agent mode" / "Plan mode" / "Ask mode"). Shown as a
-   * chip in the agent header and under a sent human bubble (v6 decision).
-   */
-  modeLabel?: string;
   /** Assigned agent icon name (AgentIconName) for the avatar header. */
   agentIcon?: string | null;
   /**

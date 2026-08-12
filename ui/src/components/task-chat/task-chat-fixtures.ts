@@ -50,7 +50,7 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
         surface: "thread",
         items: [
           ...exchangePrefix(),
-          { id: "m-agent-1", kind: "message", author: "agent", authorName: AGENT, agentIcon: "bot", modeLabel: "Agent mode", text: "On it — I'll add a token-bucket limiter and wire it into the login route.", timestamp: "2:31 PM" },
+          { id: "m-agent-1", kind: "message", author: "agent", authorName: AGENT, agentIcon: "bot", text: "On it — I'll add a token-bucket limiter and wire it into the login route.", timestamp: "2:31 PM" },
         ],
       };
     case "thinking":
@@ -207,7 +207,6 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
             author: "agent",
             authorName: AGENT,
             agentIcon: "bot",
-            modeLabel: "Agent mode",
             text: "Done — added a per-account token-bucket limiter and wired it into the login route. Tests pass.",
             timestamp: "2:34 PM",
             attachedTurn: {
