@@ -139,6 +139,12 @@ function truncateInline(value: string | null | undefined, max = 260) {
   return compact.length <= max ? compact : `${compact.slice(0, max - 3)}...`;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
 function readPositiveInteger(value: number, fallback: number) {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
@@ -232,6 +238,14 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       .from(agents)
       .where(eq(agents.id, agentId))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function isCheapRecoveryProfileEnabled(agentId: string | null) {
+    if (!agentId) return false;
+    const agent = await getAgent(agentId);
+    const modelProfiles = asRecord(asRecord(agent?.runtimeConfig)?.modelProfiles);
+    const cheapProfile = asRecord(modelProfiles?.cheap);
+    return cheapProfile?.enabled === true;
   }
 
   function isAgentInvokable(agent: AgentRow | null | undefined) {
@@ -759,6 +773,9 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     }
 
     const ownerAgentId = await resolveReviewOwnerAgentId(evidence.sourceIssue, evidence.sourceAgent);
+    const assigneeAdapterOverrides = await isCheapRecoveryProfileEnabled(ownerAgentId)
+      ? recoveryAssigneeAdapterOverrides("status_only")
+      : null;
     let review: Awaited<ReturnType<typeof issuesSvc.create>>;
     try {
       review = await issuesSvc.create(evidence.sourceIssue.companyId, {
@@ -771,7 +788,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         goalId: evidence.sourceIssue.goalId,
         billingCode: evidence.sourceIssue.billingCode,
         assigneeAgentId: ownerAgentId,
-        assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides("status_only"),
+        assigneeAdapterOverrides,
         originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
         originId: evidence.sourceIssue.id,
         originFingerprint: productivityReviewFingerprint(evidence.sourceIssue.id),
