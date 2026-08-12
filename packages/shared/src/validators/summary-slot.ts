@@ -47,6 +47,15 @@ export const summarySlotQuerySchema = z
 
 export const generateSummarySlotSchema = summarySlotQuerySchema;
 
+export const claimRoutineSummaryRefreshSlotsSchema = z
+  .object({
+    generationIssueId: z.string().uuid(),
+    staleAfterHours: z.number().finite().positive().max(24 * 365),
+    maxSlots: z.number().int().positive().max(50),
+    scopeKinds: z.union([z.literal("all"), summarySlotScopeKindSchema]),
+  })
+  .strict();
+
 export const writeSummarySlotSchema = z
   .object({
     scopeId: optionalScopeIdSchema,
@@ -61,4 +70,5 @@ export const writeSummarySlotSchema = z
 
 export type SummarySlotScopeSelectorInput = z.infer<typeof summarySlotScopeSelectorSchema>;
 export type GenerateSummarySlotInput = z.infer<typeof generateSummarySlotSchema>;
+export type ClaimRoutineSummaryRefreshSlotsInput = z.infer<typeof claimRoutineSummaryRefreshSlotsSchema>;
 export type WriteSummarySlotInput = z.infer<typeof writeSummarySlotSchema>;

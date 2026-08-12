@@ -89,6 +89,22 @@ export interface GenerateSummarySlotResponse {
   alreadyGenerating: boolean;
 }
 
+export interface ClaimRoutineSummaryRefreshSlotsRequest {
+  generationIssueId: string;
+  staleAfterHours: number;
+  maxSlots: number;
+  scopeKinds: SummarySlotScopeKind | "all";
+}
+
+export interface ClaimedRoutineSummaryRefreshSlot {
+  slot: SummarySlot;
+  document: SummarySlotDocument;
+}
+
+export interface ClaimRoutineSummaryRefreshSlotsResponse {
+  slots: ClaimedRoutineSummaryRefreshSlot[];
+}
+
 export interface WriteSummarySlotRequest {
   scopeId?: string | null;
   markdown: string;

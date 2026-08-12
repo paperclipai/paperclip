@@ -174,8 +174,12 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(summarizer).toMatchObject({
       defaultAdapterType: "claude_local",
       defaultAdapterConfig: { model: "claude-haiku-4-5" },
+      defaultRuntimeConfig: {
+        modelProfiles: {
+          cheap: { enabled: true, adapterConfig: { model: "claude-haiku-4-5" } },
+        },
+      },
     });
-    expect(summarizer?.defaultRuntimeConfig).toBeUndefined();
     expect(() => validateBuiltInAgentDefinitions([
       {
         key: "briefs",
@@ -1209,7 +1213,15 @@ describeEmbeddedPostgres("built-in agents", () => {
       featureKeys: ["summarizer"],
     });
 
-    expect(state.agent?.runtimeConfig).not.toHaveProperty("modelProfiles.cheap");
+    expect(state.agent?.runtimeConfig).toMatchObject({
+      modelProfiles: {
+        cheap: {
+          enabled: true,
+          label: "Cheap",
+          adapterConfig: { model: "claude-haiku-4-5" },
+        },
+      },
+    });
 
     expect(state.resources.map((resource) => [resource.resourceKind, resource.stockStatus])).toEqual([
       ["instructions", "stock_current"],
@@ -1245,6 +1257,14 @@ describeEmbeddedPostgres("built-in agents", () => {
       cronExpression: "0 8 * * *",
       timezone: "UTC",
     });
+    const [routineBinding] = await db.select().from(builtInManagedResources).where(and(
+      eq(builtInManagedResources.companyId, companyId),
+      eq(builtInManagedResources.resourceKind, "routine"),
+      eq(builtInManagedResources.resourceId, routine!.id),
+    ));
+    expect(routineBinding?.defaultsJson).toMatchObject({
+      issueTemplate: { modelProfile: "cheap" },
+    });
   });
 
   it("keeps the Summarizer not-configured until an adapter model is set", async () => {
@@ -1266,7 +1286,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
   });
 
-  it("preserves an operator-overridden cheap summariser model across reconcile", async () => {
+  it("enables the Summarizer cheap lane while preserving an operator-overridden low-cost model", async () => {
     const companyId = await seedCompany();
     const builtIns = builtInAgentService(db);
     const created = await builtIns.ensure(companyId, "summarizer");
@@ -1274,13 +1294,13 @@ describeEmbeddedPostgres("built-in agents", () => {
     // Operator overrides the cheap lane with a provider-specific low-cost model.
     await agentService(db).update(created.agentId!, {
       runtimeConfig: {
-        modelProfiles: { cheap: { enabled: true, label: "Cheap", adapterConfig: { model: "haiku-cheap" } } },
+        modelProfiles: { cheap: { enabled: false, label: "Cheap", adapterConfig: { model: "haiku-cheap" } } },
       },
     }, { allowBuiltInAgentMetadata: true });
 
     const reconciled = await builtIns.ensure(companyId, "summarizer");
     expect(reconciled.agent?.runtimeConfig).toMatchObject({
-      modelProfiles: { cheap: { adapterConfig: { model: "haiku-cheap" } } },
+      modelProfiles: { cheap: { enabled: true, adapterConfig: { model: "haiku-cheap" } } },
     });
   });
 
