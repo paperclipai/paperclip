@@ -685,6 +685,9 @@ describe("CompanyEnvironments — test provider button", () => {
         driver: "sandbox",
         envVars: { API_TOKEN: { type: "plain", value: "draft-token" } },
       }),
+      // The secret-context company must ride along so the server can scope
+      // bindings even when the environment has none yet.
+      "company-1",
     );
     expect(getEnvironmentFormPage()).toBeNull();
   });

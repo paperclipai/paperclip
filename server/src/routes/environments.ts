@@ -498,7 +498,8 @@ export function environmentRoutes(
    * Pick the company context used to create new secrets from raw-pasted
    * values, normalize env-var bindings, and resolve probe secrets. An
    * explicit route param / query wins, then the single company the
-   * environment's bindings already live in, then the actor's own company.
+   * environment's bindings already live in, then the actor's own company,
+   * then the instance's only company (when exactly one exists).
    * Bindings must never veto an explicit caller context: config-derived
    * bindings live in the company that owns each referenced secret (see
    * `replaceSecretRefsForInstanceTarget`), so an environment's bindings may
@@ -525,6 +526,14 @@ export function environmentRoutes(
     if (req.actor.type === "agent" && req.actor.companyId) return req.actor.companyId;
     if (req.actor.type === "board" && Array.isArray(req.actor.companyIds) && req.actor.companyIds.length === 1) {
       return req.actor.companyIds[0] ?? null;
+    }
+    // Single-company instances have exactly one possible secret scope, so an
+    // actor whose memberships cannot pin a company (none, or several — e.g. an
+    // instance admin provisioned without a membership row) still resolves.
+    // Mirrors the fallback in `resolveCustomImageCompanyId`.
+    const instanceCompanyIds = await instanceSettings.listCompanyIds();
+    if (instanceCompanyIds.length === 1 && instanceCompanyIds[0]) {
+      return instanceCompanyIds[0];
     }
     if (!options.required) return null;
     throw unprocessable(
