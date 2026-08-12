@@ -20,6 +20,7 @@ export type RunDatabaseBackupOptions = {
   retention: BackupRetentionPolicy;
   maxBackups?: number;
   getAvailableDiskSpaceBytes?: (backupDir: string) => number;
+  createOutputStream?: (filePath: string) => fs.WriteStream;
   filenamePrefix?: string;
   connectTimeoutSeconds?: number;
   /**
@@ -435,6 +436,7 @@ async function runPgDumpBackup(opts: {
   connectionString: string;
   partialBackupFile: string;
   connectTimeout: number;
+  createOutputStream?: (filePath: string) => fs.WriteStream;
 }): Promise<void> {
   const pgDumpBin = process.env.PAPERCLIP_PG_DUMP_PATH || "pg_dump";
   const child = spawn(
@@ -464,7 +466,9 @@ async function runPgDumpBackup(opts: {
     () => ({ ok: true } as const),
     (error) => ({ ok: false, error } as const),
   );
-  const output = fs.createWriteStream(opts.partialBackupFile, { flags: "wx" });
+  const output = opts.createOutputStream
+    ? opts.createOutputStream(opts.partialBackupFile)
+    : fs.createWriteStream(opts.partialBackupFile, { flags: "wx" });
   try {
     await waitForWriteStreamOpen(output);
   } catch (error) {
@@ -778,6 +782,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           connectionString: opts.connectionString,
           partialBackupFile,
           connectTimeout,
+          createOutputStream: opts.createOutputStream,
         });
         fs.renameSync(partialBackupFile, backupFile);
         backupFileFinalized = true;
