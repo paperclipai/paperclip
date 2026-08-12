@@ -48,18 +48,24 @@ test("archived company URLs bounce cold arrivals and honor deliberate visits", a
   });
   expect(archiveRes.ok(), `archive failed ${archiveRes.status()}: ${await archiveRes.text()}`).toBe(true);
 
+  // The e2e server is shared across specs, so other companies exist and the
+  // bounce may pick any active one; the contract is only "not the archived
+  // company's routes anymore".
+  const awayFromArchived = (url: URL) =>
+    url.pathname.endsWith("/dashboard") && !url.pathname.startsWith(`/${archived.prefix}/`);
+
   // Cold arrival #1: a fresh load straight onto the archived company's
   // remembered URL (previously the first-open blank-screen crash) bounces
-  // to the active company.
+  // to an active company.
   await page.goto(`/${archived.prefix}/dashboard`);
-  await page.waitForURL(new RegExp(`/${active.prefix}/dashboard`), { timeout: 15_000 });
+  await page.waitForURL(awayFromArchived, { timeout: 15_000 });
   await expect(page.getByText("Archived Loop Archived is archived")).toBeVisible();
   expect(fatal, `crash on direct load of archived company URL:\n${fatal.join("\n")}`).toEqual([]);
 
-  // Cold arrival #2: back-navigation onto the archived URL (previously the
+  // Cold arrival #2: re-arrival at the archived URL (previously the
   // "switched back" crash) bounces the same way.
   await page.goto(`/${archived.prefix}/issues`);
-  await page.waitForURL(new RegExp(`/${active.prefix}/dashboard`), { timeout: 15_000 });
+  await page.waitForURL(awayFromArchived, { timeout: 15_000 });
   expect(fatal, `crash on re-arrival at archived company URL:\n${fatal.join("\n")}`).toEqual([]);
 
   // Deliberate visit: selecting the archived company from the companies list
