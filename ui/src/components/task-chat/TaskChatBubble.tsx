@@ -47,8 +47,8 @@ function initialsForName(name: string) {
 /**
  * Author-typed message row — the primary legibility signal. Human messages sit
  * right in a solid accent bubble; agent messages sit left in a neutral card
- * bubble with an avatar author header (the agent's assigned icon + name · mode
- * chip); system notices are centered and recede.
+ * bubble with an avatar author header (the agent's assigned icon + name);
+ * system notices are centered and recede.
  */
 function galleryItemForImage(src: string, name?: string): GalleryMediaItem {
   return {
@@ -112,15 +112,14 @@ export function TaskChatBubble({ item, attachedTurn, actions }: TaskChatBubblePr
               userName={item.onBehalfOfUserName}
             />
           ) : null}
-          {item.modeLabel ? (
-            <span className="rounded-full border border-border px-2 py-px text-(length:--text-micro) font-medium text-muted-foreground">
-              {item.modeLabel}
-            </span>
-          ) : null}
         </span>
       ) : null}
       {bodyText.length > 0 ? (
         <div
+          // Stable hook so the TaskChatLab bubble-treatment explorations
+          // (PAP-501) can scope background/border overrides to the agent
+          // bubble body without touching the live thread.
+          data-testid={isHuman ? "task-chat-human-bubble" : "task-chat-agent-bubble"}
           className={cn(
             "max-w-(--pct-85) break-words px-3.5 py-2 text-sm",
             isHuman

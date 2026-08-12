@@ -588,6 +588,41 @@
 .tc-approval { animation: tc-approval-pulse var(--motion-approval-pulse) var(--motion-ease-standard) infinite; }
 .tc-cursor { animation: tc-cursor-blink var(--motion-streaming-cursor-blink) step-end infinite; }
 .tc-enter-plan-entry { animation: tc-fade-rise var(--motion-plan-check) var(--motion-ease-out-expo) both; }
+
+/* ────────────────────────────────────────────────────────────────────────
+   Agent-bubble treatment explorations (PAP-501). Scoped to the TaskChatLab
+   stage via [data-bubble-variant]; the live thread never sets that attribute,
+   so these overrides are lab-only until one is picked and its tokens are
+   promoted into --bubble-agent above. Feedback: the dark-mode agent card
+   (oklch 0.24) reads too light against the near-black page for the bulk of the
+   text. Each variant pairs a light-mode treatment with the dark one.
+   ──────────────────────────────────────────────────────────────────────── */
+
+/* A · Darker bubble — same card grammar, fill lowered so it recedes toward
+   the page instead of glowing above it. */
+[data-bubble-variant="darker"] { --bubble-agent: oklch(0.97 0 0); }
+.dark [data-bubble-variant="darker"] { --bubble-agent: oklch(0.185 0 0); }
+
+/* B · Hairline flush — near-page fill + a 1px hairline for gentle definition
+   without any brightness lift. */
+[data-bubble-variant="hairline"] { --bubble-agent: var(--background); }
+[data-bubble-variant="hairline"] [data-testid="task-chat-agent-bubble"] {
+  border: 1px solid var(--border);
+}
+.dark [data-bubble-variant="hairline"] { --bubble-agent: oklch(0.17 0 0); }
+.dark [data-bubble-variant="hairline"] [data-testid="task-chat-agent-bubble"] {
+  border-color: oklch(1 0 0 / 8%);
+}
+
+/* C · On the page bg — no fill, no border; agent prose sits directly on the
+   page à la Claude/ChatGPT and spacing does the separation work. */
+[data-bubble-variant="flush"] [data-testid="task-chat-agent-bubble"] {
+  background: transparent;
+  border-radius: 0;
+  padding-left: 0.25rem;
+  padding-right: 0.25rem;
+  max-width: 100%;
+}
 /* Live-line viewport (PAP-361): exactly one line-height tall, clipping the
    wrapped interstitial block. On wrap, the inner block translates up whole
    line-heights (set inline as translateY(-(n−1)·1lh)) so the completed line
