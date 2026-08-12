@@ -687,6 +687,13 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
+
+function resolveKeepIdleOnTimeout(
+  agent: Pick<typeof agents.$inferSelect, "adapterType" | "adapterConfig">,
+) {
+  const configured = agent.adapterConfig?.keepIdleOnTimeout;
+  return typeof configured === "boolean" ? configured : SESSIONED_LOCAL_ADAPTERS.has(agent.adapterType);
+}
 // Routes and the scheduler construct separate heartbeatService instances, but
 // they must agree on in-process adapter executions when reaping stale runs.
 const activeRunExecutions = new Set<string>();
@@ -9959,6 +9966,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return { outcome: "not_applicable" as const, queuedRun: null };
     }
 
+    // A timeout has its own availability policy in finalizeAgentStatus (see
+    // issueNeedsImmediateRecovery above): the agent either stays idle for the
+    // normal scheduler to retry on the next tick, or latches into error under
+    // the consecutive-timeout cap. Queuing an immediate missing-comment retry
+    // here would claim the agent and flip it back to "running" right after
+    // that terminal state is persisted, silently undoing either outcome.
+    if (run.status === "timed_out") {
+      if (run.issueCommentStatus !== "not_applicable") {
+        await patchRunIssueCommentStatus(run.id, {
+          issueCommentStatus: "not_applicable",
+          issueCommentSatisfiedByCommentId: null,
+          issueCommentRetryQueuedAt: null,
+        });
+      }
+      return { outcome: "not_applicable" as const, queuedRun: null };
+    }
+
     const postedComment = await findRunIssueComment(run.id, run.companyId, issueId);
     if (postedComment) {
       await patchRunIssueCommentStatus(run.id, {
@@ -12817,7 +12841,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agentId: string,
     outcome: "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out",
     failureReason?: string | null,
-    options?: { keepIdleOnFailure?: boolean; wasFirstHeartbeat?: boolean },
+    options?: {
+      keepIdleOnFailure?: boolean;
+      keepIdleOnTimeout?: boolean;
+      wasFirstHeartbeat?: boolean;
+    },
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -12828,13 +12856,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const isFirstHeartbeat = options?.wasFirstHeartbeat ?? !existing.lastHeartbeatAt;
 
+    const previousTimeoutCount =
+      typeof existing.metadata?.consecutiveTimeoutCount === "number" &&
+      Number.isFinite(existing.metadata.consecutiveTimeoutCount) &&
+      existing.metadata.consecutiveTimeoutCount >= 0
+        ? Math.floor(existing.metadata.consecutiveTimeoutCount)
+        : 0;
+    const consecutiveTimeoutCount = outcome === "timed_out" ? previousTimeoutCount + 1 : 0;
+    const timeoutUnderCap = consecutiveTimeoutCount <= 3;
+
     const runningCount = await countRunningRunsForAgent(agentId);
     const nextStatus =
       runningCount > 0
         ? "running"
-        : outcome === "succeeded" || outcome === "interrupted" || outcome === "cancelled" || (outcome === "failed" && options?.keepIdleOnFailure)
+        : outcome === "succeeded" ||
+            outcome === "interrupted" ||
+            outcome === "cancelled" ||
+            (outcome === "failed" && options?.keepIdleOnFailure) ||
+            (outcome === "timed_out" && options?.keepIdleOnTimeout && timeoutUnderCap)
           ? "idle"
           : "error";
+    const statusFailureReason =
+      outcome === "timed_out" && !timeoutUnderCap
+        ? `Timed out (${consecutiveTimeoutCount} consecutive timeouts; latching error)`
+        : failureReason;
 
     const updated = await db
       .update(agents)
@@ -12843,7 +12888,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // Persist a human-readable reason on the agent record when it enters
         // error so operators see it on the agent page without digging into run
         // events; clear it whenever the agent leaves error.
-        errorReason: nextStatus === "error" ? truncateAgentErrorReason(failureReason) : null,
+        errorReason: nextStatus === "error" ? truncateAgentErrorReason(statusFailureReason) : null,
+        metadata: { ...(existing.metadata ?? {}), consecutiveTimeoutCount },
         lastHeartbeatAt: new Date(),
         updatedAt: new Date(),
       })
@@ -15899,6 +15945,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       const finalizedRun = persistedRun ?? (await getRun(run.id));
+
+      // Persist this run's terminal agent status BEFORE any promotion/handoff
+      // below can queue and dispatch a continuation run for the same agent.
+      // releaseIssueExecutionAndPromote/handleRunLivenessContinuation/
+      // handleSuccessfulRunHandoff can claim a new run and flip the agent to
+      // "running" via a fire-and-forget executeRun (see
+      // startNextQueuedRunForAgent), which used to race this write: whichever
+      // update committed last won, so a promoted retry could silently
+      // overwrite this run's own terminal error/idle status (or vice versa).
+      // Finalizing first means the agent's status is already settled by the
+      // time any such claim reads it for invokability.
+      await finalizeAgentStatus(
+        agent.id,
+        outcome,
+        runErrorMessage,
+        {
+          keepIdleOnFailure:
+            outcome === "failed" &&
+            ((finalizedRun ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota" : runErrorCode === "provider_quota") ||
+              isWorkspaceSyncConflictFailure(adapterResult.errorMessage)),
+          keepIdleOnTimeout: resolveKeepIdleOnTimeout(agent),
+          wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+        },
+      );
+
       if (finalizedRun) {
         await appendRunEvent(finalizedRun, seq++, {
           eventType: "lifecycle",
@@ -16042,18 +16113,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       }
-      await finalizeAgentStatus(
-        agent.id,
-        outcome,
-        outcome === "succeeded" ? null : (adapterResult.errorMessage ?? null),
-        {
-          keepIdleOnFailure:
-            outcome === "failed" &&
-            ((finalizedRun ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota" : runErrorCode === "provider_quota") ||
-              isWorkspaceSyncConflictFailure(adapterResult.errorMessage)),
-          wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
-        },
-      );
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -16947,7 +17006,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         (issue.status === "todo" || issue.status === "in_progress") &&
         !issue.assigneeUserId &&
         issue.assigneeAgentId === run.agentId &&
-        (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled");
+        // A timeout has its own availability policy in finalizeAgentStatus:
+        // sessioned local adapters remain idle through the bounded timeout
+        // streak, so their normal scheduler can retry them on the next tick.
+        // Do not promote an immediate issue-continuation run here, because that
+        // new run claims the agent as running before the terminal timeout state
+        // can be observed or persisted.
+        (run.status === "failed" || run.status === "cancelled");
 
       if (!issueNeedsImmediateRecovery) {
         return { kind: "released" as const };
