@@ -50,6 +50,7 @@ import type { PluginJobStore } from "./plugin-job-store.js";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import { pluginDatabaseService } from "./plugin-database.js";
+import { resolveBundledCatalogRoot } from "./bundled-plugins.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -126,10 +127,15 @@ const K8S_IN_CLUSTER_ENV_PASSTHROUGH = [
  * executes inside the plugin worker, whose environment is scrubbed, so
  * the deployment-level var must be forwarded explicitly.
  *
- * Keyed by the installed npm package name — the `@paperclipai` scope is
- * project-controlled — and cross-checked against the manifest's declared
- * driver key. A third-party plugin that merely declares a first-party
- * driver key (e.g. `daytona`) matches neither and receives nothing.
+ * Keyed by the installed npm package name and cross-checked against the
+ * manifest's declared driver key — but name and manifest are both
+ * plugin-authored, so neither is proof of identity on its own. The gate
+ * therefore also requires a trusted install origin: a registry install
+ * (`packagePath` null — the `@paperclipai` scope is project-controlled at
+ * the registry), or a local path inside the repo/bundled plugin catalog,
+ * which ships inside the release image and is as trusted as the server
+ * code itself. An operator-added local plugin directory can claim any
+ * name and driver key and still receives nothing.
  */
 const SANDBOX_PROVIDER_CREDENTIAL_ENV_PASSTHROUGH: Record<
   string,
@@ -146,6 +152,10 @@ export function buildPluginWorkerEnv(input: {
     environmentDrivers?: ReadonlyArray<{ driverKey: string }>;
   };
   packageName?: string;
+  /** Local install path (`PluginRecord.packagePath`); null for registry installs. */
+  packagePath?: string | null;
+  /** Test seam; defaults to the repo plugin tree and the bundled catalog root. */
+  trustedLocalPluginRoots?: readonly string[];
   instanceInfo: { deploymentMode?: string | null; deploymentExposure?: string | null };
   processEnv?: NodeJS.ProcessEnv;
 }): Record<string, string> {
@@ -158,7 +168,12 @@ export function buildPluginWorkerEnv(input: {
     && input.manifest.capabilities.includes("environment.drivers.register");
   if (!canRegisterEnvironmentDrivers) return env;
 
-  const credentialEntry = input.packageName
+  const trustedLocalRoots = input.trustedLocalPluginRoots
+    ?? [BUNDLED_LOCAL_PLUGIN_ROOT, resolveBundledCatalogRoot(processEnv)];
+  const installOriginTrusted =
+    input.packagePath == null
+    || trustedLocalRoots.some((root) => isPathWithin(root, path.resolve(input.packagePath as string)));
+  const credentialEntry = installOriginTrusted && input.packageName
     ? SANDBOX_PROVIDER_CREDENTIAL_ENV_PASSTHROUGH[input.packageName]
     : undefined;
   const credentialKeys =
@@ -2258,7 +2273,12 @@ export function pluginLoader(
         databaseNamespace,
         hostHandlers,
         autoRestart: true,
-        env: buildPluginWorkerEnv({ manifest, packageName: activePlugin.packageName, instanceInfo }),
+        env: buildPluginWorkerEnv({
+          manifest,
+          packageName: activePlugin.packageName,
+          packagePath: activePlugin.packagePath,
+          instanceInfo,
+        }),
         // Authorize the worker to act on each configured company from its
         // proactive loops/timers (LOOA-629). Seeded here so it is in place
         // before any setup()-time worker→host call (LOOA-695). The authorized
