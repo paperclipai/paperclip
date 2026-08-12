@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@/lib/router";
-import { List, Lock, Maximize2, Minus, Plus, RotateCcw, Target } from "lucide-react";
+import { ChevronRight, List, Lock, Maximize2, Minus, Plus, RotateCcw, Target } from "lucide-react";
 import type { Agent, GoalMapIssueNode, GoalMapNode, GoalMapStatusCounts } from "@paperclipai/shared";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
@@ -156,10 +156,16 @@ function viewStateStorageKey(companyId: string): string {
   return `paperclip:goal-map-view:${companyId}`;
 }
 
+interface CollapsedState {
+  issueIds: Set<string>;
+  goalIds: Set<string>;
+}
+
 function layoutGoalMap(
   nodes: GoalMapNode[],
   trees: IssueTreeInfo,
   overrides: PositionOverrides,
+  collapsed: CollapsedState,
 ): GoalMapLayout {
   const nodeIds = new Set(nodes.map((n) => n.goal.id));
   const goalChildren = new Map<string, GoalMapNode[]>();
@@ -177,7 +183,7 @@ function layoutGoalMap(
     const memoized = issueHeightMemo.get(issue.id);
     if (memoized !== undefined) return memoized;
     let h = issueNodeHeight(trees, issue) + VGAP;
-    const children = trees.childrenById.get(issue.id) ?? [];
+    const children = collapsed.issueIds.has(issue.id) ? [] : trees.childrenById.get(issue.id) ?? [];
     if (children.length > 0) {
       let sum = 0;
       for (const child of children) sum += issueSubH(child);
@@ -187,6 +193,7 @@ function layoutGoalMap(
     return h;
   }
   function goalIssuesHeight(goalId: string): number {
+    if (collapsed.goalIds.has(goalId)) return 0;
     let h = 0;
     for (const root of trees.rootsByGoalId.get(goalId) ?? []) h += issueSubH(root);
     return h;
@@ -215,6 +222,7 @@ function layoutGoalMap(
     const h = issueSubH(issue);
     const nodeH = issueNodeHeight(trees, issue);
     placedIssueById.set(issue.id, { issue, x, y: y + (h - VGAP - nodeH) / 2, h: nodeH });
+    if (collapsed.issueIds.has(issue.id)) return;
     let cy = y;
     for (const child of trees.childrenById.get(issue.id) ?? []) {
       placeIssue(child, x + COL_STEP, cy);
@@ -227,7 +235,7 @@ function layoutGoalMap(
     placedGoalById.set(node.goal.id, { node, x, y: y + (totalHeight - VGAP - GOAL_H) / 2 });
     const childX = x + GOAL_W + GAP_X;
     let cy = y;
-    const roots = trees.rootsByGoalId.get(node.goal.id) ?? [];
+    const roots = collapsed.goalIds.has(node.goal.id) ? [] : trees.rootsByGoalId.get(node.goal.id) ?? [];
     for (const root of roots) {
       placeIssue(root, childX, cy);
       cy += issueSubH(root);
@@ -393,10 +401,17 @@ export function GoalMap() {
     }
   }, [selectedCompanyId]);
 
+  const [collapsedIssueIds, setCollapsedIssueIds] = useState<Set<string>>(new Set());
+  const [collapsedGoalIds, setCollapsedGoalIds] = useState<Set<string>>(new Set());
+  const collapsed = useMemo<CollapsedState>(
+    () => ({ issueIds: collapsedIssueIds, goalIds: collapsedGoalIds }),
+    [collapsedIssueIds, collapsedGoalIds],
+  );
+
   const trees = useMemo(() => buildIssueTrees(visibleIssues), [visibleIssues]);
   const layout = useMemo(
-    () => layoutGoalMap(goalMap?.nodes ?? [], trees, positionOverrides),
-    [goalMap, trees, positionOverrides],
+    () => layoutGoalMap(goalMap?.nodes ?? [], trees, positionOverrides, collapsed),
+    [goalMap, trees, positionOverrides, collapsed],
   );
   const issueById = useMemo(
     () => new Map((goalMap?.issues ?? []).map((issue) => [issue.id, issue])),
@@ -668,8 +683,20 @@ export function GoalMap() {
     try {
       const raw = window.localStorage.getItem(viewStateStorageKey(selectedCompanyId));
       if (raw) {
-        const parsed = JSON.parse(raw) as { hideCompleted?: unknown; pan?: { x?: unknown; y?: unknown }; zoom?: unknown };
+        const parsed = JSON.parse(raw) as {
+          hideCompleted?: unknown;
+          pan?: { x?: unknown; y?: unknown };
+          zoom?: unknown;
+          collapsedIssueIds?: unknown;
+          collapsedGoalIds?: unknown;
+        };
         if (typeof parsed.hideCompleted === "boolean") setHideCompleted(parsed.hideCompleted);
+        if (Array.isArray(parsed.collapsedIssueIds)) {
+          setCollapsedIssueIds(new Set(parsed.collapsedIssueIds.filter((id): id is string => typeof id === "string")));
+        }
+        if (Array.isArray(parsed.collapsedGoalIds)) {
+          setCollapsedGoalIds(new Set(parsed.collapsedGoalIds.filter((id): id is string => typeof id === "string")));
+        }
         if (
           typeof parsed.zoom === "number" &&
           typeof parsed.pan?.x === "number" &&
@@ -691,14 +718,20 @@ export function GoalMap() {
       try {
         window.localStorage.setItem(
           viewStateStorageKey(selectedCompanyId),
-          JSON.stringify({ hideCompleted, pan, zoom }),
+          JSON.stringify({
+            hideCompleted,
+            pan,
+            zoom,
+            collapsedIssueIds: [...collapsedIssueIds],
+            collapsedGoalIds: [...collapsedGoalIds],
+          }),
         );
       } catch {
         // View state is cosmetic; ignore storage failures.
       }
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [selectedCompanyId, viewLoaded, hideCompleted, pan, zoom]);
+  }, [selectedCompanyId, viewLoaded, hideCompleted, pan, zoom, collapsedIssueIds, collapsedGoalIds]);
 
   useEffect(() => {
     if (hasInitialized.current || !viewLoaded || layout.placedGoals.length === 0 || !containerRef.current) return;
@@ -959,6 +992,15 @@ export function GoalMap() {
                   onClick={() => {
                     if (!suppressNextClick.current) setSelection({ kind: "goal", id: node.goal.id });
                   }}
+                  onDoubleClick={() => {
+                    if ((trees.rootsByGoalId.get(node.goal.id)?.length ?? 0) === 0) return;
+                    setCollapsedGoalIds((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(node.goal.id)) next.delete(node.goal.id);
+                      else next.add(node.goal.id);
+                      return next;
+                    });
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
@@ -970,6 +1012,9 @@ export function GoalMap() {
                     <div className="flex items-center gap-1.5">
                       <span className="truncate text-sm font-semibold">{node.goal.title}</span>
                       {node.gated && <Lock aria-label="Gated by open blockers" className="h-3 w-3 shrink-0 text-(--hex-facc15)" />}
+                      {collapsedGoalIds.has(node.goal.id) && (
+                        <ChevronRight aria-label="Tasks collapsed" className="ml-auto h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      )}
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
@@ -1016,7 +1061,18 @@ export function GoalMap() {
                     zIndex: isDragging ? 10 : undefined,
                   }}
                   onClick={() => selectIssue(issue.id)}
-                  onDoubleClick={() => navigate(`/issues/${issue.id}`)}
+                  onDoubleClick={() => {
+                    if (hasKids) {
+                      setCollapsedIssueIds((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(issue.id)) next.delete(issue.id);
+                        else next.add(issue.id);
+                        return next;
+                      });
+                    } else {
+                      navigate(`/issues/${issue.id}`);
+                    }
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
@@ -1033,6 +1089,15 @@ export function GoalMap() {
                       <span className={cn("truncate text-xs font-medium", issue.status === "cancelled" && "text-muted-foreground line-through")}>
                         {issue.title}
                       </span>
+                      {collapsedIssueIds.has(issue.id) && stats && (
+                        <span
+                          aria-label="Sub-tasks collapsed"
+                          className="ml-auto flex shrink-0 items-center gap-0.5 font-mono text-(length:--text-nano) tabular-nums text-muted-foreground"
+                        >
+                          <ChevronRight className="h-3 w-3" />
+                          {stats.denom}
+                        </span>
+                      )}
                     </div>
                     {hasKids && stats && (
                       <div className="flex items-center gap-1.5 pl-5">
@@ -1062,7 +1127,10 @@ export function GoalMap() {
         {/* Inspector */}
         <aside className="flex w-full shrink-0 flex-col gap-4 overflow-y-auto border-t border-border bg-background p-4 md:w-80 md:border-t-0 md:border-l">
           {!selectedGoal && !selectedIssue && (
-            <p className="text-sm text-muted-foreground">Select a goal or task. Drag a task onto another task or goal to move it; double-click to open it.</p>
+            <p className="text-sm text-muted-foreground">
+              Select a goal or task. Drag cards to move, nest, or place them freely; double-click a parent to
+              collapse it, a leaf task to open it.
+            </p>
           )}
 
           {selectedGoal && (
@@ -1233,7 +1301,8 @@ export function GoalMap() {
                   </Link>
                 </div>
                 <p className="mt-1.5 text-xs text-muted-foreground">
-                  Drag the card to move it under another task or goal. Double-click opens the full task.
+                  Drag the card to move or nest it. Double-click a parent to collapse or expand its sub-tasks;
+                  double-click a leaf task to open it.
                 </p>
               </InspectorSection>
 
