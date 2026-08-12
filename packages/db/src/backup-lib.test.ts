@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Writable } from "node:stream";
 import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import postgres from "postgres";
@@ -22,7 +21,7 @@ const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 async function importBackupLibWithMocks(options?: {
-  createWriteStream?: typeof fs.createWriteStream;
+  spawn?: typeof import("node:child_process").spawn;
 }) {
   vi.resetModules();
   vi.doMock("postgres", () => ({
@@ -37,26 +36,17 @@ async function importBackupLibWithMocks(options?: {
       return sql;
     },
   }));
-  if (options?.createWriteStream) {
-    vi.doMock("node:fs", async () => {
-      const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
-      const actualDefault = "default" in actual ? actual.default : actual;
-      return {
-        ...actual,
-        createWriteStream: options.createWriteStream,
-        default: {
-          ...actualDefault,
-          createWriteStream: options.createWriteStream,
-        },
-      };
-    });
+  if (options?.spawn) {
+    vi.doMock("node:child_process", () => ({
+      spawn: options.spawn,
+    }));
   }
 
   try {
     return await import("./backup-lib.js");
   } finally {
     vi.doUnmock("postgres");
-    vi.doUnmock("node:fs");
+    vi.doUnmock("node:child_process");
   }
 }
 
@@ -186,66 +176,84 @@ describe("runDatabaseBackup preflight", () => {
   });
 
   it(
-    "does not emit an unhandled rejection when pg_dump fails before the output stream opens",
+    "kills pg_dump and destroys the custom output stream when it fails before opening",
     async () => {
       const backupDir = createTempDir("paperclip-db-backup-pgdump-early-fail-");
-      const realPgDumpPath = process.env.PAPERCLIP_PG_DUMP_PATH;
-      const missingPgDumpPath = path.join(backupDir, "missing-pg-dump");
-      const unhandledRejections: unknown[] = [];
-      const onUnhandledRejection = (reason: unknown) => {
-        unhandledRejections.push(reason);
-      };
+      const streamOpenError = new Error("stream open failed");
 
-      class DelayedOpenWriteStream extends Writable {
+      class ErrorBeforeOpenWriteStream {
         pending = true;
+        destroyed = false;
+        private openListener?: () => void;
+        private errorListener?: (error: unknown) => void;
 
         constructor() {
-          super();
           setTimeout(() => {
-            this.pending = false;
-            this.emit("open", 1);
-          }, 25);
+            this.errorListener?.(streamOpenError);
+          }, 0);
         }
 
-        _write(
-          _chunk: unknown,
-          _encoding: BufferEncoding,
-          callback: (error?: Error | null) => void,
-        ): void {
-          callback();
+        once(event: "open" | "error", listener: (() => void) | ((error: unknown) => void)): this {
+          if (event === "open") {
+            this.openListener = listener as () => void;
+          } else {
+            this.errorListener = listener as (error: unknown) => void;
+          }
+          return this;
+        }
+
+        removeListener(event: "open" | "error", listener: (() => void) | ((error: unknown) => void)): this {
+          if (event === "open" && this.openListener === listener) {
+            this.openListener = undefined;
+          }
+          if (event === "error" && this.errorListener === listener) {
+            this.errorListener = undefined;
+          }
+          return this;
+        }
+
+        destroy(): this {
+          this.destroyed = true;
+          return this;
         }
       }
 
-      const createWriteStream = vi.fn(
-        () => new DelayedOpenWriteStream() as unknown as fs.WriteStream,
-      );
+      let output: ErrorBeforeOpenWriteStream | undefined;
+      const createOutputStream = vi.fn(() => {
+        output = new ErrorBeforeOpenWriteStream();
+        return output as unknown as fs.WriteStream;
+      });
+      const onceHandlers = new Map<string, (...args: unknown[]) => void>();
+      const kill = vi.fn(() => {
+        onceHandlers.get("exit")?.(null, "SIGTERM");
+      });
+      const spawn = vi.fn(() => ({
+          stdout: {} as NodeJS.ReadableStream,
+          stderr: { on: vi.fn() },
+          kill,
+          once: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+            onceHandlers.set(event, handler);
+          }),
+        }));
+
       const { runDatabaseBackup: runDatabaseBackupWithMocks } = await importBackupLibWithMocks({
-        createWriteStream,
+        spawn: spawn as typeof import("node:child_process").spawn,
       });
 
-      process.on("unhandledRejection", onUnhandledRejection);
-      process.env.PAPERCLIP_PG_DUMP_PATH = missingPgDumpPath;
+      await expect(runDatabaseBackupWithMocks({
+        connectionString: "postgres://paperclip:paperclip@127.0.0.1:54329/paperclip",
+        backupDir,
+        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+        filenamePrefix: "paperclip-test",
+        backupEngine: "pg_dump",
+        createOutputStream,
+      })).rejects.toThrow("stream open failed");
 
-      try {
-        await expect(runDatabaseBackupWithMocks({
-          connectionString: "postgres://paperclip:paperclip@127.0.0.1:54329/paperclip",
-          backupDir,
-          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
-          filenamePrefix: "paperclip-test",
-          backupEngine: "pg_dump",
-        })).rejects.toThrow(/ENOENT/);
-
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        expect(createWriteStream).toHaveBeenCalledTimes(1);
-        expect(unhandledRejections).toEqual([]);
-      } finally {
-        process.off("unhandledRejection", onUnhandledRejection);
-        if (realPgDumpPath === undefined) {
-          delete process.env.PAPERCLIP_PG_DUMP_PATH;
-        } else {
-          process.env.PAPERCLIP_PG_DUMP_PATH = realPgDumpPath;
-        }
-      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(createOutputStream).toHaveBeenCalledTimes(1);
+      expect(output?.destroyed).toBe(true);
+      expect(kill).toHaveBeenCalledTimes(1);
     },
     30_000,
   );
