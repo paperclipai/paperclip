@@ -1,4 +1,4 @@
-import { useCallback, useState, type ReactNode } from "react";
+import { useCallback, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "@/lib/router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -165,6 +165,7 @@ export function AgentActionButtons({
   workActionsDisabled = false,
   workActionsDisabledReason,
   navigateToRunOnInvoke = true,
+  hasPendingNavigationChanges = false,
   onBeforeNavigate,
   onActionError,
   onTerminateSuccess,
@@ -183,6 +184,8 @@ export function AgentActionButtons({
   workActionsDisabled?: boolean;
   workActionsDisabledReason?: string;
   navigateToRunOnInvoke?: boolean;
+  /** Whether the caller currently has an unsaved draft that navigation would discard. */
+  hasPendingNavigationChanges?: boolean;
   /** Return false to stop an action whose success would navigate away. */
   onBeforeNavigate?: () => boolean;
   /**
@@ -210,6 +213,25 @@ export function AgentActionButtons({
   const { pushToast } = useToastActions();
   const [moreOpen, setMoreOpen] = useState(false);
   const [pauseConfirmOpen, setPauseConfirmOpen] = useState(false);
+  const pendingNavigationChangesRef = useRef(hasPendingNavigationChanges);
+  const beforeNavigateRef = useRef(onBeforeNavigate);
+  const agentActionStartedDirtyRef = useRef(false);
+  const duplicateStartedDirtyRef = useRef(false);
+  pendingNavigationChangesRef.current = hasPendingNavigationChanges;
+  beforeNavigateRef.current = onBeforeNavigate;
+
+  function confirmNavigationStart(startedDirtyRef: React.MutableRefObject<boolean>) {
+    startedDirtyRef.current = pendingNavigationChangesRef.current;
+    return beforeNavigateRef.current?.() !== false;
+  }
+
+  function confirmLateNavigationChanges(startedDirtyRef: React.MutableRefObject<boolean>) {
+    return (
+      !pendingNavigationChangesRef.current ||
+      startedDirtyRef.current ||
+      beforeNavigateRef.current?.() !== false
+    );
+  }
 
   const resolvedCompanyId = companyId ?? agent.companyId;
   const canonicalAgentRef = agentRouteRef(agent);
@@ -254,9 +276,11 @@ export function AgentActionButtons({
       onActionError?.(null);
       invalidateAgent();
       if (action === "terminate") {
+        if (!confirmLateNavigationChanges(agentActionStartedDirtyRef)) return;
         onTerminateSuccess?.(data as Agent);
       }
       if (action === "invoke" && navigateToRunOnInvoke && data && typeof data === "object" && "id" in data) {
+        if (!confirmLateNavigationChanges(agentActionStartedDirtyRef)) return;
         navigate(`/agents/${canonicalAgentRef}/runs/${(data as HeartbeatRun).id}`);
       }
     },
@@ -288,6 +312,7 @@ export function AgentActionButtons({
         await queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(resolvedCompanyId) });
       }
       pushToast({ title: "Agent duplicated", body: createdAgent.name, tone: "success" });
+      if (!confirmLateNavigationChanges(duplicateStartedDirtyRef)) return;
       navigate(`/agents/${agentRouteRef(createdAgent)}/dashboard`);
     },
     onError: (err) => {
@@ -302,9 +327,9 @@ export function AgentActionButtons({
     const nextName = duplicateAgentName(agent.name);
     const confirmed = window.confirm(`Duplicate ${agent.name} as ${nextName}?`);
     setMoreOpen(false);
-    if (!confirmed || onBeforeNavigate?.() === false) return;
+    if (!confirmed || !confirmNavigationStart(duplicateStartedDirtyRef)) return;
     duplicateAgent.mutate();
-  }, [agent.name, duplicateAgent, onBeforeNavigate]);
+  }, [agent.name, duplicateAgent]);
 
   const resetTaskSession = useMutation({
     mutationFn: () => agentsApi.resetSession(agent.id, null, resolvedCompanyId ?? undefined),
@@ -338,7 +363,7 @@ export function AgentActionButtons({
       </Button>
       <RunButton
         onClick={() => {
-          if (navigateToRunOnInvoke && onBeforeNavigate?.() === false) return;
+          if (navigateToRunOnInvoke && !confirmNavigationStart(agentActionStartedDirtyRef)) return;
           agentAction.mutate("invoke");
         }}
         disabled={assignAndRunDisabled}
@@ -430,7 +455,7 @@ export function AgentActionButtons({
               className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
               onClick={() => {
                 setMoreOpen(false);
-                if (onTerminateSuccess && onBeforeNavigate?.() === false) return;
+                if (onTerminateSuccess && !confirmNavigationStart(agentActionStartedDirtyRef)) return;
                 agentAction.mutate("terminate");
               }}
             >
