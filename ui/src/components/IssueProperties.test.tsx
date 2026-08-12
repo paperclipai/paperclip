@@ -56,10 +56,18 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
 
+const mockSidebarState = vi.hoisted(() => ({
+  isMobile: false,
+}));
+
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
     selectedCompanyId: "company-1",
   }),
+}));
+
+vi.mock("../context/SidebarContext", () => ({
+  useSidebar: () => mockSidebarState,
 }));
 
 vi.mock("../api/agents", () => ({
@@ -155,6 +163,11 @@ vi.mock("@/components/ui/popover", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+if (!globalThis.PointerEvent) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (globalThis as any).PointerEvent = MouseEvent;
+}
 
 async function act(callback: () => void | Promise<void>) {
   let result: void | Promise<void> = undefined;
@@ -433,6 +446,7 @@ describe("IssueProperties", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    mockSidebarState.isMobile = false;
     container = document.createElement("div");
     document.body.appendChild(container);
     mockAgentsApi.list.mockResolvedValue([]);
@@ -1013,6 +1027,75 @@ describe("IssueProperties", () => {
 
     await act(async () => {
       removeButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(document.body.textContent).toContain("Remove PAP-2: Existing blocker as a blocker for this task.");
+    const confirmButton = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Remove blocker"));
+    expect(confirmButton).not.toBeUndefined();
+
+    await act(async () => {
+      confirmButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({ blockedByIssueIds: ["issue-4"] });
+
+    act(() => root.unmount());
+  });
+
+  it("opens visit and remove actions when a blocked-by chip is tapped on mobile", async () => {
+    mockSidebarState.isMobile = true;
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({
+        blockedBy: [
+          {
+            id: "issue-2",
+            identifier: "PAP-2",
+            title: "Existing blocker",
+            status: "in_progress",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+          },
+          {
+            id: "issue-4",
+            identifier: "PAP-4",
+            title: "Keep blocker",
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+          },
+        ],
+      }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    expect(container.querySelector('a[href="/issues/PAP-2"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Remove PAP-2 as blocker"]')).toBeNull();
+    const blockerActions = container.querySelector('button[aria-label="Actions for blocker PAP-2"]');
+    expect(blockerActions).not.toBeNull();
+
+    await act(async () => {
+      blockerActions!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      blockerActions!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const visitLink = Array.from(document.body.querySelectorAll('a[href="/issues/PAP-2"]'))
+      .find((link) => link.textContent?.includes("Visit task"));
+    expect(visitLink).not.toBeUndefined();
+    const removeMenuItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
+      .find((item) => item.textContent?.includes("Remove blocker"));
+    expect(removeMenuItem).not.toBeUndefined();
+
+    await act(async () => {
+      removeMenuItem!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flush();
 
