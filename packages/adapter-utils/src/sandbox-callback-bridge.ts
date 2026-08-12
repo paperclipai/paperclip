@@ -1073,7 +1073,11 @@ export async function startSandboxCallbackBridgeServer(input: {
       `    printf 'set %s=%s\\r\\n' ${shellQuote(key)} ${shellQuote(String(value).replace(/\r?\n/g, " "))}`,
     ).join("\n"),
     `    printf 'set PAPERCLIP_BRIDGE_QUEUE_DIR=%s\\r\\n' "$QUEUE_WIN"`,
-    `    printf 'powershell -NoProfile -ExecutionPolicy Bypass -Command "$p = Start-Process -FilePath ''%s'' -ArgumentList ''%s'' -WorkingDirectory ''%s'' -WindowStyle Hidden -RedirectStandardOutput ''%s'' -RedirectStandardError ''%s'' -PassThru; $p.Id | Out-File -FilePath ''%s'' -Encoding ascii"\\r\\n' "$NODE_WIN" "$ENTRY_WIN" "$CWD_WIN" "$LOG_WIN" "$ERR_WIN" "$PID_WIN"`,
+    // Build the PowerShell command line in a bash variable first: double-quoted
+    // strings expand $NODE_WIN etc. while keeping literal quotes, avoiding
+    // single-quote nesting inside the printf format string.
+    `  PSCMD="\\$p = Start-Process -FilePath \\"$NODE_WIN\\" -ArgumentList \\"$ENTRY_WIN\\" -WorkingDirectory \\"$CWD_WIN\\" -WindowStyle Hidden -RedirectStandardOutput \\"$LOG_WIN\\" -RedirectStandardError \\"$ERR_WIN\\" -PassThru; \\$p.Id | Out-File -FilePath \\"$PID_WIN\\" -Encoding ascii"`,
+    `  printf 'powershell -NoProfile -ExecutionPolicy Bypass -Command "%s"\\r\\n' "$PSCMD"`,
     `  } > ${shellQuote(wrapperCmdPath)}`,
     `  printf '%s' ${shellQuote(winTaskName)} > ${shellQuote(taskNameFile)}`,
     `  MSYS_NO_PATHCONV=1 cmd.exe /c "schtasks /create /tn ${winTaskName} /tr \"$WRAPPER_WIN\" /sc once /st 23:59 /f" >/dev/null 2>&1 || true`,

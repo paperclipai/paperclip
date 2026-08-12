@@ -2111,6 +2111,10 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       bridgeToken,
       bridgeAsset,
       timeoutMs: bridgeTimeoutMs,
+      // Long-thinking agents (e.g. agy with extended reasoning) can exceed the
+      // default 30s bridge response window; inherit the run timeout so a
+      // legitimate slow step is not misreported as "timeout waiting for response".
+      responseTimeoutMs: bridgeTimeoutMs,
       maxBodyBytes,
       shellCommand,
     });

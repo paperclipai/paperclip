@@ -5,6 +5,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Transform } from "node:stream";
+import { gzipSync } from "node:zlib";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import { readSanitizedOriginRemoteUrl } from "./git-workspace-sync.js";
 import type { RunProcessResult } from "./server-utils.js";
@@ -148,7 +149,16 @@ interface LocalGitWorkspaceSnapshot {
 }
 
 export function shellQuote(value: string) {
-  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+  // Standard POSIX single-quote escaping: close the quote, emit a literal
+  // quote via backslash in the bare context, reopen. The previous form
+  // ('\"'\" pairs) only survives when the result is later wrapped in double
+  // quotes; OpenSSH argv serialization does not do that, so scripts
+  // containing single quotes were mangled or failed with "unexpected EOF".
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+export function gzipBase64(value: string): string {
+  return gzipSync(Buffer.from(value, "utf8")).toString("base64");
 }
 
 function isValidShellEnvKey(value: string) {
@@ -1199,11 +1209,21 @@ export async function runSshCommand(
         : `exec sh -c ${shellQuote(remoteCommand)}`,
     ].join(" && ");
 
+    const remoteTmpScript = `/tmp/paperclip-remote-${process.pid}-${Math.random().toString(36).slice(2, 8)}.sh`;
+    // The remote script can contain single quotes and backslashes (e.g.
+    // bridge wrapper .cmd generation with printf format strings). Passing it
+    // as a shell-quoted literal is unsafe: OpenSSH re-quotes argv during
+    // serialization, so the quoting is mangled and the remote shell fails
+    // with "unexpected EOF". Transport the script gzip+base64 instead (no
+    // quotes/backslashes in the alphabet; compressed to stay under the
+    // ~8KB remote command limit), decode it into a temp file, then execute
+    // it with stdin inherited so callers can still pipe data.
+    const encodedScript = gzipBase64(remoteScript);
     sshArgs.push(
       "-p",
       String(config.port),
       `${config.username}@${config.host}`,
-      `sh -c ${shellQuote(remoteScript)}`,
+      `sh -c 'echo ${encodedScript} | base64 -d | gzip -d > ${remoteTmpScript} && sh ${remoteTmpScript}'`,
     );
 
     return options.stdin != null

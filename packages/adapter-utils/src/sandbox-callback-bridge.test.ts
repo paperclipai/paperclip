@@ -1521,6 +1521,10 @@ describe("sandbox callback bridge", () => {
     });
 
     const startScript = capturedScripts.join("\n");
+    if (process.env.PAPERCLIP_DUMP_START_SCRIPT) {
+      // eslint-disable-next-line no-console
+      console.log(`\n===DUMP_START_SCRIPT_BEGIN===\n${startScript}\n===DUMP_START_SCRIPT_END===`);
+    }
     // Windows (MSYS/git bash) detection gate (uname -s matched case-insensitively).
     expect(startScript).toContain("mingw|msys|cygwin|^nt");
     // Wrapper .cmd generation: crlf header, env baking, PowerShell Start-Process
@@ -1531,6 +1535,13 @@ describe("sandbox callback bridge", () => {
     expect(startScript).toContain("Start-Process");
     expect(startScript).toContain("-PassThru");
     expect(startScript).toContain("task-name.txt");
+    // The PowerShell command line is assembled in a bash variable with
+    // escaped double quotes (\"$NODE_WIN\"), so paths with spaces survive
+    // cmd.exe's pass-through to PowerShell.
+    expect(startScript).toContain("PSCMD=");
+    expect(startScript).toContain('\\"$NODE_WIN\\"');
+    expect(startScript).toContain('\\"$ENTRY_WIN\\"');
+    expect(startScript).toContain('powershell -NoProfile -ExecutionPolicy Bypass -Command "%s"');
     // schtasks one-shot registration + run (detaches the process from the SSH session).
     expect(startScript).toContain("schtasks /create");
     expect(startScript).toContain("schtasks /run");
