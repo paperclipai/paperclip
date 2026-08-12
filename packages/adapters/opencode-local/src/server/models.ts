@@ -9,7 +9,16 @@ import {
 import { isValidOpenCodeModelId } from "../index.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
-const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
+// Configurable discovery timeout. The 20s default was too tight on hosts where
+// interactive OpenCode/Orca sessions contend with Paperclip's spawned
+// `opencode models` over the shared opencode.db, causing intermittent
+// "timed out after 20s" adapter failures. Override with
+// PAPERCLIP_OPENCODE_MODELS_TIMEOUT_MS (milliseconds).
+const MODELS_DISCOVERY_TIMEOUT_MS = Number.isFinite(
+  Number(process.env.PAPERCLIP_OPENCODE_MODELS_TIMEOUT_MS),
+)
+  ? Number(process.env.PAPERCLIP_OPENCODE_MODELS_TIMEOUT_MS)
+  : 30_000;
 
 function resolveOpenCodeCommand(input: unknown): string {
   const envOverride =
@@ -206,10 +215,22 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
   });
 
   if (models.length === 0) {
+    // Static fallback: on hosts where `opencode models` discovery fails or is
+    // unavailable (e.g. constrained/contended environments), still allow a run
+    // whose model is explicitly pinned in adapterConfig and known-good. This
+    // prevents a transient discovery failure from hard-blocking execution.
+    if (isKnownFallbackOpenCodeModel(model)) {
+      return [{ id: model, label: model }];
+    }
     throw new Error("OpenCode returned no models. Run `opencode models` and verify provider auth.");
   }
 
   if (!models.some((entry) => entry.id === model)) {
+    // The configured model may be gateway-routed and absent from the local
+    // catalog. If it is a known-good pinned model, allow it through.
+    if (isKnownFallbackOpenCodeModel(model)) {
+      return [{ id: model, label: model }];
+    }
     const sample = models.slice(0, 12).map((entry) => entry.id).join(", ");
     throw new Error(
       `Configured OpenCode model is unavailable: ${model}. Available models: ${sample}${models.length > 12 ? ", ..." : ""}`,
@@ -217,6 +238,23 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
   }
 
   return models;
+}
+
+// Known-good OpenCode models that are safe to pin even when `opencode models`
+// discovery is slow/unavailable. This is an escape hatch for deterministic
+// runtimes (agent adapters pin a model in adapterConfig); discovery remains the
+// source of truth whenever it succeeds.
+function isKnownFallbackOpenCodeModel(model: string): boolean {
+  const FALLBACK_MODELS = new Set([
+    "opencode-go/deepseek-v4-flash",
+    "opencode-go/deepseek-v4-pro",
+    "opencode/deepseek-v4-flash-free",
+    "opencode/nemotron-3-ultra-free",
+    "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
+    "nvidia/nemotron-3-super-120b-a12b",
+    "ollama/qwen3-coder:latest",
+  ]);
+  return FALLBACK_MODELS.has(model);
 }
 
 export async function listOpenCodeModels(): Promise<AdapterModel[]> {

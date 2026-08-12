@@ -1,0 +1,39 @@
+{
+  "name": "@nideas/routing-board-plugin",
+  "version": "0.1.0",
+  "description": "nideas routing board \u2014 pick a routing (orchestrator x model) when creating tasks / running heartbeats, with an additive routing registry. UI + tools for Paperclip.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "private": true,
+  "scripts": {
+    "build": "node build-plugin.mjs",
+    "build:ui": "node build-plugin.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
+    "@paperclipai/shared": "workspace:*",
+    "esbuild": "^0.27.0"
+  },
+  "peerDependencies": {
+    "react": "^19"
+  },
+  "devDependencies": {
+    "@types/react": "^19"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./manifest": {
+      "types": "./dist/manifest.d.ts",
+      "import": "./dist/manifest.js"
+    },
+    "./worker": {
+      "types": "./dist/worker.d.ts",
+      "import": "./dist/worker.js"
+    },
+    "./ui": "./dist/ui/index.js"
+  }
+}
