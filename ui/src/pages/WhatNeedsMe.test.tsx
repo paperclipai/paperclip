@@ -1,6 +1,11 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { DecisionBundleHeader, decisionHistoryCount, decisionHistoryQueryEnabled } from "./WhatNeedsMe";
+import {
+  DecisionBundleHeader,
+  DecisionsLoadingState,
+  decisionHistoryCount,
+  decisionHistoryQueryEnabled,
+} from "./WhatNeedsMe";
 
 describe("WhatNeedsMe decision history", () => {
   it("defers terminal-history queries until their curtain opens", () => {
@@ -14,6 +19,13 @@ describe("WhatNeedsMe decision history", () => {
     expect(decisionHistoryCount(49)).toBe(49);
     expect(decisionHistoryCount(50)).toBe(50);
     expect(decisionHistoryCount(51)).toBe("50+");
+  });
+
+  it("keeps the page identifiable while decisions are loading", () => {
+    const loading = renderToStaticMarkup(<DecisionsLoadingState />);
+
+    expect(loading).toContain('role="status"');
+    expect(loading).toContain("Loading decisions");
   });
 
   it("labels general bundles as decisions instead of cleanups", () => {

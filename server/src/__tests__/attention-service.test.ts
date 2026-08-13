@@ -841,6 +841,65 @@ describeEmbeddedPostgres("attention service", () => {
     expect(feed.items.filter((item) => item.sourceKind === "failed_run")).toEqual([]);
   });
 
+  it("keeps failed-run attention when a newer run belongs to a different issue", async () => {
+    const { companyId, workerId } = await seedCompany("ATD");
+    const failedIssueId = await insertIssue({
+      companyId,
+      identifier: "ATD-1",
+      title: "Still failed task",
+      status: "in_progress",
+    });
+    const newerIssueId = await insertIssue({
+      companyId,
+      identifier: "ATD-2",
+      title: "Unrelated successful task",
+      status: "done",
+    });
+    const failedRunId = randomUUID();
+    const failedAt = new Date("2026-07-09T13:00:00.000Z");
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: failedRunId,
+        companyId,
+        agentId: workerId,
+        invocationSource: "automation",
+        status: "failed",
+        error: "adapter failed",
+        contextSnapshot: { issueId: failedIssueId },
+        createdAt: failedAt,
+        updatedAt: failedAt,
+        finishedAt: failedAt,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId: workerId,
+        invocationSource: "automation",
+        status: "succeeded",
+        contextSnapshot: { issueId: newerIssueId },
+        createdAt: new Date("2026-07-09T13:01:00.000Z"),
+        updatedAt: new Date("2026-07-09T13:01:00.000Z"),
+        finishedAt: new Date("2026-07-09T13:01:00.000Z"),
+      },
+    ]);
+    await db.insert(heartbeatRunEvents).values({
+      companyId,
+      runId: failedRunId,
+      agentId: workerId,
+      seq: 1,
+      eventType: "lifecycle",
+      message: "Bounded retry exhausted after 4 scheduled attempts; no further automatic retry will be queued",
+      createdAt: new Date("2026-07-09T13:00:01.000Z"),
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const failedRuns = feed.items.filter((item) => item.sourceKind === "failed_run");
+
+    expect(failedRuns).toHaveLength(1);
+    expect(failedRuns[0]?.subject.id).toBe(failedRunId);
+  });
+
   it("enriches interaction details with project, workspace, plan metadata, and images", async () => {
     const { companyId, workerId } = await seedCompany("ATE");
     const projectId = randomUUID();

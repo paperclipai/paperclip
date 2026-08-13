@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { CheckCircle2, Inbox } from "lucide-react";
+import { CheckCircle2, Inbox, Loader2 } from "lucide-react";
 import type { Agent, AttentionItem, AttentionSubject } from "@paperclipai/shared";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { attentionApi } from "../api/attention";
@@ -39,7 +39,6 @@ import {
   type AttentionSortOrder,
 } from "../lib/attention";
 import { hasBlockingShortcutDialog, resolveAttentionQueueKeyAction } from "../lib/keyboardShortcuts";
-import { PageSkeleton } from "../components/PageSkeleton";
 import { AttentionQueueRow } from "../components/AttentionQueueRow";
 import { DecisionsToolbar } from "../components/DecisionsToolbar";
 import { Curtain, AgingItemRow } from "../components/DecisionShelf";
@@ -510,10 +509,6 @@ export function WhatNeedsMe() {
     return <p className="text-sm text-muted-foreground">Select a company first.</p>;
   }
 
-  if (isLoading) {
-    return <PageSkeleton variant="approvals" />;
-  }
-
   const hasAnything = activeItems.length > 0 || snoozedItems.length > 0 || dismissedItems.length > 0;
 
   return (
@@ -548,7 +543,9 @@ export function WhatNeedsMe() {
 
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
 
-      {!hasAnything ? (
+      {isLoading ? (
+        <DecisionsLoadingState />
+      ) : !hasAnything ? (
         <ZeroState />
       ) : (
         <div className="space-y-4">
@@ -756,6 +753,19 @@ export function WhatNeedsMe() {
           )}
         </Curtain>
       </div>
+    </div>
+  );
+}
+
+export function DecisionsLoadingState() {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex items-center gap-2 rounded-xl border border-border px-4 py-6 text-sm text-muted-foreground"
+    >
+      <Loader2 className="h-4 w-4 animate-spin" />
+      Loading decisions…
     </div>
   );
 }
