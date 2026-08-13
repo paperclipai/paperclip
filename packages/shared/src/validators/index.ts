@@ -584,6 +584,22 @@ export {
   type CreateGoal,
   type UpdateGoal,
 } from "./goal.js";
+export {
+  createGoalTargetSchema,
+  updateGoalTargetSchema,
+  createGoalRelationSchema,
+  createRoadmapBlockSchema,
+  updateRoadmapBlockSchema,
+  createRoadmapBlockEdgeSchema,
+  promoteRoadmapBlockSchema,
+  type CreateGoalTarget,
+  type UpdateGoalTarget,
+  type CreateGoalRelation,
+  type CreateRoadmapBlock,
+  type UpdateRoadmapBlock,
+  type CreateRoadmapBlockEdge,
+  type PromoteRoadmapBlock,
+} from "./goal-platform.js";
 
 export {
   createApprovalSchema,

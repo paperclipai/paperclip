@@ -1,11 +1,21 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
-import { createGoalSchema, updateGoalSchema } from "@paperclipai/shared";
+import { HUMAN_ONLY_GOAL_LEVELS, createGoalSchema, updateGoalSchema } from "@paperclipai/shared";
 import { trackGoalCreated } from "@paperclipai/shared/telemetry";
+import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { buildGoalMap, goalService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { getTelemetryClient } from "../telemetry.js";
+
+/** Objectives, initiatives, epics, and the company root are human-managed. */
+function assertGoalLevelWritable(req: Request, ...levels: Array<string | null | undefined>) {
+  const humanOnly = HUMAN_ONLY_GOAL_LEVELS as readonly string[];
+  if (!levels.some((level) => level && humanOnly.includes(level))) return;
+  if (getActorInfo(req).actorType === "agent") {
+    throw forbidden("Goals at this level are managed by humans");
+  }
+}
 
 export function goalRoutes(db: Db) {
   const router = Router();
@@ -35,6 +45,7 @@ export function goalRoutes(db: Db) {
   router.post("/companies/:companyId/goals", validate(createGoalSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    assertGoalLevelWritable(req, req.body.level ?? "task");
     const goal = await svc.create(companyId, req.body);
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -58,6 +69,7 @@ export function goalRoutes(db: Db) {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Goal not found");
     if (!existing) return;
+    assertGoalLevelWritable(req, existing.level, req.body.level);
     const goal = await svc.update(id, req.body);
     if (!goal) {
       res.status(404).json({ error: "Goal not found" });
@@ -83,6 +95,7 @@ export function goalRoutes(db: Db) {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Goal not found");
     if (!existing) return;
+    assertGoalLevelWritable(req, existing.level);
     const goal = await svc.remove(id);
     if (!goal) {
       res.status(404).json({ error: "Goal not found" });

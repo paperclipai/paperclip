@@ -18,6 +18,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { IssueStatusBadge, StatusBadge } from "../components/StatusBadge";
 import { StatusGlyph } from "../components/StatusGlyph";
 import { StatusIcon } from "../components/StatusIcon";
+import { RoadmapView } from "../components/RoadmapView";
 
 // Layout constants (left-to-right layered tree; task pills match the approved
 // grouping preview: slim leaves, two-row parents with subtree progress).
@@ -178,6 +179,11 @@ function layoutGoalMap(
   }
   const goalRoots = nodes.filter((n) => !n.goal.parentId || !nodeIds.has(n.goal.parentId));
 
+  function goalChildrenOf(goalId: string): GoalMapNode[] {
+    // A collapsed initiative folds its whole epic group, not just its tasks.
+    return collapsed.goalIds.has(goalId) ? [] : goalChildren.get(goalId) ?? [];
+  }
+
   const issueHeightMemo = new Map<string, number>();
   function issueSubH(issue: GoalMapIssueNode): number {
     const memoized = issueHeightMemo.get(issue.id);
@@ -205,7 +211,7 @@ function layoutGoalMap(
     if (stack.has(node.goal.id)) return GOAL_H + VGAP;
     stack.add(node.goal.id);
     const issuesHeight = goalIssuesHeight(node.goal.id);
-    const children = goalChildren.get(node.goal.id) ?? [];
+    const children = goalChildrenOf(node.goal.id);
     const childrenHeight = children.length > 0
       ? children.reduce((sum, child) => sum + goalSubH(child, stack), 0) + (children.length - 1) * GOAL_GAP
       : 0;
@@ -240,7 +246,7 @@ function layoutGoalMap(
       placeIssue(root, childX, cy);
       cy += issueSubH(root);
     }
-    const children = goalChildren.get(node.goal.id) ?? [];
+    const children = goalChildrenOf(node.goal.id);
     if (roots.length > 0 && children.length > 0) cy += GOAL_GAP - VGAP;
     for (const child of children) {
       placeGoal(child, childX, cy);
@@ -312,7 +318,7 @@ export function GoalMap() {
   const queryClient = useQueryClient();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Goals", href: "/goals" }, { label: "Map" }]);
+    setBreadcrumbs([{ label: "Goals", href: "/goals" }, { label: "Initiatives Map" }]);
   }, [setBreadcrumbs]);
 
   const { data: goalMap, isLoading, error } = useQuery({
@@ -348,10 +354,49 @@ export function GoalMap() {
     },
   });
 
+  // Create-from-the-map: initiative + -> epic, epic + -> task, task + -> sub-task.
+  const [createDraft, setCreateDraft] = useState<
+    | { kind: "epic"; parentGoalId: string; parentTitle: string }
+    | { kind: "task"; goalId: string; goalTitle: string }
+    | { kind: "subtask"; goalId: string; parentIssueId: string; parentTitle: string }
+    | null
+  >(null);
+  const [createTitle, setCreateTitle] = useState("");
+  const createEpic = useMutation({
+    mutationFn: ({ title, parentGoalId }: { title: string; parentGoalId: string }) =>
+      goalsApi.create(selectedCompanyId!, { title, level: "epic", status: "active", parentId: parentGoalId }),
+    onSettled: () => {
+      if (selectedCompanyId) queryClient.invalidateQueries({ queryKey: queryKeys.goals.list(selectedCompanyId) });
+    },
+  });
+  const createTask = useMutation({
+    mutationFn: (data: Record<string, unknown>) => issuesApi.create(selectedCompanyId!, data),
+    onSettled: () => {
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.goals.map(selectedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+      }
+    },
+  });
+  const submitCreate = useCallback(() => {
+    const title = createTitle.trim();
+    if (!createDraft || !title) return;
+    if (createDraft.kind === "epic") {
+      createEpic.mutate({ title, parentGoalId: createDraft.parentGoalId });
+    } else if (createDraft.kind === "task") {
+      createTask.mutate({ title, goalId: createDraft.goalId, status: "backlog" });
+    } else {
+      createTask.mutate({ title, goalId: createDraft.goalId, parentId: createDraft.parentIssueId, status: "backlog" });
+    }
+    setCreateDraft(null);
+    setCreateTitle("");
+  }, [createDraft, createTitle, createEpic, createTask]);
+
   // Hide-completed: open tasks stay, plus (a) their done ancestors so trees
   // keep their shape, and (b) the completed blockers that unlocked a shown
   // task, so green "path clear" arrows keep their context.
   const [hideCompleted, setHideCompleted] = useState(false);
+  const [mapView, setMapView] = useState<"map" | "roadmap">("map");
   const visibleIssues = useMemo(() => {
     const all = goalMap?.issues ?? [];
     if (!hideCompleted) return all;
@@ -408,10 +453,21 @@ export function GoalMap() {
     [collapsedIssueIds, collapsedGoalIds],
   );
 
+  // Objectives live on the Goals page; the company root renders only while it
+  // still holds stray tasks (as "New / unassigned").
+  const mapNodes = useMemo(() => {
+    const all = goalMap?.nodes ?? [];
+    return all.filter((node) => {
+      if (node.goal.level === "objective") return false;
+      if (node.goal.level === "company") return node.counts.total > 0;
+      return true;
+    });
+  }, [goalMap]);
+
   const trees = useMemo(() => buildIssueTrees(visibleIssues), [visibleIssues]);
   const layout = useMemo(
-    () => layoutGoalMap(goalMap?.nodes ?? [], trees, positionOverrides, collapsed),
-    [goalMap, trees, positionOverrides, collapsed],
+    () => layoutGoalMap(mapNodes, trees, positionOverrides, collapsed),
+    [mapNodes, trees, positionOverrides, collapsed],
   );
   const issueById = useMemo(
     () => new Map((goalMap?.issues ?? []).map((issue) => [issue.id, issue])),
@@ -545,15 +601,22 @@ export function GoalMap() {
       const current = issueById.get(issueId);
       return current?.parentId !== target.id;
     }
+    // Tasks live under epics (or the unassigned company root); dropping on an
+    // initiative is ambiguous and therefore invalid.
+    const targetGoal = nodeByGoalId.get(target.id)?.goal;
+    if (!targetGoal || (targetGoal.level !== "epic" && targetGoal.level !== "company" && targetGoal.level !== "team")) {
+      return false;
+    }
     const current = issueById.get(issueId);
     if (!current) return false;
     // Goal drop makes the task a root of that goal.
     return current.goalId !== target.id || trees.layoutParentById.has(issueId);
-  }, [trees, issueById]);
+  }, [trees, issueById, nodeByGoalId]);
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
+    if (target.closest("[data-map-plus]")) return;
     const issueCard = target.closest<HTMLElement>("[data-map-issue-id]");
     if (issueCard) {
       dragState.current = {
@@ -689,8 +752,10 @@ export function GoalMap() {
           zoom?: unknown;
           collapsedIssueIds?: unknown;
           collapsedGoalIds?: unknown;
+          mapView?: unknown;
         };
         if (typeof parsed.hideCompleted === "boolean") setHideCompleted(parsed.hideCompleted);
+        if (parsed.mapView === "roadmap" || parsed.mapView === "map") setMapView(parsed.mapView);
         if (Array.isArray(parsed.collapsedIssueIds)) {
           setCollapsedIssueIds(new Set(parsed.collapsedIssueIds.filter((id): id is string => typeof id === "string")));
         }
@@ -720,6 +785,7 @@ export function GoalMap() {
           viewStateStorageKey(selectedCompanyId),
           JSON.stringify({
             hideCompleted,
+            mapView,
             pan,
             zoom,
             collapsedIssueIds: [...collapsedIssueIds],
@@ -731,7 +797,7 @@ export function GoalMap() {
       }
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [selectedCompanyId, viewLoaded, hideCompleted, pan, zoom, collapsedIssueIds, collapsedGoalIds]);
+  }, [selectedCompanyId, viewLoaded, hideCompleted, mapView, pan, zoom, collapsedIssueIds, collapsedGoalIds]);
 
   useEffect(() => {
     if (hasInitialized.current || !viewLoaded || layout.placedGoals.length === 0 || !containerRef.current) return;
@@ -760,31 +826,51 @@ export function GoalMap() {
   return (
     <div className="flex h-(--sz-calc-38) min-h-(--sz-420px) flex-col md:h-full md:min-h-0">
       <div className="mb-2 flex shrink-0 flex-wrap items-center gap-2">
+        <Button
+          variant={mapView === "map" ? "secondary" : "outline"}
+          size="sm"
+          aria-pressed={mapView === "map"}
+          onClick={() => setMapView("map")}
+        >
+          Map
+        </Button>
+        <Button
+          variant={mapView === "roadmap" ? "secondary" : "outline"}
+          size="sm"
+          aria-pressed={mapView === "roadmap"}
+          onClick={() => setMapView("roadmap")}
+        >
+          Roadmap
+        </Button>
         <Link to="/goals">
           <Button variant="outline" size="sm">
             <List className="mr-1.5 h-3.5 w-3.5" />
-            Tree view
+            Goals
           </Button>
         </Link>
-        <Button
-          variant={hideCompleted ? "secondary" : "outline"}
-          size="sm"
-          aria-pressed={hideCompleted}
-          onClick={() => setHideCompleted((value) => !value)}
-        >
-          Hide completed
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={Object.keys(positionOverrides).length === 0}
-          onClick={() => persistOverrides({})}
-        >
-          <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-          Reset layout
-        </Button>
-        {goalMap.issuesTruncated && (
-          <span className="text-xs text-muted-foreground">Showing the first {goalMap.issues.length} tasks.</span>
+        {mapView === "map" && (
+          <>
+            <Button
+              variant={hideCompleted ? "secondary" : "outline"}
+              size="sm"
+              aria-pressed={hideCompleted}
+              onClick={() => setHideCompleted((value) => !value)}
+            >
+              Hide completed
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={Object.keys(positionOverrides).length === 0}
+              onClick={() => persistOverrides({})}
+            >
+              <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
+              Reset layout
+            </Button>
+            {goalMap.issuesTruncated && (
+              <span className="text-xs text-muted-foreground">Showing the first {goalMap.issues.length} tasks.</span>
+            )}
+          </>
         )}
         <div className="ml-auto flex items-center gap-4 text-xs text-muted-foreground">
           <span className="flex items-center gap-1.5">
@@ -802,6 +888,12 @@ export function GoalMap() {
         </div>
       </div>
 
+      {mapView === "roadmap" ? (
+        <RoadmapView
+          companyId={selectedCompanyId}
+          goals={(goalMap?.nodes ?? []).map((node) => node.goal)}
+        />
+      ) : (
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border md:flex-row">
         <div
           ref={containerRef}
@@ -1008,12 +1100,22 @@ export function GoalMap() {
                     }
                   }}
                 >
-                  <div className="flex h-full flex-col justify-center gap-1 px-3 py-2">
+                  <div className="flex h-full flex-col justify-center gap-1 py-2 pl-3 pr-6">
                     <div className="flex items-center gap-1.5">
-                      <span className="truncate text-sm font-semibold">{node.goal.title}</span>
+                      <span
+                        className={cn(
+                          "shrink-0 text-(length:--text-nano) font-bold uppercase tracking-wide",
+                          node.goal.level === "initiative" ? "text-(--hex-22d3ee)" : "text-muted-foreground",
+                        )}
+                      >
+                        {node.goal.level === "company" ? "unassigned" : node.goal.level}
+                      </span>
+                      <span className="truncate text-sm font-semibold">
+                        {node.goal.level === "company" ? "New / unassigned" : node.goal.title}
+                      </span>
                       {node.gated && <Lock aria-label="Gated by open blockers" className="h-3 w-3 shrink-0 text-(--hex-facc15)" />}
                       {collapsedGoalIds.has(node.goal.id) && (
-                        <ChevronRight aria-label="Tasks collapsed" className="ml-auto h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <ChevronRight aria-label="Collapsed" className="ml-auto h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                       )}
                     </div>
                     <div className="flex items-center gap-2">
@@ -1025,6 +1127,28 @@ export function GoalMap() {
                       </span>
                     </div>
                   </div>
+                  <button
+                    data-map-plus
+                    aria-label={node.goal.level === "initiative" ? "New epic in this initiative" : "New task in this epic"}
+                    title={node.goal.level === "initiative" ? "New epic in this initiative" : "New task in this epic"}
+                    className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded border border-border bg-background text-xs font-bold text-muted-foreground hover:border-ring hover:text-foreground"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelection({ kind: "goal", id: node.goal.id });
+                      setCreateTitle("");
+                      if (node.goal.level === "initiative") {
+                        setCreateDraft({ kind: "epic", parentGoalId: node.goal.id, parentTitle: node.goal.title });
+                      } else {
+                        setCreateDraft({
+                          kind: "task",
+                          goalId: node.goal.id,
+                          goalTitle: node.goal.level === "company" ? "New / unassigned" : node.goal.title,
+                        });
+                      }
+                    }}
+                  >
+                    +
+                  </button>
                 </Card>
               );
             })}
@@ -1045,7 +1169,7 @@ export function GoalMap() {
                   aria-label={`Task ${issue.title}`}
                   title={issue.title}
                   className={cn(
-                    "absolute block cursor-pointer overflow-hidden rounded-lg py-0 select-none transition-(--tp-box-shadow-border-color) duration-150 hover:border-foreground/20 hover:shadow-md",
+                    "group absolute block cursor-pointer overflow-hidden rounded-lg py-0 select-none transition-(--tp-box-shadow-border-color) duration-150 hover:border-foreground/20 hover:shadow-md",
                     issue.status === "done" && "border-green-700/30 bg-green-500/10",
                     issue.status === "blocked" && "bg-yellow-500/10",
                     issue.status === "cancelled" && "opacity-60",
@@ -1110,6 +1234,20 @@ export function GoalMap() {
                       </div>
                     )}
                   </div>
+                  <button
+                    data-map-plus
+                    aria-label="New sub-task"
+                    title="New sub-task"
+                    className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded border border-border bg-background text-xs font-bold text-muted-foreground opacity-0 hover:border-ring hover:text-foreground group-hover:opacity-100"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelection({ kind: "issue", id: issue.id });
+                      setCreateTitle("");
+                      setCreateDraft({ kind: "subtask", goalId: issue.goalId, parentIssueId: issue.id, parentTitle: issue.title });
+                    }}
+                  >
+                    +
+                  </button>
                 </Card>
               );
             })}
@@ -1126,6 +1264,30 @@ export function GoalMap() {
 
         {/* Inspector */}
         <aside className="flex w-full shrink-0 flex-col gap-4 overflow-y-auto border-t border-border bg-background p-4 md:w-80 md:border-t-0 md:border-l">
+          {createDraft && (
+            <div className="rounded-lg border border-ring/50 bg-accent/30 p-3">
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                {createDraft.kind === "epic" && `New epic in ${createDraft.parentTitle}`}
+                {createDraft.kind === "task" && `New task in ${createDraft.goalTitle}`}
+                {createDraft.kind === "subtask" && `New sub-task of ${createDraft.parentTitle}`}
+              </p>
+              <input
+                autoFocus
+                value={createTitle}
+                onChange={(e) => setCreateTitle(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") submitCreate();
+                  if (e.key === "Escape") setCreateDraft(null);
+                }}
+                placeholder="Title…"
+                className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm focus-visible:ring-ring focus-visible:ring-[3px] focus-visible:outline-none"
+              />
+              <div className="mt-2 flex gap-2">
+                <Button size="sm" onClick={submitCreate} disabled={!createTitle.trim()}>Create</Button>
+                <Button size="sm" variant="outline" onClick={() => setCreateDraft(null)}>Cancel</Button>
+              </div>
+            </div>
+          )}
           {!selectedGoal && !selectedIssue && (
             <p className="text-sm text-muted-foreground">
               Select a goal or task. Drag cards to move, nest, or place them freely; double-click a parent to
@@ -1146,8 +1308,26 @@ export function GoalMap() {
                     </span>
                   )}
                 </div>
-                <h2 className="text-lg font-semibold leading-snug">{selectedGoal.goal.title}</h2>
+                <h2 className="text-lg font-semibold leading-snug">
+                  {selectedGoal.goal.level === "company" ? "New / unassigned" : selectedGoal.goal.title}
+                </h2>
               </div>
+
+              {(selectedGoal.serves?.length ?? 0) > 0 && (
+                <InspectorSection title="Serves">
+                  <div className="flex flex-wrap gap-1.5">
+                    {selectedGoal.serves.map((link) => (
+                      <span
+                        key={link.relationId}
+                        className="rounded bg-accent/60 px-1.5 py-0.5 text-xs font-medium"
+                        title={link.targetText ?? link.goalTitle ?? undefined}
+                      >
+                        🎯 {link.targetText ?? link.goalTitle ?? "goal"}
+                      </span>
+                    ))}
+                  </div>
+                </InspectorSection>
+              )}
 
               <InspectorSection title="Why this exists">
                 <WhyChain chain={whyChain} onSelectGoal={(goalId) => setSelection({ kind: "goal", id: goalId })} />
@@ -1273,9 +1453,9 @@ export function GoalMap() {
                     </PopoverTrigger>
                     <PopoverContent className="w-64 p-1" align="start">
                       <p className="px-2 py-1.5 text-xs text-muted-foreground">
-                        Move to the top level of a goal. To nest under another task, drag the card on the map.
+                        Move to the top level of an epic. To nest under another task, drag the card on the map.
                       </p>
-                      {goalMap.nodes.map((node) => {
+                      {goalMap.nodes.filter((node) => node.goal.level === "epic").map((node) => {
                         const isCurrent = selectedIssue.goalId === node.goal.id && !selectedIssue.parentId;
                         return (
                           <button
@@ -1385,6 +1565,7 @@ export function GoalMap() {
           )}
         </aside>
       </div>
+      )}
     </div>
   );
 }

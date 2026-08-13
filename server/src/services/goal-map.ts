@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
-import { goals, issuePlanDecompositions, issueRelations, issues } from "@paperclipai/db";
+import { goalRelations, goalTargets, goals, issuePlanDecompositions, issueRelations, issues } from "@paperclipai/db";
 import type {
   Goal,
   GoalMapDecompositionSummary,
@@ -10,6 +10,7 @@ import type {
   GoalMapIssueNode,
   GoalMapNode,
   GoalMapResponse,
+  GoalMapServesLink,
   GoalMapStatusCounts,
 } from "@paperclipai/shared";
 
@@ -170,6 +171,28 @@ export async function buildGoalMap(db: Db, companyId: string): Promise<GoalMapRe
     ))
     .orderBy(desc(issuePlanDecompositions.createdAt), desc(issuePlanDecompositions.id));
 
+  const targetById = new Map(
+    (await db.select().from(goalTargets).where(eq(goalTargets.companyId, companyId)))
+      .map((row) => [row.id, row]),
+  );
+  const servesRows = await db
+    .select()
+    .from(goalRelations)
+    .where(and(eq(goalRelations.companyId, companyId), eq(goalRelations.type, "serves")));
+  const goalTitleById = new Map(goalRows.map((goal) => [goal.id, goal.title]));
+  const servesByGoalId = new Map<string, GoalMapServesLink[]>();
+  for (const row of servesRows) {
+    const list = servesByGoalId.get(row.fromGoalId) ?? [];
+    list.push({
+      relationId: row.id,
+      goalId: row.toGoalId,
+      goalTitle: row.toGoalId ? goalTitleById.get(row.toGoalId) ?? null : null,
+      targetId: row.toTargetId,
+      targetText: row.toTargetId ? targetById.get(row.toTargetId)?.text ?? null : null,
+    });
+    servesByGoalId.set(row.fromGoalId, list);
+  }
+
   const countsByGoalId = new Map<string, GoalMapStatusCounts>();
   for (const row of statusCountRows) {
     if (!row.goalId || !goalIds.has(row.goalId)) continue;
@@ -242,6 +265,7 @@ export async function buildGoalMap(db: Db, companyId: string): Promise<GoalMapRe
     const inboundOpenGateCount = inboundOpenGatesByGoalId.get(goal.id) ?? 0;
     return {
       goal: goal as Goal,
+      serves: servesByGoalId.get(goal.id) ?? [],
       counts: countsByGoalId.get(goal.id) ?? emptyStatusCounts(),
       subtreeCounts: subtreeCountsByGoalId.get(goal.id) ?? emptyStatusCounts(),
       decompositions: decompositionsByGoalId.get(goal.id) ?? [],

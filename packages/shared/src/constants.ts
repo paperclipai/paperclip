@@ -503,8 +503,14 @@ export type IssueExecutionMonitorClearReason = (typeof ISSUE_EXECUTION_MONITOR_C
 export const ISSUE_EXECUTION_DECISION_OUTCOMES = ["approved", "changes_requested"] as const;
 export type IssueExecutionDecisionOutcome = (typeof ISSUE_EXECUTION_DECISION_OUTCOMES)[number];
 
-export const GOAL_LEVELS = ["company", "team", "agent", "task"] as const;
+export const GOAL_LEVELS = ["company", "team", "agent", "task", "objective", "initiative", "epic"] as const;
 export type GoalLevel = (typeof GOAL_LEVELS)[number];
+
+/** Levels reserved for humans; agents may not create or modify goals at these levels. */
+export const HUMAN_ONLY_GOAL_LEVELS = ["company", "objective", "initiative", "epic"] as const;
+
+export const ROADMAP_BLOCK_STATUSES = ["planned", "in_progress", "done"] as const;
+export type RoadmapBlockStatus = (typeof ROADMAP_BLOCK_STATUSES)[number];
 
 export const GOAL_STATUSES = ["planned", "active", "achieved", "cancelled"] as const;
 export type GoalStatus = (typeof GOAL_STATUSES)[number];

@@ -710,11 +710,19 @@ export type {
   GoalMapStatusCounts,
   GoalMapIssueNode,
   GoalMapDecompositionSummary,
+  GoalMapServesLink,
   GoalMapNode,
   GoalMapEdge,
   GoalMapIssueEdge,
   GoalMapResponse,
 } from "./goal-map.js";
+export type {
+  GoalTarget,
+  GoalRelation,
+  RoadmapBlock,
+  RoadmapBlockEdge,
+  RoadmapResponse,
+} from "./goal-platform.js";
 export type { Approval, ApprovalComment } from "./approval.js";
 export type {
   BudgetPolicy,

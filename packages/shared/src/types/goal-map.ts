@@ -37,8 +37,18 @@ export interface GoalMapDecompositionSummary {
   createdAt: Date | string;
 }
 
+export interface GoalMapServesLink {
+  relationId: string;
+  goalId: string | null;
+  goalTitle: string | null;
+  targetId: string | null;
+  targetText: string | null;
+}
+
 export interface GoalMapNode {
   goal: Goal;
+  /** What this initiative/epic advances (goal or specific target). */
+  serves: GoalMapServesLink[];
   /** Issues assigned directly to this goal (hidden issues excluded). */
   counts: GoalMapStatusCounts;
   /** Direct counts plus all descendant goals' counts. */

@@ -2862,6 +2862,132 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/goal-targets",
+  tags: ["goals"],
+  summary: "List goal targets (checklist items) in a company",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/goals/{id}/targets",
+  tags: ["goals"],
+  summary: "Add a target to a goal (human planning layer)",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 201: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/goal-targets/{id}",
+  tags: ["goals"],
+  summary: "Update a goal target",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/goal-targets/{id}",
+  tags: ["goals"],
+  summary: "Delete a goal target",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/goal-relations",
+  tags: ["goals"],
+  summary: "List goal relations (serves links)",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/goal-relations",
+  tags: ["goals"],
+  summary: "Link an initiative/epic to a goal or target",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 201: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/goal-relations/{id}",
+  tags: ["goals"],
+  summary: "Remove a goal relation",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/roadmap",
+  tags: ["goals"],
+  summary: "Get the roadmap board (blocks + unlock edges)",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/roadmap-blocks",
+  tags: ["goals"],
+  summary: "Create a roadmap block",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 201: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/roadmap-blocks/{id}",
+  tags: ["goals"],
+  summary: "Update a roadmap block (title, status, position, link)",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/roadmap-blocks/{id}",
+  tags: ["goals"],
+  summary: "Delete a roadmap block",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/roadmap-block-edges",
+  tags: ["goals"],
+  summary: "Create an unlocks edge between roadmap blocks",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 201: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/roadmap-block-edges/{id}",
+  tags: ["goals"],
+  summary: "Delete a roadmap edge",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/roadmap-blocks/{id}/promote",
+  tags: ["goals"],
+  summary: "Promote a roadmap block into an initiative or epic",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 201: r.ok(), 401: r.unauthorized },
+});
+
 // ─── Secrets ─────────────────────────────────────────────────────────────────
 
 registry.registerPath({

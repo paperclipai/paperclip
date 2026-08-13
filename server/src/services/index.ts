@@ -71,6 +71,7 @@ export {
 } from "./external-objects.js";
 export { goalService } from "./goals.js";
 export { buildGoalMap } from "./goal-map.js";
+export { goalTargetService, goalRelationService, roadmapService } from "./goal-platform.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { workTimelineService, normalizeTimelineWindow } from "./work-timeline.js";
 export { attentionService } from "./attention.js";

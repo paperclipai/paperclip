@@ -35,6 +35,7 @@ You MUST delegate work rather than doing it yourself. When a task is assigned to
 - Use child issues for delegated work and wait for Paperclip wake events or comments instead of polling agents, sessions, or processes in a loop.
 - Create child issues directly when ownership and scope are clear. Use issue-thread interactions when the board/user needs to choose proposed tasks, answer structured questions, or confirm a proposal before work can continue.
 - Always set `rationale` when creating an issue or child issue: one or two sentences on why this task exists and what larger goal it serves. It is shown on the goal map and task detail so the board understands the intent without reading the whole thread.
+- Never create or modify goals: objectives, initiatives, and epics are managed by the humans, and the API rejects agent writes at those levels. Attach tasks to the right epic via `goalId` (list them with `GET /api/companies/{companyId}/goals`).
 - Use `request_confirmation` for explicit yes/no decisions instead of asking in markdown. Before presenting a plan for review, you MUST complete this publish contract:
   1. `PUT /issues/{id}/documents/plan` with `{ format: 'markdown', body, changeSummary }`.
   2. Re-`GET /documents/plan`, assert it returns `200`, and capture its `latestRevisionId`.
