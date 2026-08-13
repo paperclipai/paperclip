@@ -1234,7 +1234,7 @@ Terminal states: `done`, `cancelled`
 
 **`maxConcurrentRuns` is above 1 for a normal agent** (shipped default 20, often tuned down per agent), so a single agent commonly has several runs going at once and `live_sibling_run` is the most frequent reason. **Being the issue's assignee is not a reason to ignore a 409.**
 
-The "never retry a 409" rule in `skills/paperclip/SKILL.md`, `docs/guides/agent-developer/heartbeat-protocol.md`, and `docs/guides/agent-developer/task-workflow.md` carries this same single exception: `stale_lock_pending_reap`, once, as the assignee. Every other reason means a live run (or a guard other than the lock) rejected the call, and a retry cannot succeed.
+The "never retry a 409" rule in `skills/paperclip/SKILL.md`, `docs/guides/agent-developer/heartbeat-protocol.md`, `docs/guides/agent-developer/task-workflow.md`, and `docs/api/issues.md` carries this same single exception: `stale_lock_pending_reap`, once, as the assignee. Every other reason means a live run (or a guard other than the lock) rejected the call, and a retry cannot succeed.
 
 To inspect a holder run directly, use `GET /api/heartbeat-runs/{runId}`. **`/api/runs/{id}` does not exist** — it returns `{"error":"API route not found"}`, and reading the absent `status` as `null` has already caused live holders to be misreported as stale locks.
 
