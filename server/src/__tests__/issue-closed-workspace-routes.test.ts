@@ -61,6 +61,7 @@ function registerServiceMocks() {
 
   vi.doMock("../services/execution-workspaces.js", () => ({
     executionWorkspaceService: () => mockExecutionWorkspaceService,
+    STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS: 5 * 60 * 1000,
   }));
 
   vi.doMock("../services/heartbeat.js", () => ({
