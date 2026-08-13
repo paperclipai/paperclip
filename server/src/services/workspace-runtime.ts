@@ -21,7 +21,7 @@ import {
   type WorkspaceRuntimeServiceStateMap,
 } from "@paperclipai/shared";
 import { and, desc, eq, inArray, isNull, ne } from "drizzle-orm";
-import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
+import { applyAgentNodeEnvDefault, asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
 import {
   createLocalServiceKey,
@@ -359,6 +359,10 @@ export function sanitizeRuntimeServiceBaseEnv(baseEnv: NodeJS.ProcessEnv): NodeJ
   delete env.DATABASE_URL;
   delete env.npm_config_tailscale_auth;
   delete env.npm_config_authenticated_private;
+  // Dev/preview services are development processes: don't let them inherit the
+  // server's NODE_ENV=production, which makes installs skip devDependencies and
+  // bundlers serve the production React build.
+  applyAgentNodeEnvDefault(env);
   return env;
 }
 
@@ -2420,7 +2424,10 @@ function buildWorkspaceCommandEnv(input: {
   agent: ExecutionWorkspaceAgentRef;
   created: boolean;
 }) {
-  const env: NodeJS.ProcessEnv = { ...process.env };
+  // Workspace setup commands routinely run `npm ci` / `npm install`; inheriting
+  // the server's NODE_ENV=production would leave the tree without devDeps before
+  // the agent even starts.
+  const env: NodeJS.ProcessEnv = applyAgentNodeEnvDefault({ ...process.env });
   env.PAPERCLIP_WORKSPACE_CWD = input.worktreePath;
   env.PAPERCLIP_WORKSPACE_PATH = input.worktreePath;
   env.PAPERCLIP_WORKSPACE_WORKTREE_PATH = input.worktreePath;

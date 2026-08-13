@@ -1978,6 +1978,45 @@ export function buildInvocationEnvForLogs(
   return redactEnvForLogs(merged);
 }
 
+// The Paperclip server image sets NODE_ENV=production (Dockerfile), which is
+// right for the server and wrong for every agent child process that inherits
+// it. An agent workspace is a development environment, and NODE_ENV=production
+// breaks frontend work there in two ways that both read as "the repo is broken":
+//
+//   1. npm *derives* `omit=["dev"]` from NODE_ENV=production, so `npm ci` skips
+//      devDependencies. typescript/vitest/tsup/@testing-library are never
+//      installed and the scripts fail with `tsc: not found` / `vitest: not found`.
+//   2. Bundlers resolve React to its production build, so @testing-library/react
+//      aborts every component test with "act(...) is not supported in production
+//      builds of React".
+//
+// Note that (1) is a *derived* default, not separate npm config: clearing npm's
+// `omit` alone fixes the install but leaves (2), so NODE_ENV is the only knob
+// that fixes both.
+export const AGENT_DEFAULT_NODE_ENV = "development";
+
+// Neutralizes an inherited production NODE_ENV for agent-facing processes while
+// preserving a deliberate non-production host value (a self-hosted dev server
+// running NODE_ENV=development keeps it). This is a *default*, not a lock:
+// adapter/project config env is applied after the Paperclip base env, and
+// NODE_ENV is outside the reserved PAPERCLIP_* namespace, so an operator who
+// genuinely wants NODE_ENV=production in an agent can still set it.
+// The parameter is required on purpose: a default of `process.env.NODE_ENV`
+// would make an explicit `undefined` (an env record that carries no NODE_ENV)
+// silently read the host value instead of resolving to the agent default.
+export function agentNodeEnvDefault(hostNodeEnv: string | undefined): string {
+  const host = (hostNodeEnv ?? "").trim();
+  return host && host !== "production" ? host : AGENT_DEFAULT_NODE_ENV;
+}
+
+// In-place variant for the env builders that start from a `{ ...process.env }`
+// clone (workspace setup commands, runtime dev services) rather than building a
+// fresh record.
+export function applyAgentNodeEnvDefault(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  env.NODE_ENV = agentNodeEnvDefault(env.NODE_ENV);
+  return env;
+}
+
 export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
@@ -1988,6 +2027,10 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
   const vars: Record<string, string> = {
     PAPERCLIP_AGENT_ID: agent.id,
     PAPERCLIP_COMPANY_ID: agent.companyId,
+    // Every adapter (CLI lane via runChildProcess, ACP lane via ACPX session
+    // env) layers its run env over this record, and both merge it *over* the
+    // inherited process.env — so this is the one place that reaches all of them.
+    NODE_ENV: agentNodeEnvDefault(process.env.NODE_ENV),
   };
   const runtimeHost = resolveHostForUrl(
     process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
