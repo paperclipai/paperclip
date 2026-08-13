@@ -59,7 +59,7 @@ import {
 } from "../services/index.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
-import { assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectAgentAdapterWorkspaceCommandPaths,
@@ -4319,6 +4319,37 @@ export function agentRoutes(
   };
 
   /**
+   * Read-access gate for the company-scoped setup-token session routes. It runs
+   * before a route resolves a session. The session id is an opaque secret-bearing
+   * reference, so a cross-company reference must fail closed like a missing
+   * session. This gate returns the same fixed not-found error for a cross-company
+   * reference by an authenticated non-member as for a missing session, so the
+   * route is not a company-membership oracle. It keeps the not-found equivalence
+   * the session lookups use.
+   *
+   * The gate keeps the actor rules unchanged. It throws 401 for an unauthenticated
+   * caller and 403 for a non-user actor through the owner derivation. For an
+   * authorized member it runs the full `assertCompanyAccess` write-path checks and
+   * returns the owner user id. For a non-member it sends the fixed 404 and returns
+   * null; the route must stop.
+   */
+  const resolveCompanySessionOwner = (
+    req: Request,
+    companyId: string,
+    res: Response,
+  ): string | null => {
+    assertAuthenticated(req);
+    const ownerUserId = deriveSetupTokenOwnerUserId(req);
+    if (!hasCompanyAccess(req, companyId)) {
+      res.setHeader("Cache-Control", "no-store");
+      res.status(404).json({ error: SETUP_TOKEN_SESSION_NOT_FOUND });
+      return null;
+    }
+    assertCompanyAccess(req, companyId);
+    return ownerUserId;
+  };
+
+  /**
    * Builds the immutable session scope from the authenticated owner user and the
    * target agent (SR-3, FU-1). Only a user actor owns a login session; the route
    * uses this dedicated login scope, not the broad agent-manage permission.
@@ -4632,8 +4663,8 @@ export function agentRoutes(
 
   router.get("/companies/:companyId/setup-token-login-sessions/:sessionId", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const ownerUserId = deriveSetupTokenOwnerUserId(req);
+    const ownerUserId = resolveCompanySessionOwner(req, companyId, res);
+    if (ownerUserId === null) return;
     res.setHeader("Cache-Control", "no-store");
     try {
       const sessionId = req.params.sessionId as string;
@@ -4651,8 +4682,8 @@ export function agentRoutes(
 
   router.get("/companies/:companyId/setup-token-login-sessions/:sessionId/prompt", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const ownerUserId = deriveSetupTokenOwnerUserId(req);
+    const ownerUserId = resolveCompanySessionOwner(req, companyId, res);
+    if (ownerUserId === null) return;
     res.setHeader("Cache-Control", "no-store");
     // SR-6 and SR-7: the full login URL is a confidential response.
     if (!enforceSetupTokenTransport(req, res)) return;
@@ -4679,8 +4710,8 @@ export function agentRoutes(
 
   router.post("/companies/:companyId/setup-token-login-sessions/:sessionId/code", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const ownerUserId = deriveSetupTokenOwnerUserId(req);
+    const ownerUserId = resolveCompanySessionOwner(req, companyId, res);
+    if (ownerUserId === null) return;
     const browserCode = typeof req.body?.browserCode === "string" ? req.body.browserCode : null;
     res.setHeader("Cache-Control", "no-store");
     // SR-6 and SR-7: the browser code is the confidential OAuth authorization
@@ -4710,8 +4741,8 @@ export function agentRoutes(
 
   router.post("/companies/:companyId/setup-token-login-sessions/:sessionId/completion", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const ownerUserId = deriveSetupTokenOwnerUserId(req);
+    const ownerUserId = resolveCompanySessionOwner(req, companyId, res);
+    if (ownerUserId === null) return;
     res.setHeader("Cache-Control", "no-store");
     try {
       const sessionId = req.params.sessionId as string;
@@ -4732,8 +4763,8 @@ export function agentRoutes(
 
   router.post("/companies/:companyId/setup-token-login-sessions/:sessionId/cancel", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const ownerUserId = deriveSetupTokenOwnerUserId(req);
+    const ownerUserId = resolveCompanySessionOwner(req, companyId, res);
+    if (ownerUserId === null) return;
     res.setHeader("Cache-Control", "no-store");
     try {
       const sessionId = req.params.sessionId as string;

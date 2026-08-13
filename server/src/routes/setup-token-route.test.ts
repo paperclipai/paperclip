@@ -152,6 +152,25 @@ function useOwner(userId: string = OWNER_USER_ID): void {
   };
 }
 
+// Installs a non-`local_implicit` company member. The actor is a signed-in
+// board user with an explicit company allow-list, so `hasCompanyAccess` denies a
+// company that is not on the list. A test uses this actor to prove the
+// cross-company read returns the fixed not-found error, not a membership oracle.
+function useCompanyMember(userId: string = OWNER_USER_ID, companyIds: string[] = [COMPANY_ID]): void {
+  currentActor = {
+    type: "board",
+    userId,
+    companyIds,
+    source: "session",
+    isInstanceAdmin: false,
+    memberships: companyIds.map((companyId) => ({
+      companyId,
+      status: "active",
+      membershipRole: "admin",
+    })),
+  };
+}
+
 // --- Fake transport ----------------------------------------------------------
 
 interface TransportHandle {
@@ -726,6 +745,43 @@ describe("company-and-environment setup-token route — object-level authorizati
     const res = await request(app).get(`${crossCompanyBase}/${sessionId}`).send();
     expect(res.status).toBe(404);
     expect(res.body.error).toBe(SETUP_TOKEN_SESSION_NOT_FOUND);
+  });
+
+  it("returns the fixed not-found for a non-member on every action across a company boundary", async () => {
+    const transport = buildTransport({ onSubmit: "complete" });
+    const { app } = await createApp({ transport });
+
+    // A member of one company starts the session in that company.
+    const startRes = await startCompanySession(app);
+    const sessionId = startRes.body.sessionId as string;
+
+    // A signed-in board member of the first company reads the session under a
+    // second company it is not a member of. The company reference is a
+    // cross-company reference. The route must return the same fixed not-found
+    // error as a missing session, so it is not a company-membership oracle. It
+    // must not return a 403, a login URL, a token, or the browser code forward.
+    useCompanyMember(OWNER_USER_ID, [COMPANY_ID]);
+    const crossCompanyBase = `/api/companies/${OTHER_COMPANY_ID}/setup-token-login-sessions`;
+    const paths: Array<() => request.Test> = [
+      () => request(app).get(`${crossCompanyBase}/${sessionId}`).send(),
+      () => request(app).get(`${crossCompanyBase}/${sessionId}/prompt`).send(),
+      () => request(app).post(`${crossCompanyBase}/${sessionId}/code`).send({ browserCode: BROWSER_CODE }),
+      () => request(app).post(`${crossCompanyBase}/${sessionId}/completion`).send(),
+      () => request(app).post(`${crossCompanyBase}/${sessionId}/cancel`).send(),
+    ];
+    for (const call of paths) {
+      const res = await call();
+      expect(res.status).toBe(404);
+      expect(res.body.error).toBe(SETUP_TOKEN_SESSION_NOT_FOUND);
+      expect(res.body.authorizationUrl).toBeUndefined();
+      expect(res.body.loginUrl).toBeUndefined();
+      expect(res.body.token).toBeUndefined();
+      expect(res.body.storedSessionId).toBeUndefined();
+      expectNoSecret(JSON.stringify(res.body));
+    }
+    // The code route returned the not-found error before it forwarded the code,
+    // so the login process received no submit.
+    expect(transport.submittedCodes).toEqual([]);
   });
 
   it("rejects an adapter other than claude_local at start", async () => {
