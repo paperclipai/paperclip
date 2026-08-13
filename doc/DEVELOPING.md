@@ -870,8 +870,8 @@ Quick examples:
 
 ```sh
 pnpm paperclipai issue list --company-id <company-id>
-pnpm paperclipai issue create --company-id <company-id> --title "Investigate checkout conflict"
-pnpm paperclipai issue update <issue-id> --status in_progress --comment "Started triage"
+npx paperclipai issue create --company-id <company-id> --title "Investigate checkout conflict"
+npx paperclipai issue update <issue-id> --status in_progress --comment "Started triage"
 ```
 
 Set defaults once with context profiles:

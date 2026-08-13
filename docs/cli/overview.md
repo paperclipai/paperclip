@@ -60,11 +60,11 @@ export PAPERCLIP_API_KEY=...
 Secret operations are available under `paperclipai secrets`:
 
 ```sh
-pnpm paperclipai secrets declarations --company-id <company-id> --kind secret
-pnpm paperclipai secrets create --company-id <company-id> --name anthropic-api-key --value-env ANTHROPIC_API_KEY
-pnpm paperclipai secrets link --company-id <company-id> --name prod-stripe-key --provider aws_secrets_manager --external-ref <provider-ref>
-pnpm paperclipai secrets doctor --company-id <company-id>
-pnpm paperclipai secrets migrate-inline-env --company-id <company-id> --apply
+npx paperclipai secrets declarations --company-id <company-id> --kind secret
+npx paperclipai secrets create --company-id <company-id> --name anthropic-api-key --value-env ANTHROPIC_API_KEY
+npx paperclipai secrets link --company-id <company-id> --name prod-stripe-key --provider aws_secrets_manager --external-ref <provider-ref>
+npx paperclipai secrets doctor --company-id <company-id>
+npx paperclipai secrets migrate-inline-env --company-id <company-id> --apply
 ```
 
 Context is stored at `~/.paperclip/context.json`.
