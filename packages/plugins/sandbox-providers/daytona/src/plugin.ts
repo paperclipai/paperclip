@@ -641,6 +641,33 @@ function expiresAtForMinutes(minutes: number): string {
   return new Date(Date.now() + minutes * 60_000).toISOString();
 }
 
+// Configure a provider-side time-to-live so Daytona destroys the sandbox at or
+// before the caller-requested deadline, even after a Paperclip crash or outage.
+// `setTtl` counts wall-clock time regardless of the sandbox state, so the destroy
+// happens even when the sandbox is stopped, paused, or archived. The function
+// returns the real provider destroy time (`autoDestroyAt`) as evidence of the
+// provider-side bound. It returns null when the caller sets no deadline, when the
+// deadline is invalid, or when the deadline is less than one minute away (Daytona
+// TTL granularity is one minute, so a nearer deadline maps to no valid TTL). The
+// server then fails closed on a null expiry and releases the lease.
+async function configureSandboxExpiry(input: {
+  sandbox: Sandbox;
+  requestedExpiresAt: string | null | undefined;
+  nowMs: number;
+}): Promise<string | null> {
+  const requestedMs = input.requestedExpiresAt ? Date.parse(input.requestedExpiresAt) : Number.NaN;
+  if (!Number.isFinite(requestedMs)) return null;
+  // Round DOWN so the provider destroy time never lands after the deadline.
+  const ttlMinutes = Math.floor((requestedMs - input.nowMs) / 60_000);
+  if (ttlMinutes < 1) return null;
+  await input.sandbox.setTtl(ttlMinutes);
+  await input.sandbox.refreshData();
+  const autoDestroyAt = input.sandbox.autoDestroyAt;
+  return typeof autoDestroyAt === "string" && autoDestroyAt.trim().length > 0
+    ? autoDestroyAt.trim()
+    : null;
+}
+
 function sanitizeSnapshotName(value: string | null | undefined, fallback: string): string {
   const cleaned = (value ?? fallback)
     .trim()
@@ -1970,6 +1997,14 @@ const plugin = definePlugin({
     try {
       const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
       const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
+      // Configure a provider-side destroy time at or before a caller deadline, so
+      // an abandoned sandbox self-destroys even if Paperclip is down. The lease
+      // carries the real provider expiry (or none) as evidence of the bound.
+      const expiresAt = await configureSandboxExpiry({
+        sandbox,
+        requestedExpiresAt: params.requestedExpiresAt,
+        nowMs: Date.now(),
+      });
       const workspaceSentinel = await writeWorkspaceSentinel({
         sandbox,
         remoteCwd,
@@ -1999,6 +2034,7 @@ const plugin = definePlugin({
       );
       return {
         providerLeaseId: sandbox.id,
+        expiresAt,
         metadata: leaseMetadata({
           config,
           sandbox,

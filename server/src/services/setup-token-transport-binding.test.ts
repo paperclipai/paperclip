@@ -456,8 +456,8 @@ describe("production sandbox provider", () => {
         releaseLease: async () => ({}) as never,
       },
       environmentRuntime: {
-        // The runtime bounds the lease expiry to the requested deadline, so the
-        // recorded expiry is the earlier of the two.
+        // The runtime records the provider-attested expiry. Here the provider
+        // grants an expiry at or before the requested deadline.
         acquireRunLease: async (input: { requestedExpiresAt?: Date | null }) => {
           forwardedExpiresAt = input.requestedExpiresAt;
           const bounded = new Date(Math.min(deadline, deadline + 5_000));

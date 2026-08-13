@@ -3945,6 +3945,111 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(released[0]?.lease.status).toBe("released");
   });
 
+  async function seedPluginDriverEnvironment(pluginId: string) {
+    const seeded = await seedEnvironment({
+      driver: "plugin",
+      name: "Plugin Fake plugin",
+      config: {
+        pluginKey: "acme.environments",
+        driverKey: "fake-plugin",
+        driverConfig: { template: "base" },
+      },
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.environments",
+      packageName: "@acme/paperclip-environments",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.environments",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Acme Environments",
+        description: "Test plugin environment driver",
+        author: "Acme",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          { driverKey: "fake-plugin", displayName: "Fake plugin", configSchema: { type: "object" } },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    return seeded;
+  }
+
+  it("forwards a requested expiry to the acquire RPC and records only a provider-attested expiry", async () => {
+    const pluginId = randomUUID();
+    let receivedRequestedExpiresAt: unknown;
+    const workerManager = {
+      isRunning: vi.fn(() => true),
+      call: vi.fn(async (_pluginId: string, method: string, params: Record<string, unknown>) => {
+        if (method === "environmentAcquireLease") {
+          receivedRequestedExpiresAt = params.requestedExpiresAt;
+          // The provider grants no expiry.
+          return { providerLeaseId: "plugin-lease-no-expiry", metadata: { remoteCwd: "/workspace" } };
+        }
+        return undefined;
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    const { companyId, environment, runId } = await seedPluginDriverEnvironment(pluginId);
+
+    const requestedExpiresAt = new Date(Date.now() + 60_000);
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+      requestedExpiresAt,
+    });
+
+    // The acquire RPC receives the requested expiry as an ISO 8601 string.
+    expect(receivedRequestedExpiresAt).toBe(requestedExpiresAt.toISOString());
+    // The provider gave no expiry, so the lease row records no expiry. The runtime
+    // never synthesizes the requested deadline as evidence of provider enforcement.
+    expect(acquired.lease.expiresAt ?? null).toBeNull();
+  });
+
+  it("records the real provider expiry when the provider grants one later than the requested deadline", async () => {
+    const pluginId = randomUUID();
+    const providerExpiresAt = new Date(Date.now() + 120_000).toISOString();
+    const workerManager = {
+      isRunning: vi.fn(() => true),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "plugin-lease-later",
+            expiresAt: providerExpiresAt,
+            metadata: { remoteCwd: "/workspace" },
+          };
+        }
+        return undefined;
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    const { companyId, environment, runId } = await seedPluginDriverEnvironment(pluginId);
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+      requestedExpiresAt: new Date(Date.now() + 60_000),
+    });
+
+    // The lease row records the real provider expiry, not the requested deadline.
+    // The caller then verifies the expiry bounds its deadline and fails closed.
+    expect(acquired.lease.expiresAt?.toISOString()).toBe(providerExpiresAt);
+  });
+
   it("delegates the full plugin environment lifecycle through the worker manager", async () => {
     const pluginId = randomUUID();
     const workerManager = {

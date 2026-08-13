@@ -45,6 +45,7 @@ function createMockSandbox(overrides: {
   state?: string;
   recoverable?: boolean;
   workDir?: string;
+  autoDestroyAt?: string | null;
 } = {}) {
   return {
     id: overrides.id ?? "sandbox-123",
@@ -53,6 +54,9 @@ function createMockSandbox(overrides: {
     recoverable: overrides.recoverable ?? false,
     target: "us",
     errorReason: null,
+    // A configured provider TTL populates `autoDestroyAt` after `setTtl` +
+    // `refreshData`. The default mock leaves it unset (no TTL configured).
+    autoDestroyAt: overrides.autoDestroyAt ?? undefined,
     getWorkDir: vi.fn().mockResolvedValue(overrides.workDir ?? "/home/daytona"),
     getUserHomeDir: vi.fn().mockResolvedValue("/home/daytona"),
     start: vi.fn().mockResolvedValue(undefined),
@@ -65,6 +69,7 @@ function createMockSandbox(overrides: {
     resize: vi.fn().mockResolvedValue(undefined),
     delete: vi.fn().mockResolvedValue(undefined),
     archive: vi.fn().mockResolvedValue(undefined),
+    setTtl: vi.fn().mockResolvedValue(undefined),
     setAutoDeleteInterval: vi.fn().mockResolvedValue(undefined),
     createSshAccess: vi.fn().mockResolvedValue({
       token: "ssh-token-secret",
@@ -341,6 +346,71 @@ describe("Daytona sandbox provider plugin", () => {
       "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
       300,
     );
+  });
+
+  it("does not configure a provider ttl when the acquire carries no requested expiry", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    mockCreate.mockResolvedValue(sandbox);
+
+    const lease = await plugin.definition.onEnvironmentAcquireLease?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      runId: "run-1",
+      config: { image: "node:20", timeoutMs: 300000, reuseLease: false },
+    });
+
+    // A generic caller keeps the current behavior: no provider ttl, no expiry.
+    expect(sandbox.setTtl).not.toHaveBeenCalled();
+    expect(lease?.expiresAt ?? null).toBeNull();
+  });
+
+  it("configures a provider ttl at or before the requested expiry and returns the provider expiry", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const autoDestroyAt = new Date(Date.now() + 30 * 60_000).toISOString();
+    const sandbox = createMockSandbox({ autoDestroyAt });
+    mockCreate.mockResolvedValue(sandbox);
+
+    const requestedExpiresAt = new Date(Date.now() + 30 * 60_000 + 30_000).toISOString();
+    const lease = await plugin.definition.onEnvironmentAcquireLease?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      runId: "run-1",
+      config: { image: "node:20", timeoutMs: 300000, reuseLease: false },
+      requestedExpiresAt,
+    });
+
+    // The provider ttl is rounded DOWN to whole minutes, so the destroy time
+    // never lands after the requested deadline.
+    expect(sandbox.setTtl).toHaveBeenCalledTimes(1);
+    expect(sandbox.setTtl).toHaveBeenCalledWith(30);
+    expect(sandbox.refreshData).toHaveBeenCalled();
+    // The lease carries the real provider destroy time as evidence of the bound.
+    expect(lease?.expiresAt).toBe(autoDestroyAt);
+  });
+
+  it("returns no expiry when the requested deadline is less than one minute away", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ autoDestroyAt: "must-not-be-read" });
+    mockCreate.mockResolvedValue(sandbox);
+
+    const requestedExpiresAt = new Date(Date.now() + 30_000).toISOString();
+    const lease = await plugin.definition.onEnvironmentAcquireLease?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      runId: "run-1",
+      config: { image: "node:20", timeoutMs: 300000, reuseLease: false },
+      requestedExpiresAt,
+    });
+
+    // Daytona ttl granularity is one minute, so a nearer deadline maps to no
+    // valid provider ttl. The provider grants no expiry and the server fails
+    // closed on the null expiry.
+    expect(sandbox.setTtl).not.toHaveBeenCalled();
+    expect(lease?.expiresAt ?? null).toBeNull();
   });
 
   it("starts an interactive setup sandbox with redacted metadata and one-time SSH payload", async () => {

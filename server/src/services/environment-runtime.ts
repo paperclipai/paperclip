@@ -1237,6 +1237,11 @@ function createSandboxEnvironmentDriver(
             // environment's default adapter image (a pi agent then runs in the
             // opencode image and the harness binary is missing at exec time).
             adapterType: input.adapterType ?? undefined,
+            // Forward a caller deadline so the provider configures a provider-side
+            // expiry at or before it and returns the real provider expiry.
+            ...(requestedExpiresAtParam(input.requestedExpiresAt) !== undefined
+              ? { requestedExpiresAt: requestedExpiresAtParam(input.requestedExpiresAt) }
+              : {}),
           },
           resolvePluginSandboxRpcTimeoutMs(workerConfig),
         );
@@ -1274,7 +1279,7 @@ function createSandboxEnvironmentDriver(
           leasePolicy: resolvedLeasePolicy,
           provider: parsed.config.provider,
           providerLeaseId: acquiredLease.providerLeaseId,
-          expiresAt: boundLeaseExpiresAt(
+          expiresAt: providerAttestedLeaseExpiry(
             input.requestedExpiresAt,
             acquiredLease.expiresAt ? new Date(acquiredLease.expiresAt) : undefined,
           ),
@@ -1382,6 +1387,9 @@ function createSandboxEnvironmentDriver(
           agentId: input.agentId,
           executionWorkspaceId: input.executionWorkspaceId,
           reusableProviderLeaseId,
+          // Forward a caller deadline so the provider configures a provider-side
+          // expiry at or before it and returns the real provider expiry.
+          requestedExpiresAt: requestedExpiresAtParam(input.requestedExpiresAt),
         });
       } catch (error) {
         if (reusableLease) {
@@ -1429,7 +1437,10 @@ function createSandboxEnvironmentDriver(
         leasePolicy: resolvedLeasePolicy,
         provider: parsed.config.provider,
         providerLeaseId: providerLease.providerLeaseId,
-        expiresAt: boundLeaseExpiresAt(input.requestedExpiresAt, undefined),
+        expiresAt: providerAttestedLeaseExpiry(
+          input.requestedExpiresAt,
+          providerLease.expiresAt ? new Date(providerLease.expiresAt) : undefined,
+        ),
         metadata: {
           ...(input.agentId ? { agentId: input.agentId } : {}),
           driver: input.environment.driver,
@@ -1917,13 +1928,18 @@ function parseExpiresAt(value: string | null | undefined): Date | null {
 }
 
 /**
- * Bounds a persisted lease expiry to a caller-requested deadline. It returns the
- * earlier of the requested deadline and the provider expiry. It returns the
- * requested deadline when the provider gives no expiry. It returns the provider
- * expiry when the caller requests no deadline, so all other callers keep the
- * current behavior. It ignores an invalid requested deadline.
+ * Resolves the persisted lease expiry for a caller-requested deadline. It records
+ * ONLY a provider-attested expiry as evidence of provider enforcement. It never
+ * synthesizes the requested deadline onto the lease row: a database-only expiry
+ * does not stop a remote sandbox after a server crash, so it must not stand in for
+ * a provider-side bound. It returns the real provider expiry when the caller sets
+ * a deadline (the caller then verifies the expiry bounds the deadline and fails
+ * closed when it does not). It returns null when the caller sets a deadline and the
+ * provider grants no expiry. It returns the provider expiry unchanged when the
+ * caller requests no deadline, so all other callers keep the current behavior. It
+ * ignores an invalid requested deadline.
  */
-function boundLeaseExpiresAt(
+function providerAttestedLeaseExpiry(
   requestedExpiresAt: Date | null | undefined,
   providerExpiresAt: Date | null | undefined,
 ): Date | null | undefined {
@@ -1932,8 +1948,21 @@ function boundLeaseExpiresAt(
       ? requestedExpiresAt
       : null;
   if (!requested) return providerExpiresAt;
-  if (!providerExpiresAt) return requested;
-  return providerExpiresAt.getTime() <= requested.getTime() ? providerExpiresAt : requested;
+  return providerExpiresAt ?? null;
+}
+
+/**
+ * Converts a caller-requested deadline to the ISO 8601 string a provider acquire
+ * RPC carries. It returns undefined for an absent or invalid deadline, so a
+ * generic caller without a deadline sends no requested expiry and keeps the
+ * current provider behavior.
+ */
+function requestedExpiresAtParam(
+  requestedExpiresAt: Date | null | undefined,
+): string | undefined {
+  return requestedExpiresAt instanceof Date && !Number.isNaN(requestedExpiresAt.getTime())
+    ? requestedExpiresAt.toISOString()
+    : undefined;
 }
 
 function pluginDriverProviderKey(config: PluginEnvironmentConfig): string {
@@ -2095,6 +2124,11 @@ function createPluginEnvironmentDriver(
         executionWorkspaceId: input.executionWorkspaceId ?? undefined,
         adapterType: input.adapterType ?? undefined,
         executionWorkspaceSettings: input.executionWorkspaceSettings,
+        // Forward a caller deadline so the provider configures a provider-side
+        // expiry at or before it and returns the real provider expiry.
+        ...(requestedExpiresAtParam(input.requestedExpiresAt) !== undefined
+          ? { requestedExpiresAt: requestedExpiresAtParam(input.requestedExpiresAt) }
+          : {}),
       } as PluginEnvironmentAcquireLeaseParams);
 
       return await environmentsSvc.acquireLease({
@@ -2106,7 +2140,7 @@ function createPluginEnvironmentDriver(
         leasePolicy: "ephemeral",
         provider: `plugin:${parsed.config.pluginKey}:${parsed.config.driverKey}`,
         providerLeaseId: providerLease.providerLeaseId,
-        expiresAt: boundLeaseExpiresAt(input.requestedExpiresAt, parseExpiresAt(providerLease.expiresAt)),
+        expiresAt: providerAttestedLeaseExpiry(input.requestedExpiresAt, parseExpiresAt(providerLease.expiresAt)),
         metadata: {
           ...(input.agentId ? { agentId: input.agentId } : {}),
           providerMetadata: providerLease.metadata ?? {},

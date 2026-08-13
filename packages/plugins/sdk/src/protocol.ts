@@ -628,6 +628,17 @@ export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDr
    */
   adapterType?: string;
   executionWorkspaceSettings?: Record<string, unknown> | null;
+  /**
+   * The absolute latest time the acquired lease may stay active, as an ISO 8601
+   * timestamp. A caller with an independent deadline (for example the setup-token
+   * login session) sets it. A provider that materializes a sandbox must configure
+   * a provider-side expiry at or before this time, and return the real provider
+   * expiry in `PluginEnvironmentLease.expiresAt`. When the provider cannot bound
+   * the sandbox at or before this time, it returns no expiry, so the server fails
+   * closed and releases the lease. When omitted, the provider keeps its default
+   * lifetime.
+   */
+  requestedExpiresAt?: string | null;
 }
 
 export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDriverBaseParams {
