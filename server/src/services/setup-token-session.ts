@@ -468,6 +468,21 @@ export function assessConfidentialStartup(config: ConfidentialTransportConfig): 
 
 // --- The session service -----------------------------------------------------
 
+/**
+ * A synchronous capacity hold for the enforced caps. The service reserves the
+ * capacity for the owner, the agent, and the company before the first `await` in
+ * {@link SetupTokenSessionService.start}, so two concurrent starts for one owner
+ * never both pass the cap. The service holds the reservation for the whole
+ * session lifetime and releases it exactly one time: on an early start failure or
+ * on the terminal cleanup. The `released` flag makes the release idempotent.
+ */
+interface CapReservation {
+  released: boolean;
+  companyId: string;
+  ownerUserId: string;
+  targetAgentId: string | null;
+}
+
 interface StoredSession {
   id: string;
   scope: SetupTokenSessionScope;
@@ -495,6 +510,9 @@ interface StoredSession {
   // holds this lock across the awaited secret write, so a cancel or an expiry
   // that arrives during the write waits for the write to settle first.
   lock: Promise<void>;
+  // The synchronous capacity hold for the enforced caps. The cleanup releases it
+  // exactly one time when the session reaches a terminal state.
+  reservation: CapReservation;
 }
 
 /** The public read view of a session prompt. */
@@ -564,6 +582,12 @@ function defaultSessionId(): string {
  */
 export class SetupTokenSessionService {
   private readonly sessions = new Map<string, StoredSession>();
+  // The live reservation counts per owner, per agent, and per company. The start
+  // path reads and increments these synchronously before the first `await`, so
+  // the cap decision and the capacity hold are one atomic step on the event loop.
+  private readonly reservedByOwner = new Map<string, number>();
+  private readonly reservedByAgent = new Map<string, number>();
+  private readonly reservedByCompany = new Map<string, number>();
   private readonly factory: SetupTokenLoginProcessFactory;
   private readonly leases: SetupTokenLeaseManager;
   private readonly store: SetupTokenCleanupStore;
@@ -635,6 +659,73 @@ export class SetupTokenSessionService {
     return count;
   }
 
+  private static incrementCount(counts: Map<string, number>, key: string): void {
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+
+  private static decrementCount(counts: Map<string, number>, key: string): void {
+    const next = (counts.get(key) ?? 0) - 1;
+    if (next > 0) {
+      counts.set(key, next);
+    } else {
+      counts.delete(key);
+    }
+  }
+
+  /**
+   * Reserves the capacity for one start under every enforced cap. The method is
+   * synchronous, so it runs to completion before the first `await` in
+   * {@link start}. Two concurrent starts for one owner cannot interleave inside
+   * it: the first reserves the owner slot, and the second reads the incremented
+   * count and fails closed with the fixed 429 cap error. The method holds the
+   * per-owner, per-agent, and per-company semantics: it counts the agent slot
+   * only for an agent-scoped login, because a null agent id is not a shared key
+   * across owners. It increments no counter on a rejection, so a rejected start
+   * reserves nothing.
+   */
+  private reserveCapacity(scope: SetupTokenSessionScope): CapReservation {
+    if ((this.reservedByOwner.get(scope.ownerUserId) ?? 0) >= this.caps.perOwner) {
+      throw new SetupTokenSessionError(429, SETUP_TOKEN_CAP_EXCEEDED);
+    }
+    if (
+      scope.targetAgentId !== null &&
+      (this.reservedByAgent.get(scope.targetAgentId) ?? 0) >= this.caps.perAgent
+    ) {
+      throw new SetupTokenSessionError(429, SETUP_TOKEN_CAP_EXCEEDED);
+    }
+    if ((this.reservedByCompany.get(scope.companyId) ?? 0) >= this.caps.perCompany) {
+      throw new SetupTokenSessionError(429, SETUP_TOKEN_CAP_EXCEEDED);
+    }
+    SetupTokenSessionService.incrementCount(this.reservedByOwner, scope.ownerUserId);
+    if (scope.targetAgentId !== null) {
+      SetupTokenSessionService.incrementCount(this.reservedByAgent, scope.targetAgentId);
+    }
+    SetupTokenSessionService.incrementCount(this.reservedByCompany, scope.companyId);
+    return {
+      released: false,
+      companyId: scope.companyId,
+      ownerUserId: scope.ownerUserId,
+      targetAgentId: scope.targetAgentId,
+    };
+  }
+
+  /**
+   * Releases a capacity reservation exactly one time. The `released` flag makes
+   * the release idempotent, so an early start failure and the terminal cleanup
+   * never double-release one reservation. The method decrements the same counters
+   * that {@link reserveCapacity} incremented, and it drops the agent counter only
+   * for an agent-scoped login.
+   */
+  private releaseReservation(reservation: CapReservation): void {
+    if (reservation.released) return;
+    reservation.released = true;
+    SetupTokenSessionService.decrementCount(this.reservedByOwner, reservation.ownerUserId);
+    if (reservation.targetAgentId !== null) {
+      SetupTokenSessionService.decrementCount(this.reservedByAgent, reservation.targetAgentId);
+    }
+    SetupTokenSessionService.decrementCount(this.reservedByCompany, reservation.companyId);
+  }
+
   /**
    * Starts a login session. It rate-limits the start, enforces the caps,
    * acquires the lease with an external expiry no later than the deadline,
@@ -646,37 +737,45 @@ export class SetupTokenSessionService {
     if (!rate.allowed) {
       throw new SetupTokenSessionError(429, SETUP_TOKEN_RATE_LIMITED);
     }
-    if (this.countActive((s) => s.scope.ownerUserId === scope.ownerUserId) >= this.caps.perOwner) {
-      throw new SetupTokenSessionError(429, SETUP_TOKEN_CAP_EXCEEDED);
-    }
-    // The per-agent cap applies only to an agent-scoped login. A company login
-    // has no agent id, so the per-owner cap above bounds it. A null agent id is
-    // not a shared key across owners, so the service does not cap on it.
-    if (
-      scope.targetAgentId !== null &&
-      this.countActive((s) => s.scope.targetAgentId === scope.targetAgentId) >= this.caps.perAgent
-    ) {
-      throw new SetupTokenSessionError(429, SETUP_TOKEN_CAP_EXCEEDED);
-    }
-    if (this.countActive((s) => s.scope.companyId === scope.companyId) >= this.caps.perCompany) {
-      throw new SetupTokenSessionError(429, SETUP_TOKEN_CAP_EXCEEDED);
-    }
+    // Reserve the capacity synchronously before the first `await`. This closes
+    // the time-of-check/time-of-use window: the lease acquire, the durable write,
+    // and the factory creation all run after the reservation, so two concurrent
+    // starts for one owner cannot both pass the cap. The service releases the
+    // reservation on every early failure below and on the terminal cleanup.
+    const reservation = this.reserveCapacity(scope);
 
     const sessionId = this.generateSessionId();
     const deadline = this.now() + this.ttlMs;
-    const lease = await this.leases.acquire({ scope, deadline });
 
-    await this.store.record({
-      sessionId,
-      companyId: scope.companyId,
-      ownerUserId: scope.ownerUserId,
-      adapterType: scope.adapterType,
-      environmentId: scope.environmentId,
-      leaseId: lease.id,
-      deadline,
-      state: "starting",
-      boundAt: null,
-    });
+    let lease: SetupTokenLease;
+    try {
+      lease = await this.leases.acquire({ scope, deadline });
+    } catch (error) {
+      // The lease acquire failed before any durable state exists. Roll back the
+      // reservation and rethrow the original error.
+      this.releaseReservation(reservation);
+      throw error;
+    }
+
+    try {
+      await this.store.record({
+        sessionId,
+        companyId: scope.companyId,
+        ownerUserId: scope.ownerUserId,
+        adapterType: scope.adapterType,
+        environmentId: scope.environmentId,
+        leaseId: lease.id,
+        deadline,
+        state: "starting",
+        boundAt: null,
+      });
+    } catch (error) {
+      // The durable write failed, so no record exists for the reaper to read.
+      // Release the lease at once, roll back the reservation, and rethrow.
+      await this.releaseLeaseSafely(lease);
+      this.releaseReservation(reservation);
+      throw error;
+    }
 
     const abort = new AbortController();
     const session: StoredSession = {
@@ -694,6 +793,7 @@ export class SetupTokenSessionService {
       retentionTimer: null,
       cleanupDone: false,
       lock: Promise.resolve(),
+      reservation,
     };
 
     let process: SetupTokenLoginProcess;
@@ -706,10 +806,12 @@ export class SetupTokenSessionService {
         signal: abort.signal,
       });
     } catch {
-      // The factory could not start the process. Release the lease and drop the
-      // durable record, then return a fixed, non-secret error.
+      // The factory could not start the process. Release the lease, drop the
+      // durable record, roll back the reservation, then return a fixed,
+      // non-secret error.
       await this.releaseLeaseSafely(lease);
       await this.store.remove(sessionId).catch(() => {});
+      this.releaseReservation(reservation);
       throw new SetupTokenSessionError(503, SETUP_TOKEN_START_FAILED);
     }
 
@@ -1013,6 +1115,10 @@ export class SetupTokenSessionService {
   private async runCleanup(session: StoredSession, state: SetupTokenSessionState): Promise<void> {
     if (session.cleanupDone) return;
     session.cleanupDone = true;
+    // Release the capacity reservation as the session reaches a terminal state.
+    // A terminal session no longer counts against a cap, so the owner regains the
+    // slot at once, even while a completed session lingers for the retention read.
+    this.releaseReservation(session.reservation);
     if (session.timer) {
       clearTimeout(session.timer);
       session.timer = null;

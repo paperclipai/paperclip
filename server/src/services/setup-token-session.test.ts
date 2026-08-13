@@ -121,6 +121,47 @@ class FakeLeaseManager implements SetupTokenLeaseManager {
   }
 }
 
+// A lease manager whose `acquire` stays in flight until the test resolves it.
+// The test uses it to hold the first start suspended on the lease acquire, then
+// prove a concurrent start for the same owner fails closed before it reaches the
+// provider. It can also fail the next acquire, to drive the acquire-failure
+// rollback path.
+class DeferredLeaseManager implements SetupTokenLeaseManager {
+  acquireCalls = 0;
+  released: string[] = [];
+  releaseByIdCalls: string[] = [];
+  failNextAcquire = false;
+  private counter = 0;
+  private readonly pending: Array<{ resolve: (lease: SetupTokenLease) => void; id: string }> = [];
+  async acquire(): Promise<SetupTokenLease> {
+    this.acquireCalls += 1;
+    if (this.failNextAcquire) {
+      this.failNextAcquire = false;
+      throw new Error("lease acquire failed");
+    }
+    const id = `lease-${(this.counter += 1)}`;
+    return new Promise<SetupTokenLease>((resolve) => {
+      this.pending.push({ resolve, id });
+    });
+  }
+  /** Resolves the oldest in-flight acquire with its lease. */
+  resolveNextAcquire(): void {
+    const next = this.pending.shift();
+    if (next) next.resolve({ id: next.id });
+  }
+  /** The count of acquires that are in flight. */
+  pendingCount(): number {
+    return this.pending.length;
+  }
+  async release(lease: SetupTokenLease): Promise<void> {
+    this.released.push(lease.id);
+  }
+  async releaseById(leaseId: string): Promise<void> {
+    this.releaseByIdCalls.push(leaseId);
+    this.released.push(leaseId);
+  }
+}
+
 function identityMatchesRow(row: SetupTokenCleanupRecord, identity: SetupTokenCleanupIdentity): boolean {
   return (
     row.companyId === identity.companyId &&
@@ -178,9 +219,9 @@ interface RecordedSecretWrite {
   token: string;
 }
 
-function buildService(overrides: {
+function buildService<L extends SetupTokenLeaseManager = FakeLeaseManager>(overrides: {
   events?: string[];
-  leases?: FakeLeaseManager;
+  leases?: L;
   store?: FakeStore;
   rateLimiter?: SetupTokenRateLimiter;
   caps?: { perOwner: number; perAgent: number; perCompany: number };
@@ -188,17 +229,20 @@ function buildService(overrides: {
   tokenRetentionMs?: number;
   now?: () => number;
   completeCredential?: SetupTokenSecretWriter;
+  factory?: SetupTokenLoginProcessFactory;
 } = {}) {
   const events = overrides.events ?? [];
   const processes: FakeProcess[] = [];
   let processCounter = 0;
-  const factory: SetupTokenLoginProcessFactory = ({ onPrompt, onCredential }) => {
-    processCounter += 1;
-    const process = new FakeProcess(`p${processCounter}`, onPrompt, onCredential, events);
-    processes.push(process);
-    return process;
-  };
-  const leases = overrides.leases ?? new FakeLeaseManager(events);
+  const factory: SetupTokenLoginProcessFactory =
+    overrides.factory ??
+    (({ onPrompt, onCredential }) => {
+      processCounter += 1;
+      const process = new FakeProcess(`p${processCounter}`, onPrompt, onCredential, events);
+      processes.push(process);
+      return process;
+    });
+  const leases: L = overrides.leases ?? (new FakeLeaseManager(events) as unknown as L);
   const store = overrides.store ?? new FakeStore();
   const secretWrites: RecordedSecretWrite[] = [];
   const completeCredential: SetupTokenSecretWriter =
@@ -265,6 +309,140 @@ describe("SetupTokenSessionService.start", () => {
       status: 429,
       message: SETUP_TOKEN_CAP_EXCEEDED,
     });
+  });
+});
+
+describe("SetupTokenSessionService.start cap reservation (concurrency)", () => {
+  const capsPerOwnerOne = { perOwner: 1, perAgent: 5, perCompany: 5 };
+
+  it("reserves the owner slot synchronously, so a concurrent start fails closed with 429", async () => {
+    const leases = new DeferredLeaseManager();
+    const { service } = buildService({ leases, caps: capsPerOwnerOne });
+
+    // Start the first session. It reserves the owner slot synchronously, then it
+    // suspends on the deferred lease acquire. The acquire reached the provider and
+    // has not resolved yet.
+    const firstStart = service.start(OWNER_SCOPE);
+    await flush();
+    expect(leases.acquireCalls).toBe(1);
+    expect(leases.pendingCount()).toBe(1);
+
+    // The second start for the same owner runs while the first acquire is in
+    // flight. The synchronous reservation already holds the one owner slot, so the
+    // second start fails closed with the fixed 429 cap error before it reaches the
+    // provider. Only one acquire ever reaches the provider.
+    await expect(service.start(OWNER_SCOPE)).rejects.toMatchObject({
+      status: 429,
+      message: SETUP_TOKEN_CAP_EXCEEDED,
+    });
+    expect(leases.acquireCalls).toBe(1);
+
+    // Let the first start finish. It holds the one live session.
+    leases.resolveNextAcquire();
+    const first = await firstStart;
+    expect(first.sessionId).toBeTruthy();
+    expect(service.activeSessionCount()).toBe(1);
+  });
+
+  it("releases the owner reservation after cleanup, so the owner can start again", async () => {
+    const leases = new DeferredLeaseManager();
+    const { service } = buildService({ leases, caps: capsPerOwnerOne });
+
+    const firstStart = service.start(OWNER_SCOPE);
+    await flush();
+    leases.resolveNextAcquire();
+    const first = await firstStart;
+
+    // Cancel the live session. The cleanup releases the owner reservation.
+    await service.cancel(first.sessionId, OWNER_SCOPE);
+    expect(service.activeSessionCount()).toBe(0);
+
+    // A new start for the same owner reserves the slot again and starts, so the
+    // cleanup released the reservation exactly once and left no slot held.
+    const secondStart = service.start(OWNER_SCOPE);
+    await flush();
+    leases.resolveNextAcquire();
+    const second = await secondStart;
+    expect(second.sessionId).toBeTruthy();
+    expect(second.sessionId).not.toBe(first.sessionId);
+    expect(service.activeSessionCount()).toBe(1);
+  });
+
+  it("releases the owner reservation when the lease acquire fails, so a retry can start", async () => {
+    const leases = new DeferredLeaseManager();
+    leases.failNextAcquire = true;
+    const { service } = buildService({ leases, caps: capsPerOwnerOne });
+
+    // The first start reserves the owner slot, then the lease acquire rejects. The
+    // failure path rolls back the reservation and holds no durable state.
+    await expect(service.start(OWNER_SCOPE)).rejects.toThrow("lease acquire failed");
+    expect(service.activeSessionCount()).toBe(0);
+    expect(leases.released).toEqual([]);
+
+    // A retry for the same owner reserves the slot again and starts. The failed
+    // start left no reservation behind.
+    const retry = service.start(OWNER_SCOPE);
+    await flush();
+    expect(leases.acquireCalls).toBe(2);
+    leases.resolveNextAcquire();
+    const result = await retry;
+    expect(result.sessionId).toBeTruthy();
+    expect(service.activeSessionCount()).toBe(1);
+  });
+
+  it("releases the reservation and the lease when the durable record write fails", async () => {
+    const leases = new FakeLeaseManager();
+    const store = new FakeStore();
+    let failRecord = true;
+    const recordOriginal = store.record.bind(store);
+    store.record = async (record) => {
+      if (failRecord) {
+        failRecord = false;
+        throw new Error("durable write failed");
+      }
+      return recordOriginal(record);
+    };
+    const { service } = buildService({ leases, store, caps: capsPerOwnerOne });
+
+    // The durable write fails. The failure path releases the acquired lease and
+    // rolls back the reservation.
+    await expect(service.start(OWNER_SCOPE)).rejects.toThrow("durable write failed");
+    expect(leases.released).toEqual(["lease-1"]);
+    expect(service.activeSessionCount()).toBe(0);
+
+    // The reservation rolled back, so a retry for the same owner starts.
+    const retry = await service.start(OWNER_SCOPE);
+    expect(retry.sessionId).toBeTruthy();
+    expect(service.activeSessionCount()).toBe(1);
+  });
+
+  it("releases the reservation and the lease when the factory throws, so a retry can start", async () => {
+    const leases = new FakeLeaseManager();
+    let failFactory = true;
+    const factory: SetupTokenLoginProcessFactory = () => {
+      if (failFactory) {
+        failFactory = false;
+        throw new Error("factory failed");
+      }
+      // A minimal live process for the retry. It never ends on its own.
+      return {
+        done: new Promise<SetupTokenLoginOutcome>(() => {}),
+        submitCode: () => {},
+        stop: () => {},
+      };
+    };
+    const { service } = buildService({ leases, factory, caps: capsPerOwnerOne });
+
+    // The factory throws. The start releases the lease, drops the durable record,
+    // rolls back the reservation, and returns the fixed 503 start error.
+    await expect(service.start(OWNER_SCOPE)).rejects.toMatchObject({ status: 503 });
+    expect(leases.released).toEqual(["lease-1"]);
+    expect(service.activeSessionCount()).toBe(0);
+
+    // The reservation rolled back, so a retry for the same owner starts.
+    const retry = await service.start(OWNER_SCOPE);
+    expect(retry.sessionId).toBeTruthy();
+    expect(service.activeSessionCount()).toBe(1);
   });
 });
 
