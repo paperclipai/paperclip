@@ -363,6 +363,7 @@ const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
 const MAX_INLINE_WAKE_ISSUE_DESCRIPTION_CHARS = 12_000;
 const MAX_AGENT_SESSION_MESSAGE_CHARS = 12_000;
+const LOCAL_CHILD_METADATA_GRACE_MS = 20 * 60 * 1000;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -13113,8 +13114,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; metadataMissingGraceMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
+    const metadataGraceMs = opts?.metadataMissingGraceMs ?? LOCAL_CHILD_METADATA_GRACE_MS;
     const now = new Date();
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
@@ -13163,6 +13165,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
+      if (tracksLocalChild && !run.processPid) {
+        const startedRef = run.startedAt ? new Date(run.startedAt).getTime() : 0;
+        const updatedRef = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+        const refTime = Math.max(startedRef, updatedRef, 0);
+        if (refTime > 0 && now.getTime() - refTime < metadataGraceMs) continue;
+      }
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (
@@ -19115,6 +19123,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     cancelInvocationsForAgents: (agentIds: string[], reason: string) =>
       cancelInvocationsForAgentsInternal(agentIds, reason),
+
 
     cancelBudgetScopeWork,
 
