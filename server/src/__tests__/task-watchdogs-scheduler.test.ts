@@ -22,6 +22,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { buildPaperclipWakePayload } from "../services/heartbeat.ts";
 import { taskWatchdogService } from "../services/task-watchdogs.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -257,12 +258,24 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(result).toMatchObject({ checked: 1, triggered: 1 });
     expect(wakes).toHaveLength(1);
     const context = wakes[0]?.opts?.contextSnapshot as any;
-    expect(context.terminalLeafSummaries).toEqual(expect.arrayContaining([
+    const expectedTerminalLeaves = expect.arrayContaining([
       expect.objectContaining({ issueId: doneId, status: "done" }),
       expect.objectContaining({ issueId: blockedId, status: "blocked" }),
       expect.objectContaining({ issueId: reviewId, status: "in_review" }),
-    ]));
+    ]);
+    expect(context.terminalLeafSummaries).toEqual(expectedTerminalLeaves);
+    expect(context.taskWatchdog.terminalLeafSummaries).toEqual(expectedTerminalLeaves);
     expect(context.terminalLeafSummaries.map((leaf: any) => leaf.issueId)).not.toContain(watchdogDescendantId);
+    expect(context.taskWatchdog.terminalLeafSummaries.map((leaf: any) => leaf.issueId)).not.toContain(watchdogDescendantId);
+
+    const adapterWakePayload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: context,
+    });
+    expect(adapterWakePayload?.taskWatchdog).toMatchObject({
+      terminalLeafSummaries: expectedTerminalLeaves,
+    });
     const watchdogIssues = await db.select().from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "task_watchdog")));
     expect(watchdogIssues).toHaveLength(1);
