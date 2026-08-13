@@ -15,6 +15,14 @@ export interface PreMergeGateInput {
   activeRuns: PaperclipRunSnapshot[];
   /** Last comment body on the ticket, lower-cased for substring checks. null when the ticket has no comments. */
   lastCommentBody: string | null;
+  /**
+   * Identifier of the run that is currently invoking the gate. The gate
+   * excludes this run from the `activeRuns` race check so a legitimate merge
+   * initiated by the current run is not denied as a self-conflict. Pass
+   * `undefined` (the default for backwards compatibility) when the caller
+   * doesn't have a current-run identifier handy.
+   */
+  currentRunId?: string;
 }
 
 export interface PaperclipTicketSnapshot {
@@ -44,15 +52,23 @@ const ASSIGNEE_CTO = "cto";
  * the parser walks each shell-separated segment and pulls the first numeric
  * PR number that follows the literal `gh pr merge` subcommand.
  *
+ * A single Bash command may contain MULTIPLE `gh pr merge` invocations chained
+ * with `&&` / `;` / `||`. The hook must require ALL of them to pass the gates
+ * (a single approval must never let an unapproved PR through), so the parser
+ * returns EVERY PR number it can resolve across every `gh pr merge` segment,
+ * in order, with duplicates preserved exactly as written.
+ *
  * If the agent passes a non-numeric selector (`gh pr merge --merge owner:branch`
  * or `gh pr merge main` without a PR number), the parser intentionally returns
- * `null` so the hook falls back to deny-by-default. The gate never lets an
- * unresolvable target through.
+ * an empty array so the hook falls back to deny-by-default. The gate never lets
+ * an unresolvable target through.
  */
-export function parseGhPrMergeCommand(command: string): number | null {
-  if (typeof command !== "string") return null;
-  // Strip leading wrappers and trailing redirections so `cd foo && gh pr merge 460 --squash --delete-branch > /tmp/x` matches.
+export function parseGhPrMergeCommand(command: string): number[] {
+  if (typeof command !== "string") return [];
+  // Split on shell chaining operators so `cd foo && gh pr merge 460 --squash --delete-branch > /tmp/x`
+  // and `gh pr merge 459 && gh pr merge 460` are both parsed correctly.
   const segments = command.split(/&&|;|\|\|/);
+  const prs: number[] = [];
   for (const segment of segments) {
     const cleaned = segment.replace(/\s+>\s*.*$/g, "").trim();
     const head = cleaned.match(/^gh\s+pr\s+merge\b/);
@@ -63,17 +79,24 @@ export function parseGhPrMergeCommand(command: string): number | null {
     // `https://github.com/foo/bar/pull/460` would not match here either — there
     // is no all-digit token in `pull/460`, so they correctly fall through.
     const tokens = tail.split(/\s+/).filter((t) => t.length > 0);
+    let resolved = false;
     for (const token of tokens) {
       if (/^\d+$/.test(token)) {
         const n = Number(token);
-        if (Number.isInteger(n) && n > 0) return n;
-        return null;
+        if (Number.isInteger(n) && n > 0) {
+          prs.push(n);
+          resolved = true;
+        }
+        break;
       }
     }
-    // `gh pr merge` with no numeric token anywhere: deny-by-default.
-    return null;
+    if (!resolved) {
+      // `gh pr merge` segment with no numeric token: bail out entirely so the
+      // command cannot be misread as "only the numeric segments count".
+      return [];
+    }
   }
-  return null;
+  return prs;
 }
 
 /**
@@ -120,9 +143,14 @@ export function evaluatePreMergeGates(input: PreMergeGateInput): GateResult {
   }
 
   // Gate #2 — concurrent run race.
+  // Exclude the run that is currently invoking the gate: a legitimate merge
+  // initiated by this run must not be denied as a self-conflict. The harness
+  // always sets `PAPERCLIP_RUN_ID` for the calling process, so the adapter
+  // pipes that identifier into `currentRunId` here.
   for (const run of input.activeRuns) {
     if (run.livenessState === "completed") continue;
     if (!run.nextAction) continue;
+    if (input.currentRunId && run.id === input.currentRunId) continue;
     if (run.nextAction.includes("PR #" + input.prNumber) || run.nextAction.includes("PR#" + input.prNumber)) {
       return {
         allow: false,
