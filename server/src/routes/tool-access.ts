@@ -232,10 +232,50 @@ export function toolAccessRoutes(
     }
   }
 
-  router.get("/companies/:companyId/tools/gallery", async (req, res) => {
-    assertBoard(req);
-    const companyId = req.params.companyId as string;
+  /**
+   * Apps are company configuration, but an active CEO must be able to turn a
+   * legacy MCP definition into an audited App without asking the board to
+   * proxy every request. OAuth authorization remains board-only because it is
+   * tied to a human identity and browser callback.
+   */
+  async function assertCanConfigureApps(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
+    if (req.actor.type === "board") {
+      assertToolAppMutationAccess(req, companyId);
+      return;
+    }
+
+    const agentId = req.actor.agentId;
+    if (!agentId) throw forbidden("Agent authentication required");
+    const [agent] = await db
+      .select({ id: agents.id, companyId: agents.companyId, role: agents.role, status: agents.status })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .limit(1);
+    if (!agent || agent.companyId !== companyId) {
+      throw forbidden("Agent key cannot access another company");
+    }
+    if (agent.status !== "active") {
+      throw forbidden("Only active agents can configure Apps");
+    }
+    if (agent.role === "ceo") return;
+    if (await access.hasPermission(companyId, "agent", agent.id, "tools:manage_connections")) return;
+    throw forbidden("Apps configuration requires the CEO role or tools:manage_connections permission");
+  }
+
+  function activityActor(req: Request) {
+    const actor = getActorInfo(req);
+    return {
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+    };
+  }
+
+  router.get("/companies/:companyId/tools/gallery", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCanConfigureApps(req, companyId);
     const googleSheetsAvailability = googleSheetsRobotEmailFromEnv();
     res.json({
       apps: CONNECTABLE_APP_DEFINITIONS.map((app) =>
@@ -254,10 +294,13 @@ export function toolAccessRoutes(
 
   router.post("/companies/:companyId/tools/apps/connect", validate(connectToolAppSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertToolAppMutationAccess(req, companyId);
+    await assertCanConfigureApps(req, companyId);
     try {
       const result = await svc.connectGalleryApp(companyId, req.body, getActorInfo(req));
-      if (result.auth?.kind === "oauth") {
+      // OAuth is deliberately human-owned: the board user must authorize a
+      // provider account in their browser. The CEO can still create the
+      // auditable draft and tell the board that authorization is required.
+      if (result.auth?.kind === "oauth" && req.actor.type === "board") {
         const start = await svc.startOAuth(companyId, result.connectionId, {
           redirectUri: oauthRedirectUri(),
           actor: getActorInfo(req),
@@ -266,8 +309,7 @@ export function toolAccessRoutes(
       }
       await logActivity(db, {
         companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        ...activityActor(req),
         action: "tool_app.connected",
         entityType: "tool_connection",
         entityId: result.connectionId,
@@ -364,13 +406,12 @@ export function toolAccessRoutes(
 
   router.post("/companies/:companyId/tools/apps/:connectionId/finish", validate(finishToolAppSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertToolAppMutationAccess(req, companyId);
+    await assertCanConfigureApps(req, companyId);
     const existing = await svc.getConnection(req.params.connectionId as string, companyId);
     const result = await svc.finishGalleryAppConnection(companyId, existing.id, req.body, getActorInfo(req));
     await logActivity(db, {
       companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      ...activityActor(req),
       action: "tool_app.finished",
       entityType: "tool_connection",
       entityId: result.connection.id,
@@ -463,9 +504,8 @@ export function toolAccessRoutes(
   });
 
   router.get("/companies/:companyId/tools/applications", async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCanConfigureApps(req, companyId);
     res.json({ applications: await svc.listApplications(companyId) });
   });
 
@@ -528,9 +568,8 @@ export function toolAccessRoutes(
   });
 
   router.get("/companies/:companyId/tools/connections", async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCanConfigureApps(req, companyId);
     res.json({ connections: await svc.listConnections(companyId) });
   });
 
@@ -1359,14 +1398,12 @@ export function toolAccessRoutes(
   );
 
   router.post("/companies/:companyId/tools/mcp/import-json", validate(importMcpJsonSchema), async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    await assertCanConfigureApps(req, companyId);
     const preview = await svc.previewMcpJsonImport(req.body);
     await logActivity(db, {
       companyId,
-      actorType: "user",
-      actorId: req.actor.userId ?? "board",
+      ...activityActor(req),
       action: "tool_connection.import_mcp_json_previewed",
       entityType: "tool_connection_import",
       entityId: companyId,

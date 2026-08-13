@@ -166,11 +166,16 @@ async function grantBoardUser(
   }
 }
 
-async function createAgent(db: ReturnType<typeof createDb>, companyId: string, status = "active") {
+async function createAgent(
+  db: ReturnType<typeof createDb>,
+  companyId: string,
+  status = "active",
+  role = "engineer",
+) {
   return db.insert(agents).values({
     companyId,
     name: `Test Agent ${randomUUID()}`,
-    role: "engineer",
+    role,
     status,
     adapterType: "process",
     adapterConfig: {},
@@ -2577,6 +2582,71 @@ describeEmbeddedPostgres("tool access service", () => {
         }),
       ]),
     );
+  });
+
+  it("lets an active CEO turn legacy MCP JSON into an audited Apps draft", async () => {
+    const company = await createCompany(db);
+    const ceo = await createAgent(db, company.id, "active", "ceo");
+    const engineer = await createAgent(db, company.id);
+    const ceoApp = createRouteApp(db, {
+      type: "agent",
+      companyId: company.id,
+      agentId: ceo.id,
+      runId: null,
+      source: "agent_jwt",
+    });
+    const engineerApp = createRouteApp(db, {
+      type: "agent",
+      companyId: company.id,
+      agentId: engineer.id,
+      runId: null,
+      source: "agent_jwt",
+    });
+    const payload = {
+      mcpJson: {
+        mcpServers: {
+          context7: { url: "https://mcp.context7.com/mcp" },
+        },
+      },
+    };
+
+    const gallery = await request(ceoApp).get(`/api/companies/${company.id}/tools/gallery`);
+    expect(gallery.status).toBe(200);
+    const preview = await request(ceoApp)
+      .post(`/api/companies/${company.id}/tools/mcp/import-json`)
+      .send(payload);
+    expect(preview.status).toBe(200);
+    expect(preview.body.drafts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "context7", transport: "mcp_remote" }),
+    ]));
+    mockToolsList([{ name: "search-docs", description: "Search documentation", inputSchema: { type: "object" } }]);
+    const connected = await request(ceoApp)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({ link: "https://mcp.context7.com/mcp", name: "Context7" });
+    expect(connected.status).toBe(201);
+    expect(connected.body).toMatchObject({ connection: expect.objectContaining({ name: "Context7" }) });
+    await request(engineerApp)
+      .post(`/api/companies/${company.id}/tools/mcp/import-json`)
+      .send(payload)
+      .expect(403);
+
+    const [activity] = await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, company.id),
+        eq(activityLog.action, "tool_connection.import_mcp_json_previewed"),
+      ));
+    expect(activity).toMatchObject({ actorType: "agent", actorId: ceo.id, agentId: ceo.id });
+    const connectedActivity = await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, company.id),
+        eq(activityLog.action, "tool_app.connected"),
+      ))
+      .then((rows) => rows[0]);
+    expect(connectedActivity).toMatchObject({ actorType: "agent", actorId: ceo.id, agentId: ceo.id });
   });
 
   it("previews remote mcp.json headers as secret replacement fields without echoing values", async () => {

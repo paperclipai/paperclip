@@ -39,6 +39,23 @@ GET    /api/agents/:id/mcp-server-refs
 PUT    /api/agents/:id/mcp-server-refs                  { desiredMcpServers: string[] }
 ```
 
+## Move a legacy MCP connection into Apps
+
+Use **Apps → Advanced setup → Paste a config** to turn a remote `mcp.json`
+entry into an auditable App connection. An active CEO agent can perform the
+same migration through the API: it may read the Apps catalog, preview
+`mcp.json`, create a connection, and finish the reviewed tool profile. The
+activity feed records the CEO as the actor. Other agents need the explicit
+`tools:manage_connections` grant. OAuth authorization is still completed by a
+board user in a browser, because it connects that user's provider account.
+
+```text
+GET  /api/companies/:companyId/tools/gallery
+POST /api/companies/:companyId/tools/mcp/import-json     { mcpJson }
+POST /api/companies/:companyId/tools/apps/connect
+POST /api/companies/:companyId/tools/apps/:connectionId/finish
+```
+
 ## Per-agent servers (overrides)
 
 Open the agent's **Configuration** tab and find the **MCP Servers** section. Servers defined here belong to this agent only, and override a library server with the same name.
