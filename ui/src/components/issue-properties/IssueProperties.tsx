@@ -287,6 +287,7 @@ export function IssueProperties({
   const [watchdogAgentInput, setWatchdogAgentInput] = useState(issue.watchdog?.watchdogAgentId ?? "");
   const [watchdogInstructionsInput, setWatchdogInstructionsInput] = useState(issue.watchdog?.instructions ?? "");
   const normalizedBlockedBySearch = blockedBySearch.trim();
+  const normalizedParentSearch = parentSearch.trim();
 
   useEffect(() => {
     setBlockedByExpanded(false);
@@ -347,6 +348,17 @@ export function IssueProperties({
       limit: ISSUE_BLOCKER_SEARCH_LIMIT,
     }),
     enabled: !!companyId && blockedByOpen && normalizedBlockedBySearch.length > 0,
+  });
+
+  const { data: searchedParentIssues, isFetching: isFetchingSearchedParentIssues } = useQuery({
+    queryKey: companyId
+      ? queryKeys.issues.search(companyId, normalizedParentSearch, undefined, ISSUE_BLOCKER_SEARCH_LIMIT)
+      : ["issues", "blocker-search", normalizedParentSearch, ISSUE_BLOCKER_SEARCH_LIMIT],
+    queryFn: () => issuesApi.list(companyId!, {
+      q: normalizedParentSearch,
+      limit: ISSUE_BLOCKER_SEARCH_LIMIT,
+    }),
+    enabled: !!companyId && parentOpen && normalizedParentSearch.length > 0,
   });
 
   const createLabel = useMutation({
@@ -1898,22 +1910,22 @@ export function IssueProperties({
       <ArrowUpRight className="h-3 w-3" />
     </Link>
   ) : undefined;
-  const parentOptions = (allIssues ?? [])
+  const parentSearchActive = normalizedParentSearch.length > 0;
+  // When the user types, search on the server. The default list caps at 500 rows
+  // and sorts priority-first, so a medium-priority or low-priority match past that
+  // cap never enters the client list. A server query with `q` still finds it.
+  const parentSourceIssues = parentSearchActive ? searchedParentIssues : allIssues;
+  const parentOptions = (parentSourceIssues ?? [])
     .filter((candidate) => candidate.id !== issue.id)
     .filter((candidate) => !descendantIssueIds.has(candidate.id))
-    .filter((candidate) => {
-      if (!parentSearch.trim()) return true;
-      const query = parentSearch.toLowerCase();
-      return (
-        (candidate.identifier ?? "").toLowerCase().includes(query) ||
-        candidate.title.toLowerCase().includes(query)
-      );
-    })
     .sort((a, b) => {
       const aLabel = `${a.identifier ?? ""} ${a.title}`.trim();
       const bLabel = `${b.identifier ?? ""} ${b.title}`.trim();
       return aLabel.localeCompare(bLabel);
     });
+  const parentOptionsLoading = parentOpen && (
+    parentSearchActive ? isFetchingSearchedParentIssues : isFetchingIssuePickerIssues
+  );
   const parentContent = (
     <>
       <input
@@ -1955,6 +1967,11 @@ export function IssueProperties({
             </span>
           </button>
         ))}
+        {parentOptionsLoading ? (
+          <div className="px-2 py-2 text-xs text-muted-foreground">Searching tasks...</div>
+        ) : parentOptions.length === 0 ? (
+          <div className="px-2 py-2 text-xs text-muted-foreground">No matching tasks.</div>
+        ) : null}
       </div>
     </>
   );
