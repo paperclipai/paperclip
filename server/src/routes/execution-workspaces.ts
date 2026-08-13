@@ -665,12 +665,6 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       workspace = archiveResult.workspace;
       const capturedGeneration = archiveResult.capturedGeneration;
 
-      await environmentRuntime.destroyReusableSandboxLeases({
-        companyId: existing.companyId,
-        executionWorkspaceId: existing.id,
-        failureReason: "execution_workspace_closed",
-      });
-
       if (existing.mode === "shared_workspace") {
         await db
           .update(issues)
@@ -713,10 +707,21 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
           : null;
         // Destroy under the lifecycle lock. If a resume reopened the workspace in
         // the meantime, the fence skips destruction and keeps the reopened row.
+        // The reusable sandbox lease teardown runs inside this fence too. A reopen
+        // that races the archive rebuilds the worktree and keeps its leases, so
+        // the fence must skip both the worktree teardown and the lease teardown at
+        // the same generation. If the lease teardown ran before the fence, an
+        // overlapping reopen would lose its reusable leases while the fence still
+        // preserved its rebuilt worktree.
         const fenced = await svc.fenceClosedWorkspaceDestruction({
           workspaceId: id,
           capturedGeneration,
           destroy: async () => {
+            await environmentRuntime.destroyReusableSandboxLeases({
+              companyId: existing.companyId,
+              executionWorkspaceId: existing.id,
+              failureReason: "execution_workspace_closed",
+            });
             await stopRuntimeServicesForExecutionWorkspace({
               db,
               executionWorkspaceId: existing.id,

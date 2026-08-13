@@ -30,6 +30,10 @@ const mockAccessService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
+const mockEnvironmentRuntimeService = vi.hoisted(() => ({
+  destroyReusableSandboxLeases: vi.fn(async () => undefined),
+}));
+
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   executionWorkspaceService: () => mockExecutionWorkspaceService,
@@ -37,6 +41,25 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
   workspaceOperationService: () => mockWorkspaceOperationService,
 }));
+
+vi.mock("../services/environment-runtime.js", () => ({
+  environmentRuntimeService: () => mockEnvironmentRuntimeService,
+}));
+
+const mockWorkspaceRuntimeTeardown = vi.hoisted(() => ({
+  stopRuntimeServicesForExecutionWorkspace: vi.fn(async () => undefined),
+  cleanupExecutionWorkspaceArtifacts: vi.fn(async () => ({ cleaned: true, warnings: [] as string[] })),
+}));
+
+vi.mock("../services/workspace-runtime.js", async (importActual) => {
+  const actual = await importActual<typeof import("../services/workspace-runtime.js")>();
+  return {
+    ...actual,
+    stopRuntimeServicesForExecutionWorkspace:
+      mockWorkspaceRuntimeTeardown.stopRuntimeServicesForExecutionWorkspace,
+    cleanupExecutionWorkspaceArtifacts: mockWorkspaceRuntimeTeardown.cleanupExecutionWorkspaceArtifacts,
+  };
+});
 
 function createApp(actor: Record<string, unknown> = {
   type: "board",
@@ -420,5 +443,97 @@ describe.sequential("execution workspace routes", () => {
     expect(mockExecutionWorkspaceService.archiveWorkspaceUnderLifecycleLock).toHaveBeenCalledTimes(1);
     // The destruction fence never runs, so no worktree is removed.
     expect(mockExecutionWorkspaceService.fenceClosedWorkspaceDestruction).not.toHaveBeenCalled();
+  });
+
+  it("destroys the reusable sandbox leases inside the destruction fence when the archive wins", async () => {
+    // The archive wins the lifecycle race. The fence runs the destroy callback,
+    // so the reusable sandbox lease teardown runs with the worktree teardown.
+    const archivedWorkspace = {
+      id: "workspace-1",
+      companyId: "company-1",
+      sourceIssueId: "issue-1",
+      status: "archived",
+      mode: "isolated_workspace",
+      projectWorkspaceId: null,
+      projectId: null,
+      cwd: "/tmp/worktree",
+    };
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      ...archivedWorkspace,
+      status: "active",
+    });
+    mockExecutionWorkspaceService.getCloseReadiness.mockResolvedValue({
+      state: "ready",
+      blockingReasons: [],
+    });
+    mockExecutionWorkspaceService.archiveWorkspaceUnderLifecycleLock.mockResolvedValue({
+      outcome: "archived",
+      workspace: archivedWorkspace,
+      capturedGeneration: 3,
+    });
+    mockExecutionWorkspaceService.fenceClosedWorkspaceDestruction.mockImplementation(
+      async ({ destroy }: { destroy: () => Promise<unknown> }) => ({
+        skippedReopened: false,
+        result: await destroy(),
+      }),
+    );
+
+    const res = await request(createApp())
+      .patch("/api/execution-workspaces/workspace-1")
+      .send({ status: "archived" });
+
+    expect(res.status).toBe(200);
+    // The lease teardown runs inside the fence, so it uses the closed-workspace
+    // failure reason and targets the archived row.
+    expect(mockEnvironmentRuntimeService.destroyReusableSandboxLeases).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: "company-1",
+        executionWorkspaceId: "workspace-1",
+        failureReason: "execution_workspace_closed",
+      }),
+    );
+  });
+
+  it("keeps the reusable sandbox leases when a reopen makes the fence skip the archive teardown", async () => {
+    // A reopen raised the lifecycle generation after the archive captured its
+    // own generation. The fence skips the destroy callback and keeps the
+    // reopened row, so the lease teardown must not run. Before the fix the lease
+    // teardown ran before the fence, so an overlapping reopen lost its leases.
+    const archivedWorkspace = {
+      id: "workspace-1",
+      companyId: "company-1",
+      sourceIssueId: "issue-1",
+      status: "archived",
+      mode: "isolated_workspace",
+      projectWorkspaceId: null,
+      projectId: null,
+      cwd: "/tmp/worktree",
+    };
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      ...archivedWorkspace,
+      status: "active",
+    });
+    mockExecutionWorkspaceService.getCloseReadiness.mockResolvedValue({
+      state: "ready",
+      blockingReasons: [],
+    });
+    mockExecutionWorkspaceService.archiveWorkspaceUnderLifecycleLock.mockResolvedValue({
+      outcome: "archived",
+      workspace: archivedWorkspace,
+      capturedGeneration: 3,
+    });
+    // The fence detects the reopen and never runs the destroy callback.
+    mockExecutionWorkspaceService.fenceClosedWorkspaceDestruction.mockResolvedValue({
+      skippedReopened: true,
+    });
+
+    const res = await request(createApp())
+      .patch("/api/execution-workspaces/workspace-1")
+      .send({ status: "archived" });
+
+    expect(res.status).toBe(200);
+    expect(mockExecutionWorkspaceService.fenceClosedWorkspaceDestruction).toHaveBeenCalledTimes(1);
+    // The reopen keeps its reusable leases because the fence skipped the destroy.
+    expect(mockEnvironmentRuntimeService.destroyReusableSandboxLeases).not.toHaveBeenCalled();
   });
 });
