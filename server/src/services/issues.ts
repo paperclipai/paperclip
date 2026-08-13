@@ -790,6 +790,10 @@ export type DelegatedIssueExecutionContractValidation = {
   warnings: string[];
 };
 
+function isDelegatedContractRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 function readDelegatedContractField(record: Record<string, unknown> | null | undefined, ...keys: string[]) {
   if (!record) return undefined;
   for (const key of keys) {
@@ -807,7 +811,7 @@ function hasDelegatedContractContent(value: unknown): boolean {
   if (typeof value === "string") return value.trim().length > 0;
   if (typeof value === "number" || typeof value === "boolean") return true;
   if (Array.isArray(value)) return value.some(hasDelegatedContractContent);
-  if (isRecord(value)) return Object.values(value).some(hasDelegatedContractContent);
+  if (isDelegatedContractRecord(value)) return Object.values(value).some(hasDelegatedContractContent);
   return false;
 }
 
@@ -829,7 +833,7 @@ export function validateDelegatedIssueExecutionContract(
     warnings.push("executionContract.taskType is required");
   }
   const coreValue = readDelegatedContractField(executionContract, "core");
-  if (!isRecord(coreValue)) return { valid: false, warnings: [...warnings, "executionContract.core is required"] };
+  if (!isDelegatedContractRecord(coreValue)) return { valid: false, warnings: [...warnings, "executionContract.core is required"] };
   if (!readDelegatedContractString(coreValue, "objective")) warnings.push("executionContract.core.objective is required");
   if (!readDelegatedContractString(coreValue, "why")) warnings.push("executionContract.core.why is required");
   if (!hasDelegatedContractContent(readDelegatedContractField(coreValue, "sourceOfTruth", "source_of_truth"))) {
@@ -839,7 +843,7 @@ export function validateDelegatedIssueExecutionContract(
     warnings.push("executionContract.core.acceptanceChecks must contain at least one check");
   }
   const handoffNotes = readDelegatedContractField(coreValue, "handoffNotes", "handoff_notes");
-  if (!readDelegatedContractString(isRecord(handoffNotes) ? handoffNotes : null, "managerReasoning", "manager_reasoning")) {
+  if (!readDelegatedContractString(isDelegatedContractRecord(handoffNotes) ? handoffNotes : null, "managerReasoning", "manager_reasoning")) {
     warnings.push("executionContract.core.handoffNotes.managerReasoning is required");
   }
   return { valid: warnings.length === 0, warnings };
@@ -6652,13 +6656,12 @@ export function issueService(db: Db) {
           : null;
       const description = appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria);
       if (actorAgentId) {
-        const contractFields = resolveExecutionContractFields({
-          description,
-          executionContract: issueData.executionContract,
-        });
-        assertDelegatedIssueExecutionContract(contractFields.executionContract ?? null, {
+        assertDelegatedIssueExecutionContract(
+          isDelegatedContractRecord(issueData.executionContract) ? issueData.executionContract : null,
+          {
           parentId: parent.id,
-        });
+          },
+        );
       }
       let child = await issueService(db).create(parent.companyId, {
         ...issueData,
