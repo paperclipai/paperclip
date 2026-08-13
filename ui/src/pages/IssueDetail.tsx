@@ -1,11 +1,10 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode, type Ref } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode, type Ref } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
-import { budgetsApi } from "../api/budgets";
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
 import { heartbeatsApi, type ActiveRunForIssue, type LiveRunForIssue } from "../api/heartbeats";
@@ -40,8 +39,16 @@ import {
   rememberIssueDetailLocationState,
 } from "../lib/issueDetailBreadcrumb";
 import { resolveIssueActiveRun, shouldTrackIssueActiveRun } from "../lib/issueActiveRun";
-import { isHumanControlWorkItemType } from "../lib/issue-work-items";
 import { getIssueDetailQueryOptions } from "../lib/issueDetailCache";
+import {
+  beginIssueDetailNavigation,
+  ISSUE_DETAIL_CONTENT_MEASURE,
+  ISSUE_DETAIL_CONTENT_PAINT_MARK,
+  ISSUE_DETAIL_HEADER_MEASURE,
+  ISSUE_DETAIL_HEADER_PAINT_MARK,
+  reportIssueDetailWebVitals,
+  scheduleIssueDetailPaintMeasure,
+} from "../lib/issue-detail-performance";
 import {
   beginLocalInboxArchive,
   boundLocalInboxArchive,
@@ -70,14 +77,13 @@ import {
   getNextIssueCommentPageParam,
   ISSUE_COMMENT_PAGE_SIZE,
   isQueuedIssueComment,
+  loadRemainingIssueCommentPages,
   matchesIssueRef,
   mergeIssueComments,
-  paginateIssueComments,
   removeIssueCommentFromPages,
   shouldAutoloadOlderIssueComments,
   takeOptimisticIssueComment,
   upsertIssueCommentInPages,
-  upsertIssueCommentInInfiniteData,
   type IssueCommentReassignment,
   type OptimisticIssueComment,
 } from "../lib/optimistic-issue-comments";
@@ -93,10 +99,9 @@ import {
   type IssueChatComposerHandle,
   type IssueChatRunFinalizationAction,
 } from "../components/IssueChatThread";
-import type { InlineEntityOption } from "../components/InlineEntitySelector";
 import { TaskChatThread } from "../components/TaskChatThread";
 import type { TaskChatIssueBrief } from "../components/task-chat/TaskChatDescriptionBubble";
-import { useTaskChatRedesignEnabled } from "../hooks/useTaskChatRedesignEnabled";
+import { useClassicTaskInterfaceEnabled } from "../hooks/useClassicTaskInterfaceEnabled";
 import { workModeMetaFor } from "../lib/work-mode-meta";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
 import { IssueAttachmentsSection } from "../components/IssueAttachmentsSection";
@@ -129,9 +134,9 @@ import { IssueProperties } from "../components/IssueProperties";
 import { PauseAffectsSummaryView } from "../components/interrupt-handoff/InterruptHandoffViews";
 import { computePauseAffectsSummary } from "../lib/interrupt-handoff";
 import { useIssueExternalObjects } from "../hooks/useIssueExternalObjects";
+import { useIssuePlanDocument } from "../hooks/useIssuePlanDocument";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
-import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import type { MentionOption } from "../components/MarkdownEditor";
 import { ImageGalleryModal, type GalleryMediaItem } from "../components/ImageGalleryModal";
 import { FileViewerProvider, useRequiredFileViewer } from "../context/FileViewerContext";
@@ -148,7 +153,6 @@ import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback, AvatarGroup, AvatarImage } from "@/components/ui/avatar";
@@ -168,7 +172,6 @@ import { formatIssueActivityAction } from "@/lib/activity-format";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { buildIssuePropertiesPanelKey } from "../lib/issue-properties-panel-key";
 import { buildIssueSiblingNavigation, shouldRenderRichSubIssuesSection } from "../lib/issue-detail-subissues";
-import { sumIssueValuesWithDescendants } from "../lib/issue-rollups";
 import { filterIssueDescendants } from "../lib/issue-tree";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import {
@@ -182,22 +185,15 @@ import {
   AlertTriangle,
   Archive,
   ArrowLeft,
-  Bot,
-  CalendarClock,
   Check,
-  ChevronLeft,
   ChevronRight,
-  Clock3,
   Copy,
   Eye,
   EyeOff,
   ScanEye,
   Flag,
-  Hash,
-  Hexagon,
   FileCode2,
   ListTree,
-  Lock,
   MessageSquare,
   MoreHorizontal,
   MoreVertical,
@@ -208,19 +204,14 @@ import {
   Repeat,
   SlidersHorizontal,
   XCircle,
-  type LucideIcon,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
   deriveOriginatingActor,
-  chatThinkingEffortAdapterConfigKey,
-  chatThinkingEffortOptionsForAdapter,
-  formatChatThinkingEffort,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
-  isChatThinkingEffortSupported,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
-  type BudgetPolicySummary,
+  ONBOARDING_FIRST_TASK_ORIGIN_KIND,
   type AskUserQuestionsAnswer,
   type AskUserQuestionsInteraction,
   type ActivityEvent,
@@ -242,6 +233,12 @@ import {
   type WorkspaceFileRef,
   workspaceFileRefSchema,
 } from "@paperclipai/shared";
+
+// Stable empty array for React Query `data` defaults. A literal `= []` default
+// creates a new array reference on every render while `data` is undefined
+// (loading/idle), which destabilizes downstream memos and panel keys that
+// depend on it. Reusing one shared reference keeps those values stable.
+const EMPTY_ISSUES: Issue[] = [];
 
 type StopAndFinalizeRunError = Error & {
   runCancelledBeforeStatusUpdateFailed?: boolean;
@@ -305,465 +302,10 @@ function issueTreeControlLabel(mode: IssueTreeControlMode, scope: "leaf" | "subt
     : TREE_CONTROL_MODE_LABEL[mode];
 }
 
-function hasExecutionContract(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  return Object.keys(value).length > 0;
-}
-
-function readContractString(record: Record<string, unknown> | null | undefined, ...keys: string[]) {
-  if (!record) return null;
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return null;
-}
-
-function readContractRecord(record: Record<string, unknown> | null | undefined, key: string) {
-  const value = record?.[key];
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
-
-function IssueExecutionContractPanel({
-  contract,
-  defaultOpen = false,
-}: {
-  contract: unknown;
-  defaultOpen?: boolean;
-}) {
-  if (!hasExecutionContract(contract)) return null;
-  const core = readContractRecord(contract, "core");
-  const taskType = readContractString(contract, "taskType", "task_type");
-  const objective = readContractString(core, "objective");
-  const why = readContractString(core, "why");
-
-  return (
-    <details open={defaultOpen} className="group rounded-md border border-border bg-muted/20">
-      <summary className="flex cursor-pointer select-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium">
-        <span className="flex min-w-0 items-center gap-2">
-          <ListTree className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <span className="truncate">Execution Contract</span>
-        </span>
-        <span className="shrink-0 text-xs font-normal text-muted-foreground">
-          {taskType ?? "handoff"}
-        </span>
-      </summary>
-      {objective || why ? (
-        <div className="space-y-2 border-t border-border px-3 py-2 text-xs leading-5">
-          {objective ? (
-            <p>
-              <span className="font-medium text-foreground">Objective: </span>
-              <span className="text-muted-foreground">{objective}</span>
-            </p>
-          ) : null}
-          {why ? (
-            <p>
-              <span className="font-medium text-foreground">Why: </span>
-              <span className="text-muted-foreground">{why}</span>
-            </p>
-          ) : null}
-        </div>
-      ) : null}
-      <pre className="max-h-96 overflow-auto border-t border-border px-3 py-2 text-xs leading-5 text-muted-foreground">
-        {JSON.stringify(contract, null, 2)}
-      </pre>
-    </details>
-  );
-}
-
 function issueTreeControlHelpText(mode: IssueTreeControlMode, scope: "leaf" | "subtree") {
   return scope === "leaf"
     ? LEAF_WORK_CONTROL_MODE_HELP_TEXT[mode] ?? TREE_CONTROL_MODE_HELP_TEXT[mode]
     : TREE_CONTROL_MODE_HELP_TEXT[mode];
-}
-
-function formatIssuePlanningHours(value: number | null | undefined): string {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return "No estimate";
-  return Number.isInteger(value) ? `${value}h` : `${value.toFixed(1)}h`;
-}
-
-function formatIssueAiHours(seconds: number | null | undefined): string {
-  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) return "0h";
-  const hours = seconds / 3600;
-  return Number.isInteger(hours) ? `${hours}h` : `${hours.toFixed(1)}h`;
-}
-
-function actualAiSecondsForIssue(issue: Issue): number {
-  if (typeof issue.actualAiSeconds !== "number" || !Number.isFinite(issue.actualAiSeconds)) return 0;
-  return Math.max(0, issue.actualAiSeconds);
-}
-
-function actualHumanSecondsForIssue(issue: Issue): number {
-  if (typeof issue.actualHumanSeconds !== "number" || !Number.isFinite(issue.actualHumanSeconds)) return 0;
-  return Math.max(0, issue.actualHumanSeconds);
-}
-
-function formatIssueDueDate(issue: Issue): string {
-  if (!issue.dueDate) return "No due date";
-  return new Date(issue.dueDate).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
-function IssuePlanningStat({
-  icon: Icon,
-  label,
-  value,
-  detail,
-}: {
-  icon: typeof Hash;
-  label: string;
-  value: string;
-  detail: string;
-}) {
-  return (
-    <div className="min-w-0 rounded-md border border-border bg-muted/20 px-3 py-2">
-      <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
-        <Icon className="h-3.5 w-3.5" />
-        <span>{label}</span>
-      </div>
-      <div className="mt-1 truncate text-sm font-semibold text-foreground">{value}</div>
-      <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{detail}</div>
-    </div>
-  );
-}
-
-function IssuePlanningStrip({ issue, childIssues }: { issue: Issue; childIssues: Issue[] }) {
-  const [open, setOpen] = useState(false);
-  const actualHumanSeconds = actualHumanSecondsForIssue(issue);
-  const actualAiSecondsWithChildren = useMemo(
-    () => sumIssueValuesWithDescendants([issue], [issue, ...childIssues], actualAiSecondsForIssue),
-    [childIssues, issue],
-  );
-
-  return (
-    <Collapsible open={open} onOpenChange={setOpen} className="border-t border-border pt-2">
-      <div className="flex min-h-7 items-center">
-        <CollapsibleTrigger asChild>
-          <Button
-            type="button"
-            variant="ghost"
-            size="xs"
-            className="h-7 px-2 text-muted-foreground hover:text-foreground"
-            aria-expanded={open}
-            aria-label={open ? "Hide issue details" : "Show issue details"}
-          >
-            <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-90")} />
-            <span>Details</span>
-          </Button>
-        </CollapsibleTrigger>
-      </div>
-      <CollapsibleContent>
-        <div className="grid gap-2 pt-2 sm:grid-cols-2 xl:grid-cols-5">
-          <IssuePlanningStat
-            icon={Hash}
-            label="Story points"
-            value={issue.storyPoints != null ? `${issue.storyPoints} pts` : "No points"}
-            detail="Human planning weight"
-          />
-          <IssuePlanningStat
-            icon={Clock3}
-            label="Estimate"
-            value={formatIssuePlanningHours(issue.estimateHours)}
-            detail="Rough hours"
-          />
-          <IssuePlanningStat
-            icon={Clock3}
-            label="Human time"
-            value={formatIssueAiHours(actualHumanSeconds)}
-            detail="Created to done/now"
-          />
-          <IssuePlanningStat
-            icon={Bot}
-            label="AI time"
-            value={formatIssueAiHours(actualAiSecondsWithChildren)}
-            detail={childIssues.length > 0 ? "Including sub-issues" : "Recorded execution"}
-          />
-          <IssuePlanningStat
-            icon={CalendarClock}
-            label="Cycle"
-            value={issue.cycle?.name ?? "No cycle"}
-            detail={formatIssueDueDate(issue)}
-          />
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
-  );
-}
-
-type IssuePauseSummary = {
-  isRoot: boolean;
-  rootLabel: string | null;
-  heldCount: number;
-};
-
-type IssueStateSummaryTone = "neutral" | "live" | "warning" | "danger" | "success";
-
-type IssueStateSummaryModel = {
-  icon: LucideIcon;
-  tone: IssueStateSummaryTone;
-  title: string;
-  detail: string;
-  meta: string[];
-};
-
-const ISSUE_STATE_SUMMARY_TONE_CLASSES: Record<IssueStateSummaryTone, { container: string; icon: string }> = {
-  neutral: {
-    container: "border-border bg-muted/20",
-    icon: "text-muted-foreground",
-  },
-  live: {
-    container: "border-cyan-500/30 bg-cyan-500/10",
-    icon: "text-cyan-600 dark:text-cyan-400",
-  },
-  warning: {
-    container: "border-amber-500/35 bg-amber-500/10",
-    icon: "text-amber-700 dark:text-amber-300",
-  },
-  danger: {
-    container: "border-destructive/35 bg-destructive/10",
-    icon: "text-destructive",
-  },
-  success: {
-    container: "border-emerald-500/30 bg-emerald-500/10",
-    icon: "text-emerald-700 dark:text-emerald-300",
-  },
-};
-
-function formatIssueStatusLabel(status: Issue["status"]): string {
-  return status.replace(/_/g, " ");
-}
-
-function formatIssueCount(count: number, singular: string, plural = `${singular}s`): string {
-  return `${count} ${count === 1 ? singular : plural}`;
-}
-
-function formatScheduledRetryAt(date: Date | string | null | undefined): string | null {
-  if (!date) return null;
-  const timestamp = new Date(date).getTime();
-  if (!Number.isFinite(timestamp)) return null;
-  const diffMinutes = Math.round((timestamp - Date.now()) / 60000);
-  if (diffMinutes <= 0) return "due now";
-  if (diffMinutes < 60) return `in ${diffMinutes}m`;
-  const diffHours = Math.round(diffMinutes / 60);
-  if (diffHours < 24) return `in ${diffHours}h`;
-  const diffDays = Math.round(diffHours / 24);
-  if (diffDays < 14) return `in ${diffDays}d`;
-  return new Date(date).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
-function buildIssueStateSummary(input: {
-  issue: Issue;
-  childIssues: Issue[];
-  hasLiveRuns: boolean;
-  activePauseSummary: IssuePauseSummary | null;
-}): IssueStateSummaryModel {
-  const { issue, childIssues, hasLiveRuns, activePauseSummary } = input;
-  const statusLabel = formatIssueStatusLabel(issue.status);
-  const meta = [
-    statusLabel,
-    childIssues.length > 0 ? formatIssueCount(childIssues.length, "sub-issue") : null,
-  ].filter((item): item is string => Boolean(item));
-  const blockerAttention = issue.blockerAttention ?? null;
-  const blockedByCount = issue.blockedBy?.length ?? 0;
-  const scheduledRetry = issue.scheduledRetry ?? null;
-
-  if (activePauseSummary) {
-    const heldLabel = activePauseSummary.isRoot
-      ? formatIssueCount(activePauseSummary.heldCount, "issue")
-      : activePauseSummary.rootLabel
-        ? `Root ${activePauseSummary.rootLabel}`
-        : "Parent hold";
-    return {
-      icon: PauseCircle,
-      tone: "warning",
-      title: activePauseSummary.isRoot ? "Work paused" : "Paused by parent",
-      detail: activePauseSummary.isRoot
-        ? "Execution is held until the board resumes this work."
-        : "Execution is held by an ancestor pause. Resume from the root issue.",
-      meta: [heldLabel, ...meta],
-    };
-  }
-
-  if (issue.successfulRunHandoff?.state === "escalated") {
-    return {
-      icon: AlertTriangle,
-      tone: "danger",
-      title: "Handoff escalated",
-      detail: issue.successfulRunHandoff.detectedProgressSummary
-        ?? "A successful run still needs board review before this issue can move on.",
-      meta,
-    };
-  }
-
-  if (issue.successfulRunHandoff?.state === "required") {
-    return {
-      icon: AlertTriangle,
-      tone: "warning",
-      title: "Handoff needs review",
-      detail: issue.successfulRunHandoff.detectedProgressSummary
-        ?? "A successful run reported progress and needs a human handoff decision.",
-      meta,
-    };
-  }
-
-  if (issue.activeRecoveryAction) {
-    return {
-      icon: Flag,
-      tone: "warning",
-      title: "Recovery action open",
-      detail: issue.activeRecoveryAction.nextAction || "A recovery workflow is waiting for the next action.",
-      meta: [issue.activeRecoveryAction.kind.replace(/_/g, " "), ...meta],
-    };
-  }
-
-  if (blockerAttention?.state === "needs_attention") {
-    const sample = blockerAttention.sampleStalledBlockerIdentifier ?? blockerAttention.sampleBlockerIdentifier;
-    return {
-      icon: AlertTriangle,
-      tone: "danger",
-      title: "Blocked work needs attention",
-      detail: sample
-        ? `${sample} needs attention before this issue can continue.`
-        : "One or more blockers need attention before this issue can continue.",
-      meta: [
-        formatIssueCount(blockerAttention.attentionBlockerCount || blockedByCount || 1, "blocker"),
-        ...meta,
-      ],
-    };
-  }
-
-  if (blockerAttention?.state === "stalled") {
-    const sample = blockerAttention.sampleStalledBlockerIdentifier ?? blockerAttention.sampleBlockerIdentifier;
-    return {
-      icon: Flag,
-      tone: "warning",
-      title: "Blocker looks stalled",
-      detail: sample
-        ? `${sample} is not making visible progress.`
-        : "A blocker is not making visible progress.",
-      meta: [
-        formatIssueCount(blockerAttention.stalledBlockerCount || blockedByCount || 1, "blocker"),
-        ...meta,
-      ],
-    };
-  }
-
-  if (blockedByCount > 0) {
-    const sample = issue.blockedBy?.[0]?.identifier ?? issue.blockedBy?.[0]?.title ?? null;
-    return {
-      icon: Flag,
-      tone: "warning",
-      title: "Waiting on blockers",
-      detail: sample
-        ? `${sample} must clear before this issue can proceed.`
-        : "This issue is waiting on dependency work.",
-      meta: [formatIssueCount(blockedByCount, "blocker"), ...meta],
-    };
-  }
-
-  if (hasLiveRuns) {
-    return {
-      icon: Bot,
-      tone: "live",
-      title: "Agent is working",
-      detail: "Live execution is active for this issue.",
-      meta,
-    };
-  }
-
-  if (scheduledRetry?.status === "scheduled_retry") {
-    const retryAt = formatScheduledRetryAt(scheduledRetry.scheduledRetryAt);
-    return {
-      icon: Clock3,
-      tone: "neutral",
-      title: "Retry scheduled",
-      detail: retryAt
-        ? `Paperclip will retry ${retryAt}.`
-        : scheduledRetry.scheduledRetryReason ?? "Paperclip will retry automatically.",
-      meta: [scheduledRetry.agentName ?? "Scheduled retry", ...meta],
-    };
-  }
-
-  if (issue.status === "done") {
-    return {
-      icon: Check,
-      tone: "success",
-      title: "Work complete",
-      detail: issue.completedAt ? `Completed ${relativeTime(issue.completedAt)}.` : "This issue is marked done.",
-      meta,
-    };
-  }
-
-  if (issue.status === "cancelled") {
-    return {
-      icon: XCircle,
-      tone: "neutral",
-      title: "Work cancelled",
-      detail: "This issue is no longer active.",
-      meta,
-    };
-  }
-
-  if (issue.status === "blocked") {
-    return {
-      icon: Flag,
-      tone: "warning",
-      title: "Marked blocked",
-      detail: "This issue is blocked, but no active dependency is shown in the header.",
-      meta,
-    };
-  }
-
-  return {
-    icon: issue.status === "in_review" ? Eye : PlayCircle,
-    tone: issue.status === "in_review" ? "warning" : "neutral",
-    title: issue.status === "in_review" ? "Ready for review" : "Ready for next update",
-    detail: issue.status === "backlog"
-      ? "This issue is parked in backlog."
-      : "No active blockers, pauses, or live runs are visible.",
-    meta,
-  };
-}
-
-function IssueStateSummary({
-  issue,
-  childIssues,
-  hasLiveRuns,
-  activePauseSummary,
-}: {
-  issue: Issue;
-  childIssues: Issue[];
-  hasLiveRuns: boolean;
-  activePauseSummary: IssuePauseSummary | null;
-}) {
-  const state = buildIssueStateSummary({ issue, childIssues, hasLiveRuns, activePauseSummary });
-  const Icon = state.icon;
-  const toneClasses = ISSUE_STATE_SUMMARY_TONE_CLASSES[state.tone];
-
-  return (
-    <div className={cn("flex flex-col gap-2 rounded-md border px-3 py-2 text-sm sm:flex-row sm:items-start sm:justify-between", toneClasses.container)}>
-      <div className="flex min-w-0 items-start gap-2">
-        <Icon className={cn("mt-0.5 h-4 w-4 shrink-0", toneClasses.icon)} />
-        <div className="min-w-0">
-          <div className="font-medium text-foreground">{state.title}</div>
-          <p className="mt-0.5 text-xs leading-5 text-muted-foreground">{state.detail}</p>
-        </div>
-      </div>
-      {state.meta.length > 0 ? (
-        <div className="flex shrink-0 flex-wrap gap-1.5 sm:justify-end">
-          {state.meta.map((item) => (
-            <span
-              key={item}
-              className="inline-flex rounded-full border border-border/70 bg-background/70 px-2 py-0.5 text-[10px] font-medium capitalize text-muted-foreground"
-            >
-              {item}
-            </span>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
 }
 
 function treeControlPreviewErrorCopy(error: unknown): string {
@@ -1117,44 +659,87 @@ function IssueSectionSkeleton({
   rows?: number;
 }) {
   return (
-    <div className="space-y-3 rounded-lg border border-border bg-background px-5 py-4 shadow-sm">
+    <div className="space-y-3 rounded-lg border border-border p-3">
       <Skeleton className={cn("h-4", titleWidth)} />
       <div className="space-y-2">
         {Array.from({ length: rows }).map((_, index) => (
-          <Skeleton key={index} className="h-12 w-full rounded-xl" />
+          <Skeleton key={index} className="h-12 w-full rounded-md" />
         ))}
       </div>
     </div>
   );
 }
 
+/**
+ * One chat-bubble placeholder mirroring TaskChatBubble's anatomy: agent replies
+ * sit left under an avatar + name author row, human messages sit right with no
+ * header. The bubble reuses the real rounding (rounded-2xl with a squared tail
+ * corner) so the skeleton reads as a conversation, not a stack of cards.
+ */
+function ChatBubbleSkeleton({
+  side,
+  className,
+}: {
+  side: "agent" | "human";
+  className?: string;
+}) {
+  const isHuman = side === "human";
+  return (
+    <div className={cn("flex w-full flex-col gap-1", isHuman ? "items-end" : "items-start")}>
+      {isHuman ? null : (
+        <span className="flex items-center gap-2 px-1">
+          <Skeleton className="h-6 w-6 rounded-full" />
+          <Skeleton className="h-3 w-24" />
+        </span>
+      )}
+      <Skeleton
+        className={cn(
+          "max-w-(--pct-85)",
+          isHuman ? "rounded-2xl rounded-br-sm" : "rounded-2xl rounded-bl-sm",
+          className,
+        )}
+      />
+    </div>
+  );
+}
+
+/**
+ * Composer placeholder mirroring TaskChatComposer's docked card (a bordered
+ * rounded input area with a plus, a mode chip, and a send affordance) so the
+ * foot of the loading state matches the real chat shell.
+ */
+function IssueChatComposerSkeleton({ className }: { className?: string }) {
+  return (
+    <div
+      className={cn("rounded-xl border border-input bg-card p-2", className)}
+      data-testid="issue-chat-composer-skeleton"
+    >
+      <div className="min-h-(--sz-48px) space-y-2 px-1 py-1">
+        <Skeleton className="h-3 w-1/2" />
+        <Skeleton className="h-3 w-1/3" />
+      </div>
+      <div className="mt-1 flex items-center gap-2">
+        <Skeleton className="h-8 w-8 rounded-md" />
+        <Skeleton className="h-8 w-24 rounded-md" />
+        <div className="flex-1" />
+        <Skeleton className="h-8 w-8 rounded-md" />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Alternating chat-bubble placeholders for the thread body. Widths and heights
+ * vary so the skeleton mirrors a real back-and-forth (TaskChatThreadView)
+ * rather than the pre-chat bordered card it replaced.
+ */
 function IssueChatSkeleton() {
   return (
-    <div className="space-y-3 rounded-lg border border-border p-3">
-      <div className="space-y-2">
-        <div className="flex items-center gap-2">
-          <Skeleton className="h-8 w-8 rounded-full" />
-          <div className="space-y-2">
-            <Skeleton className="h-3 w-24" />
-            <Skeleton className="h-3 w-16" />
-          </div>
-        </div>
-        <Skeleton className="h-20 w-full rounded-xl" />
-      </div>
-      <div className="space-y-2">
-        <div className="flex items-center justify-end gap-2">
-          <div className="space-y-2 text-right">
-            <Skeleton className="ml-auto h-3 w-20" />
-            <Skeleton className="ml-auto h-3 w-14" />
-          </div>
-          <Skeleton className="h-8 w-8 rounded-full" />
-        </div>
-        <Skeleton className="ml-auto h-16 w-(--pct-85) rounded-xl" />
-      </div>
-      <div className="space-y-2 border-t border-border pt-3">
-        <Skeleton className="h-3 w-28" />
-        <Skeleton className="h-24 w-full rounded-xl" />
-      </div>
+    <div className="flex flex-col gap-3" data-testid="issue-chat-skeleton">
+      <ChatBubbleSkeleton side="agent" className="h-16 w-3/4" />
+      <ChatBubbleSkeleton side="human" className="h-9 w-1/2" />
+      <ChatBubbleSkeleton side="agent" className="h-24 w-4/5" />
+      <ChatBubbleSkeleton side="human" className="h-8 w-2/5" />
     </div>
   );
 }
@@ -1165,14 +750,15 @@ function IssueDetailLoadingState({
   headerSeed: ReturnType<typeof readIssueDetailHeaderSeed>;
 }) {
   const identifier = headerSeed?.identifier ?? headerSeed?.id.slice(0, 8) ?? null;
-  const { enabled: taskChatShellEnabled } = useTaskChatRedesignEnabled();
+  const { enabled: classicTaskInterfaceEnabled } = useClassicTaskInterfaceEnabled();
+  const taskChatShellEnabled = !classicTaskInterfaceEnabled;
 
   return (
     <div
       className={
         taskChatShellEnabled
           ? "mx-auto w-full max-w-(--tc-shell-max-w) space-y-6"
-          : "mx-auto w-full max-w-[1120px] space-y-5 px-0 xl:px-2"
+          : "max-w-3xl space-y-6"
       }
     >
       <div className="space-y-3">
@@ -1224,7 +810,7 @@ function IssueDetailLoadingState({
 
         {headerSeed ? (
           <>
-            <h2 className="text-2xl font-bold leading-snug tracking-tight">{headerSeed.title}</h2>
+            <h2 className="text-xl font-bold leading-tight">{headerSeed.title}</h2>
             <div className="space-y-2">
               <Skeleton className="h-4 w-full max-w-xl" />
               <Skeleton className="h-4 w-(--pct-72)" />
@@ -1238,17 +824,29 @@ function IssueDetailLoadingState({
         )}
       </div>
 
-      <Skeleton className="h-28 w-full rounded-lg border border-border" />
-
-      <div className="space-y-3">
-        <div className="flex items-center gap-2">
-          <Skeleton className="h-8 w-20" />
-          <Skeleton className="h-8 w-20" />
+      {taskChatShellEnabled ? (
+        // Chat shell: the thread is the whole surface — alternating bubble
+        // placeholders followed by the docked composer, no tab strip or
+        // properties-card chrome (those don't exist in the chat layout).
+        <div className="space-y-6">
+          <IssueChatSkeleton />
+          <IssueChatComposerSkeleton />
         </div>
-        <IssueChatSkeleton />
-      </div>
+      ) : (
+        <>
+          <Skeleton className="h-28 w-full rounded-lg border border-border" />
 
-      <IssueSectionSkeleton titleWidth="w-24" rows={3} />
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Skeleton className="h-8 w-20" />
+              <Skeleton className="h-8 w-20" />
+            </div>
+            <IssueChatSkeleton />
+          </div>
+
+          <IssueSectionSkeleton titleWidth="w-24" rows={3} />
+        </>
+      )}
     </div>
   );
 }
@@ -1383,21 +981,21 @@ type IssueDetailChatTabProps = {
   interactions: IssueThreadInteraction[];
   hasOlderComments: boolean;
   commentsLoadingOlder: boolean;
-  onLoadOlderComments: () => Promise<unknown> | void;
+  onLoadOlderComments: () => void;
   onRefreshLatestComments: () => Promise<unknown> | void;
   onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
   composerRef: Ref<IssueChatComposerHandle>;
   /** Optional node rendered inline directly above the reply composer (e.g. the monitor strip). */
   composerAccessory?: ReactNode;
   /**
-   * Issue header (title row, badges, plugin toolbars) that the redesigned
+   * Issue header (title row, badges, plugin toolbars) that the chat-style
    * thread renders inside its scroll viewport so it scrolls away with the
-   * messages (flag: enableTaskChatRedesign). Ignored by the legacy thread.
+   * messages. Ignored by the classic thread (flag: enableClassicTaskInterface).
    */
   threadHeader?: ReactNode;
   /**
    * The task description rendered as the requester's first chat bubble in the
-   * redesigned thread (PAP-375). Ignored by the legacy thread.
+   * chat-style thread (PAP-375). Ignored by the classic thread.
    */
   issueBrief?: TaskChatIssueBrief;
   footer?: ReactNode;
@@ -1421,13 +1019,7 @@ type IssueDetailChatTabProps = {
     vote: "up" | "down",
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
-  onAdd: (
-    body: string,
-    reopen?: boolean,
-    reassignment?: CommentReassignment,
-    modelOverride?: string,
-    thinkingEffortOverride?: string,
-  ) => Promise<void>;
+  onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
   onImageUpload: (file: File) => Promise<string>;
   onAttachImage: (file: File) => Promise<IssueAttachment | void>;
   onInterruptQueued: (runId: string) => Promise<void>;
@@ -1438,7 +1030,6 @@ type IssueDetailChatTabProps = {
   interruptingQueuedRunId: string | null;
   pausingWorkRunId: string | null;
   onImageClick: (src: string) => void;
-  resolveImageSrc?: (src: string) => string | null;
   onAcceptInteraction: (
     interaction: ActionableIssueThreadInteraction,
     selectedClientKeys?: string[],
@@ -1527,7 +1118,6 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   interruptingQueuedRunId,
   pausingWorkRunId,
   onImageClick,
-  resolveImageSrc,
   onAcceptInteraction,
   onRejectInteraction,
   onSubmitInteractionAnswers,
@@ -1539,59 +1129,12 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   externalReferences,
   linkCaseReferences,
 }: IssueDetailChatTabProps) {
-  // Seam for the Task Chat Redesign (flag: enableTaskChatRedesign). Flag OFF
-  // renders IssueChatThread verbatim — the flag-off branch is provably today's
-  // UI. Both components share one prop type, so no cast is needed.
-  const { enabled: taskChatRedesignEnabled } = useTaskChatRedesignEnabled();
-  const ThreadComponent = taskChatRedesignEnabled ? TaskChatThread : IssueChatThread;
-  const assigneeAgent = issueAssigneeAgentId ? agentMap.get(issueAssigneeAgentId) ?? null : null;
-  const chatModelAdapterType = assigneeAgent?.adapterType ?? null;
-  const chatModelOverrideSupported =
-    chatModelAdapterType === "codex_local" ||
-    chatModelAdapterType === "claude_local" ||
-    chatModelAdapterType === "opencode_local";
-  const chatDefaultModel = typeof assigneeAgent?.adapterConfig?.model === "string"
-    ? assigneeAgent.adapterConfig.model
-    : null;
-  const chatThinkingEffortOptions = useMemo<InlineEntityOption[]>(
-    () => chatThinkingEffortOptionsForAdapter(chatModelAdapterType).map((effort) => ({
-      id: effort,
-      label: formatChatThinkingEffort(effort),
-      searchText: effort === "xhigh" ? "xhigh extra high" : effort,
-    })),
-    [chatModelAdapterType],
-  );
-  const chatDefaultThinkingEffort = useMemo(() => {
-    if (!assigneeAgent) return null;
-    const configKey = chatThinkingEffortAdapterConfigKey(chatModelAdapterType);
-    if (!configKey) return null;
-    const configured = configKey === "modelReasoningEffort"
-      ? assigneeAgent.adapterConfig.modelReasoningEffort ?? assigneeAgent.adapterConfig.reasoningEffort
-      : assigneeAgent.adapterConfig[configKey];
-    const effort = typeof configured === "string" ? configured.trim() : "";
-    return isChatThinkingEffortSupported(chatModelAdapterType, effort) ? effort : null;
-  }, [assigneeAgent, chatModelAdapterType]);
-  const { data: chatAdapterModels } = useQuery({
-    queryKey: chatModelAdapterType && chatModelOverrideSupported
-      ? queryKeys.agents.adapterModels(companyId, chatModelAdapterType)
-      : ["agents", "none", "adapter-models", chatModelAdapterType ?? "none"],
-    queryFn: () => agentsApi.adapterModels(companyId, chatModelAdapterType!),
-    enabled: chatModelOverrideSupported,
-    staleTime: 60_000,
-  });
-  const chatModelOptions = useMemo<InlineEntityOption[]>(() => {
-    const byId = new Map((chatAdapterModels ?? []).map((model) => [model.id, model]));
-    if (chatDefaultModel && !byId.has(chatDefaultModel)) {
-      byId.set(chatDefaultModel, { id: chatDefaultModel, label: chatDefaultModel });
-    }
-    return [...byId.values()]
-      .sort((left, right) => left.label.localeCompare(right.label, "en", { numeric: true, sensitivity: "base" }))
-      .map((model) => ({
-        id: model.id,
-        label: model.label,
-        searchText: `${model.id} ${model.label}`,
-      }));
-  }, [chatAdapterModels, chatDefaultModel]);
+  // Seam for the Classic Task Interface (flag: enableClassicTaskInterface).
+  // Flag ON renders the legacy IssueChatThread verbatim; flag OFF (the
+  // default) renders the chat-style TaskChatThread. Both components share one
+  // prop type, so no cast is needed.
+  const { enabled: classicTaskInterfaceEnabled } = useClassicTaskInterfaceEnabled();
+  const ThreadComponent = classicTaskInterfaceEnabled ? IssueChatThread : TaskChatThread;
   const { data: activity } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
@@ -1726,179 +1269,6 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     () => extractIssueTimelineEvents(resolvedActivity),
     [resolvedActivity],
   );
-  const [commentPageFromLatest, setCommentPageFromLatest] = useState(0);
-  useEffect(() => {
-    setCommentPageFromLatest(0);
-  }, [issueId]);
-
-  const commentPages = useMemo(
-    () => paginateIssueComments(commentsWithRunMeta, ISSUE_COMMENT_PAGE_SIZE),
-    [commentsWithRunMeta],
-  );
-  const loadedCommentPageCount = Math.max(1, commentPages.length);
-  const boundedCommentPageFromLatest = Math.min(
-    Math.max(0, commentPageFromLatest),
-    loadedCommentPageCount - 1,
-  );
-  const commentPageIndex = commentPages.length === 0
-    ? 0
-    : loadedCommentPageCount - 1 - boundedCommentPageFromLatest;
-  const visibleComments = commentPages[commentPageIndex] ?? [];
-  const visibleCommentStartIndex = commentPages
-    .slice(0, commentPageIndex)
-    .reduce((total, page) => total + page.length, 0);
-  const visibleCommentStart = visibleComments.length > 0 ? visibleCommentStartIndex + 1 : 0;
-  const visibleCommentEnd = visibleCommentStartIndex + visibleComments.length;
-  const showCommentPagination =
-    hasOlderComments
-    || commentsWithRunMeta.length > ISSUE_COMMENT_PAGE_SIZE
-    || commentPageFromLatest > 0;
-  const canShowLoadedOlderPage = boundedCommentPageFromLatest < loadedCommentPageCount - 1;
-  const canLoadOlderPage = boundedCommentPageFromLatest === loadedCommentPageCount - 1 && hasOlderComments;
-  const canGoOlder = canShowLoadedOlderPage || canLoadOlderPage;
-  const canGoNewer = boundedCommentPageFromLatest > 0;
-  const handleOlderCommentPage = useCallback(async () => {
-    if (canShowLoadedOlderPage) {
-      setCommentPageFromLatest((page) => page + 1);
-      return;
-    }
-    if (!canLoadOlderPage || commentsLoadingOlder) return;
-    await onLoadOlderComments();
-    setCommentPageFromLatest((page) => page + 1);
-  }, [canLoadOlderPage, canShowLoadedOlderPage, commentsLoadingOlder, onLoadOlderComments]);
-  const handleNewerCommentPage = useCallback(() => {
-    setCommentPageFromLatest((page) => Math.max(0, page - 1));
-  }, []);
-  const handleAddVisibleComment = useCallback(
-    async (
-      body: string,
-      reopen?: boolean,
-      reassignment?: CommentReassignment,
-      modelOverride?: string,
-      thinkingEffortOverride?: string,
-    ) => {
-      setCommentPageFromLatest(0);
-      await onAdd(body, reopen, reassignment, modelOverride, thinkingEffortOverride);
-    },
-    [onAdd],
-  );
-  const handleRefreshLatestComments = useCallback(async () => {
-    setCommentPageFromLatest(0);
-    await onRefreshLatestComments();
-  }, [onRefreshLatestComments]);
-  const visibleCommentIds = useMemo(
-    () => new Set(visibleComments.map((comment) => comment.id)),
-    [visibleComments],
-  );
-  const visibleRunIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const comment of visibleComments) {
-      if (comment.runId) ids.add(comment.runId);
-      if (comment.interruptedRunId) ids.add(comment.interruptedRunId);
-      if (comment.queueTargetRunId) ids.add(comment.queueTargetRunId);
-    }
-    return ids;
-  }, [visibleComments]);
-  const visibleCommentWindow = useMemo(() => {
-    if (visibleComments.length === 0) return null;
-    const times = visibleComments
-      .map((comment) => new Date(comment.createdAt).getTime())
-      .filter(Number.isFinite);
-    if (times.length === 0) return null;
-    return {
-      start: Math.min(...times),
-      end: Math.max(...times),
-    };
-  }, [visibleComments]);
-  const isVisibleTime = useCallback((value: Date | string | null | undefined) => {
-    if (!visibleCommentWindow) return true;
-    if (!value) return false;
-    const time = new Date(value).getTime();
-    if (!Number.isFinite(time)) return false;
-    return time >= visibleCommentWindow.start && time <= visibleCommentWindow.end;
-  }, [visibleCommentWindow]);
-  const visibleInteractions = useMemo(
-    () =>
-      visibleCommentWindow
-        ? interactions.filter((interaction) => {
-          const sourceRunId =
-            "sourceRunId" in interaction && typeof interaction.sourceRunId === "string"
-              ? interaction.sourceRunId
-              : null;
-          return isVisibleTime(interaction.createdAt)
-            || (!!sourceRunId && visibleRunIds.has(sourceRunId));
-        })
-        : interactions,
-    [interactions, isVisibleTime, visibleCommentWindow, visibleRunIds],
-  );
-  const visibleTimelineEvents = useMemo(
-    () =>
-      visibleCommentWindow
-        ? timelineEvents.filter((event) =>
-          isVisibleTime(event.createdAt)
-          || (!!event.commentId && visibleCommentIds.has(event.commentId))
-          || (!!event.runId && visibleRunIds.has(event.runId))
-        )
-        : timelineEvents,
-    [isVisibleTime, timelineEvents, visibleCommentIds, visibleCommentWindow, visibleRunIds],
-  );
-  const visibleTimelineRuns = useMemo(
-    () =>
-      visibleCommentWindow
-        ? timelineRuns.filter((run) =>
-          visibleRunIds.has(run.runId)
-          || isVisibleTime(run.startedAt ?? run.createdAt)
-          || isVisibleTime(run.finishedAt ?? null)
-        )
-        : timelineRuns,
-    [isVisibleTime, timelineRuns, visibleCommentWindow, visibleRunIds],
-  );
-  const renderCommentPaginationControls = () => showCommentPagination ? (
-    <div
-      className="flex flex-col gap-2 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between"
-      data-testid="issue-comment-pagination"
-    >
-      <div className="tabular-nums">
-        {visibleComments.length > 0 ? (
-          <>
-            Comments {visibleCommentStart}-{visibleCommentEnd} of {commentsWithRunMeta.length}
-            {hasOlderComments ? "+" : ""}
-          </>
-        ) : (
-          <>No comments loaded</>
-        )}
-      </div>
-      <div className="flex items-center gap-2">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={!canGoOlder || commentsLoadingOlder}
-          onClick={handleOlderCommentPage}
-        >
-          <ChevronLeft className="mr-1 h-3.5 w-3.5" />
-          {commentsLoadingOlder && canLoadOlderPage ? "Loading older..." : "Older"}
-        </Button>
-        <span className="min-w-20 text-center tabular-nums">
-          Page {boundedCommentPageFromLatest + 1}
-          {hasOlderComments && boundedCommentPageFromLatest === loadedCommentPageCount - 1
-            ? "+"
-            : ` of ${loadedCommentPageCount}`}
-        </span>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={!canGoNewer}
-          onClick={handleNewerCommentPage}
-        >
-          Newer
-          <ChevronRight className="ml-1 h-3.5 w-3.5" />
-        </Button>
-      </div>
-    </div>
-  ) : null;
-
   const workModeChanges = useMemo(
     () => extractIssueWorkModeChanges(resolvedActivity),
     [resolvedActivity],
@@ -1919,18 +1289,27 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   ) : null;
 
   return (
-    <div className={taskChatRedesignEnabled ? "flex min-h-0 flex-1 flex-col" : "space-y-3"}>
-      {/* Redesign: the button rides inside the thread's scroll viewport with the
-          header so nothing sits above the thread in the page flow. */}
-      {taskChatRedesignEnabled ? null : renderCommentPaginationControls()}
+    <div className={classicTaskInterfaceEnabled ? "space-y-3" : "flex min-h-0 flex-1 flex-col"}>
+      {/* Chat-style: the button rides inside the thread's scroll viewport with
+          the header so nothing sits above the thread in the page flow. */}
+      {classicTaskInterfaceEnabled ? loadOlderButton : null}
       {commentsInitialLoading && commentsWithRunMeta.length === 0 && interactions.length === 0 ? (
-        <IssueChatSkeleton />
+        classicTaskInterfaceEnabled ? (
+          <IssueChatSkeleton />
+        ) : (
+          // Chat shell: center the bubbles at the thread cap (mirrors
+          // TaskChatThreadView) and dock a composer placeholder beneath them.
+          <div className="mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-3 px-4 py-4">
+            <IssueChatSkeleton />
+            <IssueChatComposerSkeleton className="mt-3" />
+          </div>
+        )
       ) : (
       <ThreadComponent
         composerRef={composerRef}
         composerAccessory={composerAccessory}
         threadHeader={
-          taskChatRedesignEnabled && (threadHeader || loadOlderButton) ? (
+          !classicTaskInterfaceEnabled && (threadHeader || loadOlderButton) ? (
             <>
               {threadHeader}
               {loadOlderButton}
@@ -1938,13 +1317,13 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           ) : undefined
         }
         issueBrief={issueBrief}
-        comments={taskChatRedesignEnabled ? commentsWithRunMeta : visibleComments}
-        interactions={taskChatRedesignEnabled ? interactions : visibleInteractions}
+        comments={commentsWithRunMeta}
+        interactions={interactions}
         feedbackVotes={feedbackVotes}
         feedbackDataSharingPreference={feedbackDataSharingPreference}
         feedbackTermsUrl={feedbackTermsUrl}
-        linkedRuns={taskChatRedesignEnabled ? timelineRuns : visibleTimelineRuns}
-        timelineEvents={taskChatRedesignEnabled ? timelineEvents : visibleTimelineEvents}
+        linkedRuns={timelineRuns}
+        timelineEvents={timelineEvents}
         workModeChanges={workModeChanges}
         liveRuns={resolvedLiveRuns}
         activeRun={resolvedActiveRun}
@@ -1982,12 +1361,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         mentions={mentions}
         composerDisabledReason={composerDisabledReason}
         composerHint={composerHint}
-        modelOptions={chatModelOptions}
-        defaultModel={chatDefaultModel}
-        thinkingEffortOptions={chatThinkingEffortOptions}
-        defaultThinkingEffort={chatDefaultThinkingEffort}
         onVote={onVote}
-        onAdd={handleAddVisibleComment}
+        onAdd={onAdd}
         imageUploadHandler={onImageUpload}
         onAttachImage={onAttachImage}
         onInterruptQueued={onInterruptQueued}
@@ -2015,9 +1390,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             }
           : undefined}
         onImageClick={onImageClick}
-        resolveImageSrc={resolveImageSrc}
-        onRefreshLatestComments={handleRefreshLatestComments}
-        initialScrollToLatestKey={issueId}
+        onRefreshLatestComments={onRefreshLatestComments}
         assigneeUserId={assigneeUserId}
         onResumeFromBacklog={onResumeFromBacklog}
         resumeFromBacklogPending={resumeFromBacklogPending}
@@ -2026,7 +1399,6 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         linkCaseReferences={linkCaseReferences}
       />
       )}
-      {taskChatRedesignEnabled ? null : renderCommentPaginationControls()}
     </div>
   );
 });
@@ -2047,40 +1419,6 @@ type IssueDetailActivityTabProps = {
   externalReferences?: MarkdownExternalReferenceMap;
 };
 
-function fallbackIssueBudgetSummary(input: {
-  companyId: string;
-  issue: Issue;
-  scopeType: "issue_tree" | "issue_children";
-  observedAmount: number;
-}): BudgetPolicySummary {
-  const now = new Date();
-  const issueRef = input.issue.identifier ?? input.issue.id.slice(0, 8);
-  return {
-    policyId: "",
-    companyId: input.companyId,
-    scopeType: input.scopeType,
-    scopeId: input.issue.id,
-    scopeName: input.scopeType === "issue_tree"
-      ? `${input.issue.title} (${issueRef})`
-      : `Execution lanes for ${input.issue.title} (${issueRef})`,
-    metric: "billed_cents",
-    windowKind: "lifetime",
-    amount: 0,
-    observedAmount: input.observedAmount,
-    remainingAmount: 0,
-    utilizationPercent: 0,
-    warnPercent: 80,
-    hardStopEnabled: true,
-    notifyEnabled: true,
-    isActive: false,
-    status: "ok",
-    paused: false,
-    pauseReason: null,
-    windowStart: now,
-    windowEnd: now,
-  };
-}
-
 function IssueDetailActivityTab({
   issue,
   issueId,
@@ -2096,7 +1434,6 @@ function IssueDetailActivityTab({
   handoffFocusSignal = 0,
   externalReferences,
 }: IssueDetailActivityTabProps) {
-  const queryClient = useQueryClient();
   const { data: activity, isLoading: activityLoading } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
@@ -2131,34 +1468,6 @@ function IssueDetailActivityTab({
     queryKey: queryKeys.issues.costSummary(issueId),
     queryFn: () => issuesApi.getCostSummary(issueId),
     placeholderData: keepPreviousDataForSameQueryTail<Awaited<ReturnType<typeof issuesApi.getCostSummary>>>(issueId),
-  });
-  const { data: childIssueCostSummary } = useQuery({
-    queryKey: queryKeys.issues.costSummary(issueId, { excludeRoot: true }),
-    queryFn: () => issuesApi.getCostSummary(issueId, { excludeRoot: true }),
-    placeholderData: keepPreviousDataForSameQueryTail<Awaited<ReturnType<typeof issuesApi.getCostSummary>>>(
-      issueId,
-    ),
-  });
-  const { data: budgetOverview } = useQuery({
-    queryKey: queryKeys.budgets.overview(companyId),
-    queryFn: () => budgetsApi.overview(companyId),
-  });
-  const issueBudgetMutation = useMutation({
-    mutationFn: (input: { scopeType: "issue_tree" | "issue_children"; amountCents: number }) =>
-      budgetsApi.upsertPolicy(companyId, {
-        scopeType: input.scopeType,
-        scopeId: issueId,
-        amount: input.amountCents,
-        windowKind: "lifetime",
-      }),
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(companyId) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.costSummary(issueId) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.costSummary(issueId, { excludeRoot: true }) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) }),
-      ]);
-    },
   });
   const initialLoading =
     (activityLoading && activity === undefined)
@@ -2227,26 +1536,6 @@ function IssueDetailActivityTab({
       || issueTreeCostSummary.issueCount > 1);
   const shouldShowCostSummary =
     (linkedRuns && linkedRuns.length > 0) || hasIssueTreeCost;
-  const treeBudgetSummary = useMemo(() => {
-    return budgetOverview?.policies.find(
-      (policy) => policy.scopeType === "issue_tree" && policy.scopeId === issueId,
-    ) ?? fallbackIssueBudgetSummary({
-      companyId,
-      issue,
-      scopeType: "issue_tree",
-      observedAmount: issueTreeCostSummary?.costCents ?? 0,
-    });
-  }, [budgetOverview?.policies, companyId, issue, issueId, issueTreeCostSummary?.costCents]);
-  const childBudgetSummary = useMemo(() => {
-    return budgetOverview?.policies.find(
-      (policy) => policy.scopeType === "issue_children" && policy.scopeId === issueId,
-    ) ?? fallbackIssueBudgetSummary({
-      companyId,
-      issue,
-      scopeType: "issue_children",
-      observedAmount: childIssueCostSummary?.costCents ?? 0,
-    });
-  }, [budgetOverview?.policies, childIssueCostSummary?.costCents, companyId, issue, issueId]);
 
   if (initialLoading) {
     return <IssueSectionSkeleton titleWidth="w-20" rows={4} />;
@@ -2315,35 +1604,6 @@ function IssueDetailActivityTab({
           )}
         </div>
       )}
-      <div className="mb-3 grid gap-3 xl:grid-cols-2">
-        <BudgetPolicyCard
-          summary={treeBudgetSummary}
-          compact
-          isSaving={
-            issueBudgetMutation.isPending
-            && issueBudgetMutation.variables?.scopeType === "issue_tree"
-          }
-          onSave={(amountCents) =>
-            issueBudgetMutation.mutate({ scopeType: "issue_tree", amountCents })}
-        />
-        <BudgetPolicyCard
-          summary={childBudgetSummary}
-          compact
-          isSaving={
-            issueBudgetMutation.isPending
-            && issueBudgetMutation.variables?.scopeType === "issue_children"
-          }
-          onSave={(amountCents) =>
-            issueBudgetMutation.mutate({ scopeType: "issue_children", amountCents })}
-        />
-      </div>
-      {issueBudgetMutation.isError ? (
-        <p className="mb-3 text-xs text-destructive">
-          {issueBudgetMutation.error instanceof Error
-            ? issueBudgetMutation.error.message
-            : "Unable to save issue budget."}
-        </p>
-      ) : null}
       <div className="mb-3">
         <IssueRunLedger
           issueId={issueId}
@@ -2427,15 +1687,16 @@ function IssueDetailActivityTab({
 export function IssueDetail() {
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId } = useCompany();
-  // Task Chat Redesign (flag: enableTaskChatRedesign): with the flag ON the
-  // thread owns the center column — the legacy title/description block,
-  // sub-tasks table, plan decompositions and Documents section are gated off
-  // (plan lives in the properties-pane Plan tab). Flag OFF renders the legacy
-  // page byte-identically.
-  const { enabled: taskChatShellEnabled } = useTaskChatRedesignEnabled();
-  // Flag ON the page wrapper spans the full center pane so the thread's scroll
-  // viewport (and its scrollbar) reaches the properties-pane border; every
-  // non-thread section re-centers itself at the 60rem shell cap instead.
+  // Classic Task Interface (flag: enableClassicTaskInterface): with the flag
+  // OFF (the default) the chat-style thread owns the center column — the
+  // legacy title/description block, sub-tasks table, plan decompositions and
+  // Documents section are gated off (plan lives in the properties-pane Plan
+  // tab). Flag ON restores the legacy page.
+  const { enabled: classicTaskInterfaceEnabled } = useClassicTaskInterfaceEnabled();
+  const taskChatShellEnabled = !classicTaskInterfaceEnabled;
+  // Chat-style: the page wrapper spans the full center pane so the thread's
+  // scroll viewport (and its scrollbar) reaches the properties-pane border;
+  // every non-thread section re-centers itself at the 60rem shell cap instead.
   const shellSectionClass = taskChatShellEnabled
     ? "mx-auto w-full max-w-(--tc-shell-max-w)"
     : undefined;
@@ -2444,8 +1705,8 @@ export function IssueDetail() {
   const { setBreadcrumbs, setMobileToolbar } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const location = useLocation();
   const navigationType = useNavigationType();
+  const location = useLocation();
   const { pushToast } = useToastActions();
   const { isMobile } = useSidebar();
   const [moreOpen, setMoreOpen] = useState(false);
@@ -2530,6 +1791,25 @@ export function IssueDetail() {
     () => flattenIssueCommentPages(commentPages?.pages),
     [commentPages?.pages],
   );
+
+  useLayoutEffect(() => {
+    beginIssueDetailNavigation();
+  }, [issueId]);
+
+  useEffect(() => {
+    if (!(import.meta.env.DEV || import.meta.env.MODE === "qa")) return;
+    return reportIssueDetailWebVitals();
+  }, [issueId]);
+
+  useEffect(() => {
+    if (!issue) return;
+    scheduleIssueDetailPaintMeasure(ISSUE_DETAIL_HEADER_PAINT_MARK, ISSUE_DETAIL_HEADER_MEASURE);
+  }, [issue?.id]);
+
+  useEffect(() => {
+    if (!issue || commentsLoading) return;
+    scheduleIssueDetailPaintMeasure(ISSUE_DETAIL_CONTENT_PAINT_MARK, ISSUE_DETAIL_CONTENT_MEASURE);
+  }, [commentsLoading, issue?.id]);
   const shouldPrefetchOlderComments = useMemo(
     () =>
       shouldAutoloadOlderIssueComments({
@@ -2592,7 +1872,7 @@ export function IssueDetail() {
     [issueId, location.state, location.search],
   );
 
-  const { data: rawChildIssues = [], isLoading: childIssuesLoading } = useQuery({
+  const { data: rawChildIssuesData, isLoading: childIssuesLoading } = useQuery({
     queryKey:
       issue?.id && resolvedCompanyId
         ? queryKeys.issues.listByDescendantRoot(resolvedCompanyId, issue.id)
@@ -2601,8 +1881,9 @@ export function IssueDetail() {
     enabled: !!resolvedCompanyId && !!issue?.id,
     placeholderData: keepPreviousDataForSameQueryTail<Issue[]>(issue?.id ?? "pending"),
   });
+  const rawChildIssues: Issue[] = rawChildIssuesData ?? EMPTY_ISSUES;
   const {
-    data: rawSiblingIssues = [],
+    data: rawSiblingIssuesData,
     isLoading: siblingIssuesLoading,
     isError: siblingIssuesError,
   } = useQuery({
@@ -2613,6 +1894,7 @@ export function IssueDetail() {
     queryFn: () => issuesApi.list(resolvedCompanyId!, { parentId: issue!.parentId!, includeBlockedBy: true }),
     enabled: !!resolvedCompanyId && !!issue?.parentId,
   });
+  const rawSiblingIssues: Issue[] = rawSiblingIssuesData ?? EMPTY_ISSUES;
   const companyLiveRunsQueryKey = resolvedCompanyId ? queryKeys.liveRuns(resolvedCompanyId) : ["live-runs", "pending"] as const;
   const sharedCompanyLiveRuns = useSharedPollingQuery<LiveRunForIssue[]>({
     companyId: resolvedCompanyId,
@@ -2783,15 +2065,14 @@ export function IssueDetail() {
     () => buildCompanyUserLabelMap(companyMembers?.users),
     [companyMembers?.users],
   );
-  const isHumanControlIssue = isHumanControlWorkItemType(issue?.workItemType);
   const mentionOptions = useMemo<MentionOption[]>(() => {
     return buildMarkdownMentionOptions({
-      agents: isHumanControlIssue ? [] : agents,
+      agents,
       projects: orderedProjects,
       members: companyMembers?.users,
       issues: mentionIssues,
     });
-  }, [agents, companyMembers?.users, isHumanControlIssue, mentionIssues, orderedProjects]);
+  }, [agents, companyMembers?.users, orderedProjects, mentionIssues]);
 
   const resolvedProject = useMemo(
     () => (issue?.projectId ? orderedProjects.find((project) => project.id === issue.projectId) ?? issue.project ?? null : null),
@@ -2820,8 +2101,28 @@ export function IssueDetail() {
     () => childIssues,
     [issuePanelKey],
   );
+  // Onboarding first task only: hide the Properties sidebar until a plan exists,
+  // then reveal it already on the Plan tab. We gate the panel *mount* (withhold
+  // the panel content) rather than flipping the global `panelVisible` preference
+  // — that preference persists to localStorage and would leak "hidden" into every
+  // other task. Every non-first task has originKind !== onboarding_first_task, so
+  // `suppressPanelForFirstTask` stays false and behavior is unchanged. The user
+  // can still opt in early via the "Show properties" header button, which sets a
+  // per-issue override (keyed on the issue id so it resets across navigations).
+  const isOnboardingFirstTask =
+    taskChatShellEnabled &&
+    issue?.originKind === ONBOARDING_FIRST_TASK_ORIGIN_KIND;
+  const { data: firstTaskPlanDoc } = useIssuePlanDocument(
+    isOnboardingFirstTask ? issue?.id : null,
+  );
+  const [firstTaskPanelOverrideIssueId, setFirstTaskPanelOverrideIssueId] = useState<
+    string | null
+  >(null);
+  const firstTaskPanelOverride =
+    firstTaskPanelOverrideIssueId !== null && firstTaskPanelOverrideIssueId === issue?.id;
+  const suppressPanelForFirstTask =
+    isOnboardingFirstTask && !firstTaskPlanDoc && !firstTaskPanelOverride;
   const showRichSubIssuesSection = shouldRenderRichSubIssuesSection(childIssuesLoading, childIssues.length);
-  const canCreateSubIssues = Boolean(issue && !issue.parentId);
   const siblingNavigation = useMemo(
     () => issue && !childIssuesLoading && !siblingIssuesLoading && !siblingIssuesError
       ? buildIssueSiblingNavigation(issue, rawSiblingIssues, childIssues)
@@ -2829,7 +2130,7 @@ export function IssueDetail() {
     [childIssues, childIssuesLoading, issue, rawSiblingIssues, siblingIssuesError, siblingIssuesLoading],
   );
   const openNewSubIssue = useCallback(() => {
-    if (!issue || issue.parentId) return;
+    if (!issue) return;
     openNewIssue(buildSubIssueDefaultsForViewer(issue, currentUserId));
   }, [
     currentUserId,
@@ -2840,19 +2141,17 @@ export function IssueDetail() {
   const commentReassignOptions = useMemo(() => {
     const options: Array<{ id: string; label: string; searchText?: string }> = [];
     options.push(...buildCompanyUserInlineOptions(companyMembers?.users, { excludeUserIds: [currentUserId] }));
-    if (!isHumanControlIssue) {
-      const activeAgents = [...(agents ?? [])]
-        .filter(isAgentTaskTarget)
-        .sort((a, b) => a.name.localeCompare(b.name));
-      for (const agent of activeAgents) {
-        options.push({ id: `agent:${agent.id}`, label: agent.name });
-      }
+    const activeAgents = [...(agents ?? [])]
+      .filter(isAgentTaskTarget)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    for (const agent of activeAgents) {
+      options.push({ id: `agent:${agent.id}`, label: agent.name });
     }
     if (currentUserId) {
       options.push({ id: `user:${currentUserId}`, label: "Me" });
     }
     return options;
-  }, [agents, companyMembers?.users, currentUserId, isHumanControlIssue]);
+  }, [agents, companyMembers?.users, currentUserId]);
 
   const actualAssigneeValue = useMemo(
     () => assigneeValueFromSelection(issue ?? {}),
@@ -2860,15 +2159,13 @@ export function IssueDetail() {
   );
 
   const suggestedAssigneeValue = useMemo(
-    () => {
-      const value = suggestedCommentAssigneeValue(
+    () =>
+      suggestedCommentAssigneeValue(
         issue ?? {},
         mergeIssueComments(comments ?? [], optimisticComments),
         currentUserId,
-      );
-      return isHumanControlIssue && value.startsWith("agent:") ? "" : value;
-    },
-    [issue, comments, optimisticComments, currentUserId, isHumanControlIssue],
+      ),
+    [issue, comments, optimisticComments, currentUserId],
   );
 
   const threadComments = useMemo(
@@ -2908,7 +2205,6 @@ export function IssueDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref) });
     }
   }, [issueCacheRefs, queryClient]);
   const invalidateIssueThreadLazily = useCallback(() => {
@@ -2916,7 +2212,6 @@ export function IssueDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref), refetchType: "inactive" });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref), refetchType: "inactive" });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref), refetchType: "inactive" });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref), refetchType: "inactive" });
     }
   }, [issueCacheRefs, queryClient]);
 
@@ -2977,6 +2272,37 @@ export function IssueDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
     }
   }, [queryClient, selectedCompanyId]);
+  const undoInboxArchive = useCallback(async (
+    id: string,
+    companyId: string | undefined,
+    previousData: InboxIssueCacheSnapshot,
+  ) => {
+    if (companyId) {
+      await cancelInboxIssueQueries(queryClient, companyId);
+      clearLocalInboxArchive(companyId, id);
+      restoreIssueToInboxCaches(queryClient, previousData, id);
+    }
+
+    try {
+      await issuesApi.unarchiveFromInbox(id);
+      pushToast({ title: "Task restored to inbox", tone: "success" });
+    } catch (error) {
+      if (companyId) {
+        beginLocalInboxArchive(companyId, id);
+        removeIssueFromInboxCaches(queryClient, companyId, id);
+        boundLocalInboxArchive(companyId, id);
+      }
+      pushToast({
+        title: "Undo failed",
+        body: error instanceof Error ? error.message : "Unable to restore this task to the inbox",
+        tone: "error",
+      });
+    } finally {
+      if (companyId) {
+        await invalidateInboxIssueQueries(queryClient, companyId);
+      }
+    }
+  }, [pushToast, queryClient]);
   const upsertInteractionInCache = useCallback((interaction: IssueThreadInteraction) => {
     queryClient.setQueryData<IssueThreadInteraction[] | undefined>(
       queryKeys.issues.interactions(issueId!),
@@ -3061,7 +2387,6 @@ export function IssueDetail() {
       if (nextIssue.identifier) issueRefs.add(nextIssue.identifier);
       mergeIssueResponseIntoCaches(issueRefs, nextIssue);
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.collaborators(issueId!) });
       invalidateIssueCollections();
     },
     onError: (err, _variables, context) => {
@@ -3293,7 +2618,49 @@ export function IssueDetail() {
   });
   const handleChildIssueUpdate = useCallback((id: string, data: Record<string, unknown>) => {
     updateChildIssue.mutate({ id, data });
-  }, [updateChildIssue]);
+  }, [updateChildIssue.mutate]);
+
+  // PAP-496: the chat shell keeps the full sub-task tree directly below the
+  // title in the center column. This is the tree's single chat-shell home; the
+  // Properties pane does not duplicate it. Classic mode keeps its existing
+  // center-column section below the header.
+  const subTasksTree = useMemo(
+    () =>
+      taskChatShellEnabled && issue && showRichSubIssuesSection ? (
+        <IssuesList
+          issues={childIssues}
+          isLoading={childIssuesLoading}
+          agents={agents}
+          projects={projects}
+          liveIssueIds={liveIssueIds}
+          projectId={issue.projectId ?? undefined}
+          viewStateKey={`paperclip:issue-detail:${issue.id}:subissues-view`}
+          issueLinkState={resolvedIssueDetailState ?? location.state}
+          searchFilters={{ descendantOf: issue.id, includeBlockedBy: true }}
+          searchWithinLoadedIssues
+          baseCreateIssueDefaults={buildSubIssueDefaultsForViewer(issue, currentUserId)}
+          createIssueLabel="Sub-task"
+          defaultSortField="workflow"
+          showProgressSummary
+          parentIssueIdForCostSummary={issue.id}
+          onUpdateIssue={handleChildIssueUpdate}
+        />
+      ) : null,
+    [
+      taskChatShellEnabled,
+      issue,
+      showRichSubIssuesSection,
+      childIssues,
+      childIssuesLoading,
+      agents,
+      projects,
+      liveIssueIds,
+      resolvedIssueDetailState,
+      location.state,
+      currentUserId,
+      handleChildIssueUpdate,
+    ],
+  );
 
   const checkIssueMonitorNow = useMutation({
     mutationFn: () => issuesApi.checkMonitorNow(issueId!),
@@ -3351,19 +2718,8 @@ export function IssueDetail() {
   });
 
   const addComment = useMutation({
-    mutationFn: ({
-      body,
-      reopen,
-      interrupt,
-      modelOverride,
-      thinkingEffortOverride,
-    }: {
-      body: string;
-      reopen?: boolean;
-      interrupt?: boolean;
-      modelOverride?: string;
-      thinkingEffortOverride?: string;
-    }) => issuesApi.addComment(issueId!, body, reopen, interrupt, modelOverride, thinkingEffortOverride),
+    mutationFn: ({ body, reopen, interrupt }: { body: string; reopen?: boolean; interrupt?: boolean }) =>
+      issuesApi.addComment(issueId!, body, reopen, interrupt),
     onMutate: async ({ body, reopen, interrupt }) => {
       await queryClient.cancelQueries({ queryKey: queryKeys.issues.comments(issueId!) });
       await queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(issueId!) });
@@ -3430,7 +2786,13 @@ export function IssueDetail() {
       }
       queryClient.setQueryData<InfiniteData<IssueComment[], string | null>>(
         queryKeys.issues.comments(issueId!),
-        (current) => upsertIssueCommentInInfiniteData(current, comment, ISSUE_COMMENT_PAGE_SIZE),
+        (current) => current ? {
+          ...current,
+          pages: upsertIssueCommentInPages(current.pages, comment),
+        } : {
+          pageParams: [null],
+          pages: upsertIssueCommentInPages(undefined, comment),
+        },
       );
     },
     onError: (err, _variables, context) => {
@@ -3688,7 +3050,13 @@ export function IssueDetail() {
       if (comment) {
         queryClient.setQueryData<InfiniteData<IssueComment[], string | null>>(
           queryKeys.issues.comments(issueId!),
-          (current) => upsertIssueCommentInInfiniteData(current, comment, ISSUE_COMMENT_PAGE_SIZE),
+          (current) => current ? {
+            ...current,
+            pages: upsertIssueCommentInPages(current.pages, comment),
+          } : {
+            pageParams: [null],
+            pages: upsertIssueCommentInPages(undefined, comment),
+          },
         );
       }
     },
@@ -4009,13 +3377,22 @@ export function IssueDetail() {
       removeIssueFromInboxCaches(queryClient, selectedCompanyId, id);
       return { companyId: selectedCompanyId, previousData };
     },
-    onSuccess: (_data, id) => {
+    onSuccess: (_data, id, context) => {
       if (selectedCompanyId) {
         removeIssueFromInboxCaches(queryClient, selectedCompanyId, id);
       }
       invalidateIssueCollections();
       navigate(sourceBreadcrumb.href.startsWith("/inbox") ? sourceBreadcrumb.href : "/inbox", { replace: true });
-      pushToast({ title: "Task archived from inbox", tone: "success" });
+      pushToast({
+        title: "Task archived from inbox",
+        tone: "success",
+        action: {
+          label: "Undo",
+          onClick: () => {
+            void undoInboxArchive(id, context?.companyId, context?.previousData ?? []);
+          },
+        },
+      });
     },
     onError: (err, id, context) => {
       if (context?.companyId) clearLocalInboxArchive(context.companyId, id);
@@ -4104,7 +3481,7 @@ export function IssueDetail() {
   }, [issue?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!panelIssue) {
+    if (!panelIssue || suppressPanelForFirstTask) {
       closePanel();
       return;
     }
@@ -4112,7 +3489,7 @@ export function IssueDetail() {
       <IssueProperties
         issue={panelIssue}
         childIssues={panelChildIssues}
-        onAddSubIssue={panelIssue.parentId ? undefined : openNewSubIssue}
+        onAddSubIssue={openNewSubIssue}
         onUpdate={handleIssuePropertiesUpdate}
         hasActiveRun={resolvedHasActiveRun}
         externalObjects={externalObjectsState.isEnabled ? externalObjectsState.groups : undefined}
@@ -4132,6 +3509,7 @@ export function IssueDetail() {
     openPanel,
     panelChildIssues,
     panelIssue,
+    suppressPanelForFirstTask,
     resolvedHasActiveRun,
     checkIssueMonitorNow.isPending,
     checkIssueMonitorNow.mutate,
@@ -4332,10 +3710,6 @@ export function IssueDetail() {
     () => (attachments ?? []).filter((attachment) => !promotedOutputAttachmentIds.has(attachment.id)),
     [attachments, promotedOutputAttachmentIds],
   );
-  const imageAttachments = useMemo(
-    () => attachmentList.filter(isImageAttachment),
-    [attachmentList],
-  );
   const mediaGalleryItems = useMemo<GalleryMediaItem[]>(() => {
     const items: GalleryMediaItem[] = [];
     const seen = new Set<string>();
@@ -4376,17 +3750,6 @@ export function IssueDetail() {
     return items;
   }, [attachments, workProducts]);
 
-  const resolveImageSrcForChat = useCallback(
-    (src: string): string | null => {
-      if (!src) return null;
-      if (/^(https?:|data:|blob:|\/)/i.test(src)) return null;
-      const bare = src.split(/[?#]/)[0].split("/").pop() ?? src;
-      const match = imageAttachments.find((a) => a.originalFilename === bare);
-      return match ? match.contentPath : null;
-    },
-    [imageAttachments],
-  );
-
   const handleChatImageClick = useCallback(
     (src: string) => {
       // Try exact contentPath match first
@@ -4397,11 +3760,6 @@ export function IssueDetail() {
         if (assetMatch) {
           idx = mediaGalleryItems.findIndex((a) => "assetId" in a && a.assetId === assetMatch[1]);
         }
-      }
-      if (idx < 0) {
-        // Try matching by filename (bare or resolved path)
-        const bare = src.split(/[?#]/)[0].split("/").pop() ?? src;
-        idx = mediaGalleryItems.findIndex((item) => item.originalFilename === bare);
       }
       if (idx >= 0) {
         setGalleryIndex(idx);
@@ -4499,10 +3857,30 @@ export function IssueDetail() {
 
   const attachmentsInitialLoading = attachmentsLoading && attachments === undefined;
   const loadOlderComments = useCallback(() => {
-    return fetchOlderComments();
+    void fetchOlderComments();
   }, [fetchOlderComments]);
   const refetchLatestComments = useCallback(async () => {
-    await refetchComments();
+    // Refetch page 0 first so comments that arrived after initial load are
+    // visible, then load every remaining older page. The chat thread is
+    // paginated and virtualized, so "latest" must be resolved against the
+    // complete comment set rather than the current loaded window.
+    const refreshed = await refetchComments();
+    const loaded = await loadRemainingIssueCommentPages<IssueComment>({
+      pages: refreshed.data?.pages,
+      pageParams: refreshed.data?.pageParams as Array<string | null> | undefined,
+      pageSize: ISSUE_COMMENT_PAGE_SIZE,
+      maxPages: JUMP_TO_LATEST_MAX_COMMENT_PAGES,
+      fetchPage: (afterCommentId) =>
+        issuesApi.listComments(issueId!, {
+          order: "desc",
+          limit: ISSUE_COMMENT_PAGE_SIZE,
+          after: afterCommentId,
+        }),
+    });
+    queryClient.setQueryData<InfiniteData<IssueComment[], string | null>>(
+      queryKeys.issues.comments(issueId!),
+      loaded,
+    );
     await new Promise<void>((resolve) => {
       if (typeof window === "undefined") {
         resolve();
@@ -4510,7 +3888,7 @@ export function IssueDetail() {
       }
       window.requestAnimationFrame(() => resolve());
     });
-  }, [refetchComments]);
+  }, [issueId, queryClient, refetchComments]);
   useEffect(() => {
     if (!shouldPrefetchOlderComments) return;
     void fetchOlderComments();
@@ -4525,18 +3903,12 @@ export function IssueDetail() {
       sharingPreferenceAtSubmit: feedbackDataSharingPreference,
     });
   }, [feedbackDataSharingPreference, feedbackVoteMutation]);
-  const handleChatAdd = useCallback(async (
-    body: string,
-    reopen?: boolean,
-    reassignment?: CommentReassignment,
-    modelOverride?: string,
-    thinkingEffortOverride?: string,
-  ) => {
+  const handleChatAdd = useCallback(async (body: string, reopen?: boolean, reassignment?: CommentReassignment) => {
     if (reassignment) {
       await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
       return;
     }
-    await addComment.mutateAsync({ body, reopen, modelOverride, thinkingEffortOverride });
+    await addComment.mutateAsync({ body, reopen });
   }, [addComment, addCommentAndReassign]);
   const handleCommentImageUpload = useCallback(async (file: File) => {
     const attachment = await uploadAttachment.mutateAsync(file);
@@ -4912,17 +4284,6 @@ export function IssueDetail() {
   const treePreviewWarnings = treeControlPreview?.warnings ?? [];
   const heldDescendantCount = activeRootPauseHold?.members?.filter((member) => member.depth > 0 && !member.skipped).length
     ?? Math.max(heldIssueIds.size - 1, 0);
-  const activePauseSummary = activePauseHold
-    ? {
-        isRoot: activePauseHold.isRoot === true,
-        rootLabel: activePauseHoldRoot?.identifier ?? activePauseHold.rootIssueId.slice(0, 8),
-        heldCount: activePauseHold.isRoot === true
-          ? childIssues.length === 0
-            ? 1
-            : heldDescendantCount
-          : 0,
-      }
-    : null;
   const canShowSubtreeControls = canManageTreeControl && childIssues.length > 0;
   const canResumeSubtree = canShowSubtreeControls && activePauseHold?.isRoot === true;
   const canRestoreSubtree = canShowSubtreeControls && activeCancelHolds.length > 0;
@@ -5040,7 +4401,10 @@ export function IssueDetail() {
   );
 
   const issueHeaderBlock = (
-      <div className={cn("space-y-3", shellSectionClass)}>
+      <div
+        data-testid="issue-detail-header"
+        className={cn("space-y-3", shellSectionClass)}
+      >
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <StatusIcon
             status={issue.status}
@@ -5056,16 +4420,6 @@ export function IssueDetail() {
             />
           )}
           <span className="text-sm font-mono text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
-
-          {issue.visibility === "private" && (
-            <span
-              className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/50 px-2 py-0.5 text-[10px] font-medium text-muted-foreground shrink-0"
-              title="Only the creator and explicit collaborators can see this issue"
-            >
-              <Lock className="h-3 w-3" />
-              Private
-            </span>
-          )}
 
           {hasLiveRuns && (
             <Badge variant="outline" className={cn("gap-1.5 text-(length:--text-nano)", liveBlueBadge)}>
@@ -5251,9 +4605,16 @@ export function IssueDetail() {
               size="icon-xs"
               className={cn(
                 "shrink-0 transition-opacity duration-200",
-                panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
+                panelVisible && !suppressPanelForFirstTask
+                  ? "opacity-0 pointer-events-none w-0 overflow-hidden"
+                  : "opacity-100",
               )}
-              onClick={() => setPanelVisible(true)}
+              onClick={() => {
+                if (suppressPanelForFirstTask && issue?.id) {
+                  setFirstTaskPanelOverrideIssueId(issue.id);
+                }
+                setPanelVisible(true);
+              }}
               title="Show properties"
             >
               <SlidersHorizontal className="h-4 w-4" />
@@ -5304,22 +4665,6 @@ export function IssueDetail() {
                 >
                   <PlayCircle className="h-3 w-3" />
                   Resume work
-                </button>
-              ) : null}
-              {canManageTreeControl && childIssues.length === 0 && !isTerminalIssue ? (
-                <button
-                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
-                  onClick={() => {
-                    setMoreOpen(false);
-                    if (window.confirm("Cancel this issue? The running agent (if any) is stopped and the issue is moved to Cancelled — it won't be picked up again. Reopen by changing its status.")) {
-                      // PATCH status=cancelled cancels the active run AND parks the
-                      // issue terminal, so the recovery sweep won't re-pick it.
-                      updateIssue.mutate({ status: "cancelled" });
-                    }
-                  }}
-                >
-                  <XCircle className="h-3 w-3" />
-                  Cancel issue...
                 </button>
               ) : null}
               {canShowSubtreeControls ? (
@@ -5404,6 +4749,8 @@ export function IssueDetail() {
           className={taskChatShellEnabled ? "text-base font-semibold" : "text-xl font-bold"}
         />
 
+        {taskChatShellEnabled ? subTasksTree : null}
+
         <IssueMonitorBanner
           issue={issue}
           onCheckNow={() => checkIssueMonitorNow.mutate()}
@@ -5411,45 +4758,24 @@ export function IssueDetail() {
         />
 
         {taskChatShellEnabled ? null : (
-          <>
-            <div className="space-y-3 rounded-lg border border-border bg-background px-5 py-4 shadow-sm">
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">Description</h3>
-                {issue.description?.trim() ? null : (
-                  <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                    Empty
-                  </span>
-                )}
-              </div>
-              <InlineEditor
-                value={issue.description ?? ""}
-                onSave={(description) => updateIssue.mutateAsync({ description })}
-                as="p"
-                className="text-[15px] leading-7 text-muted-foreground"
-                placeholder="Add a description..."
-                multiline
-                nullable
-                foldable
-                mentions={mentionOptions}
-                externalReferences={externalObjectsState.isEnabled ? externalObjectsState.markdownReferences : undefined}
-                imageUploadHandler={async (file) => {
-                  const attachment = await uploadAttachment.mutateAsync(file);
-                  return attachment.contentPath;
-                }}
-                onDropFile={async (file) => {
-                  await uploadAttachment.mutateAsync(file);
-                }}
-              />
-            </div>
-            <IssueStateSummary
-              issue={issue}
-              childIssues={childIssues}
-              hasLiveRuns={hasLiveRuns}
-              activePauseSummary={activePauseSummary}
-            />
-            <IssuePlanningStrip issue={issue} childIssues={childIssues} />
-            <IssueExecutionContractPanel contract={issue.executionContract} defaultOpen={!issue.description?.trim()} />
-          </>
+          <InlineEditor
+            value={issue.description ?? ""}
+            onSave={(description) => updateIssue.mutateAsync({ description })}
+            as="p"
+            className="text-sm leading-7 text-foreground"
+            placeholder="Add a description..."
+            multiline
+            foldable
+            mentions={mentionOptions}
+            externalReferences={externalObjectsState.isEnabled ? externalObjectsState.markdownReferences : undefined}
+            imageUploadHandler={async (file) => {
+              const attachment = await uploadAttachment.mutateAsync(file);
+              return attachment.contentPath;
+            }}
+            onDropFile={async (file) => {
+              await uploadAttachment.mutateAsync(file);
+            }}
+          />
         )}
       </div>
   );
@@ -5510,6 +4836,7 @@ export function IssueDetail() {
   return (
     <FileViewerProvider issueId={issue.id} enabled={fileViewerEnabled}>
     <div
+      data-task-chat-shell={taskChatShellEnabled ? "" : undefined}
       className={
         taskChatShellEnabled
           ? isMobile
@@ -5629,23 +4956,22 @@ export function IssueDetail() {
             issueLinkState={resolvedIssueDetailState ?? location.state}
             searchFilters={{ descendantOf: issue.id, includeBlockedBy: true }}
             searchWithinLoadedIssues
-            allowCreateIssue={canCreateSubIssues}
-            baseCreateIssueDefaults={canCreateSubIssues ? buildSubIssueDefaultsForViewer(issue, currentUserId) : undefined}
-            createIssueLabel={canCreateSubIssues ? "Sub-task" : undefined}
+            baseCreateIssueDefaults={buildSubIssueDefaultsForViewer(issue, currentUserId)}
+            createIssueLabel="Sub-task"
             defaultSortField="workflow"
             showProgressSummary
             parentIssueIdForCostSummary={issue.id}
             onUpdateIssue={handleChildIssueUpdate}
           />
         </div>
-      ) : canCreateSubIssues ? (
+      ) : (
         <div className="flex flex-wrap items-center justify-end gap-2 min-w-0">
           <Button variant="outline" size="sm" onClick={openNewSubIssue} className="shrink-0 shadow-none">
             <Plus className="mr-1.5 h-3.5 w-3.5" />
             New Sub-task
           </Button>
         </div>
-      ) : null}
+      )}
 
       {!taskChatShellEnabled && showPlanDecompositionsSection ? (
         <IssuePlanDecompositionsSection
@@ -5800,7 +5126,7 @@ export function IssueDetail() {
             <ListTree className="h-3.5 w-3.5" />
             Related work
           </TabsTrigger>
-        {issuePluginTabItems.map((item) => (
+          {issuePluginTabItems.map((item) => (
             <TabsTrigger key={item.value} value={item.value}>
               {item.label}
             </TabsTrigger>
@@ -5812,6 +5138,7 @@ export function IssueDetail() {
             (symmetric, so the centered column keeps the same axis) and the
             scrollbar sits flush against the properties-pane border. */}
         <TabsContent
+          data-testid="issue-detail-content"
           value="chat"
           className={
             taskChatShellEnabled
@@ -5825,7 +5152,11 @@ export function IssueDetail() {
             <IssueDetailChatTab
               threadHeader={taskChatThreadHeader}
               issueBrief={
-                taskChatShellEnabled
+                // Suppress the seeded-description bubble for the onboarding first
+                // task: its description is agent instructions, not something the
+                // user typed. The user lands on a seeded agent greeting instead.
+                taskChatShellEnabled &&
+                issue.originKind !== ONBOARDING_FIRST_TASK_ORIGIN_KIND
                   ? {
                       description: issue.description ?? "",
                       author: issue.createdByAgentId ? "agent" : "human",
@@ -5935,7 +5266,6 @@ export function IssueDetail() {
               interruptingQueuedRunId={interruptQueuedComment.isPending ? interruptQueuedComment.variables ?? null : null}
               pausingWorkRunId={pauseIssueWorkRun.isPending ? pauseIssueWorkRun.variables?.runId ?? null : null}
               onImageClick={handleChatImageClick}
-              resolveImageSrc={resolveImageSrcForChat}
               onAcceptInteraction={handleAcceptInteraction}
               onRejectInteraction={handleRejectInteraction}
               onSubmitInteractionAnswers={handleSubmitInteractionAnswers}
@@ -6166,7 +5496,7 @@ export function IssueDetail() {
               <IssueProperties
                 issue={issue}
                 childIssues={childIssues}
-                onAddSubIssue={issue.parentId ? undefined : openNewSubIssue}
+                onAddSubIssue={openNewSubIssue}
                 onUpdate={(data) => updateIssue.mutate(data)}
                 inline
                 hasActiveRun={resolvedHasActiveRun}

@@ -241,7 +241,7 @@ describe("SidebarCompanyMenu", () => {
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Create new company...");
+    expect(document.body.textContent).toContain("Create new organization...");
     expect(document.body.textContent).not.toContain("Add company...");
 
     act(() => {
@@ -280,9 +280,9 @@ describe("SidebarCompanyMenu", () => {
     expect(document.body.textContent).toContain("Edit");
     expect(document.body.textContent).toContain("Strata");
     expect(document.body.textContent).toContain("ANA");
-    expect(document.body.textContent).toContain("Create new company...");
+    expect(document.body.textContent).toContain("Create new organization...");
     expect(document.body.textContent).toContain("Invite people to Acme Labs");
-    expect(document.body.textContent).toContain("Company settings");
+    expect(document.body.textContent).not.toContain("Company settings");
     expect(document.body.textContent).toContain("Sign out");
 
     const signOutButton = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
@@ -411,7 +411,7 @@ describe("SidebarCompanyMenu", () => {
     await openMenu("Open Acme Labs company switcher");
 
     const createItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
-      .find((element) => element.textContent?.includes("Create new company..."));
+      .find((element) => element.textContent?.includes("Create new organization..."));
     expect(createItem).toBeTruthy();
 
     act(() => {
@@ -493,7 +493,7 @@ describe("SidebarCompanyMenu", () => {
 
       expect(document.body.textContent).toContain("Switch organization");
       expect(document.body.textContent).toContain("Create new organization...");
-      expect(document.body.textContent).toContain("Organization settings");
+      expect(document.body.textContent).not.toContain("Organization settings");
       expect(document.body.textContent).not.toContain("Switch company");
       expect(document.body.textContent).not.toContain("Create new company...");
       expect(document.body.textContent).not.toContain("Company settings");

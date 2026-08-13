@@ -714,7 +714,23 @@ export async function prepareSandboxManagedRuntime(input: {
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
   const syncWorkspace = input.syncWorkspace !== false;
-  const gitSnapshot = syncWorkspace ? await readGitWorkspaceSnapshot(input.workspaceLocalDir) : null;
+
+  // Wrap a host-side staging sub-step in its own span when the caller injects a
+  // runtime span runner. Mirrors the `pack` span below: the runner defaults to a
+  // no-op, so a caller with no injected runner keeps the current control flow,
+  // and a throwing runner never changes it (see `createRuntimeSpanRunner`). Each
+  // span parents under the `stage.sync` step, so the two pre-`pack` operations —
+  // the git enumeration and the baseline content-hash walk — stop showing up as
+  // a hidden gap at the head of the step.
+  const runStepSpan = <T>(name: string, work: () => Promise<T>): Promise<T> =>
+    input.runtimeSpan ? input.runtimeSpan(name, work) : work();
+
+  // The git enumeration (`git status --ignored`, the HEAD diffs, `ls-files`).
+  // It reads git's own bookkeeping to decide what to include/exclude, so it is
+  // usually fast, but on a large working tree the `--ignored` walk is not free.
+  const gitSnapshot = syncWorkspace
+    ? await runStepSpan("snapshot.git", () => readGitWorkspaceSnapshot(input.workspaceLocalDir))
+    : null;
   const gitIgnoredExcludes = gitSnapshot?.ignoredPaths;
   const workspaceArchiveExclude = mergeExcludes(
     SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
@@ -730,8 +746,14 @@ export async function prepareSandboxManagedRuntime(input: {
     input.workspaceExclude,
     gitIgnoredExcludes,
   );
+  // The baseline "before" snapshot: a recursive walk of the whole workspace that
+  // `lstat`s every entry and SHA-256-hashes every file's bytes. This is the
+  // dominant cost in the pre-`pack` window — it reads the content of every
+  // non-excluded file, serially — so it earns its own span.
   const baselineSnapshot = syncWorkspace
-    ? await captureDirectorySnapshot(input.workspaceLocalDir, { exclude: restoreExclude })
+    ? await runStepSpan("snapshot.baseline", () =>
+        captureDirectorySnapshot(input.workspaceLocalDir, { exclude: restoreExclude }),
+      )
     : null;
 
   // Every inbound staging step delegates to the provider through `client.syncIn`:
@@ -849,9 +871,7 @@ export async function prepareSandboxManagedRuntime(input: {
       // span, so `pack` measures only the host tar-build cost. The runner
       // defaults to a no-op, so a caller with no injected runner keeps the
       // current behavior and control flow.
-      const runPackSpan = <T>(work: () => Promise<T>): Promise<T> =>
-        input.runtimeSpan ? input.runtimeSpan("pack", work) : work();
-      await runPackSpan(async () => {
+      await runStepSpan("pack", async () => {
         // 1. git-history tar (git-backed workspace only). Both tar targets live under
         //    `runtimeRootDir` (`.paperclip-runtime/<adapterKey>`). The git extract
         //    wipes the target tree EXCEPT `.paperclip-runtime`, so the overlay tar,

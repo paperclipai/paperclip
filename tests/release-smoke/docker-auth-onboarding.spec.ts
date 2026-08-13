@@ -10,8 +10,11 @@ const ADMIN_PASSWORD =
   "paperclip-smoke-password";
 
 const COMPANY_NAME = `Release-Smoke-${Date.now()}`;
+const MISSION = "Ship a reliable release smoke suite for Paperclip.";
 const AGENT_NAME = "CEO";
-const TASK_TITLE = "Release smoke task";
+// Seeded by the wizard's launch step (DEFAULT_TASK_TITLE in
+// ui/src/components/OnboardingWizard.tsx).
+const FIRST_TASK_TITLE = "Hire your first engineer and create a hiring plan";
 
 async function signIn(page: Page) {
   await page.goto("/");
@@ -38,39 +41,50 @@ async function openOnboarding(page: Page) {
 }
 
 test.describe("Docker authenticated onboarding smoke", () => {
-  test("logs in, completes onboarding, and triggers the first CEO run", async ({
+  test("logs in, completes onboarding, and hires the lead agent", async ({
     page,
   }) => {
     await signIn(page);
     await openOnboarding(page);
 
+    // Step 1: name the company.
     await page.locator('input[placeholder="Acme Corp"]').fill(COMPANY_NAME);
     await page.getByRole("button", { name: "Next" }).click();
 
+    // Step 2: define the mission directly; confirming creates the company.
     await expect(
-      page.locator("h3", { hasText: "Create your first agent" })
+      page.locator("h3", { hasText: "Define your mission" })
     ).toBeVisible({ timeout: 10_000 });
-
-    await expect(page.locator('input[placeholder="CEO"]')).toHaveValue(AGENT_NAME);
-    await page.getByRole("button", { name: "Next" }).click();
-
-    await expect(
-      page.locator("h3", { hasText: "Give it something to do" })
-    ).toBeVisible({ timeout: 10_000 });
+    await page.getByRole("button", { name: "I know my mission" }).click();
     await page
-      .locator('input[placeholder="e.g. Research competitor pricing"]')
-      .fill(TASK_TITLE);
+      .locator('textarea[placeholder="What is your team trying to achieve?"]')
+      .fill(MISSION);
+    await page.getByRole("button", { name: "Confirm mission" }).click();
+
+    // Step 3: name the team lead.
+    const leadNameInput = page.locator('input[placeholder="Chief of staff"]');
+    await expect(leadNameInput).toBeVisible({ timeout: 20_000 });
+    await leadNameInput.fill(AGENT_NAME);
     await page.getByRole("button", { name: "Next" }).click();
 
-    await expect(
-      page.locator("h3", { hasText: "Ready to launch" })
-    ).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByText(COMPANY_NAME)).toBeVisible();
-    await expect(page.getByText(AGENT_NAME)).toBeVisible();
-    await expect(page.getByText(TASK_TITLE)).toBeVisible();
+    // Step 4: keep the default adapter and hire the lead. The adapter
+    // environment test runs inside the smoke container, where no agent CLIs
+    // are installed; an unhealthy report is expected and must not block the
+    // hire. Allow generous time for the env probe + hire + auto-approval.
+    const heartbeatButton = page.getByRole("button", {
+      name: "Give it a heartbeat",
+    });
+    await expect(heartbeatButton).toBeVisible({ timeout: 10_000 });
+    await expect(heartbeatButton).toBeEnabled({ timeout: 30_000 });
+    await heartbeatButton.click();
 
-    await page.getByRole("button", { name: "Create & Open Task" }).click();
-    await expect(page).toHaveURL(/\/issues\//, { timeout: 10_000 });
+    // Step 5: review, then launch. "Get started" provisions the onboarding
+    // goal/project and navigates to the dashboard only on success.
+    const getStartedButton = page.getByRole("button", { name: "Get started" });
+    await expect(getStartedButton).toBeVisible({ timeout: 60_000 });
+    await expect(getStartedButton).toBeEnabled({ timeout: 10_000 });
+    await getStartedButton.click();
+    await expect(page).toHaveURL(/\/dashboard/, { timeout: 30_000 });
 
     const baseUrl = new URL(page.url()).origin;
 
@@ -95,6 +109,26 @@ test.describe("Docker authenticated onboarding smoke", () => {
     expect(ceoAgent!.role).toBe("ceo");
     expect(ceoAgent!.adapterType).not.toBe("process");
 
+    const goalsRes = await page.request.get(
+      `${baseUrl}/api/companies/${company!.id}/goals`
+    );
+    expect(goalsRes.ok()).toBe(true);
+    const goals = (await goalsRes.json()) as Array<{
+      id: string;
+      title: string;
+      level: string;
+      status: string;
+    }>;
+    expect(goals).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          title: MISSION,
+          level: "company",
+          status: "active",
+        }),
+      ])
+    );
+
     const issuesRes = await page.request.get(
       `${baseUrl}/api/companies/${company!.id}/issues`
     );
@@ -104,9 +138,9 @@ test.describe("Docker authenticated onboarding smoke", () => {
       title: string;
       assigneeAgentId: string | null;
     }>;
-    const issue = issues.find((entry) => entry.title === TASK_TITLE);
-    expect(issue).toBeTruthy();
-    expect(issue!.assigneeAgentId).toBe(ceoAgent!.id);
+    const seededIssue = issues.find((entry) => entry.title === FIRST_TASK_TITLE);
+    expect(seededIssue).toBeTruthy();
+    expect(seededIssue!.assigneeAgentId).toBe(ceoAgent!.id);
 
     await expect.poll(
       async () => {

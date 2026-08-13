@@ -5,8 +5,8 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "@/lib/router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./App";
+import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { CompanyProvider, useCompany } from "./context/CompanyContext";
-import { OrgProvider } from "./context/OrgContext";
 import { LiveUpdatesProvider } from "./context/LiveUpdatesProvider";
 import { BreadcrumbProvider } from "./context/BreadcrumbContext";
 import { PanelProvider } from "./context/PanelContext";
@@ -55,10 +55,10 @@ function CompanyAwareBreadcrumbProvider({ children }: { children: React.ReactNod
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <ThemeProvider>
-        <BrowserRouter>
-          <OrgProvider>
+    <AppErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <ThemeProvider>
+          <BrowserRouter>
             <CompanyProvider>
               <EditorAutocompleteProvider>
                 <ToastProvider>
@@ -80,9 +80,9 @@ createRoot(document.getElementById("root")!).render(
                 </ToastProvider>
               </EditorAutocompleteProvider>
             </CompanyProvider>
-          </OrgProvider>
-        </BrowserRouter>
-      </ThemeProvider>
-    </QueryClientProvider>
+          </BrowserRouter>
+        </ThemeProvider>
+      </QueryClientProvider>
+    </AppErrorBoundary>
   </StrictMode>
 );

@@ -196,17 +196,9 @@ const executionContractStructuredContentSchema = z.union([
   z.array(z.unknown()).max(500),
   z.record(z.unknown()),
 ]);
-
 const executionContractWorkProductTypeSchema = z.enum([
-  "preview_url",
-  "runtime_service",
-  "pull_request",
-  "branch",
-  "commit",
-  "artifact",
-  "document",
+  "preview_url", "runtime_service", "pull_request", "branch", "commit", "artifact", "document",
 ]);
-
 const executionContractRequiredOutputObjectSchema = z.object({
   workProductType: executionContractWorkProductTypeSchema.optional(),
   work_product_type: executionContractWorkProductTypeSchema.optional(),
@@ -215,102 +207,56 @@ const executionContractRequiredOutputObjectSchema = z.object({
   const declared = [value.workProductType, value.work_product_type, value.type]
     .filter((entry): entry is z.infer<typeof executionContractWorkProductTypeSchema> => entry !== undefined);
   if (declared.length === 0) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "requiredOutputs entries must declare a supported workProductType",
-      path: ["workProductType"],
-    });
-    return;
-  }
-  if (new Set(declared).size > 1) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "requiredOutputs type aliases must match",
-      path: ["workProductType"],
-    });
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "requiredOutputs entries must declare a supported workProductType", path: ["workProductType"] });
+  } else if (new Set(declared).size > 1) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "requiredOutputs type aliases must match", path: ["workProductType"] });
   }
 }).transform((value) => value as IssueExecutionContractRequiredOutput);
-
 const executionContractRequiredOutputSchema = z.union([
   executionContractWorkProductTypeSchema,
   executionContractRequiredOutputObjectSchema,
 ]);
-
 const executionContractRequiredOutputsSchema = z.union([
   executionContractRequiredOutputSchema,
   z.array(executionContractRequiredOutputSchema).max(500),
 ]);
-
 function executionContractValuesEqual(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true;
   if (Array.isArray(left) || Array.isArray(right)) {
-    return Array.isArray(left) &&
-      Array.isArray(right) &&
-      left.length === right.length &&
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length &&
       left.every((item, index) => executionContractValuesEqual(item, right[index]));
   }
-  if (
-    !left ||
-    !right ||
-    typeof left !== "object" ||
-    typeof right !== "object"
-  ) return false;
+  if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
   const leftRecord = left as Record<string, unknown>;
   const rightRecord = right as Record<string, unknown>;
   const leftKeys = Object.keys(leftRecord).sort();
   const rightKeys = Object.keys(rightRecord).sort();
-  return leftKeys.length === rightKeys.length &&
-    leftKeys.every((key, index) =>
-      key === rightKeys[index] && executionContractValuesEqual(leftRecord[key], rightRecord[key]));
+  return leftKeys.length === rightKeys.length && leftKeys.every((key, index) =>
+    key === rightKeys[index] && executionContractValuesEqual(leftRecord[key], rightRecord[key]));
 }
-
-function addExecutionContractAliasConflict(
-  value: Record<string, unknown>,
-  canonical: string,
-  legacy: string,
-  ctx: z.RefinementCtx,
-) {
-  if (
-    value[canonical] !== undefined &&
-    value[legacy] !== undefined &&
-    !executionContractValuesEqual(value[canonical], value[legacy])
-  ) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: `executionContract ${canonical} and ${legacy} must match when both are provided`,
-      path: [canonical],
-    });
+function addExecutionContractAliasConflict(value: Record<string, unknown>, canonical: string, legacy: string, ctx: z.RefinementCtx) {
+  if (value[canonical] !== undefined && value[legacy] !== undefined && !executionContractValuesEqual(value[canonical], value[legacy])) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `executionContract ${canonical} and ${legacy} must match when both are provided`, path: [canonical] });
   }
 }
-
 const executionContractHandoffNotesSchema = z.object({
-  managerReasoning: executionContractTextSchema.optional(),
-  manager_reasoning: executionContractTextSchema.optional(),
-  currentBlocker: executionContractTextSchema.nullable().optional(),
-  current_blocker: executionContractTextSchema.nullable().optional(),
-  nextAction: executionContractTextSchema.nullable().optional(),
-  next_action: executionContractTextSchema.nullable().optional(),
+  managerReasoning: executionContractTextSchema.optional(), manager_reasoning: executionContractTextSchema.optional(),
+  currentBlocker: executionContractTextSchema.nullable().optional(), current_blocker: executionContractTextSchema.nullable().optional(),
+  nextAction: executionContractTextSchema.nullable().optional(), next_action: executionContractTextSchema.nullable().optional(),
 }).passthrough().superRefine((value, ctx) => {
   addExecutionContractAliasConflict(value, "managerReasoning", "manager_reasoning", ctx);
   addExecutionContractAliasConflict(value, "currentBlocker", "current_blocker", ctx);
   addExecutionContractAliasConflict(value, "nextAction", "next_action", ctx);
 });
-
 const issueExecutionContractCoreSchema = z.object({
-  objective: executionContractTextSchema.optional(),
-  why: executionContractTextSchema.optional(),
+  objective: executionContractTextSchema.optional(), why: executionContractTextSchema.optional(),
   owner: z.union([executionContractTextSchema, z.record(z.unknown())]).optional(),
-  sourceOfTruth: executionContractStructuredContentSchema.optional(),
-  source_of_truth: executionContractStructuredContentSchema.optional(),
-  acceptanceChecks: executionContractStructuredContentSchema.optional(),
-  acceptance_checks: executionContractStructuredContentSchema.optional(),
+  sourceOfTruth: executionContractStructuredContentSchema.optional(), source_of_truth: executionContractStructuredContentSchema.optional(),
+  acceptanceChecks: executionContractStructuredContentSchema.optional(), acceptance_checks: executionContractStructuredContentSchema.optional(),
   constraints: executionContractStructuredContentSchema.optional(),
-  evidenceRequired: executionContractStructuredContentSchema.optional(),
-  evidence_required: executionContractStructuredContentSchema.optional(),
-  requiredOutputs: executionContractRequiredOutputsSchema.optional(),
-  required_outputs: executionContractRequiredOutputsSchema.optional(),
-  handoffNotes: executionContractHandoffNotesSchema.optional(),
-  handoff_notes: executionContractHandoffNotesSchema.optional(),
+  evidenceRequired: executionContractStructuredContentSchema.optional(), evidence_required: executionContractStructuredContentSchema.optional(),
+  requiredOutputs: executionContractRequiredOutputsSchema.optional(), required_outputs: executionContractRequiredOutputsSchema.optional(),
+  handoffNotes: executionContractHandoffNotesSchema.optional(), handoff_notes: executionContractHandoffNotesSchema.optional(),
 }).passthrough().superRefine((value, ctx) => {
   addExecutionContractAliasConflict(value, "sourceOfTruth", "source_of_truth", ctx);
   addExecutionContractAliasConflict(value, "acceptanceChecks", "acceptance_checks", ctx);
@@ -318,37 +264,18 @@ const issueExecutionContractCoreSchema = z.object({
   addExecutionContractAliasConflict(value, "requiredOutputs", "required_outputs", ctx);
   addExecutionContractAliasConflict(value, "handoffNotes", "handoff_notes", ctx);
 });
-
-/**
- * The execution-contract envelope is explicit for fields Paperclip interprets,
- * while passthrough objects preserve forward compatibility for manager- or
- * plugin-owned fields. This keeps malformed canonical fields out without
- * turning the core control plane into an extension-schema registry.
- */
 export const issueExecutionContractSchema = z.object({
-  schemaVersion: executionContractSchemaVersionSchema.optional(),
-  schema_version: executionContractSchemaVersionSchema.optional(),
+  schemaVersion: executionContractSchemaVersionSchema.optional(), schema_version: executionContractSchemaVersionSchema.optional(),
   revision: executionContractRevisionSchema.optional(),
-  supersedesRevision: executionContractRevisionSchema.nullable().optional(),
-  supersedes_revision: executionContractRevisionSchema.nullable().optional(),
-  contractType: executionContractTextSchema.optional(),
-  contract_type: executionContractTextSchema.optional(),
-  taskType: executionContractTextSchema.optional(),
-  task_type: executionContractTextSchema.optional(),
-  core: issueExecutionContractCoreSchema.optional(),
-  extensions: z.record(z.unknown()).optional().nullable(),
+  supersedesRevision: executionContractRevisionSchema.nullable().optional(), supersedes_revision: executionContractRevisionSchema.nullable().optional(),
+  contractType: executionContractTextSchema.optional(), contract_type: executionContractTextSchema.optional(),
+  taskType: executionContractTextSchema.optional(), task_type: executionContractTextSchema.optional(),
+  core: issueExecutionContractCoreSchema.optional(), extensions: z.record(z.unknown()).optional().nullable(),
 }).passthrough().superRefine((value, ctx) => {
-  const aliasPairs = [
-    ["schemaVersion", "schema_version"],
-    ["supersedesRevision", "supersedes_revision"],
-    ["contractType", "contract_type"],
-    ["taskType", "task_type"],
-  ] as const;
-  for (const [canonical, legacy] of aliasPairs) {
+  for (const [canonical, legacy] of [["schemaVersion", "schema_version"], ["supersedesRevision", "supersedes_revision"], ["contractType", "contract_type"], ["taskType", "task_type"]] as const) {
     addExecutionContractAliasConflict(value, canonical, legacy, ctx);
   }
 });
-
 export type IssueExecutionContractInput = z.infer<typeof issueExecutionContractSchema>;
 
 const issueExecutionStagePrincipalBaseSchema = z.object({
@@ -673,18 +600,30 @@ const createIssueDuplicateGuardSchema = {
     .default(false),
 };
 
-type CreateIssueSchemaOutput = z.output<typeof createIssueBaseSchema> & {
-  idempotencyKey?: string | null;
-  allowDuplicate: boolean;
+// Narrow intent flag set by the onboarding wizard on the single first task. The
+// server owns the resulting origin kind (clients cannot set arbitrary origin
+// kinds) and uses it to seed the agent greeting instead of an LLM welcome step.
+const onboardingFirstTaskMarkerSchema = {
+  onboardingFirstTask: z.boolean().optional(),
 };
 
 export const createIssueInputSchema = createIssueBaseSchema.extend({
   status: createIssueBaseSchema.shape.status.optional(),
   ...createIssueDuplicateGuardSchema,
+  ...onboardingFirstTaskMarkerSchema,
 });
 
+type CreateIssueSchemaOutput = z.output<typeof createIssueBaseSchema> & {
+  idempotencyKey?: string | null;
+  allowDuplicate: boolean;
+  onboardingFirstTask?: boolean;
+};
+
 export const createIssueSchema: z.ZodType<CreateIssueSchemaOutput, z.ZodTypeDef, unknown> = withCreateIssueStatusDefault(
-  createIssueBaseSchema.extend(createIssueDuplicateGuardSchema),
+  createIssueBaseSchema.extend({
+    ...createIssueDuplicateGuardSchema,
+    ...onboardingFirstTaskMarkerSchema,
+  }),
 ).superRefine(requireBlockedStatusForUnblockDescriptor);
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
@@ -693,14 +632,12 @@ export const updateIssueVisibilitySchema = z.object({
   visibility: z.enum(["private", "company"]),
   confirmed: z.boolean().optional(),
 });
-
 export type UpdateIssueVisibility = z.infer<typeof updateIssueVisibilitySchema>;
 
 export const upsertIssueCollaboratorSchema = z.object({
   principalType: z.enum(["user", "agent"]),
   principalId: z.string().min(1),
 });
-
 export type UpsertIssueCollaborator = z.infer<typeof upsertIssueCollaboratorSchema>;
 
 export const upsertIssueWatchdogSchema = z.object({
@@ -763,7 +700,6 @@ export const updateIssueSchema = createIssueBaseSchema.omit({
   workItemType: z.enum(ISSUE_WORK_ITEM_TYPES).optional(),
   harnessKind: z.enum(ISSUE_HARNESS_KINDS).optional().nullable(),
   priority: z.enum(ISSUE_PRIORITIES).optional(),
-  // Visibility changes are governed by their dedicated confirmation endpoint.
   visibility: z.never().optional(),
   requestDepth: issueRequestDepthInputSchema.optional(),
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
@@ -896,12 +832,7 @@ export const addIssueCommentSchema = z.object({
   authorType: issueCommentAuthorTypeSchema.optional(),
   presentation: issueCommentPresentationSchema.nullable().optional(),
   metadata: issueCommentMetadataSchema.nullable().optional(),
-  // A board-selected, one-run override. It is deliberately separate from the
-  // issue-level assigneeAdapterOverrides so a chat reply never changes the
-  // agent's saved/default model or the rest of the task's runs.
   modelOverride: z.string().trim().min(1).max(200).optional().nullable(),
-  // The same one-run boundary as modelOverride. Its adapter-specific values
-  // are validated at the route and again before heartbeat dispatch.
   thinkingEffortOverride: z.string().trim().min(1).max(32).optional().nullable(),
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
@@ -958,23 +889,7 @@ export const suggestedTaskDraftSchema: z.ZodType<
   }
 });
 
-type SuggestTasksPayloadSchemaOutput = {
-  version: 1;
-  defaultParentId?: string | null;
-  tasks: Array<z.output<typeof suggestedTaskDraftSchema>>;
-};
-
-type SuggestTasksPayloadSchemaInput = {
-  version: 1;
-  defaultParentId?: string | null;
-  tasks: Array<z.input<typeof suggestedTaskDraftSchema>>;
-};
-
-export const suggestTasksPayloadSchema: z.ZodType<
-  SuggestTasksPayloadSchemaOutput,
-  z.ZodTypeDef,
-  SuggestTasksPayloadSchemaInput
-> = z.object({
+export const suggestTasksPayloadSchema = z.object({
   version: z.literal(1),
   defaultParentId: z.string().uuid().nullable().optional(),
   tasks: z.array(suggestedTaskDraftSchema).min(1).max(50),
@@ -1009,14 +924,18 @@ export const suggestTasksResultSchema = z.object({
   createdTasks: z.array(suggestTasksResultCreatedTaskSchema).max(50).optional(),
   skippedClientKeys: z.array(z.string().trim().min(1).max(120)).max(50).optional(),
   rejectionReason: z.string().trim().max(4000).nullable().optional(),
-  cancelled: z.literal(true).optional(),
-  cancellationReason: z.string().trim().max(4000).nullable().optional(),
 });
 
 export const askUserQuestionsQuestionOptionSchema = z.object({
   id: z.string().trim().min(1).max(120),
   label: z.string().trim().min(1).max(120),
   description: z.string().trim().max(500).nullable().optional(),
+  freeText: z
+    .boolean()
+    .optional()
+    .describe(
+      "When true, selecting this option reveals an inline text field; the typed value is returned as the question's otherText. Use this for a real \"I'll describe it\" choice instead of authoring a dead option that does nothing. At most one free-text option per question.",
+    ),
 });
 
 export const askUserQuestionsQuestionSchema = z.object({
@@ -1032,7 +951,6 @@ export const askUserQuestionsPayloadSchema = z.object({
   version: z.literal(1),
   title: z.string().trim().max(240).nullable().optional(),
   submitLabel: z.string().trim().max(120).nullable().optional(),
-  context: z.record(z.unknown()).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
   questions: z.array(askUserQuestionsQuestionSchema).min(1).max(10),
 }).superRefine((value, ctx) => {
@@ -1048,6 +966,7 @@ export const askUserQuestionsPayloadSchema = z.object({
     seenQuestionIds.add(question.id);
 
     const seenOptionIds = new Set<string>();
+    let freeTextOptionCount = 0;
     for (const [optionIndex, option] of question.options.entries()) {
       if (seenOptionIds.has(option.id)) {
         ctx.addIssue({
@@ -1057,6 +976,16 @@ export const askUserQuestionsPayloadSchema = z.object({
         });
       }
       seenOptionIds.add(option.id);
+      if (option.freeText) {
+        freeTextOptionCount += 1;
+        if (freeTextOptionCount > 1) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "A question may declare at most one free-text option",
+            path: ["questions", questionIndex, "options", optionIndex, "freeText"],
+          });
+        }
+      }
     }
   }
 });
@@ -1074,8 +1003,11 @@ export const askUserQuestionsResultSchema = z.object({
   answers: z.array(askUserQuestionsAnswerSchema).max(20),
   cancelled: z.literal(true).optional(),
   cancellationReason: z.string().trim().max(4000).nullable().optional(),
-  expirationReason: z.literal("superseded_by_comment").optional(),
+  expirationReason: z.enum(["superseded_by_comment", "superseded_by_newer_interaction"]).optional(),
   commentId: z.string().uuid().nullable().optional(),
+  // Set alongside expirationReason "superseded_by_newer_interaction": the id of
+  // the newer sibling ask_user_questions that replaced this one (PAP-437).
+  supersededByInteractionId: z.string().uuid().nullable().optional(),
   summaryMarkdown: z.string().max(20000).nullable().optional(),
 });
 
@@ -1271,7 +1203,6 @@ export const requestConfirmationResultSchema = z.object({
   outcome: z.enum([
     "accepted",
     "rejected",
-    "cancelled",
     "superseded_by_comment",
     "superseded_by_newer_request",
     "stale_target",
@@ -1458,11 +1389,7 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
     sourceRunId: z.string().uuid().nullable().optional(),
     title: z.string().trim().max(240).nullable().optional(),
     summary: z.string().trim().max(1000).nullable().optional(),
-    // Default to waking the issue's assignee on ANY decision (accept / reject /
-    // changes-requested) so a decided proposal actually resumes the work.
-    // Previously "none" — which silently woke nobody, leaving the main issue
-    // stranded after the user approved/rejected the proposal.
-    continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
+    continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("none"),
     payload: requestConfirmationPayloadSchema,
   }),
   z.object({

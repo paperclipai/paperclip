@@ -1,5 +1,5 @@
 import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
-import type { ApprovalDecisionAction, ApprovalDecisionOption } from "@paperclipai/shared";
+import { MarkdownBody } from "./MarkdownBody";
 import { formatCents } from "../lib/utils";
 
 export const typeLabel: Record<string, string> = {
@@ -16,97 +16,6 @@ function firstNonEmptyString(...values: unknown[]): string | null {
     }
   }
   return null;
-}
-
-function stringOrNull(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
-function normalizeDecisionAction(value: unknown): ApprovalDecisionAction {
-  const normalized = stringOrNull(value)?.toLowerCase().replace(/[\s-]+/g, "_") ?? "";
-  if (
-    normalized === "reject" ||
-    normalized === "rejected" ||
-    normalized === "decline" ||
-    normalized === "declined"
-  ) {
-    return "reject";
-  }
-  if (
-    normalized === "revision" ||
-    normalized === "revise" ||
-    normalized === "request_revision" ||
-    normalized === "revision_requested" ||
-    normalized === "changes" ||
-    normalized === "request_changes"
-  ) {
-    return "revision";
-  }
-  return "approve";
-}
-
-function normalizeDecisionTone(value: unknown, action: ApprovalDecisionAction): ApprovalDecisionOption["tone"] {
-  const normalized = stringOrNull(value)?.toLowerCase() ?? "";
-  if (normalized === "success" || normalized === "danger" || normalized === "warning" || normalized === "default") {
-    return normalized;
-  }
-  if (action === "approve") return "success";
-  if (action === "reject") return "danger";
-  return "warning";
-}
-
-function optionIdFor(label: string, index: number) {
-  const slug = label
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80);
-  return slug || `option-${index + 1}`;
-}
-
-export function approvalDecisionOptions(payload?: Record<string, unknown> | null): ApprovalDecisionOption[] {
-  const rawOptions = payload?.decisionOptions ?? payload?.options ?? payload?.proposals;
-  if (!Array.isArray(rawOptions)) return [];
-
-  return rawOptions.flatMap((item, index): ApprovalDecisionOption[] => {
-    if (typeof item === "string") {
-      const label = item.trim();
-      if (!label) return [];
-      return [{
-        id: optionIdFor(label, index),
-        label,
-        action: "approve",
-        description: null,
-        decisionNote: label,
-        nextStep: null,
-        tone: "success",
-      }];
-    }
-
-    if (!item || typeof item !== "object") return [];
-    const record = item as Record<string, unknown>;
-    const label = firstNonEmptyString(
-      record.label,
-      record.title,
-      record.name,
-      record.summary,
-      record.recommendedAction,
-    );
-    if (!label) return [];
-
-    const action = normalizeDecisionAction(
-      record.action ?? record.decisionAction ?? record.status ?? record.outcome,
-    );
-    return [{
-      id: firstNonEmptyString(record.id, record.key, record.value) ?? optionIdFor(label, index),
-      label,
-      action,
-      description: firstNonEmptyString(record.description, record.summary, record.rationale, record.reason),
-      decisionNote: firstNonEmptyString(record.decisionNote, record.note, record.boardResponse, record.response) ?? label,
-      nextStep: firstNonEmptyString(record.nextStep, record.nextAction, record.nextActionOnApproval, record.onApproval),
-      tone: normalizeDecisionTone(record.tone ?? record.variant, action),
-    }];
-  });
 }
 
 export function approvalSubject(payload?: Record<string, unknown> | null): string | null {
@@ -253,11 +162,19 @@ export function BoardApprovalPayload({
   );
 }
 
+/**
+ * Risks render inside a custom bullet row, so a leading markdown list marker
+ * would nest a second bullet inside the first. Strip one leading marker.
+ */
+function stripLeadingListMarker(value: string): string {
+  return value.replace(/^(?:[-*•]|\d+[.)])\s+/, "");
+}
+
 function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unknown> }) {
   const risks = Array.isArray(payload.risks)
     ? payload.risks
         .filter((value): value is string => typeof value === "string")
-        .map((value) => value.trim())
+        .map((value) => stripLeadingListMarker(value.trim()))
         .filter(Boolean)
     : [];
   const title = firstNonEmptyString(payload.title);
@@ -265,7 +182,6 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
   const recommendedAction = firstNonEmptyString(payload.recommendedAction);
   const nextActionOnApproval = firstNonEmptyString(payload.nextActionOnApproval);
   const proposedComment = firstNonEmptyString(payload.proposedComment);
-  const decisionOptions = approvalDecisionOptions(payload);
 
   return (
     <div className="mt-4 space-y-3.5 text-sm">
@@ -278,7 +194,7 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
       {summary && (
         <div className="space-y-1">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Summary</p>
-          <p className="leading-6 text-foreground/90">{summary}</p>
+          <MarkdownBody className="leading-6 text-foreground/90">{summary}</MarkdownBody>
         </div>
       )}
       {recommendedAction && (
@@ -286,50 +202,23 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-amber-700 dark:text-amber-300">
             Recommended action
           </p>
-          <p className="mt-1 leading-6 text-foreground">{recommendedAction}</p>
+          <MarkdownBody className="mt-1 leading-6 text-foreground">{recommendedAction}</MarkdownBody>
         </div>
       )}
       {nextActionOnApproval && (
         <div className="rounded-lg border border-border/60 bg-background/60 px-3.5 py-3">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">On approval</p>
-          <p className="mt-1 leading-6 text-foreground">{nextActionOnApproval}</p>
-        </div>
-      )}
-      {decisionOptions.length > 0 && (
-        <div className="space-y-2">
-          <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
-            Decision options
-          </p>
-          <div className="grid gap-2">
-            {decisionOptions.map((option) => (
-              <div key={option.id} className="rounded-lg border border-border/60 bg-background/60 px-3.5 py-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-medium leading-5 text-foreground">{option.label}</span>
-                  <span className="rounded border border-border/70 px-1.5 py-0.5 text-[11px] capitalize text-muted-foreground">
-                    {option.action === "revision" ? "request changes" : option.action}
-                  </span>
-                </div>
-                {option.description ? (
-                  <p className="mt-1 text-sm leading-6 text-muted-foreground">{option.description}</p>
-                ) : null}
-                {option.nextStep ? (
-                  <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                    Next: {option.nextStep}
-                  </p>
-                ) : null}
-              </div>
-            ))}
-          </div>
+          <MarkdownBody className="mt-1 leading-6 text-foreground">{nextActionOnApproval}</MarkdownBody>
         </div>
       )}
       {risks.length > 0 && (
         <div className="space-y-1.5">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Risks</p>
           <ul className="space-y-1 text-sm text-muted-foreground">
-            {risks.map((risk) => (
-              <li key={risk} className="flex items-start gap-2">
-                <span className="mt-2 h-1.5 w-1.5 rounded-full bg-muted-foreground/60" />
-                <span className="leading-6">{risk}</span>
+            {risks.map((risk, index) => (
+              <li key={`${index}-${risk}`} className="flex items-start gap-2">
+                <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/60" />
+                <MarkdownBody className="leading-6">{risk}</MarkdownBody>
               </li>
             ))}
           </ul>

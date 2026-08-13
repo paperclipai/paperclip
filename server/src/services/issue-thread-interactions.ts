@@ -355,45 +355,6 @@ function isEquivalentCreateRequest(
   );
 }
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function hydrateSuggestedTasksPayload(
-  payload: unknown,
-): SuggestTasksInteraction["payload"] {
-  if (!isPlainRecord(payload) || !Array.isArray(payload.tasks)) {
-    return suggestTasksPayloadSchema.parse(payload);
-  }
-  const rawTasks = payload.tasks;
-
-  // Historical rows may contain execution contracts written before the
-  // canonical field schema existed. Keep list/get readable by validating the
-  // interaction envelope and task fields without reparsing that one payload.
-  const tasksWithoutContracts = rawTasks.map((task) => {
-    if (!isPlainRecord(task)) return task;
-    const { executionContract: _legacyExecutionContract, ...taskFields } = task;
-    return taskFields;
-  });
-  const parsed = suggestTasksPayloadSchema.parse({
-    ...payload,
-    tasks: tasksWithoutContracts,
-  });
-  return {
-    ...parsed,
-    tasks: parsed.tasks.map((task, index) => {
-      const rawTask = rawTasks[index];
-      if (!isPlainRecord(rawTask) || !Object.prototype.hasOwnProperty.call(rawTask, "executionContract")) {
-        return task;
-      }
-      return {
-        ...task,
-        executionContract: rawTask.executionContract as SuggestTasksInteraction["payload"]["tasks"][number]["executionContract"],
-      };
-    }),
-  };
-}
-
 /**
  * Parse a stored interaction `result` blob tolerantly. Rows persisted by older
  * builds can carry a `result` shape that predates the current schema — e.g. a
@@ -439,7 +400,7 @@ function hydrateInteraction(
       return {
         ...base,
         kind: "suggest_tasks",
-        payload: hydrateSuggestedTasksPayload(row.payload),
+        payload: suggestTasksPayloadSchema.parse(row.payload),
         result: parseStoredInteractionResult(suggestTasksResultSchema, row.result, row),
       } satisfies SuggestTasksInteraction;
     case "ask_user_questions":
@@ -484,33 +445,6 @@ async function touchIssue(db: IssueTouchDb, issueId: string) {
 
 function isTerminalIssueStatus(status: string) {
   return status === "done" || status === "cancelled";
-}
-
-function buildCancelledInteractionResult(kind: string, reason: string | null) {
-  if (kind === "ask_user_questions") {
-    return {
-      version: 1 as const,
-      answers: [],
-      cancelled: true as const,
-      cancellationReason: reason,
-      summaryMarkdown: null,
-    };
-  }
-  if (kind === "suggest_tasks") {
-    return {
-      version: 1 as const,
-      cancelled: true as const,
-      cancellationReason: reason,
-    };
-  }
-  if (kind === "request_confirmation") {
-    return {
-      version: 1 as const,
-      outcome: "cancelled" as const,
-      reason,
-    };
-  }
-  throw unprocessable(`Unknown interaction kind: ${kind}`);
 }
 
 function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
@@ -628,6 +562,21 @@ function buildSupersededByNewerRequestResult(replacementInteractionId: string) {
     version: 1,
     outcome: "superseded_by_newer_request",
     supersededByInteractionId: replacementInteractionId,
+  } as const;
+}
+
+// An agent that posts a fresh ask_user_questions while its own earlier ones on
+// the same issue are still pending has replaced them — the newer card carries
+// the real ask, so the stale siblings auto-expire (PAP-437). Mirrors the
+// `superseded_by_comment` shape (ask_user_questions results key expiry off
+// `expirationReason`, not `outcome`) so the UI can hide them cleanly.
+function buildSupersededByNewerInteractionResult(replacementInteractionId: string) {
+  return {
+    version: 1,
+    answers: [],
+    expirationReason: "superseded_by_newer_interaction",
+    supersededByInteractionId: replacementInteractionId,
+    summaryMarkdown: null,
   } as const;
 }
 
@@ -895,17 +844,6 @@ function buildTaskCreationOrder(tasks: ReadonlyArray<SuggestTasksInteraction["pa
   }
 
   return ordered;
-}
-
-function assertSuggestedTasksAreDirect(
-  tasks: ReadonlyArray<SuggestTasksInteraction["payload"]["tasks"][number]>,
-) {
-  const nestedTask = tasks.find((task) => Boolean(task.parentClientKey));
-  if (nestedTask) {
-    throw unprocessable(
-      `Suggested task ${nestedTask.clientKey} is nested. Suggested tasks must be direct execution lanes; parentClientKey graphs are not supported.`,
-    );
-  }
 }
 
 function resolveSelectedSuggestedTasks(args: {
@@ -1347,7 +1285,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
   }
 
   async function getPendingInteractionForResolution(args: {
-    issue: { id: string; companyId: string };
+    issue: { id: string; companyId: string; status?: string };
     interactionId: string;
   }) {
     const current = await db
@@ -1360,10 +1298,19 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     if (current.companyId !== args.issue.companyId || current.issueId !== args.issue.id) {
       throw notFound("Interaction not found");
     }
+    if (args.issue.status && isTerminalIssueStatus(args.issue.status)) {
+      throw conflict("Interaction is no longer actionable because the issue is closed");
+    }
     if (current.status !== "pending") {
       throw conflict("Interaction has already been resolved");
     }
     return current;
+  }
+
+  function assertIssueOpenForInteractionResolution(issue: { id: string; companyId: string; status?: string }) {
+    if (issue.status && isTerminalIssueStatus(issue.status)) {
+      throw conflict("Interaction is no longer actionable because the issue is closed");
+    }
   }
 
   async function acceptRequestConfirmation(args: {
@@ -1676,13 +1623,29 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       return { checked: rows.length, candidates: eligible.length, accepted, woken };
     },
     listForIssue: async (issueId: string) => {
-      const rows = await db
-        .select()
-        .from(issueThreadInteractions)
-        .where(eq(issueThreadInteractions.issueId, issueId))
-        .orderBy(asc(issueThreadInteractions.createdAt), asc(issueThreadInteractions.id));
+      const [rows, issueStatus] = await Promise.all([
+        db
+          .select()
+          .from(issueThreadInteractions)
+          .where(eq(issueThreadInteractions.issueId, issueId))
+          .orderBy(asc(issueThreadInteractions.createdAt), asc(issueThreadInteractions.id)),
+        db
+          .select({ status: issues.status })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((issueRows) => issueRows[0]?.status ?? null),
+      ]);
 
-      return rows.map((row) => hydrateInteraction(row));
+      return rows.map((row) => hydrateInteraction(
+        issueStatus && isTerminalIssueStatus(issueStatus) && row.status === "pending"
+          ? {
+              ...row,
+              status: "expired",
+              result: buildAdministrativeOutcomeResult(row, "issue_closed"),
+              resolvedAt: row.updatedAt,
+            }
+          : row,
+      ));
     },
 
     getById: async (interactionId: string) => {
@@ -1908,10 +1871,6 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         }
       }
 
-      if (data.kind === "suggest_tasks") {
-        assertSuggestedTasksAreDirect(data.payload.tasks);
-      }
-
       const requiresCurrentTarget =
         data.kind === "request_confirmation"
         || data.kind === "request_checkbox_confirmation"
@@ -1969,16 +1928,27 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             })
             .returning();
 
-          if (data.kind !== "request_confirmation" || !actor.agentId) {
+          // An agent replacing its own still-pending card supersedes the older
+          // one so the thread never accumulates stale sibling cards. This covers
+          // request_confirmation drafts and ask_user_questions (PAP-437: probe
+          // question cards that agents never withdrew). Each kind keeps its own
+          // result shape. Scoped strictly to the same agent + issue + kind, so
+          // other agents' or other kinds' pending cards are untouched.
+          const canSupersedeSiblingCards =
+            data.kind === "request_confirmation" || data.kind === "ask_user_questions";
+          if (!actor.agentId || !canSupersedeSiblingCards) {
             return { row, supersededRows: [] };
           }
 
           const now = new Date();
+          const supersededResult = data.kind === "ask_user_questions"
+            ? buildSupersededByNewerInteractionResult(row.id)
+            : buildSupersededByNewerRequestResult(row.id);
           const supersededRows = await tx
             .update(issueThreadInteractions)
             .set({
               status: "expired",
-              result: buildSupersededByNewerRequestResult(row.id),
+              result: supersededResult,
               resolvedByAgentId: actor.agentId,
               resolvedByUserId: actor.userId ?? null,
               resolvedAt: now,
@@ -2031,7 +2001,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     },
 
     acceptInteraction: async (
-      issue: { id: string; companyId: string; projectId: string | null; goalId: string | null },
+      issue: { id: string; companyId: string; projectId: string | null; goalId: string | null; status?: string },
       interactionId: string,
       input: AcceptIssueThreadInteraction,
       actor: InteractionActor,
@@ -2079,11 +2049,12 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     },
 
     acceptSuggestedTasks: async (
-      issue: { id: string; companyId: string; projectId: string | null; goalId: string | null },
+      issue: { id: string; companyId: string; projectId: string | null; goalId: string | null; status?: string },
       interactionId: string,
       input: AcceptIssueThreadInteraction,
       actor: InteractionActor,
     ) => {
+      assertIssueOpenForInteractionResolution(issue);
       const current = await db
         .select()
         .from(issueThreadInteractions)
@@ -2102,26 +2073,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         throw conflict("Interaction has already been resolved");
       }
 
-      const currentPayload = suggestTasksPayloadSchema.safeParse(current.payload);
-      if (!currentPayload.success) {
-        throw unprocessable("Stored suggested tasks do not satisfy the current acceptance schema", {
-          code: "invalid_suggested_tasks_schema",
-          issues: currentPayload.error.issues,
-        });
-      }
-      const interaction = {
-        ...(hydrateInteraction(current) as SuggestTasksInteraction),
-        payload: currentPayload.data,
-      };
-      assertSuggestedTasksAreDirect(interaction.payload.tasks);
-      // Accepting a proposal resolves the interaction, but it does not become
-      // the origin of the proposed work. Preserve the proposer so a board
-      // acceptance cannot turn an agent-authored child into a human-authored
-      // child and bypass the delegated execution-contract guardrail.
-      const taskCreatorAgentId = current.createdByAgentId ?? null;
-      const taskCreatorUserId = taskCreatorAgentId
-        ? null
-        : current.createdByUserId ?? actor.userId ?? null;
+      const interaction = hydrateInteraction(current) as SuggestTasksInteraction;
       const { selectedTasks, skippedClientKeys } = resolveSelectedSuggestedTasks({
         interaction,
         selectedClientKeys: input.selectedClientKeys,
@@ -2194,11 +2146,10 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             projectId: task.projectId ?? issue.projectId,
             goalId: task.goalId ?? issue.goalId,
             billingCode: task.billingCode ?? null,
-            executionContract: task.executionContract ?? null,
-            createdByAgentId: taskCreatorAgentId,
-            createdByUserId: taskCreatorUserId,
-            actorAgentId: taskCreatorAgentId,
-            actorUserId: taskCreatorUserId,
+            createdByAgentId: actor.agentId ?? null,
+            createdByUserId: actor.userId ?? null,
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.userId ?? null,
           } as Parameters<ReturnType<typeof issueService>["createChild"]>[1]);
 
           const parentIdentifier = createdByClientKey.get(task.parentClientKey ?? "")?.identifier
@@ -2252,7 +2203,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     },
 
     rejectInteraction: async (
-      issue: { id: string; companyId: string },
+      issue: { id: string; companyId: string; status?: string },
       interactionId: string,
       input: RejectIssueThreadInteraction,
       actor: InteractionActor,
@@ -2277,11 +2228,12 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     },
 
     submitItemVerdicts: async (
-      issue: { id: string; companyId: string },
+      issue: { id: string; companyId: string; status?: string },
       interactionId: string,
       input: SubmitIssueThreadInteractionVerdicts,
       actor: InteractionActor,
     ): Promise<{ interaction: IssueThreadInteraction; newlyResolvedItemIds: string[] }> => {
+      assertIssueOpenForInteractionResolution(issue);
       const data = submitIssueThreadInteractionVerdictsSchema.parse(input);
       const submission = await db.transaction(async (tx) => {
         const current = await tx
@@ -2378,12 +2330,13 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     },
 
     rejectSuggestedTasks: async (
-      issue: { id: string; companyId: string },
+      issue: { id: string; companyId: string; status?: string },
       interactionId: string,
       input: RejectIssueThreadInteraction,
       actor: InteractionActor,
       current: IssueThreadInteractionRow,
     ) => {
+      assertIssueOpenForInteractionResolution(issue);
       if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
         throw notFound("Interaction not found");
       }
@@ -2425,7 +2378,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     },
 
     expireRequestConfirmationsSupersededByComment: async (
-      issue: { id: string; companyId: string },
+      issue: { id: string; companyId: string; status?: string },
       comment: { id: string; createdAt: Date | string; authorUserId?: string | null; createdByRunId?: string | null },
       actor: InteractionActor,
     ) => {
@@ -2769,6 +2722,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       input: WithdrawIssueThreadInteraction,
       actor: InteractionActor,
     ) => {
+      assertIssueOpenForInteractionResolution(issue);
       const data = withdrawIssueThreadInteractionSchema.parse(input);
       const current = await db
         .select()
@@ -2836,11 +2790,12 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     },
 
     answerQuestions: async (
-      issue: { id: string; companyId: string },
+      issue: { id: string; companyId: string; status?: string },
       interactionId: string,
       input: RespondIssueThreadInteraction,
       actor: InteractionActor,
     ) => {
+      assertIssueOpenForInteractionResolution(issue);
       const current = await db
         .select()
         .from(issueThreadInteractions)
@@ -2896,22 +2851,43 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       return answered;
     },
 
-    cancelInteraction: async (
-      issue: { id: string; companyId: string },
+    cancelQuestions: async (
+      issue: { id: string; companyId: string; status?: string },
       interactionId: string,
       input: CancelIssueThreadInteraction,
       actor: InteractionActor,
     ) => {
+      assertIssueOpenForInteractionResolution(issue);
       const data = cancelIssueThreadInteractionSchema.parse(input);
-      const current = await getPendingInteractionForResolution({ issue, interactionId });
+      const current = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId))
+        .then((rows) => rows[0] ?? null);
+
+      if (!current) throw notFound("Interaction not found");
+      if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
+        throw notFound("Interaction not found");
+      }
+      if (current.kind !== "ask_user_questions") {
+        throw unprocessable("Only ask_user_questions interactions can be cancelled");
+      }
+      if (current.status !== "pending") {
+        throw conflict("Interaction has already been resolved");
+      }
 
       const reason = data.reason?.trim() || null;
-      const result = buildCancelledInteractionResult(current.kind, reason);
       const [updated] = await db
         .update(issueThreadInteractions)
         .set({
           status: "cancelled",
-          result,
+          result: {
+            version: 1,
+            answers: [],
+            cancelled: true,
+            cancellationReason: reason,
+            summaryMarkdown: null,
+          },
           resolvedByAgentId: actor.agentId ?? null,
           resolvedByRunId: actor.runId ?? null,
           resolvedByUserId: actor.userId ?? null,
@@ -2931,50 +2907,6 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       await touchIssue(db, issue.id);
       const cancelled = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, cancelled);
-      return cancelled;
-    },
-
-    cancelPendingForTerminalIssue: async (
-      issue: { id: string; companyId: string; status: string },
-      actor: InteractionActor,
-    ) => {
-      if (!isTerminalIssueStatus(issue.status)) {
-        throw unprocessable("Pending interactions can only be retired for a terminal issue");
-      }
-
-      const pending = await db
-        .select()
-        .from(issueThreadInteractions)
-        .where(and(
-          eq(issueThreadInteractions.companyId, issue.companyId),
-          eq(issueThreadInteractions.issueId, issue.id),
-          eq(issueThreadInteractions.status, "pending"),
-        ));
-      if (pending.length === 0) return [];
-
-      const reason = `Issue marked ${issue.status}`;
-      const cancelled: IssueThreadInteraction[] = [];
-      for (const current of pending) {
-        const [updated] = await db
-          .update(issueThreadInteractions)
-          .set({
-            status: "cancelled",
-            result: buildCancelledInteractionResult(current.kind, reason),
-            resolvedByAgentId: actor.agentId ?? null,
-            resolvedByRunId: actor.runId ?? null,
-            resolvedByUserId: actor.userId ?? null,
-            resolvedAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(and(
-            eq(issueThreadInteractions.id, current.id),
-            eq(issueThreadInteractions.status, "pending"),
-          ))
-          .returning();
-        if (updated) cancelled.push(hydrateInteraction(updated));
-      }
-
-      if (cancelled.length > 0) await touchIssue(db, issue.id);
       return cancelled;
     },
   };

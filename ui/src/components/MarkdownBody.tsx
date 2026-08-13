@@ -11,9 +11,22 @@ import { mentionChipInlineStyle, parseMentionChipHref } from "../lib/mention-chi
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../lib/issue-reference";
-import { buildIssueLabelParts } from "../lib/issue-labels";
 import { remarkLinkCaseReferences } from "../lib/case-reference";
-import { parseWorkspaceFileHref, remarkWorkspaceFileRefs, WORKSPACE_FILE_HREF_PREFIX } from "../lib/remark-workspace-file-refs";
+
+const CASE_HREF_RE = /^\/cases\/([A-Z][A-Z0-9]*-C\d+)$/i;
+
+/** Recover the case identifier from a `/cases/PAP-C7` href produced by the plugin. */
+function caseIdentifierFromHref(href: string | undefined): string | null {
+  if (!href) return null;
+  const match = decodeURIComponent(href.trim()).match(CASE_HREF_RE);
+  return match ? match[1]!.toUpperCase() : null;
+}
+import {
+  createRemarkWorkspaceFileRefs,
+  parseWorkspaceFileHref,
+  WORKSPACE_FILE_HREF_PREFIX,
+  type WorkspaceFileRefResolver,
+} from "../lib/remark-workspace-file-refs";
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
 import { StatusIcon } from "./StatusIcon";
 import { WorkspaceFileLink } from "./WorkspaceFileLink";
@@ -29,15 +42,6 @@ import type {
   ExternalObjectLivenessState,
   ExternalObjectStatusCategory,
 } from "@paperclipai/shared";
-
-const CASE_HREF_RE = /^\/cases\/([A-Z][A-Z0-9]*-C\d+)$/i;
-
-/** Recover the case identifier from a `/cases/PAP-C7` href produced by the plugin. */
-function caseIdentifierFromHref(href: string | undefined): string | null {
-  if (!href) return null;
-  const match = decodeURIComponent(href.trim()).match(CASE_HREF_RE);
-  return match ? match[1]!.toUpperCase() : null;
-}
 
 /**
  * Host-resolved external-object metadata for inline markdown decoration.
@@ -85,8 +89,15 @@ interface MarkdownBodyProps {
   resolveImageSrc?: (src: string) => string | null;
   /** Called when a user clicks an inline image */
   onImageClick?: (src: string) => void;
-  /** Link inline-code workspace file paths to the issue file viewer. */
-  linkWorkspaceFileRefs?: boolean;
+  /**
+   * Resolver that decides which inline-code workspace file paths may be linked
+   * to the issue file viewer. Omitting it (or returning null) leaves every
+   * path-shaped code span as ordinary inline code — the fail-closed default.
+   *
+   * Its identity must change when previously-pending references become
+   * openable, so the markdown re-parses with the new answers.
+   */
+  resolveWorkspaceFileRef?: WorkspaceFileRefResolver;
 }
 
 let mermaidLoaderPromise: Promise<typeof import("mermaid").default> | null = null;
@@ -105,8 +116,9 @@ function MarkdownIssueLink({
   });
 
   const identifier = data?.identifier ?? issuePathId;
+  const title = data?.title ?? identifier;
   const status = data?.status;
-  const labelParts = buildIssueLabelParts(data ?? { id: issuePathId, identifier }, identifier);
+  const issueLabel = title !== identifier ? `Issue ${identifier}: ${title}` : `Issue ${identifier}`;
 
   return (
     <Link
@@ -115,20 +127,13 @@ function MarkdownIssueLink({
       // Boxless inline mention: the unified status glyph + a regular-weight
       // underlined link, optically centered with the body text.
       className={cn("paperclip-markdown-issue-ref", "font-normal underline")}
-      title={labelParts.text}
-      aria-label={labelParts.ariaLabel}
+      title={title}
+      aria-label={issueLabel}
     >
       {status ? (
         <StatusIcon status={status} size="md" className="relative -top-px mr-1 inline-block h-4 w-4 align-middle" />
       ) : null}
-      {labelParts.identifierSuffix ? (
-        <>
-          <span className="min-w-0">{labelParts.title}</span>
-          <span className="shrink-0 font-mono text-[0.88em] text-muted-foreground">
-            {labelParts.identifierSuffix}
-          </span>
-        </>
-      ) : children}
+      {children}
     </Link>
   );
 }
@@ -713,7 +718,7 @@ function MarkdownBodyImpl({
   externalReferences,
   resolveImageSrc,
   onImageClick,
-  linkWorkspaceFileRefs = false,
+  resolveWorkspaceFileRef,
 }: MarkdownBodyProps) {
   const { theme } = useTheme();
   // Read company prefixes non-throwingly: MarkdownBody renders in surfaces that
@@ -747,8 +752,8 @@ function MarkdownBodyImpl({
     if (enableWikiLinks) {
       plugins.push(createRemarkWikiLinks({ wikiLinkRoot, resolveWikiLinkHref }));
     }
-    if (linkWorkspaceFileRefs) {
-      plugins.push(remarkWorkspaceFileRefs);
+    if (resolveWorkspaceFileRef) {
+      plugins.push(createRemarkWorkspaceFileRefs(resolveWorkspaceFileRef));
     }
     if (linkIssueReferences) {
       plugins.push([remarkLinkIssueReferences, { knownPrefixes }]);
@@ -760,7 +765,7 @@ function MarkdownBodyImpl({
       plugins.push(remarkSoftBreaks);
     }
     return plugins;
-  }, [enableWikiLinks, wikiLinkRoot, resolveWikiLinkHref, linkWorkspaceFileRefs, linkIssueReferences, linkCaseReferences, knownPrefixes, softBreaks]);
+  }, [enableWikiLinks, wikiLinkRoot, resolveWikiLinkHref, resolveWorkspaceFileRef, linkIssueReferences, linkCaseReferences, knownPrefixes, softBreaks]);
   const components = useMemo<Components>(() => {
     const map: Components = {
     p: ({ node: _node, style: paragraphStyle, children: paragraphChildren, ...paragraphProps }) => (

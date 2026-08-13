@@ -37,6 +37,7 @@ import plugin, {
 } from "./plugin.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import manifest from "./manifest.js";
+import { parseTarVerboseListingLine, splitLinkEntryOnce } from "./file-sync.js";
 
 function createMockSandbox(overrides: {
   id?: string;
@@ -3861,13 +3862,14 @@ describe("daytona native file-sync hooks", () => {
           tempDirs.push(staging);
           await fs.mkdir(path.join(staging, "sub"), { recursive: true });
           await fs.writeFile(path.join(staging, "sub", "escape.txt"), "escape");
+          // GNU spells member-name rewriting --transform; bsdtar (macOS) spells it -s.
+          const gnuTar = execFileSync("tar", ["--version"]).toString().includes("GNU tar");
           execFileSync("tar", [
             "-cf",
             req.destination!,
             "-C",
             path.join(staging, "sub"),
-            "--transform",
-            "s,^,../,",
+            ...(gnuTar ? ["--transform", "s,^,../,"] : ["-s", ",^,../,"]),
             "escape.txt",
           ]);
           return { source: req.source, result: req.destination };
@@ -3895,6 +3897,87 @@ describe("daytona native file-sync hooks", () => {
     // The traversal member (`../escape.txt` relative to `restored`) was never
     // written above the extraction dir.
     await expect(fs.stat(path.join(hostRoot, "escape.txt"))).rejects.toThrow();
+  });
+
+  it("syncOut refuses a sandbox-authored tarball carrying a symlink whose target escapes the extraction dir", async () => {
+    const hostRoot = await makeHostDir();
+    const restored = path.join(hostRoot, "restored");
+    const sandbox = createMockSandbox();
+    sandbox.fs.downloadFiles.mockImplementation(async (requests: Array<{ source: string; destination?: string }>) => {
+      return Promise.all(
+        requests.map(async (req) => {
+          // Craft a tar whose sole member is a symlink pointing above the tree.
+          const staging = await fs.mkdtemp(path.join(os.tmpdir(), "daytona-evil-"));
+          tempDirs.push(staging);
+          await fs.mkdir(path.join(staging, "sub"), { recursive: true });
+          await fs.symlink("../../outside.txt", path.join(staging, "sub", "evil"));
+          execFileSync("tar", ["-cf", req.destination!, "-C", path.join(staging, "sub"), "evil"]);
+          return { source: req.source, result: req.destination };
+        }),
+      );
+    });
+    mockGet.mockResolvedValue(sandbox);
+
+    await expect(
+      plugin.definition.onEnvironmentSyncOut?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: syncLease(),
+        operations: [
+          {
+            operationId: "sync-op-out-symlink-escape",
+            files: [{ sourcePath: `${REMOTE_DIR}/proj`, targetPath: restored, kind: "directory" }],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/link whose target escapes the extraction dir/);
+
+    // Fail-closed: the confinement check runs before extraction touches disk.
+    await expect(fs.stat(restored)).rejects.toThrow();
+  });
+
+  it("syncOut refuses a symlink whose name embeds the listing delimiter (ambiguous split hides the real target)", async () => {
+    const hostRoot = await makeHostDir();
+    const restored = path.join(hostRoot, "restored");
+    const sandbox = createMockSandbox();
+    sandbox.fs.downloadFiles.mockImplementation(async (requests: Array<{ source: string; destination?: string }>) => {
+      return Promise.all(
+        requests.map(async (req) => {
+          // A symlink literally named "evil -> decoy" with an escaping target
+          // lists as "evil -> decoy -> ../../outside.txt"; splitting at the
+          // first delimiter would validate "decoy -> ../../outside.txt" (which
+          // normalizes in-tree) while tar extracts the real escaping link.
+          const staging = await fs.mkdtemp(path.join(os.tmpdir(), "daytona-evil-"));
+          tempDirs.push(staging);
+          await fs.mkdir(path.join(staging, "sub"), { recursive: true });
+          await fs.symlink("../../outside.txt", path.join(staging, "sub", "evil -> decoy"));
+          execFileSync("tar", ["-cf", req.destination!, "-C", path.join(staging, "sub"), "evil -> decoy"]);
+          return { source: req.source, result: req.destination };
+        }),
+      );
+    });
+    mockGet.mockResolvedValue(sandbox);
+
+    await expect(
+      plugin.definition.onEnvironmentSyncOut?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: syncLease(),
+        operations: [
+          {
+            operationId: "sync-op-out-ambiguous-symlink",
+            files: [{ sourcePath: `${REMOTE_DIR}/proj`, targetPath: restored, kind: "directory" }],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/ambiguous symlink entry/);
+
+    // Fail-closed: the confinement check runs before extraction touches disk.
+    await expect(fs.stat(restored)).rejects.toThrow();
   });
 
   it("round-trips a directory (syncIn then syncOut) preserving contents, a 0600 file, and a preserved symlink", async () => {
@@ -4381,5 +4464,88 @@ describe("daytona manifest form defaults", () => {
         expect(prop.default).toBeUndefined();
       }
     }
+  });
+});
+
+describe("parseTarVerboseListingLine", () => {
+  it("parses GNU tar listing lines (file, dir, symlink, hardlink, numeric owner)", () => {
+    expect(parseTarVerboseListingLine("-rw-r--r-- daytona/daytona 7560 2026-08-11 21:43 AGENTS.md")).toEqual({
+      typeFlag: "-",
+      rest: "AGENTS.md",
+    });
+    expect(parseTarVerboseListingLine("drwxr-xr-x daytona/daytona 0 2026-08-11 21:43 nested/")).toEqual({
+      typeFlag: "d",
+      rest: "nested/",
+    });
+    expect(
+      parseTarVerboseListingLine("lrwxrwxrwx daytona/daytona 0 2026-08-11 21:43 shortcut -> nested/data.txt"),
+    ).toEqual({ typeFlag: "l", rest: "shortcut -> nested/data.txt" });
+    expect(
+      parseTarVerboseListingLine("hrw-r--r-- daytona/daytona 0 2026-08-11 21:43 copy.txt link to data.txt"),
+    ).toEqual({ typeFlag: "h", rest: "copy.txt link to data.txt" });
+    expect(parseTarVerboseListingLine("-rw-r--r-- 0/0 12 2026-08-11 21:43 root-owned.txt")).toEqual({
+      typeFlag: "-",
+      rest: "root-owned.txt",
+    });
+  });
+
+  it("parses bsdtar (macOS) listing lines, including year-form dates", () => {
+    expect(parseTarVerboseListingLine("-rw-r--r--  0 daytona daytona  7560 Aug 11 21:43 AGENTS.md")).toEqual({
+      typeFlag: "-",
+      rest: "AGENTS.md",
+    });
+    expect(parseTarVerboseListingLine("drwxr-xr-x  0 daytona daytona     0 Aug 11 21:43 nested/")).toEqual({
+      typeFlag: "d",
+      rest: "nested/",
+    });
+    expect(
+      parseTarVerboseListingLine("lrwxr-xr-x  0 daytona daytona     0 Aug 11 21:43 shortcut -> nested/data.txt"),
+    ).toEqual({ typeFlag: "l", rest: "shortcut -> nested/data.txt" });
+    expect(
+      parseTarVerboseListingLine("hrw-r--r--  0 daytona daytona     0 Aug 11 21:43 copy.txt link to data.txt"),
+    ).toEqual({ typeFlag: "h", rest: "copy.txt link to data.txt" });
+    expect(parseTarVerboseListingLine("-rw-r--r--  0 daytona daytona  7560 Aug 11  2025 old.txt")).toEqual({
+      typeFlag: "-",
+      rest: "old.txt",
+    });
+  });
+
+  it("keeps the true member name for bsdtar lines with numeric uid/gid, so traversal stays visible", () => {
+    // With unresolvable ids bsdtar prints bare numbers; a looser GNU-first parse
+    // would read this shape shifted by one field and report the member name as
+    // "21:43 ../escape.txt", hiding the leading "../" from the traversal check.
+    expect(parseTarVerboseListingLine("-rw-r--r--  0 1001 1001  7560 Aug 11 21:43 ../escape.txt")).toEqual({
+      typeFlag: "-",
+      rest: "../escape.txt",
+    });
+  });
+
+  it("returns null (fail closed) for lines matching neither dialect", () => {
+    expect(parseTarVerboseListingLine("not a tar listing line")).toBeNull();
+    expect(parseTarVerboseListingLine("tar: Error is not recoverable: exiting now")).toBeNull();
+    // Device nodes carry "major,minor" instead of a byte count in both dialects.
+    expect(parseTarVerboseListingLine("crw-rw-rw- root/root 1,3 2026-08-11 21:43 dev/null")).toBeNull();
+    expect(parseTarVerboseListingLine("crw-rw-rw-  0 root wheel  1,3 Aug 11 21:43 dev/null")).toBeNull();
+  });
+});
+
+describe("splitLinkEntryOnce", () => {
+  it("splits a clean single-delimiter link field", () => {
+    expect(splitLinkEntryOnce("shortcut -> nested/data.txt", " -> ")).toEqual({
+      name: "shortcut",
+      target: "nested/data.txt",
+    });
+    expect(splitLinkEntryOnce("copy.txt link to data.txt", " link to ")).toEqual({
+      name: "copy.txt",
+      target: "data.txt",
+    });
+  });
+
+  it("returns null (fail closed) when the delimiter is absent or appears more than once", () => {
+    expect(splitLinkEntryOnce("no delimiter here", " -> ")).toBeNull();
+    // A link name or target embedding the delimiter makes the split point
+    // unresolvable; either split choice can hide an escaping target.
+    expect(splitLinkEntryOnce("evil -> decoy -> ../../outside.txt", " -> ")).toBeNull();
+    expect(splitLinkEntryOnce("a link to b link to ../../outside.txt", " link to ")).toBeNull();
   });
 });

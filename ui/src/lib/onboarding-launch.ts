@@ -133,5 +133,8 @@ export function buildOnboardingIssuePayload(input: {
       ? { executionContract: buildOperatingHarnessExecutionContract() }
       : {}),
     status: "todo" as const,
+    // Marks the single onboarding first task so the server seeds an agent
+    // greeting and the task-detail view suppresses the seeded-description bubble.
+    onboardingFirstTask: true,
   };
 }

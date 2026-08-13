@@ -142,6 +142,11 @@ function requestBaseUrl(req: Request) {
   return `${proto}://${host}`;
 }
 
+function resolveBaseUrl(req: Request, authPublicBaseUrl?: string): string {
+  if (authPublicBaseUrl) return authPublicBaseUrl.replace(/\/+$/, "");
+  return requestBaseUrl(req);
+}
+
 function buildCliAuthApprovalPath(challengeId: string, token: string) {
   return `/cli-auth/${challengeId}?token=${encodeURIComponent(token)}`;
 }
@@ -958,12 +963,13 @@ function toInviteSummaryResponse(
       brandColor: string | null;
       logoUrl: string | null;
     }
-    | null = null
+    | null = null,
+  authPublicBaseUrl?: string
 ) {
   const companyInfo = typeof company === "string"
     ? { name: company, brandColor: null, logoUrl: null }
     : company;
-  const baseUrl = requestBaseUrl(req);
+  const baseUrl = resolveBaseUrl(req, authPublicBaseUrl);
   const invitePath = `/invite/${token}`;
   const onboardingPath = `/api/invites/${token}/onboarding`;
   const onboardingTextPath = `/api/invites/${token}/onboarding.txt`;
@@ -1619,9 +1625,10 @@ function buildInviteOnboardingManifest(
     deploymentExposure: DeploymentExposure;
     bindHost: string;
     allowedHostnames: string[];
+    authPublicBaseUrl?: string;
   }
 ) {
-  const baseUrl = requestBaseUrl(req);
+  const baseUrl = resolveBaseUrl(req, opts.authPublicBaseUrl);
   const skillPath = `/api/invites/${token}/skills/paperclip`;
   const skillUrl = baseUrl ? `${baseUrl}${skillPath}` : skillPath;
   const registrationEndpointPath = `/api/invites/${token}/accept`;
@@ -1650,7 +1657,8 @@ function buildInviteOnboardingManifest(
       req,
       token,
       invite,
-      opts.companyName ?? null
+      opts.companyName ?? null,
+      opts.authPublicBaseUrl
     ),
     onboarding: {
       instructions:
@@ -1717,6 +1725,7 @@ export function buildInviteOnboardingTextDocument(
     deploymentExposure: DeploymentExposure;
     bindHost: string;
     allowedHostnames: string[];
+    authPublicBaseUrl?: string;
   }
 ) {
   const manifest = buildInviteOnboardingManifest(req, token, invite, opts);
@@ -2493,6 +2502,7 @@ export function accessRoutes(
     allowedHostnames: string[];
     inviteResolutionNetwork?: Partial<InviteResolutionNetwork>;
     inviteRateLimiter?: InviteRateLimiter;
+    authPublicBaseUrl?: string;
   }
 ) {
   const router = Router();
@@ -3207,7 +3217,8 @@ export function accessRoutes(
         req,
         token,
         created,
-        companyBranding
+        companyBranding,
+        opts.authPublicBaseUrl
       );
       res.status(201).json({
         ...created,
@@ -3261,7 +3272,8 @@ export function accessRoutes(
         req,
         token,
         created,
-        companyBranding
+        companyBranding,
+        opts.authPublicBaseUrl
       );
       res.status(201).json({
         ...created,
@@ -3301,7 +3313,7 @@ export function accessRoutes(
         )
       : null;
     res.json({
-      ...toInviteSummaryResponse(req, token, invite, companyBranding),
+      ...toInviteSummaryResponse(req, token, invite, companyBranding, opts.authPublicBaseUrl),
       invitedByUserName: inviterName,
       joinRequestStatus: inviteJoinRequest?.status ?? null,
       joinRequestType: inviteJoinRequest?.requestType ?? null,

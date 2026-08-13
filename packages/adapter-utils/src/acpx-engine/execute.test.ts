@@ -376,9 +376,6 @@ describe("shared ACPX engine runtime behavior", () => {
       agent: "codex",
       cwd: root,
       stateDir: path.join(root, "state"),
-      // Keep this warm-session test independent from an operator's ambient
-      // Codex auth home; the behavior under test is ACP identity persistence.
-      env: { CODEX_HOME: path.join(root, "source-codex-home") },
       warmHandleIdleMs: 60_000,
     };
     const context = {
@@ -955,24 +952,19 @@ describe("shared ACPX engine runtime behavior", () => {
   it("busts the session fingerprint when resolved adapter env changes but not across wakes", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
-    const baseConfig = {
-      agent: "custom",
-      agentCommand: "node ./fake-acp.js",
-      cwd: root,
-      stateDir,
-    };
+    const baseConfig = { agentCommand: "node ./fake-acp.js", stateDir };
 
     const first = await runExecutor(
       { ...baseConfig, env: { OPENROUTER_API_KEY: "value-1" } },
       { context: { taskId: "issue-1", wakeReason: "issue_assigned" } },
     );
-    const sameEnvNewWake = await runExecutor(
-      { ...baseConfig, env: { OPENROUTER_API_KEY: "value-1" } },
-      { context: { taskId: "issue-1", wakeReason: "comment", wakeCommentId: "c-9" } },
-    );
     const changedEnv = await runExecutor(
       { ...baseConfig, env: { OPENROUTER_API_KEY: "value-2" } },
       { context: { taskId: "issue-1", wakeReason: "issue_assigned" } },
+    );
+    const sameEnvNewWake = await runExecutor(
+      { ...baseConfig, env: { OPENROUTER_API_KEY: "value-1" } },
+      { context: { taskId: "issue-1", wakeReason: "comment", wakeCommentId: "c-9" } },
     );
 
     const fp = (r: { result: { sessionParams?: unknown } }) =>
@@ -981,21 +973,16 @@ describe("shared ACPX engine runtime behavior", () => {
     // A changed forwarded env value invalidates warm-handle / session reuse so
     // the next launch sources the latest env.
     expect(fp(first)).toBeDefined();
+    expect(fp(changedEnv)).not.toBe(fp(first));
     // A new heartbeat with the same config env keeps the fingerprint stable, so
     // per-wake PAPERCLIP_* churn does not needlessly reset the session.
     expect(fp(sameEnvNewWake)).toBe(fp(first));
-    expect(fp(changedEnv)).not.toBe(fp(first));
   });
 
   it("busts the session fingerprint when a stable configured PAPERCLIP_* value rotates", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
-    const baseConfig = {
-      agent: "custom",
-      agentCommand: "node ./fake-acp.js",
-      cwd: root,
-      stateDir,
-    };
+    const baseConfig = { agentCommand: "node ./fake-acp.js", stateDir };
 
     // A configured PAPERCLIP_*-named value the harness does not assign (e.g. a
     // cloud provider token binding) is stable per-run config: rotating it must
@@ -3285,19 +3272,12 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
 
     // A codex bring-up over the remote sandbox lane crosses all 7 boundaries.
     // Each boundary span parents to the sandbox bring-up span, not to the run
-    // root or the turn span. The `stage.sync` step also opens one host `pack`
-    // span around the workspace tarball build, so it nests one level deeper.
-    // The process-session proxy can relay ACP handshake bytes while bring-up
-    // is still settling. Those are separately covered run-time spans, not one
-    // of the fixed bring-up boundaries asserted here.
-    const startupBoundarySpans = spans.filter(
-      (span) =>
-        span !== runRootSpan &&
-        span !== startupSpan &&
-        span !== turnSpan &&
-        !span.name.startsWith("sandbox.agentSession."),
-    );
-    const childNames = startupBoundarySpans
+    // root or the turn span. The `stage.sync` step also opens three host
+    // sub-step spans — `snapshot.git`, `snapshot.baseline`, and `pack` — around
+    // its git enumeration, baseline content-hash walk, and workspace tarball
+    // build, so those nest one level deeper.
+    const childNames = spans
+      .filter((span) => span !== runRootSpan && span !== startupSpan && span !== turnSpan)
       .map((span) => span.name)
       .sort();
     expect(childNames).toEqual(
@@ -3308,25 +3288,35 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
         "codex-home.seed",
         "pack",
         "skills.reconcile",
+        "snapshot.baseline",
+        "snapshot.git",
         "stage.sync",
         "workspace.resolve",
       ],
     );
 
-    // The host `pack` span nests under the `stage.sync` step span (the host
-    // tarball build runs inside that step), not directly under the bring-up
-    // span.
+    // The three host sub-step spans nest under the `stage.sync` step span (that
+    // host work runs inside the step), not directly under the bring-up span.
     const stageSyncSpan = spans.find((span) => span.name === "stage.sync");
     const packSpan = spans.find((span) => span.name === "pack");
+    const snapshotGitSpan = spans.find((span) => span.name === "snapshot.git");
+    const snapshotBaselineSpan = spans.find((span) => span.name === "snapshot.baseline");
     expect(stageSyncSpan).toBeTruthy();
     expect(packSpan).toBeTruthy();
+    expect(snapshotGitSpan).toBeTruthy();
+    expect(snapshotBaselineSpan).toBeTruthy();
     expect(packSpan!.parent).toBe(stageSyncSpan);
+    expect(snapshotGitSpan!.parent).toBe(stageSyncSpan);
+    expect(snapshotBaselineSpan!.parent).toBe(stageSyncSpan);
     expect(packSpan!.ended).toBe(true);
 
     // Every boundary step span parents to the sandbox bring-up span and ends.
-    // The `pack` span is the one exception: it parents to `stage.sync` above.
-    for (const span of startupBoundarySpans) {
-      if (span === packSpan) continue;
+    // The three `stage.sync` sub-step spans are the exceptions: they parent to
+    // `stage.sync` above.
+    const stageSyncChildren = new Set([packSpan, snapshotGitSpan, snapshotBaselineSpan]);
+    for (const span of spans) {
+      if (span === runRootSpan || span === startupSpan || span === turnSpan) continue;
+      if (stageSyncChildren.has(span)) continue;
       expect(span.parent, `span "${span.name}" must parent to the startup span`).toBe(startupSpan);
       expect(span.ended, `span "${span.name}" must end`).toBe(true);
     }

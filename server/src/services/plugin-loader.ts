@@ -31,7 +31,6 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { Worker } from "node:worker_threads";
 import type { Db } from "@paperclipai/db";
 import { PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import type {
@@ -51,6 +50,7 @@ import type { PluginJobStore } from "./plugin-job-store.js";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import { pluginDatabaseService } from "./plugin-database.js";
+import { resolveBundledCatalogRoot } from "./bundled-plugins.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -59,28 +59,6 @@ export const BUNDLED_LOCAL_PLUGIN_ROOT = path.join(REPO_ROOT, "packages", "plugi
 export const STANDALONE_BUNDLED_PLUGIN_ROOT = path.join(BUNDLED_LOCAL_PLUGIN_ROOT, "sandbox-providers");
 export const LOCAL_PLUGIN_AUTOBUILD_TIMEOUT_MS = 120_000;
 const STANDALONE_BUNDLED_PLUGIN_SDK_PACKAGE = "@paperclipai/plugin-sdk";
-
-/**
- * Test-only fallback: under vitest, dynamic import() of arbitrary file:// URLs
- * is intercepted by vite-node and fails ("Cannot find module ... Does the file
- * exist?"). A worker thread runs Node's native loader so the import succeeds.
- */
-function importInWorker(href: string): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(
-      "import { workerData, parentPort } from \"node:worker_threads\";"
-      + "import(workerData.url).then((mod) => parentPort.postMessage({ ok: true, value: { ...mod } }))"
-      + ".catch((err) => parentPort.postMessage({ ok: false, error: String(err) }));",
-      { eval: true, workerData: { url: href } },
-    );
-    worker.once("message", (msg: { ok: boolean; value?: Record<string, unknown>; error?: string }) => {
-      void worker.terminate();
-      if (msg.ok && msg.value) resolve(msg.value);
-      else reject(new Error(msg.error ?? "manifest import failed"));
-    });
-    worker.once("error", reject);
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -141,8 +119,43 @@ const K8S_IN_CLUSTER_ENV_PASSTHROUGH = [
   "KUBERNETES_SERVICE_PORT_HTTPS",
 ];
 
+/**
+ * Each first-party sandbox provider's documented credential fallback env
+ * var. Environment rows may omit `config.apiKey` (managed/platform-
+ * provisioned rows always do — see `managed-environments.ts`), in which
+ * case the provider reads its documented process env var. That fallback
+ * executes inside the plugin worker, whose environment is scrubbed, so
+ * the deployment-level var must be forwarded explicitly.
+ *
+ * Keyed by the installed npm package name and cross-checked against the
+ * manifest's declared driver key — but name and manifest are both
+ * plugin-authored, so neither is proof of identity on its own. The gate
+ * therefore also requires a trusted install origin: a registry install
+ * (`packagePath` null — the `@paperclipai` scope is project-controlled at
+ * the registry), or a local path inside the repo/bundled plugin catalog,
+ * which ships inside the release image and is as trusted as the server
+ * code itself. An operator-added local plugin directory can claim any
+ * name and driver key and still receives nothing.
+ */
+const SANDBOX_PROVIDER_CREDENTIAL_ENV_PASSTHROUGH: Record<
+  string,
+  { driverKey: string; envVars: readonly string[] }
+> = {
+  "@paperclipai/plugin-daytona": { driverKey: "daytona", envVars: ["DAYTONA_API_KEY"] },
+  "@paperclipai/plugin-e2b": { driverKey: "e2b", envVars: ["E2B_API_KEY"] },
+  "@paperclipai/plugin-exe-dev": { driverKey: "exe-dev", envVars: ["EXE_API_KEY"] },
+  "@paperclipai/plugin-novita-sandbox": { driverKey: "novita", envVars: ["NOVITA_API_KEY"] },
+};
+
 export function buildPluginWorkerEnv(input: {
-  manifest: Pick<PaperclipPluginManifestV1, "capabilities">;
+  manifest: Pick<PaperclipPluginManifestV1, "capabilities"> & {
+    environmentDrivers?: ReadonlyArray<{ driverKey: string }>;
+  };
+  packageName?: string;
+  /** Local install path (`PluginRecord.packagePath`); null for registry installs. */
+  packagePath?: string | null;
+  /** Test seam; defaults to the repo plugin tree and the bundled catalog root. */
+  trustedLocalPluginRoots?: readonly string[];
   instanceInfo: { deploymentMode?: string | null; deploymentExposure?: string | null };
   processEnv?: NodeJS.ProcessEnv;
 }): Record<string, string> {
@@ -155,7 +168,22 @@ export function buildPluginWorkerEnv(input: {
     && input.manifest.capabilities.includes("environment.drivers.register");
   if (!canRegisterEnvironmentDrivers) return env;
 
-  for (const key of [...ADAPTER_ENV_PASSTHROUGH, ...K8S_IN_CLUSTER_ENV_PASSTHROUGH]) {
+  const trustedLocalRoots = input.trustedLocalPluginRoots
+    ?? [BUNDLED_LOCAL_PLUGIN_ROOT, resolveBundledCatalogRoot(processEnv)];
+  const installOriginTrusted =
+    input.packagePath == null
+    || trustedLocalRoots.some((root) => isPathWithin(root, path.resolve(input.packagePath as string)));
+  const credentialEntry = installOriginTrusted && input.packageName
+    ? SANDBOX_PROVIDER_CREDENTIAL_ENV_PASSTHROUGH[input.packageName]
+    : undefined;
+  const credentialKeys =
+    credentialEntry
+      && (input.manifest.environmentDrivers ?? []).some(
+        (driver) => driver.driverKey === credentialEntry.driverKey,
+      )
+      ? credentialEntry.envVars
+      : [];
+  for (const key of [...ADAPTER_ENV_PASSTHROUGH, ...K8S_IN_CLUSTER_ENV_PASSTHROUGH, ...credentialKeys]) {
     const value = processEnv[key];
     if (value && value.trim().length > 0) {
       env[key] = value;
@@ -1300,21 +1328,6 @@ export function pluginLoader(
   }
 
   /**
-   * Dynamically import a manifest module. Under vitest, `import()` is hooked by
-   * vite-node and rejects file:// URLs outside the project root, so fall back to
-   * a worker thread which runs Node's native ESM loader.
-   */
-  async function importManifestModule(
-    href: string,
-  ): Promise<Record<string, unknown>> {
-    const underVitest = process.env.VITEST === "true";
-    if (!underVitest) {
-      return (await import(href)) as Record<string, unknown>;
-    }
-    return await importInWorker(href);
-  }
-
-  /**
    * Attempt to load and validate a plugin manifest from a resolved path.
    * Returns the manifest on success or throws with a descriptive error.
    */
@@ -1324,10 +1337,12 @@ export function pluginLoader(
     let raw: unknown;
 
     try {
+      // Dynamic import works for both .js (ESM) and .cjs (CJS) manifests
       const manifestUrl = pathToFileURL(manifestPath);
       const manifestStat = await stat(manifestPath);
       manifestUrl.searchParams.set("mtime", String(Math.trunc(manifestStat.mtimeMs)));
-      const mod = await importManifestModule(manifestUrl.href);
+      const mod = await import(manifestUrl.href) as Record<string, unknown>;
+      // The manifest may be the default export or the module itself
       raw = mod["default"] ?? mod;
     } catch (err) {
       throw new Error(
@@ -2258,13 +2273,12 @@ export function pluginLoader(
         databaseNamespace,
         hostHandlers,
         autoRestart: true,
-        env: {
-          ...buildPluginWorkerEnv({ manifest, instanceInfo }),
-          // Workers that manage instance-local data (e.g. plugin local-folder
-          // defaults) must resolve the same home/instance tree as the host.
-          ...(process.env.PAPERCLIP_HOME ? { PAPERCLIP_HOME: process.env.PAPERCLIP_HOME } : {}),
-          ...(process.env.PAPERCLIP_INSTANCE_ID ? { PAPERCLIP_INSTANCE_ID: process.env.PAPERCLIP_INSTANCE_ID } : {}),
-        },
+        env: buildPluginWorkerEnv({
+          manifest,
+          packageName: activePlugin.packageName,
+          packagePath: activePlugin.packagePath,
+          instanceInfo,
+        }),
         // Authorize the worker to act on each configured company from its
         // proactive loops/timers (LOOA-629). Seeded here so it is in place
         // before any setup()-time worker→host call (LOOA-695). The authorized

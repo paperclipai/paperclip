@@ -49,8 +49,8 @@ const STREAMLINED_TOGGLE_SELECTOR =
   'button[aria-label="Toggle streamlined left navigation experimental setting"]';
 const TASK_WATCHDOGS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle task watchdogs experimental setting"]';
-const TASK_CHAT_REDESIGN_TOGGLE_SELECTOR =
-  'button[aria-label="Toggle chat-style tasks experimental setting"]';
+const CLASSIC_TASK_INTERFACE_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle classic task interface experimental setting"]';
 const GOALS_SIDEBAR_LINK_TOGGLE_SELECTOR =
   'button[aria-label="Toggle goals sidebar link experimental setting"]';
 const DECISIONS_TOGGLE_SELECTOR =
@@ -72,13 +72,14 @@ const AUTO_RECOVERY_TOGGLE_SELECTOR =
 function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
   return {
     enableEnvironments: false,
+  enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,
     enableStreamlinedLeftNavigation: true,
     enableApps: false,
     enablePipelines: false,
     enableCases: false,
     enableConferenceRoomChat: false,
-    enableTaskChatRedesign: false,
+    enableClassicTaskInterface: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
     enableExternalObjects: false,
@@ -294,18 +295,20 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     });
   });
 
-  it("renders and patches the Chat-Style Tasks experimental toggle on and off", async () => {
+  it("renders and patches the Classic Task Interface experimental toggle on and off", async () => {
     await renderPage();
 
-    expect(container.textContent).toContain("Chat-Style Tasks");
+    expect(container.textContent).toContain("Classic Task Interface");
     expect(container.textContent).toContain(
-      "Reimagines the task detail page as a live conversation with your agents",
+      "Restores the previous task detail page",
     );
     expect(container.textContent).toContain(
-      "Turning this off instantly restores the classic task page. No task data is affected.",
+      "Switching takes effect immediately. No task data is affected.",
     );
 
-    const toggle = container.querySelector<HTMLButtonElement>(TASK_CHAT_REDESIGN_TOGGLE_SELECTOR);
+    const toggle = container.querySelector<HTMLButtonElement>(
+      CLASSIC_TASK_INTERFACE_TOGGLE_SELECTOR,
+    );
     expect(toggle?.getAttribute("aria-checked")).toBe("false");
 
     await act(async () => {
@@ -314,7 +317,7 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     await flushReact();
 
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
-      enableTaskChatRedesign: true,
+      enableClassicTaskInterface: true,
     });
     expect(toggle?.getAttribute("aria-checked")).toBe("true");
 
@@ -326,7 +329,7 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     await renderPage();
 
     const enabledToggle = container.querySelector<HTMLButtonElement>(
-      TASK_CHAT_REDESIGN_TOGGLE_SELECTOR,
+      CLASSIC_TASK_INTERFACE_TOGGLE_SELECTOR,
     );
     expect(enabledToggle?.getAttribute("aria-checked")).toBe("true");
 
@@ -336,7 +339,7 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     await flushReact();
 
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({
-      enableTaskChatRedesign: false,
+      enableClassicTaskInterface: false,
     });
   });
 

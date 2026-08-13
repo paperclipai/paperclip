@@ -46,7 +46,6 @@ import {
   rewriteWorkspaceCwdEnvVarsForExecution,
   shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
-  sanitizeChildEnv,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
@@ -62,7 +61,6 @@ import {
   describeClaudeFailure,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
-  isClaudeContextLimitError,
   isClaudeMaxTurnsResult,
   isClaudeProviderQuotaError,
   isClaudeRefusalResult,
@@ -79,23 +77,11 @@ import {
   resolveSharedClaudeConfigDir,
   writePaperclipClaudeMcpConfig,
 } from "./claude-config.js";
-import {
-  buildClaudeMcpAllowedToolPatterns,
-  parseResolvedMcpServers,
-  prepareClaudeMcpConfigFile,
-} from "./mcp-config.js";
 import { claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
-import {
-  isBedrockAuth,
-  resolveClaudeGatewayAttribution,
-  resolveGatewayCostUsd,
-  resolveGatewayModelOverride,
-  resolveGatewayReportedModel,
-} from "./gateway-attribution.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import {
   createClaudeAcpExecutor,
@@ -154,6 +140,24 @@ function buildLoginResult(input: {
   };
 }
 
+function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
+  const raw = env[key];
+  return typeof raw === "string" && raw.trim().length > 0;
+}
+
+function isBedrockAuth(env: Record<string, string>): boolean {
+  return (
+    env.CLAUDE_CODE_USE_BEDROCK === "1" ||
+    env.CLAUDE_CODE_USE_BEDROCK === "true" ||
+    hasNonEmptyEnvValue(env, "ANTHROPIC_BEDROCK_BASE_URL")
+  );
+}
+
+function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscription" | "metered_api" {
+  if (isBedrockAuth(env)) return "metered_api";
+  return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
+}
+
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
   const { runId, agent, config, context, runtimeCommandSpec, executionTarget, authToken } = input;
   const onLog = input.onLog ?? (async () => {});
@@ -201,7 +205,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
   const envConfig = parseObject(config.env);
-  const env: Record<string, string> = { ...buildPaperclipEnv(agent, runId, context) };
+  const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
   env.PAPERCLIP_RUN_ID = runId;
 
   const wakeTaskId =
@@ -298,13 +302,13 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   }
 
   const runtimeEnv = Object.fromEntries(
-    Object.entries(ensurePathInEnv({ ...sanitizeChildEnv(process.env), ...env })).filter(
+    Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
   const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
     executionTarget,
-    asNumber(config.timeoutSec, 3600),
+    asNumber(config.timeoutSec, 0),
   );
   const graceSec = asNumber(config.graceSec, 20);
   await ensureAdapterExecutionTargetRuntimeCommandInstalled({
@@ -405,7 +409,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     await ctx.onLog("stderr", formatClaudeAcpFallbackMessage(engineSelection.fallbackReason));
   }
 
-  const { runId, agent, runtime, config, context, onLog, onMeta, acquireLaunchPermit, onSpawn, authToken } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
@@ -420,7 +424,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const model = asString(config.model, "");
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
-  const maxTurns = asNumber(config.maxTurnsPerRun, 200);
+  const maxTurns = asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
   const configEnv = parseObject(config.env);
   const workspaceContext = parseObject(context.paperclipWorkspace);
@@ -472,11 +476,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     asNumber(config.terminalResultCleanupGraceMs, 5_000),
   );
   const effectiveEnv = Object.fromEntries(
-    Object.entries({ ...sanitizeChildEnv(process.env), ...env }).filter(
+    Object.entries({ ...process.env, ...env }).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
-  const attribution = resolveClaudeGatewayAttribution(effectiveEnv);
+  const billingType = resolveClaudeBillingType(effectiveEnv);
   const claudeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = new Set(resolveClaudeDesiredSkillNames(config, claudeSkillEntries));
   // When instructionsFilePath is configured, build a stable content-addressed
@@ -520,58 +524,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     runId,
     servers: runtimeMcpServers,
   });
-  // The fork's per-agent external MCP settings and Paperclip-governed runtime
-  // connections both use Claude's one --mcp-config input. When both are
-  // present, materialize a single run-scoped config in the external config's
-  // temporary directory so resolved external secrets retain their cleanup
-  // lifecycle instead of being copied into managed state.
-  const resolvedMcpServers = parseResolvedMcpServers(config.mcpServers);
-  const mcpServerNames = Object.keys(resolvedMcpServers);
-  const preparedMcpConfig = mcpServerNames.length > 0
-    ? await prepareClaudeMcpConfigFile({ runId, servers: resolvedMcpServers })
-    : null;
-  let mcpConfigLocalDir = path.dirname(localMcpConfigPath);
-  let mcpConfigFileName = path.basename(localMcpConfigPath);
-  if (preparedMcpConfig) {
-    try {
-      if (runtimeMcpServers.length > 0) {
-        const [externalRaw, runtimeRaw] = await Promise.all([
-          fs.readFile(preparedMcpConfig.localFilePath, "utf-8"),
-          fs.readFile(localMcpConfigPath, "utf-8"),
-        ]);
-        const externalDocument = parseObject(JSON.parse(externalRaw));
-        const combinedServers = parseObject(externalDocument.mcpServers);
-        const runtimeDocument = parseObject(JSON.parse(runtimeRaw));
-        for (const [baseName, runtimeServer] of Object.entries(parseObject(runtimeDocument.mcpServers))) {
-          let name = baseName;
-          let suffix = 2;
-          while (name in combinedServers) {
-            name = `${baseName}-paperclip-${suffix}`;
-            suffix += 1;
-          }
-          combinedServers[name] = runtimeServer;
-        }
-        await fs.writeFile(
-          preparedMcpConfig.localFilePath,
-          JSON.stringify({ ...externalDocument, mcpServers: combinedServers }, null, 2),
-          { mode: 0o600 },
-        );
-      }
-      mcpConfigLocalDir = preparedMcpConfig.localDir;
-      mcpConfigFileName = preparedMcpConfig.fileName;
-    } catch (err) {
-      await preparedMcpConfig.cleanup();
-      throw err;
-    }
-  }
-  const hasMcpConfig = runtimeMcpServers.length > 0 || preparedMcpConfig !== null;
-  const mcpToolPatterns = buildClaudeMcpAllowedToolPatterns(resolvedMcpServers);
-  if (preparedMcpConfig) {
-    await onLog(
-      "stdout",
-      `[paperclip] Injecting ${mcpServerNames.length} external MCP server${mcpServerNames.length === 1 ? "" : "s"} (${mcpServerNames.join(", ")}) via --mcp-config.\n`,
-    );
-  }
+  const localMcpConfigDir = path.dirname(localMcpConfigPath);
   const sharedClaudeConfigDir = resolveSharedClaudeConfigDir(process.env);
   const networkScope = parseLocalProcessNetworkScope(config.networkScope);
   const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
@@ -584,7 +537,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             { path: sharedClaudeConfigDir, access: "rw" },
             { path: path.join(path.dirname(sharedClaudeConfigDir), ".claude.json"), access: "rw" },
             { path: promptBundle.addDir, access: "ro" },
-            { path: mcpConfigLocalDir, access: "ro" },
+            { path: localMcpConfigDir, access: "ro" },
           ],
           extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
           homeDir: filesystemScope ? path.dirname(sharedClaudeConfigDir) : null,
@@ -593,7 +546,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           networkTrustedUrls: [
             env.PAPERCLIP_API_URL,
             ...runtimeMcpServers.map((server) => server.url),
-            ...Object.values(resolvedMcpServers).map((server) => server.url),
           ].filter((value): value is string => typeof value === "string" && value.length > 0),
           command: asString(config.filesystemSandboxCommand, "bwrap"),
         }
@@ -615,20 +567,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const claudeConfigSeedDir = useManagedRemoteClaudeConfig
     ? await prepareClaudeConfigSeed(process.env, onLog, agent.companyId)
     : null;
-  // Once the MCP config file (which holds resolved secrets) exists, any throw
-  // before the main try/finally would leak it on disk. Guard the remote asset
-  // sync — the dominant I/O throw source (dead target, network drop) — so the
-  // file is removed on failure.
-  const cleanupMcpOnThrow = async <T>(work: Promise<T>): Promise<T> => {
-    try {
-      return await work;
-    } catch (err) {
-      if (preparedMcpConfig) await preparedMcpConfig.cleanup();
-      throw err;
-    }
-  };
   const preparedExecutionTargetRuntime = executionTargetIsRemote
-    ? await cleanupMcpOnThrow((async () => {
+    ? await (async () => {
         await onLog(
           "stdout",
           `[paperclip] Syncing workspace and Claude runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
@@ -651,8 +591,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             },
             {
               key: "mcp-config",
-              localDir: mcpConfigLocalDir,
-              followSymlinks: !preparedMcpConfig,
+              localDir: localMcpConfigDir,
+              followSymlinks: true,
             },
             ...(claudeConfigSeedDir
               ? [{
@@ -663,7 +603,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               : []),
           ],
         });
-      })())
+      })()
     : null;
   if (preparedExecutionTargetRuntime?.workspaceRemoteDir) {
     effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir;
@@ -697,17 +637,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? path.posix.join(effectivePromptBundleAddDir, path.basename(promptBundle.instructionsFilePath))
       : promptBundle.instructionsFilePath
     : undefined;
+  const effectiveMcpConfigPath = executionTargetIsRemote
+    ? path.posix.join(
+        preparedExecutionTargetRuntime?.assetDirs["mcp-config"] ??
+          path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "claude", "mcp-config"),
+        path.basename(localMcpConfigPath),
+      )
+    : localMcpConfigPath;
   const remoteClaudeRuntimeRoot = executionTargetIsRemote
     ? preparedExecutionTargetRuntime?.runtimeRootDir ??
       path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "claude")
     : null;
-  const effectiveMcpConfigPath = executionTargetIsRemote
-    ? path.posix.join(
-        preparedExecutionTargetRuntime?.assetDirs["mcp-config"] ??
-          path.posix.join(remoteClaudeRuntimeRoot ?? ".paperclip-runtime/claude", "mcp-config"),
-        mcpConfigFileName,
-      )
-    : preparedMcpConfig?.localFilePath ?? localMcpConfigPath;
   const remoteClaudeConfigSeedDir = claudeConfigSeedDir && remoteClaudeRuntimeRoot
     ? preparedExecutionTargetRuntime?.assetDirs["config-seed"] ??
       path.posix.join(remoteClaudeRuntimeRoot, "config-seed")
@@ -900,27 +840,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     args.push(...buildClaudeExecutionPermissionArgs({
       dangerouslySkipPermissions,
       targetIsRemote: executionTargetIsRemote,
-      mcpToolPatterns,
+      localProcessUid: process.getuid?.() ?? null,
     }));
-    if (hasMcpConfig) {
-      // --strict-mcp-config makes the injected servers the ONLY servers for
-      // this run (ignores project/user/plugin scopes) so per-agent MCP config
-      // never leaks between agents sharing a machine.
-      args.push("--mcp-config", effectiveMcpConfigPath);
-      args.push("--strict-mcp-config");
-    }
     if (chrome) args.push("--chrome");
     // For Bedrock: only pass --model when the ID is a Bedrock-native identifier
     // (e.g. "us.anthropic.*" or ARN). Anthropic-style IDs like "claude-opus-4-6" are invalid
     // on Bedrock, so skip them and let the CLI use its own configured model.
-    //
-    // For a third-party Anthropic gateway (DeepSeek/MiMo via ANTHROPIC_BASE_URL),
-    // a claude-* id from the Model dropdown is translated to the gateway's
-    // configured tier model so the run doesn't fail with the gateway's
-    // "unsupported model" 400. Native Anthropic + provider ids pass through.
-    const effectiveModel = resolveGatewayModelOverride(model, effectiveEnv) ?? model;
-    if (effectiveModel && (!isBedrockAuth(effectiveEnv) || isBedrockModelId(effectiveModel))) {
-      args.push("--model", effectiveModel);
+    if (model && (!isBedrockAuth(effectiveEnv) || isBedrockModelId(model))) {
+      args.push("--model", model);
     }
     if (effectiveEffort) args.push("--effort", effectiveEffort);
     if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
@@ -929,6 +856,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // per heartbeat and the Claude CLI may reject the combination outright.
     if (attemptInstructionsFilePath && !resumeSessionId) {
       args.push("--append-system-prompt-file", attemptInstructionsFilePath);
+    }
+    if (runtimeMcpServers.length > 0) {
+      args.push("--mcp-config", effectiveMcpConfigPath, "--strict-mcp-config");
     }
     args.push("--add-dir", effectivePromptBundleAddDir);
     if (extraArgs.length > 0) args.push(...extraArgs);
@@ -963,11 +893,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         "Using a broad --allowedTools whitelist for remote execution so hosted targets do not inherit local Claude bypass permissions.",
       );
     }
-    if (preparedMcpConfig) {
-      commandNotes.push(
-        `Injected ${mcpServerNames.length} external MCP server${mcpServerNames.length === 1 ? "" : "s"} (${mcpServerNames.join(", ")}) via --mcp-config with --strict-mcp-config.`,
-      );
-    }
     if (attemptInstructionsFilePath && !resumeSessionId) {
       commandNotes.push(
         `Injected agent instructions via --append-system-prompt-file ${instructionsFilePath} (with path directive appended)`,
@@ -998,7 +923,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdin: prompt,
       timeoutSec,
       graceSec,
-      acquireLaunchPermit,
       onSpawn,
       onRuntimeProgress: ctx.onRuntimeProgress,
       onLog,
@@ -1050,14 +974,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     if (!parsed) {
       const fallbackErrorMessage = parseFallbackErrorMessage(proc);
-      const contextLimit =
-        !loginMeta.requiresLogin &&
-        isClaudeContextLimitError({
-          parsed: null,
-          stdout: proc.stdout,
-          stderr: proc.stderr,
-          errorMessage: fallbackErrorMessage,
-        });
       const providerQuota =
         !loginMeta.requiresLogin &&
         (proc.exitCode ?? 0) !== 0 &&
@@ -1068,7 +984,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           errorMessage: fallbackErrorMessage,
         });
       const transientUpstream =
-        !contextLimit &&
         !loginMeta.requiresLogin &&
         !providerQuota &&
         (proc.exitCode ?? 0) !== 0 &&
@@ -1095,8 +1010,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           errorMessage: fallbackErrorMessage,
         })
         ? "model_not_found"
-        : contextLimit
-        ? "claude_context_limit"
         : providerQuota
         ? "provider_quota"
         : transientUpstream
@@ -1115,7 +1028,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         resultJson: {
           stdout: proc.stdout,
           stderr: proc.stderr,
-          ...(contextLimit ? { stopReason: "context_limit", errorCategory: "context_limit" } : {}),
           ...(errorFamily ? { errorFamily } : {}),
           ...(transientRetryNotBefore
             ? { retryNotBefore: transientRetryNotBefore.toISOString() }
@@ -1128,7 +1040,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             : {}),
           ...(proc.terminalResultCleanup ? { unmanagedBackgroundTask: proc.terminalResultCleanup } : {}),
         },
-        clearSession: contextLimit || Boolean(opts.clearSessionOnMissingSession),
+        clearSession: Boolean(opts.clearSessionOnMissingSession),
       };
     }
 
@@ -1191,19 +1103,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const errorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
-    const clearSessionForContextLimit =
-      failed &&
-      isClaudeContextLimitError({
-        parsed,
-        stdout: proc.stdout,
-        stderr: proc.stderr,
-        errorMessage,
-      });
     const providerQuota =
       failed &&
       !loginMeta.requiresLogin &&
       !clearSessionForMaxTurns &&
-      !clearSessionForContextLimit &&
       !poisonedPreviousMessageId &&
       isClaudeProviderQuotaError({
         parsed,
@@ -1215,7 +1118,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       failed &&
       !loginMeta.requiresLogin &&
       !clearSessionForMaxTurns &&
-      !clearSessionForContextLimit &&
       !poisonedPreviousMessageId &&
       !providerQuota &&
       isClaudeTransientUpstreamError({
@@ -1243,8 +1145,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? "model_not_found"
       : failed && clearSessionForMaxTurns
       ? "max_turns_exhausted"
-      : clearSessionForContextLimit
-      ? "claude_context_limit"
       : failed && poisonedPreviousMessageId
       ? "claude_poisoned_previous_message_id"
       : providerQuota
@@ -1264,7 +1164,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const mergedResultJson: Record<string, unknown> = {
       ...parsed,
       ...(failed && clearSessionForMaxTurns ? { stopReason: "max_turns_exhausted" } : {}),
-      ...(clearSessionForContextLimit ? { stopReason: "context_limit", errorCategory: "context_limit" } : {}),
       ...(failed && poisonedPreviousMessageId ? { stopReason: "claude_poisoned_previous_message_id" } : {}),
       ...(claudeRefusal ? { stopReason: "refusal", errorFamily: "model_refusal" } : {}),
       ...(errorFamily ? { errorFamily } : {}),
@@ -1273,23 +1172,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ...(providerQuota && transientRetryNotBefore ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       ...(proc.terminalResultCleanup ? { unmanagedBackgroundTask: proc.terminalResultCleanup } : {}),
     };
-
-    const reportedModel = resolveGatewayReportedModel({
-      env: effectiveEnv,
-      configuredModel: model,
-      parsedModel: parsedStream.model || asString(parsed.model, "") || null,
-    });
-    const cliCostUsd =
-      parsedStream.costUsd ??
-      (typeof parsed.total_cost_usd === "number" && Number.isFinite(parsed.total_cost_usd)
-        ? parsed.total_cost_usd
-        : null);
-    const costUsd = resolveGatewayCostUsd({
-      env: effectiveEnv,
-      model: reportedModel,
-      usage,
-      cliCostUsd,
-    });
 
     return {
       exitCode: proc.exitCode,
@@ -1305,16 +1187,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
       sessionDisplayId: resolvedSessionId,
-      provider: attribution.provider,
-      biller: attribution.biller,
-      model: reportedModel,
-      billingType: attribution.billingType,
-      costUsd,
+      provider: "anthropic",
+      biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
+      model: parsedStream.model || asString(parsed.model, model),
+      billingType,
+      costUsd: parsedStream.costUsd,
       resultJson: mergedResultJson,
       summary: parsedStream.summary || asString(parsed.result, ""),
       clearSession:
         clearSessionForMaxTurns ||
-        clearSessionForContextLimit ||
         // Clear-on-error: a poisoned previous_message_id is a deterministic
         // state error. Force the server to drop persisted session state for
         // this issue so the next continuation starts from a clean slate.
@@ -1376,18 +1257,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
   } finally {
-    // Run cleanups independently so a failing bridge/workspace restore can't
-    // skip removal of the MCP config file (which holds resolved secrets).
-    await Promise.allSettled([
-      paperclipBridge?.stop(),
-      restoreRemoteWorkspace
-        ? onLog(
-            "stdout",
-            `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
-          ).then(() => restoreRemoteWorkspace())
-        : undefined,
-      // The mcp config file holds resolved secrets — remove it after the run.
-      preparedMcpConfig?.cleanup(),
-    ]);
+    if (paperclipBridge) {
+      await paperclipBridge.stop();
+    }
+    if (restoreRemoteWorkspace) {
+      await onLog(
+        "stdout",
+        `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+      );
+      await restoreRemoteWorkspace();
+    }
   }
 }

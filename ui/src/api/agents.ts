@@ -8,6 +8,8 @@ import type {
   AgentInstructionsFileDetail,
   AgentSkillSnapshot,
   AdapterEnvironmentTestResult,
+  AdapterAuthSessionResponse,
+  AdapterAuthSessionOwnerResponse,
   AgentKeyCreated,
   AgentRuntimeState,
   AgentTaskSession,
@@ -15,9 +17,6 @@ import type {
   HeartbeatRun,
   Approval,
   AgentConfigRevision,
-  AgentMcpServersSnapshot,
-  McpServerConfig,
-  McpServersConfig,
   ClearAgentErrorResponse,
   AgentApiKeyScope,
 } from "@paperclipai/shared";
@@ -25,7 +24,7 @@ import type {
   AdapterModelProfileDefinition,
   AdapterModelProfileKey,
 } from "@paperclipai/adapter-utils";
-import { isUuidLike, normalizeAgentUrlKey, AGENT_PRESETS } from "@paperclipai/shared";
+import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { ApiError, api } from "./client";
 
 export interface AgentKey {
@@ -56,29 +55,6 @@ export interface ClaudeLoginResult {
   signal: string | null;
   timedOut: boolean;
   loginUrl: string | null;
-  stdout: string;
-  stderr: string;
-}
-
-export interface CodexLoginResult {
-  exitCode: number | null;
-  signal: string | null;
-  timedOut: boolean;
-  loginUrl: string | null;
-  stdout: string;
-  stderr: string;
-}
-
-export interface CodexLoginStartResponse {
-  sessionId: string;
-}
-
-export interface CodexLoginPollResponse {
-  status: "starting" | "awaiting_user" | "success" | "error";
-  verificationUrl: string | null;
-  userCode: string | null;
-  error: string | null;
-  errorCode: "timeout" | "denied" | "device_code_disabled" | "infra" | null;
   stdout: string;
   stderr: string;
 }
@@ -166,39 +142,6 @@ export const agentsApi = {
     api.post<Agent>(`/companies/${companyId}/agents`, data),
   hire: (companyId: string, data: Record<string, unknown>) =>
     api.post<AgentHireResponse>(`/companies/${companyId}/agent-hires`, data),
-  createFromPreset: (
-    companyId: string,
-    presetId: string,
-    overrides?: {
-      name?: string;
-      reportsTo?: string;
-      credentialId?: string | null;
-    },
-  ) => {
-    const preset = AGENT_PRESETS.find((p) => p.id === presetId);
-    if (!preset) throw new Error(`Unknown preset: ${presetId}`);
-    return agentsApi.create(companyId, {
-      name: overrides?.name ?? preset.name,
-      role: preset.role,
-      title: preset.title,
-      adapterType: preset.adapterType,
-      adapterConfig: {},
-      runtimeConfig: {
-        heartbeat: {
-          enabled: false,
-          intervalSec: 300,
-          wakeOnDemand: true,
-          cooldownSec: 10,
-          maxConcurrentRuns: 1,
-        },
-      },
-      ...(overrides?.reportsTo ? { reportsTo: overrides.reportsTo } : {}),
-      ...(overrides?.credentialId !== undefined
-        ? { credentialId: overrides.credentialId }
-        : {}),
-      budgetMonthlyCents: 0,
-    });
-  },
   update: (id: string, data: Record<string, unknown>, companyId?: string) =>
     api.patch<Agent>(agentPath(id, companyId), data),
   updatePermissions: (id: string, data: AgentPermissionUpdate, companyId?: string) =>
@@ -230,11 +173,6 @@ export const agentsApi = {
     ),
   pause: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/pause"), {}),
   resume: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/resume"), {}),
-  cancelActiveHeartbeats: (id: string, companyId?: string, options?: { force?: boolean }) =>
-    api.post<{ cancelled: number }>(
-      agentPath(id, companyId, "/heartbeat-runs/cancel-active"),
-      options?.force ? { force: true } : {},
-    ),
   clearError: (id: string, companyId?: string) =>
     api.post<ClearAgentErrorResponse>(agentPath(id, companyId, "/clear-error"), {}),
   approve: (id: string, companyId?: string) => api.post<Agent>(agentPath(id, companyId, "/approve"), {}),
@@ -299,39 +237,25 @@ export const agentsApi = {
     data: AgentWakeRequest,
     companyId?: string,
   ) => api.post<AgentWakeupResponse>(agentPath(id, companyId, "/wakeup"), data),
-  getMcpServers: (id: string, companyId?: string) =>
-    api.get<{ mcpServers: McpServersConfig }>(agentPath(id, companyId, "/mcp-servers")),
-  putMcpServers: (id: string, mcpServers: McpServersConfig, companyId?: string) =>
-    api.put<{ mcpServers: McpServersConfig }>(agentPath(id, companyId, "/mcp-servers"), {
-      mcpServers,
-    }),
-  upsertMcpServer: (id: string, name: string, server: McpServerConfig, companyId?: string) =>
-    api.post<{ mcpServers: McpServersConfig }>(agentPath(id, companyId, "/mcp-servers"), {
-      name,
-      server,
-    }),
-  removeMcpServer: (id: string, name: string, companyId?: string) =>
-    api.delete<{ mcpServers: McpServersConfig }>(
-      agentPath(id, companyId, `/mcp-servers/${encodeURIComponent(name)}`),
-    ),
-  startMcpOauth: (id: string, name: string, companyId?: string) =>
-    api.post<{ authorizeUrl: string }>(
-      agentPath(id, companyId, `/mcp-servers/${encodeURIComponent(name)}/oauth/start`),
-      {},
-    ),
-  getMcpServerRefs: (id: string, companyId?: string) =>
-    api.get<AgentMcpServersSnapshot>(agentPath(id, companyId, "/mcp-server-refs")),
-  putMcpServerRefs: (id: string, desiredMcpServers: string[], companyId?: string) =>
-    api.put<AgentMcpServersSnapshot>(agentPath(id, companyId, "/mcp-server-refs"), {
-      desiredMcpServers,
-    }),
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
-  loginWithCodex: (id: string, companyId?: string) =>
-    api.post<CodexLoginStartResponse>(agentPath(id, companyId, "/codex-login"), {}),
-  pollCodexLogin: (id: string, sessionId: string, companyId?: string) =>
-    api.get<CodexLoginPollResponse>(
-      agentPath(id, companyId, `/codex-login/${encodeURIComponent(sessionId)}`),
+  startAdapterAuthLogin: (
+    companyId: string,
+    type: string,
+    data: { environmentId: string; ttlSeconds?: number },
+  ) =>
+    api.post<AdapterAuthSessionResponse>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions`,
+      data,
+    ),
+  getAdapterAuthLoginStatus: (companyId: string, type: string, sessionId: string) =>
+    api.get<AdapterAuthSessionOwnerResponse>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions/${encodeURIComponent(sessionId)}`,
+    ),
+  cancelAdapterAuthLogin: (companyId: string, type: string, sessionId: string) =>
+    api.post<AdapterAuthSessionOwnerResponse>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions/${encodeURIComponent(sessionId)}/cancel`,
+      {},
     ),
   availableSkills: () =>
     api.get<{ skills: AvailableSkill[] }>("/skills/available"),

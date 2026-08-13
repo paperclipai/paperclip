@@ -2,9 +2,10 @@ import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
+  AdapterAuthSessionPrompt,
+  AdapterAuthSessionStatus,
   AdapterEnvironmentTestResult,
   CompanySecret,
-  CredentialType,
   EnvBinding,
   EnvSecretRefBinding,
   Environment,
@@ -16,23 +17,20 @@ import { environmentsApi } from "../api/environments";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { secretsApi } from "../api/secrets";
 import { assetsApi } from "../api/assets";
-import { credentialsApi, type ProviderCredential } from "../api/credentials";
-import { Link } from "@/lib/router";
-import {
-  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
-  DEFAULT_CODEX_LOCAL_MODEL,
-} from "@paperclipai/adapter-codex-local";
+import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/adapter-codex-local/ui";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { FolderOpen, Heart, ChevronDown, X, KeyRound } from "lucide-react";
+import { FolderOpen, Heart, ChevronDown, X, Copy, Check, ExternalLink, Loader2, TriangleAlert } from "lucide-react";
 import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { resolveAdapterTestEnvironmentId } from "../lib/adapter-test-environment";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
@@ -68,10 +66,6 @@ import { getAdapterDisplay, getAdapterLabel } from "../adapters/adapter-display-
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { buildAgentUpdatePatch, omitUndefinedEntries, type AgentConfigOverlay } from "../lib/agent-config-patch";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
-import {
-  hasMixedCodexAuthModes,
-  toggleCredentialSelectionForAuthMode,
-} from "../lib/credential-selection";
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
 
 /* ---- Create mode values ---- */
@@ -94,6 +88,12 @@ type AgentConfigFormProps = {
   onTestFeedbackChange?: (feedback: {
     errorMessage: string | null;
     result: AdapterEnvironmentTestResult | null;
+    // The login panel descriptor when the current target is a sandbox with no
+    // ready authentication, otherwise null. A parent that lifts the test
+    // feedback must render `AdapterLoginPanel` from this descriptor. The inline
+    // feedback branch renders the panel itself, so this descriptor is the only
+    // way the panel reaches a parent that hides the inline branch.
+    login: AdapterLoginDescriptor | null;
   }) => void;
   hideInlineSave?: boolean;
   showAdapterTypeField?: boolean;
@@ -141,11 +141,7 @@ function isOverlayDirty(o: AgentConfigOverlay): boolean {
     Object.keys(o.adapterConfig).length > 0 ||
     Object.keys(o.heartbeat).length > 0 ||
     Object.keys(o.runtime).length > 0 ||
-    o.credentialId !== undefined ||
-    o.credentialIds !== undefined ||
-    o.modelProfiles?.cheap !== undefined ||
-    o.routes?.cheap !== undefined ||
-    o.routes?.backup !== undefined
+    o.modelProfiles?.cheap !== undefined
   );
 }
 
@@ -176,8 +172,6 @@ const codexThinkingEffortOptions = [
   { id: "medium", label: "Medium" },
   { id: "high", label: "High" },
   { id: "xhigh", label: "X-High" },
-  { id: "max", label: "Max" },
-  { id: "ultra", label: "Ultra" },
 ] as const;
 
 const openCodeThinkingEffortOptions = [
@@ -201,8 +195,6 @@ const claudeThinkingEffortOptions = [
   { id: "low", label: "Low" },
   { id: "medium", label: "Medium" },
   { id: "high", label: "High" },
-  { id: "xhigh", label: "Extra High (Opus 4.7)" },
-  { id: "max", label: "Max" },
 ] as const;
 
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -429,7 +421,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   // ---- Resolve values ----
   const config = !isCreate ? ((props.agent.adapterConfig ?? {}) as Record<string, unknown>) : {};
-  const acpxAgent = typeof config.agent === "string" ? config.agent : undefined;
   const runtimeConfig = !isCreate ? ((props.agent.runtimeConfig ?? {}) as Record<string, unknown>) : {};
   const heartbeat = !isCreate ? ((runtimeConfig.heartbeat ?? {}) as Record<string, unknown>) : {};
 
@@ -474,6 +465,23 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     [environments, instanceDefaultEnvironmentId],
   );
 
+  // The environment a login session runs in. It mirrors the Test resolution: the
+  // agent's own environment wins, otherwise the instance default. The login
+  // affordance shows only when this environment is a sandbox, because the
+  // canonical auth-missing check comes only from a sandbox target.
+  const effectiveLoginEnvironmentId = useMemo(
+    () =>
+      resolveAdapterTestEnvironmentId({
+        agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
+        instanceDefaultEnvironmentId: instanceSettings?.defaultEnvironmentId ?? null,
+      }),
+    [rawCurrentDefaultEnvironmentId, instanceSettings?.defaultEnvironmentId],
+  );
+  const effectiveLoginEnvironment = useMemo(
+    () => environments.find((environment) => environment.id === effectiveLoginEnvironmentId) ?? null,
+    [environments, effectiveLoginEnvironmentId],
+  );
+
   // When the instance forces Kubernetes execution, new agents must default to the
   // managed Kubernetes sandbox environment (never the implicit local default).
   // Only applies in create mode and only once the K8s environment is loaded; if
@@ -509,9 +517,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     currentDefaultEnvironmentId.length > 0 ||
     runnableEnvironments.length >= 1
   );
+  const managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
   const inheritedEnvironmentLabel = instanceDefaultEnvironment
     ? `${instanceDefaultEnvironment.name} (${instanceDefaultEnvironment.driver})`
-    : "Local";
+    : managedSandboxOnly
+      ? "Managed sandbox"
+      : "Local";
 
   // Fetch adapter models for the effective adapter type
   const modelQueryKey = selectedCompanyId
@@ -555,102 +566,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     enabled: Boolean(!isCreate && selectedCompanyId),
   });
 
-  const { data: credentials = [] } = useQuery({
-    queryKey: selectedCompanyId
-      ? queryKeys.credentials.list(selectedCompanyId)
-      : ["credentials", "none"],
-    queryFn: () => credentialsApi.list(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId),
-  });
-
-  const credentialTypesForAdapter = useMemo(
-    () => credentialTypesForAdapterType(adapterType, acpxAgent),
-    [adapterType, acpxAgent],
-  );
-  const availableCredentials = useMemo(
-    () => credentials.filter((c) => credentialTypesForAdapter.has(c.type)),
-    [credentials, credentialTypesForAdapter],
-  );
-
-  const selectedCredentialIds = useMemo<string[]>(() => {
-    if (isCreate) {
-      const fromArray = props.values.credentialIds;
-      if (Array.isArray(fromArray) && fromArray.length > 0) return fromArray;
-      if (props.values.credentialId) return [props.values.credentialId];
-      return [];
-    }
-    if (overlay.credentialIds !== undefined) return overlay.credentialIds;
-    const fromAgent = (props.agent.credentials ?? []).map((c) => c.id);
-    if (fromAgent.length > 0) return fromAgent;
-    return props.agent.credentialId ? [props.agent.credentialId] : [];
-  }, [
-    isCreate,
-    isCreate ? props.values.credentialIds : null,
-    isCreate ? props.values.credentialId : null,
-    isCreate ? null : overlay.credentialIds,
-    isCreate ? null : props.agent.credentials,
-    isCreate ? null : props.agent.credentialId,
-  ]);
-
-  const enforceCodexAuthMode =
-    adapterType === "codex_local" || (adapterType === "acpx_local" && acpxAgent === "codex");
-
-  const toggleCredential = useCallback(
-    (credentialId: string) => {
-      const next = toggleCredentialSelectionForAuthMode(
-        availableCredentials,
-        selectedCredentialIds,
-        credentialId,
-        { enforceCodexAuthMode },
-      );
-      if (isCreate) {
-        props.onChange({ credentialIds: next });
-      } else {
-        setOverlay((prev) => ({ ...prev, credentialIds: next }));
-      }
-    },
-    [availableCredentials, enforceCodexAuthMode, isCreate, selectedCredentialIds, props],
-  );
-
-  const autoSelectedCredentialRef = useRef(false);
-  useEffect(() => {
-    if (!isCreate) return;
-    if (autoSelectedCredentialRef.current) return;
-    if (availableCredentials.length === 0) return;
-    if ((props.values.credentialIds ?? []).length > 0) return;
-    if (props.values.credentialId) return;
-    const defaultCred = availableCredentials.find((c) => c.isDefault);
-    if (defaultCred) {
-      autoSelectedCredentialRef.current = true;
-      props.onChange({ credentialIds: [defaultCred.id] });
-    }
-  }, [isCreate, availableCredentials]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Prune selected credentials that became incompatible after switching ACPX agent
-  // (claude ↔ codex). The adapter-type change handler already prunes when the
-  // adapter itself changes; this covers the narrower agent toggle within ACPX.
-  useEffect(() => {
-    if (selectedCredentialIds.length === 0) return;
-    // Don't prune until the credentials list has actually loaded. `credentials`
-    // is fetched via useQuery and is [] on first render; pruning against an empty
-    // list would mark every saved credential "incompatible", blank them out, and
-    // flip the form dirty on open even though the user changed nothing.
-    if (credentials.length === 0) return;
-    const compatibleIds = selectedCredentialIds.filter((id) => {
-      const cred = credentials.find((c) => c.id === id);
-      // Keep credentials we can't resolve in the current list (e.g. not yet
-      // loaded, or not visible to this viewer) rather than silently dropping
-      // them — only prune ones we positively know are type-incompatible.
-      return cred ? credentialTypesForAdapter.has(cred.type) : true;
-    });
-    if (compatibleIds.length === selectedCredentialIds.length) return;
-    if (isCreate) {
-      props.onChange({ credentialIds: compatibleIds });
-    } else {
-      setOverlay((prev) => ({ ...prev, credentialIds: compatibleIds }));
-    }
-  }, [credentialTypesForAdapter, credentials]); // eslint-disable-line react-hooks/exhaustive-deps
-
   /** Props passed to adapter-specific config field components */
   const adapterFieldProps = {
     mode,
@@ -670,10 +585,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
   const [cheapModelOpen, setCheapModelOpen] = useState(false);
-  const [cheapRouteModelOpen, setCheapRouteModelOpen] = useState(false);
-  const [backupRouteModelOpen, setBackupRouteModelOpen] = useState(false);
   const [thinkingEffortOpen, setThinkingEffortOpen] = useState(false);
-  const [credentialOpen, setCredentialOpen] = useState(false);
 
   // Cheap model profile state — only relevant when the adapter advertises
   // `supportsModelProfiles`. Defaults are sourced from the adapter's
@@ -868,6 +780,32 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const testActionLabel = "Test";
   const isSavePending = !isCreate && Boolean(props.isSaving);
   const testEnvironmentDisabled = testActionPending || isSavePending || !selectedCompanyId;
+
+  // Drop a stale Test result when the adapter type or the effective environment
+  // changes. A held result would keep the login affordance visible for a target
+  // the user no longer selected. The reset unmounts the login panel too, so its
+  // session state clears with it. Hold `reset` in a ref so the effect does not
+  // re-run on every render (the mutation object has a new identity each render).
+  const resetTestEnvironmentRef = useRef(testEnvironment.reset);
+  resetTestEnvironmentRef.current = testEnvironment.reset;
+  useEffect(() => {
+    resetTestEnvironmentRef.current();
+    setTestActionError(null);
+  }, [adapterType, effectiveLoginEnvironmentId]);
+
+  // Show the login affordance only for a current `codex_local` sandbox whose most
+  // recent Test result carries the canonical auth-missing check. The result keeps
+  // its own `adapterType`, so a result from another adapter never gates the panel.
+  const authMissingCheck =
+    testEnvironment.data?.adapterType === "codex_local"
+      ? testEnvironment.data.checks.find((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE) ?? null
+      : null;
+  const showAdapterLogin =
+    adapterType === "codex_local" &&
+    effectiveLoginEnvironment?.driver === "sandbox" &&
+    Boolean(effectiveLoginEnvironmentId) &&
+    Boolean(selectedCompanyId) &&
+    Boolean(authMissingCheck);
   const runEnvironmentTest = useCallback(async () => {
     if (!selectedCompanyId) {
       throw new Error("Select a company to test adapter environment");
@@ -934,11 +872,26 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? "Environment test failed"
             : null),
       result: testEnvironment.data ?? null,
+      // `showAdapterLogin` already requires a selected company and a non-empty
+      // environment id, so both are present here.
+      login:
+        showAdapterLogin && selectedCompanyId && effectiveLoginEnvironmentId
+          ? { companyId: selectedCompanyId, adapterType, environmentId: effectiveLoginEnvironmentId }
+          : null,
     });
     return () => {
-      props.onTestFeedbackChange?.({ errorMessage: null, result: null });
+      props.onTestFeedbackChange?.({ errorMessage: null, result: null, login: null });
     };
-  }, [props.onTestFeedbackChange, testActionError, testEnvironment.data, testEnvironment.error]);
+  }, [
+    props.onTestFeedbackChange,
+    testActionError,
+    testEnvironment.data,
+    testEnvironment.error,
+    showAdapterLogin,
+    selectedCompanyId,
+    adapterType,
+    effectiveLoginEnvironmentId,
+  ]);
 
   // Current model for display
   const currentModelValue = isCreate
@@ -1017,91 +970,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         if (typeof overlayModel === "string") return overlayModel;
         return cheapProfileFromAgent.model;
       })();
-
-  function routeState(routeKey: "cheap" | "backup") {
-    if (isCreate) {
-      return routeKey === "cheap"
-        ? {
-            enabled: val!.cheapRouteEnabled ?? false,
-            adapterType: val!.cheapRouteAdapterType ?? "codex_local",
-            credentialIds: val!.cheapRouteCredentialIds ?? [],
-            model: val!.cheapRouteModel ?? "",
-          }
-        : {
-            enabled: val!.backupRouteEnabled ?? false,
-            adapterType: val!.backupRouteAdapterType ?? "codex_local",
-            credentialIds: val!.backupRouteCredentialIds ?? [],
-            model: val!.backupRouteModel ?? "",
-          };
-    }
-    const routes = (runtimeConfig.routes ?? {}) as Record<string, unknown>;
-    const route = (routes[routeKey] ?? {}) as Record<string, unknown>;
-    const overlayRoute = !isCreate ? overlay.routes?.[routeKey] : undefined;
-    const routeAdapterConfig = (route.adapterConfig ?? {}) as Record<string, unknown>;
-    const overlayAdapterConfig = (overlayRoute?.adapterConfig ?? {}) as Record<string, unknown>;
-    return {
-      enabled: overlayRoute?.enabled ?? (route.enabled === true),
-      adapterType: overlayRoute?.adapterType ?? (typeof route.adapterType === "string" ? route.adapterType : adapterType),
-      credentialIds:
-        overlayRoute?.credentialIds ??
-        (Array.isArray(route.credentialIds)
-          ? route.credentialIds.filter((value): value is string => typeof value === "string")
-          : []),
-      model:
-        typeof overlayAdapterConfig.model === "string"
-          ? overlayAdapterConfig.model
-          : typeof routeAdapterConfig.model === "string"
-            ? routeAdapterConfig.model
-            : "",
-    };
-  }
-
-  const cheapRoute = routeState("cheap");
-  const backupRoute = routeState("backup");
-
-  function updateRuntimeRoute(
-    routeKey: "cheap" | "backup",
-    patch: { enabled?: boolean; adapterType?: string; model?: string; credentialIds?: string[] },
-  ) {
-    if (isCreate) {
-      if (routeKey === "cheap") {
-        set!({
-          ...(patch.enabled !== undefined ? { cheapRouteEnabled: patch.enabled } : {}),
-          ...(patch.adapterType !== undefined ? { cheapRouteAdapterType: patch.adapterType } : {}),
-          ...(patch.model !== undefined ? { cheapRouteModel: patch.model } : {}),
-          ...(patch.credentialIds !== undefined ? { cheapRouteCredentialIds: patch.credentialIds } : {}),
-        });
-      } else {
-        set!({
-          ...(patch.enabled !== undefined ? { backupRouteEnabled: patch.enabled } : {}),
-          ...(patch.adapterType !== undefined ? { backupRouteAdapterType: patch.adapterType } : {}),
-          ...(patch.model !== undefined ? { backupRouteModel: patch.model } : {}),
-          ...(patch.credentialIds !== undefined ? { backupRouteCredentialIds: patch.credentialIds } : {}),
-        });
-      }
-      return;
-    }
-    setOverlay((prev) => {
-      const existing = prev.routes?.[routeKey] ?? {};
-      const nextAdapterConfig = {
-        ...((existing.adapterConfig ?? {}) as Record<string, unknown>),
-        ...(patch.model !== undefined ? { model: patch.model || undefined } : {}),
-      };
-      return {
-        ...prev,
-        routes: {
-          ...(prev.routes ?? {}),
-          [routeKey]: {
-            ...existing,
-            ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
-            ...(patch.adapterType !== undefined ? { adapterType: patch.adapterType } : {}),
-            ...(patch.credentialIds !== undefined ? { credentialIds: patch.credentialIds } : {}),
-            adapterConfig: nextAdapterConfig,
-          },
-        },
-      };
-    });
-  }
 
   function setCheapEnabled(next: boolean) {
     if (isCreate) {
@@ -1369,13 +1237,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 value={adapterType}
                 disabledTypes={disabledTypes}
                 onChange={(t) => {
-                  const nextCompatible = credentialTypesForAdapterType(t);
-                  const filteredCredentialIds = selectedCredentialIds.filter((id) => {
-                    const cred = credentials.find((c) => c.id === id);
-                    return cred ? nextCompatible.has(cred.type) : false;
-                  });
-                  const credentialsChanged =
-                    filteredCredentialIds.length !== selectedCredentialIds.length;
                   if (isCreate) {
                     // Reset all adapter-specific fields to defaults when switching adapter type
                     const { adapterType: _at, ...defaults } = defaultCreateValues;
@@ -1390,8 +1251,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     } else if (t === "opencode_local") {
                       nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
                     }
-                    nextValues.credentialIds = filteredCredentialIds;
-                    nextValues.credentialId = null;
                     set!(nextValues);
                   } else {
                     // Clear all adapter config and explicitly blank out model + effort/mode keys
@@ -1399,7 +1258,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     setOverlay((prev) => ({
                       ...prev,
                       adapterType: t,
-                      ...(credentialsChanged ? { credentialIds: filteredCredentialIds } : {}),
                       modelProfiles: { cheap: { cleared: true } },
                       adapterConfig: {
                         model:
@@ -1428,20 +1286,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {credentialTypesForAdapter.size > 0 ||
-          availableCredentials.length > 0 ||
-          selectedCredentialIds.length > 0 ? (
-            <CredentialMultiSelect
-              credentials={availableCredentials}
-              totalCredentialCount={credentials.length}
-              selectedIds={selectedCredentialIds}
-              onToggle={toggleCredential}
-              open={credentialOpen}
-              onOpenChange={setCredentialOpen}
-              enforceCodexAuthMode={enforceCodexAuthMode}
-            />
-          ) : null}
-
           {showInlineAdapterTestEnvironmentFeedback && (testActionError || testEnvironment.error) && (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
               {testActionError
@@ -1453,6 +1297,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
           {showInlineAdapterTestEnvironmentFeedback && testEnvironment.data && (
             <AdapterEnvironmentResult result={testEnvironment.data} />
+          )}
+
+          {showInlineAdapterTestEnvironmentFeedback && showAdapterLogin && (
+            <AdapterLoginPanel
+              key={`${adapterType}:${effectiveLoginEnvironmentId}`}
+              companyId={selectedCompanyId!}
+              adapterType={adapterType}
+              environmentId={effectiveLoginEnvironmentId!}
+            />
           )}
 
           {/* Working directory */}
@@ -1590,94 +1443,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   open={cheapModelOpen}
                   onOpenChange={setCheapModelOpen}
                 />
-              )}
-
-              {(
-                <div className="space-y-3 rounded-md border border-border/70 bg-muted/20 px-3 py-3">
-                  <div>
-                    <div className="text-xs font-medium text-foreground">Route profiles</div>
-                    <p className="text-[11px] text-muted-foreground">
-                      Cheap and backup routes can use a different adapter/model than the primary agent.
-                    </p>
-                  </div>
-                  {(["cheap", "backup"] as const).map((routeKey) => {
-                    const state = routeKey === "cheap" ? cheapRoute : backupRoute;
-                    const routeCredentialTypes = credentialTypesForAdapterType(state.adapterType);
-                    const routeCredentials = credentials.filter((credential) => routeCredentialTypes.has(credential.type));
-                    return (
-                      <div key={routeKey} className="space-y-2 rounded-md border border-border/60 px-3 py-2">
-                        <ToggleField
-                          label={routeKey === "cheap" ? "Cheap route" : "Backup route"}
-                          hint={
-                            routeKey === "cheap"
-                              ? "Used when an issue requests the cheap lane."
-                              : "Used after primary hits quota/rate-limit and no same-type credential can take over."
-                          }
-                          checked={state.enabled}
-                          onChange={(enabled) => updateRuntimeRoute(routeKey, { enabled })}
-                        />
-                        {state.enabled && (
-                          <div className="grid gap-2 sm:grid-cols-2">
-                            <Field label="Adapter">
-                              <AdapterTypeDropdown
-                                value={state.adapterType}
-                                disabledTypes={disabledTypes}
-                                onChange={(nextAdapterType) =>
-                                  updateRuntimeRoute(routeKey, { adapterType: nextAdapterType })
-                                }
-                              />
-                            </Field>
-                            <RouteModelDropdown
-                              companyId={selectedCompanyId ?? null}
-                              adapterType={state.adapterType}
-                              environmentId={currentDefaultEnvironmentId || null}
-                              model={state.model}
-                              onModelChange={(model) => updateRuntimeRoute(routeKey, { model })}
-                              open={routeKey === "cheap" ? cheapRouteModelOpen : backupRouteModelOpen}
-                              onOpenChange={routeKey === "cheap" ? setCheapRouteModelOpen : setBackupRouteModelOpen}
-                              defaultLabel="Default model"
-                              fetchErrorLabel={
-                                routeKey === "cheap"
-                                  ? "Failed to load cheap route models."
-                                  : "Failed to load backup route models."
-                              }
-                              refreshErrorLabel={
-                                routeKey === "cheap"
-                                  ? "Failed to refresh cheap route models."
-                                  : "Failed to refresh backup route models."
-                              }
-                              />
-                            {routeCredentials.length > 0 && (
-                              <Field label="Credentials">
-                                <div className="space-y-1 rounded-md border border-border/60 px-2 py-1.5">
-                                  {routeCredentials.map((credential) => {
-                                    const checked = state.credentialIds.includes(credential.id);
-                                    return (
-                                      <label key={credential.id} className="flex items-center gap-2 text-xs">
-                                        <input
-                                          type="checkbox"
-                                          checked={checked}
-                                          onChange={() => {
-                                            const next = checked
-                                              ? state.credentialIds.filter((id) => id !== credential.id)
-                                              : [...state.credentialIds, credential.id];
-                                            updateRuntimeRoute(routeKey, { credentialIds: next });
-                                          }}
-                                        />
-                                        <span className="truncate">{credential.name}</span>
-                                        <span className="shrink-0 text-[10px] text-muted-foreground">{credential.type}</span>
-                                      </label>
-                                    );
-                                  })}
-                                </div>
-                              </Field>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
               )}
 
               {showThinkingEffort && (
@@ -1820,10 +1585,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         </div>
       )}
 
-      {/* MCP servers are managed through the company library (/mcp) and the
-          agent's MCP tab. Per-agent inline overrides (adapterConfig.mcpServers)
-          remain supported via the API. */}
-
       {/* ---- Run Policy ---- */}
       {isCreate && showCreateRunPolicySection ? (
         <div className={cn(!cards && "border-b border-border")}>
@@ -1952,6 +1713,264 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   );
 }
 
+// The public session states that end a login. The panel stops the status poll
+// and shows a terminal message when the session reaches one of these.
+const ADAPTER_LOGIN_TERMINAL_STATUSES = new Set<AdapterAuthSessionStatus>([
+  "authenticated",
+  "failed",
+  "timed_out",
+  "cancelled",
+]);
+
+// The status route poll interval while a session is active (Decision A). The
+// poll stops at a terminal state.
+const ADAPTER_LOGIN_POLL_INTERVAL_MS = 2000;
+
+// A copy-to-clipboard button. It mirrors the workspace service control bar: a
+// short "copied" flash, then it returns to the copy icon.
+function AdapterLoginCopyButton({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    },
+    [],
+  );
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-xs"
+      aria-label={label}
+      title={label}
+      className="text-muted-foreground hover:text-foreground"
+      onClick={async () => {
+        try {
+          await copyTextToClipboard(value);
+          setCopied(true);
+        } catch {
+          setCopied(false);
+        }
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        timeoutRef.current = setTimeout(() => setCopied(false), 1500);
+      }}
+    >
+      {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+    </Button>
+  );
+}
+
+// The terminal message for a finished login. It never shows a secret. It shows
+// only the fixed, non-secret failure message the server returns.
+function AdapterLoginTerminalState({
+  status,
+  message,
+}: {
+  status: AdapterAuthSessionStatus;
+  message: string | null;
+}) {
+  if (status === "authenticated") {
+    return (
+      <div className="flex items-center gap-2 text-(length:--text-micro) text-foreground">
+        <Check className="size-3 shrink-0" />
+        <span>Authenticated. The sandbox has credentials now.</span>
+      </div>
+    );
+  }
+  const label =
+    status === "timed_out"
+      ? "Login timed out"
+      : status === "cancelled"
+        ? "Login cancelled"
+        : "Login failed";
+  return (
+    <div className="flex items-start gap-2 text-(length:--text-micro) text-destructive">
+      <TriangleAlert className="size-3 shrink-0" />
+      <span>
+        {label}
+        {message ? `: ${message}` : "."}
+      </span>
+    </div>
+  );
+}
+
+// The login panel for one adapter in one sandbox environment. It starts a login
+// session, polls the status route, and shows the one-time code and the
+// authentication URL with copy and open actions. It shows the terminal states.
+// It never writes the code, the URL, or any credential byte to a log line.
+//
+// The panel holds its own session state. The parent gives it a stable `key` from
+// the adapter type and the environment id, so a change to either remounts the
+// panel with a fresh session state.
+// The props that identify one login panel: one adapter in one sandbox
+// environment for one company. A parent that lifts the test feedback renders
+// the panel from this descriptor.
+export type AdapterLoginDescriptor = {
+  companyId: string;
+  adapterType: string;
+  environmentId: string;
+};
+
+export function AdapterLoginPanel({
+  companyId,
+  adapterType,
+  environmentId,
+}: AdapterLoginDescriptor) {
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [startError, setStartError] = useState<string | null>(null);
+  // The server delivers the one-time prompt on the first owner read only. Latch
+  // it so a later poll that returns a null prompt does not hide the code and the
+  // URL.
+  const [latchedPrompt, setLatchedPrompt] = useState<AdapterAuthSessionPrompt | null>(null);
+
+  const startLogin = useMutation({
+    mutationFn: () => agentsApi.startAdapterAuthLogin(companyId, adapterType, { environmentId }),
+    onSuccess: (session) => {
+      setStartError(null);
+      setLatchedPrompt(null);
+      setSessionId(session.sessionId);
+    },
+    onError: (error) => {
+      setStartError(error instanceof Error ? error.message : "Could not start the login.");
+    },
+  });
+
+  const cancelLogin = useMutation({
+    mutationFn: () => agentsApi.cancelAdapterAuthLogin(companyId, adapterType, sessionId!),
+    onSuccess: () => {
+      // Reset local state, so the panel returns to its idle start state and the
+      // Log in button is available again.
+      setSessionId(null);
+      setLatchedPrompt(null);
+      setStartError(null);
+    },
+    onError: (error) => {
+      setStartError(error instanceof Error ? error.message : "Could not cancel the login.");
+    },
+  });
+
+  const statusQuery = useQuery({
+    queryKey: ["adapter-login-status", companyId, adapterType, sessionId],
+    queryFn: () => agentsApi.getAdapterAuthLoginStatus(companyId, adapterType, sessionId!),
+    enabled: Boolean(sessionId),
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status && ADAPTER_LOGIN_TERMINAL_STATUSES.has(status)
+        ? false
+        : ADAPTER_LOGIN_POLL_INTERVAL_MS;
+    },
+  });
+
+  // Latch the first non-null prompt for the current session. A later poll
+  // returns a null prompt after the one-time delivery, so keep the latched value.
+  useEffect(() => {
+    const next = statusQuery.data?.prompt ?? null;
+    if (next) setLatchedPrompt(next);
+  }, [statusQuery.data]);
+
+  const session = statusQuery.data ?? startLogin.data ?? null;
+  const status = session?.status ?? null;
+  const prompt = latchedPrompt;
+  const isTerminal = status ? ADAPTER_LOGIN_TERMINAL_STATUSES.has(status) : false;
+  const isActive = Boolean(sessionId) && !isTerminal;
+  const startDisabled = startLogin.isPending || isActive;
+
+  return (
+    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-foreground">Sign in to the sandbox</span>
+        <div className="flex items-center gap-1.5">
+          {isActive && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2.5 text-xs text-muted-foreground hover:text-foreground"
+              disabled={cancelLogin.isPending}
+              onClick={() => cancelLogin.mutate()}
+            >
+              Cancel
+            </Button>
+          )}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 px-2.5 text-xs"
+            disabled={startDisabled}
+            onClick={() => startLogin.mutate()}
+          >
+            Log in
+          </Button>
+        </div>
+      </div>
+
+      {startError && (
+        <div role="alert" className="text-(length:--text-micro) text-destructive">
+          {startError}
+        </div>
+      )}
+
+      {/* One live region announces the loading, prompt, and terminal states, so a
+          screen reader reports each transition without a re-navigation. */}
+      <div role="status" aria-live="polite" className="space-y-2 empty:hidden">
+        {isActive && !prompt && (
+          <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
+            <Loader2 className="size-3 animate-spin shrink-0" />
+            <span>Preparing the login…</span>
+          </div>
+        )}
+
+        {isActive && prompt && (
+          <div className="space-y-2">
+            <div className="text-(length:--text-micro) text-muted-foreground">
+              Open the authentication page and enter the code.
+            </div>
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
+                Code
+              </div>
+              <span className="font-mono text-xs text-foreground break-all">{prompt.code}</span>
+            </div>
+            <AdapterLoginCopyButton value={prompt.code} label="Copy code" />
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
+                Authentication URL
+              </div>
+              <span className="font-mono text-xs text-foreground break-all">{prompt.url}</span>
+            </div>
+            <div className="flex items-center">
+              <AdapterLoginCopyButton value={prompt.url} label="Copy URL" />
+              <Button
+                asChild
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                aria-label="Open the authentication page"
+                title="Open the authentication page"
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <a href={prompt.url} target="_blank" rel="noreferrer noopener">
+                  <ExternalLink className="size-3" />
+                </a>
+              </Button>
+            </div>
+          </div>
+        </div>
+        )}
+
+        {isTerminal && status && (
+          <AdapterLoginTerminalState status={status} message={session?.failure?.message ?? null} />
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function AdapterEnvironmentResult({ result }: { result: AdapterEnvironmentTestResult }) {
   const statusLabel =
     result.status === "pass" ? "Passed" : result.status === "warn" ? "Warnings" : "Failed";
@@ -2059,98 +2078,6 @@ function ExperimentalBadge() {
     <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-(length:--text-nano) font-medium leading-none text-amber-700 dark:text-amber-200">
       Experimental
     </span>
-  );
-}
-
-function RouteModelDropdown({
-  companyId,
-  adapterType,
-  environmentId,
-  model,
-  onModelChange,
-  open,
-  onOpenChange,
-  defaultLabel,
-  fetchErrorLabel,
-  refreshErrorLabel,
-}: {
-  companyId: string | null;
-  adapterType: string;
-  environmentId: string | null;
-  model: string;
-  onModelChange: (next: string) => void;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  defaultLabel: string;
-  fetchErrorLabel: string;
-  refreshErrorLabel: string;
-}) {
-  const queryClient = useQueryClient();
-  const routeModelQueryKey = companyId
-    ? queryKeys.agents.adapterModels(companyId, adapterType, environmentId)
-    : ["agents", "none", "adapter-models", adapterType, environmentId];
-  const {
-    data: routeModels,
-    error: routeModelsError,
-  } = useQuery({
-    queryKey: routeModelQueryKey,
-    queryFn: () =>
-      agentsApi.adapterModels(companyId!, adapterType, {
-        environmentId,
-      }),
-    enabled: Boolean(companyId),
-  });
-  const [refreshingModels, setRefreshingModels] = useState(false);
-  const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
-
-  async function handleRefreshModels() {
-    if (!companyId) return;
-    setRefreshingModels(true);
-    setRefreshModelsError(null);
-    try {
-      const refreshed = await agentsApi.adapterModels(companyId, adapterType, {
-        environmentId,
-        refresh: true,
-      });
-      queryClient.setQueryData(routeModelQueryKey, refreshed);
-    } catch (error) {
-      setRefreshModelsError(error instanceof Error ? error.message : refreshErrorLabel);
-    } finally {
-      setRefreshingModels(false);
-    }
-  }
-
-  return (
-    <div className="space-y-1.5">
-      <ModelDropdown
-        models={routeModels ?? []}
-        value={model}
-        onChange={onModelChange}
-        open={open}
-        onOpenChange={onOpenChange}
-        allowDefault={adapterType !== "opencode_local"}
-        required={adapterType === "opencode_local"}
-        groupByProvider={adapterType === "opencode_local"}
-        creatable
-        detectedModel={null}
-        detectedModelCandidates={[]}
-        onRefreshModels={
-          adapterType === "codex_local" || adapterType === "acpx_local"
-            ? handleRefreshModels
-            : undefined
-        }
-        refreshingModels={refreshingModels}
-        defaultLabel={defaultLabel}
-      />
-      {(refreshModelsError || routeModelsError) && (
-        <p className="text-xs text-destructive">
-          {refreshModelsError
-            ?? (routeModelsError instanceof Error
-              ? routeModelsError.message
-              : fetchErrorLabel)}
-        </p>
-      )}
-    </div>
   );
 }
 
@@ -2582,241 +2509,6 @@ function ThinkingEffortDropdown({
           ))}
         </PopoverContent>
       </Popover>
-    </Field>
-  );
-}
-
-const CREDENTIAL_TYPE_LABELS: Record<CredentialType, string> = {
-  claude_oauth: "Claude OAuth",
-  claude_api_key: "Claude API Key",
-  codex_oauth: "Codex OAuth",
-  gemini_api_key: "Gemini API Key",
-  openai_api_key: "OpenAI API Key",
-  openrouter_api_key: "OpenRouter API Key",
-  deepseek_api_key: "DeepSeek API Key",
-  mimo_api_key: "MiMo (Xiaomi) API Key",
-};
-
-function credentialTypesForAdapterType(
-  adapterType: string,
-  acpxAgent?: string,
-): Set<CredentialType> {
-  switch (adapterType) {
-    case "claude_local":
-      // deepseek_api_key / mimo_api_key route the Claude Code CLI through the
-      // provider's Anthropic-compatible endpoint (the resolver injects
-      // ANTHROPIC_BASE_URL + AUTH_TOKEN + model mapping when bound here).
-      return new Set<CredentialType>(["claude_oauth", "claude_api_key", "deepseek_api_key", "mimo_api_key"]);
-    case "claude_tui":
-      // claude_tui drives the same Claude Code CLI session as claude_local,
-      // just through a TUI wrapper, so it shares the same credential set.
-      return new Set<CredentialType>(["claude_oauth", "claude_api_key", "deepseek_api_key", "mimo_api_key"]);
-    case "gemini_local":
-      return new Set<CredentialType>(["gemini_api_key"]);
-    case "codex_local":
-      return new Set<CredentialType>(["codex_oauth", "openai_api_key"]);
-    case "cursor":
-      return new Set<CredentialType>(["openai_api_key"]);
-    case "deepseek_api":
-      return new Set<CredentialType>(["deepseek_api_key"]);
-    case "opencode_local":
-      return new Set<CredentialType>([
-        "openrouter_api_key",
-        "openai_api_key",
-        "claude_api_key",
-        "gemini_api_key",
-      ]);
-    case "pi_local":
-      // Pi selects a provider from adapterConfig.model's provider/model prefix.
-      // The server resolver injects only the env/auth material Pi consumes for
-      // that provider and records failures against the matching credential type.
-      return new Set<CredentialType>([
-        "codex_oauth",
-        "openai_api_key",
-        "deepseek_api_key",
-        "mimo_api_key",
-        "openrouter_api_key",
-        "claude_api_key",
-        "gemini_api_key",
-      ]);
-    case "acpx_local":
-      // ACPX dispatches based on adapterConfig.agent. Narrow the credential
-      // picker to the provider that will actually be invoked so the user
-      // isn't offered creds that the runtime will ignore.
-      if (acpxAgent === "claude") {
-        return new Set<CredentialType>(["claude_oauth", "claude_api_key"]);
-      }
-      if (acpxAgent === "codex") {
-        return new Set<CredentialType>(["codex_oauth", "openai_api_key"]);
-      }
-      // custom or unset — allow both providers
-      return new Set<CredentialType>([
-        "claude_oauth",
-        "claude_api_key",
-        "codex_oauth",
-        "openai_api_key",
-      ]);
-    default:
-      return new Set<CredentialType>();
-  }
-}
-
-function CredentialMultiSelect({
-  credentials,
-  totalCredentialCount,
-  selectedIds,
-  onToggle,
-  open,
-  onOpenChange,
-  enforceCodexAuthMode,
-}: {
-  credentials: ProviderCredential[];
-  totalCredentialCount: number;
-  selectedIds: string[];
-  onToggle: (id: string) => void;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  enforceCodexAuthMode: boolean;
-}) {
-  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
-  const selectedCreds = useMemo(
-    () => selectedIds.map((id) => credentials.find((c) => c.id === id)).filter(Boolean) as ProviderCredential[],
-    [credentials, selectedIds],
-  );
-  const filteredCredentialCount = Math.max(0, totalCredentialCount - credentials.length);
-
-  const typeCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const cred of selectedCreds) {
-      counts.set(cred.type, (counts.get(cred.type) ?? 0) + 1);
-    }
-    return counts;
-  }, [selectedCreds]);
-  // Same-type credentials are NOT a conflict — they form a rotation pool that
-  // the runtime cycles through least-recently-used, skipping any on cooldown.
-  const pooledTypes = useMemo(
-    () => [...typeCounts.entries()].filter(([, count]) => count > 1).map(([type]) => type),
-    [typeCounts],
-  );
-  const mixedCodexAuthModes = enforceCodexAuthMode && hasMixedCodexAuthModes(credentials, selectedIds);
-
-  return (
-    <Field
-      label="Credentials"
-      hint="Provider credentials to inject into the adapter environment at run time. Only credentials matching this adapter's selected provider are shown. Manage in Company Settings."
-    >
-      <Popover open={open} onOpenChange={onOpenChange}>
-        <PopoverTrigger asChild>
-          <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between min-h-[34px]">
-            <span className="inline-flex items-center gap-1.5 flex-wrap min-w-0">
-              <KeyRound className="h-3 w-3 text-muted-foreground shrink-0" />
-              {selectedCreds.length === 0 ? (
-                <span className="text-muted-foreground">No credentials (use env vars)</span>
-              ) : (
-                selectedCreds.map((cred) => (
-                  <span
-                    key={cred.id}
-                    className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-xs"
-                  >
-                    <span className="truncate max-w-[140px]">{cred.name}</span>
-                    <span className="text-[10px] text-muted-foreground">
-                      {CREDENTIAL_TYPE_LABELS[cred.type] ?? cred.type}
-                    </span>
-                    <span
-                      role="button"
-                      tabIndex={0}
-                      className="rounded hover:bg-accent/50 p-0.5"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onToggle(cred.id);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          onToggle(cred.id);
-                        }
-                      }}
-                    >
-                      <X className="h-3 w-3" />
-                    </span>
-                  </span>
-                ))
-              )}
-            </span>
-            <ChevronDown className="h-3 w-3 text-muted-foreground shrink-0" />
-          </button>
-        </PopoverTrigger>
-        <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1" align="start">
-          <div className="max-h-[280px] overflow-y-auto">
-            {credentials.map((cred) => {
-              const isSelected = selectedSet.has(cred.id);
-              const sameTypeCount = typeCounts.get(cred.type) ?? 0;
-              const wouldPoolType = !isSelected && sameTypeCount >= 1;
-              return (
-                <button
-                  key={cred.id}
-                  className={cn(
-                    "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50 text-left",
-                    isSelected && "bg-accent",
-                  )}
-                  onClick={() => onToggle(cred.id)}
-                >
-                  <span
-                    className={cn(
-                      "h-3.5 w-3.5 shrink-0 rounded border flex items-center justify-center",
-                      isSelected ? "border-primary bg-primary" : "border-border",
-                    )}
-                  >
-                    {isSelected && <span className="h-1.5 w-1.5 rounded-sm bg-primary-foreground" />}
-                  </span>
-                  <span className="truncate flex-1">{cred.name}</span>
-                  <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] font-medium text-muted-foreground">
-                    {CREDENTIAL_TYPE_LABELS[cred.type] ?? cred.type}
-                  </span>
-                  {cred.isDefault && (
-                    <span className="shrink-0 rounded bg-amber-500/10 px-1 py-0.5 text-[10px] font-medium text-amber-600">
-                      default
-                    </span>
-                  )}
-                  {wouldPoolType && (
-                    <span className="shrink-0 rounded bg-sky-500/10 px-1 py-0.5 text-[10px] font-medium text-sky-600">
-                      + rotation
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-            {credentials.length === 0 && (
-              <p className="px-2 py-1.5 text-xs text-muted-foreground">
-                No compatible credentials from {totalCredentialCount} company credentials.{" "}
-                <Link
-                  to="/company/settings"
-                  className="text-blue-600 dark:text-blue-400 underline underline-offset-2"
-                >
-                  Manage in Company Settings
-                </Link>
-              </p>
-            )}
-          </div>
-        </PopoverContent>
-      </Popover>
-      <p className="mt-1 text-xs text-muted-foreground">
-        Showing {credentials.length} compatible of {totalCredentialCount} company credentials
-        {filteredCredentialCount > 0 ? ` (${filteredCredentialCount} filtered by adapter type)` : ""}.
-      </p>
-      {pooledTypes.length > 0 && (
-        <p className="text-xs text-muted-foreground mt-1">
-          Multiple {pooledTypes.join(", ")} credentials form a rotation pool — the
-          agent uses the least-recently-used one and rotates to another if one hits
-          a rate limit.
-        </p>
-      )}
-      {mixedCodexAuthModes && (
-        <p className="text-xs text-destructive mt-1">
-          Codex OAuth and OpenAI API key credentials cannot be used together. Select one auth mode.
-        </p>
-      )}
     </Field>
   );
 }

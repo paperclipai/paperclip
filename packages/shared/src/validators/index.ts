@@ -620,7 +620,11 @@ export {
 } from "./execution-workspace.js";
 
 export {
+  normalizedWorkspaceFileAvailabilityQuerySchema,
   resolvedWorkspaceResourceSchema,
+  workspaceFileAvailabilityRequestSchema,
+  workspaceFileAvailabilityResponseSchema,
+  workspaceFileAvailabilityResultSchema,
   workspaceFileListModeSchema,
   workspaceFileListQuerySchema,
   workspaceFileContentSchema,
@@ -630,6 +634,7 @@ export {
   workspaceFileResourceQuerySchema,
   workspaceFileSelectorSchema,
   workspaceFileWorkspaceKindSchema,
+  type WorkspaceFileAvailabilityRequestInput,
   type WorkspaceFileListQuery,
   type WorkspaceFileResourceQuery,
 } from "./workspace-file-resource.js";

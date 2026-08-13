@@ -28,8 +28,7 @@ import {
 import { fileKindForName, formatFileSize } from "./task-chat-attachments";
 import { MarkdownEditor, type MarkdownEditorRef } from "@/components/MarkdownEditor";
 import { nextWorkMode, workModeMetaFor, workModeMetaList } from "@/lib/work-mode-meta";
-import type { InlineEntityOption } from "@/components/InlineEntitySelector";
-import { ChatModelSelector, ChatThinkingEffortSelector } from "@/components/ChatModelSelector";
+import { InlineEntitySelector, type InlineEntityOption } from "@/components/InlineEntitySelector";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import type { IssueAttachment, IssueWorkMode } from "@paperclipai/shared";
 
@@ -40,13 +39,7 @@ interface CommentReassignment {
 }
 
 interface TaskChatComposerProps {
-  onAdd: (
-    body: string,
-    reopen?: boolean,
-    reassignment?: CommentReassignment,
-    modelOverride?: string,
-    thinkingEffortOverride?: string,
-  ) => Promise<void> | void;
+  onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void> | void;
   workMode: IssueWorkMode;
   onWorkModeChange?: (mode: IssueWorkMode) => Promise<void> | void;
   disabled?: boolean;
@@ -66,11 +59,6 @@ interface TaskChatComposerProps {
   mobile?: boolean;
   /** Storage key used to restore, persist, and clear this task's text draft. */
   draftKey?: string;
-  modelOptions?: InlineEntityOption[];
-  defaultModel?: string | null;
-  /** One-message reasoning-effort choices for the current assignee's adapter. */
-  thinkingEffortOptions?: InlineEntityOption[];
-  defaultThinkingEffort?: string | null;
 }
 
 /** Per-mode hue token (see ui/src/index.css `--tc-mode-*`). */
@@ -163,26 +151,16 @@ export function TaskChatComposer({
   issueStatus,
   mobile = false,
   draftKey,
-  modelOptions = [],
-  defaultModel = null,
-  thinkingEffortOptions = [],
-  defaultThinkingEffort = null,
 }: TaskChatComposerProps) {
   const [body, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
   const [submitting, setSubmitting] = useState(false);
   const [pendingMode, setPendingMode] = useState<IssueWorkMode>(workMode);
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
-  const [modelOverride, setModelOverride] = useState("");
-  const [thinkingEffortOverride, setThinkingEffortOverride] = useState("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
   const pendingAssigneeRef = useRef(pendingAssignee);
   pendingAssigneeRef.current = pendingAssignee;
-  const modelOverrideRef = useRef(modelOverride);
-  modelOverrideRef.current = modelOverride;
-  const thinkingEffortOverrideRef = useRef(thinkingEffortOverride);
-  thinkingEffortOverrideRef.current = thinkingEffortOverride;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const editorRef = useRef<MarkdownEditorRef>(null);
   const bodyRef = useRef(body);
@@ -220,17 +198,10 @@ export function TaskChatComposer({
   const canAcceptFiles = Boolean(onAttachImage || onImageUpload);
   const showAssignee = Boolean(enableReassign && reassignOptions && reassignOptions.length > 0);
   const assigneeValue = pendingAssignee ?? currentAssigneeValue;
-  const hasPendingReassignment = showAssignee && assigneeValue !== currentAssigneeValue;
   const assigneeLabel =
     reassignOptions?.find((o) => o.id === assigneeValue)?.label ?? "Unassigned";
   const assigneeName = assigneeLabel === "Unassigned" ? "the agent" : assigneeLabel;
   const effectivePlaceholder = placeholder ?? modePlaceholder(pendingMode, assigneeName);
-
-  useEffect(() => {
-    if (!hasPendingReassignment) return;
-    setModelOverride("");
-    setThinkingEffortOverride("");
-  }, [hasPendingReassignment]);
 
   /** Upload an image and return its URL for inline `![](src)` markdown. */
   async function uploadInlineImage(file: File): Promise<string> {
@@ -347,8 +318,6 @@ export function TaskChatComposer({
     const submittedBody = bodyRef.current;
     const submittedAttachments = attachmentsRef.current;
     const submittedAssignee = pendingAssigneeRef.current;
-    const submittedModelOverride = modelOverrideRef.current;
-    const submittedThinkingEffortOverride = thinkingEffortOverrideRef.current;
     const trimmed = submittedBody.trim();
     if (
       (!trimmed && attachedRefs.length === 0) ||
@@ -363,7 +332,8 @@ export function TaskChatComposer({
       .map((item) => `[${escapeMarkdownLabel(item.name)}](${item.contentPath})`)
       .join("\n");
     const fullBody = [trimmed, refLines].filter(Boolean).join("\n\n");
-    const reassignment = hasPendingReassignment ? parseAssigneeValue(assigneeValue) : undefined;
+    const hasReassignment = showAssignee && assigneeValue !== currentAssigneeValue;
+    const reassignment = hasReassignment ? parseAssigneeValue(assigneeValue) : undefined;
     const reopen = shouldImplicitlyReopenComment(issueStatus, assigneeValue) ? true : undefined;
 
     setSubmitting(true);
@@ -371,19 +341,7 @@ export function TaskChatComposer({
       if (pendingMode !== workMode && onWorkModeChange) {
         await onWorkModeChange(pendingMode);
       }
-      if (reassignment || (!submittedModelOverride && !submittedThinkingEffortOverride)) {
-        await onAdd(fullBody, reopen, reassignment);
-      } else if (!submittedThinkingEffortOverride) {
-        await onAdd(fullBody, reopen, reassignment, submittedModelOverride);
-      } else {
-        await onAdd(
-          fullBody,
-          reopen,
-          reassignment,
-          submittedModelOverride || undefined,
-          submittedThinkingEffortOverride || undefined,
-        );
-      }
+      await onAdd(fullBody, reopen, reassignment);
       if (bodyRef.current === submittedBody) {
         bodyRef.current = "";
         if (draftTimer.current) {
@@ -403,12 +361,6 @@ export function TaskChatComposer({
       if (pendingAssigneeRef.current === submittedAssignee) {
         setPendingAssignee(null);
       }
-      if (modelOverrideRef.current === submittedModelOverride) {
-        setModelOverride("");
-      }
-      if (thinkingEffortOverrideRef.current === submittedThinkingEffortOverride) {
-        setThinkingEffortOverride("");
-      }
     } catch {
       // Keep the body and its draft available for retry.
     } finally {
@@ -419,7 +371,7 @@ export function TaskChatComposer({
   return (
     <div
       className={cn(
-        "rounded-xl border border-input bg-card p-2 shadow-(--shadow-extract-7) transition-[border-color,box-shadow] focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/15",
+        "rounded-xl border border-input bg-card p-(--sz-18px) shadow-(--shadow-extract-7) transition-[border-color,box-shadow] focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/15",
       )}
       onKeyDownCapture={(e) => {
         // Shift+Tab cycles the pending mode; captured on the wrapper so it
@@ -568,50 +520,27 @@ export function TaskChatComposer({
           </DropdownMenuContent>
         </DropdownMenu>
 
-        {modelOptions.length > 0 && !hasPendingReassignment ? (
-          <ChatModelSelector
-            value={modelOverride}
-            options={modelOptions}
-            defaultModel={defaultModel}
-            onChange={setModelOverride}
-            className="h-8 max-w-56 text-xs"
-          />
-        ) : null}
-
-        {thinkingEffortOptions.length > 0 && !hasPendingReassignment ? (
-          <ChatThinkingEffortSelector
-            value={thinkingEffortOverride}
-            options={thinkingEffortOptions}
-            defaultEffort={defaultThinkingEffort}
-            onChange={setThinkingEffortOverride}
-            className="h-8 max-w-44 text-xs"
-          />
-        ) : null}
-
         <div className="flex-1" />
 
         {showAssignee ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                disabled={disabled}
-                className="flex h-8 min-w-0 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50"
-                data-testid="task-chat-composer-assignee"
-              >
+          <InlineEntitySelector
+            value={assigneeValue}
+            options={reassignOptions ?? []}
+            placeholder="Assignee"
+            noneLabel="No assignee"
+            searchPlaceholder="Search assignees…"
+            emptyMessage="No matches."
+            onChange={setPendingAssignee}
+            disabled={disabled}
+            triggerTestId="task-chat-composer-assignee"
+            className="h-8 gap-1.5 bg-transparent px-2.5 text-xs hover:bg-accent"
+            renderTriggerValue={() => (
+              <>
                 <span className="max-w-40 truncate">{assigneeLabel}</span>
                 <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56">
-              {(reassignOptions ?? []).map((option) => (
-                <DropdownMenuItem key={option.id} onSelect={() => setPendingAssignee(option.id)}>
-                  <span className="min-w-0 flex-1 truncate">{option.label}</span>
-                  {option.id === assigneeValue ? <Check className="h-4 w-4 shrink-0" aria-hidden /> : null}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
+              </>
+            )}
+          />
         ) : null}
 
         <button

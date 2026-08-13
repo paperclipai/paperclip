@@ -1523,15 +1523,13 @@ export function ExecutionWorkspaceDetail() {
           </Card>
         ) : activeTab === "issues" ? (
           <div className="space-y-6">
-            {workspace.projectWorkspaceId ? (
-              <SummarySlotCard
-                companyId={workspace.companyId}
-                scopeKind="project_workspace"
-                scopeId={workspace.projectWorkspaceId}
-                title="Workspace summary"
-                description="Summarizer keeps the latest workspace status, next step, and operator-needed items here."
-              />
-            ) : null}
+            <SummarySlotCard
+              companyId={workspace.companyId}
+              scopeKind="execution_workspace"
+              scopeId={workspace.id}
+              title="Workspace summary"
+              description="Summarizer keeps the latest workspace status, next step, and operator-needed items here."
+            />
             <ExecutionWorkspaceIssuesList
               companyId={workspace.companyId}
               workspace={workspace}

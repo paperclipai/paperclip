@@ -9,11 +9,9 @@ import {
 } from "@paperclipai/shared";
 import { updateEnvFileContents, writeEnvFileAtomicallyIfChanged } from "@paperclipai/shared/env-file";
 import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "./paths.js";
-
 function nonEmpty(value: string | null | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
-
 function expandHomePrefix(value: string): string {
   if (value === "~") return os.homedir();
   if (value.startsWith("~/")) return path.resolve(os.homedir(), value.slice(2));
@@ -650,6 +648,14 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
   return { repairedConfig, repairedEnv };
 }
 
+function isPortPinnedByRuntimeEnv(rawValue: string | null | undefined, selectedPort: number): boolean {
+  const normalized = nonEmpty(rawValue);
+  if (!normalized) return false;
+  const parsedPort = Number(normalized);
+  if (!Number.isInteger(parsedPort) || parsedPort <= 0) return true;
+  return parsedPort === selectedPort;
+}
+
 export function maybePersistWorktreeRuntimePorts(input: {
   serverPort: number;
   databasePort?: number | null;
@@ -667,7 +673,7 @@ export function maybePersistWorktreeRuntimePorts(input: {
   const { config, changed } = applyRuntimePortSelectionToConfig(fileConfig, {
     serverPort: input.serverPort,
     databasePort: input.databasePort,
-    allowServerPortWrite: !nonEmpty(process.env.PORT),
+    allowServerPortWrite: !isPortPinnedByRuntimeEnv(process.env.PORT, input.serverPort),
     allowDatabasePortWrite: !nonEmpty(process.env.DATABASE_URL),
   });
 

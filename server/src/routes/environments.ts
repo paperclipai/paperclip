@@ -95,22 +95,52 @@ function redactSecretLikeConfigKeys(value: Record<string, unknown>): Record<stri
 
 /**
  * Floor view of a platform-provisioned environment on a cloud-managed
- * instance: env vars and credential-shaped config keys are never echoed — to
- * ANY actor, including instance admins — while structural config (provider,
- * image, template, region, ...) and the managed markers in `metadata` stay
+ * instance: credential-shaped config keys are never echoed — to ANY actor,
+ * including instance admins — while structural config (provider, image,
+ * template, region, ...) and the managed markers in `metadata` stay
  * visible so admin surfaces can render the environment and show its
  * platform-managed state.
+ *
+ * Env vars are the one tenant-owned field on a managed sandbox row: the
+ * platform never writes them (`ensureManagedSandboxEnvironment` reconciles
+ * name/config/metadata/status only), and tenants may edit them through the
+ * envVars-only PATCH exception below — so they echo back for round-trip
+ * editing. Everywhere else (the local slot, legacy kubernetes-marker rows
+ * that pre-generalization builds may have stamped platform values on) env
+ * vars stay blanked.
  */
 export function applyPlatformProvisionedEnvironmentFloor<T extends {
+  driver?: string;
   config: Record<string, unknown> | null;
   envVars?: Record<string, unknown> | null;
   metadata: Record<string, unknown> | null;
 }>(environment: T): T {
+  const tenantEnvVarsVisible = isTenantEditableManagedSandbox(environment);
   return {
     ...environment,
     config: redactSecretLikeConfigKeys(isPlainRecord(environment.config) ? environment.config : {}),
-    ...(Object.prototype.hasOwnProperty.call(environment, "envVars") ? { envVars: {} } : {}),
+    ...(Object.prototype.hasOwnProperty.call(environment, "envVars") && !tenantEnvVarsVisible
+      ? { envVars: {} }
+      : {}),
   };
+}
+
+/**
+ * Whether this platform-provisioned row participates in the tenant
+ * env-vars contract: the generalized managed sandbox slot only. The local
+ * slot and legacy kubernetes-marker rows do not — the tenant never runs
+ * on local under this regime, and legacy rows may carry platform-written
+ * values.
+ */
+function isTenantEditableManagedSandbox(environment: {
+  driver?: string;
+  metadata: Record<string, unknown> | null;
+}): boolean {
+  return (
+    environment.driver === "sandbox" &&
+    environment.metadata?.managedByPaperclip === true &&
+    environment.metadata?.managedKubernetesSandbox !== true
+  );
 }
 
 const PLATFORM_PROVISIONED_MARKER_KEYS = [
@@ -211,18 +241,39 @@ function isPlatformMarkerClearOnlyPatch(body: unknown): boolean {
 }
 
 /**
+ * Returns true when the PATCH body touches nothing but `envVars` (as a
+ * plain object). This is the one tenant edit the managed-environment write
+ * floor admits: agents need environment variables in their managed
+ * sandbox, and everything else on the row (name, driver, config, status,
+ * metadata) stays platform-owned.
+ */
+function isTenantEnvVarsOnlyPatch(body: unknown): boolean {
+  if (!isPlainRecord(body)) return false;
+  const bodyKeys = Object.keys(body);
+  return bodyKeys.length === 1 && bodyKeys[0] === "envVars" && isPlainRecord(body.envVars);
+}
+
+/**
  * Floor: on cloud-managed instances, platform-provisioned rows are
  * platform-owned runtime state — no actor, including instance admins, may
  * update or delete them. Binds to the persisted row's markers, so a patch
  * cannot strip the marker to lift the floor.
  *
- * Exception: a metadata-only patch that only clears the marker keys is
- * allowed so tenants can recover rows stamped with stale markers by the old
- * unrestricted API — for every row except those whose markers are live
- * platform state (see `isPlatformSlotEnvironment`): there, clearing the
- * markers would let the very next write reclassify the row as
- * tenant-managed and bypass this floor. Every marker outside a live slot
- * is stale by construction, so no row is ever locked unrecoverably.
+ * Exceptions:
+ *
+ * - A metadata-only patch that only clears the marker keys is allowed so
+ *   tenants can recover rows stamped with stale markers by the old
+ *   unrestricted API — for every row except those whose markers are live
+ *   platform state (see `isPlatformSlotEnvironment`): there, clearing the
+ *   markers would let the very next write reclassify the row as
+ *   tenant-managed and bypass this floor. Every marker outside a live slot
+ *   is stale by construction, so no row is ever locked unrecoverably.
+ * - An envVars-only patch on the generalized managed sandbox row is
+ *   allowed: env vars are the one tenant-owned field there (agents need
+ *   their environment variables inside the managed sandbox), the platform
+ *   never writes them, and the body shape guarantees nothing else — name,
+ *   driver, config, status, metadata — rides along. DELETE still calls
+ *   this with no options, so deletion stays blocked.
  */
 async function assertPlatformProvisionedEnvironmentWritable(
   environment: { driver: string; metadata: Record<string, unknown> | null },
@@ -236,6 +287,11 @@ async function assertPlatformProvisionedEnvironmentWritable(
     options !== undefined &&
     isPlatformMarkerClearOnlyPatch(options.patchBody) &&
     !(await isPlatformSlotEnvironment(environment, options))
+  ) return;
+  if (
+    options !== undefined &&
+    isTenantEnvVarsOnlyPatch(options.patchBody) &&
+    isTenantEditableManagedSandbox(environment)
   ) return;
   throw forbidden("Platform-provisioned environments are platform-managed on cloud-managed instances", {
     code: "environment_platform_managed",
@@ -333,14 +389,23 @@ export function environmentRoutes(
     envVars?: Record<string, unknown> | null;
     metadata: Record<string, unknown> | null;
   }>(req: Request, environment: T): T {
-    // Floor: on cloud-managed instances, platform-provisioned rows use one
-    // view for every reader — instance admins (including computed
-    // owner-admins) never see env vars or credential-shaped config keys, and
-    // restricted readers gain the structural fields the redacted view used to
-    // blank (the platform config carries no secrets by the managed-config
-    // contract).
+    // Floor: on cloud-managed instances, platform-provisioned rows use the
+    // floored view — credential-shaped config keys are never echoed to any
+    // reader, structural config stays visible, and tenant env vars on the
+    // managed sandbox row round-trip for full readers only. Restricted
+    // readers keep the structural floor fields (the platform config carries
+    // no secrets by the managed-config contract) but never env vars — the
+    // same envVars posture the restricted view applies to every other
+    // environment, since tenant env vars can carry pasted credentials.
     if (isCloudManagedInstance() && isPlatformProvisionedEnvironment(environment)) {
-      return applyPlatformProvisionedEnvironmentFloor(environment);
+      const floored = applyPlatformProvisionedEnvironmentFloor(environment);
+      if (canReadFullInstanceEnvironment(req)) {
+        return floored;
+      }
+      return {
+        ...floored,
+        ...(Object.prototype.hasOwnProperty.call(floored, "envVars") ? { envVars: {} } : {}),
+      };
     }
     return canReadFullInstanceEnvironment(req)
       ? environment
@@ -433,7 +498,8 @@ export function environmentRoutes(
    * Pick the company context used to create new secrets from raw-pasted
    * values, normalize env-var bindings, and resolve probe secrets. An
    * explicit route param / query wins, then the single company the
-   * environment's bindings already live in, then the actor's own company.
+   * environment's bindings already live in, then the actor's own company,
+   * then the instance's only company (when exactly one exists).
    * Bindings must never veto an explicit caller context: config-derived
    * bindings live in the company that owns each referenced secret (see
    * `replaceSecretRefsForInstanceTarget`), so an environment's bindings may
@@ -460,6 +526,14 @@ export function environmentRoutes(
     if (req.actor.type === "agent" && req.actor.companyId) return req.actor.companyId;
     if (req.actor.type === "board" && Array.isArray(req.actor.companyIds) && req.actor.companyIds.length === 1) {
       return req.actor.companyIds[0] ?? null;
+    }
+    // Single-company instances have exactly one possible secret scope, so an
+    // actor whose memberships cannot pin a company (none, or several — e.g. an
+    // instance admin provisioned without a membership row) still resolves.
+    // Mirrors the fallback in `resolveCustomImageCompanyId`.
+    const instanceCompanyIds = await instanceSettings.listCompanyIds();
+    if (instanceCompanyIds.length === 1 && instanceCompanyIds[0]) {
+      return instanceCompanyIds[0];
     }
     if (!options.required) return null;
     throw unprocessable(
@@ -589,13 +663,29 @@ export function environmentRoutes(
     throw unprocessable(failure.message);
   }
 
+  /**
+   * Managed-sandbox-only policy (`enableManagedSandboxOnly`): the local
+   * environment disappears from every read surface — the list and the
+   * by-id read — for every actor, including instance admins. The row
+   * itself stays in the database (company creation and the heartbeat
+   * depend on `ensureLocalEnvironment`); run selection independently
+   * refuses local under the same flag, so hiding here is presentation,
+   * not the enforcement boundary.
+   */
+  async function isManagedSandboxOnlyInstance(): Promise<boolean> {
+    return (await instanceSettings.getExperimental()).enableManagedSandboxOnly === true;
+  }
+
   router.get("/companies/:companyId/environments", async (req, res) => {
     assertCanReadInstanceEnvironments(req);
     const rows = await svc.list({
       status: req.query.status as string | undefined,
       driver: req.query.driver as string | undefined,
     });
-    res.json(rows.map((row) => presentEnvironmentForRead(req, row)));
+    const visible = (await isManagedSandboxOnlyInstance())
+      ? rows.filter((row) => row.driver !== "local")
+      : rows;
+    res.json(visible.map((row) => presentEnvironmentForRead(req, row)));
   });
 
   router.get("/environments/:id/delete-blast-radius", async (req, res) => {
@@ -925,7 +1015,7 @@ export function environmentRoutes(
   router.get("/environments/:id", async (req, res) => {
     assertCanReadInstanceEnvironments(req);
     const environment = await svc.getById(req.params.id as string);
-    if (!environment) {
+    if (!environment || (environment.driver === "local" && (await isManagedSandboxOnlyInstance()))) {
       res.status(404).json({ error: "Environment not found" });
       return;
     }

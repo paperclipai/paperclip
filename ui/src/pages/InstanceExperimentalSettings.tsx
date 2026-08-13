@@ -355,12 +355,13 @@ export function InstanceExperimentalSettings() {
     getWorktreeInstanceId(),
   );
   const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
+  const enableManagedSandboxOnly = experimentalQuery.data?.enableManagedSandboxOnly === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
   const enableApps = experimentalQuery.data?.enableApps === true;
   // Streamlined left navigation is now the standard sidebar (PAP-12472); the
   // experimental opt-out was retired, so it no longer surfaces a toggle here.
   const enableConferenceRoomChat = experimentalQuery.data?.enableConferenceRoomChat === true;
-  const enableTaskChatRedesign = experimentalQuery.data?.enableTaskChatRedesign === true;
+  const enableClassicTaskInterface = experimentalQuery.data?.enableClassicTaskInterface === true;
   const enableIssuePlanDecompositions =
     experimentalQuery.data?.enableIssuePlanDecompositions === true;
   const enableExperimentalFileViewer =
@@ -601,14 +602,14 @@ export function InstanceExperimentalSettings() {
       />
 
       <ExperimentalToggleCard
-        title="Chat-Style Tasks"
-        description="Reimagines the task detail page as a live conversation with your agents: chat bubbles for people and agents, streaming activity — thinking, tool calls, diffs — that folds into a one-line summary when a turn finishes, inline plan/question/permission cards, a three-mode composer (Agent · Plan · Ask), and a resizable Properties · Plan · Artifacts pane."
-        footnote="Turning this off instantly restores the classic task page. No task data is affected."
-        checked={enableTaskChatRedesign}
-        onCheckedChange={(checked) => toggleMutation.mutate({ enableTaskChatRedesign: checked })}
+        title="Classic Task Interface"
+        description="Restores the previous task detail page: the page-level header with inline description editing, the plain comment thread, and the fixed Properties sidebar. Chat-only features — streaming activity folding, inline plan and question cards, the three-mode composer — are unavailable in the classic view."
+        footnote="Switching takes effect immediately. No task data is affected."
+        checked={enableClassicTaskInterface}
+        onCheckedChange={(checked) => toggleMutation.mutate({ enableClassicTaskInterface: checked })}
         disabled={toggleMutation.isPending}
-        managed={managedKeys.enableTaskChatRedesign}
-        ariaLabel="Toggle chat-style tasks experimental setting"
+        managed={managedKeys.enableClassicTaskInterface}
+        ariaLabel="Toggle classic task interface experimental setting"
       />
 
       {SHOW_CONFERENCE_ROOM_EXPERIMENTAL_SETTING ? (
@@ -681,6 +682,16 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         managed={managedKeys.enableGoalsSidebarLink}
         ariaLabel="Toggle goals sidebar link experimental setting"
+      />
+
+      <ExperimentalToggleCard
+        title="Managed Sandbox Only"
+        description="Hide the local environment and run all agents in the platform-managed sandbox environment."
+        checked={enableManagedSandboxOnly}
+        onCheckedChange={(checked) => toggleMutation.mutate({ enableManagedSandboxOnly: checked })}
+        disabled={toggleMutation.isPending}
+        managed={managedKeys.enableManagedSandboxOnly}
+        ariaLabel="Toggle managed sandbox only experimental setting"
       />
 
       {inWorktree ? (

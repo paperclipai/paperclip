@@ -375,15 +375,35 @@ describe("settledRunChildren (PAP-361)", () => {
   ];
   const parsed = transcriptToTaskChatItems(transcript, { runId: "run-1", running: false });
 
-  it("keeps exactly the tool rows — messages AND thinking are excluded", () => {
+  it("groups tools under the historical assistant boundary and excludes the final reply", () => {
     const children = settledRunChildren(parsed);
-    expect(children.map((c) => c.kind)).toEqual(["tool", "tool"]);
+    expect(children.map((c) => c.kind)).toEqual(["activity_phase"]);
+    const phase = children[0];
+    expect(phase.kind === "activity_phase" && phase.interstitial?.text).toBe("Checking the adapter first.");
+    expect(phase.kind === "activity_phase" && phase.items.map((item) => item.kind)).toEqual(["tool", "tool"]);
   });
 
   it("matches the folded summary's tool count exactly (row-count parity)", () => {
     const children = settledRunChildren(parsed);
     const summary = buildTurnSummary(transcript);
-    expect(children.filter((c) => c.kind === "tool")).toHaveLength(summary.toolCount);
+    const phaseToolCount = children.reduce(
+      (count, child) => count + (child.kind === "activity_phase" ? child.items.filter((item) => item.kind === "tool").length : 0),
+      0,
+    );
+    expect(phaseToolCount).toBe(summary.toolCount);
+  });
+
+  it("creates a stable opening phase for calls before the first interstitial", () => {
+    const opening = transcriptToTaskChatItems([
+      toolCall("Read", { file_path: "a.ts" }),
+      { kind: "assistant", ts: TS, text: "Now editing." } as TranscriptEntry,
+      toolCall("Edit", { file_path: "a.ts" }),
+      { kind: "assistant", ts: TS, text: "Done." } as TranscriptEntry,
+    ], { runId: "run-opening", running: false });
+    const phases = settledRunChildren(opening);
+    expect(phases).toHaveLength(2);
+    expect(phases[0].id).toContain(":phase:opening");
+    expect(phases[1].kind === "activity_phase" && phases[1].summary).toBe("Edited 1 file");
   });
 });
 

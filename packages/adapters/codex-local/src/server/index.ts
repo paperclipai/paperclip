@@ -1,4 +1,4 @@
-export { execute, ensureCodexSkillsInjected, runCodexLogin } from "./execute.js";
+export { execute, ensureCodexSkillsInjected } from "./execute.js";
 export {
   resolveCodexAuthPrecedence,
   CODEX_SANDBOX_AUTH_PRECEDENCE_WARNING,
@@ -24,17 +24,24 @@ export {
 export { listCodexSkills, syncCodexSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
 export {
-  classifyCodexAuthRefreshFailure,
-  extractCodexDeviceAuth,
-  extractCodexLoginUrl,
-  extractCodexRetryNotBefore,
-  isCodexHarnessCrash,
-  isCodexProviderQuotaError,
-  isCodexTransientUpstreamError,
-  isCodexUnknownSessionError,
-  parseCodexJsonl,
-  type CodexAuthRefreshFailureClass,
-} from "./parse.js";
+  runDeviceLogin,
+  CODEX_DEVICE_LOGIN_COMMAND,
+  type SandboxLoginDriver,
+  type DeviceLoginPromptSink,
+  type DeviceLoginOutcome,
+  type DeviceLoginResult,
+  type RunDeviceLoginOptions,
+} from "./device-login-runner.js";
+export { DEVICE_LOGIN_URL, type DeviceLoginPrompt } from "./device-login-parse.js";
+export {
+  promoteDeviceLoginCredential,
+  checkStagedCredentialReadiness,
+  DeviceLoginReadinessError,
+  type CredentialReadinessResult,
+  type PromoteDeviceLoginCredentialInput,
+  type PromoteDeviceLoginCredentialOutcome,
+} from "./adapter-auth-promotion.js";
+export { parseCodexJsonl, isCodexHarnessCrash, isCodexProviderQuotaError, isCodexTransientUpstreamError, isCodexUnknownSessionError } from "./parse.js";
 export {
   getQuotaWindows,
   readCodexAuthInfo,

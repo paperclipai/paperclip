@@ -466,6 +466,315 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(archived?.cleanupEligibleAt).toBeInstanceOf(Date);
   }, 20_000);
 
+  async function seedAncestryTerminalWorkspace(overrides: { updatedAt?: Date } = {}) {
+    // Build a worktree whose HEAD equals the base ref, so HEAD is an ancestor
+    // of the base. This workspace landed by ancestry and carries no tracked
+    // pull request, so delivery derives to merged_by_ancestry.
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-ancestry-${randomUUID()}`);
+    tempDirs.add(worktreePath);
+    const branchName = `ancestry-${randomUUID().slice(0, 8)}`;
+    await runGit(repoRoot, ["branch", branchName]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, branchName]);
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const issuePrefix = `P${companyId.slice(0, 8).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Ancestry delivery",
+      status: "in_progress",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: `${issuePrefix}-1`,
+      status: "active",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      providerType: "git_worktree",
+      repoUrl: "https://github.com/paperclipai/paperclip.git",
+      baseRef: "main",
+      branchName,
+    });
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      identifier: `${issuePrefix}-1`,
+      title: "Delivered by ancestry",
+      status: "done",
+      priority: "medium",
+      executionWorkspaceId,
+    });
+    await db
+      .update(executionWorkspaces)
+      .set({ sourceIssueId, ...(overrides.updatedAt ? { updatedAt: overrides.updatedAt } : {}) })
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    return { companyId, projectId, executionWorkspaceId, sourceIssueId, worktreePath };
+  }
+
+  it("archives a terminal workspace delivered by ancestry with no pull request", async () => {
+    const seeded = await seedAncestryTerminalWorkspace();
+
+    const readiness = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+    expect(readiness?.deliveryState).toBe("merged_by_ancestry");
+    expect(readiness?.blockingReasons).toEqual([]);
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    const [workspace] = await db
+      .select({ status: executionWorkspaces.status, cleanupReason: executionWorkspaces.cleanupReason })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    expect(sweep).toMatchObject({ archived: 1, cleanupFailed: 0 });
+    expect(workspace).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
+  }, 20_000);
+
+  it("skips a sweep that starts while another sweep runs", async () => {
+    // The scheduler can start a second sweep before the first one finishes. The
+    // sweeps share the cursor and the boundary. A concurrent sweep must skip
+    // instead of running, so it cannot corrupt the shared rotation state.
+    const seeded = await seedAncestryTerminalWorkspace();
+
+    // Start the first sweep and do not wait. An async function runs its body up
+    // to the first await, so the in-progress flag is set before the second call
+    // starts. The second call sees the flag and returns without a scan.
+    const firstSweepPromise = svc.sweepTerminalWorkspaces();
+    const concurrentSweep = await svc.sweepTerminalWorkspaces();
+    const firstSweep = await firstSweepPromise;
+
+    // The concurrent sweep inspected no candidate and changed no state.
+    expect(concurrentSweep).toMatchObject({ checked: 0, archived: 0, eligible: 0 });
+    // The first sweep archived the eligible workspace.
+    expect(firstSweep.archived).toBe(1);
+
+    const [workspace] = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    expect(workspace?.status).toBe("archived");
+
+    // The flag resets after the first sweep, so a later sweep runs its scan.
+    const laterSweep = await svc.sweepTerminalWorkspaces();
+    expect(laterSweep).toMatchObject({ archived: 0 });
+  }, 20_000);
+
+  it("archives an eligible workspace behind a full page of skipped candidates", async () => {
+    // Seed more skipped candidates than the sweep page holds, each older than
+    // the eligible workspace. A skipped candidate keeps its updatedAt, so a
+    // sweep that always reads the oldest page never reaches the eligible
+    // workspace. The reaper must rotate its scan window across sweeps.
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const issuePrefix = `P${companyId.slice(0, 8).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Starved reaper",
+      status: "in_progress",
+    });
+    // Two open-issue workspaces that the reaper always skips. Their older
+    // updatedAt keeps them at the front of the ordered candidate set.
+    const skippedWorkspaceIds: string[] = [];
+    for (let index = 0; index < 2; index += 1) {
+      const workspaceId = randomUUID();
+      const openIssueId = randomUUID();
+      skippedWorkspaceIds.push(workspaceId);
+      await db.insert(executionWorkspaces).values({
+        id: workspaceId,
+        companyId,
+        projectId,
+        mode: "isolated_workspace",
+        strategyType: "local_fs",
+        name: `${issuePrefix}-skip-${index}`,
+        status: "active",
+        providerType: "local_fs",
+        updatedAt: new Date(Date.UTC(2020, 0, index + 1)),
+      });
+      await db.insert(issues).values({
+        id: openIssueId,
+        companyId,
+        projectId,
+        title: `Open ${index}`,
+        status: "in_progress",
+        priority: "medium",
+        executionWorkspaceId: workspaceId,
+      });
+      await db
+        .update(executionWorkspaces)
+        .set({ sourceIssueId: openIssueId, updatedAt: new Date(Date.UTC(2020, 0, index + 1)) })
+        .where(eq(executionWorkspaces.id, workspaceId));
+    }
+    // The eligible workspace is newest, so it sorts after the whole skipped page.
+    const eligible = await seedAncestryTerminalWorkspace({ updatedAt: new Date(Date.UTC(2020, 0, 9)) });
+
+    // A fresh service starts with an empty scan cursor, so each call inspects
+    // one row and advances. A single-row page never lands on the eligible
+    // workspace first.
+    const service = executionWorkspaceService(db, {
+      resolvePullRequestDetails: async () => ({ state: "unknown", headRef: null, headSha: null }),
+    });
+
+    const firstSweep = await service.sweepTerminalWorkspaces(1);
+    expect(firstSweep).toMatchObject({ checked: 1, archived: 0, skippedNonTerminalTree: 1 });
+    const [afterFirst] = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, eligible.executionWorkspaceId));
+    expect(afterFirst?.status).toBe("active");
+
+    let archivedSweep: Awaited<ReturnType<typeof service.sweepTerminalWorkspaces>> | null = null;
+    for (let attempt = 0; attempt < 4 && !archivedSweep; attempt += 1) {
+      const sweep = await service.sweepTerminalWorkspaces(1);
+      if (sweep.archived > 0) archivedSweep = sweep;
+    }
+
+    expect(archivedSweep).toMatchObject({ archived: 1 });
+    const workspaces = await db
+      .select({ id: executionWorkspaces.id, status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(inArray(executionWorkspaces.id, [eligible.executionWorkspaceId, ...skippedWorkspaceIds]));
+    const byId = new Map(workspaces.map((row) => [row.id, row.status]));
+    expect(byId.get(eligible.executionWorkspaceId)).toBe("archived");
+    for (const skippedId of skippedWorkspaceIds) {
+      expect(byId.get(skippedId)).toBe("active");
+    }
+  }, 20_000);
+
+  it("revisits an eligible workspace behind the cursor despite continuous newer churn", async () => {
+    // Reproduce the rotation-starvation case. The scan cursor advances past a
+    // workspace while it is not eligible. The workspace then becomes eligible
+    // but keeps its old updatedAt, so it stays behind the cursor. Meanwhile a
+    // steady stream of newer candidates keeps every page full. Without a frozen
+    // per-rotation upper bound, the cursor never reaches the end, never resets,
+    // and never revisits the eligible workspace. The bound makes each rotation
+    // cover a finite set, so the cursor resets and the workspace is archived.
+    let clockMs = Date.UTC(2021, 6, 1);
+    const service = executionWorkspaceService(db, {
+      resolvePullRequestDetails: async () => ({ state: "unknown", headRef: null, headSha: null }),
+      now: () => new Date(clockMs),
+    });
+
+    // An eligible ancestry workspace with an old updatedAt. Its source issue
+    // starts non-terminal, so the first sweeps skip it and pass the cursor.
+    const eligible = await seedAncestryTerminalWorkspace({ updatedAt: new Date(Date.UTC(2021, 0, 2)) });
+    await db
+      .update(issues)
+      .set({ status: "in_progress" })
+      .where(eq(issues.id, eligible.sourceIssueId));
+
+    // One older skipped candidate. With a single-row page it sorts before the
+    // eligible workspace, so the first sweep advances the cursor onto it.
+    const olderSkippedId = randomUUID();
+    const olderOpenIssueId = randomUUID();
+    await db.insert(executionWorkspaces).values({
+      id: olderSkippedId,
+      companyId: eligible.companyId,
+      projectId: eligible.projectId,
+      mode: "isolated_workspace",
+      strategyType: "local_fs",
+      name: "skip-older",
+      status: "active",
+      providerType: "local_fs",
+      updatedAt: new Date(Date.UTC(2021, 0, 1)),
+    });
+    await db.insert(issues).values({
+      id: olderOpenIssueId,
+      companyId: eligible.companyId,
+      projectId: eligible.projectId,
+      title: "Older open",
+      status: "in_progress",
+      priority: "medium",
+      executionWorkspaceId: olderSkippedId,
+    });
+    await db
+      .update(executionWorkspaces)
+      .set({ sourceIssueId: olderOpenIssueId, updatedAt: new Date(Date.UTC(2021, 0, 1)) })
+      .where(eq(executionWorkspaces.id, olderSkippedId));
+
+    // Sweep once per row so the cursor lands on the eligible workspace while it
+    // is still non-terminal.
+    await service.sweepTerminalWorkspaces(1); // reads olderSkipped
+    await service.sweepTerminalWorkspaces(1); // reads eligible, still non-terminal
+
+    const [afterSkip] = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, eligible.executionWorkspaceId));
+    expect(afterSkip?.status).toBe("active");
+
+    // The workspace becomes eligible now. Its updatedAt stays old, so it is
+    // behind the cursor.
+    await db
+      .update(issues)
+      .set({ status: "done" })
+      .where(eq(issues.id, eligible.sourceIssueId));
+
+    // Drive continuous churn. Each sweep, advance the clock and add a newer
+    // skipped candidate ahead of the cursor. Without the frozen bound the cursor
+    // would chase this churn forever and never revisit the eligible workspace.
+    let archived = false;
+    for (let attempt = 0; attempt < 8 && !archived; attempt += 1) {
+      clockMs += 24 * 60 * 60 * 1000;
+      const churnId = randomUUID();
+      const churnIssueId = randomUUID();
+      await db.insert(executionWorkspaces).values({
+        id: churnId,
+        companyId: eligible.companyId,
+        projectId: eligible.projectId,
+        mode: "isolated_workspace",
+        strategyType: "local_fs",
+        name: `churn-${attempt}`,
+        status: "active",
+        providerType: "local_fs",
+        updatedAt: new Date(clockMs),
+      });
+      await db.insert(issues).values({
+        id: churnIssueId,
+        companyId: eligible.companyId,
+        projectId: eligible.projectId,
+        title: `Churn ${attempt}`,
+        status: "in_progress",
+        priority: "medium",
+        executionWorkspaceId: churnId,
+      });
+      await db
+        .update(executionWorkspaces)
+        .set({ sourceIssueId: churnIssueId, updatedAt: new Date(clockMs) })
+        .where(eq(executionWorkspaces.id, churnId));
+
+      const sweep = await service.sweepTerminalWorkspaces(1);
+      if (sweep.archived > 0) archived = true;
+    }
+
+    expect(archived).toBe(true);
+    const [finalState] = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, eligible.executionWorkspaceId));
+    expect(finalState?.status).toBe("archived");
+  }, 30_000);
+
   it("does not treat an unrelated inbound issue mention as delivery evidence", async () => {
     const seeded = await seedTerminalWorkspace();
     const unrelatedIssueId = randomUUID();

@@ -20,10 +20,13 @@ const strictTextDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: tru
 // malicious highly-compressible package cannot exhaust server memory: a
 // per-entry ceiling (passed to zlib as maxOutputLength, so it fails before
 // over-allocating) plus an aggregate ceiling across all entries. Both sit far
-// above any real company package (inline JSON was historically capped at 64MB)
-// yet far below what a bomb would need.
-export const MAX_ZIP_ENTRY_DECOMPRESSED_BYTES = 256 * 1024 * 1024;
-export const MAX_ZIP_TOTAL_DECOMPRESSED_BYTES = 512 * 1024 * 1024;
+// above any real company package yet far below what a bomb would need. These
+// are only fallback defaults: the server import route passes explicit limits
+// scaled from its configured upload cap. The per-entry ceiling stays at 512 MB
+// even for large caps because a text or base64 entry beyond that cannot
+// materialize as a JS string (V8's string length limit) regardless.
+export const MAX_ZIP_ENTRY_DECOMPRESSED_BYTES = 512 * 1024 * 1024;
+export const MAX_ZIP_TOTAL_DECOMPRESSED_BYTES = 1024 * 1024 * 1024;
 
 export const binaryContentTypeByExtension: Record<string, string> = {
   ".gif": "image/gif",

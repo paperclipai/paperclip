@@ -144,6 +144,7 @@ import {
   isInboxEntityDismissed,
   isMineInboxTab,
   loadCollapsedInboxGroupKeys,
+  loadCollapsedInboxParentIds,
   loadInboxFilterPreferences,
   loadInboxIssueColumns,
   loadInboxNesting,
@@ -155,6 +156,7 @@ import {
   resolveInboxSelectionIndex,
   saveInboxFilterPreferences,
   saveCollapsedInboxGroupKeys,
+  saveCollapsedInboxParentIds,
   saveInboxIssueColumns,
   saveInboxNesting,
   saveInboxWorkItemGroupBy,
@@ -802,6 +804,7 @@ export function Inbox() {
       previousSelectedCompanyIdRef.current = selectedCompanyId;
       setFilterPreferences(loadInboxFilterPreferences(selectedCompanyId));
       setCollapsedGroupKeys(loadCollapsedInboxGroupKeys(selectedCompanyId));
+      setCollapsedInboxParents(loadCollapsedInboxParentIds(selectedCompanyId));
     }
   }, [selectedCompanyId]);
 
@@ -1387,7 +1390,9 @@ export function Inbox() {
       return next;
     });
   }, []);
-  const [collapsedInboxParents, setCollapsedInboxParents] = useState<Set<string>>(new Set());
+  const [collapsedInboxParents, setCollapsedInboxParents] = useState<Set<string>>(
+    () => loadCollapsedInboxParentIds(selectedCompanyId),
+  );
   const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(() => loadCollapsedInboxGroupKeys(selectedCompanyId));
   const toggleGroupCollapse = useCallback((groupKey: string) => {
     setCollapsedGroupKeys((prev) => {
@@ -1523,18 +1528,20 @@ export function Inbox() {
       const next = new Set(prev);
       if (next.has(parentId)) next.delete(parentId);
       else next.add(parentId);
+      saveCollapsedInboxParentIds(selectedCompanyId, next);
       return next;
     });
-  }, []);
+  }, [selectedCompanyId]);
   const setInboxParentCollapsed = useCallback((parentId: string, collapsed: boolean) => {
     setCollapsedInboxParents((prev) => {
       if (prev.has(parentId) === collapsed) return prev;
       const next = new Set(prev);
       if (collapsed) next.add(parentId);
       else next.delete(parentId);
+      saveCollapsedInboxParentIds(selectedCompanyId, next);
       return next;
     });
-  }, []);
+  }, [selectedCompanyId]);
 
   // Build flat navigation list from visible rows so keyboard traversal respects collapsed groups.
   const flatNavItems = useMemo((): NavEntry[] => {

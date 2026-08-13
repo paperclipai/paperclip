@@ -26,7 +26,8 @@ export const INBOX_NESTING_KEY = "paperclip:inbox:nesting";
 export const INBOX_GROUP_BY_KEY = "paperclip:inbox:group-by";
 export const INBOX_FILTER_PREFERENCES_KEY_PREFIX = "paperclip:inbox:filters";
 export const INBOX_COLLAPSED_GROUPS_KEY_PREFIX = "paperclip:inbox:collapsed-groups";
-export type InboxTab = "decisions" | "mine" | "recent" | "unread" | "blocked" | "all";
+export const INBOX_COLLAPSED_PARENTS_KEY_PREFIX = "paperclip:inbox:collapsed-parents";
+export type InboxTab = "mine" | "recent" | "unread" | "blocked" | "all";
 export type InboxCategoryFilter =
   | "everything"
   | "issues_i_touched"
@@ -39,18 +40,12 @@ export type InboxWorkItemGroupBy = "none" | "type" | "assignee" | "project" | "w
 export const inboxIssueColumns = [
   "status",
   "id",
-  "priority",
   "assignee",
   "kickedOffBy",
   "project",
   "workspace",
   "parent",
-  "storyPoints",
-  "estimateHours",
-  "actualHumanTime",
-  "actualAiTime",
   "labels",
-  "dueDate",
   "updated",
 ] as const;
 export type InboxIssueColumn = (typeof inboxIssueColumns)[number];
@@ -193,6 +188,11 @@ function getInboxCollapsedGroupsStorageKey(companyId: string | null | undefined)
   return `${INBOX_COLLAPSED_GROUPS_KEY_PREFIX}:${companyId}`;
 }
 
+function getInboxCollapsedParentsStorageKey(companyId: string | null | undefined): string | null {
+  if (!companyId) return null;
+  return `${INBOX_COLLAPSED_PARENTS_KEY_PREFIX}:${companyId}`;
+}
+
 export function loadInboxFilterPreferences(
   companyId: string | null | undefined,
 ): InboxFilterPreferences {
@@ -272,6 +272,36 @@ export function saveCollapsedInboxGroupKeys(
 
   try {
     localStorage.setItem(storageKey, JSON.stringify([...groupKeys]));
+  } catch {
+    // Ignore localStorage failures.
+  }
+}
+
+export function loadCollapsedInboxParentIds(
+  companyId: string | null | undefined,
+): Set<string> {
+  const storageKey = getInboxCollapsedParentsStorageKey(companyId);
+  if (!storageKey) return new Set();
+
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return new Set(Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+export function saveCollapsedInboxParentIds(
+  companyId: string | null | undefined,
+  parentIds: ReadonlySet<string>,
+) {
+  const storageKey = getInboxCollapsedParentsStorageKey(companyId);
+  if (!storageKey) return;
+
+  try {
+    localStorage.setItem(storageKey, JSON.stringify([...parentIds]));
   } catch {
     // Ignore localStorage failures.
   }
@@ -653,7 +683,6 @@ export function loadLastInboxTab(): InboxTab {
       || raw === "recent"
       || raw === "mine"
       || raw === "blocked"
-      || raw === "decisions"
     ) return raw;
     if (raw === "new") return "mine";
     return "mine";
@@ -754,9 +783,6 @@ export function getApprovalsForTab(
     (a, b) => normalizeTimestamp(b.updatedAt) - normalizeTimestamp(a.updatedAt),
   );
 
-  if (tab === "decisions") {
-    return sortedApprovals.filter((approval) => ACTIONABLE_APPROVAL_STATUSES.has(approval.status));
-  }
   if (tab === "mine") {
     return sortedApprovals.filter((approval) => isApprovalVisibleInMine(approval, currentUserId));
   }

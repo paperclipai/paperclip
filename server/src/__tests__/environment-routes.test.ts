@@ -29,6 +29,7 @@ const mockProjectService = vi.hoisted(() => ({
 const mockInstanceSettingsService = vi.hoisted(() => ({
   listCompanyIds: vi.fn(),
   getGeneral: vi.fn(),
+  getExperimental: vi.fn(),
 }));
 
 const mockEnvironmentService = vi.hoisted(() => ({
@@ -242,6 +243,8 @@ describe("environment routes", () => {
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockInstanceSettingsService.getGeneral.mockReset();
     mockInstanceSettingsService.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockInstanceSettingsService.getExperimental.mockReset();
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: false });
     mockEnvironmentService.list.mockReset();
     mockEnvironmentService.list.mockResolvedValue([]);
     mockEnvironmentService.getById.mockReset();
@@ -415,9 +418,9 @@ describe("environment routes", () => {
           provider: "daytona",
           image: "custom-image:latest",
           target: "us",
-          apiKey: "must-never-echo",
+          apiKey: "config-credential-must-never-echo",
         },
-        envVars: { DAYTONA_API_KEY: "must-never-echo" },
+        envVars: { MY_AGENT_TOOL_SETTING: "tenant-env-value" },
         metadata: { managedByPaperclip: true, managedSandboxProvider: "daytona" },
         createdAt: now,
         updatedAt: now,
@@ -451,21 +454,42 @@ describe("environment routes", () => {
       delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
     });
 
-    it("never echoes env vars or credential-shaped config keys to instance admins", async () => {
+    it("never echoes credential-shaped config keys, while tenant env vars round-trip", async () => {
       mockEnvironmentService.getById.mockResolvedValue(createPlatformSandboxEnvironment());
       const app = createApp(ownerAdminActor);
 
       const res = await request(app).get("/api/environments/env-managed-1");
 
       expect(res.status).toBe(200);
-      expect(res.body.envVars).toEqual({});
+      // Env vars are the tenant-owned field on the managed sandbox row
+      // (the platform never writes them), so they echo for editing.
+      expect(res.body.envVars).toEqual({ MY_AGENT_TOOL_SETTING: "tenant-env-value" });
       expect(res.body.config).toEqual({
         provider: "daytona",
         image: "custom-image:latest",
         target: "us",
       });
       expect(res.body.metadata).toMatchObject({ managedByPaperclip: true });
-      expect(JSON.stringify(res.body)).not.toContain("must-never-echo");
+      expect(JSON.stringify(res.body)).not.toContain("config-credential-must-never-echo");
+    });
+
+    it("keeps blanking env vars on legacy kubernetes-marker rows", async () => {
+      // Pre-generalization builds may have written platform values into
+      // these rows' env vars, so the legacy floor stays absolute there.
+      mockEnvironmentService.getById.mockResolvedValue({
+        ...createPlatformSandboxEnvironment(),
+        metadata: {
+          managedByPaperclip: true,
+          managedSandboxProvider: "kubernetes",
+          managedKubernetesSandbox: true,
+        },
+      });
+      const app = createApp(ownerAdminActor);
+
+      const res = await request(app).get("/api/environments/env-managed-1");
+
+      expect(res.status).toBe(200);
+      expect(res.body.envVars).toEqual({});
     });
 
     it("exposes structural config to restricted company readers instead of blanking it", async () => {
@@ -487,6 +511,8 @@ describe("environment routes", () => {
         image: "custom-image:latest",
         target: "us",
       });
+      // Tenant env vars can carry pasted credentials, so restricted readers
+      // get the same blank envVars posture as on every other environment.
       expect(res.body[0].envVars).toEqual({});
       expect(res.body[0].metadata).toMatchObject({ managedByPaperclip: true });
     });
@@ -500,6 +526,189 @@ describe("environment routes", () => {
       expect(res.status).toBe(403);
       expect(res.body.details).toMatchObject({ code: "environment_platform_managed" });
       expect(mockEnvironmentService.update).not.toHaveBeenCalled();
+    });
+
+    it("allows an envVars-only patch on the managed sandbox row", async () => {
+      const row = createPlatformSandboxEnvironment();
+      mockEnvironmentService.getById.mockResolvedValue(row);
+      mockEnvironmentService.update.mockResolvedValue({
+        ...row,
+        envVars: { MY_AGENT_TOOL_SETTING: "updated-value", EXTRA: "added" },
+      });
+      const app = createApp(ownerAdminActor);
+
+      const res = await request(app)
+        .patch("/api/environments/env-managed-1")
+        .send({ envVars: { MY_AGENT_TOOL_SETTING: "updated-value", EXTRA: "added" } });
+
+      expect(res.status).toBe(200);
+      expect(mockEnvironmentService.update).toHaveBeenCalledWith(
+        "env-managed-1",
+        expect.objectContaining({
+          envVars: { MY_AGENT_TOOL_SETTING: "updated-value", EXTRA: "added" },
+        }),
+        expect.anything(),
+      );
+      expect(res.body.envVars).toEqual({ MY_AGENT_TOOL_SETTING: "updated-value", EXTRA: "added" });
+    });
+
+    it("scopes the envVars patch to an explicit companyId query for a multi-company actor", async () => {
+      const row = createPlatformSandboxEnvironment();
+      mockEnvironmentService.getById.mockResolvedValue(row);
+      mockEnvironmentService.update.mockResolvedValue({ ...row, envVars: { A: "1" } });
+      // No prior bindings and two memberships: neither inference path can
+      // pin a company, so the explicit query context must carry the save.
+      mockSecretService.listBindingCompanyIdsForTarget.mockResolvedValue([]);
+      const app = createApp({
+        ...ownerAdminActor,
+        companyIds: ["company-1", "company-2"],
+        memberships: [
+          { companyId: "company-1", status: "active", membershipRole: "owner" },
+          { companyId: "company-2", status: "active", membershipRole: "member" },
+        ],
+      });
+
+      const res = await request(app)
+        .patch("/api/environments/env-managed-1?companyId=company-1")
+        .send({ envVars: { A: "1" } });
+
+      expect(res.status).toBe(200);
+      expect(mockSecretService.normalizeEnvBindingsForPersistence).toHaveBeenCalledWith(
+        "company-1",
+        { A: "1" },
+        expect.anything(),
+      );
+    });
+
+    it("falls back to the instance's only company when the actor's memberships cannot pin one", async () => {
+      const row = createPlatformSandboxEnvironment();
+      mockEnvironmentService.getById.mockResolvedValue(row);
+      mockEnvironmentService.update.mockResolvedValue({ ...row, envVars: { A: "1" } });
+      mockSecretService.listBindingCompanyIdsForTarget.mockResolvedValue([]);
+      // An instance admin provisioned without membership rows — the
+      // owner-as-admin shape on managed stacks.
+      const app = createApp({
+        ...ownerAdminActor,
+        companyIds: [],
+        memberships: [],
+      });
+
+      const res = await request(app)
+        .patch("/api/environments/env-managed-1")
+        .send({ envVars: { A: "1" } });
+
+      expect(res.status).toBe(200);
+      expect(mockSecretService.normalizeEnvBindingsForPersistence).toHaveBeenCalledWith(
+        "company-1",
+        { A: "1" },
+        expect.anything(),
+      );
+    });
+
+    it("still fails closed when no companyId context is resolvable on a multi-company instance", async () => {
+      mockEnvironmentService.getById.mockResolvedValue(createPlatformSandboxEnvironment());
+      mockSecretService.listBindingCompanyIdsForTarget.mockResolvedValue([]);
+      mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1", "company-2"]);
+      const app = createApp({
+        ...ownerAdminActor,
+        companyIds: ["company-1", "company-2"],
+        memberships: [
+          { companyId: "company-1", status: "active", membershipRole: "owner" },
+          { companyId: "company-2", status: "active", membershipRole: "member" },
+        ],
+      });
+
+      const res = await request(app)
+        .patch("/api/environments/env-managed-1")
+        .send({ envVars: { A: "1" } });
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toContain("requires a companyId context");
+      expect(mockEnvironmentService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects a patch that mixes envVars with any other field on the managed sandbox row", async () => {
+      mockEnvironmentService.getById.mockResolvedValue(createPlatformSandboxEnvironment());
+      const app = createApp(ownerAdminActor);
+
+      const res = await request(app)
+        .patch("/api/environments/env-managed-1")
+        .send({ envVars: { A: "1" }, name: "Renamed" });
+
+      expect(res.status).toBe(403);
+      expect(res.body.details).toMatchObject({ code: "environment_platform_managed" });
+      expect(mockEnvironmentService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects an envVars-only patch on a legacy kubernetes-marker row", async () => {
+      mockEnvironmentService.getById.mockResolvedValue({
+        ...createPlatformSandboxEnvironment(),
+        metadata: {
+          managedByPaperclip: true,
+          managedSandboxProvider: "kubernetes",
+          managedKubernetesSandbox: true,
+        },
+      });
+      const app = createApp(ownerAdminActor);
+
+      const res = await request(app)
+        .patch("/api/environments/env-managed-1")
+        .send({ envVars: { A: "1" } });
+
+      expect(res.status).toBe(403);
+      expect(res.body.details).toMatchObject({ code: "environment_platform_managed" });
+      expect(mockEnvironmentService.update).not.toHaveBeenCalled();
+    });
+
+    it("still rejects deletion of the managed sandbox row", async () => {
+      mockEnvironmentService.getById.mockResolvedValue(createPlatformSandboxEnvironment());
+      const app = createApp(ownerAdminActor);
+
+      const res = await request(app).delete("/api/environments/env-managed-1");
+
+      expect(res.status).toBe(403);
+      expect(res.body.details).toMatchObject({ code: "environment_platform_managed" });
+    });
+
+    it("hides the local environment from every read surface under managed-sandbox-only", async () => {
+      mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: true });
+      const localRow = {
+        ...createPlatformSandboxEnvironment(),
+        id: "env-local-1",
+        name: "Local",
+        driver: "local",
+        config: {},
+        envVars: {},
+        metadata: { managedByPaperclip: true, defaultForInstance: true },
+      };
+      mockEnvironmentService.list.mockResolvedValue([localRow, createPlatformSandboxEnvironment()]);
+      const app = createApp(ownerAdminActor);
+
+      const listRes = await request(app).get("/api/companies/company-1/environments");
+      expect(listRes.status).toBe(200);
+      expect(listRes.body.map((row: { id: string }) => row.id)).toEqual(["env-managed-1"]);
+
+      mockEnvironmentService.getById.mockResolvedValue(localRow);
+      const byIdRes = await request(app).get("/api/environments/env-local-1");
+      expect(byIdRes.status).toBe(404);
+    });
+
+    it("keeps the local environment visible when managed-sandbox-only is off", async () => {
+      const localRow = {
+        ...createPlatformSandboxEnvironment(),
+        id: "env-local-1",
+        name: "Local",
+        driver: "local",
+        config: {},
+        envVars: {},
+        metadata: { managedByPaperclip: true },
+      };
+      mockEnvironmentService.list.mockResolvedValue([localRow]);
+      const app = createApp(ownerAdminActor);
+
+      const listRes = await request(app).get("/api/companies/company-1/environments");
+      expect(listRes.status).toBe(200);
+      expect(listRes.body.map((row: { id: string }) => row.id)).toEqual(["env-local-1"]);
     });
 
     it("allows a marker-clear-only patch to unblock a row with a stale legacy kubernetes marker", async () => {
@@ -807,8 +1016,8 @@ describe("environment routes", () => {
       const res = await request(app).get("/api/environments/env-tenant-1");
 
       expect(res.status).toBe(200);
-      expect(res.body.envVars).toEqual({ DAYTONA_API_KEY: "must-never-echo" });
-      expect(res.body.config.apiKey).toBe("must-never-echo");
+      expect(res.body.envVars).toEqual({ MY_AGENT_TOOL_SETTING: "tenant-env-value" });
+      expect(res.body.config.apiKey).toBe("config-credential-must-never-echo");
     });
 
     it("does not floor platform-marked rows on self-hosted instances", async () => {
@@ -824,8 +1033,8 @@ describe("environment routes", () => {
       const res = await request(app).get("/api/environments/env-managed-1");
 
       expect(res.status).toBe(200);
-      expect(res.body.envVars).toEqual({ DAYTONA_API_KEY: "must-never-echo" });
-      expect(res.body.config.apiKey).toBe("must-never-echo");
+      expect(res.body.envVars).toEqual({ MY_AGENT_TOOL_SETTING: "tenant-env-value" });
+      expect(res.body.config.apiKey).toBe("config-credential-must-never-echo");
     });
   });
 
@@ -2363,7 +2572,9 @@ describe("environment routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(mockProbeEnvironment).toHaveBeenCalledWith(expect.anything(), environment, {
-      companyId: null,
+      // The instance has exactly one company, so the secret-context fallback
+      // resolves it even though the actor carries no memberships.
+      companyId: "company-1",
       pluginWorkerManager: undefined,
       applyCustomImageTemplate: false,
       acquireSandboxRuntimeLease: false,
@@ -2404,6 +2615,9 @@ describe("environment routes", () => {
     };
     mockEnvironmentService.getById.mockResolvedValue(environment);
     mockSecretService.listBindingCompanyIdsForTarget.mockResolvedValue([]);
+    // A multi-company instance keeps the context genuinely ambiguous — a
+    // single-company instance would resolve via the instance fallback.
+    mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1", "company-2"]);
     const app = createApp({
       type: "board",
       userId: "user-1",

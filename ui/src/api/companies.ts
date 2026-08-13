@@ -10,6 +10,17 @@ import type {
   UpdateCompanyBranding,
 } from "@paperclipai/shared";
 import type { ExportFidelityReport } from "@paperclipai/shared/portability-fidelity";
+import {
+  companyImportTransferApplyPath,
+  companyImportTransferPartPath,
+  companyImportTransferPath,
+  companyImportTransferPreviewPath,
+  COMPANY_IMPORT_TRANSFERS_ROUTE_PATH,
+  type CompanyImportTransferCreated,
+  type CompanyImportTransferDeclaration,
+  type CompanyImportTransferPartUploadResult,
+  type CompanyImportTransferStatus,
+} from "@paperclipai/shared/company-import-transfer";
 import { api } from "./client";
 
 export type CompanyStats = Record<string, { agentCount: number; issueCount: number }>;
@@ -126,4 +137,29 @@ export const companiesApi = {
     api.postForm<CompanyImportJobAccepted>("/companies/import?async=1", importPackageForm(file, meta)),
   getImportJob: (jobId: string) =>
     api.get<CompanyImportJobStatus>(`/companies/import/jobs/${encodeURIComponent(jobId)}`),
+  // Chunked resumable transfer for large local .zip packages: declare the
+  // sliced zip (content-addressed, so re-declaring the same file resumes the
+  // prior transfer with its uploaded parts intact), upload the missing parts,
+  // then preview/apply against the server-side assembled spool. Shapes and
+  // paths come from the shared transfer contract.
+  importTransferCreate: (manifest: CompanyImportTransferDeclaration) =>
+    api.post<CompanyImportTransferCreated>(`/companies${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}`, manifest),
+  importTransferUploadPart: (transferId: string, index: number, bytes: Blob) =>
+    api.putRaw<CompanyImportTransferPartUploadResult>(
+      `/companies${companyImportTransferPartPath(transferId, index)}`,
+      bytes,
+    ),
+  importTransferStatus: (transferId: string) =>
+    api.get<CompanyImportTransferStatus>(`/companies${companyImportTransferPath(transferId)}`),
+  importTransferPreview: (transferId: string, meta: CompanyPortabilityPreviewMeta) =>
+    api.post<CompanyPortabilityPreviewResult>(
+      `/companies${companyImportTransferPreviewPath(transferId)}`,
+      meta,
+    ),
+  /** Apply a fully uploaded transfer as an async job (same 202/409 contract as importBundlePackageAsync). */
+  importTransferApply: (transferId: string, meta: CompanyPortabilityImportMeta) =>
+    api.post<CompanyImportJobAccepted>(
+      `/companies${companyImportTransferApplyPath(transferId)}?async=1`,
+      meta,
+    ),
 };

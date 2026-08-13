@@ -1,6 +1,5 @@
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
-import { isDeepStrictEqual } from "node:util";
 import { and, asc, desc, eq, gt, gte, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -35,14 +34,12 @@ import {
   labels,
   projectWorkspaces,
   projects,
-  workCycles,
   workspaceOperations,
 } from "@paperclipai/db";
 import type {
   AcceptedPlanDecomposition,
   IssueComment,
   IssueCommentAuthorType,
-  IssueAttachment,
   IssueCommentDerivedAuthorSource,
   IssueCommentMetadata,
   IssueCommentPresentation,
@@ -59,16 +56,12 @@ import type {
   SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
 import {
-  ISSUE_WORK_ITEM_TYPES,
-} from "@paperclipai/shared/constants";
-import {
   clampIssueRequestDepth,
   extractAgentMentionIds,
   extractProjectMentionIds,
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
-  issueExecutionContractSchema,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
@@ -93,10 +86,6 @@ import {
   type ParsedExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
-import {
-  assertIssueCompletionEvidence,
-  assertIssueCompletionEvidenceOnCreate,
-} from "./issue-completion-evidence.js";
 import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
@@ -105,7 +94,7 @@ import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallbac
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
-import { insertRowsInChunks } from "./batch-insert.js";
+import { DEFAULT_INSERT_CHUNK_ROWS, insertRowsInChunks } from "./batch-insert.js";
 import type {
   ImportIssueRow,
   ImportIssueCommentRow,
@@ -155,7 +144,7 @@ export const ISSUE_SUBTREE_DIAGNOSTICS_MAX_BLOCKERS_PER_NODE = 20;
 export const ISSUE_SUBTREE_DIAGNOSTICS_MAX_WAKE_REQUESTS_PER_NODE = 5;
 export const ISSUE_SUBTREE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS_PER_NODE = 5;
 const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
-export const MAX_DIRECT_CHILD_ISSUES_PER_PARENT = 10;
+export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
 const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
 // Non-human author sentinels that agents post under. These ARE eligible for
@@ -167,21 +156,6 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
-const ISSUE_ATTACHMENT_CONTENT_PATH_RE = /\/api\/attachments\/([^/\s)"'`]+)\/content\b/g;
-
-function issueAttachmentContentPath(id: string) {
-  return `/api/attachments/${id}/content`;
-}
-
-function extractIssueAttachmentIdsFromText(text: string) {
-  const ids = new Set<string>();
-  for (const match of text.matchAll(ISSUE_ATTACHMENT_CONTENT_PATH_RE)) {
-    const id = match[1]?.trim();
-    if (id && isUuidLike(id)) ids.add(id);
-  }
-  return [...ids];
-}
-
 export const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS = 7;
 const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS = ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const ISSUE_CREATE_IDEMPOTENCY_KEY_CLEANUP_BATCH_SIZE = 500;
@@ -562,20 +536,21 @@ export interface IssueFilters {
   attention?: "blocked";
   status?: string | readonly string[];
   /**
-   * Filter by assignee agent ID. A null value matches unassigned issues; the
-   * route normalizes the query-string "null" sentinel before calling here.
+   * Filter by assignee agent ID.
+   * - `string` (UUID): match issues assigned to that agent.
+   * - `null`: match unassigned issues (IS NULL).
+   * - The literal string `"null"` is also accepted as a sentinel for `null`
+   *   so that query-string callers can pass `?assigneeAgentId=null` directly.
+   *   The route layer normalises it before calling the service, but the service
+   *   also normalises it for direct callers.
    */
   assigneeAgentId?: string | null;
-  recoveryOwnerAgentId?: string;
   participantAgentId?: string;
   assigneeUserId?: string;
   touchedByUserId?: string;
   inboxArchivedByUserId?: string;
   unreadForUserId?: string;
-  awaitingDecisionForUserId?: string;
   projectId?: string;
-  cycleId?: string;
-  projectScopeRestrictedTo?: string[];
   workspaceId?: string;
   executionWorkspaceId?: string;
   parentId?: string;
@@ -584,7 +559,6 @@ export interface IssueFilters {
   originKind?: string;
   originKindPrefix?: string;
   originId?: string;
-  workItemType?: string;
   includeRoutineExecutions?: boolean;
   excludeRoutineExecutions?: boolean;
   includePluginOperations?: boolean;
@@ -598,87 +572,8 @@ export interface IssueFilters {
   offset?: number;
   sortField?: "updated";
   sortDir?: "asc" | "desc";
-}
-
-const ISSUE_WORK_ITEM_TYPE_SET = new Set<string>(ISSUE_WORK_ITEM_TYPES);
-const HUMAN_CONTROL_WORK_ITEM_TYPES = new Set(["initiative", "human_task"]);
-
-export function parseWorkItemTypeFilter(input: string | readonly string[] | undefined): string[] {
-  if (input == null) return [];
-  const entries = Array.isArray(input) ? input : typeof input === "string" ? [input] : [];
-  return entries
-    .flatMap((entry) => (typeof entry === "string" ? entry.split(",") : []))
-    .map((workItemType) => workItemType.trim())
-    .filter((workItemType) => ISSUE_WORK_ITEM_TYPE_SET.has(workItemType));
-}
-
-function isHumanControlWorkItemType(value: unknown) {
-  return typeof value === "string" && HUMAN_CONTROL_WORK_ITEM_TYPES.has(value);
-}
-
-function assertAgentAssignmentAllowedForWorkItem(workItemType: unknown, assigneeAgentId: string | null | undefined) {
-  if (!assigneeAgentId || !isHumanControlWorkItemType(workItemType)) return;
-  throw unprocessable("Initiatives and human tasks cannot be assigned to AI agents. Create a linked AI execution issue instead.");
-}
-
-async function assertChildIssueCreationAllowed(
-  dbOrTx: DbReader,
-  companyId: string,
-  parentIssueId: string,
-  options: { lockParent?: boolean } = {},
-) {
-  const parentSelection = dbOrTx
-    .select({ id: issues.id, companyId: issues.companyId, parentId: issues.parentId })
-    .from(issues)
-    .where(and(eq(issues.id, parentIssueId), eq(issues.companyId, companyId)));
-  const parent = options.lockParent
-    ? await parentSelection.for("update").then((rows) => rows[0] ?? null)
-    : await parentSelection.then((rows) => rows[0] ?? null);
-  if (!parent) throw notFound("Parent issue not found");
-  if (parent.parentId) {
-    throw unprocessable(
-      "Execution lanes cannot create sub-issues. Paperclip supports only one child level under a main parent issue.",
-    );
-  }
-
-  const [{ childCount }] = await dbOrTx
-    .select({ childCount: sql<number>`count(*)::int` })
-    .from(issues)
-    .where(and(eq(issues.companyId, companyId), eq(issues.parentId, parent.id)));
-  if (childCount >= MAX_DIRECT_CHILD_ISSUES_PER_PARENT) {
-    throw unprocessable(
-      `Parent issue already has the maximum ${MAX_DIRECT_CHILD_ISSUES_PER_PARENT} direct execution lanes.`,
-    );
-  }
-
-  return parent;
-}
-
-async function assertIssueParentUpdateAllowed(
-  dbOrTx: DbReader,
-  existing: IssueRow,
-  nextParentId: string,
-  options: { lockRows?: boolean } = {},
-) {
-  if (nextParentId === existing.id) {
-    throw unprocessable("An issue cannot be its own parent");
-  }
-  await assertChildIssueCreationAllowed(dbOrTx, existing.companyId, nextParentId, {
-    lockParent: options.lockRows,
-  });
-
-  const childSelection = dbOrTx
-    .select({ id: issues.id })
-    .from(issues)
-    .where(and(eq(issues.companyId, existing.companyId), eq(issues.parentId, existing.id)));
-  const children = options.lockRows
-    ? await childSelection.for("update")
-    : await childSelection;
-  if (children.length > 0) {
-    throw unprocessable(
-      "Main issues with execution lanes cannot become child issues. Paperclip supports only one child level.",
-    );
-  }
+  /** ISO 8601 timestamp — only return issues with updatedAt strictly after this value. */
+  updatedSince?: string;
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -763,7 +658,6 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
   inheritExecutionWorkspaceFromIssueId?: string | null;
-  budgetLimits?: unknown;
   skipExecutionWorkspaceInheritance?: boolean;
   watchdog?: { agentId: string; instructions?: string | null } | null;
   watchdogActorRunId?: string | null;
@@ -921,360 +815,6 @@ function appendAcceptanceCriteriaToDescription(description: string | null | unde
   const base = description?.trim() ?? "";
   const criteriaMarkdown = ["## Acceptance Criteria", "", ...criteria.map((item) => `- ${item}`)].join("\n");
   return base ? `${base}\n\n${criteriaMarkdown}` : criteriaMarkdown;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function normalizeExecutionContractValue(value: unknown): Record<string, unknown> | null {
-  if (value == null) return null;
-  return isRecord(value) ? value : null;
-}
-
-function canonicalizeExecutionContractAlias(
-  value: Record<string, unknown>,
-  canonical: string,
-  legacy: string,
-) {
-  if (value[canonical] === undefined && value[legacy] !== undefined) {
-    value[canonical] = value[legacy];
-  }
-  delete value[legacy];
-}
-
-function canonicalizeExecutionContractAliases(value: Record<string, unknown>) {
-  const canonical = { ...value };
-  canonicalizeExecutionContractAlias(canonical, "schemaVersion", "schema_version");
-  canonicalizeExecutionContractAlias(canonical, "supersedesRevision", "supersedes_revision");
-  canonicalizeExecutionContractAlias(canonical, "contractType", "contract_type");
-  canonicalizeExecutionContractAlias(canonical, "taskType", "task_type");
-
-  if (isRecord(canonical.core)) {
-    const core = { ...canonical.core };
-    canonicalizeExecutionContractAlias(core, "sourceOfTruth", "source_of_truth");
-    canonicalizeExecutionContractAlias(core, "acceptanceChecks", "acceptance_checks");
-    canonicalizeExecutionContractAlias(core, "evidenceRequired", "evidence_required");
-    canonicalizeExecutionContractAlias(core, "requiredOutputs", "required_outputs");
-    canonicalizeExecutionContractAlias(core, "handoffNotes", "handoff_notes");
-    if (isRecord(core.handoffNotes)) {
-      const handoffNotes = { ...core.handoffNotes };
-      canonicalizeExecutionContractAlias(handoffNotes, "managerReasoning", "manager_reasoning");
-      canonicalizeExecutionContractAlias(handoffNotes, "currentBlocker", "current_blocker");
-      canonicalizeExecutionContractAlias(handoffNotes, "nextAction", "next_action");
-      core.handoffNotes = handoffNotes;
-    }
-    canonical.core = core;
-  }
-  return canonical;
-}
-
-function executionContractsAreSemanticallyEqual(
-  previous: Record<string, unknown> | null,
-  next: Record<string, unknown> | null,
-) {
-  if (!previous || !next) return previous === next;
-  const previousSemantic = canonicalizeExecutionContractAliases(previous);
-  const nextSemantic = canonicalizeExecutionContractAliases(next);
-  delete previousSemantic.revision;
-  delete previousSemantic.supersedesRevision;
-  delete nextSemantic.revision;
-  delete nextSemantic.supersedesRevision;
-  return isDeepStrictEqual(previousSemantic, nextSemantic);
-}
-
-function parseExecutionContractValue(value: unknown): Record<string, unknown> | null {
-  if (value == null) return null;
-  const parsed = issueExecutionContractSchema.safeParse(value);
-  if (!parsed.success) {
-    throw unprocessable("Invalid executionContract", {
-      code: "invalid_execution_contract_schema",
-      issues: parsed.error.issues,
-    });
-  }
-  return canonicalizeExecutionContractAliases(parsed.data);
-}
-
-function executionContractRevision(value: Record<string, unknown> | null | undefined) {
-  const revision = value?.revision;
-  return typeof revision === "number" && Number.isInteger(revision) && revision > 0 ? revision : null;
-}
-
-function executionContractSupersedesRevision(value: Record<string, unknown>) {
-  const revision = value.supersedesRevision ?? value.supersedes_revision;
-  return typeof revision === "number" && Number.isInteger(revision) && revision > 0 ? revision : null;
-}
-
-function prepareInitialExecutionContract(
-  value: Record<string, unknown> | null | undefined,
-): Record<string, unknown> | null {
-  if (!value) return null;
-  const requestedRevision = executionContractRevision(value);
-  if (requestedRevision !== null && requestedRevision !== 1) {
-    throw unprocessable("A new executionContract must start at revision 1", {
-      code: "invalid_execution_contract_revision",
-      expectedRevision: 1,
-      receivedRevision: requestedRevision,
-    });
-  }
-  if (executionContractSupersedesRevision(value) !== null) {
-    throw unprocessable("A new executionContract cannot supersede an earlier revision", {
-      code: "invalid_execution_contract_revision",
-      expectedSupersedesRevision: null,
-    });
-  }
-  const canonical = canonicalizeExecutionContractAliases(value);
-  return {
-    ...canonical,
-    revision: 1,
-  };
-}
-
-function issueExecutionContractIsFrozen(issue: IssueRow) {
-  return Boolean(
-    issue.startedAt ||
-    issue.checkoutRunId ||
-    issue.executionRunId ||
-    !["backlog", "todo"].includes(issue.status),
-  );
-}
-
-function prepareUpdatedExecutionContract(input: {
-  existing: IssueRow;
-  next: Record<string, unknown> | null;
-}): { changed: boolean; value: Record<string, unknown> | null } {
-  const previous = normalizeExecutionContractValue(input.existing.executionContract);
-  if (executionContractsAreSemanticallyEqual(previous, input.next)) {
-    return { changed: false, value: previous };
-  }
-  if (issueExecutionContractIsFrozen(input.existing)) {
-    throw conflict(
-      "executionContract is frozen once issue execution begins; create a replacement issue for a superseding contract",
-      {
-        code: "execution_contract_frozen",
-        currentRevision: executionContractRevision(previous) ?? 1,
-      },
-    );
-  }
-  if (!input.next) return { changed: true, value: null };
-  if (!previous) return { changed: true, value: prepareInitialExecutionContract(input.next) };
-
-  const currentRevision = executionContractRevision(previous) ?? 1;
-  const expectedRevision = currentRevision + 1;
-  const requestedRevision = executionContractRevision(input.next);
-  const requestedSupersedesRevision = executionContractSupersedesRevision(input.next);
-  const echoedCurrentRevision = requestedRevision === currentRevision;
-  if (
-    requestedRevision !== null &&
-    requestedRevision !== currentRevision &&
-    requestedRevision !== expectedRevision
-  ) {
-    throw unprocessable("executionContract revision must identify the current or next revision", {
-      code: "invalid_execution_contract_revision",
-      expectedRevision,
-      currentRevision,
-      receivedRevision: requestedRevision,
-    });
-  }
-  const previousSupersedesRevision = executionContractSupersedesRevision(previous);
-  const expectedRequestedSupersedesRevision = echoedCurrentRevision
-    ? previousSupersedesRevision
-    : currentRevision;
-  if (
-    requestedSupersedesRevision !== null &&
-    requestedSupersedesRevision !== expectedRequestedSupersedesRevision
-  ) {
-    throw unprocessable("executionContract supersedesRevision must reference the current revision", {
-      code: "invalid_execution_contract_revision",
-      expectedSupersedesRevision: expectedRequestedSupersedesRevision,
-      receivedSupersedesRevision: requestedSupersedesRevision,
-    });
-  }
-  const next = canonicalizeExecutionContractAliases(input.next);
-  delete next.supersedes_revision;
-  return {
-    changed: true,
-    value: {
-      ...next,
-      revision: expectedRevision,
-      supersedesRevision: currentRevision,
-    },
-  };
-}
-
-function extractJsonObjectFromMarkdown(value: string): Record<string, unknown> | null {
-  const fenced = value.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = fenced?.[1]?.trim() ?? (() => {
-    const start = value.indexOf("{");
-    const end = value.lastIndexOf("}");
-    return start >= 0 && end > start ? value.slice(start, end + 1).trim() : "";
-  })();
-  if (!candidate) return null;
-  try {
-    const parsed = JSON.parse(candidate);
-    return normalizeExecutionContractValue(parsed);
-  } catch {
-    return null;
-  }
-}
-
-function extractExecutionContractFromDescription(description: string | null | undefined): {
-  description: string | null;
-  executionContract: Record<string, unknown> | null;
-} | null {
-  if (typeof description !== "string" || !description.trim()) return null;
-  const headingPattern = /^##\s+Execution Contract\s*$/gim;
-  const match = headingPattern.exec(description);
-  if (!match) return null;
-
-  const sectionStart = (() => {
-    const lineEnd = description.indexOf("\n", match.index + match[0].length);
-    return lineEnd === -1 ? description.length : lineEnd + 1;
-  })();
-  const nextHeadingPattern = /^##\s+\S.*$/gm;
-  nextHeadingPattern.lastIndex = sectionStart;
-  const nextHeading = nextHeadingPattern.exec(description);
-  const sectionEnd = nextHeading?.index ?? description.length;
-  const sectionBody = description.slice(sectionStart, sectionEnd);
-  const executionContract = extractJsonObjectFromMarkdown(sectionBody);
-  if (!executionContract) return null;
-
-  return {
-    description,
-    executionContract,
-  };
-}
-
-function resolveExecutionContractFields(input: {
-  description?: string | null;
-  executionContract?: Record<string, unknown> | null;
-}): {
-  description?: string | null;
-  executionContract?: Record<string, unknown> | null;
-} {
-  const hasDescription = Object.prototype.hasOwnProperty.call(input, "description");
-  const extracted = hasDescription ? extractExecutionContractFromDescription(input.description) : null;
-  const description = extracted ? extracted.description : input.description;
-  if (input.executionContract !== undefined) {
-    return {
-      ...(hasDescription ? { description } : {}),
-      executionContract: parseExecutionContractValue(input.executionContract),
-    };
-  }
-  if (extracted) {
-    return {
-      description,
-      executionContract: parseExecutionContractValue(extracted.executionContract),
-    };
-  }
-  return hasDescription ? { description } : {};
-}
-
-export type DelegatedIssueExecutionContractValidation = {
-  valid: boolean;
-  warnings: string[];
-};
-
-function readContractField(record: Record<string, unknown> | null | undefined, ...keys: string[]) {
-  if (!record) return undefined;
-  for (const key of keys) {
-    if (Object.prototype.hasOwnProperty.call(record, key)) return record[key];
-  }
-  return undefined;
-}
-
-function readContractString(record: Record<string, unknown> | null | undefined, ...keys: string[]) {
-  const value = readContractField(record, ...keys);
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
-function hasContractContent(value: unknown): boolean {
-  if (typeof value === "string") return value.trim().length > 0;
-  if (typeof value === "number" || typeof value === "boolean") return true;
-  if (Array.isArray(value)) return value.some(hasContractContent);
-  if (isRecord(value)) return Object.values(value).some(hasContractContent);
-  return false;
-}
-
-export function validateDelegatedIssueExecutionContract(
-  executionContract: Record<string, unknown> | null | undefined,
-): DelegatedIssueExecutionContractValidation {
-  const warnings: string[] = [];
-  if (!executionContract) {
-    return {
-      valid: false,
-      warnings: ["executionContract is required for agent-created child issues"],
-    };
-  }
-
-  const schemaVersion = readContractField(executionContract, "schemaVersion", "schema_version");
-  if (
-    typeof schemaVersion !== "number" ||
-    !Number.isInteger(schemaVersion) ||
-    schemaVersion < 1
-  ) {
-    warnings.push("executionContract.schemaVersion must be a positive integer");
-  }
-
-  if (!readContractString(executionContract, "contractType", "contract_type")) {
-    warnings.push("executionContract.contractType is required");
-  }
-  if (!readContractString(executionContract, "taskType", "task_type")) {
-    warnings.push("executionContract.taskType is required");
-  }
-
-  const coreValue = readContractField(executionContract, "core");
-  if (!isRecord(coreValue)) {
-    warnings.push("executionContract.core is required");
-    return { valid: false, warnings };
-  }
-
-  if (!readContractString(coreValue, "objective")) {
-    warnings.push("executionContract.core.objective is required");
-  }
-  if (!readContractString(coreValue, "why")) {
-    warnings.push("executionContract.core.why is required");
-  }
-
-  const sourceOfTruth = readContractField(coreValue, "sourceOfTruth", "source_of_truth");
-  if (!hasContractContent(sourceOfTruth)) {
-    warnings.push("executionContract.core.sourceOfTruth must contain at least one source");
-  }
-
-  const acceptanceChecks = readContractField(coreValue, "acceptanceChecks", "acceptance_checks");
-  if (!hasContractContent(acceptanceChecks)) {
-    warnings.push("executionContract.core.acceptanceChecks must contain at least one check");
-  }
-
-  const handoffNotesValue = readContractField(coreValue, "handoffNotes", "handoff_notes");
-  const handoffNotes = isRecord(handoffNotesValue) ? handoffNotesValue : null;
-  if (!readContractString(handoffNotes, "managerReasoning", "manager_reasoning")) {
-    warnings.push("executionContract.core.handoffNotes.managerReasoning is required");
-  }
-
-  return {
-    valid: warnings.length === 0,
-    warnings,
-  };
-}
-
-export function assertDelegatedIssueExecutionContract(
-  executionContract: Record<string, unknown> | null | undefined,
-  input: {
-    parentId: string;
-    mode?: "enforce";
-  },
-) {
-  const validation = validateDelegatedIssueExecutionContract(executionContract);
-  if (validation.valid) return;
-
-  throw unprocessable("Agent-created child issues require a valid executionContract", {
-    code: "invalid_execution_contract",
-    mode: input.mode ?? "enforce",
-    parentId: input.parentId,
-    missingExecutionContract: executionContract == null,
-    warnings: validation.warnings,
-  });
 }
 
 function normalizeAcceptedPlanDecompositionFingerprintValue(value: unknown): unknown {
@@ -1716,14 +1256,9 @@ async function listIssueDependencyReadinessMap(
   for (const row of blockerRows) {
     const current = readinessMap.get(row.issueId) ?? createIssueDependencyReadiness(row.issueId);
     current.blockerIssueIds.push(row.blockerIssueId);
-    // A blocker resolves its dependents once it reaches a TERMINAL state — done
-    // OR cancelled. Previously only "done" cleared a dependent, so cancelling a
-    // blocker (a normal way to say "this is no longer needed") left the dependent
-    // stranded in `blocked` forever with no obvious recourse — every run,
-    // including credential-failover retries, got cancelled by the dependency
-    // gate. A cancelled blocker is not coming back, so it should not keep a
-    // ready issue (e.g. one that's "Ready to QA") blocked.
-    if (row.blockerStatus !== "done" && row.blockerStatus !== "cancelled") {
+    // Only done blockers resolve dependents; cancelled blockers stay unresolved
+    // until an operator removes or replaces the blocker relationship explicitly.
+    if (row.blockerStatus !== "done") {
       current.unresolvedBlockerIssueIds.push(row.blockerIssueId);
       current.unresolvedBlockerCount += 1;
       current.allBlockersDone = false;
@@ -2186,24 +1721,6 @@ function latestIssueActivityAt(...values: Array<Date | string | null | undefined
   return normalized[0] ?? null;
 }
 
-function rowsFromDbExecuteResult<T>(result: unknown): T[] {
-  if (!result) return [];
-  if (Array.isArray(result)) return result as T[];
-
-  if (typeof result === "object" && "rows" in result) {
-    const rowsValue = (result as { rows?: unknown }).rows;
-    if (Array.isArray(rowsValue)) return rowsValue as T[];
-  }
-
-  if (
-    typeof result === "object" &&
-    typeof (result as Iterable<T>)[Symbol.iterator] === "function"
-  ) {
-    return Array.from(result as Iterable<T>);
-  }
-  return [];
-}
-
 type InboxArchiveAttributionRow = {
   issueId: string;
   archivedAt: Date;
@@ -2478,135 +1995,6 @@ async function activeRunMapForIssues(
       map.set(row.id, row);
     }
   }
-  return map;
-}
-
-async function actualAiSecondsMapForIssues(
-  dbOrTx: any,
-  companyId: string,
-  issueIds: string[],
-): Promise<Map<string, number>> {
-  const map = new Map<string, number>();
-  const uniqueIssueIds = [...new Set(issueIds.filter(Boolean))];
-  if (uniqueIssueIds.length === 0) return map;
-
-  const issueIdExpr = sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
-  const runSecondsExpr = sql<number>`
-    CASE
-      WHEN COALESCE(${heartbeatRuns.startedAt}, ${heartbeatRuns.processStartedAt}) IS NULL THEN 0
-      ELSE GREATEST(
-        0,
-        EXTRACT(EPOCH FROM (
-          COALESCE(
-            ${heartbeatRuns.finishedAt},
-            CASE
-              WHEN ${heartbeatRuns.status} IN ('queued', 'running') THEN now()
-              ELSE ${heartbeatRuns.updatedAt}
-            END,
-            ${heartbeatRuns.updatedAt},
-            ${heartbeatRuns.createdAt}
-          )
-          - COALESCE(${heartbeatRuns.startedAt}, ${heartbeatRuns.processStartedAt})
-        ))
-      )
-    END
-  `;
-
-  for (const issueIdChunk of chunkList(uniqueIssueIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
-    const rows = await dbOrTx
-      .select({
-        issueId: issueIdExpr,
-        seconds: sql<number>`COALESCE(SUM(${runSecondsExpr}), 0)::int`,
-      })
-      .from(heartbeatRuns)
-      .where(
-        and(
-          eq(heartbeatRuns.companyId, companyId),
-          inArray(issueIdExpr, issueIdChunk),
-        ),
-      )
-      .groupBy(issueIdExpr);
-
-    for (const row of rows) {
-      if (!row.issueId) continue;
-      map.set(row.issueId, Number(row.seconds ?? 0));
-    }
-  }
-
-  return map;
-}
-
-async function actualHumanSecondsMapForIssues(
-  dbOrTx: any,
-  companyId: string,
-  issueIds: string[],
-): Promise<Map<string, number>> {
-  const map = new Map<string, number>();
-  const uniqueIssueIds = [...new Set(issueIds.filter(Boolean))];
-  if (uniqueIssueIds.length === 0) return map;
-
-  const stopAtExpr = sql<Date>`
-    CASE
-      WHEN ${issues.status} IN ('done', 'cancelled') THEN COALESCE(
-        (
-          SELECT MIN(${activityLog.createdAt})
-          FROM ${activityLog}
-          WHERE ${activityLog.companyId} = ${companyId}
-            AND ${activityLog.entityType} = 'issue'
-            AND ${activityLog.entityId} = ${issues.id}::text
-            AND ${activityLog.action} = 'issue.updated'
-            AND ${activityLog.details}->>'status' IN ('done', 'cancelled')
-            AND ${activityLog.createdAt} >= COALESCE(
-              (
-                SELECT MAX(open_activity.created_at)
-                FROM activity_log AS open_activity
-                WHERE open_activity.company_id = ${companyId}
-                  AND open_activity.entity_type = 'issue'
-                  AND open_activity.entity_id = ${issues.id}::text
-                  AND open_activity.action = 'issue.updated'
-                  AND open_activity.details->>'status' NOT IN ('done', 'cancelled')
-                  AND open_activity.created_at >= ${issues.createdAt}
-              ),
-              ${issues.createdAt}
-            )
-        ),
-        ${issues.completedAt},
-        ${issues.cancelledAt},
-        ${issues.updatedAt},
-        now()
-      )
-      ELSE now()
-    END
-  `;
-
-  const lifecycleSecondsExpr = sql<number>`
-    GREATEST(
-      0,
-      EXTRACT(EPOCH FROM (
-        ${stopAtExpr} - ${issues.createdAt}
-      ))
-    )
-  `;
-
-  for (const issueIdChunk of chunkList(uniqueIssueIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
-    const rows = await dbOrTx
-      .select({
-        issueId: issues.id,
-        seconds: sql<number>`COALESCE(${lifecycleSecondsExpr}, 0)::int`,
-      })
-      .from(issues)
-      .where(
-        and(
-          eq(issues.companyId, companyId),
-          inArray(issues.id, issueIdChunk),
-        ),
-      );
-
-    for (const row of rows) {
-      map.set(row.issueId, Number(row.seconds ?? 0));
-    }
-  }
-
   return map;
 }
 
@@ -3696,7 +3084,6 @@ const issueListSelect = {
   id: issues.id,
   companyId: issues.companyId,
   projectId: issues.projectId,
-  cycleId: issues.cycleId,
   projectWorkspaceId: issues.projectWorkspaceId,
   goalId: issues.goalId,
   parentId: issues.parentId,
@@ -3715,7 +3102,6 @@ const issueListSelect = {
   `,
   status: issues.status,
   workMode: issues.workMode,
-  workItemType: issues.workItemType,
   harnessKind: issues.harnessKind,
   priority: issues.priority,
   reviewPolicy: issues.reviewPolicy,
@@ -3737,7 +3123,6 @@ const issueListSelect = {
   requestDepth: issues.requestDepth,
   billingCode: issues.billingCode,
   assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
-  executionContract: sql<null>`null`,
   executionPolicy: sql<null>`null`,
   executionState: sql<null>`null`,
   monitorNextCheckAt: issues.monitorNextCheckAt,
@@ -3749,12 +3134,6 @@ const issueListSelect = {
   executionWorkspaceId: issues.executionWorkspaceId,
   executionWorkspacePreference: issues.executionWorkspacePreference,
   executionWorkspaceSettings: sql<null>`null`,
-  visibility: issues.visibility,
-  dueDate: issues.dueDate,
-  workLeadDays: issues.workLeadDays,
-  storyPoints: issues.storyPoints,
-  estimateHours: issues.estimateHours,
-  actualHumanSeconds: issues.actualHumanSeconds,
   sourceTrust: issues.sourceTrust,
   unblockDescriptor: issues.unblockDescriptor,
   blockedTransitionAt: issues.blockedTransitionAt,
@@ -3766,7 +3145,6 @@ const issueListSelect = {
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
 };
-const { workItemType: _workItemType, ...issueListSelectWithoutWorkItemType } = issueListSelect;
 
 function withActiveRuns(
   issueRows: IssueWithLabels[],
@@ -4427,7 +3805,6 @@ async function listIssueBlockedInboxAttentionMap(
     companyId,
     issueId: row.issueId,
     status: "pending",
-    createdAt: row.createdAt,
   }));
   const pendingApprovals = (approvalRows as BlockedInboxApprovalRow[]).map((row) => ({
     companyId,
@@ -4651,8 +4028,6 @@ async function listIssueBlockedInboxAttentionMap(
                 return "Repair review participant";
               case "in_review_without_action_path":
                 return "Choose review path";
-              default:
-                return "Resolve blocker";
             }
           })(),
           detail: finding.recommendedAction,
@@ -5101,96 +4476,6 @@ export function issueService(db: Db) {
     };
   }
 
-  async function attachIssueAttachmentsToComments<T extends { id: string; issueId: string; body: string }>(
-    comments: readonly T[],
-  ): Promise<Array<T & { attachments: IssueAttachment[] }>> {
-    if (comments.length === 0) return [];
-
-    const issueIds = [...new Set(comments.map((comment) => comment.issueId))];
-    const commentIds = comments.map((comment) => comment.id);
-    const referencedIdsByCommentId = new Map<string, string[]>();
-    const referencedAttachmentIds = new Set<string>();
-
-    for (const comment of comments) {
-      const ids = extractIssueAttachmentIdsFromText(comment.body);
-      referencedIdsByCommentId.set(comment.id, ids);
-      for (const id of ids) referencedAttachmentIds.add(id);
-    }
-
-    const directCommentCondition = commentIds.length > 0
-      ? inArray(issueAttachments.issueCommentId, commentIds)
-      : null;
-    const referencedAttachmentCondition = referencedAttachmentIds.size > 0
-      ? inArray(issueAttachments.id, [...referencedAttachmentIds])
-      : null;
-    const attachmentScopeCondition = directCommentCondition && referencedAttachmentCondition
-      ? or(directCommentCondition, referencedAttachmentCondition)!
-      : directCommentCondition ?? referencedAttachmentCondition;
-
-    if (!attachmentScopeCondition) {
-      return comments.map((comment) => ({ ...comment, attachments: [] }));
-    }
-
-    const issueCondition = issueIds.length === 1
-      ? eq(issueAttachments.issueId, issueIds[0])
-      : inArray(issueAttachments.issueId, issueIds);
-
-    const attachmentRows = await db
-      .select({
-        id: issueAttachments.id,
-        companyId: issueAttachments.companyId,
-        issueId: issueAttachments.issueId,
-        issueCommentId: issueAttachments.issueCommentId,
-        assetId: issueAttachments.assetId,
-        provider: assets.provider,
-        objectKey: assets.objectKey,
-        contentType: assets.contentType,
-        byteSize: assets.byteSize,
-        sha256: assets.sha256,
-        originalFilename: assets.originalFilename,
-        createdByAgentId: assets.createdByAgentId,
-        createdByUserId: assets.createdByUserId,
-        createdAt: issueAttachments.createdAt,
-        updatedAt: issueAttachments.updatedAt,
-      })
-      .from(issueAttachments)
-      .innerJoin(assets, eq(issueAttachments.assetId, assets.id))
-      .where(and(issueCondition, attachmentScopeCondition));
-
-    const attachments = attachmentRows.map((row): IssueAttachment => ({
-      ...row,
-      contentPath: issueAttachmentContentPath(row.id),
-    }));
-    const attachmentById = new Map(attachments.map((attachment) => [attachment.id, attachment]));
-    const directAttachmentsByCommentId = new Map<string, IssueAttachment[]>();
-
-    for (const attachment of attachments) {
-      if (!attachment.issueCommentId) continue;
-      const current = directAttachmentsByCommentId.get(attachment.issueCommentId) ?? [];
-      current.push(attachment);
-      directAttachmentsByCommentId.set(attachment.issueCommentId, current);
-    }
-
-    return comments.map((comment) => {
-      const seen = new Set<string>();
-      const commentAttachments: IssueAttachment[] = [];
-      const addAttachment = (attachment: IssueAttachment | undefined) => {
-        if (!attachment || seen.has(attachment.id)) return;
-        seen.add(attachment.id);
-        commentAttachments.push(attachment);
-      };
-
-      for (const attachment of directAttachmentsByCommentId.get(comment.id) ?? []) {
-        addAttachment(attachment);
-      }
-      for (const id of referencedIdsByCommentId.get(comment.id) ?? []) {
-        addAttachment(attachmentById.get(id));
-      }
-
-      return { ...comment, attachments: commentAttachments };
-    });
-  }
-
   async function readRunLogText(run: {
     runId?: string | null;
     logStore: string | null;
@@ -5514,31 +4799,6 @@ export function issueService(db: Db) {
       throw unprocessable("Project workspace must belong to the selected project");
     }
     return workspace;
-  }
-
-  async function getAssignableCycle(
-    companyId: string,
-    projectId: string | null | undefined,
-    cycleId: string,
-    dbOrTx: DbReader = db,
-  ) {
-    const cycle = await dbOrTx
-      .select({
-        id: workCycles.id,
-        companyId: workCycles.companyId,
-        projectId: workCycles.projectId,
-      })
-      .from(workCycles)
-      .where(eq(workCycles.id, cycleId))
-      .then((rows) => rows[0] ?? null);
-    if (!cycle) throw notFound("Cycle not found");
-    if (cycle.companyId !== companyId) {
-      throw unprocessable("Cycle must belong to the same company");
-    }
-    if (cycle.projectId && cycle.projectId !== projectId) {
-      throw unprocessable("Project cycle can only be assigned to issues in that project");
-    }
-    return cycle;
   }
 
   async function assertValidExecutionWorkspace(
@@ -5980,27 +5240,6 @@ export function issueService(db: Db) {
     });
   }
 
-  let workItemTypeColumnSupported: boolean | null = null;
-  async function hasWorkItemTypeColumnInIssuesTable() {
-    if (workItemTypeColumnSupported !== null) return workItemTypeColumnSupported;
-
-    try {
-      const rows = rowsFromDbExecuteResult<unknown>(await db.execute(sql`
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_name = 'issues'
-          AND column_name = 'work_item_type'
-        LIMIT 1
-      `));
-      const resolved = rows.length > 0;
-      workItemTypeColumnSupported = resolved;
-      return resolved;
-    } catch {
-      workItemTypeColumnSupported = false;
-      return false;
-    }
-  }
-
   // Symmetric to clearExecutionRunIfTerminal. Clears checkoutRunId (and the
   // bundled execution lock cols) when the row's checkoutRunId points at a
   // heartbeat run that is terminal or no longer exists. No assignee/status
@@ -6164,14 +5403,8 @@ export function issueService(db: Db) {
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
     addStopRelayCommentIfNeeded,
-    actualAiSecondsMapForIssues: (companyId: string, issueIds: string[]) =>
-      actualAiSecondsMapForIssues(db, companyId, issueIds),
-    actualHumanSecondsMapForIssues: (companyId: string, issueIds: string[]) =>
-      actualHumanSecondsMapForIssues(db, companyId, issueIds),
 
     list: async (companyId: string, filters?: IssueFilters) => {
-      const requestedWorkItemType = filters?.workItemType?.trim() ?? "";
-      const requestedWorkItemTypes = parseWorkItemTypeFilter(requestedWorkItemType);
       if (filters?.attention === "blocked") {
         return listBlockedInboxIssues(db, companyId, {
           ...filters,
@@ -6192,21 +5425,8 @@ export function issueService(db: Db) {
       const touchedByUserId = filters?.touchedByUserId?.trim() || undefined;
       const inboxArchivedByUserId = filters?.inboxArchivedByUserId?.trim() || undefined;
       const unreadForUserId = filters?.unreadForUserId?.trim() || undefined;
-      const awaitingDecisionForUserId = filters?.awaitingDecisionForUserId?.trim() || undefined;
-      const contextUserId =
-        unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId ?? awaitingDecisionForUserId;
+      const contextUserId = unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId;
       const includeBlockedBy = filters?.includeBlockedBy === true;
-      const supportsWorkItemTypeColumn = await hasWorkItemTypeColumnInIssuesTable();
-      if (requestedWorkItemType && requestedWorkItemTypes.length === 0) {
-        return [];
-      }
-      if (
-        requestedWorkItemTypes.length > 0 &&
-        !supportsWorkItemTypeColumn &&
-        !requestedWorkItemTypes.includes("ai_task")
-      ) {
-        return [];
-      }
       const includeBlockedInboxAttention = filters?.includeBlockedInboxAttention === true;
       const includeLiveDescendantSummary = filters?.includeLiveDescendantSummary === true;
       const rawSearch = filters?.q?.trim() ?? "";
@@ -6260,16 +5480,6 @@ export function issueService(db: Db) {
       } else if (assigneeAgentFilter) {
         conditions.push(eq(issues.assigneeAgentId, assigneeAgentFilter));
       }
-      if (filters?.recoveryOwnerAgentId) {
-        conditions.push(sql<boolean>`exists (
-          select 1
-          from ${issueRecoveryActions}
-          where ${issueRecoveryActions.companyId} = ${companyId}
-            and ${issueRecoveryActions.sourceIssueId} = ${issues.id}
-            and ${issueRecoveryActions.ownerAgentId} = ${filters.recoveryOwnerAgentId}
-            and ${issueRecoveryActions.status} in ('active', 'escalated')
-        )`);
-      }
       if (filters?.participantAgentId) {
         conditions.push(participatedByAgentCondition(companyId, filters.participantAgentId));
       }
@@ -6285,57 +5495,7 @@ export function issueService(db: Db) {
       if (unreadForUserId) {
         conditions.push(unreadForUserCondition(companyId, unreadForUserId));
       }
-      if (awaitingDecisionForUserId) {
-        conditions.push(
-          or(
-            and(
-              eq(issues.status, "blocked"),
-              or(
-                eq(issues.assigneeUserId, awaitingDecisionForUserId),
-                eq(issues.createdByUserId, awaitingDecisionForUserId),
-              )!,
-            ),
-            // A board-owned recovery action is first-class board work even
-            // when source ownership/status is intentionally preserved. Put it
-            // in the same "Needs you" queue so watchdog escalations cannot be
-            // hidden in an otherwise ordinary todo/in-review issue.
-            sql`exists (
-              select 1
-              from ${issueRecoveryActions}
-              where ${issueRecoveryActions.companyId} = ${companyId}
-                and ${issueRecoveryActions.sourceIssueId} = ${issues.id}
-                and ${issueRecoveryActions.ownerType} = 'board'
-                and ${issueRecoveryActions.status} in ('active', 'escalated')
-            )`,
-            // Harness liveness only asks the board after manager and
-            // same-company agent recovery paths are exhausted. Surface that
-            // structured interaction in every authorized board member's
-            // "Needs you" queue; otherwise it would be durable but discoverable
-            // only by opening the exact recovery issue.
-            sql`exists (
-              select 1
-              from ${issueThreadInteractions}
-              where ${issueThreadInteractions.companyId} = ${companyId}
-                and ${issueThreadInteractions.issueId} = ${issues.id}
-                and ${issueThreadInteractions.status} = 'pending'
-                and ${issueThreadInteractions.payload} -> 'context' ->> 'kind'
-                  = 'issue_graph_liveness_board_escalation'
-            )`,
-          )!,
-        );
-      }
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
-      if (filters?.cycleId) conditions.push(eq(issues.cycleId, filters.cycleId));
-      if (filters?.projectScopeRestrictedTo) {
-        const allowed = filters.projectScopeRestrictedTo;
-        if (allowed.length === 0) {
-          conditions.push(isNull(issues.projectId));
-        } else {
-          conditions.push(
-            or(isNull(issues.projectId), inArray(issues.projectId, allowed))!,
-          );
-        }
-      }
       if (filters?.workspaceId) {
         conditions.push(or(
           eq(issues.executionWorkspaceId, filters.workspaceId),
@@ -6346,11 +5506,6 @@ export function issueService(db: Db) {
         conditions.push(eq(issues.executionWorkspaceId, filters.executionWorkspaceId));
       }
       if (filters?.parentId) conditions.push(eq(issues.parentId, filters.parentId));
-      if (requestedWorkItemTypes.length === 1 && supportsWorkItemTypeColumn) {
-        conditions.push(eq(issues.workItemType, requestedWorkItemTypes[0]!));
-      } else if (requestedWorkItemTypes.length > 1 && supportsWorkItemTypeColumn) {
-        conditions.push(inArray(issues.workItemType, requestedWorkItemTypes));
-      }
       if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
       if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
@@ -6378,6 +5533,12 @@ export function issueService(db: Db) {
           )!,
         );
       }
+      if (filters?.updatedSince) {
+        const since = new Date(filters.updatedSince);
+        if (Number.isFinite(since.getTime())) {
+          conditions.push(gt(issues.updatedAt, since));
+        }
+      }
       if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
         conditions.push(ne(issues.originKind, "routine_execution"));
       }
@@ -6393,11 +5554,8 @@ export function issueService(db: Db) {
           ELSE 6
         END
       `;
-      const issueListSelectForList = supportsWorkItemTypeColumn
-        ? issueListSelect
-        : issueListSelectWithoutWorkItemType;
       const baseQuery = db
-        .select(issueListSelectForList)
+        .select(issueListSelect)
         .from(issues)
         .where(and(...conditions))
         .orderBy(...issueListOrderBy(companyId, {
@@ -6412,10 +5570,9 @@ export function issueService(db: Db) {
         : (limit === undefined ? baseQuery : baseQuery.limit(limit));
       const rows = (await pageQuery).map((row) => ({
         ...row,
-        ...(supportsWorkItemTypeColumn ? {} : { workItemType: "ai_task" as const }),
         description: decodeDatabaseTextPreview(row.description, ISSUE_LIST_DESCRIPTION_MAX_CHARS),
       }));
-      const withLabels = await withIssueLabels(db, rows as IssueRow[]);
+      const withLabels = await withIssueLabels(db, rows);
       const runMap = await activeRunMapForIssues(db, withLabels);
       const withRuns = withActiveRuns(withLabels, runMap);
       if (withRuns.length === 0) {
@@ -6423,16 +5580,7 @@ export function issueService(db: Db) {
       }
 
       const issueIds = withRuns.map((row) => row.id);
-      const [
-        statsRows,
-        readRows,
-        lastActivityRows,
-        archiveRows,
-        blockedByMap,
-        actualAiSecondsByIssueId,
-        actualHumanSecondsByIssueId,
-        liveDescendantCountByIssueId,
-      ] = await Promise.all([
+      const [statsRows, readRows, lastActivityRows, archiveRows, blockedByMap, liveDescendantCountByIssueId] = await Promise.all([
         contextUserId
           ? userCommentStatsForIssues(db, companyId, contextUserId, issueIds)
           : Promise.resolve([]),
@@ -6446,8 +5594,6 @@ export function issueService(db: Db) {
         includeBlockedBy
           ? blockedByMapForIssues(db, companyId, issueIds)
           : Promise.resolve(new Map<string, IssueRelationIssueSummary[]>()),
-        actualAiSecondsMapForIssues(db, companyId, issueIds),
-        actualHumanSecondsMapForIssues(db, companyId, issueIds),
         includeLiveDescendantSummary
           ? liveDescendantCountMapForIssues(db, companyId, issueIds)
           : Promise.resolve(new Map<string, number>()),
@@ -6479,8 +5625,6 @@ export function issueService(db: Db) {
           ) ?? row.updatedAt;
           return {
             ...row,
-            actualAiSeconds: actualAiSecondsByIssueId.get(row.id) ?? 0,
-            actualHumanSeconds: actualHumanSecondsByIssueId.get(row.id) ?? 0,
             ...(includeBlockedBy ? { blockedBy: blockedByMap.get(row.id) ?? [] } : {}),
             lastActivityAt,
             ...(blockerAttentionByIssueId.has(row.id) ? { blockerAttention: blockerAttentionByIssueId.get(row.id) } : {}),
@@ -6505,8 +5649,6 @@ export function issueService(db: Db) {
         ) ?? row.updatedAt;
         return {
           ...row,
-          actualAiSeconds: actualAiSecondsByIssueId.get(row.id) ?? 0,
-          actualHumanSeconds: actualHumanSecondsByIssueId.get(row.id) ?? 0,
           ...activeInboxArchiveFields(archiveByIssueId.get(row.id), lastActivityAt),
           ...(includeBlockedBy ? { blockedBy: blockedByMap.get(row.id) ?? [] } : {}),
           lastActivityAt,
@@ -7271,7 +6413,6 @@ export function issueService(db: Db) {
           id: issues.id,
           assigneeAgentId: issues.assigneeAgentId,
           status: issues.status,
-          workItemType: issues.workItemType,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
@@ -7286,9 +6427,7 @@ export function issueService(db: Db) {
 
       const wakeableCandidates = candidates.filter(
         (candidate) =>
-          candidate.assigneeAgentId
-          && !isHumanControlWorkItemType(candidate.workItemType)
-          && !["backlog", "done", "cancelled"].includes(candidate.status),
+          candidate.assigneeAgentId && !["backlog", "done", "cancelled"].includes(candidate.status),
       );
       if (wakeableCandidates.length === 0) return [];
 
@@ -7312,9 +6451,7 @@ export function issueService(db: Db) {
         .map(({ candidate, readiness }) => ({
           id: candidate.id,
           assigneeAgentId: candidate.assigneeAgentId!,
-          workItemType: candidate.workItemType,
           blockerIssueIds: readiness.blockerIssueIds,
-          allBlockersDone: readiness.allBlockersDone,
         }));
     },
 
@@ -7324,18 +6461,12 @@ export function issueService(db: Db) {
           id: issues.id,
           assigneeAgentId: issues.assigneeAgentId,
           status: issues.status,
-          workItemType: issues.workItemType,
           companyId: issues.companyId,
         })
         .from(issues)
         .where(eq(issues.id, parentIssueId))
         .then((rows) => rows[0] ?? null);
-      if (
-        !parent
-        || !parent.assigneeAgentId
-        || isHumanControlWorkItemType(parent.workItemType)
-        || ["backlog", "done", "cancelled"].includes(parent.status)
-      ) {
+      if (!parent || !parent.assigneeAgentId || ["backlog", "done", "cancelled"].includes(parent.status)) {
         return null;
       }
 
@@ -7390,7 +6521,6 @@ export function issueService(db: Db) {
       return {
         id: parent.id,
         assigneeAgentId: parent.assigneeAgentId,
-        workItemType: parent.workItemType,
         childIssueIds: children.map((child) => child.id),
         childIssueSummaries,
         childIssueSummaryTruncated: children.length > childIssueSummaries.length,
@@ -7407,7 +6537,14 @@ export function issueService(db: Db) {
         .where(eq(issues.id, parentIssueId))
         .then((rows) => rows[0] ?? null);
       if (!parent) throw notFound("Parent issue not found");
-      await assertChildIssueCreationAllowed(db, parent.companyId, parent.id);
+
+      const [{ childCount }] = await db
+        .select({ childCount: sql<number>`count(*)::int` })
+        .from(issues)
+        .where(and(eq(issues.companyId, parent.companyId), eq(issues.parentId, parent.id)));
+      if (childCount >= MAX_CHILD_ISSUES_CREATED_BY_HELPER) {
+        throw unprocessable(`Parent issue already has the maximum ${MAX_CHILD_ISSUES_CREATED_BY_HELPER} child issues for this helper`);
+      }
 
       const {
         acceptanceCriteria,
@@ -7417,16 +6554,6 @@ export function issueService(db: Db) {
         actorUserId,
         ...issueData
       } = data;
-      const description = appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria);
-      if (actorAgentId) {
-        const contractFields = resolveExecutionContractFields({
-          description,
-          executionContract: issueData.executionContract,
-        });
-        assertDelegatedIssueExecutionContract(contractFields.executionContract ?? null, {
-          parentId: parent.id,
-        });
-      }
       const inheritStrategyOnly = executionWorkspaceInheritanceMode === "strategy_only";
       const hasExplicitExecutionWorkspaceOverride =
         issueData.executionWorkspaceId !== undefined ||
@@ -7447,7 +6574,7 @@ export function issueService(db: Db) {
         requestDepth: clampIssueRequestDepth(
           Math.max(clampIssueRequestDepth(parent.requestDepth) + 1, issueData.requestDepth ?? 0),
         ),
-        description,
+        description: appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria),
         ...(inheritedPreRealizationWorkspaceSettings
           ? { executionWorkspaceSettings: inheritedPreRealizationWorkspaceSettings }
           : {}),
@@ -7756,7 +6883,6 @@ export function issueService(db: Db) {
         labelIds: inputLabelIds,
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
-        budgetLimits: _budgetLimits,
         skipExecutionWorkspaceInheritance,
         watchdog,
         watchdogActorRunId,
@@ -7768,26 +6894,6 @@ export function issueService(db: Db) {
         onDeduplicated,
         ...issueData
       } = data;
-      const contractFields = resolveExecutionContractFields({
-        description: issueData.description,
-        executionContract: issueData.executionContract,
-      });
-      issueData.description = contractFields.description ?? null;
-      if (Object.prototype.hasOwnProperty.call(contractFields, "executionContract")) {
-        issueData.executionContract = prepareInitialExecutionContract(contractFields.executionContract);
-      } else {
-        delete issueData.executionContract;
-      }
-      if (issueData.parentId && issueData.createdByAgentId) {
-        assertDelegatedIssueExecutionContract(issueData.executionContract ?? null, {
-          parentId: issueData.parentId,
-        });
-      }
-      if (issueData.status === "done") {
-        assertIssueCompletionEvidenceOnCreate(
-          normalizeExecutionContractValue(issueData.executionContract),
-        );
-      }
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -7797,7 +6903,6 @@ export function issueService(db: Db) {
       if (data.assigneeAgentId && data.assigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
-      assertAgentAssignmentAllowedForWorkItem(issueData.workItemType, data.assigneeAgentId);
       if (data.assigneeAgentId) {
         await assertAssignableAgent(db, companyId, data.assigneeAgentId, { kind: "work" });
       }
@@ -7808,9 +6913,6 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       return db.transaction(async (tx) => {
-        if (issueData.parentId) {
-          await assertChildIssueCreationAllowed(tx, companyId, issueData.parentId, { lockParent: true });
-        }
         const idempotencyKey = rawIdempotencyKey?.trim() || null;
         const normalizedTitle = normalizeCreateIssueTitle(issueData.title);
         if (allowDuplicate === false) {
@@ -7987,9 +7089,6 @@ export function issueService(db: Db) {
         }
         if (executionWorkspaceId) {
           await assertValidExecutionWorkspace(companyId, issueData.projectId, executionWorkspaceId, tx);
-        }
-        if (issueData.cycleId) {
-          await getAssignableCycle(companyId, issueData.projectId, issueData.cycleId, tx);
         }
         if (isolatedWorkspacesEnabled && issueData.executionWorkspaceSettings !== undefined) {
           assertExplicitPinnedWorktreeIssueRunnable({
@@ -8261,9 +7360,19 @@ export function issueService(db: Db) {
             responsibleUserId: null,
             requestDepth: clampIssueRequestDepth(undefined),
             originKind: "manual",
-            startedAt: row.status === "in_progress" ? new Date() : null,
-            completedAt: row.status === "done" ? new Date() : null,
-            cancelledAt: row.status === "cancelled" ? new Date() : null,
+            // The caller resolves parentId against ids in this same batch, so a
+            // parent always lands in the same insert (rows arrive parents-first).
+            parentId: row.parentId ?? null,
+            // Preserved bundle timestamps win; without them createdAt/updatedAt
+            // fall back to the insert time (the old defaultNow() behavior).
+            createdAt: row.createdAt ?? new Date(),
+            updatedAt: row.updatedAt ?? new Date(),
+            // Imported in-progress work did not start at import time; fabricating
+            // startedAt here trips duration-based sweeps (e.g. productivity
+            // review). Only a bundle-carried startedAt is written.
+            startedAt: row.startedAt ?? null,
+            completedAt: row.completedAt ?? (row.status === "done" ? new Date() : null),
+            cancelledAt: row.cancelledAt ?? (row.status === "cancelled" ? new Date() : null),
             monitorNotes: row.monitorNotes ?? null,
             monitorScheduledBy: row.monitorScheduledBy ?? null,
           });
@@ -8303,10 +7412,28 @@ export function issueService(db: Db) {
           };
         });
         await insertRowsInChunks(tx, issueComments, commentRows);
-        // Mirror addComment's recency bump, once per affected issue.
-        const issueIds = [...new Set(rows.map((row) => row.issueId))];
-        if (issueIds.length > 0) {
-          await tx.update(issues).set({ updatedAt: new Date() }).where(inArray(issues.id, issueIds));
+        // Mirror addComment's recency bump, once per affected issue — but never
+        // backwards. An issue imported with a preserved updatedAt keeps it
+        // unless a newer imported comment outdates it; issues without preserved
+        // timestamps carry an insert-time updatedAt, so GREATEST reproduces the
+        // old "bump to now" behavior for them.
+        const bumpAtByIssueId = new Map<string, Date>();
+        for (const row of commentRows) {
+          const existing = bumpAtByIssueId.get(row.issueId);
+          if (!existing || row.createdAt > existing) bumpAtByIssueId.set(row.issueId, row.createdAt);
+        }
+        const bumpEntries = [...bumpAtByIssueId.entries()];
+        for (let start = 0; start < bumpEntries.length; start += DEFAULT_INSERT_CHUNK_ROWS) {
+          const chunk = bumpEntries.slice(start, start + DEFAULT_INSERT_CHUNK_ROWS);
+          await tx.execute(sql`
+            update ${issues}
+            set updated_at = greatest(${issues.updatedAt}, bumps.bump_at)
+            from (values ${sql.join(
+              chunk.map(([issueId, bumpAt]) => sql`(${issueId}::uuid, ${bumpAt.toISOString()}::timestamptz)`),
+              sql`, `,
+            )}) as bumps(issue_id, bump_at)
+            where ${issues.id} = bumps.issue_id
+          `);
         }
       });
     },
@@ -8373,44 +7500,6 @@ export function issueService(db: Db) {
         actorUserId,
         ...issueData
       } = data;
-      const contractFields = resolveExecutionContractFields({
-        ...(Object.prototype.hasOwnProperty.call(issueData, "description")
-          ? { description: issueData.description }
-          : {}),
-        ...(Object.prototype.hasOwnProperty.call(issueData, "executionContract")
-          ? { executionContract: issueData.executionContract }
-          : {}),
-      });
-      if (Object.prototype.hasOwnProperty.call(contractFields, "description")) {
-        issueData.description = contractFields.description ?? null;
-      }
-      let executionContractWillChange = false;
-      if (Object.prototype.hasOwnProperty.call(contractFields, "executionContract")) {
-        const preparedContract = prepareUpdatedExecutionContract({
-          existing,
-          next: contractFields.executionContract ?? null,
-        });
-        executionContractWillChange = preparedContract.changed;
-        if (preparedContract.changed) {
-          issueData.executionContract = preparedContract.value;
-        } else {
-          delete issueData.executionContract;
-        }
-      }
-      const parentWillChange = issueData.parentId !== undefined && issueData.parentId !== existing.parentId;
-      const nextParentId = issueData.parentId !== undefined ? issueData.parentId : existing.parentId;
-      if (
-        nextParentId &&
-        (parentWillChange || executionContractWillChange) &&
-        (existing.createdByAgentId || actorAgentId)
-      ) {
-        assertDelegatedIssueExecutionContract(
-          executionContractWillChange
-            ? issueData.executionContract ?? null
-            : normalizeExecutionContractValue(existing.executionContract),
-          { parentId: nextParentId },
-        );
-      }
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -8442,12 +7531,10 @@ export function issueService(db: Db) {
         issueData.assigneeAgentId !== undefined ? issueData.assigneeAgentId : existing.assigneeAgentId;
       const nextAssigneeUserId =
         issueData.assigneeUserId !== undefined ? issueData.assigneeUserId : existing.assigneeUserId;
-      const nextWorkItemType = issueData.workItemType !== undefined ? issueData.workItemType : existing.workItemType;
 
       if (nextAssigneeAgentId && nextAssigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
-      assertAgentAssignmentAllowedForWorkItem(nextWorkItemType, nextAssigneeAgentId);
       if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
@@ -8531,19 +7618,6 @@ export function issueService(db: Db) {
           executionWorkspaceSettings: issueData.executionWorkspaceSettings,
         });
       }
-      const nextCycleId = issueData.cycleId !== undefined ? issueData.cycleId : existing.cycleId;
-      if (nextCycleId) {
-        try {
-          await getAssignableCycle(existing.companyId, nextProjectId, nextCycleId, dbOrTx);
-        } catch (err) {
-          const projectChanged =
-            issueData.projectId !== undefined &&
-            issueData.projectId !== existing.projectId &&
-            issueData.cycleId === undefined;
-          if (!projectChanged) throw err;
-          patch.cycleId = null;
-        }
-      }
 
       applyStatusSideEffects(issueData.status, patch);
       if (issueData.status && issueData.status !== "done") {
@@ -8566,60 +7640,19 @@ export function issueService(db: Db) {
         patch.executionRunId = null;
         patch.executionAgentNameKey = null;
         patch.executionLockedAt = null;
-        // Drop overrides pinned to the prior assignee's adapter (e.g. claude model on codex agent).
-        if (issueData.assigneeAdapterOverrides === undefined) {
-          patch.assigneeAdapterOverrides = null;
-        }
       }
 
-      const completionRequested = issueData.status === "done";
       const runUpdate = async (tx: any) => {
-        // The receipt baseline and every topology/contract guard must observe
-        // the same locked row as the mutation.
+        // The receipt baseline must be read under the same row lock as the
+        // write. Otherwise a concurrent update can be mistaken for a change
+        // made by this request.
         const receiptExisting = await tx
           .select()
           .from(issues)
-          .where(and(eq(issues.id, id), eq(issues.companyId, existing.companyId)))
+          .where(eq(issues.id, id))
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
-        const lockedExisting = receiptExisting;
-        if (executionContractWillChange) {
-          if (!isDeepStrictEqual(lockedExisting.executionContract, existing.executionContract)) {
-            throw conflict("executionContract changed while this revision was being updated", {
-              code: "execution_contract_revision_conflict",
-            });
-          }
-          if (issueExecutionContractIsFrozen(lockedExisting)) {
-            throw conflict(
-              "executionContract is frozen once issue execution begins; create a replacement issue for a superseding contract",
-              {
-                code: "execution_contract_frozen",
-                currentRevision:
-                  executionContractRevision(normalizeExecutionContractValue(lockedExisting.executionContract)) ?? 1,
-              },
-            );
-          }
-        }
-        if (parentWillChange) {
-          if (lockedExisting.parentId !== existing.parentId) {
-            throw conflict("Issue parent changed while this topology update was being applied", {
-              code: "issue_parent_conflict",
-            });
-          }
-          if (nextParentId) {
-            await assertIssueParentUpdateAllowed(tx, lockedExisting, nextParentId, { lockRows: true });
-          }
-        }
-        if (completionRequested && lockedExisting.status !== "done") {
-          await assertIssueCompletionEvidence(tx, {
-            companyId: lockedExisting.companyId,
-            issueId: lockedExisting.id,
-            executionContract: executionContractWillChange
-              ? normalizeExecutionContractValue(issueData.executionContract)
-              : normalizeExecutionContractValue(lockedExisting.executionContract),
-          });
-        }
         const [previousLabelsByIssueId, previousRelationSummaries] = await Promise.all([
           nextLabelIds !== undefined
             ? labelMapForIssues(tx, [id])
@@ -8647,25 +7680,13 @@ export function issueService(db: Db) {
           projectGoalId: nextProjectGoalId,
           defaultGoalId: defaultCompanyGoal?.id ?? null,
         });
-        const executionContractCompareAndSwap = executionContractWillChange
-          ? existing.executionContract == null
-            ? and(eq(issues.id, id), isNull(issues.executionContract))
-            : and(eq(issues.id, id), eq(issues.executionContract, existing.executionContract))
-          : eq(issues.id, id);
         const updated = await tx
           .update(issues)
           .set(patch)
-          .where(executionContractCompareAndSwap)
+          .where(eq(issues.id, id))
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
-        if (!updated) {
-          if (executionContractWillChange) {
-            throw conflict("executionContract changed while this revision was being updated", {
-              code: "execution_contract_revision_conflict",
-            });
-          }
-          return null;
-        }
+        if (!updated) return null;
         if (existing.status !== updated.status) {
           if (
             (existing.status === "done" || existing.status === "cancelled")
@@ -8945,12 +7966,11 @@ export function issueService(db: Db) {
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
       const issueCompany = await db
-        .select({ companyId: issues.companyId, workItemType: issues.workItemType })
+        .select({ companyId: issues.companyId })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
-      assertAgentAssignmentAllowedForWorkItem(issueCompany.workItemType, agentId);
       await assertAssignableAgent(db, issueCompany.companyId, agentId, { kind: "work" });
 
       const now = new Date();
@@ -9485,8 +8505,7 @@ export function issueService(db: Db) {
       const comments = limit ? await query.limit(limit) : await query;
       const { censorUsernameInLogs } = await instanceSettings.getGeneral();
       const enrichedComments = await enrichCommentsWithDerivedAgentAttribution(comments);
-      const commentsWithAttachments = await attachIssueAttachmentsToComments(enrichedComments);
-      return commentsWithAttachments.map((comment) => redactIssueComment(comment, censorUsernameInLogs));
+      return enrichedComments.map((comment) => redactIssueComment(comment, censorUsernameInLogs));
     },
 
     getCommentCursor: async (issueId: string) => {
@@ -9526,8 +8545,7 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!comment) return null;
       const [enrichedComment] = await enrichCommentsWithDerivedAgentAttribution([comment]);
-      const [commentWithAttachments] = await attachIssueAttachmentsToComments([enrichedComment ?? comment]);
-      return redactIssueComment(commentWithAttachments ?? { ...comment, attachments: [] }, censorUsernameInLogs);
+      return redactIssueComment(enrichedComment ?? comment, censorUsernameInLogs);
     },
 
     removeComment: async (commentId: string) => {
@@ -9682,8 +8700,41 @@ export function issueService(db: Db) {
         .set({ updatedAt: new Date() })
         .where(eq(issues.id, issueId));
 
-      const [commentWithAttachments] = await attachIssueAttachmentsToComments([comment]);
-      return redactIssueComment(commentWithAttachments ?? { ...comment, attachments: [] }, currentUserRedactionOptions.enabled);
+      if (
+        authorType === "user" &&
+        actor.userId &&
+        actor.userId !== "board-concierge" &&
+        !createdByRunId
+      ) {
+        const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+        const expiredInteractions = await issueThreadInteractionService(dbOrTx)
+          .expireRequestConfirmationsSupersededByComment(
+            { id: issueId, companyId: issue.companyId },
+            comment,
+            { agentId: actor.agentId, userId: actor.userId },
+          );
+        for (const interaction of expiredInteractions) {
+          await logActivity(dbOrTx, {
+            companyId: issue.companyId,
+            actorType: "user",
+            actorId: actor.userId,
+            agentId: actor.agentId ?? null,
+            runId: createdByRunId,
+            action: "issue.thread_interaction_expired",
+            entityType: "issue",
+            entityId: issueId,
+            details: {
+              interactionId: interaction.id,
+              interactionKind: interaction.kind,
+              interactionStatus: interaction.status,
+              source: "issue.comment.service",
+              result: interaction.result ?? null,
+            },
+          });
+        }
+      }
+
+      return redactIssueComment(comment, currentUserRedactionOptions.enabled);
     },
 
     createAttachment: async (input: {

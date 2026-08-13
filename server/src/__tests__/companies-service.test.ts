@@ -12,7 +12,6 @@ import {
   companySkills,
   companyMemberships,
   createDb,
-  environments,
   heartbeatRunEvents,
   heartbeatRuns,
   principalPermissionGrants,
@@ -23,27 +22,9 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { companyService, isIssuePrefixConflict } from "../services/companies.js";
+import { companyService } from "../services/companies.js";
 import { readBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";
-import { reconcileBuiltInAgentsOnStartup } from "../services/built-in-agents.js";
-
-describe("company service issue-prefix conflicts", () => {
-  it("recognizes Drizzle-wrapped issue-prefix duplicate errors", () => {
-    const postgresError = Object.assign(new Error("duplicate key value violates unique constraint"), {
-      code: "23505",
-      constraint_name: "companies_issue_prefix_idx",
-    });
-    expect(isIssuePrefixConflict(new Error("Failed query", { cause: postgresError }))).toBe(true);
-  });
-
-  it("does not treat unrelated duplicate keys as issue-prefix conflicts", () => {
-    const postgresError = Object.assign(new Error("duplicate key value violates unique constraint"), {
-      code: "23505",
-      constraint_name: "users_email_idx",
-    });
-    expect(isIssuePrefixConflict(new Error("Failed query", { cause: postgresError }))).toBe(false);
-  });
-});
+import { builtInAgentService, reconcileBuiltInAgentsOnStartup } from "../services/built-in-agents.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -77,7 +58,6 @@ describeEmbeddedPostgres("companyService", () => {
     await db.delete(agents);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
-    await db.delete(environments);
     await db.delete(companies);
   });
 
@@ -101,38 +81,28 @@ describeEmbeddedPostgres("companyService", () => {
     expect(rows.map((row) => row.issuePrefix).sort()).toEqual(["ARO", "AROA"]);
   });
 
-  it("allocates a suffix and provisions a local environment for a colliding derived prefix", async () => {
-    await db.insert(companies).values({
-      name: "Existing Elitez",
-      issuePrefix: "ELI",
-    });
-
-    const created = await companyService(db).create({
-      name: "Elitez Asia (Rafly)",
-      budgetMonthlyCents: 0,
-    });
-
-    expect(created.issuePrefix).toBe("ELIA");
-    const [localEnvironment] = await db
-      .select()
-      .from(environments)
-      .where(eq(environments.driver, "local"));
-    expect(localEnvironment?.driver).toBe("local");
-  });
-
-  it("auto-provisions one paused Reflection Coach bundle for a freshly created company", async () => {
+  it("does not auto-provision bundled built-in agents for a freshly created company", async () => {
     const created = await companyService(db).create({
       name: "Fresh Company",
     });
 
+    // A new company starts clean: the Reflection Coach and Summarizer are
+    // opt-in, not seeded by default for a new user.
     const agentRows = await db.select().from(agents).where(eq(agents.companyId, created.id));
-    const reflectionRows = agentRows.filter((row) => readBuiltInAgentMarker(row.metadata)?.key === "reflection-coach");
-    expect(reflectionRows).toHaveLength(1);
-    expect(reflectionRows[0]).toMatchObject({
+    expect(agentRows.filter((row) => readBuiltInAgentMarker(row.metadata))).toHaveLength(0);
+
+    // Startup reconcile leaves a fresh company untouched — nothing is created.
+    await reconcileBuiltInAgentsOnStartup(db);
+    const afterReconcileRows = await db.select().from(agents).where(eq(agents.companyId, created.id));
+    expect(afterReconcileRows.filter((row) => readBuiltInAgentMarker(row.metadata))).toHaveLength(0);
+
+    // The Reflection Coach remains available to enable on demand, and enabling
+    // it materializes its bundled skill + paused routine.
+    const enabled = await builtInAgentService(db).ensure(created.id, "reflection-coach");
+    expect(enabled.agent).toMatchObject({
       name: "Reflection Coach",
       status: "paused",
       budgetMonthlyCents: 0,
-      spentMonthlyCents: 0,
     });
 
     const [skill] = await db
@@ -149,10 +119,10 @@ describeEmbeddedPostgres("companyService", () => {
     const [routine] = await db
       .select()
       .from(routines)
-      .where(and(eq(routines.companyId, created.id), eq(routines.assigneeAgentId, reflectionRows[0]!.id)));
+      .where(and(eq(routines.companyId, created.id), eq(routines.assigneeAgentId, enabled.agentId!)));
     expect(routine).toMatchObject({
       status: "paused",
-      assigneeAgentId: reflectionRows[0]!.id,
+      assigneeAgentId: enabled.agentId,
       originKind: "built_in_agent_bundle",
       originId: "reflection-coach:recent-agent-reflection",
     });
@@ -161,10 +131,6 @@ describeEmbeddedPostgres("companyService", () => {
       kind: "schedule",
       enabled: false,
     });
-
-    await reconcileBuiltInAgentsOnStartup(db);
-    const afterReconcileRows = await db.select().from(agents).where(eq(agents.companyId, created.id));
-    expect(afterReconcileRows.filter((row) => readBuiltInAgentMarker(row.metadata)?.key === "reflection-coach")).toHaveLength(1);
   });
 
   it("archives companies by pausing runnable agents and cancelling active runs", async () => {
@@ -903,4 +869,12 @@ describeEmbeddedPostgres("companyService", () => {
       details: { agentsPaused: 1, runsCancelled: 1 },
     });
   });
+
+  it("getById returns null (not a query error) for non-UUID refs", async () => {
+    const svc = companyService(db);
+    await expect(svc.getById("tumbly-haus-creative")).resolves.toBeNull();
+    await expect(svc.getById("not-a-uuid")).resolves.toBeNull();
+    await expect(svc.getById("")).resolves.toBeNull();
+  });
+
 });

@@ -8,16 +8,19 @@ import type { InspectDatabaseBackupHealthOptions } from "./services/database-bac
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
-import { readOnlyAgentMutationGuard } from "./middleware/read-only-agent-guard.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
 import { applyTrustProxy, parseTrustProxyEnv } from "./middleware/trust-proxy.js";
+import {
+  IMPORT_TRANSFER_SPOOL_SWEEP_INTERVAL_MS,
+  resolveDefaultImportTransferSpoolRoot,
+  sweepAbandonedImportTransferSpools,
+} from "./services/company-import-transfers.js";
+import { companyTransferRunService } from "./services/company-transfer-runs.js";
 import { healthRoutes } from "./routes/health.js";
 import { cloudRoutes } from "./routes/cloud.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
-import { improvementSuggestionRoutes } from "./routes/improvement-suggestions.js";
-import { companyMcpServerRoutes } from "./routes/company-mcp-servers.js";
 import { companySkillPolicyRoutes } from "./routes/company-skill-policy.js";
 import { inboxAgentPolicyRoutes } from "./routes/inbox-agent-policy.js";
 import { builtInAgentRoutes } from "./routes/built-in-agents.js";
@@ -26,9 +29,8 @@ import { summarySlotRoutes } from "./routes/summary-slots.js";
 import { statusCardRoutes } from "./routes/status-cards.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
+import type { SetupTokenSessionService } from "./services/setup-token-session.js";
 import { projectRoutes } from "./routes/projects.js";
-import { workCycleRoutes } from "./routes/work-cycles.js";
-import { organizationRoutes } from "./routes/organizations.js";
 import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { caseRoutes } from "./routes/cases.js";
@@ -41,10 +43,6 @@ import { goalRoutes } from "./routes/goals.js";
 import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
-import { authenticatorRoutes } from "./routes/authenticators.js";
-import { githubConnectionRoutes } from "./routes/github-connections.js";
-import { credentialRoutes } from "./routes/credentials.js";
-import { credentialValidateRoutes } from "./routes/credential-validate.js";
 import { toolAccessRoutes } from "./routes/tool-access.js";
 import { smokeLabRoutes } from "./routes/smoke-lab.js";
 import { costRoutes } from "./routes/costs.js";
@@ -61,7 +59,6 @@ import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
 import { resourceMembershipRoutes } from "./routes/resource-memberships.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { instanceSettingsRoutes } from "./routes/instance-settings.js";
-import { notificationRoutes } from "./routes/notifications.js";
 import { openApiRoutes } from "./routes/openapi.js";
 import {
   instanceDatabaseBackupRoutes,
@@ -98,7 +95,6 @@ import { setPluginEventBus } from "./services/activity-log.js";
 import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
 import { createPluginHostServiceCleanup } from "./services/plugin-host-service-cleanup.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
-import { createIssueImageGenerationJobService } from "./services/issue-image-generation-jobs.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
@@ -264,6 +260,7 @@ export async function createApp(
     deploymentExposure: DeploymentExposure;
     allowedHostnames: string[];
     bindHost: string;
+    authPublicBaseUrl?: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
     instanceId?: string;
@@ -327,7 +324,6 @@ export async function createApp(
       resolveSession: opts.resolveSession,
     }),
   );
-  app.use(readOnlyAgentMutationGuard());
   app.use("/api/auth", authRoutes(db));
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
@@ -336,7 +332,6 @@ export async function createApp(
 
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
-  const issueImageGenerationJobs = createIssueImageGenerationJobService(db, opts.storageService);
   const managedAutoInstallKeys = opts.managedPluginAutoInstall ?? null;
   const bundledCatalogRoot =
     opts.bundledPluginCatalogRoot ?? resolveBundledCatalogRoot(process.env);
@@ -385,19 +380,49 @@ export async function createApp(
   api.use(llmRoutes(db));
   api.use(folderRoutes(db));
   api.use(companySkillRoutes(db));
-  api.use(improvementSuggestionRoutes(db));
-  api.use(companyMcpServerRoutes(db));
   api.use(companySkillPolicyRoutes(db));
   api.use(inboxAgentPolicyRoutes(db));
   api.use(builtInAgentRoutes(db));
   api.use(summarySlotRoutes(db));
   api.use(statusCardRoutes(db));
   api.use(teamsCatalogRoutes(db));
-  api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
+  // The setup-token login session service. The router builds it and hands it
+  // back through the callback below, so the shutdown hook can cancel every live
+  // session (SR-4).
+  let setupTokenLoginService: SetupTokenSessionService | null = null;
+  // The dedicated proxy IP or CIDR allowlist for the confidential setup-token
+  // login responses (SR-7). The global `TRUST_PROXY` setting does not satisfy
+  // the guard; an operator sets this allowlist to the real TLS-terminating
+  // proxy addresses. An empty value keeps the confidential responses on direct
+  // TLS (or a `local_trusted` loopback peer) only.
+  const setupTokenLoginProxyAllowlist = (process.env.CLAUDE_LOGIN_TRUSTED_PROXIES ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  // The production server does not bind `setupTokenLogin` yet, so the start route
+  // fails closed with a fixed no-secret 503 and the login never spawns a process
+  // or holds a lease. This is a deliberate staged rollout: the live transport
+  // needs a real sandbox-lease manager, a live pseudo-terminal factory over the
+  // sandbox provider, and a durable cleanup store (the in-router default store is
+  // in-memory only). Each of those is a separate follow-up that goes through its
+  // own security review before the production server binds `setupTokenLogin`.
+  api.use(
+    agentRoutes(db, {
+      pluginWorkerManager: workerManager,
+      deploymentMode: opts.deploymentMode,
+      confidentialProxyAllowlist: setupTokenLoginProxyAllowlist,
+      onSetupTokenLoginService: (service) => {
+        setupTokenLoginService = service;
+        // Startup reaper (SR-4): release any lease whose login session is
+        // terminal or past its deadline after a restart. The DB is ready here.
+        void service.reap().catch((err) => {
+          logger.error({ err }, "Setup-token login startup reaper failed");
+        });
+      },
+    }),
+  );
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
-  api.use(workCycleRoutes(db));
-  api.use(organizationRoutes(db));
   api.use(caseRoutes(db, opts.storageService));
   api.use(issueTreeControlRoutes(db));
   api.use(fileResourceRoutes(db));
@@ -417,10 +442,6 @@ export async function createApp(
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(secretRoutes(db));
-  api.use(authenticatorRoutes(db));
-  api.use(githubConnectionRoutes(db));
-  api.use(credentialRoutes(db));
-  api.use(credentialValidateRoutes());
   const trustedLocalStdioRuntimeHost =
     process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST
     ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
@@ -438,7 +459,6 @@ export async function createApp(
   api.use(resourceMembershipRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
-  api.use(notificationRoutes(db));
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
   }
@@ -469,7 +489,6 @@ export async function createApp(
   api.use(issueRoutes(db, opts.storageService, {
     feedbackExportService: opts.feedbackExportService,
     pluginWorkerManager: workerManager,
-    issueImageGenerationJobs,
     approveToolActionRequest: (input) => toolGateway.approveActionRequest(input),
   }));
   app.use(mcpGatewayProtocolRoutes(toolGateway));
@@ -550,6 +569,7 @@ export async function createApp(
       deploymentExposure: opts.deploymentExposure,
       bindHost: opts.bindHost,
       allowedHostnames: opts.allowedHostnames,
+      authPublicBaseUrl: opts.authPublicBaseUrl,
     }),
   );
   app.use("/api", api);
@@ -663,7 +683,6 @@ export async function createApp(
 
   jobCoordinator.start();
   scheduler.start();
-  issueImageGenerationJobs.start();
   let feedbackExportShuttingDown = false;
   let feedbackExportTimer: ReturnType<typeof setInterval> | null = null;
   const disableFeedbackExportFlushes = () => {
@@ -696,6 +715,48 @@ export async function createApp(
   if (opts.feedbackExportService) {
     void flushPendingFeedbackExports();
   }
+  // Abandoned chunked-import spool sweep: hourly (plus once at startup),
+  // deleting spool dirs whose transfer saw no activity for 24h and cancelling
+  // their still-open ledger runs. Same setInterval + unref + shutdown-clear
+  // shape as the feedback export flush above.
+  const importTransferSpoolRoot = resolveDefaultImportTransferSpoolRoot();
+  const sweepImportTransferSpools = () => {
+    sweepAbandonedImportTransferSpools(db, importTransferSpoolRoot)
+      .then((result) => {
+        if (result.swept > 0) {
+          logger.info(result, "swept abandoned company import transfer spools");
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "abandoned company import transfer spool sweep failed");
+      });
+  };
+  let importTransferSweepTimer: ReturnType<typeof setInterval> | null = setInterval(
+    sweepImportTransferSpools,
+    IMPORT_TRANSFER_SPOOL_SWEEP_INTERVAL_MS,
+  );
+  importTransferSweepTimer.unref?.();
+  // Startup only (never on the hourly interval — that would kill live
+  // applies): apply jobs are in-memory in this single process, so any run
+  // still "applying" now was interrupted by the previous shutdown and would
+  // otherwise 409 every retry forever. Fail those stranded runs — their
+  // spooled parts stay reusable — then run the normal sweep once.
+  void companyTransferRunService
+    .recoverStrandedApplyingRuns(db)
+    .then((recovered) => {
+      if (recovered.length > 0) {
+        logger.warn(
+          { count: recovered.length, runIds: recovered },
+          "failed company transfer runs stranded in applying by a restart",
+        );
+      }
+    })
+    .catch((err) => {
+      logger.error({ err }, "stranded company transfer apply recovery failed");
+    })
+    .finally(() => {
+      sweepImportTransferSpools();
+    });
   void toolDispatcher.initialize().catch((err) => {
     logger.error({ err }, "Failed to initialize plugin tool dispatcher");
   });
@@ -743,13 +804,6 @@ export async function createApp(
     // Operator-DISABLED plugins are never touched in either mode.
     { reinstallUninstalled: managedAutoInstallKeys !== null },
   )
-    .then(async () => {
-      await ensureBundledLlmWikiPlugin({ loader, lifecycle, pluginRegistry });
-      await ensureBundledOperatorAssistantPlugin({ loader, lifecycle, pluginRegistry });
-    })
-    .catch((err) => {
-      logger.error({ err }, "Failed to auto-install bundled plugins");
-    })
     .then(() => loader.loadAll())
     .then((result) => {
     if (!result) return;
@@ -767,11 +821,17 @@ export async function createApp(
     if (appServicesShutdown) return;
     appServicesShutdown = true;
     disableFeedbackExportFlushes();
-    issueImageGenerationJobs.stop();
+    if (importTransferSweepTimer) {
+      clearInterval(importTransferSweepTimer);
+      importTransferSweepTimer = null;
+    }
     devWatcher?.close();
     viteHtmlRenderer?.dispose();
     hostServiceCleanup.disposeAll();
     hostServiceCleanup.teardown();
+    // Cancel every live setup-token login session, so each direct child stops
+    // before the server releases each lease (SR-4).
+    void setupTokenLoginService?.shutdown();
   };
   app.locals.paperclipShutdown = shutdownAppServices;
 
@@ -781,91 +841,4 @@ export async function createApp(
   });
 
   return app;
-}
-
-async function ensureBundledLlmWikiPlugin({
-  loader,
-  lifecycle,
-  pluginRegistry,
-}: {
-  loader: ReturnType<typeof pluginLoader>;
-  lifecycle: ReturnType<typeof pluginLifecycleManager>;
-  pluginRegistry: ReturnType<typeof pluginRegistryService>;
-}) {
-  return ensureBundledPlugin({
-    loader,
-    lifecycle,
-    pluginRegistry,
-    pluginKey: "paperclipai.plugin-llm-wiki",
-    directoryName: "plugin-llm-wiki",
-    displayName: "LLM Wiki",
-  });
-}
-
-async function ensureBundledOperatorAssistantPlugin({
-  loader,
-  lifecycle,
-  pluginRegistry,
-}: {
-  loader: ReturnType<typeof pluginLoader>;
-  lifecycle: ReturnType<typeof pluginLifecycleManager>;
-  pluginRegistry: ReturnType<typeof pluginRegistryService>;
-}) {
-  return ensureBundledPlugin({
-    loader,
-    lifecycle,
-    pluginRegistry,
-    pluginKey: "paperclipai.plugin-operator-assistant",
-    directoryName: "plugin-operator-assistant",
-    displayName: "Operator Assistant",
-  });
-}
-
-async function ensureBundledPlugin({
-  loader,
-  lifecycle,
-  pluginRegistry,
-  pluginKey,
-  directoryName,
-  displayName,
-}: {
-  loader: ReturnType<typeof pluginLoader>;
-  lifecycle: ReturnType<typeof pluginLifecycleManager>;
-  pluginRegistry: ReturnType<typeof pluginRegistryService>;
-  pluginKey: string;
-  directoryName: string;
-  displayName: string;
-}) {
-  const candidates = [
-    path.resolve(process.cwd(), `packages/plugins/${directoryName}`),
-    path.resolve(path.dirname(fileURLToPath(import.meta.url)), `../../packages/plugins/${directoryName}`),
-  ];
-  const pluginPath = candidates.find((candidate) =>
-    fs.existsSync(path.join(candidate, "package.json")) &&
-    fs.existsSync(path.join(candidate, "dist/manifest.js")) &&
-    fs.existsSync(path.join(candidate, "dist/worker.js")),
-  );
-  if (!pluginPath) return;
-
-  const existing = await pluginRegistry.getByKey(pluginKey);
-  if (existing && existing.status !== "uninstalled") {
-    if (existing.packagePath === pluginPath) {
-      if (existing.status === "installed") {
-        await lifecycle.load(existing.id);
-      }
-      return;
-    }
-
-    await lifecycle.unload(existing.id, false);
-    logger.info(
-      { pluginKey, previousPackagePath: existing.packagePath, pluginPath },
-      `Reinstalling bundled ${displayName} plugin from bundled path`,
-    );
-  }
-
-  const discovered = await loader.installPlugin({ localPath: pluginPath });
-  const installed = discovered.manifest ? await pluginRegistry.getByKey(discovered.manifest.id) : null;
-  if (!installed) return;
-  await lifecycle.load(installed.id);
-  logger.info({ pluginKey, pluginPath }, `Auto-installed bundled ${displayName} plugin`);
 }
