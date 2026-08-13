@@ -35,6 +35,125 @@ function buildTargetTree(targets: GoalTarget[], goalId: string): TargetTreeNode[
   return roots;
 }
 
+function PlannerActionsMenu({
+  trigger,
+  initiatives,
+  epics,
+  subjectLabel,
+  onLink,
+  onCreate,
+  extraActions,
+}: {
+  trigger: React.ReactNode;
+  initiatives: Goal[];
+  epics: Goal[];
+  subjectLabel: string;
+  onLink: (goal: Goal) => void;
+  onCreate: (level: "initiative" | "epic", title: string, parentInitiativeId: string | null) => void;
+  extraActions: Array<{ label: string; destructive?: boolean; onClick: () => void }>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [view, setView] = useState<"main" | "link" | "name" | "epicPick">("main");
+  const [pendingLevel, setPendingLevel] = useState<"initiative" | "epic">("initiative");
+  const [pendingParent, setPendingParent] = useState<string | null>(null);
+  const [title, setTitle] = useState("");
+  const itemCls = "flex w-full items-center rounded px-2 py-1.5 text-left text-sm hover:bg-accent/50";
+  const submit = () => {
+    if (!title.trim()) return;
+    onCreate(pendingLevel, title.trim(), pendingParent);
+    setOpen(false);
+  };
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (next) {
+          setView("main");
+          setTitle("");
+          setPendingParent(null);
+        }
+      }}
+    >
+      <PopoverTrigger asChild>{trigger}</PopoverTrigger>
+      <PopoverContent className="w-72 p-1" align="end">
+        {view === "main" && (
+          <>
+            <button className={itemCls} onClick={() => setView("link")}>🔗 Link existing initiative / epic…</button>
+            <button
+              className={itemCls}
+              onClick={() => { setPendingLevel("initiative"); setPendingParent(null); setView("name"); }}
+            >
+              ⬖ New initiative from this {subjectLabel}
+            </button>
+            <button
+              className={itemCls}
+              onClick={() => { setPendingLevel("epic"); setView(initiatives.length > 0 ? "epicPick" : "name"); }}
+            >
+              ◆ New epic from this {subjectLabel}
+            </button>
+            <div className="my-1 border-t border-border" />
+            {extraActions.map((action) => (
+              <button
+                key={action.label}
+                className={cn(itemCls, action.destructive && "text-destructive")}
+                onClick={() => { action.onClick(); setOpen(false); }}
+              >
+                {action.label}
+              </button>
+            ))}
+          </>
+        )}
+        {view === "link" && (
+          <>
+            <p className="px-2 py-1.5 text-xs text-muted-foreground">Link an existing initiative or epic</p>
+            <div className="max-h-64 overflow-y-auto">
+              {[...initiatives, ...epics].map((g) => (
+                <button key={g.id} className={itemCls} onClick={() => { onLink(g); setOpen(false); }}>
+                  {g.level === "initiative" ? "⬖ " : "◆ "}
+                  <span className="truncate">{g.title}</span>
+                </button>
+              ))}
+              {initiatives.length + epics.length === 0 && (
+                <p className="px-2 py-1.5 text-xs text-muted-foreground">Nothing to link yet.</p>
+              )}
+            </div>
+          </>
+        )}
+        {view === "epicPick" && (
+          <>
+            <p className="px-2 py-1.5 text-xs text-muted-foreground">Which initiative does the new epic belong to?</p>
+            {initiatives.map((g) => (
+              <button key={g.id} className={itemCls} onClick={() => { setPendingParent(g.id); setView("name"); }}>
+                ⬖ <span className="truncate">{g.title}</span>
+              </button>
+            ))}
+          </>
+        )}
+        {view === "name" && (
+          <div className="p-2">
+            <p className="mb-1.5 text-xs text-muted-foreground">
+              {pendingLevel === "initiative" ? "New initiative" : "New epic"} title
+            </p>
+            <input
+              autoFocus
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
+              placeholder="Title…"
+              className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm focus-visible:ring-ring focus-visible:ring-[3px] focus-visible:outline-none"
+            />
+            <div className="mt-2 flex gap-2">
+              <Button size="sm" disabled={!title.trim()} onClick={submit}>Create</Button>
+              <Button size="sm" variant="outline" onClick={() => setView("main")}>Back</Button>
+            </div>
+          </div>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function countTargets(nodes: TargetTreeNode[]): { done: number; total: number } {
   let done = 0;
   let total = 0;
@@ -198,26 +317,17 @@ export function Goals() {
     return <PageSkeleton variant="list" />;
   }
 
-  const linkMenu = (attach: (choice: { toGoal?: Goal }) => void) => (
-    <PopoverContent className="w-72 p-1" align="start">
-      <p className="px-2 py-1.5 text-xs text-muted-foreground">Link an existing initiative or epic</p>
-      {[...initiatives, ...epics].map((g) => (
-        <button
-          key={g.id}
-          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent/50"
-          onClick={() => attach({ toGoal: g })}
-        >
-          <span className={cn("text-xs font-semibold uppercase", g.level === "initiative" ? "text-(--hex-22d3ee)" : "text-(--hex-a3a3a3)")}>
-            {g.level === "initiative" ? "⬖" : "◆"}
-          </span>
-          <span className="truncate">{g.title}</span>
-        </button>
-      ))}
-      {initiatives.length + epics.length === 0 && (
-        <p className="px-2 py-1.5 text-xs text-muted-foreground">No initiatives or epics yet.</p>
-      )}
-    </PopoverContent>
-  );
+  const createLinkedGoal = async (
+    level: "initiative" | "epic",
+    title: string,
+    parentInitiativeId: string | null,
+    link: { toGoalId?: string; toTargetId?: string },
+  ) => {
+    const parentId = level === "initiative" ? northStar?.id ?? null : parentInitiativeId;
+    const created = await goalsApi.create(selectedCompanyId!, { title, level, status: "active", parentId });
+    await goalsApi.relationCreate(selectedCompanyId!, { type: "serves", fromGoalId: created.id, ...link });
+    invalidate();
+  };
 
   const renderChips = (relationList: GoalRelation[]) => relationList.map((relation) => {
     const linked = relation.fromGoalId ? goalById.get(relation.fromGoalId) : null;
@@ -295,40 +405,28 @@ export function Goals() {
           <span className="flex shrink-0 flex-wrap items-center gap-1">
             {renderChips(relationsByTarget.get(target.id) ?? [])}
           </span>
-          <Popover>
-            <PopoverTrigger asChild>
+          <PlannerActionsMenu
+            trigger={
               <button
-                className="mt-0.5 shrink-0 rounded border border-border px-1 text-muted-foreground opacity-0 hover:text-foreground group-hover:opacity-100"
+                className="mt-0.5 shrink-0 rounded border border-border px-1 text-muted-foreground/70 hover:border-ring hover:text-foreground"
                 aria-label="Target actions"
               >
                 <MoreHorizontal className="h-3.5 w-3.5" />
               </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-64 p-1" align="end">
-              <Popover>
-                <PopoverTrigger asChild>
-                  <button className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm hover:bg-accent/50">
-                    🔗 Link initiative / epic…
-                  </button>
-                </PopoverTrigger>
-                {linkMenu(({ toGoal }) => {
-                  if (toGoal) relationCreate.mutate({ fromGoalId: toGoal.id, toTargetId: target.id });
-                })}
-              </Popover>
-              <button
-                className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm hover:bg-accent/50"
-                onClick={() => targetCreate.mutate({ goalId: goal.id, data: { parentId: target.id, text: "New sub-item" } })}
-              >
-                ＋ Add sub-item
-              </button>
-              <button
-                className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm text-destructive hover:bg-accent/50"
-                onClick={() => targetRemove.mutate(target.id)}
-              >
-                🗑 Delete target
-              </button>
-            </PopoverContent>
-          </Popover>
+            }
+            initiatives={initiatives}
+            epics={epics}
+            subjectLabel="target"
+            onLink={(g) => relationCreate.mutate({ fromGoalId: g.id, toTargetId: target.id })}
+            onCreate={(level, title, parent) => { void createLinkedGoal(level, title, parent, { toTargetId: target.id }); }}
+            extraActions={[
+              {
+                label: "＋ Add sub-item",
+                onClick: () => targetCreate.mutate({ goalId: goal.id, data: { parentId: target.id, text: "New sub-item" } }),
+              },
+              { label: "🗑 Delete target", destructive: true, onClick: () => targetRemove.mutate(target.id) },
+            ]}
+          />
         </div>
         {node.children.map((child) => renderTargetRow(goal, child, depth + 1))}
       </div>
@@ -442,40 +540,28 @@ export function Goals() {
                     ))}
                   </PopoverContent>
                 </Popover>
-                <Popover>
-                  <PopoverTrigger asChild>
+                <PlannerActionsMenu
+                  trigger={
                     <button
-                      className="rounded border border-border px-1 py-0.5 text-muted-foreground opacity-0 hover:text-foreground group-hover/goal:opacity-100"
+                      className="rounded border border-border px-1 py-0.5 text-muted-foreground/70 hover:border-ring hover:text-foreground"
                       aria-label="Goal actions"
                     >
                       <MoreHorizontal className="h-4 w-4" />
                     </button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-64 p-1" align="end">
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <button className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm hover:bg-accent/50">
-                          🔗 Link initiative / epic…
-                        </button>
-                      </PopoverTrigger>
-                      {linkMenu(({ toGoal }) => {
-                        if (toGoal) relationCreate.mutate({ fromGoalId: toGoal.id, toGoalId: goal.id });
-                      })}
-                    </Popover>
-                    <button
-                      className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm hover:bg-accent/50"
-                      onClick={() => targetCreate.mutate({ goalId: goal.id, data: { text: "New target" } })}
-                    >
-                      ＋ Add target
-                    </button>
-                    <button
-                      className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm text-destructive hover:bg-accent/50"
-                      onClick={() => goalRemove.mutate(goal.id)}
-                    >
-                      🗑 Delete goal
-                    </button>
-                  </PopoverContent>
-                </Popover>
+                  }
+                  initiatives={initiatives}
+                  epics={epics}
+                  subjectLabel="goal"
+                  onLink={(g) => relationCreate.mutate({ fromGoalId: g.id, toGoalId: goal.id })}
+                  onCreate={(level, title, parent) => { void createLinkedGoal(level, title, parent, { toGoalId: goal.id }); }}
+                  extraActions={[
+                    {
+                      label: "＋ Add target",
+                      onClick: () => targetCreate.mutate({ goalId: goal.id, data: { text: "New target" } }),
+                    },
+                    { label: "🗑 Delete goal", destructive: true, onClick: () => goalRemove.mutate(goal.id) },
+                  ]}
+                />
               </span>
             </div>
 

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@/lib/router";
-import { ChevronRight, List, Lock, Maximize2, Minus, Plus, RotateCcw, Target } from "lucide-react";
+import { ChevronRight, Lock, Maximize2, Minus, Plus, RotateCcw, Target } from "lucide-react";
 import type { Agent, GoalMapIssueNode, GoalMapNode, GoalMapStatusCounts } from "@paperclipai/shared";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
@@ -842,12 +842,6 @@ export function GoalMap() {
         >
           Roadmap
         </Button>
-        <Link to="/goals">
-          <Button variant="outline" size="sm">
-            <List className="mr-1.5 h-3.5 w-3.5" />
-            Goals
-          </Button>
-        </Link>
         {mapView === "map" && (
           <>
             <Button
@@ -1131,7 +1125,7 @@ export function GoalMap() {
                     data-map-plus
                     aria-label={node.goal.level === "initiative" ? "New epic in this initiative" : "New task in this epic"}
                     title={node.goal.level === "initiative" ? "New epic in this initiative" : "New task in this epic"}
-                    className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded border border-border bg-background text-xs font-bold text-muted-foreground hover:border-ring hover:text-foreground"
+                    className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded border border-(--hex-22d3ee) bg-background text-sm font-bold text-(--hex-22d3ee) hover:bg-(--hex-22d3ee) hover:text-white"
                     onClick={(e) => {
                       e.stopPropagation();
                       setSelection({ kind: "goal", id: node.goal.id });
@@ -1238,7 +1232,7 @@ export function GoalMap() {
                     data-map-plus
                     aria-label="New sub-task"
                     title="New sub-task"
-                    className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded border border-border bg-background text-xs font-bold text-muted-foreground opacity-0 hover:border-ring hover:text-foreground group-hover:opacity-100"
+                    className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded border border-(--hex-22d3ee) bg-background text-xs font-bold text-(--hex-22d3ee) opacity-70 hover:bg-(--hex-22d3ee) hover:text-white hover:opacity-100"
                     onClick={(e) => {
                       e.stopPropagation();
                       setSelection({ kind: "issue", id: issue.id });

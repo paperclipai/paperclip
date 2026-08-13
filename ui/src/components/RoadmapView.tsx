@@ -308,7 +308,7 @@ export function RoadmapView({ companyId, goals }: { companyId: string; goals: Go
                       data-roadmap-action
                       aria-label="Make initiative / epic, or link existing"
                       title="Make initiative / epic, or link existing"
-                      className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded border border-border bg-background text-xs font-bold text-muted-foreground hover:border-ring hover:text-foreground"
+                      className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded border border-(--hex-22d3ee) bg-background text-sm font-bold text-(--hex-22d3ee) hover:bg-(--hex-22d3ee) hover:text-white"
                     >
                       +
                     </button>
