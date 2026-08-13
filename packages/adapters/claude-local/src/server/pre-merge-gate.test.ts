@@ -91,6 +91,13 @@ describe("parseGhPrMergeCommand", () => {
   it("preserves order and duplicates when the same PR is repeated in a compound command", () => {
     expect(parseGhPrMergeCommand("gh pr merge 460 && gh pr merge 460 --squash")).toEqual([460, 460]);
   });
+
+  it("matches a TAB between `gh pr merge` and the PR number (Greptile P1 #6 regression)", () => {
+    // Reproduces Greptile round 4 finding: the bash extractor previously
+    // required a literal space after `gh pr merge`, so `gh pr merge\t460`
+    // bypassed the gate. The TS parser is symmetric.
+    expect(parseGhPrMergeCommand("gh pr merge\t460 --squash")).toEqual([460]);
+  });
 });
 
 describe("evaluatePreMergeGates — gate #1 (ticket state)", () => {
@@ -403,7 +410,7 @@ describe("buildPreMergeHookScript", () => {
     // BOTH PRs to pass — partial approval is never sufficient.
     expect(script).toContain("for PR_NUMBER in $PR_NUMBERS; do");
     expect(script).toContain("done");
-    expect(script).toMatch(/extract_pr_numbers\(\) \{[\s\S]*?case "\$segment" in[\s\S]*?\) continue/);
+    expect(script).toMatch(/extract_pr_numbers\(\) \{[\s\S]*?grep -qE 'gh pr merge\[\[:space:\]\]'[\s\S]*?continue/);
   });
 });
 
