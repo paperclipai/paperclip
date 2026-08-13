@@ -79,7 +79,7 @@ import {
 } from "../lib/optimistic-issue-comments";
 import { clearIssueExecutionRun, removeLiveRunById, upsertInterruptedRun } from "../lib/optimistic-issue-runs";
 import { useProjectOrder } from "../hooks/useProjectOrder";
-import { relativeTime, cn, formatDurationMs, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import { relativeTime, cn, formatDurationMs, formatTokens, totalTrackedTokens, visibleRunCostUsd } from "../lib/utils";
 import { liveBlueBadge } from "../lib/status-colors";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
@@ -1372,7 +1372,7 @@ function IssueDetailActivityTab({
       output,
       cached,
       cost,
-      totalTokens: input + output,
+      totalTokens: totalTrackedTokens({ inputTokens: input, cachedInputTokens: cached, outputTokens: output }),
       hasCost,
       hasTokens,
       runtimeMs,
@@ -1380,8 +1380,11 @@ function IssueDetailActivityTab({
       hasRuntime: runtimeMs > 0,
     };
   }, [linkedRuns]);
-  const issueTreeCostTokens =
-    (issueTreeCostSummary?.inputTokens ?? 0) + (issueTreeCostSummary?.outputTokens ?? 0);
+  const issueTreeCostTokens = totalTrackedTokens({
+    inputTokens: issueTreeCostSummary?.inputTokens ?? 0,
+    cachedInputTokens: issueTreeCostSummary?.cachedInputTokens ?? 0,
+    outputTokens: issueTreeCostSummary?.outputTokens ?? 0,
+  });
   const hasIssueTreeCost =
     !!issueTreeCostSummary
     && (issueTreeCostSummary.costCents > 0
