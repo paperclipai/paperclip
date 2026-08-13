@@ -10,6 +10,7 @@ import {
 } from "@paperclipai/adapter-utils/execution-target";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
+import { HOOK_RELATIVE_PATH, buildPreMergeHookScript } from "./pre-merge-gate-script.js";
 
 const SEEDED_SHARED_FILES = ["settings.json", "CLAUDE.md"] as const;
 
@@ -112,6 +113,85 @@ async function materializeSeedSnapshot(input: {
   return targetDir;
 }
 
+/**
+ * Inject the Paperclip-managed pre-merge `PreToolUse` hook into the seeded
+ * `settings.json` and write the matching shell handler script into the
+ * snapshot directory. The hook is content-addressed: it depends only on the
+ * hook script's stable payload (not the snapshot key), so re-injecting on a
+ * reused snapshot is a no-op when the script is already up to date.
+ *
+ * Why we patch the snapshot AFTER sanitization (and not before): the snapshot
+ * key already captures the user-supplied `settings.json` contents. `sanitize`
+ * intentionally strips `hooks` to keep operator-controlled hooks out of the
+ * remote sandbox. This is a Paperclip-managed hook — separate concern,
+ * injected here, and it points at a script that lives INSIDE the same
+ * snapshot, so the remote sandbox still ships with no host-only side effects.
+ */
+async function injectManagedPreMergeHook(snapshotDir: string): Promise<void> {
+  const scriptPath = path.join(snapshotDir, HOOK_RELATIVE_PATH);
+  const scriptBody = buildPreMergeHookScript({ scriptPath });
+
+  await fs.mkdir(path.dirname(scriptPath), { recursive: true });
+  let scriptChanged = true;
+  if (await pathExists(scriptPath)) {
+    const existing = await fs.readFile(scriptPath, "utf8").catch(() => "");
+    if (existing === scriptBody) scriptChanged = false;
+  }
+  if (scriptChanged) {
+    await fs.writeFile(scriptPath, scriptBody, { mode: 0o755 });
+  }
+
+  const settingsPath = path.join(snapshotDir, "settings.json");
+  let settingsRaw: string;
+  try {
+    settingsRaw = await fs.readFile(settingsPath, "utf8");
+  } catch {
+    settingsRaw = JSON.stringify({ permissions: { defaultMode: "default" } });
+  }
+  let settings: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(settingsRaw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      settings = parsed as Record<string, unknown>;
+    } else {
+      settings = {};
+    }
+  } catch {
+    settings = {};
+  }
+
+  const existingHooks = settings.hooks;
+  const hooks: Record<string, unknown> =
+    existingHooks && typeof existingHooks === "object" && !Array.isArray(existingHooks)
+      ? (existingHooks as Record<string, unknown>)
+      : {};
+  const preToolUse = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : [];
+  // Replace any prior injection so re-runs of the snapshot are idempotent.
+  const filtered = preToolUse.filter(
+    (entry) =>
+      !(entry && typeof entry === "object" && (entry as Record<string, unknown>).__paperclipManaged === true),
+  );
+  filtered.push({
+    matcher: "Bash",
+    hooks: [
+      {
+        type: "command",
+        command: scriptPath,
+        __paperclipManaged: true,
+      },
+    ],
+    __paperclipManaged: true,
+  });
+  hooks.PreToolUse = filtered;
+  settings.hooks = hooks;
+  settings.permissions = { defaultMode: "default" };
+
+  const nextRaw = JSON.stringify(settings);
+  if (nextRaw !== settingsRaw) {
+    await fs.writeFile(settingsPath, nextRaw, { mode: 0o600 });
+  }
+}
+
 export function resolveSharedClaudeConfigDir(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
@@ -194,6 +274,12 @@ export async function prepareClaudeConfigSeed(
     snapshotKey,
     files: copiedFiles,
   });
+
+  // Managed injection: add the pre-merge gate hook (Control 3, MGC-2350) to
+  // the snapshot regardless of whether the user supplied a settings.json. The
+  // injection is idempotent and runs on every seed prep so it stays in sync
+  // with the latest handler shipped by this adapter version.
+  await injectManagedPreMergeHook(targetDir);
 
   if (copiedFiles.length > 0) {
     await onLog(
