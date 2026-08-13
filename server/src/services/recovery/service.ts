@@ -129,17 +129,35 @@ export const STRANDED_RECENT_PROGRESS_EXEMPTION_MS = Math.max(
   Number(process.env.STRANDED_RECENT_PROGRESS_EXEMPTION_MS) || 30 * 60 * 1000,
 );
 
-// SPC-21314: cap re-escalation for the `successful_run_missing_state` recovery
-// cause. The flap on SPC-21292 (2026-07-11) burned ~1 wake/min for 17+ minutes
-// when an owner PATCHed `in_progress` on every recovery wake without recording a
-// valid disposition, and `reconcileStrandedAssignedIssues` re-escalated on every
-// tick because the exhausted-handoff path never consulted the existing active
-// recovery action's attemptCount (it was left unbounded, maxAttempts=null). Cap
-// re-escalation at 3 attempts so the reconciler surfaces the loop for
-// intervention instead of enqueuing another wake.
-export const SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS = Math.max(
-  1,
-  Number(process.env.SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS) || 3,
+// Default + hard ceiling for the `successful_run_missing_state` re-escalation
+// cap. The ceiling is PostgreSQL `integer` (int32) so a parsed env value can
+// never be written into `issue_recovery_actions.max_attempts` as Infinity,
+// a decimal, or a number outside the column range.
+export const SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS_DEFAULT = 3;
+export const SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS_CEILING = 2_147_483_647;
+
+// Accept only a finite integer in [1, int32]. Reject decimals ("3.5"),
+// Infinity, scientific notation, and out-of-range values. `Number("3.5")`
+// is finite and `Math.max(1, 3.5)` would persist 3.5 into an integer column.
+export function parseSuccessfulRunMissingStateMaxAttempts(
+  raw: string | undefined,
+  fallback = SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS_DEFAULT,
+): number {
+  const trimmed = raw?.trim();
+  if (!trimmed || !/^[+-]?\d+$/.test(trimmed)) return fallback;
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS_CEILING) {
+    return fallback;
+  }
+  return parsed;
+}
+
+// Cap re-escalation for the `successful_run_missing_state` recovery cause.
+// Without a bound, `reconcileStrandedAssignedIssues` re-escalates every tick
+// when an owner PATCHes `in_progress` on every recovery wake without recording
+// a valid disposition (observed ~1 wake/min for 17+ minutes, attemptCount=30).
+export const SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS = parseSuccessfulRunMissingStateMaxAttempts(
+  process.env.SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS,
 );
 
 type RecoveryWakeupOptions = {
