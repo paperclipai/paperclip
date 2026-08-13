@@ -336,6 +336,23 @@ export function RoadmapView({ companyId, goals }: { companyId: string; goals: Go
                     </button>
                   </PopoverTrigger>
                   <PopoverContent className="w-72 p-1" align="start">
+                    {linked && (
+                      <>
+                        <div className="flex items-center justify-between gap-2 rounded bg-accent/40 px-2 py-1.5">
+                          <span className="truncate text-sm">
+                            {linked.level === "initiative" ? "⬖" : "◆"} {linked.title}
+                          </span>
+                          <button
+                            data-roadmap-action
+                            className="shrink-0 rounded px-1.5 py-0.5 text-xs text-destructive hover:bg-destructive/10"
+                            onClick={() => blockUpdate.mutate({ id: block.id, data: { linkedGoalId: null } })}
+                          >
+                            Unlink
+                          </button>
+                        </div>
+                        <div className="my-1 border-t border-border" />
+                      </>
+                    )}
                     <button
                       data-roadmap-action
                       className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm hover:bg-accent/50"
@@ -355,17 +372,24 @@ export function RoadmapView({ companyId, goals }: { companyId: string; goals: Go
                       </button>
                     ))}
                     <div className="my-1 border-t border-border" />
-                    <p className="px-2 pt-0.5 text-xs text-muted-foreground">Link existing epic…</p>
-                    {epics.map((epic) => (
-                      <button
-                        key={epic.id}
-                        data-roadmap-action
-                        className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm hover:bg-accent/50"
-                        onClick={() => blockUpdate.mutate({ id: block.id, data: { linkedGoalId: epic.id } })}
-                      >
-                        ◆ {epic.title}
-                      </button>
-                    ))}
+                    <p className="px-2 pt-0.5 text-xs text-muted-foreground">
+                      {linked ? "Re-link to another epic…" : "Link existing epic…"}
+                    </p>
+                    {epics.map((epic) => {
+                      const isCurrent = epic.id === block.linkedGoalId;
+                      return (
+                        <button
+                          key={epic.id}
+                          data-roadmap-action
+                          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent/50 disabled:opacity-50"
+                          disabled={isCurrent}
+                          onClick={() => blockUpdate.mutate({ id: block.id, data: { linkedGoalId: epic.id } })}
+                        >
+                          <span className="truncate">◆ {epic.title}</span>
+                          {isCurrent && <span className="ml-auto shrink-0 text-xs text-muted-foreground">current</span>}
+                        </button>
+                      );
+                    })}
                   </PopoverContent>
                 </Popover>
               </Card>
@@ -399,6 +423,28 @@ export function RoadmapView({ companyId, goals }: { companyId: string; goals: Go
                 multiline
               />
             </div>
+
+            {selected.linkedGoalId && (
+              <div>
+                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Linked goal</h3>
+                <div className="flex items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate text-sm" style={{ color: "#0891b2" }}>
+                    {goalById.get(selected.linkedGoalId)?.level === "initiative" ? "⬖" : "◆"}{" "}
+                    {goalById.get(selected.linkedGoalId)?.title ?? "unknown goal"}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => blockUpdate.mutate({ id: selected.id, data: { linkedGoalId: null } })}
+                  >
+                    Unlink
+                  </Button>
+                </div>
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  The block mirrors this goal (done when it is achieved). Unlink to make it a plain note again.
+                </p>
+              </div>
+            )}
 
             <div>
               <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Status</h3>

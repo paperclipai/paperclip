@@ -905,11 +905,29 @@ export function GoalMap() {
             <Button
               variant="outline"
               size="sm"
-              disabled={Object.keys(positionOverrides).length === 0}
-              onClick={() => persistOverrides({})}
+              title="Collapse every goal's task tree"
+              disabled={[...trees.rootsByGoalId.keys()].every((goalId) => collapsedGoalIds.has(goalId))}
+              onClick={() => setCollapsedGoalIds(new Set(trees.rootsByGoalId.keys()))}
+            >
+              Collapse all
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              title="Expand everything and restore automatic positions"
+              disabled={
+                Object.keys(positionOverrides).length === 0 &&
+                collapsedGoalIds.size === 0 &&
+                collapsedIssueIds.size === 0
+              }
+              onClick={() => {
+                persistOverrides({});
+                setCollapsedGoalIds(new Set());
+                setCollapsedIssueIds(new Set());
+              }}
             >
               <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-              Reset layout
+              Show all
             </Button>
             {goalMap.issuesTruncated && (
               <span className="text-xs text-muted-foreground">Showing the first {goalMap.issues.length} tasks.</span>
