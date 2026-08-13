@@ -1,4 +1,5 @@
 import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
+import type { ApprovalDecisionAction, ApprovalDecisionOption } from "@paperclipai/shared";
 import { MarkdownBody } from "./MarkdownBody";
 import { formatCents } from "../lib/utils";
 
@@ -16,6 +17,52 @@ function firstNonEmptyString(...values: unknown[]): string | null {
     }
   }
   return null;
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function normalizeDecisionAction(value: unknown): ApprovalDecisionAction {
+  const normalized = stringOrNull(value)?.toLowerCase().replace(/[\s-]+/g, "_") ?? "";
+  if (["reject", "rejected", "decline", "declined"].includes(normalized)) return "reject";
+  if (["revision", "revise", "request_revision", "revision_requested", "changes", "request_changes"].includes(normalized)) return "revision";
+  return "approve";
+}
+
+function normalizeDecisionTone(value: unknown, action: ApprovalDecisionAction): ApprovalDecisionOption["tone"] {
+  const normalized = stringOrNull(value)?.toLowerCase() ?? "";
+  if (normalized === "success" || normalized === "danger" || normalized === "warning" || normalized === "default") return normalized;
+  return action === "approve" ? "success" : action === "reject" ? "danger" : "warning";
+}
+
+function optionIdFor(label: string, index: number) {
+  return label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || `option-${index + 1}`;
+}
+
+export function approvalDecisionOptions(payload?: Record<string, unknown> | null): ApprovalDecisionOption[] {
+  const rawOptions = payload?.decisionOptions ?? payload?.options ?? payload?.proposals;
+  if (!Array.isArray(rawOptions)) return [];
+  return rawOptions.flatMap((item, index): ApprovalDecisionOption[] => {
+    if (typeof item === "string") {
+      const label = item.trim();
+      return label ? [{ id: optionIdFor(label, index), label, action: "approve", description: null, decisionNote: label, nextStep: null, tone: "success" }] : [];
+    }
+    if (!item || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    const label = firstNonEmptyString(record.label, record.title, record.name, record.summary, record.recommendedAction);
+    if (!label) return [];
+    const action = normalizeDecisionAction(record.action ?? record.decisionAction ?? record.status ?? record.outcome);
+    return [{
+      id: firstNonEmptyString(record.id, record.key, record.value) ?? optionIdFor(label, index),
+      label,
+      action,
+      description: firstNonEmptyString(record.description, record.summary, record.rationale, record.reason),
+      decisionNote: firstNonEmptyString(record.decisionNote, record.note, record.boardResponse, record.response) ?? label,
+      nextStep: firstNonEmptyString(record.nextStep, record.nextAction, record.nextActionOnApproval, record.onApproval),
+      tone: normalizeDecisionTone(record.tone ?? record.variant, action),
+    }];
+  });
 }
 
 export function approvalSubject(payload?: Record<string, unknown> | null): string | null {
