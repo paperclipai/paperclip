@@ -1,30 +1,36 @@
-import fs from "node:fs";
-import net from "node:net";
-import os from "node:os";
-import path from "node:path";
+/**
+ * Per-suite embedded-Postgres test database.
+ *
+ * Two paths, selected automatically:
+ *
+ *   1. SHARED (RBR-912) — when `globalSetup` has published a run-wide cluster
+ *      (see `test-embedded-postgres-shared.ts`), this clones a fresh database
+ *      from the already-migrated template with
+ *      `create database <fresh> template <template>`. Seconds, not a minute.
+ *   2. LEGACY — no published cluster (for example the `@paperclipai/db` package's
+ *      own migration tests, which run without that `globalSetup`). Boots a
+ *      dedicated cluster per suite and migrates it, exactly as before.
+ *
+ * The low-level cluster primitives live in `test-embedded-postgres-cluster.ts`.
+ */
+import { randomUUID } from "node:crypto";
 import { applyPendingMigrations, ensurePostgresDatabase } from "./client.js";
+import { formatEmbeddedPostgresError } from "./embedded-postgres-error.js";
 import {
-  createEmbeddedPostgresLogBuffer,
-  formatEmbeddedPostgresError,
-} from "./embedded-postgres-error.js";
-import { prepareEmbeddedPostgresNativeRuntime } from "./embedded-postgres-native.js";
-
-type EmbeddedPostgresInstance = {
-  initialise(): Promise<void>;
-  start(): Promise<void>;
-  stop(): Promise<void>;
-};
-
-type EmbeddedPostgresCtor = new (opts: {
-  databaseDir: string;
-  user: string;
-  password: string;
-  port: number;
-  persistent: boolean;
-  initdbFlags?: string[];
-  onLog?: (message: unknown) => void;
-  onError?: (message: unknown) => void;
-}) => EmbeddedPostgresInstance;
+  cleanupEmbeddedPostgresTestDirs,
+  createEmbeddedPostgresCluster,
+  destroyEmbeddedPostgresCluster,
+  startEmbeddedPostgresWithRetry,
+  stopEmbeddedPostgresBounded,
+  type EmbeddedPostgresInstance,
+  EMBEDDED_POSTGRES_START_MAX_ATTEMPTS,
+  __setEmbeddedPostgresCtorProviderForTests,
+} from "./test-embedded-postgres-cluster.js";
+import {
+  dropSharedEmbeddedPostgresDatabase,
+  cloneSharedEmbeddedPostgresDatabase,
+  getPublishedSharedEmbeddedPostgres,
+} from "./test-embedded-postgres-shared.js";
 
 export type EmbeddedPostgresTestSupport = {
   supported: boolean;
@@ -38,204 +44,25 @@ export type EmbeddedPostgresTestDatabase = {
 
 let embeddedPostgresSupportPromise: Promise<EmbeddedPostgresTestSupport> | null = null;
 
-const DEFAULT_PAPERCLIP_EMBEDDED_POSTGRES_PORT = 54329;
-
-function getReservedTestPorts(): Set<number> {
-  const configuredPorts = [
-    DEFAULT_PAPERCLIP_EMBEDDED_POSTGRES_PORT,
-    Number.parseInt(process.env.PAPERCLIP_EMBEDDED_POSTGRES_PORT ?? "", 10),
-    ...String(process.env.PAPERCLIP_TEST_POSTGRES_RESERVED_PORTS ?? "")
-      .split(",")
-      .map((value) => Number.parseInt(value.trim(), 10)),
-  ];
-  return new Set(configuredPorts.filter((port) => Number.isInteger(port) && port > 0 && port <= 65535));
-}
-
-type EmbeddedPostgresCtorProvider = () => Promise<EmbeddedPostgresCtor>;
-
-async function loadEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
-  const mod = await import("embedded-postgres");
-  await prepareEmbeddedPostgresNativeRuntime();
-  return mod.default as EmbeddedPostgresCtor;
-}
-
-let embeddedPostgresCtorProvider: EmbeddedPostgresCtorProvider = loadEmbeddedPostgresCtor;
-
-// Test seam. Replace the embedded-postgres constructor provider so a test can
-// simulate a failed start without the native runtime. Pass `null` to restore
-// the default provider. This module is test support only, so the seam is safe.
-export function __setEmbeddedPostgresCtorProviderForTests(
-  provider: EmbeddedPostgresCtorProvider | null,
-): void {
-  embeddedPostgresCtorProvider = provider ?? loadEmbeddedPostgresCtor;
-}
-
-async function getEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
-  return await embeddedPostgresCtorProvider();
-}
-
-async function getAvailablePort(): Promise<number> {
-  const reservedPorts = getReservedTestPorts();
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const port = await new Promise<number>((resolve, reject) => {
-      const server = net.createServer();
-      server.unref();
-      server.on("error", reject);
-      server.listen(0, "127.0.0.1", () => {
-        const address = server.address();
-        if (!address || typeof address === "string") {
-          server.close(() => reject(new Error("Failed to allocate test port")));
-          return;
-        }
-        const { port } = address;
-        server.close((error) => {
-          if (error) reject(error);
-          else resolve(port);
-        });
-      });
-    });
-
-    if (!reservedPorts.has(port)) return port;
-  }
-
-  throw new Error(
-    `Failed to allocate embedded Postgres test port outside reserved Paperclip ports: ${[
-      ...reservedPorts,
-    ].join(", ")}`,
-  );
-}
-
-async function createEmbeddedPostgresTestInstance(tempDirPrefix: string) {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), tempDirPrefix));
-  const port = await getAvailablePort();
-  const EmbeddedPostgres = await getEmbeddedPostgresCtor();
-  // Postgres writes the true reason for a failed start to its output, for
-  // example `could not bind IPv4 address "127.0.0.1": Address already in use`.
-  // The `start()` rejection carries an empty message, so we capture the output
-  // in a bounded buffer and surface it in the thrown error.
-  const logBuffer = createEmbeddedPostgresLogBuffer();
-  const instance = new EmbeddedPostgres({
-    databaseDir: dataDir,
-    user: "paperclip",
-    password: "paperclip",
-    port,
-    persistent: true,
-    initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
-    onLog: (message) => logBuffer.append(message),
-    onError: (message) => logBuffer.append(message),
-  });
-
-  return { dataDir, port, instance, getRecentLogs: () => logBuffer.getRecentLogs() };
-}
-
-function cleanupEmbeddedPostgresTestDirs(dataDir: string) {
-  fs.rmSync(dataDir, { recursive: true, force: true });
-}
-
-// Upper bound (ms) on how long we wait for the embedded Postgres cluster to
-// stop gracefully before abandoning the wait and returning from the hook.
-const EMBEDDED_POSTGRES_STOP_TIMEOUT_MS = 5000;
-
-// `embedded-postgres@18.1.0-beta.16` exposes only `stop(): Promise<void>` — no
-// shutdown-mode argument. Internally it SIGINTs the postgres process (already
-// PostgreSQL "fast shutdown") and resolves *only* on the child's `exit` event,
-// with no time bound of its own. Under the loaded serial server shard a slow
-// shutdown checkpoint can push that past vitest's hookTimeout and hang the
-// afterAll hook. So we bound the graceful stop: if it overruns, we stop waiting
-// and return so the hook completes. The SIGINT has already been delivered, so
-// the abandoned process still exits on its own (and again when the runner exits).
-// Errors are swallowed, matching prior behavior.
-//
-// `cleanupFn` (data-dir reclaim) is chained on the raw `stop()` promise, not on
-// the timeout race, so the disposable data dir is removed *only after* `stop()`
-// actually settles — i.e. once the child Postgres process has exited. Removing
-// it on the timeout path would pull the data files out from under a still-running
-// cluster and provoke checkpoint / WAL I/O errors. In the fast path `cleanupFn`
-// has run by the time this resolves; in the timeout path it runs asynchronously
-// once the abandoned process finally exits.
-async function stopEmbeddedPostgresBounded(
-  instance: EmbeddedPostgresInstance | null,
-  cleanupFn?: () => void,
-): Promise<void> {
-  if (!instance) {
-    cleanupFn?.();
-    return;
-  }
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const stopped = instance
-    .stop()
-    .catch(() => {
-      // Swallow shutdown errors — the data dir is reclaimed regardless.
-    })
-    .finally(() => {
-      try {
-        cleanupFn?.();
-      } catch {
-        // Best-effort reclaim; ignore removal errors.
-      }
-    });
-  try {
-    await Promise.race([
-      stopped,
-      new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, EMBEDDED_POSTGRES_STOP_TIMEOUT_MS);
-        timer.unref?.();
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
-// Upper bound on start attempts. `getAvailablePort` uses a check-then-use probe:
-// it binds port 0, reads the assigned port, closes the probe, then Postgres binds
-// that port. Under load another process can take the port in that window, so the
-// bind fails with "Address already in use" and `start()` rejects. Each retry uses
-// a fresh port and a fresh data directory, so a transient collision clears.
-const EMBEDDED_POSTGRES_START_MAX_ATTEMPTS = 5;
-
-// Start one embedded Postgres cluster with a bounded retry. Each attempt gets a
-// fresh port and a fresh data directory. On a failed attempt we stop the cluster
-// and remove its data directory before the next attempt. After the last attempt
-// we throw with the real Postgres output so the failure is loud and diagnosable.
-async function startEmbeddedPostgresWithRetry(tempDirPrefix: string): Promise<{
-  port: number;
-  dataDir: string;
-  instance: EmbeddedPostgresInstance;
-}> {
-  let lastError = new Error("embedded Postgres startup failed");
-
-  for (let attempt = 1; attempt <= EMBEDDED_POSTGRES_START_MAX_ATTEMPTS; attempt += 1) {
-    const created = await createEmbeddedPostgresTestInstance(tempDirPrefix);
-    try {
-      await created.instance.initialise();
-      await created.instance.start();
-      return { port: created.port, dataDir: created.dataDir, instance: created.instance };
-    } catch (error) {
-      lastError = formatEmbeddedPostgresError(error, {
-        fallbackMessage: "embedded Postgres startup failed",
-        recentLogs: created.getRecentLogs(),
-      });
-      // Stop the failed cluster and remove its data directory. The next attempt
-      // allocates a fresh port and a fresh data directory.
-      await stopEmbeddedPostgresBounded(created.instance, () =>
-        cleanupEmbeddedPostgresTestDirs(created.dataDir),
-      );
-    }
-  }
-
-  throw new Error(
-    `Failed to start embedded PostgreSQL test database after ${EMBEDDED_POSTGRES_START_MAX_ATTEMPTS} attempts: ${lastError.message}`,
-  );
-}
-
-// Test-only accessors. Production callers use `startEmbeddedPostgresTestDatabase`
-// or `getEmbeddedPostgresTestSupport`. A test drives the bounded retry directly
-// so it does not need a real Postgres connection.
+// Re-exported for the existing retry unit test and for any caller that swapped
+// the ctor provider before the cluster module was split out.
+export { __setEmbeddedPostgresCtorProviderForTests };
 export const __startEmbeddedPostgresWithRetryForTests = startEmbeddedPostgresWithRetry;
 export const __embeddedPostgresStartMaxAttemptsForTests = EMBEDDED_POSTGRES_START_MAX_ATTEMPTS;
 
+// Test seam. `getEmbeddedPostgresTestSupport` memoizes its probe for the life of
+// the process, which is correct in a real run but leaks between cases in the
+// guard's own unit test. Clearing the memo lets each case probe fresh.
+export function __resetEmbeddedPostgresSupportForTests(): void {
+  embeddedPostgresSupportPromise = null;
+}
+
 async function probeEmbeddedPostgresSupport(): Promise<EmbeddedPostgresTestSupport> {
+  // RBR-912: when `globalSetup` already booted the run's shared cluster, that
+  // boot *is* the support probe. Booting a throwaway probe cluster here would
+  // pay the ~20 s cost again in every worker for no new information.
+  if (getPublishedSharedEmbeddedPostgres()) return { supported: true };
+
   let started: { dataDir: string; instance: EmbeddedPostgresInstance } | null = null;
 
   try {
@@ -256,34 +83,82 @@ async function probeEmbeddedPostgresSupport(): Promise<EmbeddedPostgresTestSuppo
   }
 }
 
+/**
+ * Escape hatch for environments that genuinely cannot run embedded Postgres.
+ * Unset (the normal case), an unsupported probe is a hard failure rather than a
+ * silent green run — see `getEmbeddedPostgresTestSupport`.
+ */
+export const ALLOW_SKIP_EMBEDDED_POSTGRES_ENV = "PAPERCLIP_ALLOW_SKIP_EMBEDDED_POSTGRES_TESTS";
+
 export async function getEmbeddedPostgresTestSupport(): Promise<EmbeddedPostgresTestSupport> {
   if (!embeddedPostgresSupportPromise) {
     embeddedPostgresSupportPromise = probeEmbeddedPostgresSupport();
   }
-  return await embeddedPostgresSupportPromise;
+  const support = await embeddedPostgresSupportPromise;
+
+  // RBR-912 / AC4. Callers use this to pick `describe` vs `describe.skip`, so an
+  // unsupported probe turns a whole suite green-by-omission: the tests report
+  // `skipped` and nothing is red. That is exactly how ~56 service tests went
+  // missing. Fail loudly instead. Opting out is explicit and per-environment.
+  if (!support.supported && !process.env[ALLOW_SKIP_EMBEDDED_POSTGRES_ENV]) {
+    throw new Error(
+      `Embedded Postgres is required by this test suite but is unavailable: ${
+        support.reason ?? "unknown reason"
+      }\n` +
+        `Skipping would report these tests as \`skipped\` and hide real coverage. ` +
+        `Set ${ALLOW_SKIP_EMBEDDED_POSTGRES_ENV}=1 to allow the skip deliberately.`,
+    );
+  }
+
+  return support;
+}
+
+/**
+ * Fast path: clone a fresh, already-migrated database off the run's shared
+ * template. No cluster boot and no migration run.
+ */
+async function startFromSharedCluster(
+  shared: { adminConnectionString: string; templateDatabase: string },
+): Promise<EmbeddedPostgresTestDatabase> {
+  // Postgres identifiers are limited to 63 bytes and may not start with a digit.
+  const databaseName = `paperclip_test_${randomUUID().replace(/-/g, "")}`;
+  const connectionString = await cloneSharedEmbeddedPostgresDatabase(shared, databaseName);
+
+  return {
+    connectionString,
+    cleanup: async () => {
+      // Drop the clone so a long run does not accumulate hundreds of databases
+      // in the shared cluster's data directory. The cluster itself is owned by
+      // `globalSetup` and torn down once, at the end of the run.
+      await dropSharedEmbeddedPostgresDatabase(shared, databaseName);
+    },
+  };
 }
 
 export async function startEmbeddedPostgresTestDatabase(
   tempDirPrefix: string,
 ): Promise<EmbeddedPostgresTestDatabase> {
-  // The bounded retry hardens the cluster start against the port race. It throws
-  // with the real Postgres output if every attempt fails.
-  const { port, dataDir, instance } = await startEmbeddedPostgresWithRetry(tempDirPrefix);
+  const shared = getPublishedSharedEmbeddedPostgres();
+  if (shared) return await startFromSharedCluster(shared);
+
+  // Legacy path: a dedicated cluster for this suite. The bounded retry hardens
+  // the cluster start against the port race. It throws with the real Postgres
+  // output if every attempt fails.
+  const cluster = await createEmbeddedPostgresCluster(tempDirPrefix);
 
   try {
-    const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
-    await ensurePostgresDatabase(adminConnectionString, "paperclip");
-    const connectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
+    await ensurePostgresDatabase(cluster.adminConnectionString, "paperclip");
+    const connectionString = cluster.databaseConnectionString("paperclip");
     await applyPendingMigrations(connectionString);
 
     return {
       connectionString,
       cleanup: async () => {
-        await stopEmbeddedPostgresBounded(instance, () => cleanupEmbeddedPostgresTestDirs(dataDir));
+        await destroyEmbeddedPostgresCluster(cluster);
       },
     };
   } catch (error) {
-    await stopEmbeddedPostgresBounded(instance, () => cleanupEmbeddedPostgresTestDirs(dataDir));
+    await destroyEmbeddedPostgresCluster(cluster);
     throw new Error(
       `Failed to start embedded PostgreSQL test database: ${
         formatEmbeddedPostgresError(error, {

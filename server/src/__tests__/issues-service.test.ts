@@ -301,7 +301,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -2633,7 +2633,7 @@ describeEmbeddedPostgres("issueService.findOpenAncestorCreatedByAgent", () => {
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issues);
@@ -2754,7 +2754,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -3689,7 +3689,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -4573,7 +4573,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -5168,7 +5168,7 @@ describeEmbeddedPostgres("issueService.findMentionedProjectIds", () => {
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -5336,7 +5336,7 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-execution-lock-");
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -5806,7 +5806,7 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-accepted-plan-decomposition-");
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issuePlanDecompositions);
@@ -6505,7 +6505,7 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-checkout-owner-");
     db = createDb(tempDb.connectionString);
     svc = issueService(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueComments);
@@ -6763,7 +6763,7 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
       status: "todo",
       priority: "medium",
     });
-  }, 20_000);
+  });
 
   afterAll(async () => {
     await tempDb?.cleanup();

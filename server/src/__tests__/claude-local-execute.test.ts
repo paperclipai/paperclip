@@ -886,7 +886,7 @@ describe("claude execute", () => {
       else process.env.PATH = previousPath;
       await fs.rm(root, { recursive: true, force: true });
     }
-  }, 10_000);
+  });
 
   it("omits --effort for sandbox-managed runs when the installed Claude CLI does not advertise it", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-sandbox-effort-"));
@@ -944,7 +944,7 @@ describe("claude execute", () => {
       restore();
       await fs.rm(root, { recursive: true, force: true });
     }
-  }, 10_000);
+  });
 
   it("passes through --effort and reuses the sandbox capability probe across sandbox leases when the installed Claude CLI advertises it", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-sandbox-effort-supported-"));
@@ -1019,7 +1019,7 @@ describe("claude execute", () => {
       restore();
       await fs.rm(root, { recursive: true, force: true });
     }
-  }, 10_000);
+  });
 
   it("degrades to the conservative fallback (returns null) when the sandbox probe throws, and retries on the next lease", async () => {
     let calls = 0;
@@ -1347,7 +1347,7 @@ describe("claude execute", () => {
       else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
       await fs.rm(root, { recursive: true, force: true });
     }
-  }, 15_000);
+  });
 
   it("classifies Claude 'out of extra usage' failures as provider quota errors", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-transient-"));

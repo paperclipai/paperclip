@@ -145,7 +145,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-tool-gateway-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     vi.unstubAllEnvs();

@@ -98,7 +98,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-e2e-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(activityLog);
@@ -356,7 +356,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
         "routine.run_triggered",
       ]),
     );
-  }, 15_000);
+  });
 
   it("runs routines with variable inputs and interpolates the execution issue description", async () => {
     const { companyId, agentId, projectId, userId } = await seedFixture();

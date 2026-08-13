@@ -236,7 +236,7 @@ describeEmbeddedPostgres("company import batches inserts", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-import-batching-");
     db = createDb(tempDb.connectionString);
     counts = instrumentInserts(db as unknown as Record<string, unknown>);
-  }, 30_000);
+  });
 
   afterAll(async () => {
     await tempDb?.cleanup();

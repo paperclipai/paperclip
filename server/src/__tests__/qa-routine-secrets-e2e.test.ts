@@ -58,7 +58,7 @@ describeEmbedded("PAP-9522 QA: routine secrets end-to-end", () => {
     process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = path.join(secretsTmpDir, "master.key");
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-qa-routine-secrets-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  });
 
   afterEach(async () => {
     await db.delete(secretAccessEvents);

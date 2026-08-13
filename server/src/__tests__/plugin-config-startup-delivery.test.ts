@@ -36,7 +36,7 @@ describeEmbeddedPostgres("registry.listConfigs (startup config delivery)", () =>
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-plugin-config-delivery-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(pluginConfig);

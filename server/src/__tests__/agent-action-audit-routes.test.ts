@@ -44,7 +44,7 @@ describePostgres("agent action audit routes", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-agent-action-audit-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(activityLog);
@@ -178,7 +178,7 @@ describePostgres("agent action audit routes", () => {
     })).get(`/api/companies/${company.id}/audit/agent-actions?limit=invalid`);
     expect(invalidBoardResponse.status).toBe(403);
     expect(invalidBoardResponse.body.error).toContain("audit:view_agent_actions");
-  }, 30_000);
+  });
 
   it("lets a company member read basic all-actor rows without attribution", async () => {
     const { company } = await seed();

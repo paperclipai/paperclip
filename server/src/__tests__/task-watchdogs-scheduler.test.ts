@@ -40,7 +40,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-task-watchdogs-scheduler-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(activityLog);

@@ -64,7 +64,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-worktree-suppression-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     // Await every in-flight background heartbeat run to quiescence before the
@@ -92,6 +92,9 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    // RBR-949: outside the shared-cluster fast path, cleanup() stops a
+    // dedicated embedded Postgres cluster, which can take longer than the
+    // 30s config default.
   }, 60_000);
 
   async function insertAgentAndIssue() {
@@ -302,7 +305,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     });
     expect(userRun).not.toBeNull();
     await heartbeat.waitForRunExecutionDrain(userRun!.id);
-  }, 10_000);
+  });
 
   it("still creates live-plane assignment runs when suppression is not active", async () => {
     const { agentId, issueId } = await insertAgentAndIssue();
@@ -336,7 +339,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
       "issue_assigned",
       "issue_review_path_lost",
     ]);
-  }, 10_000);
+  });
 
   it("recognizes explicit restore-in-progress suppression", () => {
     expect(resolveHeartbeatSchedulingSuppression({

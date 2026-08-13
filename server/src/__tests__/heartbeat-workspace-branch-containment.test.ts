@@ -858,7 +858,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-branch-containment-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     // Await every in-flight background heartbeat run to quiescence before the
@@ -911,6 +911,9 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
   afterAll(async () => {
     await db.$client.end();
     await tempDb?.cleanup();
+    // RBR-949: closes the live pg client pool, then (outside the
+    // shared-cluster fast path) stops a dedicated embedded Postgres cluster
+    // — slower than the 30s config default in that fallback case.
   }, 60_000);
 
   it("blocks projectless isolated git-worktree issues before dispatch", async () => {
@@ -1095,7 +1098,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
       actualBranch: seeded.actualBranch,
     });
     expect(adapterExecute).toHaveBeenCalledTimes(callSite === "finalize" ? 1 : 0);
-  }, 30_000);
+  });
 
   it.each([
     ["workspace-runtime fresh worktree reuse", "fresh_realize" as const, false],
@@ -1204,5 +1207,5 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
       expectedResolvedRecoveryActionFingerprint,
     });
     expect(adapterExecute).toHaveBeenCalledTimes(1);
-  }, 30_000);
+  });
 });

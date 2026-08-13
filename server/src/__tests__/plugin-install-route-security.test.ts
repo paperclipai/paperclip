@@ -154,7 +154,7 @@ describeEmbeddedPostgres("plugin install route security floor", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-plugin-install-guard-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     vi.clearAllMocks();
@@ -172,7 +172,7 @@ describeEmbeddedPostgres("plugin install route security floor", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
-  }, 30_000);
+  });
 
   describe("cloud-managed instances", () => {
     it("rejects npm installs outright", async () => {
@@ -271,7 +271,7 @@ describeEmbeddedPostgres("plugin install route security floor", () => {
       expect(res.body.packageName).toBe(fixture.packageName);
       expect(res.body.pluginKey).toBe(fixture.pluginKey);
       expect(mockLifecycle.load).toHaveBeenCalledTimes(1);
-    }, 30_000);
+    });
   });
 
   describe("all instances: localPath canonicalization", () => {
@@ -334,7 +334,7 @@ describeEmbeddedPostgres("plugin install route security floor", () => {
       expect(res.body.packageName).toBe(fixture.packageName);
       expect(res.body.packagePath).toBe(await realpath(fixture.packageRoot));
       expect(mockLifecycle.load).toHaveBeenCalledTimes(1);
-    }, 30_000);
+    });
 
     it("resolves symlinked localPath installs to the real target (self-hosted)", async () => {
       const outsideDir = await mkdtemp(path.join(os.tmpdir(), "guard-selfhosted-symlink-"));
@@ -352,7 +352,7 @@ describeEmbeddedPostgres("plugin install route security floor", () => {
       expect(res.body.packageName).toBe(fixture.packageName);
       expect(res.body.packagePath).toBe(await realpath(fixture.packageRoot));
       expect(mockLifecycle.load).toHaveBeenCalledTimes(1);
-    }, 30_000);
+    });
   });
 
   describe("self-hosted npm installs (behavior unchanged)", () => {
@@ -381,6 +381,9 @@ describeEmbeddedPostgres("plugin install route security floor", () => {
       expect(res.status).toBe(400);
       expect(res.body.error).toContain("npm install failed");
       expect(mockLifecycle.load).not.toHaveBeenCalled();
+      // RBR-949: this hits the real npm registry to fail resolving a
+      // nonexistent package name — network-bound and slower/less predictable
+      // than the config default.
     }, 150_000);
   });
 });

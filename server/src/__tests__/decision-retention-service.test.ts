@@ -23,7 +23,7 @@ describePg("decision retention", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-decision-retention-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  });
 
   afterEach(async () => {
     await db.delete(decisionArchiveNotificationOutbox);
