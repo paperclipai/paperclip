@@ -1,11 +1,12 @@
 // The wired setup-token login route. This test drives the full login path —
-// start, read-prompt, submit-code, and receive-token — through the HTTP route
-// with a fake transport. It proves the guarded session contract is the live
-// login path and that the security controls hold end to end at the route level.
+// start, read-prompt, submit-code, and completion — through the HTTP route with
+// a fake transport. It proves the guarded session contract is the live login
+// path and that the security controls hold end to end at the route level.
 //
 // The test covers these criteria (the full set is on the parent plan document):
 //   * The full path returns the sign-in URL to the owner, accepts one code, and
-//     returns the minted token one time.
+//     returns the non-secret storedSessionId claim after the secret write, with
+//     no token.
 //   * SR-1 and SR-5: the browser code, the authorization-URL query values, and
 //     the token never reach the request log, an activity detail, the exception
 //     metadata, or a non-owner response. The owner read-prompt response carries
@@ -28,6 +29,7 @@ import {
   type SetupTokenLeaseManager,
   type SetupTokenLoginOutcome,
   type SetupTokenLoginProcessFactory,
+  type SetupTokenSecretWriter,
 } from "../services/setup-token-session.js";
 
 // --- Test fixtures -----------------------------------------------------------
@@ -146,18 +148,26 @@ interface TransportHandle {
   factory: SetupTokenLoginProcessFactory;
   leases: SetupTokenLeaseManager;
   store: SetupTokenCleanupStore;
+  completeCredential: SetupTokenSecretWriter;
   submittedCodes: string[];
+  secretWrites: string[];
 }
 
 /**
  * Builds a fake login transport. The factory surfaces the sign-in URL at once.
- * On submit it either completes the login and delivers the token, throws an
- * internal error, or leaves the process pending. The lease manager and the store
- * are in-memory and hold no secret.
+ * On submit it either completes the login and writes the credential, throws an
+ * internal error, or leaves the process pending. The lease manager, the store,
+ * and the secret writer are in-memory and hold no secret in a durable sink.
  */
 function buildTransport(opts: { onSubmit?: "complete" | "throw" | "pending" } = {}): TransportHandle {
   const mode = opts.onSubmit ?? "complete";
   const submittedCodes: string[] = [];
+  // The owner-bound secret writer records only the token it received in memory,
+  // so a test can prove the write ran without a durable secret sink.
+  const secretWrites: string[] = [];
+  const completeCredential: SetupTokenSecretWriter = async (input) => {
+    secretWrites.push(input.token);
+  };
   const rows = new Map<string, SetupTokenCleanupRecord>();
   const store: SetupTokenCleanupStore = {
     async record(record) {
@@ -203,15 +213,19 @@ function buildTransport(opts: { onSubmit?: "complete" | "throw" | "pending" } = 
           throw new Error("the sandbox pseudo-terminal write failed.");
         }
         if (mode === "complete") {
-          onCredential(MINTED_TOKEN);
-          resolveDone("success");
+          // Await the credential sink (the owner-bound secret write) before the
+          // process reports success, the way the real runner awaits its sink.
+          void onCredential(MINTED_TOKEN).then(
+            () => resolveDone("success"),
+            () => resolveDone("failure"),
+          );
         }
         // pending: the process stays open; the test drives no completion.
       },
       stop() {},
     };
   };
-  return { factory, leases, store, submittedCodes };
+  return { factory, leases, store, completeCredential, submittedCodes, secretWrites };
 }
 
 // --- App builder with a capturing request logger -----------------------------
@@ -297,7 +311,12 @@ async function createApp(opts: {
       deploymentMode: opts.deploymentMode,
       confidentialProxyAllowlist: opts.confidentialProxyAllowlist,
       setupTokenLogin: opts.transport
-        ? { factory: opts.transport.factory, leases: opts.transport.leases, store: opts.transport.store }
+        ? {
+            factory: opts.transport.factory,
+            leases: opts.transport.leases,
+            store: opts.transport.store,
+            completeCredential: opts.transport.completeCredential,
+          }
         : undefined,
     }),
   );
@@ -330,7 +349,7 @@ beforeEach(() => {
 });
 
 describe("setup-token login route — full path", () => {
-  it("drives start, read-prompt, submit-code, and receive-token with a fake transport", async () => {
+  it("drives start, read-prompt, submit-code, and completion with a fake transport", async () => {
     const transport = buildTransport({ onSubmit: "complete" });
     const { app } = await createApp({ transport });
 
@@ -357,17 +376,22 @@ describe("setup-token login route — full path", () => {
 
     await settle();
 
-    // Receive the token one time. The owner response carries the token, with
-    // no-store.
+    // The owner-bound secret write ran with the minted token.
+    expect(transport.secretWrites).toEqual([MINTED_TOKEN]);
+
+    // Read the completion. The owner response carries the non-secret
+    // storedSessionId and no token, with no-store.
     const tokenRes = await request(app).post(`${BASE}/${sessionId}/token`).send({});
     expect(tokenRes.status, JSON.stringify(tokenRes.body)).toBe(200);
-    expect(tokenRes.body.token).toBe(MINTED_TOKEN);
+    expect(tokenRes.body.storedSessionId).toBe(sessionId);
+    expect(tokenRes.body.token).toBeUndefined();
     expect(tokenRes.headers["cache-control"]).toBe("no-store");
+    expectNoSecret(JSON.stringify(tokenRes.body));
 
-    // The second receive returns the same not-found error as a missing session.
+    // The completion is non-secret and idempotent within the retention window.
     const secondTokenRes = await request(app).post(`${BASE}/${sessionId}/token`).send({});
-    expect(secondTokenRes.status).toBe(404);
-    expect(secondTokenRes.body.error).toBe(SETUP_TOKEN_SESSION_NOT_FOUND);
+    expect(secondTokenRes.status).toBe(200);
+    expect(secondTokenRes.body.storedSessionId).toBe(sessionId);
   });
 
   it("returns the fixed no-secret error when no transport is bound", async () => {
@@ -502,7 +526,7 @@ describe("setup-token login route — SR-6 and SR-7 (fail-closed transport guard
 
     expect(transport.submittedCodes).toEqual([]);
 
-    // receive-token over plain HTTP also fails closed and leaks no token.
+    // The completion over plain HTTP also fails closed and returns no claim.
     const tokenRes = await request(app)
       .post(`${BASE}/${sessionId}/token`)
       .set("X-Forwarded-Proto", "https")
@@ -510,6 +534,7 @@ describe("setup-token login route — SR-6 and SR-7 (fail-closed transport guard
     expect(tokenRes.status).toBe(403);
     expect(tokenRes.body.error).toBe(SETUP_TOKEN_TRANSPORT_INSECURE);
     expect(tokenRes.body.token).toBeUndefined();
+    expect(tokenRes.body.storedSessionId).toBeUndefined();
     expectNoSecret(JSON.stringify(tokenRes.body));
   });
 

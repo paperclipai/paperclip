@@ -22,6 +22,7 @@ import {
   SETUP_TOKEN_RATE_LIMITED,
   SETUP_TOKEN_CAP_EXCEEDED,
   SETUP_TOKEN_TOKEN_UNAVAILABLE,
+  SETUP_TOKEN_STORAGE_FAILED,
   type SetupTokenCleanupIdentity,
   type SetupTokenCleanupRecord,
   type SetupTokenCleanupStore,
@@ -33,6 +34,7 @@ import {
   type SetupTokenLoginProcessFactory,
   type SetupTokenPromptSink,
   type SetupTokenRateLimiter,
+  type SetupTokenSecretWriter,
   type SetupTokenSessionScope,
 } from "./setup-token-session.js";
 import { redactSensitive } from "../middleware/redact-sensitive.js";
@@ -73,8 +75,10 @@ class FakeProcess implements SetupTokenLoginProcess {
   surfacePrompt(url: string): void {
     this.onPrompt({ url });
   }
-  surfaceCredential(token: string): void {
-    this.onCredential(token);
+  // The credential sink is asynchronous: it awaits the owner-bound secret write.
+  // The test awaits this call so the write settles before it asserts.
+  async surfaceCredential(token: string): Promise<void> {
+    await this.onCredential(token);
   }
   finish(outcome: SetupTokenLoginOutcome): void {
     this.resolveDone(outcome);
@@ -165,6 +169,15 @@ function allowAllRateLimiter(): SetupTokenRateLimiter {
   return { consume: () => ({ allowed: true, retryAfterSeconds: 0 }) };
 }
 
+// One recorded owner-bound secret write. The fake writer records only the
+// non-secret ids and the token, so a test can prove the token reached the writer
+// and never the store or a log.
+interface RecordedSecretWrite {
+  scope: SetupTokenSessionScope;
+  sessionId: string;
+  token: string;
+}
+
 function buildService(overrides: {
   events?: string[];
   leases?: FakeLeaseManager;
@@ -174,6 +187,7 @@ function buildService(overrides: {
   ttlMs?: number;
   tokenRetentionMs?: number;
   now?: () => number;
+  completeCredential?: SetupTokenSecretWriter;
 } = {}) {
   const events = overrides.events ?? [];
   const processes: FakeProcess[] = [];
@@ -186,17 +200,26 @@ function buildService(overrides: {
   };
   const leases = overrides.leases ?? new FakeLeaseManager(events);
   const store = overrides.store ?? new FakeStore();
+  const secretWrites: RecordedSecretWrite[] = [];
+  const completeCredential: SetupTokenSecretWriter =
+    overrides.completeCredential ??
+    (async (input) => {
+      secretWrites.push({ scope: input.scope, sessionId: input.sessionId, token: input.token });
+    });
+  const logs: string[] = [];
   const service = new SetupTokenSessionService({
     factory,
     leases,
     store,
+    completeCredential,
     rateLimiter: overrides.rateLimiter ?? allowAllRateLimiter(),
     caps: overrides.caps ?? { perOwner: 5, perAgent: 5, perCompany: 5 },
     ttlMs: overrides.ttlMs ?? 60_000,
     tokenRetentionMs: overrides.tokenRetentionMs,
     now: overrides.now,
+    log: (line) => logs.push(line),
   });
-  return { service, processes, leases, store, events };
+  return { service, processes, leases, store, events, secretWrites, logs };
 }
 
 describe("SetupTokenSessionService.start", () => {
@@ -296,7 +319,7 @@ describe("SetupTokenSessionService authorization boundary", () => {
     for (const scope of [crossCompany, sameCompanyOtherUser, otherAgent]) {
       expect(() => service.readPrompt(sessionId, scope)).toThrow(SETUP_TOKEN_SESSION_NOT_FOUND);
       expect(() => service.submitCode(sessionId, scope, "code")).toThrow(SETUP_TOKEN_SESSION_NOT_FOUND);
-      expect(() => service.receiveToken(sessionId, scope)).toThrow(SETUP_TOKEN_SESSION_NOT_FOUND);
+      expect(() => service.completeSession(sessionId, scope)).toThrow(SETUP_TOKEN_SESSION_NOT_FOUND);
       await expect(service.cancel(sessionId, scope)).rejects.toThrow(SETUP_TOKEN_SESSION_NOT_FOUND);
       await expect(service.expire(sessionId, scope)).rejects.toThrow(SETUP_TOKEN_SESSION_NOT_FOUND);
     }
@@ -390,43 +413,85 @@ describe("SetupTokenSessionService durable reaper", () => {
   });
 });
 
-describe("SetupTokenSessionService.receiveToken", () => {
-  it("returns the token once to the authorized owner after a successful login", async () => {
-    const { service, processes, leases } = buildService();
+describe("SetupTokenSessionService.completeSession", () => {
+  it("returns the non-secret storedSessionId after a successful secret write, and no token", async () => {
+    const { service, processes, leases, store, secretWrites, logs } = buildService();
     const { sessionId } = await service.start(OWNER_SCOPE);
     processes[0].surfacePrompt(FULL_LOGIN_URL);
     service.submitCode(sessionId, OWNER_SCOPE, "code");
-    processes[0].surfaceCredential(SYNTH_TOKEN);
+    // The session awaits the owner-bound secret write before it completes.
+    await processes[0].surfaceCredential(SYNTH_TOKEN);
     processes[0].finish("success");
     await new Promise((resolve) => setImmediate(resolve));
-    // The service releases the sandbox lease at once, but it retains the token
-    // for the owner to receive it one time.
+
+    // The token reached the owner-bound writer, once, with the owner scope.
+    expect(secretWrites).toEqual([{ scope: OWNER_SCOPE, sessionId, token: SYNTH_TOKEN }]);
+    // The service releases the sandbox lease at once.
     expect(leases.released).toEqual(["lease-1"]);
-    const received = service.receiveToken(sessionId, OWNER_SCOPE);
-    expect(received.token).toBe(SYNTH_TOKEN);
-    // One-shot: a second receive returns the same not-found as a missing session.
-    expect(() => service.receiveToken(sessionId, OWNER_SCOPE)).toThrow(SETUP_TOKEN_SESSION_NOT_FOUND);
+    // The durable row stays as the stored-session claim, not removed.
+    expect(store.rows.get(sessionId)?.state).toBe("stored");
+
+    // The completion returns the non-secret storedSessionId and carries no token.
+    const completion = service.completeSession(sessionId, OWNER_SCOPE);
+    expect(completion.storedSessionId).toBe(sessionId);
+    expect(completion).not.toHaveProperty("token");
+
+    // No response, log, or durable record contains the token after success.
+    const haystack = `${logs.join("\n")}\n${JSON.stringify(completion)}\n${JSON.stringify([
+      ...store.rows.values(),
+    ])}`;
+    expect(haystack).not.toContain(SYNTH_TOKEN);
   });
 
-  it("returns the fixed unavailable error before the token is delivered", async () => {
+  it("returns the fixed unavailable error before the secret write completes", async () => {
     const { service, processes } = buildService();
     const { sessionId } = await service.start(OWNER_SCOPE);
     processes[0].surfacePrompt(FULL_LOGIN_URL);
     service.submitCode(sessionId, OWNER_SCOPE, "code");
-    // The login has not delivered the token yet, so receive-token is unavailable.
-    expect(() => service.receiveToken(sessionId, OWNER_SCOPE)).toThrow(SETUP_TOKEN_TOKEN_UNAVAILABLE);
+    // The secret write has not run, so the completion is unavailable.
+    expect(() => service.completeSession(sessionId, OWNER_SCOPE)).toThrow(SETUP_TOKEN_TOKEN_UNAVAILABLE);
   });
 
-  it("purges the retained token when the retention window ends", async () => {
+  it("reaches failed with no binding and no completion when the secret write errors", async () => {
+    const store = new FakeStore();
+    const completeCredential: SetupTokenSecretWriter = async () => {
+      throw new Error("storage down");
+    };
+    const { service, processes, leases, logs } = buildService({ store, completeCredential });
+    const { sessionId } = await service.start(OWNER_SCOPE);
+    processes[0].surfacePrompt(FULL_LOGIN_URL);
+    service.submitCode(sessionId, OWNER_SCOPE, "code");
+
+    // The sink rejects with the fixed, non-secret storage error. It does not
+    // swallow the failure.
+    await expect(processes[0].surfaceCredential(SYNTH_TOKEN)).rejects.toMatchObject({
+      message: SETUP_TOKEN_STORAGE_FAILED,
+    });
+    // Let the terminal-state handler run.
+    processes[0].finish("failure");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // The session failed: it holds no live session and released the lease.
+    expect(service.activeSessionCount()).toBe(0);
+    expect(leases.released).toEqual(["lease-1"]);
+    // No stored-session claim exists: the durable row never reached stored.
+    expect(store.rows.has(sessionId)).toBe(false);
+    // The completion is gone, so a read returns the same not-found error.
+    expect(() => service.completeSession(sessionId, OWNER_SCOPE)).toThrow(SETUP_TOKEN_SESSION_NOT_FOUND);
+    // No log line contains the token after the failure.
+    expect(logs.join("\n")).not.toContain(SYNTH_TOKEN);
+  });
+
+  it("purges the retained completion when the retention window ends", async () => {
     const { service, processes } = buildService({ tokenRetentionMs: 5 });
     const { sessionId } = await service.start(OWNER_SCOPE);
     processes[0].surfacePrompt(FULL_LOGIN_URL);
     service.submitCode(sessionId, OWNER_SCOPE, "code");
-    processes[0].surfaceCredential(SYNTH_TOKEN);
+    await processes[0].surfaceCredential(SYNTH_TOKEN);
     processes[0].finish("success");
     await new Promise((resolve) => setTimeout(resolve, 20));
-    // The retention timer purged the token, so the session is gone.
-    expect(() => service.receiveToken(sessionId, OWNER_SCOPE)).toThrow(SETUP_TOKEN_SESSION_NOT_FOUND);
+    // The retention timer dropped the in-memory session, so a read is not found.
+    expect(() => service.completeSession(sessionId, OWNER_SCOPE)).toThrow(SETUP_TOKEN_SESSION_NOT_FOUND);
   });
 });
 
@@ -437,7 +502,7 @@ describe("no secret reaches a sink (SR-1, SR-5)", () => {
     const { sessionId } = await service.start(OWNER_SCOPE);
     processes[0].surfacePrompt(FULL_LOGIN_URL);
     service.submitCode(sessionId, OWNER_SCOPE, "SECRETCODE123");
-    processes[0].surfaceCredential(SYNTH_TOKEN);
+    await processes[0].surfaceCredential(SYNTH_TOKEN);
     const serialized = JSON.stringify([...store.rows.values()]);
     expect(serialized).not.toContain("SECRETCODE123");
     expect(serialized).not.toContain("STATEVALUE");

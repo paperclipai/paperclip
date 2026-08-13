@@ -110,6 +110,7 @@ import {
   type SetupTokenLease,
   type SetupTokenLeaseManager,
   type SetupTokenLoginProcessFactory,
+  type SetupTokenSecretWriter,
   type SetupTokenSessionScope,
 } from "../services/setup-token-session.js";
 import type { DeploymentMode } from "@paperclipai/shared";
@@ -233,6 +234,11 @@ export function agentRoutes(
       leases: SetupTokenLeaseManager;
       /** The durable cleanup store. Defaults to the in-memory record store. */
       store?: SetupTokenCleanupStore;
+      /**
+       * The owner-bound secret writer. When the caller omits it, the completion
+       * fails closed, because the secret sink is not bound yet.
+       */
+      completeCredential?: SetupTokenSecretWriter;
     };
   } = {},
 ) {
@@ -371,19 +377,30 @@ export function agentRoutes(
     throw new SetupTokenSessionError(503, SETUP_TOKEN_START_FAILED);
   };
 
-  // Resolve the transport: use the injected factory, lease manager, and store
-  // when a caller binds them; otherwise use the deferred, fail-closed defaults.
+  const deferredSetupTokenSecretWriter: SetupTokenSecretWriter = async () => {
+    // The owner-bound secret writer arrives through `options.setupTokenLogin`.
+    // Until then the completion fails closed, so the session never reports a
+    // stored credential without a real secret write.
+    throw new SetupTokenSessionError(503, SETUP_TOKEN_START_FAILED);
+  };
+
+  // Resolve the transport: use the injected factory, lease manager, store, and
+  // secret writer when a caller binds them; otherwise use the deferred,
+  // fail-closed defaults.
   const setupTokenLoginFactory =
     options.setupTokenLogin?.factory ?? deferredSetupTokenLoginFactory;
   const setupTokenLeaseManager =
     options.setupTokenLogin?.leases ?? deferredSetupTokenLeaseManager;
   const setupTokenCleanupStore =
     options.setupTokenLogin?.store ?? inMemorySetupTokenCleanupStore;
+  const setupTokenSecretWriter =
+    options.setupTokenLogin?.completeCredential ?? deferredSetupTokenSecretWriter;
 
   const setupTokenLoginService = new SetupTokenSessionService({
     factory: setupTokenLoginFactory,
     leases: setupTokenLeaseManager,
     store: setupTokenCleanupStore,
+    completeCredential: setupTokenSecretWriter,
     rateLimiter: setupTokenRateLimiter,
   });
 
@@ -4432,15 +4449,14 @@ export function agentRoutes(
     if (!agent) return;
     const scope = buildSetupTokenScope(req, agent);
     res.setHeader("Cache-Control", "no-store");
-    // SR-6 and SR-7: the token is a confidential response.
     if (!enforceSetupTokenTransport(req, res)) return;
     try {
-      // The service returns the token one time from a completed session. It
-      // returns the fixed unavailable error when the token is not ready or the
-      // owner already received it. The full token rides only in this authorized
-      // owner response over the confidential transport (SR-5, SR-6, SR-7).
-      const result = setupTokenLoginService.receiveToken(req.params.sessionId as string, scope);
-      res.json({ token: result.token });
+      // The service returns the non-secret `storedSessionId` claim from a
+      // completed session whose owner-bound secret write succeeded. It returns the
+      // fixed unavailable error when the session is not completed with a stored
+      // secret. The response carries no token (Control 1).
+      const result = setupTokenLoginService.completeSession(req.params.sessionId as string, scope);
+      res.json({ storedSessionId: result.storedSessionId });
     } catch (err) {
       sendSetupTokenError(res, err);
     }

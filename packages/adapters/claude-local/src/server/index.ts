@@ -52,7 +52,6 @@ export {
   CLAUDE_SETUP_TOKEN_COMMAND,
   CODE_SUBMISSION_TERMINATOR,
   CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS,
-  SETUP_TOKEN_CREDENTIAL_RELEASE_GATE,
 } from "./setup-token-runner.js";
 export type {
   SetupTokenPtyDriver,

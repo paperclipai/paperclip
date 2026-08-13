@@ -111,16 +111,32 @@ export type SetupTokenPromptSink = (prompt: { url: string }) => void;
 
 /**
  * The credential sink the factory calls one time when the login binds the minted
- * token from the success record. The service holds the token in memory only and
- * returns it one time through receive-token. The sink never logs the token.
+ * token from the success record. The sink is asynchronous: it awaits the
+ * owner-bound secret write and rejects on a storage failure. The factory (or the
+ * runner it wraps) awaits this sink before it reports success, so a storage
+ * failure ends the login as a failure. The sink never logs the token and never
+ * returns it.
  */
-export type SetupTokenCredentialSink = (token: string) => void;
+export type SetupTokenCredentialSink = (token: string) => Promise<void>;
+
+/**
+ * The owner-bound secret writer. The service awaits it one time with the minted
+ * token, the owner scope, and the durable session id. It performs the Phase 3
+ * owner-bound compare-and-set (idempotent by session id). It resolves on a
+ * successful write and rejects on a storage failure. The service holds the token
+ * only for this call; it never stores it (Control 1).
+ */
+export type SetupTokenSecretWriter = (input: {
+  scope: SetupTokenSessionScope;
+  sessionId: string;
+  token: string;
+}) => Promise<void>;
 
 /**
  * Builds the live login process for one session. The factory receives the
  * prompt sink, the credential sink, the host timeout, and an abort signal that
- * the service aborts on cancel and on expiry. The factory delivers the token one
- * time through the credential sink.
+ * the service aborts on cancel and on expiry. The factory awaits the credential
+ * sink one time before it reports success.
  */
 export type SetupTokenLoginProcessFactory = (params: {
   scope: SetupTokenSessionScope;
@@ -248,10 +264,13 @@ export const SETUP_TOKEN_RATE_LIMITED = "Too many setup-token login attempts. Tr
 export const SETUP_TOKEN_CAP_EXCEEDED = "Too many active setup-token login sessions.";
 export const SETUP_TOKEN_TRANSPORT_INSECURE =
   "This response requires a secure transport and is not available on this request.";
-// The fixed error for a token that is not ready, or that the owner already
-// received. It never tells the two cases apart, so it leaks no session state.
+// The fixed error for a completion that is not ready. The session is not
+// `completed` with a stored secret yet. It leaks no session state.
 export const SETUP_TOKEN_TOKEN_UNAVAILABLE = "The setup-token is not available for this session.";
 export const SETUP_TOKEN_START_FAILED = "The setup-token login session could not start.";
+// The fixed error for a failed owner-bound secret write. It carries no token and
+// no storage detail, so it leaks no secret (Control 1).
+export const SETUP_TOKEN_STORAGE_FAILED = "The setup-token login could not store the credential.";
 
 /** A typed error the route maps to a fixed status and the fixed text above. */
 export class SetupTokenSessionError extends Error {
@@ -454,13 +473,14 @@ interface StoredSession {
   // The full login URL. The service holds it in memory only and returns it only
   // through the authorized owner read response (SR-5).
   loginUrl: string | null;
-  // The minted token. The service holds it in memory only, from the credential
-  // sink until the authorized owner receives it one time or the retention window
-  // ends (SR-1, SR-4).
-  token: string | null;
+  // True after the owner-bound secret write succeeds. The service never holds the
+  // token: the credential sink writes it to the secret store and the service
+  // records only this non-secret marker (Control 1).
+  secretStored: boolean;
   timer: ReturnType<typeof setTimeout> | null;
-  // The retention timer for a completed token. The service arms it after a
-  // successful login and clears it when the owner receives the token.
+  // The retention timer for a completed, stored session. The service arms it
+  // after a successful secret write and clears it when the owner reads the
+  // completion, so the in-memory session drops even if the owner never reads it.
   retentionTimer: ReturnType<typeof setTimeout> | null;
   cleanupDone: boolean;
 }
@@ -472,10 +492,26 @@ export interface SetupTokenPromptView {
   loginUrl: string | null;
 }
 
+/**
+ * The completion contract for the authorized owner. It carries the non-secret
+ * `storedSessionId` claim and no token (Control 1). The `storedSessionId` is the
+ * durable session id; the agent-create transaction consumes it as the one-time
+ * stored-session claim.
+ */
+export interface SetupTokenCompletionView {
+  storedSessionId: string;
+}
+
 export interface SetupTokenSessionServiceOptions {
   factory: SetupTokenLoginProcessFactory;
   leases: SetupTokenLeaseManager;
   store: SetupTokenCleanupStore;
+  /**
+   * The owner-bound secret writer. The service awaits it one time when the login
+   * binds the token. It performs the Phase 3 compare-and-set. The service fails
+   * closed on a rejection (Control 1).
+   */
+  completeCredential: SetupTokenSecretWriter;
   rateLimiter: SetupTokenRateLimiter;
   caps?: SetupTokenSessionCaps;
   ttlMs?: number;
@@ -502,6 +538,7 @@ export class SetupTokenSessionService {
   private readonly factory: SetupTokenLoginProcessFactory;
   private readonly leases: SetupTokenLeaseManager;
   private readonly store: SetupTokenCleanupStore;
+  private readonly completeCredential: SetupTokenSecretWriter;
   private readonly rateLimiter: SetupTokenRateLimiter;
   private readonly caps: SetupTokenSessionCaps;
   private readonly ttlMs: number;
@@ -514,6 +551,7 @@ export class SetupTokenSessionService {
     this.factory = options.factory;
     this.leases = options.leases;
     this.store = options.store;
+    this.completeCredential = options.completeCredential;
     this.rateLimiter = options.rateLimiter;
     this.caps = options.caps ?? DEFAULT_SETUP_TOKEN_SESSION_CAPS;
     this.ttlMs = options.ttlMs ?? DEFAULT_SETUP_TOKEN_SESSION_TTL_MS;
@@ -594,7 +632,7 @@ export class SetupTokenSessionService {
       process: undefined as unknown as SetupTokenLoginProcess,
       abort,
       loginUrl: null,
-      token: null,
+      secretStored: false,
       timer: null,
       retentionTimer: null,
       cleanupDone: false,
@@ -645,14 +683,34 @@ export class SetupTokenSessionService {
   }
 
   /**
-   * Receives the minted token from the login process. The service holds the
-   * token in memory only, until the authorized owner receives it one time or the
-   * retention window ends. It never logs the token (SR-1). It ignores a token
-   * that arrives after a non-success terminal state.
+   * Receives the minted token from the login process and writes it to the
+   * owner-bound secret. The service awaits the Phase 3 compare-and-set. The
+   * service never stores the token: it passes the token to the writer, then it
+   * drops the reference (Control 1, SR-1).
+   *
+   * On a successful write the service marks the durable row `stored` and records
+   * the non-secret `secretStored` marker. The process outcome then moves the
+   * session to `completed`.
+   *
+   * On a storage failure the service fails closed: it moves the session to
+   * `failed`, writes no binding, and rejects with a fixed, non-secret error. The
+   * factory (or the runner it wraps) awaits this sink, so the rejection ends the
+   * login as a failure and the process never reports success.
    */
-  private onCredential(session: StoredSession, token: string): void {
-    if (isTerminalSessionState(session.state) && session.state !== "completed") return;
-    session.token = token;
+  private async onCredential(session: StoredSession, token: string): Promise<void> {
+    if (isTerminalSessionState(session.state)) return;
+    try {
+      await this.completeCredential({ scope: session.scope, sessionId: session.id, token });
+    } catch {
+      await this.terminate(session, "failed");
+      throw new SetupTokenSessionError(500, SETUP_TOKEN_STORAGE_FAILED);
+    }
+    // A cancel or an expiry can race the write. Do not claim a stored state after
+    // a terminal transition.
+    if (isTerminalSessionState(session.state)) return;
+    session.secretStored = true;
+    // Mark the durable row `stored`. The row then persists as the one-time claim.
+    await this.store.markState(this.identityOf(session), "stored").catch(() => {});
   }
 
   /**
@@ -735,26 +793,23 @@ export class SetupTokenSessionService {
   }
 
   /**
-   * Returns the token for the authorized owner one time. The service returns the
-   * token only from a completed session that still holds it. It clears the token
-   * and drops the retained session at once, so a second receive returns the same
-   * not-found error as a missing session. It returns the fixed unavailable error
-   * when the token is not ready or the owner already received it. The route
-   * applies the confidential transport guard and sets `Cache-Control: no-store`
-   * before it calls this method.
+   * Returns the completion contract for the authorized owner. It returns the
+   * non-secret `storedSessionId` claim only from a completed session whose
+   * owner-bound secret write succeeded. It returns no token (Control 1). It
+   * returns the fixed unavailable error when the session is not completed with a
+   * stored secret. The scope check runs first, so a cross-scope caller gets the
+   * same not-found error, not the unavailable error.
+   *
+   * The read leaves the durable row in place as the one-time stored-session
+   * claim; the agent-create transaction consumes it. The route sets
+   * `Cache-Control: no-store` before it calls this method.
    */
-  receiveToken(sessionId: string, scope: SetupTokenSessionScope): { token: string } {
-    // The scope check still runs, so a cross-scope caller gets the same
-    // not-found error, not the unavailable error.
+  completeSession(sessionId: string, scope: SetupTokenSessionScope): SetupTokenCompletionView {
     const session = this.resolveOwned(sessionId, scope);
-    if (session.state !== "completed" || session.token === null) {
+    if (session.state !== "completed" || !session.secretStored) {
       throw new SetupTokenSessionError(409, SETUP_TOKEN_TOKEN_UNAVAILABLE);
     }
-    const token = session.token;
-    // One-shot delivery: clear the token and drop the retained session, so the
-    // service never returns the token a second time (SR-1).
-    this.purgeRetained(session.id);
-    return { token };
+    return { storedSessionId: session.id };
   }
 
   /**
@@ -799,10 +854,12 @@ export class SetupTokenSessionService {
    * session. It clears the in-memory login URL reference promptly (SR-3, SR-5).
    * A cleanup failure stays retryable and records no process output (SR-4).
    *
-   * A completed session that still holds a token stays in memory until the
-   * authorized owner receives it one time or the retention window ends. The
-   * cleanup still releases the sandbox lease at once; it only holds the token in
-   * memory, not the sandbox (SR-4).
+   * A completed session with a stored secret keeps its durable row as the
+   * one-time stored-session claim: the cleanup marks no terminal state and does
+   * not remove the row. The agent-create transaction consumes the claim, or the
+   * reaper removes the row after the deadline. The cleanup still releases the
+   * sandbox lease at once. It retains the in-memory session for the retention
+   * window, so the owner can read the completion once (Control 1, SR-4).
    */
   private async runCleanup(session: StoredSession, state: SetupTokenSessionState): Promise<void> {
     if (session.cleanupDone) return;
@@ -813,36 +870,38 @@ export class SetupTokenSessionService {
     }
     // Clear the secret-bearing reference promptly. Best-effort only (SR-5).
     session.loginUrl = null;
-    try {
-      await this.store.markState(this.identityOf(session), state);
-    } catch {
-      this.log("[paperclip] Setup-token session: the cleanup record update failed; it stays retryable.");
+    const storedClaim = state === "completed" && session.secretStored;
+    if (!storedClaim) {
+      try {
+        await this.store.markState(this.identityOf(session), state);
+      } catch {
+        this.log("[paperclip] Setup-token session: the cleanup record update failed; it stays retryable.");
+      }
     }
     await this.releaseLeaseSafely(session.lease);
+    if (storedClaim) {
+      // Keep the durable row as the stored-session claim. Retain the in-memory
+      // session for the owner to read the completion one time.
+      session.retentionTimer = setTimeout(() => this.purgeRetained(session.id), this.tokenRetentionMs);
+      if (typeof session.retentionTimer.unref === "function") session.retentionTimer.unref();
+      return;
+    }
     try {
       await this.store.remove(session.id);
     } catch {
       this.log("[paperclip] Setup-token session: the cleanup record removal failed; it stays retryable.");
     }
-    if (state === "completed" && session.token !== null) {
-      // Retain the token in memory for the owner to receive it one time. The
-      // retention timer purges it if the owner never receives it (SR-4).
-      session.retentionTimer = setTimeout(() => this.purgeRetained(session.id), this.tokenRetentionMs);
-      if (typeof session.retentionTimer.unref === "function") session.retentionTimer.unref();
-      return;
-    }
     this.sessions.delete(session.id);
   }
 
   /**
-   * Purges a retained completed session. It clears the token reference, clears
-   * the retention timer, and drops the in-memory session. The owner receive path
-   * and the retention timer both call it (SR-1, SR-4).
+   * Purges a retained completed session from memory. It clears the retention
+   * timer and drops the in-memory session. The durable stored-session claim
+   * stays in the store for the create flow or the reaper (SR-4).
    */
   private purgeRetained(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
-    session.token = null;
     if (session.retentionTimer) {
       clearTimeout(session.retentionTimer);
       session.retentionTimer = null;
