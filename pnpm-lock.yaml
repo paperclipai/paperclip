@@ -8,7 +8,7 @@ overrides:
   rollup: '>=4.59.0'
   react: ^19.2.7
   react-dom: ^19.2.7
-  lexical: 0.49.0
+  lexical: 0.46.0
   '@lexical/clipboard': 0.46.0
   '@lexical/link': 0.46.0
   '@lexical/list': 0.46.0
@@ -964,14 +964,14 @@ importers:
         specifier: ^26.3.6
         version: 26.3.6(typescript@5.9.3)
       lexical:
-        specifier: 0.49.0
-        version: 0.49.0(typescript@5.9.3)
+        specifier: 0.46.0
+        version: 0.46.0(typescript@5.9.3)
       lucide-react:
         specifier: ^0.577.0
         version: 0.577.0(react@19.2.7)
       mermaid:
-        specifier: ^11.16.0
-        version: 11.16.0
+        specifier: ^11.16.1
+        version: 11.16.1
       radix-ui:
         specifier: ^1.6.4
         version: 1.6.4(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -2502,8 +2502,8 @@ packages:
   '@iconify/types@2.0.0':
     resolution: {integrity: sha512-+wluvCrRhXrhyOmRDJ3q8mux9JkKy5SJ/v8ol2tu4FVjyYvtEzkc/3pK15ET6RKg4b4w4BmTk1+gsCUhf21Ykg==}
 
-  '@iconify/utils@3.1.3':
-    resolution: {integrity: sha512-LPKOXPn/zV+zis1oOfGWogaXVpqUybF3ZS6SCZIsz8vg0ivVp9+fVqyYB7xq0aiST/VhUQYGO1qo6uoYSiEJqw==}
+  '@iconify/utils@3.1.4':
+    resolution: {integrity: sha512-b1S7B1k9ohZ+iNTi2ATxbRYG9fTrJmUT0rc46bvVnNxqNRGW7dyo/vRREwyniI5IRN2RSJHDcm+s3BjWrSAjHw==}
 
   '@img/colour@1.1.0':
     resolution: {integrity: sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ==}
@@ -2748,14 +2748,6 @@ packages:
 
   '@lexical/internal@0.46.0':
     resolution: {integrity: sha512-OV1ePAAnVVd0K+Bq5SX7vOKE/LqJLYcDM4HD4zVCisbgVaznE+pTj/nDB2uWTidwf8o7QhPR65VhEi+KkUtyEw==}
-    peerDependencies:
-      typescript: '>=5.2'
-    peerDependenciesMeta:
-      typescript:
-        optional: true
-
-  '@lexical/internal@0.49.0':
-    resolution: {integrity: sha512-s+XjPC7Qb39A/Xx9ahcz1s69CPix4ultaqyW+MDG0AXYW2quDr7m0USqReKIAiuoLIWtGN5HW8BwV2Y6t4qr6Q==}
     peerDependencies:
       typescript: '>=5.2'
     peerDependenciesMeta:
@@ -5007,8 +4999,8 @@ packages:
   '@types/d3-format@3.0.4':
     resolution: {integrity: sha512-fALi2aI6shfg7vM5KiR1wNJnZ7r6UuggVqtDA+xiEdPZQwy/trcQaHnwShLuLdta2rTymCNpxYTiMZX/e09F4g==}
 
-  '@types/d3-geo@3.1.0':
-    resolution: {integrity: sha512-856sckF0oP/diXtS4jNsiQw/UuK5fQG8l/a9VVLeSouf1/PPbBE1i1W852zVwKwYCBkFJJB7nCFTbk6UMEXBOQ==}
+  '@types/d3-geo@3.1.1':
+    resolution: {integrity: sha512-65Emv9fQiQQqphLlRkuQ5ypPsOmWPhtBGCMv61JDPEPMvsx+gzhGf74yw1a78xFKPj6zw4AgQICJoQv0vK9M2w==}
 
   '@types/d3-hierarchy@3.1.7':
     resolution: {integrity: sha512-tJFtNoYBtRtkNysX1Xq4sxtjK8YgoWUNpIiUee0/jHGRwqvzYxkq0hGVbbOGSz+JgFxxRu4K8nb3YpG3CMARtg==}
@@ -5025,8 +5017,8 @@ packages:
   '@types/d3-quadtree@3.0.6':
     resolution: {integrity: sha512-oUzyO1/Zm6rsxKRHA1vH0NEDG58HrT5icx/azi9MF1TWdtttWl0UIUsjEQBBh+SIkrpd21ZjEv7ptxWys1ncsg==}
 
-  '@types/d3-random@3.0.3':
-    resolution: {integrity: sha512-Imagg1vJ3y76Y2ea0871wpabqp613+8/r0mCLEBfdtqC7xMSfj9idOnmBYyMoULfHePJyxMAw3nWhJxzc+LFwQ==}
+  '@types/d3-random@3.0.4':
+    resolution: {integrity: sha512-UHYId5WTCx4L4YNel7NU00XUXXgvgpgZOvp10PuvsQENjMDXhh2RyFc0KBjO7B45ne4Ha1yVH7ii0vnzKkuzWA==}
 
   '@types/d3-scale-chromatic@3.1.0':
     resolution: {integrity: sha512-iWMJgwkK7yTRmWqRB5plb1kadXyQ5Sj8V/zYlFGMUBbIPKQScw+Dku9cAAMgJG+z5GYDoMjWGLVOvjghDEFnKQ==}
@@ -5801,8 +5793,8 @@ packages:
     peerDependencies:
       cytoscape: ^3.2.0
 
-  cytoscape@3.34.0:
-    resolution: {integrity: sha512-62rNSrioXw93uliKFBwjukeQyeWwH2PqDrTac31r2P6464u3AUvTk0xS4LVvT251g7IgkFunrI48ZEZGjywSOg==}
+  cytoscape@3.34.1:
+    resolution: {integrity: sha512-Lr0RvH9H75y9ar8h9Toy6u4lxRSCcxUq+hHcQ26sVWo6BnaQp1gwEZOYqwuYTZhyW7npyKnNLP8oJ2p1/3OZ7g==}
     engines: {node: '>=0.10'}
 
   d3-array@2.12.1:
@@ -6258,8 +6250,8 @@ packages:
     resolution: {integrity: sha512-j6vWzfrGVfyXxge+O0x5sh6cvxAog0a/4Rdd2K36zCMV5eJ+/+tOAngRO8cODMNWbVRdVlmGZQL2YS3yR8bIUA==}
     engines: {node: '>= 0.4'}
 
-  es-toolkit@1.49.0:
-    resolution: {integrity: sha512-G5iZ6Pc/FNRY/soKZHC+TxGDD83rHUDXxzaWhGCX44vAv/tMs56WMusnm/KMNK+luUPsgA9U28cGr4RDlSzL2g==}
+  es-toolkit@1.50.0:
+    resolution: {integrity: sha512-OyZKhUVvEep9ITEiwHn8GKnMRQIVqoSIX7WnRbkWgJkllCujilqP2rD0u979tkl8wqyc8ICwlc1UBVv/Sl1G6w==}
 
   es5-ext@0.10.64:
     resolution: {integrity: sha512-p2snDhiLaXe6dahss1LddxqEm+SkuDvV8dnIQG0MWjyHpcMNfXKPE+/Cc0y+PhxJX3A4xGNeFCj5oc0BUh6deg==}
@@ -6858,8 +6850,8 @@ packages:
   layout-base@2.0.1:
     resolution: {integrity: sha512-dp3s92+uNI1hWIpPGH3jK2kxE2lMjdXdr+DH8ynZHpd6PUlH6x6cbuXnoMmiNumznqaNO31xu9e79F0uuZ0JFg==}
 
-  lexical@0.49.0:
-    resolution: {integrity: sha512-9V1ZIzGpJEd8rIN+nN7veL4fW4fFWbS66Un4JNqSZB4D5t9euzN9+3+jEXy83FjNjNy0MiiUI3+DQaGCLYko0w==}
+  lexical@0.46.0:
+    resolution: {integrity: sha512-oaE7OLY/FuqGKC7ihaqLJvgn/NvvRveryKBBgOwrSe+UIpBmc9IvyXf6hVcvew9M3Vc0XavHWe/ZAL7qc5DzMw==}
     peerDependencies:
       typescript: '>=5.2'
     peerDependenciesMeta:
@@ -7075,8 +7067,8 @@ packages:
     resolution: {integrity: sha512-Snk314V5ayFLhp3fkUREub6WtjBfPdCPY1Ln8/8munuLuiYhsABgBVWsozAG+MWMbVEvcdcpbi9R7ww22l9Q3g==}
     engines: {node: '>=18'}
 
-  mermaid@11.16.0:
-    resolution: {integrity: sha512-Zvm3kbstgdpvIJPPItlL7fppIZ3kibvc1oZIGxdvk9t6UFz6flv+Jw7FtRGKwfcI8OckmH04LqG6LlS6X4B1pA==}
+  mermaid@11.16.1:
+    resolution: {integrity: sha512-TQsq6u22fAn3rek5VOubrhKPo1g5hwC3FXUN9hiyupTckcYiGuuKGkNQrKYwGJkXUxZdojwRG46gsSCFZMDp4g==}
 
   methods@1.1.2:
     resolution: {integrity: sha512-iclAHeNqNm68zFtnZ0e+1L2yUIdvzNoauKU4WBA3VvH/vPFieF7qfRlwUZU+DA9P9bPXIS90ulxoUoCH23sV2w==}
@@ -7422,8 +7414,8 @@ packages:
   package-json-from-dist@1.0.1:
     resolution: {integrity: sha512-UEZIS3/by4OC8vL3P2dTXRETpebLI2NiI5vIrjaD/5UtrkFX/tNbwjTSRAGC/+7CAo2pIcBaRgWmcBBHcsaCIw==}
 
-  package-manager-detector@1.6.0:
-    resolution: {integrity: sha512-61A5ThoTiDG/C8s8UMZwSorAGwMJ0ERVGj2OjoW5pAalsNOg15+iQiPzrLJ4jhZ1HJzmC2PIHT2oEiH3R5fzNA==}
+  package-manager-detector@1.8.0:
+    resolution: {integrity: sha512-yQA4H19AmPEoMUeavPMDIe1higySl/gH/yaQrkT/s07Qp+7pp2hYz30N3z2l5BkjVkF9Ow6o0wjJamm2y7Sn0A==}
 
   parse-entities@4.0.2:
     resolution: {integrity: sha512-GG2AQYWoLgL877gQIKeRPGO1xF9+eG1ujIb5soS5gPvLQ1y2o8FL90w2QWNdf9I361Mpp7726c+lj3U0qK1uGw==}
@@ -8206,6 +8198,10 @@ packages:
     resolution: {integrity: sha512-SHf/r48b7vOrjve9PxJo3MN5v5yuyjHvdUcrQffT3WXMUfnGmHDVbC4k3sHJaJTgZCwpUplIaAo5ANtMyp3YHg==}
     engines: {node: '>=18'}
 
+  tinyexec@1.3.0:
+    resolution: {integrity: sha512-QKAl9m8gWWGHV8jZcPeym6j+XULi6tOf1mT83WYJ4Lk2ytW/uwAWkrP0uFsdoYMdueVJ0qs26wZ+23xeB4ibNQ==}
+    engines: {node: '>=18'}
+
   tinyglobby@0.2.15:
     resolution: {integrity: sha512-j2Zq4NyQYG5XMST4cbs02Ak8iJUdxRM0XI5QyxXuZOzKOINmWurp3smXu3y5wDcJrptwpSjgXHzIQxR0omXljQ==}
     engines: {node: '>=12.0.0'}
@@ -8728,8 +8724,8 @@ snapshots:
 
   '@antfu/install-pkg@1.1.0':
     dependencies:
-      package-manager-detector: 1.6.0
-      tinyexec: 1.2.4
+      package-manager-detector: 1.8.0
+      tinyexec: 1.3.0
 
   '@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.220':
     optional: true
@@ -10166,7 +10162,7 @@ snapshots:
 
   '@iconify/types@2.0.0': {}
 
-  '@iconify/utils@3.1.3':
+  '@iconify/utils@3.1.4':
     dependencies:
       '@antfu/install-pkg': 1.1.0
       '@iconify/types': 2.0.0
@@ -10323,7 +10319,7 @@ snapshots:
       '@lexical/selection': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
       '@types/trusted-types': 2.0.7
-      lexical: 0.49.0(typescript@5.9.3)
+      lexical: 0.46.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -10333,7 +10329,7 @@ snapshots:
       '@lexical/html': 0.46.0(typescript@5.9.3)
       '@lexical/internal': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.49.0(typescript@5.9.3)
+      lexical: 0.46.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -10344,7 +10340,7 @@ snapshots:
       '@lexical/mark': 0.46.0(typescript@5.9.3)
       '@lexical/table': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.49.0(typescript@5.9.3)
+      lexical: 0.46.0(typescript@5.9.3)
       react: 19.2.7
       react-dom: 19.2.7(react@19.2.7)
     optionalDependencies:
@@ -10353,7 +10349,7 @@ snapshots:
   '@lexical/dragon@0.46.0(typescript@5.9.3)':
     dependencies:
       '@lexical/extension': 0.46.0(typescript@5.9.3)
-      lexical: 0.49.0(typescript@5.9.3)
+      lexical: 0.46.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -10362,7 +10358,7 @@ snapshots:
       '@lexical/internal': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
       '@preact/signals-core': 1.14.4
-      lexical: 0.49.0(typescript@5.9.3)
+      lexical: 0.46.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -10370,7 +10366,7 @@ snapshots:
     dependencies:
       '@lexical/text': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.49.0(typescript@5.9.3)
+      lexical: 0.46.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -10378,7 +10374,7 @@ snapshots:
     dependencies:
       '@lexical/extension': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.49.0(typescript@5.9.3)
+      lexical: 0.46.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -10388,15 +10384,11 @@ snapshots:
       '@lexical/internal': 0.46.0(typescript@5.9.3)
       '@lexical/selection': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.49.0(typescript@5.9.3)
+      lexical: 0.46.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
   '@lexical/internal@0.46.0(typescript@5.9.3)':
-    optionalDependencies:
-      typescript: 5.9.3
-
-  '@lexical/internal@0.49.0(typescript@5.9.3)':
     optionalDependencies:
       typescript: 5.9.3
 
@@ -10406,7 +10398,7 @@ snapshots:
       '@lexical/html': 0.46.0(typescript@5.9.3)
       '@lexical/internal': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.49.0(typescript@5.9.3)
+      lexical: 0.46.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -10416,14 +10408,14 @@ snapshots:
       '@lexical/html': 0.46.0(typescript@5.9.3)
       '@lexical/internal': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.49.0(typescript@5.9.3)
+      lexical: 0.46.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
   '@lexical/mark@0.46.0(typescript@5.9.3)':
     dependencies:
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.49.0(typescript@5.9.3)
+      lexical: 0.46.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -10437,13 +10429,13 @@ snapshots:
       '@lexical/selection': 0.46.0(typescript@5.9.3)
       '@lexical/text': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.49.0(typescript@5.9.3)
+      lexical: 0.46.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
   '@lexical/overflow@0.46.0(typescript@5.9.3)':
     dependencies:
-      lexical: 0.49.0(typescript@5.9.3)
+      lexical: 0.46.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -10454,7 +10446,7 @@ snapshots:
       '@lexical/extension': 0.46.0(typescript@5.9.3)
       '@lexical/selection': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.49.0(typescript@5.9.3)
+      lexical: 0.46.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -10478,7 +10470,7 @@ snapshots:
       '@lexical/text': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
       '@lexical/yjs': 0.46.0(typescript@5.9.3)(yjs@13.6.29)
-      lexical: 0.49.0(typescript@5.9.3)
+      lexical: 0.46.0(typescript@5.9.3)
       react: 19.2.7
       react-dom: 19.2.7(react@19.2.7)
     optionalDependencies:
@@ -10493,14 +10485,14 @@ snapshots:
       '@lexical/html': 0.46.0(typescript@5.9.3)
       '@lexical/selection': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.49.0(typescript@5.9.3)
+      lexical: 0.46.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
   '@lexical/selection@0.46.0(typescript@5.9.3)':
     dependencies:
       '@lexical/internal': 0.46.0(typescript@5.9.3)
-      lexical: 0.49.0(typescript@5.9.3)
+      lexical: 0.46.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -10511,14 +10503,14 @@ snapshots:
       '@lexical/html': 0.46.0(typescript@5.9.3)
       '@lexical/internal': 0.46.0(typescript@5.9.3)
       '@lexical/utils': 0.46.0(typescript@5.9.3)
-      lexical: 0.49.0(typescript@5.9.3)
+      lexical: 0.46.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
   '@lexical/text@0.46.0(typescript@5.9.3)':
     dependencies:
       '@lexical/internal': 0.46.0(typescript@5.9.3)
-      lexical: 0.49.0(typescript@5.9.3)
+      lexical: 0.46.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -10526,7 +10518,7 @@ snapshots:
     dependencies:
       '@lexical/internal': 0.46.0(typescript@5.9.3)
       '@lexical/selection': 0.46.0(typescript@5.9.3)
-      lexical: 0.49.0(typescript@5.9.3)
+      lexical: 0.46.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -10534,7 +10526,7 @@ snapshots:
     dependencies:
       '@lexical/internal': 0.46.0(typescript@5.9.3)
       '@lexical/selection': 0.46.0(typescript@5.9.3)
-      lexical: 0.49.0(typescript@5.9.3)
+      lexical: 0.46.0(typescript@5.9.3)
       yjs: 13.6.29
     optionalDependencies:
       typescript: 5.9.3
@@ -10675,7 +10667,7 @@ snapshots:
       codemirror: 6.0.2
       downshift: 7.6.2(react@19.2.7)
       js-yaml: 4.1.1
-      lexical: 0.49.0(typescript@5.9.3)
+      lexical: 0.46.0(typescript@5.9.3)
       mdast-util-directive: 3.1.0
       mdast-util-from-markdown: 2.0.3
       mdast-util-frontmatter: 2.0.1
@@ -12680,7 +12672,7 @@ snapshots:
 
   '@types/d3-format@3.0.4': {}
 
-  '@types/d3-geo@3.1.0':
+  '@types/d3-geo@3.1.1':
     dependencies:
       '@types/geojson': 7946.0.16
 
@@ -12696,7 +12688,7 @@ snapshots:
 
   '@types/d3-quadtree@3.0.6': {}
 
-  '@types/d3-random@3.0.3': {}
+  '@types/d3-random@3.0.4': {}
 
   '@types/d3-scale-chromatic@3.1.0': {}
 
@@ -12741,13 +12733,13 @@ snapshots:
       '@types/d3-fetch': 3.0.7
       '@types/d3-force': 3.0.10
       '@types/d3-format': 3.0.4
-      '@types/d3-geo': 3.1.0
+      '@types/d3-geo': 3.1.1
       '@types/d3-hierarchy': 3.1.7
       '@types/d3-interpolate': 3.0.4
       '@types/d3-path': 3.1.1
       '@types/d3-polygon': 3.0.2
       '@types/d3-quadtree': 3.0.6
-      '@types/d3-random': 3.0.3
+      '@types/d3-random': 3.0.4
       '@types/d3-scale': 4.0.9
       '@types/d3-scale-chromatic': 3.1.0
       '@types/d3-selection': 3.0.11
@@ -13507,17 +13499,17 @@ snapshots:
 
   csstype@3.2.3: {}
 
-  cytoscape-cose-bilkent@4.1.0(cytoscape@3.34.0):
+  cytoscape-cose-bilkent@4.1.0(cytoscape@3.34.1):
     dependencies:
       cose-base: 1.0.3
-      cytoscape: 3.34.0
+      cytoscape: 3.34.1
 
-  cytoscape-fcose@2.2.0(cytoscape@3.34.0):
+  cytoscape-fcose@2.2.0(cytoscape@3.34.1):
     dependencies:
       cose-base: 2.2.0
-      cytoscape: 3.34.0
+      cytoscape: 3.34.1
 
-  cytoscape@3.34.0: {}
+  cytoscape@3.34.1: {}
 
   d3-array@2.12.1:
     dependencies:
@@ -13900,7 +13892,7 @@ snapshots:
       has-tostringtag: 1.0.2
       hasown: 2.0.2
 
-  es-toolkit@1.49.0: {}
+  es-toolkit@1.50.0: {}
 
   es5-ext@0.10.64:
     dependencies:
@@ -14701,9 +14693,9 @@ snapshots:
 
   layout-base@2.0.1: {}
 
-  lexical@0.49.0(typescript@5.9.3):
+  lexical@0.46.0(typescript@5.9.3):
     dependencies:
-      '@lexical/internal': 0.49.0(typescript@5.9.3)
+      '@lexical/internal': 0.46.0(typescript@5.9.3)
     optionalDependencies:
       typescript: 5.9.3
 
@@ -15026,22 +15018,22 @@ snapshots:
 
   merge-descriptors@2.0.0: {}
 
-  mermaid@11.16.0:
+  mermaid@11.16.1:
     dependencies:
       '@braintree/sanitize-url': 7.1.2
-      '@iconify/utils': 3.1.3
+      '@iconify/utils': 3.1.4
       '@mermaid-js/parser': 1.2.0
       '@types/d3': 7.4.3
       '@upsetjs/venn.js': 2.0.0
-      cytoscape: 3.34.0
-      cytoscape-cose-bilkent: 4.1.0(cytoscape@3.34.0)
-      cytoscape-fcose: 2.2.0(cytoscape@3.34.0)
+      cytoscape: 3.34.1
+      cytoscape-cose-bilkent: 4.1.0(cytoscape@3.34.1)
+      cytoscape-fcose: 2.2.0(cytoscape@3.34.1)
       d3: 7.9.0
       d3-sankey: 0.12.3
       dagre-d3-es: 7.0.14
       dayjs: 1.11.21
       dompurify: 3.4.13
-      es-toolkit: 1.49.0
+      es-toolkit: 1.50.0
       katex: 0.16.47
       khroma: 2.1.0
       marked: 16.4.2
@@ -15605,7 +15597,7 @@ snapshots:
 
   package-json-from-dist@1.0.1: {}
 
-  package-manager-detector@1.6.0: {}
+  package-manager-detector@1.8.0: {}
 
   parse-entities@4.0.2:
     dependencies:
@@ -16641,6 +16633,8 @@ snapshots:
   tinybench@2.9.0: {}
 
   tinyexec@1.2.4: {}
+
+  tinyexec@1.3.0: {}
 
   tinyglobby@0.2.15:
     dependencies:
