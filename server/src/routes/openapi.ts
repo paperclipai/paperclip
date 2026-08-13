@@ -224,6 +224,9 @@ import {
   importMcpJsonSchema,
   toolPolicyTestRequestSchema,
   createToolMcpGatewaySchema,
+  startClaudeSetupTokenSessionRequestSchema,
+  submitBrowserCodeRequestSchema,
+  claudeSetupTokenCompletionResponseSchema,
 } from "@paperclipai/shared";
 import {
   COMPANY_IMPORT_TRANSFERS_API_PATH,
@@ -4585,6 +4588,109 @@ registry.registerPath({
   responses: {
     200: r.ok(),
     400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+// Company-and-environment Claude setup-token login session routes. The owner
+// user starts one session for one adapter in one environment. The scope carries
+// no agent id, so a hire flow with no agent still starts one session. The owner
+// reads the login prompt, submits the browser code from the browser, and reads
+// the completion claim. The prompt, code, and completion responses require a
+// confidential transport; the guard returns 403 when the transport is not
+// confidential. No response carries a token; the completion returns the
+// non-secret `storedSessionId` claim.
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/setup-token-login-sessions",
+  tags: ["companies"],
+  summary: "Start a company-and-environment Claude setup-token login session",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(startClaudeSetupTokenSessionRequestSchema),
+  },
+  responses: {
+    201: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    503: r.serverError,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/setup-token-login-sessions/{sessionId}",
+  tags: ["companies"],
+  summary: "Read the status of a Claude setup-token login session",
+  request: { params: z.object({ companyId: z.string(), sessionId: z.string() }) },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/setup-token-login-sessions/{sessionId}/prompt",
+  tags: ["companies"],
+  summary: "Read the login prompt for a Claude setup-token login session",
+  request: { params: z.object({ companyId: z.string(), sessionId: z.string() }) },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/setup-token-login-sessions/{sessionId}/code",
+  tags: ["companies"],
+  summary: "Submit the browser code for a Claude setup-token login session",
+  request: {
+    params: z.object({ companyId: z.string(), sessionId: z.string() }),
+    body: jsonBody(submitBrowserCodeRequestSchema),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/setup-token-login-sessions/{sessionId}/completion",
+  tags: ["companies"],
+  summary: "Read the completion claim of a Claude setup-token login session",
+  request: { params: z.object({ companyId: z.string(), sessionId: z.string() }) },
+  responses: {
+    200: r.ok(claudeSetupTokenCompletionResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/setup-token-login-sessions/{sessionId}/cancel",
+  tags: ["companies"],
+  summary: "Cancel a Claude setup-token login session",
+  request: { params: z.object({ companyId: z.string(), sessionId: z.string() }) },
+  responses: {
+    200: r.ok(),
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,

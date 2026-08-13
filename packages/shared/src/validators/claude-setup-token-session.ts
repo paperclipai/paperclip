@@ -1,0 +1,118 @@
+import { z } from "zod";
+import { AGENT_ADAPTER_TYPES } from "../constants.js";
+import { ADAPTER_AUTH_PANEL_MODES } from "../types/agent.js";
+import {
+  adapterAuthSessionFailureSchema,
+  adapterAuthSessionStatusSchema,
+} from "./adapter-auth-session.js";
+
+const isoDateTime = z.union([z.date(), z.string().datetime()]);
+
+// The start request for a company-and-environment Claude login session. The
+// company and the owner user come from the authenticated caller, not from this
+// body. The body names the adapter and the environment of the login. It reuses
+// the adapter login-session request fields; every field has the same meaning.
+//
+// `.strict()` rejects an extra field, so an agent id never validates. The scope
+// carries no agent id: a hire flow with no agent still starts one session.
+export const startClaudeSetupTokenSessionRequestSchema = z.object({
+  environmentId: z.string().uuid(),
+  adapterType: z.enum(AGENT_ADAPTER_TYPES),
+  ttlSeconds: z.number().int().min(60).max(24 * 60 * 60).optional(),
+}).strict();
+export type StartClaudeSetupTokenSessionRequest =
+  z.infer<typeof startClaudeSetupTokenSessionRequestSchema>;
+
+// The panel-mode schema. It accepts only the two known panel modes.
+export const adapterAuthPanelModeSchema = z.enum(ADAPTER_AUTH_PANEL_MODES);
+export type AdapterAuthPanelMode = z.infer<typeof adapterAuthPanelModeSchema>;
+
+// The session id is an opaque, cryptographically random string, not a UUID. So
+// the schema accepts a bounded opaque string, not a UUID.
+const sessionIdSchema = z.string().min(1).max(256);
+
+// The public Claude login-session response schema. `.strict()` rejects an extra
+// field, so a prompt, a token, an account identifier, or a provider lease
+// identifier never validates.
+export const claudeSetupTokenSessionResponseSchema = z.object({
+  sessionId: sessionIdSchema,
+  environmentId: z.string().uuid(),
+  status: adapterAuthSessionStatusSchema,
+  expiresAt: isoDateTime.nullable(),
+  failure: adapterAuthSessionFailureSchema.nullable(),
+}).strict();
+export type ClaudeSetupTokenSessionResponse =
+  z.infer<typeof claudeSetupTokenSessionResponseSchema>;
+
+// The one-time Claude login prompt schema. It carries the authorization URL the
+// user opens. It carries no server-displayed code.
+export const claudeSetupTokenSessionPromptSchema = z.object({
+  authorizationUrl: z.string().min(1),
+}).strict();
+export type ClaudeSetupTokenSessionPrompt =
+  z.infer<typeof claudeSetupTokenSessionPromptSchema>;
+
+// The owner read schema. It adds the panel mode and the one-time prompt to the
+// public response.
+export const claudeSetupTokenSessionOwnerResponseSchema =
+  claudeSetupTokenSessionResponseSchema.extend({
+    panelMode: adapterAuthPanelModeSchema,
+    prompt: claudeSetupTokenSessionPromptSchema.nullable(),
+  }).strict();
+export type ClaudeSetupTokenSessionOwnerResponse =
+  z.infer<typeof claudeSetupTokenSessionOwnerResponseSchema>;
+
+// The bounded maximum length of a browser code. The provider code is short. The
+// server rejects an oversized code before it reaches the live login process.
+export const BROWSER_CODE_MAX_LENGTH = 512;
+
+// The conservative printable grammar for the submitted browser code. It matches
+// one character outside the visible ASCII range (0x21-0x7E). The validator
+// rejects a code that contains a match, so it rejects a space, a carriage
+// return, a line feed, a NUL, and every other control byte. A later
+// characterization test narrows this set to the exact provider format.
+export const BROWSER_CODE_DISALLOWED_CHAR = /[^\x21-\x7E]/;
+
+/**
+ * Returns true when the browser code obeys the grammar. The code has one or more
+ * characters, no character outside the visible ASCII range, and a length at or
+ * below the bounded maximum.
+ */
+export function isValidBrowserCode(code: string): boolean {
+  return (
+    code.length >= 1 &&
+    code.length <= BROWSER_CODE_MAX_LENGTH &&
+    !BROWSER_CODE_DISALLOWED_CHAR.test(code)
+  );
+}
+
+// The browser-code grammar schema. It rejects an empty code, an oversized code,
+// and a code with a control byte or any other non-printable character.
+export const browserCodeSchema = z
+  .string()
+  .min(1, "A browser code is required.")
+  .max(BROWSER_CODE_MAX_LENGTH, "The browser code is too long.")
+  .refine((code) => !BROWSER_CODE_DISALLOWED_CHAR.test(code), {
+    message: "The browser code has an invalid character.",
+  });
+export type BrowserCode = z.infer<typeof browserCodeSchema>;
+
+// The submit-browser-code request schema. `.strict()` rejects an extra field.
+export const submitBrowserCodeRequestSchema = z.object({
+  browserCode: browserCodeSchema,
+}).strict();
+export type SubmitBrowserCodeRequest =
+  z.infer<typeof submitBrowserCodeRequestSchema>;
+
+// The stored-session claim schema. The `storedSessionId` is the opaque durable
+// session id. It is a non-secret claim; it carries no token.
+export const storedSessionIdSchema = z.string().min(1).max(256);
+
+// The completion response schema. It carries the non-secret `storedSessionId`
+// claim and no token. `.strict()` rejects an extra field, so a token never
+// validates.
+export const claudeSetupTokenCompletionResponseSchema = z.object({
+  storedSessionId: storedSessionIdSchema,
+}).strict();
+export type ClaudeSetupTokenCompletionResponse =
+  z.infer<typeof claudeSetupTokenCompletionResponseSchema>;

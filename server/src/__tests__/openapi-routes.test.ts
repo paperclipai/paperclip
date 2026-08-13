@@ -74,6 +74,19 @@ const explicitOpenApiCoverageExclusions = new Set([
   "smoke-lab.ts",
 ]);
 
+// The company-and-environment Claude setup-token login routes are contract-first.
+// The OpenAPI document describes the route contract before the request handler
+// exists. The request handler arrives in a later change; until then the spec
+// leads the mounted routes for these paths only.
+const specOnlyContractFirstRoutes = new Set([
+  "POST /api/companies/{companyId}/setup-token-login-sessions",
+  "GET /api/companies/{companyId}/setup-token-login-sessions/{sessionId}",
+  "GET /api/companies/{companyId}/setup-token-login-sessions/{sessionId}/prompt",
+  "POST /api/companies/{companyId}/setup-token-login-sessions/{sessionId}/code",
+  "POST /api/companies/{companyId}/setup-token-login-sessions/{sessionId}/completion",
+  "POST /api/companies/{companyId}/setup-token-login-sessions/{sessionId}/cancel",
+]);
+
 function createApp() {
   const app = express();
   app.use("/api", openApiRoutes());
@@ -253,7 +266,9 @@ describe("openapi routes", () => {
     const { routes: specRoutes } = loadSpecRoutes();
 
     const missingInSpec = [...actualRoutes].filter((route) => !specRoutes.has(route)).sort();
-    const extraInSpec = [...specRoutes].filter((route) => !actualRoutes.has(route)).sort();
+    const extraInSpec = [...specRoutes]
+      .filter((route) => !actualRoutes.has(route) && !specOnlyContractFirstRoutes.has(route))
+      .sort();
 
     expect({ unknownRouteFiles, missingInSpec, extraInSpec }).toEqual({
       unknownRouteFiles: [],

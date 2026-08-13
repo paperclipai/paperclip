@@ -84,6 +84,10 @@ export const createAgentSchema = z.object({
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   permissions: agentPermissionsSchema.optional(),
   metadata: z.record(z.string(), z.unknown()).optional().nullable(),
+  // The optional stored-session claim from a completed Claude login session. It
+  // is the non-secret `storedSessionId`; it carries no token. The agent-create
+  // transaction consumes it as the one-time stored-session claim.
+  storedSessionId: z.string().min(1).max(256).optional(),
 });
 
 export type CreateAgent = z.infer<typeof createAgentSchema>;
