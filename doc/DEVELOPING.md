@@ -230,7 +230,7 @@ pnpm dev --authenticated-private
 Allow additional private hostnames (for example custom Tailscale hostnames):
 
 ```sh
-pnpm paperclipai allowed-hostname dotta-macbook-pro
+npx paperclipai allowed-hostname dotta-macbook-pro
 ```
 
 ## Test Commands
@@ -869,7 +869,7 @@ Paperclip CLI now includes client-side control-plane commands in addition to set
 Quick examples:
 
 ```sh
-pnpm paperclipai issue list --company-id <company-id>
+npx paperclipai issue list --company-id <company-id>
 npx paperclipai issue create --company-id <company-id> --title "Investigate checkout conflict"
 npx paperclipai issue update <issue-id> --status in_progress --comment "Started triage"
 ```
@@ -877,7 +877,7 @@ npx paperclipai issue update <issue-id> --status in_progress --comment "Started 
 Set defaults once with context profiles:
 
 ```sh
-pnpm paperclipai context set --api-base http://localhost:3100 --company-id <company-id>
+npx paperclipai context set --api-base http://localhost:3100 --company-id <company-id>
 ```
 
 Then run commands without repeating flags:
@@ -961,4 +961,4 @@ Networking behavior for this smoke script:
 
 - auto-detects and prints a Paperclip host URL reachable from inside OpenClaw Docker
 - default container-side host alias is `host.docker.internal` (override with `PAPERCLIP_HOST_FROM_CONTAINER` / `PAPERCLIP_HOST_PORT`)
-- if Paperclip rejects container hostnames in authenticated/private mode, allow `host.docker.internal` via `pnpm paperclipai allowed-hostname host.docker.internal` and restart Paperclip
+- if Paperclip rejects container hostnames in authenticated/private mode, allow `host.docker.internal` via `npx paperclipai allowed-hostname host.docker.internal` and restart Paperclip

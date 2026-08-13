@@ -38,7 +38,7 @@ Store defaults to avoid repeating flags:
 
 ```sh
 # Set defaults
-pnpm paperclipai context set --api-base http://localhost:3100 --company-id <id>
+npx paperclipai context set --api-base http://localhost:3100 --company-id <id>
 
 # View current context
 pnpm paperclipai context show
@@ -53,7 +53,7 @@ pnpm paperclipai context use default
 To avoid storing secrets in context, use an env var:
 
 ```sh
-pnpm paperclipai context set --api-key-env-var-name PAPERCLIP_API_KEY
+npx paperclipai context set --api-key-env-var-name PAPERCLIP_API_KEY
 export PAPERCLIP_API_KEY=...
 ```
 

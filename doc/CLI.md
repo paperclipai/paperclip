@@ -38,10 +38,16 @@ Unsafe forms for a content-bearing argument:
 - any `package.json` script that wraps the CLI
 
 `pnpm paperclipai` stays acceptable only for local lifecycle and setup commands
-with fixed, trusted arguments (for example `run`, `onboard`, `doctor`,
-`configure`, `context`, `connect`, `env-lab`, `allowed-hostname`). The
-`pnpm --filter @paperclipai/*` build and test commands are not CLI invocation.
-They do not change.
+that take fixed, trusted arguments (for example `run`, `onboard`, `doctor`,
+`configure --section <name>`, `connect`, `env-lab up`, `worktree ensure-seeded`).
+A command is content-bearing, and needs `npx`, when it takes a non-fixed value:
+a hostname (`allowed-hostname`), an import URL or folder (`company import`), an
+identifier or secret (`--company-id`, `--agent-id`, `--claim-secret`), a payload
+(`--payload-json`), or free text (`--body`, `--title`, `--comment`). A runtime
+value counts as non-fixed even when it looks safe: the private-hostname guard
+builds `allowed-hostname <value>` from the request Host header, so it must use
+`npx`. The `pnpm --filter @paperclipai/*` build and test commands are not CLI
+invocation. They do not change.
 
 ## Base Usage
 
@@ -153,7 +159,7 @@ Canonical behavior is documented in `doc/DEPLOYMENT-MODES.md`.
 Allow an authenticated/private hostname (for example custom Tailscale DNS):
 
 ```sh
-pnpm paperclipai allowed-hostname dotta-macbook-pro
+npx paperclipai allowed-hostname dotta-macbook-pro
 ```
 
 Bring up the default local SSH fixture for environment testing:
@@ -211,8 +217,8 @@ pnpm paperclipai issue list --data-dir ./tmp/paperclip-dev
 Store local defaults in `~/.paperclip/context.json`:
 
 ```sh
-pnpm paperclipai context set --api-base http://localhost:3100 --company-id <company-id>
-pnpm paperclipai context set --persona agent --agent-id <agent-id> --api-key-env-var-name PAPERCLIP_API_KEY
+npx paperclipai context set --api-base http://localhost:3100 --company-id <company-id>
+npx paperclipai context set --persona agent --agent-id <agent-id> --api-key-env-var-name PAPERCLIP_API_KEY
 pnpm paperclipai context show
 pnpm paperclipai context list
 pnpm paperclipai context use default
@@ -221,7 +227,7 @@ pnpm paperclipai context use default
 To avoid storing secrets in context, set `apiKeyEnvVarName` and keep the key in env:
 
 ```sh
-pnpm paperclipai context set --api-key-env-var-name PAPERCLIP_API_KEY
+npx paperclipai context set --api-key-env-var-name PAPERCLIP_API_KEY
 export PAPERCLIP_API_KEY=...
 ```
 

@@ -43,9 +43,13 @@ export function resolvePrivateHostnameAllowSet(opts: { allowedHostnames: string[
 }
 
 function blockedHostnameMessage(hostname: string): string {
+  // Use `npx paperclipai`, not `pnpm paperclipai`. The hostname comes from the
+  // request Host header, so a requester controls it. `pnpm` runs the argument
+  // through a shell and would evaluate a backtick, `$( )`, or `$NAME` span in
+  // that value. `npx` passes the value as one inert argv element.
   return (
     `Hostname '${hostname}' is not allowed for this Paperclip instance. ` +
-    `If you want to allow this hostname, please run pnpm paperclipai allowed-hostname ${hostname}`
+    `If you want to allow this hostname, please run npx paperclipai allowed-hostname ${hostname}`
   );
 }
 
@@ -68,7 +72,7 @@ export function privateHostnameGuard(opts: {
     const wantsJson = req.path.startsWith("/api") || req.accepts(["json", "html", "text"]) === "json";
 
     if (!hostname) {
-      const error = "Missing Host header. If you want to allow a hostname, run pnpm paperclipai allowed-hostname <host>.";
+      const error = "Missing Host header. If you want to allow a hostname, run npx paperclipai allowed-hostname <host>.";
       if (wantsJson) {
         res.status(403).json({ error });
       } else {
