@@ -222,6 +222,11 @@ export interface ClaudeOAuthBindingInvariantDecision {
  *   * A present but non-fixed OAuth binding (a replacement or a weaker binding).
  *   * A prior fixed binding that the next config drops (a removal).
  *
+ * A prior fixed binding keeps the invariant active for the write, independently
+ * of the destination adapter type. A caller cannot remove the binding by a move
+ * to another adapter type in the same write. A write to a non-claude_local
+ * adapter that has no prior fixed binding stays outside the Claude login flow.
+ *
  * A controlled internal override skips the removal and replacement checks for a
  * migration or an administrator repair. The precedence policy runs on every
  * path, with or without the override: the fixed binding together with a
@@ -236,18 +241,28 @@ export interface ClaudeOAuthBindingInvariantDecision {
 export function assertClaudeOAuthBindingInvariant(
   input: ClaudeOAuthBindingInvariantInput,
 ): ClaudeOAuthBindingInvariantDecision {
-  if (input.adapterType !== CLAUDE_LOCAL_ADAPTER_TYPE) {
-    return { introducesBinding: false, keepsBinding: false };
-  }
+  const isClaudeLocal = input.adapterType === CLAUDE_LOCAL_ADAPTER_TYPE;
   const nextHasKey = hasClaudeOAuthEnvKey(input.nextConfig);
   const nextIsFixed = hasFixedClaudeOAuthBinding(input.nextConfig);
   const priorIsFixed = hasFixedClaudeOAuthBinding(input.priorConfig);
 
+  // A write to a non-claude_local adapter that has no prior fixed binding is a
+  // normal non-Claude configuration. It stays outside the Claude login flow. A
+  // prior fixed binding always keeps the invariant active, so a write cannot
+  // drop the binding by a move to another adapter type in the same write.
+  if (!isClaudeLocal && !priorIsFixed) {
+    return { introducesBinding: false, keepsBinding: false };
+  }
+
   if (!input.allowInternalOverride) {
-    if (nextHasKey && !nextIsFixed) {
+    // A prior fixed binding locks the agent. A normal write cannot remove or
+    // replace the binding, independently of the destination adapter type.
+    if (priorIsFixed && !nextIsFixed) {
       throw new HttpError(409, CLAUDE_OAUTH_BINDING_LOCKED, { code: "claude_oauth_binding_locked" });
     }
-    if (priorIsFixed && !nextIsFixed) {
+    // A present but non-fixed OAuth binding on a claude_local write is a
+    // replacement or a weaker binding.
+    if (isClaudeLocal && nextHasKey && !nextIsFixed) {
       throw new HttpError(409, CLAUDE_OAUTH_BINDING_LOCKED, { code: "claude_oauth_binding_locked" });
     }
   }

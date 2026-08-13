@@ -87,12 +87,44 @@ describe("assertClaudeOAuthBindingInvariant", () => {
     ).toThrowError(CLAUDE_OAUTH_BINDING_LOCKED);
   });
 
+  it("rejects a removal of the fixed binding by a move to another adapter type", () => {
+    // The prior config has the fixed binding on claude_local. The write moves
+    // the agent to the process adapter and drops the binding in the same write.
+    // The invariant stays active, because a prior fixed binding locks the agent.
+    expect(() =>
+      assertClaudeOAuthBindingInvariant({
+        adapterType: "process",
+        nextConfig: withEnv({}),
+        priorConfig: withEnv({ CLAUDE_CODE_OAUTH_TOKEN: FIXED_BINDING }),
+      }),
+    ).toThrowError(CLAUDE_OAUTH_BINDING_LOCKED);
+  });
+
   it("permits a removal under the controlled internal override", () => {
     const decision = assertClaudeOAuthBindingInvariant({
       adapterType: "claude_local",
       nextConfig: withEnv({}),
       priorConfig: withEnv({ CLAUDE_CODE_OAUTH_TOKEN: FIXED_BINDING }),
       allowInternalOverride: true,
+    });
+    expect(decision).toEqual({ introducesBinding: false, keepsBinding: false });
+  });
+
+  it("permits an adapter-type move that drops the binding under the internal override", () => {
+    const decision = assertClaudeOAuthBindingInvariant({
+      adapterType: "process",
+      nextConfig: withEnv({}),
+      priorConfig: withEnv({ CLAUDE_CODE_OAUTH_TOKEN: FIXED_BINDING }),
+      allowInternalOverride: true,
+    });
+    expect(decision).toEqual({ introducesBinding: false, keepsBinding: false });
+  });
+
+  it("does nothing for a non-claude_local create with no prior fixed binding", () => {
+    const decision = assertClaudeOAuthBindingInvariant({
+      adapterType: "process",
+      nextConfig: withEnv({}),
+      priorConfig: withEnv({ SOME_OTHER_KEY: { type: "plain", value: "x" } }),
     });
     expect(decision).toEqual({ introducesBinding: false, keepsBinding: false });
   });
@@ -505,6 +537,26 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     ).rejects.toMatchObject({ message: CLAUDE_OAUTH_BINDING_LOCKED });
 
     const reloaded = await agentService(db).getById(created.id);
+    const reloadedEnv = (reloaded?.adapterConfig as { env: Record<string, unknown> }).env;
+    expect(reloadedEnv.CLAUDE_CODE_OAUTH_TOKEN).toMatchObject(FIXED_BINDING);
+  });
+
+  it("rejects a removal of the binding by a move to another adapter type on update", async () => {
+    const scope = await seedScope();
+    const sessionId = await seedStoredClaim(scope, Date.now() + 60_000);
+    const created = await agentService(db).create(scope.companyId, createInput(scope), {
+      claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
+    });
+
+    // The write moves the agent to the process adapter and drops the binding in
+    // the same PATCH. The invariant must reject it with the fixed 409.
+    await expect(
+      agentService(db).update(created.id, { adapterType: "process", adapterConfig: { env: {} } }),
+    ).rejects.toMatchObject({ message: CLAUDE_OAUTH_BINDING_LOCKED });
+
+    // Both the adapter type and the fixed binding stay unchanged.
+    const reloaded = await agentService(db).getById(created.id);
+    expect(reloaded?.adapterType).toBe("claude_local");
     const reloadedEnv = (reloaded?.adapterConfig as { env: Record<string, unknown> }).env;
     expect(reloadedEnv.CLAUDE_CODE_OAUTH_TOKEN).toMatchObject(FIXED_BINDING);
   });
