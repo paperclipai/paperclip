@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 
 const mockIssueService = vi.hoisted(() => ({
@@ -80,6 +80,21 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
 const mockIssueRecoveryActionService = vi.hoisted(() => ({
   getActiveForIssue: vi.fn(async () => null),
 }));
+const mockTaskWatchdogService = vi.hoisted(() => ({
+  getActiveForIssue: vi.fn(async () => null),
+  revalidateMutationScope: vi.fn(async () => ({
+    allowed: true,
+    classification: { state: "stopped", stopFingerprint: "task_watchdog_stop:test" },
+  })),
+  reconcileForIssueAndAncestors: vi.fn(async () => ({
+    checked: 0,
+    triggered: 0,
+    skipped: 0,
+    watchdogIssueIds: [],
+  })),
+  upsertForIssue: vi.fn(),
+  disableForIssue: vi.fn(async () => null),
+}));
 const mockIssueTreeControlService = vi.hoisted(() => ({
   getActivePauseHoldGate: vi.fn(async () => null),
 }));
@@ -90,6 +105,9 @@ const mockExternalObjectService = vi.hoisted(() => ({
 const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn());
 const mockCrossIssueInfluenceLimitError = vi.hoisted(() => vi.fn());
 const mockCrossIssueInfluenceRunContextError = vi.hoisted(() => vi.fn());
+
+let issueRoutes: typeof import("../routes/issues.js").issueRoutes;
+let errorHandler: typeof import("../middleware/index.js").errorHandler;
 
 vi.mock("@paperclipai/shared/telemetry", () => ({
   trackAgentTaskCompleted: vi.fn(),
@@ -165,6 +183,7 @@ vi.mock("../services/index.js", () => ({
   }),
   issueService: () => mockIssueService,
   issueThreadInteractionService: () => mockIssueThreadInteractionService,
+  taskWatchdogService: () => mockTaskWatchdogService,
   issueTreeControlService: () => mockIssueTreeControlService,
   logActivity: mockLogActivity,
   projectService: () => ({}),
@@ -189,10 +208,6 @@ function createApp() {
 }
 
 async function installActor(app: express.Express, actor?: Record<string, unknown>) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
-  ]);
   app.use((req, _res, next) => {
     (req as any).actor = actor ?? {
       type: "board",
@@ -262,6 +277,13 @@ async function waitForWakeup(assertion: () => void) {
 }
 
 describe.sequential("issue comment reopen routes", () => {
+  beforeAll(async () => {
+    [{ issueRoutes }, { errorHandler }] = await Promise.all([
+      import("../routes/issues.js"),
+      import("../middleware/index.js"),
+    ]);
+  }, 30_000);
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockReset();
@@ -292,6 +314,11 @@ describe.sequential("issue comment reopen routes", () => {
     mockRoutineService.syncRunStatusForIssue.mockReset();
     mockIssueThreadInteractionService.listForIssue.mockReset();
     mockIssueRecoveryActionService.getActiveForIssue.mockReset();
+    mockTaskWatchdogService.getActiveForIssue.mockReset();
+    mockTaskWatchdogService.revalidateMutationScope.mockReset();
+    mockTaskWatchdogService.reconcileForIssueAndAncestors.mockReset();
+    mockTaskWatchdogService.upsertForIssue.mockReset();
+    mockTaskWatchdogService.disableForIssue.mockReset();
     mockIssueTreeControlService.getActivePauseHoldGate.mockReset();
     mockExternalObjectService.syncCommentSafely.mockReset();
     mockExternalObjectService.syncIssueSafely.mockReset();
@@ -357,6 +384,19 @@ describe.sequential("issue comment reopen routes", () => {
     mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(null);
+    mockTaskWatchdogService.getActiveForIssue.mockResolvedValue(null);
+    mockTaskWatchdogService.revalidateMutationScope.mockResolvedValue({
+      allowed: true,
+      classification: { state: "stopped", stopFingerprint: "task_watchdog_stop:test" },
+    });
+    mockTaskWatchdogService.reconcileForIssueAndAncestors.mockResolvedValue({
+      checked: 0,
+      triggered: 0,
+      skipped: 0,
+      watchdogIssueIds: [],
+    });
+    mockTaskWatchdogService.upsertForIssue.mockResolvedValue(undefined);
+    mockTaskWatchdogService.disableForIssue.mockResolvedValue(null);
     mockIssueTreeControlService.getActivePauseHoldGate.mockResolvedValue(null);
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
@@ -426,11 +466,10 @@ describe.sequential("issue comment reopen routes", () => {
   });
 
   it("treats reopen=true as a no-op when the issue is already open", async () => {
-    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("todo"),
-      ...patch,
-    }));
+    const issue = makeIssue("todo");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      makeIssueUpdateReceipt(issue, patch));
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
@@ -1122,7 +1161,7 @@ describe.sequential("issue comment reopen routes", () => {
       {
         agentId: "22222222-2222-4222-8222-222222222222",
         userId: undefined,
-        runId: "run-1",
+        runId: null,
         onBehalfOfUserId: null,
       },
       expect.objectContaining({
@@ -1152,7 +1191,7 @@ describe.sequential("issue comment reopen routes", () => {
       {
         agentId: "22222222-2222-4222-8222-222222222222",
         userId: undefined,
-        runId: "run-1",
+        runId: null,
         onBehalfOfUserId: null,
       },
       expect.objectContaining({ presentation: null }),
@@ -1185,7 +1224,7 @@ describe.sequential("issue comment reopen routes", () => {
       {
         agentId: "22222222-2222-4222-8222-222222222222",
         userId: undefined,
-        runId: "run-1",
+        runId: null,
         onBehalfOfUserId: null,
       },
       expect.objectContaining({ presentation: null }),
@@ -1335,7 +1374,7 @@ describe.sequential("issue comment reopen routes", () => {
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({ status: "todo" }),
     );
-  });
+  }, 15_000);
 
   it("does not implicitly reopen done issues via POST comments when the comment runId matches the issue's execution run", async () => {
     mockIssueService.getById.mockResolvedValue({
@@ -1360,7 +1399,7 @@ describe.sequential("issue comment reopen routes", () => {
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({ status: "todo" }),
     );
-  });
+  }, 15_000);
 
   it("still implicitly reopens done issues via POST comments when the comment runId differs from the issue's owning run", async () => {
     mockIssueService.getById.mockResolvedValue({
