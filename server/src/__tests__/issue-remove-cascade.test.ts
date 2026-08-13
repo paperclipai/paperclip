@@ -4,8 +4,11 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
   companies,
+  costEvents,
   createDb,
   decisions,
+  feedbackVotes,
+  financeEvents,
   goals,
   heartbeatRuns,
   issueComments,
@@ -46,6 +49,10 @@ describeEmbeddedPostgres("issueService.remove referential integrity", () => {
     await db.delete(issueComments);
     await db.delete(issueReadStates);
     await db.delete(issueInboxArchives);
+    await db.delete(feedbackVotes);
+    // finance_events references cost_events, so delete finance rows first.
+    await db.delete(financeEvents);
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(goals);
@@ -115,6 +122,15 @@ describeEmbeddedPostgres("issueService.remove referential integrity", () => {
     const { companyId, goalId, runId } = await seedCompanyAgentRun();
     const issueId = await seedIssue(companyId, goalId);
 
+    await db.insert(feedbackVotes).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      targetType: "comment",
+      targetId: "target-1",
+      authorUserId: "board-user",
+      vote: "up",
+    });
     await db.insert(issueComments).values({
       id: randomUUID(),
       companyId,
@@ -159,6 +175,50 @@ describeEmbeddedPostgres("issueService.remove referential integrity", () => {
     ).toHaveLength(0);
     expect(await db.select().from(issueReadStates).where(eq(issueReadStates.issueId, issueId))).toHaveLength(0);
     expect(await db.select().from(issueInboxArchives).where(eq(issueInboxArchives.issueId, issueId))).toHaveLength(0);
+    expect(await db.select().from(feedbackVotes).where(eq(feedbackVotes.issueId, issueId))).toHaveLength(0);
+  });
+
+  it("deletes an issue and keeps ledger rows with issueId set to null", async () => {
+    const { companyId, goalId, agentId } = await seedCompanyAgentRun();
+    const issueId = await seedIssue(companyId, goalId);
+
+    const costEventId = randomUUID();
+    await db.insert(costEvents).values({
+      id: costEventId,
+      companyId,
+      agentId,
+      issueId,
+      provider: "anthropic",
+      model: "claude-opus-4-8",
+      costCents: 100,
+      occurredAt: new Date(),
+    });
+    const financeEventId = randomUUID();
+    await db.insert(financeEvents).values({
+      id: financeEventId,
+      companyId,
+      agentId,
+      issueId,
+      costEventId,
+      eventKind: "usage",
+      biller: "anthropic",
+      amountCents: 100,
+      occurredAt: new Date(),
+    });
+
+    const removed = await svc.remove(issueId);
+    expect(removed?.id).toBe(issueId);
+
+    expect(await db.select().from(issues).where(eq(issues.id, issueId))).toHaveLength(0);
+
+    // The ledger rows must survive the delete with a detached issueId.
+    const costRows = await db.select().from(costEvents).where(eq(costEvents.id, costEventId));
+    expect(costRows).toHaveLength(1);
+    expect(costRows[0]?.issueId).toBeNull();
+
+    const financeRows = await db.select().from(financeEvents).where(eq(financeEvents.id, financeEventId));
+    expect(financeRows).toHaveLength(1);
+    expect(financeRows[0]?.issueId).toBeNull();
   });
 
   it("returns a 409 conflict when a restricted decisions row references the issue", async () => {
