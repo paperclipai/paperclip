@@ -381,6 +381,56 @@ describe.sequential("closed isolated workspace issue routes", () => {
     ).not.toHaveBeenCalled();
   });
 
+  it("does not clear the reopen-pending flag when a concurrent request already reopened the workspace", async () => {
+    // A concurrent request reopened the workspace first, so this request receives
+    // reopened: false and never set the flag. Even though the checkout leaves the
+    // issue terminal, this request must not clear the flag that the other request
+    // owns. Otherwise the reaper or the archive route can destroy the rebuilt
+    // worktree while the other request still uses it.
+    mockIssueService.getById.mockResolvedValue({ ...makeIssue(), status: "done" });
+    mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockResolvedValue({
+      ok: true,
+      reopened: false,
+      workspace: { ...makeClosedWorkspace(), status: "active", closedAt: null },
+    });
+    mockIssueService.checkout.mockResolvedValue(null);
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked"],
+      });
+
+    expect(res.status).toBe(200);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(
+      mockExecutionWorkspaceService.clearReopenPendingConsumptionForUnconsumedReopen,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("retries the reopen-pending clear when the first attempt fails transiently", async () => {
+    // The workspace reopens, but the comment update returns null, so the issue
+    // stays terminal and the guard must clear the flag. A transient failure of the
+    // first clear must not strand the flag; the guard retries until it succeeds.
+    mockIssueService.getById.mockResolvedValue({ ...makeIssue(), status: "done" });
+    mockIssueService.update.mockResolvedValue(null);
+    mockExecutionWorkspaceService.clearReopenPendingConsumptionForUnconsumedReopen
+      .mockRejectedValueOnce(new Error("transient database error"))
+      .mockResolvedValue({ cleared: true });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({ comment: "hello" });
+
+    expect(res.status).toBe(404);
+    await vi.waitFor(() => {
+      expect(
+        mockExecutionWorkspaceService.clearReopenPendingConsumptionForUnconsumedReopen.mock.calls.length,
+      ).toBeGreaterThanOrEqual(2);
+    });
+  });
+
   it("still allows non-comment board updates so the issue can be moved to a new workspace", async () => {
     mockIssueService.update.mockResolvedValue({
       ...makeIssue(),
