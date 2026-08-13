@@ -17,7 +17,13 @@ export const IMPORT_TRANSFER_PART_SIZE_BYTES = 32 * 1024 * 1024;
 export const IMPORT_TRANSFER_PART_ATTEMPTS = 3;
 
 async function sha256Hex(bytes: BufferSource): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  // Normalise views from a different JavaScript realm (for example an iframe
+  // or a browser-provided File) before passing them to WebCrypto. Some
+  // SubtleCrypto implementations reject otherwise valid cross-realm views.
+  const normalized = bytes instanceof ArrayBuffer
+    ? new Uint8Array(bytes)
+    : new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const digest = await crypto.subtle.digest("SHA-256", normalized);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
