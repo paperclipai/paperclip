@@ -3,7 +3,7 @@ import {
   SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS_CEILING,
   SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS_DEFAULT,
   parseSuccessfulRunMissingStateMaxAttempts,
-} from "./service.ts";
+} from "./service.js";
 
 describe("parseSuccessfulRunMissingStateMaxAttempts", () => {
   it("returns the default for missing, empty, or non-integer values", () => {
