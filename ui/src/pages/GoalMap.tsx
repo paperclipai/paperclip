@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@/lib/router";
 import { ChevronRight, Lock, Maximize2, Minus, Plus, RotateCcw, Target } from "lucide-react";
 import type { Agent, GoalMapIssueNode, GoalMapNode, GoalMapStatusCounts } from "@paperclipai/shared";
+import { GOAL_STATUSES } from "@paperclipai/shared";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
@@ -19,6 +20,7 @@ import { IssueStatusBadge, StatusBadge } from "../components/StatusBadge";
 import { StatusGlyph } from "../components/StatusGlyph";
 import { StatusIcon } from "../components/StatusIcon";
 import { RoadmapView } from "../components/RoadmapView";
+import { InlineEditor } from "../components/InlineEditor";
 
 // Layout constants (left-to-right layered tree; task pills match the approved
 // grouping preview: slim leaves, two-row parents with subtree progress).
@@ -169,15 +171,20 @@ function layoutGoalMap(
   collapsed: CollapsedState,
 ): GoalMapLayout {
   const nodeIds = new Set(nodes.map((n) => n.goal.id));
+  // Initiatives are absolute roots: the company row (shown only as the
+  // "New / unassigned" bucket) never acts as a tree parent.
+  const companyIds = new Set(nodes.filter((n) => n.goal.level === "company").map((n) => n.goal.id));
   const goalChildren = new Map<string, GoalMapNode[]>();
   for (const node of nodes) {
     const parentId = node.goal.parentId;
-    if (!parentId || !nodeIds.has(parentId)) continue;
+    if (!parentId || !nodeIds.has(parentId) || companyIds.has(parentId)) continue;
     const siblings = goalChildren.get(parentId) ?? [];
     siblings.push(node);
     goalChildren.set(parentId, siblings);
   }
-  const goalRoots = nodes.filter((n) => !n.goal.parentId || !nodeIds.has(n.goal.parentId));
+  const goalRoots = nodes
+    .filter((n) => !n.goal.parentId || !nodeIds.has(n.goal.parentId) || companyIds.has(n.goal.parentId))
+    .sort((a, b) => Number(a.goal.level === "company") - Number(b.goal.level === "company"));
 
   function goalChildrenOf(goalId: string): GoalMapNode[] {
     // A collapsed initiative folds its whole epic group, not just its tasks.
@@ -369,6 +376,19 @@ export function GoalMap() {
       if (selectedCompanyId) queryClient.invalidateQueries({ queryKey: queryKeys.goals.list(selectedCompanyId) });
     },
   });
+  const updateGoal = useMutation({
+    mutationFn: ({ goalId, data }: { goalId: string; data: Record<string, unknown> }) =>
+      goalsApi.update(goalId, data),
+    onSettled: () => {
+      if (selectedCompanyId) queryClient.invalidateQueries({ queryKey: queryKeys.goals.list(selectedCompanyId) });
+    },
+  });
+  const removeGoal = useMutation({
+    mutationFn: (goalId: string) => goalsApi.remove(goalId),
+    onSettled: () => {
+      if (selectedCompanyId) queryClient.invalidateQueries({ queryKey: queryKeys.goals.list(selectedCompanyId) });
+    },
+  });
   const createTask = useMutation({
     mutationFn: (data: Record<string, unknown>) => issuesApi.create(selectedCompanyId!, data),
     onSettled: () => {
@@ -478,7 +498,12 @@ export function GoalMap() {
     [goalMap],
   );
   const parentEdges = useMemo(
-    () => (goalMap?.edges ?? []).filter((e) => e.kind === "parent"),
+    () => (goalMap?.edges ?? []).filter((e) => {
+      if (e.kind !== "parent") return false;
+      // Initiatives are top-level: never draw the company-root parent edge.
+      const fromLevel = (goalMap?.nodes ?? []).find((n) => n.goal.id === e.fromGoalId)?.goal.level;
+      return fromLevel !== "company";
+    }),
     [goalMap],
   );
   // Blocks arrows: only cross-branch — a task gating its own layout ancestor
@@ -1125,7 +1150,8 @@ export function GoalMap() {
                     data-map-plus
                     aria-label={node.goal.level === "initiative" ? "New epic in this initiative" : "New task in this epic"}
                     title={node.goal.level === "initiative" ? "New epic in this initiative" : "New task in this epic"}
-                    className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded border border-(--hex-22d3ee) bg-background text-sm font-bold text-(--hex-22d3ee) hover:bg-(--hex-22d3ee) hover:text-white"
+                    className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded text-sm font-bold shadow-sm"
+                    style={{ background: "#0e7490", color: "#ffffff" }}
                     onClick={(e) => {
                       e.stopPropagation();
                       setSelection({ kind: "goal", id: node.goal.id });
@@ -1232,7 +1258,8 @@ export function GoalMap() {
                     data-map-plus
                     aria-label="New sub-task"
                     title="New sub-task"
-                    className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded border border-(--hex-22d3ee) bg-background text-xs font-bold text-(--hex-22d3ee) opacity-70 hover:bg-(--hex-22d3ee) hover:text-white hover:opacity-100"
+                    className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded text-xs font-bold opacity-80 shadow-sm hover:opacity-100"
+                    style={{ background: "#0e7490", color: "#ffffff" }}
                     onClick={(e) => {
                       e.stopPropagation();
                       setSelection({ kind: "issue", id: issue.id });
@@ -1302,10 +1329,72 @@ export function GoalMap() {
                     </span>
                   )}
                 </div>
-                <h2 className="text-lg font-semibold leading-snug">
-                  {selectedGoal.goal.level === "company" ? "New / unassigned" : selectedGoal.goal.title}
-                </h2>
+                {selectedGoal.goal.level === "company" ? (
+                  <h2 className="text-lg font-semibold leading-snug">New / unassigned</h2>
+                ) : (
+                  <InlineEditor
+                    value={selectedGoal.goal.title}
+                    onSave={(title) => updateGoal.mutateAsync({ goalId: selectedGoal.goal.id, data: { title } })}
+                    as="h2"
+                    className="text-lg font-semibold leading-snug"
+                  />
+                )}
               </div>
+
+              {selectedGoal.goal.level !== "company" && (
+                <InspectorSection title="Actions">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <button className="rounded-full" aria-label="Change status">
+                          <StatusBadge status={selectedGoal.goal.status} />
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-44 p-1" align="start">
+                        {GOAL_STATUSES.map((status) => (
+                          <button
+                            key={status}
+                            className="flex w-full items-center rounded px-2 py-1.5 text-left text-sm hover:bg-accent/50"
+                            onClick={() => updateGoal.mutate({ goalId: selectedGoal.goal.id, data: { status } })}
+                          >
+                            {status}
+                          </button>
+                        ))}
+                      </PopoverContent>
+                    </Popover>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setCreateTitle("");
+                        if (selectedGoal.goal.level === "initiative") {
+                          setCreateDraft({ kind: "epic", parentGoalId: selectedGoal.goal.id, parentTitle: selectedGoal.goal.title });
+                        } else {
+                          setCreateDraft({ kind: "task", goalId: selectedGoal.goal.id, goalTitle: selectedGoal.goal.title });
+                        }
+                      }}
+                    >
+                      {selectedGoal.goal.level === "initiative" ? "+ New epic" : "+ New task"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="text-destructive"
+                      onClick={() => {
+                        if (window.confirm(`Delete ${selectedGoal.goal.level} "${selectedGoal.goal.title}"? Tasks are kept and become unassigned.`)) {
+                          removeGoal.mutate(selectedGoal.goal.id);
+                          setSelection(null);
+                        }
+                      }}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    Click the title above to rename. The + on the card does the same as "+ New {selectedGoal.goal.level === "initiative" ? "epic" : "task"}".
+                  </p>
+                </InspectorSection>
+              )}
 
               {(selectedGoal.serves?.length ?? 0) > 0 && (
                 <InspectorSection title="Serves">

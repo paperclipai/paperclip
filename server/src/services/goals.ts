@@ -1,6 +1,6 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { goals } from "@paperclipai/db";
+import { goals, issues } from "@paperclipai/db";
 
 type GoalReader = Pick<Db, "select">;
 
@@ -70,11 +70,33 @@ export function goalService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null),
 
-    remove: (id: string) =>
-      db
-        .delete(goals)
+    remove: async (id: string) => {
+      const existing = await db
+        .select()
+        .from(goals)
         .where(eq(goals.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null),
+        .then((rows) => rows[0] ?? null);
+      if (!existing) return null;
+      // Re-home before deleting: tasks fall back to the goal's parent (or the
+      // company root), child goals move up to the grandparent.
+      const fallback = existing.parentId
+        ?? (await getDefaultCompanyGoal(db, existing.companyId))?.id
+        ?? null;
+      return db.transaction(async (tx) => {
+        await tx
+          .update(issues)
+          .set({ goalId: fallback && fallback !== id ? fallback : null })
+          .where(eq(issues.goalId, id));
+        await tx
+          .update(goals)
+          .set({ parentId: existing.parentId ?? null, updatedAt: new Date() })
+          .where(eq(goals.parentId, id));
+        return tx
+          .delete(goals)
+          .where(eq(goals.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+      });
+    },
   };
 }
