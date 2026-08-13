@@ -3,6 +3,7 @@ import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
   createIssueSchema,
+  findUnsupportedMonitorSchedulingFields,
   issueBlockedInboxAttentionSchema,
   resolveIssueRecoveryActionSchema,
   respondIssueThreadInteractionSchema,
@@ -37,6 +38,46 @@ describe("issue validators", () => {
     });
 
     expect(parsed.description).toBe("Line 1\n\nLine 2");
+  });
+
+  describe("findUnsupportedMonitorSchedulingFields (RBR-1101)", () => {
+    it("detects each flat monitor-scheduling field individually", () => {
+      expect(findUnsupportedMonitorSchedulingFields({ monitorNextCheckAt: new Date().toISOString() }))
+        .toEqual(["monitorNextCheckAt"]);
+      expect(findUnsupportedMonitorSchedulingFields({ monitorNotes: "note" })).toEqual(["monitorNotes"]);
+      expect(findUnsupportedMonitorSchedulingFields({ monitorScheduledBy: "assignee" }))
+        .toEqual(["monitorScheduledBy"]);
+    });
+
+    it("detects all flat fields together, in declared order", () => {
+      expect(findUnsupportedMonitorSchedulingFields({
+        status: "todo",
+        monitorNextCheckAt: new Date().toISOString(),
+        monitorNotes: "note",
+        monitorScheduledBy: "assignee",
+      })).toEqual(["monitorNextCheckAt", "monitorNotes", "monitorScheduledBy"]);
+    });
+
+    it("detects the nested executionState.monitor key without inspecting its shape", () => {
+      expect(findUnsupportedMonitorSchedulingFields({ executionState: { monitor: {} } }))
+        .toEqual(["executionState.monitor"]);
+      expect(findUnsupportedMonitorSchedulingFields({ executionState: { monitor: null } }))
+        .toEqual(["executionState.monitor"]);
+    });
+
+    it("does not flag legitimate payloads without monitor-scheduling keys", () => {
+      expect(findUnsupportedMonitorSchedulingFields({ status: "todo" })).toEqual([]);
+      expect(findUnsupportedMonitorSchedulingFields({ executionState: { workspace: {} } })).toEqual([]);
+      expect(findUnsupportedMonitorSchedulingFields({})).toEqual([]);
+    });
+
+    it("tolerates non-object or malformed input without throwing", () => {
+      expect(findUnsupportedMonitorSchedulingFields(null)).toEqual([]);
+      expect(findUnsupportedMonitorSchedulingFields(undefined)).toEqual([]);
+      expect(findUnsupportedMonitorSchedulingFields("string")).toEqual([]);
+      expect(findUnsupportedMonitorSchedulingFields([1, 2, 3])).toEqual([]);
+      expect(findUnsupportedMonitorSchedulingFields({ executionState: "not-an-object" })).toEqual([]);
+    });
   });
 
   it("accepts null and omitted optional multiline issue fields", () => {

@@ -1606,6 +1606,54 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  it("rejects unsupported monitor-scheduling fields on PATCH /issues/:id with a 4xx naming them (RBR-1101)", async () => {
+    const { sourceIssueId, sourceIssue } = await seedCompany();
+    const app = createApp();
+
+    const flatFields = await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({
+        status: "todo",
+        monitorNextCheckAt: new Date().toISOString(),
+        monitorNotes: "retry the assignee at the provider reset time",
+        monitorScheduledBy: "assignee",
+      })
+      .expect(400);
+    expect(flatFields.body.code).toBe("unsupported_monitor_scheduling_fields");
+    expect(flatFields.body.error).toContain("monitorNextCheckAt");
+    expect(flatFields.body.error).toContain("monitorNotes");
+    expect(flatFields.body.error).toContain("monitorScheduledBy");
+    expect(flatFields.body.details).toMatchObject({
+      code: "unsupported_monitor_scheduling_fields",
+      fields: expect.arrayContaining(["monitorNextCheckAt", "monitorNotes", "monitorScheduledBy"]),
+    });
+
+    const nestedField = await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({
+        executionState: { monitor: { nextCheckAt: new Date().toISOString() } },
+      })
+      .expect(400);
+    expect(nestedField.body.code).toBe("unsupported_monitor_scheduling_fields");
+    expect(nestedField.body.error).toContain("executionState.monitor");
+    expect(nestedField.body.details).toMatchObject({
+      code: "unsupported_monitor_scheduling_fields",
+      fields: ["executionState.monitor"],
+    });
+
+    // The request must be rejected outright: no partial write of the legitimate
+    // `status` field alongside the rejected monitor-scheduling fields.
+    const [unchangedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(unchangedIssue?.status).toBe(sourceIssue.status);
+
+    // AC-b: existing legitimate PATCH payloads without these fields are unaffected.
+    const legitimate = await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ status: "todo" })
+      .expect(200);
+    expect(legitimate.body).toMatchObject({ id: sourceIssueId, status: "todo" });
+  });
+
   it("folds stale recovery during read projection after the source issue reaches done", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     const recoveryActionSvc = issueRecoveryActionService(db);
