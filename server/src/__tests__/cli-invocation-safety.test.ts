@@ -163,15 +163,62 @@ function listGuidanceFiles(): string[] {
   return found;
 }
 
+// ── Backslash line continuation ───────────────────────────────────────────
+//
+// A shell reads a backslash at the end of a line as a line join. So one
+// command can spread its content-bearing arguments across many physical
+// lines. The scan must see the whole command, not one physical line. If it
+// checks each physical line alone, a `pnpm paperclipai` command whose unsafe
+// argument sits on a later line passes undetected.
+//
+// `toLogicalLines` joins each backslash-continued physical line to the next
+// one. It returns the joined text and the line number of the first physical
+// line, so an offender report still points to the start of the command.
+
+interface LogicalLine {
+  text: string;
+  lineNumber: number;
+}
+
+function toLogicalLines(source: string): LogicalLine[] {
+  const physicalLines = source.split("\n");
+  const logicalLines: LogicalLine[] = [];
+  let buffer: string | null = null;
+  let startLine = 0;
+  physicalLines.forEach((physicalLine, index) => {
+    const continues = /\\\s*$/.test(physicalLine);
+    const body = physicalLine.replace(/\\\s*$/, "");
+    if (buffer === null) {
+      startLine = index + 1;
+      buffer = body;
+    } else {
+      buffer += body;
+    }
+    if (!continues) {
+      logicalLines.push({ text: buffer, lineNumber: startLine });
+      buffer = null;
+    }
+  });
+  if (buffer !== null) {
+    logicalLines.push({ text: buffer, lineNumber: startLine });
+  }
+  return logicalLines;
+}
+
+function scanText(relPath: string, source: string): string[] {
+  const offenders: string[] = [];
+  for (const { text, lineNumber } of toLogicalLines(source)) {
+    if (isContentBearing(text)) {
+      offenders.push(`${relPath}:${lineNumber}: ${text.trim()}`);
+    }
+  }
+  return offenders;
+}
+
 function scanForOffenders(): string[] {
   const offenders: string[] = [];
   for (const relPath of listGuidanceFiles()) {
-    const lines = read(relPath).split("\n");
-    lines.forEach((line, index) => {
-      if (isContentBearing(line)) {
-        offenders.push(`${relPath}:${index + 1}: ${line.trim()}`);
-      }
-    });
+    offenders.push(...scanText(relPath, read(relPath)));
   }
   return offenders;
 }
@@ -244,5 +291,52 @@ describe("paperclipai CLI invocation safety", () => {
     expect(skill).toContain("CLI safety");
     expect(skill).toContain("npx paperclipai");
     expect(skill).toContain("Do not use `pnpm paperclipai`");
+  });
+
+  // ── Backslash line continuation ──────────────────────────────────────────
+
+  it("flags a content-bearing pnpm paperclipai command split across continued lines", () => {
+    const source = [
+      "```sh",
+      "pnpm paperclipai issue create \\",
+      '  --company-id <company-id> \\',
+      '  --title "$(cat /etc/passwd)"',
+      "```",
+    ].join("\n");
+    const offenders = scanText("doc/EXAMPLE.md", source);
+    expect(offenders).toHaveLength(1);
+    // The report points to the first physical line of the command.
+    expect(offenders[0]).toContain("doc/EXAMPLE.md:2:");
+    expect(offenders[0]).toContain("--title");
+  });
+
+  it("flags a continued command whose only content-bearing flag sits on the last line", () => {
+    const source = [
+      "pnpm paperclipai worktree init \\",
+      "  --force \\",
+      "  --name PAP-000-example",
+    ].join("\n");
+    const offenders = scanText("doc/EXAMPLE.md", source);
+    expect(offenders).toHaveLength(1);
+    expect(offenders[0]).toContain("doc/EXAMPLE.md:1:");
+    expect(offenders[0]).toContain("--name");
+  });
+
+  it("does not flag a continued npx paperclipai command", () => {
+    const source = [
+      "npx paperclipai issue create \\",
+      "  --company-id <company-id> \\",
+      '  --title "Investigate checkout conflict"',
+    ].join("\n");
+    expect(scanText("doc/EXAMPLE.md", source)).toEqual([]);
+  });
+
+  it("does not flag a continued pnpm paperclipai command without content-bearing arguments", () => {
+    const source = [
+      "pnpm paperclipai worktree reseed \\",
+      "  --from current \\",
+      "  --seed-mode full",
+    ].join("\n");
+    expect(scanText("doc/EXAMPLE.md", source)).toEqual([]);
   });
 });

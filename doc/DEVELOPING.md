@@ -537,7 +537,7 @@ Repair an already-created repo-managed worktree and reseed its isolated instance
 
 ```sh
 cd /path/to/paperclip/.paperclip/worktrees/PAP-884-ai-commits-component
-pnpm paperclipai worktree init --force --seed-mode minimal \
+npx paperclipai worktree init --force --seed-mode minimal \
   --name PAP-884-ai-commits-component \
   --from-config ~/.paperclip/instances/default/config.json
 ```
