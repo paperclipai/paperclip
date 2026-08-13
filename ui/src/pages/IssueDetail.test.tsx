@@ -664,6 +664,7 @@ function createAgent(overrides: Partial<Agent> = {}): Agent {
     adapterType: "codex_local",
     adapterConfig: {},
     runtimeConfig: {},
+    credentialId: null,
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     pauseReason: null,

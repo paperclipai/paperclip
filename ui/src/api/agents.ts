@@ -59,7 +59,13 @@ export interface ClaudeLoginResult {
   stdout: string;
   stderr: string;
 }
-export interface CodexLoginPollResponse { status: "starting" | "awaiting_user" | "success" | "error"; verificationUrl: string | null; userCode: string | null; error: string | null; }
+export interface CodexLoginPollResponse {
+  status: "starting" | "awaiting_user" | "success" | "error";
+  verificationUrl: string | null;
+  userCode: string | null;
+  error: string | null;
+  errorCode: "timeout" | "denied" | "device_code_disabled" | "infra" | null;
+}
 export interface CodexLoginStartResponse { sessionId: string; }
 
 export interface OrgNode {
