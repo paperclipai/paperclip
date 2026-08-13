@@ -193,18 +193,25 @@ export function RoadmapView({ companyId, goals }: { companyId: string; goals: Go
     zoomTowardPoint(zoom * (e.deltaY < 0 ? 1.1 : 0.9), { x: e.clientX - rect.left, y: e.clientY - rect.top });
   }, [zoom, zoomTowardPoint]);
 
+  // Blocks grow downward one line per extra linked goal; edges keep anchoring
+  // at the base-height center so nothing shifts when links are added.
+  const blockHeight = useCallback(
+    (blockId: string) => BLOCK_H + Math.max(0, (linksByBlockId.get(blockId)?.length ?? 0) - 1) * 14,
+    [linksByBlockId],
+  );
+
   const fitToScreen = useCallback(() => {
     const container = containerRef.current;
     if (!container || blocks.length === 0) return;
     let maxX = 0, maxY = 0;
     for (const b of blocks) {
       maxX = Math.max(maxX, b.x + BLOCK_W + 60);
-      maxY = Math.max(maxY, b.y + BLOCK_H + 60);
+      maxY = Math.max(maxY, b.y + blockHeight(b.id) + 60);
     }
     const fitZoom = clampZoom(Math.min((container.clientWidth - 40) / maxX, (container.clientHeight - 40) / maxY, 1));
     setZoom(fitZoom);
     setPan({ x: (container.clientWidth - maxX * fitZoom) / 2, y: (container.clientHeight - maxY * fitZoom) / 2 });
-  }, [blocks]);
+  }, [blocks, blockHeight]);
 
   const newBlock = useCallback(() => {
     const container = containerRef.current;
@@ -330,7 +337,7 @@ export function RoadmapView({ companyId, goals }: { companyId: string; goals: Go
                   left: block.x + (isDragging ? dragDelta.dx : 0),
                   top: block.y + (isDragging ? dragDelta.dy : 0),
                   width: BLOCK_W,
-                  height: BLOCK_H,
+                  height: blockHeight(block.id),
                   zIndex: isDragging ? 10 : undefined,
                 }}
                 onClick={() => {
@@ -340,16 +347,15 @@ export function RoadmapView({ companyId, goals }: { companyId: string; goals: Go
                 <div className="flex h-full flex-col justify-center gap-0.5 py-1 pl-2.5 pr-6">
                   <span className="truncate text-xs font-semibold">{block.title}</span>
                   {linked ? (
-                    <span
-                      className="flex min-w-0 items-baseline gap-1 text-(length:--text-nano) font-medium text-(--hex-22d3ee)"
-                      title={blockLinks.map(({ goal }) => goal.title).join(" · ")}
-                    >
-                      {/* One diamond per linked goal, so the count survives truncation. */}
-                      <span className="shrink-0">
-                        {blockLinks.map(({ goal }) => (goal.level === "initiative" ? "⬖" : "◆")).join("")}
+                    blockLinks.map(({ linkId, goal }) => (
+                      <span
+                        key={linkId}
+                        className="truncate text-(length:--text-nano) font-medium text-(--hex-22d3ee)"
+                        title={goal.title}
+                      >
+                        {goal.level === "initiative" ? "⬖" : "◆"} {goal.title}
                       </span>
-                      <span className="truncate">{linked.title}</span>
-                    </span>
+                    ))
                   ) : (
                     <span className="truncate text-(length:--text-nano) text-muted-foreground">{block.detail ?? block.status}</span>
                   )}
