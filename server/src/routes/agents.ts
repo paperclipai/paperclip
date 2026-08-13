@@ -2172,7 +2172,14 @@ export function agentRoutes(
     let discoveryCtx: AdapterModelDiscoveryContext | undefined;
     if (discoveryAgentId) {
       const discoveryAgent = await svc.getById(discoveryAgentId);
-      if (discoveryAgent && discoveryAgent.companyId === companyId) {
+      // Bind the agent to the requested adapter type as well as the company.
+      // Without the type check a caller could name an agent of one adapter and
+      // hand its resolved credentials to a different adapter's discovery.
+      if (
+        discoveryAgent
+        && discoveryAgent.companyId === companyId
+        && discoveryAgent.adapterType === type
+      ) {
         try {
           const { config } = await secretsSvc.resolveAdapterConfigForRuntime(
             companyId,
