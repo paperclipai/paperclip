@@ -149,7 +149,7 @@ import {
   resolveTaskWatchdogMutationScope,
   taskWatchdogScopeAllowsIssueMutation,
 } from "../services/task-watchdog-scope.js";
-import type { TaskWatchdogServiceDeps, taskWatchdogService } from "../services/task-watchdogs.js";
+import { loadTaskWatchdogSubtreeIssues, type TaskWatchdogServiceDeps, type taskWatchdogService } from "../services/task-watchdogs.js";
 import { logger } from "../middleware/logger.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { privateJsonEtag } from "../middleware/private-json-etag.js";
@@ -5758,6 +5758,18 @@ export function issueRoutes(
     res.json(removed);
   });
 
+  const compactWatchdogSubtreeIssue = (issue: Awaited<ReturnType<typeof loadTaskWatchdogSubtreeIssues>>[number]) => ({
+    id: issue.id,
+    identifier: issue.identifier,
+    title: issue.title,
+    status: issue.status,
+    parentId: issue.parentId,
+    assigneeAgentId: issue.assigneeAgentId,
+    assigneeUserId: issue.assigneeUserId,
+    originKind: issue.originKind,
+    updatedAt: issue.updatedAt,
+  });
+
   router.get("/issues/:id/heartbeat-context", async (req, res) => {
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
@@ -5786,6 +5798,7 @@ export function issueRoutes(
       continuationSummary,
       currentExecutionWorkspace,
       activeRecoveryAction,
+      watchdogSubtreeIssues,
     ] =
       await Promise.all([
         resolveIssueProjectAndGoal(issue),
@@ -5801,6 +5814,7 @@ export function issueRoutes(
         documentsSvc.getIssueDocumentByKey(issue.id, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
         currentExecutionWorkspacePromise,
         recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
+        loadTaskWatchdogSubtreeIssues(db, issue.companyId, issue.id),
       ]);
     const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
       recoveryActionsSvc,
@@ -5861,6 +5875,12 @@ export function issueRoutes(
         originId: issue.originId,
         updatedAt: issue.updatedAt,
       },
+      children: watchdogSubtreeIssues
+        .filter((descendant) => descendant.id !== issue.id && descendant.parentId === issue.id)
+        .map(compactWatchdogSubtreeIssue),
+      descendants: watchdogSubtreeIssues
+        .filter((descendant) => descendant.id !== issue.id)
+        .map(compactWatchdogSubtreeIssue),
       ancestors: ancestors.map((ancestor) => ({
         id: ancestor.id,
         identifier: ancestor.identifier,
