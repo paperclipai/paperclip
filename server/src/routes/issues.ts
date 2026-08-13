@@ -5034,14 +5034,16 @@ export function issueRoutes(
     res: Response,
     issue: { id: string; companyId: string; projectId?: string | null },
     workspace: Pick<ExecutionWorkspace, "id">,
-  ): Promise<"reopened" | "already-open" | null> {
+  ): Promise<{ outcome: "reopened" | "already-open"; generation: number } | null> {
     const actor = getActorInfo(req);
     const result = await executionWorkspacesSvc.reopenClosedIsolatedExecutionWorkspaceForIssue({
       workspaceId: workspace.id,
       issue: { id: issue.id, companyId: issue.companyId, projectId: issue.projectId ?? null },
       actor: { agentId: actor.agentId, actorType: actor.actorType },
     });
-    if (result.ok) return result.reopened ? "reopened" : "already-open";
+    if (result.ok) {
+      return { outcome: result.reopened ? "reopened" : "already-open", generation: result.generation };
+    }
     if (result.code === "not_reopenable") {
       res.status(409).json({ error: "This issue is linked to a closed workspace that cannot be reopened." });
     } else {
@@ -5070,10 +5072,11 @@ export function issueRoutes(
     res: Response;
     issue: { id: string; companyId: string };
     workspace: Pick<ExecutionWorkspace, "id"> | null;
+    generation: number | null;
     finalIssueStatus: () => string | null | undefined;
   }): void {
-    const { req, res, issue, workspace, finalIssueStatus } = input;
-    if (!workspace) return;
+    const { req, res, issue, workspace, generation, finalIssueStatus } = input;
+    if (!workspace || generation === null) return;
     let settled = false;
     const settle = () => {
       if (settled) return;
@@ -5085,6 +5088,7 @@ export function issueRoutes(
         workspaceId: workspace.id,
         issue: { id: issue.id, companyId: issue.companyId },
         actor: { agentId: actor.agentId, actorType: actor.actorType },
+        expectedGeneration: generation,
       });
     };
     res.once("finish", settle);
@@ -5102,6 +5106,7 @@ export function issueRoutes(
     workspaceId: string;
     issue: { id: string; companyId: string };
     actor: { agentId: string | null; actorType: string };
+    expectedGeneration: number;
   }): Promise<void> {
     const maxAttempts = 5;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -9164,6 +9169,7 @@ export function issueRoutes(
     // update must not rebuild and republish the workspace as active, because the
     // issue stays terminal and the reaper then skips the leaked workspace.
     let reopenedWorkspace: Pick<ExecutionWorkspace, "id"> | null = null;
+    let reopenedGeneration: number | null = null;
     if (closedExecutionWorkspace && (commentBody || isAgentWorkUpdate)) {
       const reopenOutcome = await reopenClosedIssueExecutionWorkspaceOrRespond(
         req,
@@ -9177,19 +9183,22 @@ export function issueRoutes(
       // Install the guard only when this request set the reopen-pending flag. A
       // concurrent request that found the workspace already open must not clear
       // the flag that the actual reopener still owns.
-      if (reopenOutcome === "reopened") {
+      if (reopenOutcome.outcome === "reopened") {
         reopenedWorkspace = closedExecutionWorkspace;
+        reopenedGeneration = reopenOutcome.generation;
       }
     }
     let issue: Awaited<ReturnType<typeof svc.update>>;
     // Clear the reopen-pending flag if this update leaves the issue terminal, so
     // the rebuilt worktree does not leak. The guard reads `issue` when the
-    // response ends, so it also covers a null return and a thrown error.
+    // response ends, so it also covers a null return and a thrown error. It clears
+    // only the fence this request installed, keyed by its generation.
     guardReopenedWorkspaceConsumption({
       req,
       res,
       issue: existing,
       workspace: reopenedWorkspace,
+      generation: reopenedGeneration,
       finalIssueStatus: () => issue?.status,
     });
     try {
@@ -10251,6 +10260,7 @@ export function issueRoutes(
     // Reopen the closed isolated workspace only after the run-id gate passes. A
     // rejected checkout must not rebuild and republish the workspace as active.
     let reopenedWorkspace: Pick<ExecutionWorkspace, "id"> | null = null;
+    let reopenedGeneration: number | null = null;
     if (closedExecutionWorkspace) {
       const reopenOutcome = await reopenClosedIssueExecutionWorkspaceOrRespond(
         req,
@@ -10264,19 +10274,22 @@ export function issueRoutes(
       // Install the guard only when this request set the reopen-pending flag. A
       // concurrent request that found the workspace already open must not clear
       // the flag that the actual reopener still owns.
-      if (reopenOutcome === "reopened") {
+      if (reopenOutcome.outcome === "reopened") {
         reopenedWorkspace = closedExecutionWorkspace;
+        reopenedGeneration = reopenOutcome.generation;
       }
     }
     let updated: Awaited<ReturnType<typeof svc.checkout>> | undefined;
     // Clear the reopen-pending flag if the checkout leaves the issue terminal, so
     // the rebuilt worktree does not leak. The guard reads `updated` when the
-    // response ends, so it covers a null return and a thrown error.
+    // response ends, so it covers a null return and a thrown error. It clears only
+    // the fence this request installed, keyed by its generation.
     guardReopenedWorkspaceConsumption({
       req,
       res,
       issue,
       workspace: reopenedWorkspace,
+      generation: reopenedGeneration,
       finalIssueStatus: () => updated?.status,
     });
     try {
@@ -11346,6 +11359,7 @@ export function issueRoutes(
     // republish the workspace as active, because the issue stays terminal and the
     // reaper then skips the leaked workspace.
     let reopenedWorkspace: Pick<ExecutionWorkspace, "id"> | null = null;
+    let reopenedGeneration: number | null = null;
     if (closedExecutionWorkspace) {
       const reopenOutcome = await reopenClosedIssueExecutionWorkspaceOrRespond(
         req,
@@ -11359,8 +11373,9 @@ export function issueRoutes(
       // Install the guard only when this request set the reopen-pending flag. A
       // concurrent request that found the workspace already open must not clear
       // the flag that the actual reopener still owns.
-      if (reopenOutcome === "reopened") {
+      if (reopenOutcome.outcome === "reopened") {
         reopenedWorkspace = closedExecutionWorkspace;
+        reopenedGeneration = reopenOutcome.generation;
       }
     }
     let reopened = false;
@@ -11371,12 +11386,14 @@ export function issueRoutes(
     // the rebuilt worktree does not leak. A comment reopens the workspace but only
     // moves the issue out of the terminal state when it resumes the work. The
     // guard reads `currentIssue` when the response ends, so it covers a rejected
-    // move, a thrown error, and a comment that keeps the issue terminal.
+    // move, a thrown error, and a comment that keeps the issue terminal. It clears
+    // only the fence this request installed, keyed by its generation.
     guardReopenedWorkspaceConsumption({
       req,
       res,
       issue,
       workspace: reopenedWorkspace,
+      generation: reopenedGeneration,
       finalIssueStatus: () => currentIssue.status,
     });
     let issueBeforeCommentDecision = issue;

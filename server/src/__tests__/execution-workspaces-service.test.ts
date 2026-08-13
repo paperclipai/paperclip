@@ -1164,6 +1164,69 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(row?.cleanupReason).toBeNull();
   });
 
+  it("applies the cleanup outcome only while the row is still closed at the captured generation", async () => {
+    // The archive route records the cleanup outcome after the destruction fence
+    // returns. While the row is still closed at the captured generation, the
+    // guarded write records the warnings and the cleanup_failed status. After a
+    // resume reopened the row and raised the generation, the guard skips the write
+    // so a stale patch does not overwrite the rebuilt worktree's active state.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "archived",
+        closedAt: new Date(),
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 2,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const closedAt = new Date();
+    const applied = await svc.applyClosedWorkspaceCleanupOutcome({
+      id: seeded.executionWorkspaceId,
+      closedAt,
+      capturedGeneration: 2,
+      cleanupReason: "teardown warning",
+      markCleanupFailed: true,
+    });
+    expect(applied?.status).toBe("cleanup_failed");
+    expect(applied?.cleanupReason).toBe("teardown warning");
+
+    // Simulate a resume that reopened the row and raised the generation after the
+    // destruction fence returned.
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "active",
+        closedAt: null,
+        cleanupReason: null,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 3,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const skipped = await svc.applyClosedWorkspaceCleanupOutcome({
+      id: seeded.executionWorkspaceId,
+      closedAt: new Date(),
+      capturedGeneration: 2,
+      cleanupReason: "stale teardown warning",
+      markCleanupFailed: true,
+    });
+    expect(skipped).toBeNull();
+
+    const [row] = await db
+      .select({ status: executionWorkspaces.status, cleanupReason: executionWorkspaces.cleanupReason })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    // The reopened active row survives; the stale cleanup patch did not land.
+    expect(row?.status).toBe("active");
+    expect(row?.cleanupReason).toBeNull();
+  });
+
   it("holds Git index and ref locks across terminal cleanup", async () => {
     const seeded = await seedTerminalWorkspace({ mergedPr: true });
     await db.update(executionWorkspaces).set({

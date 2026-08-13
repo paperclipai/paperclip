@@ -20,6 +20,7 @@ import {
 import {
   EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY,
   EXECUTION_WORKSPACE_REOPEN_FAILED_REASON,
+  EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY,
   EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY,
   executionWorkspaceService,
   metadataHasReopenPendingConsumption,
@@ -355,6 +356,8 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
       actor: { agentId: null, actorType: "user" },
     });
     expect(reopenResult.ok).toBe(true);
+    if (!reopenResult.ok) throw new Error("reopen failed");
+    const reopenGeneration = reopenResult.generation;
     const reopenedRow = await readWorkspace(workspaceId);
     expect(metadataHasReopenPendingConsumption(reopenedRow?.metadata as Record<string, unknown> | null)).toBe(true);
     // The reopen stamps the time it set the flag, so the reaper can age a
@@ -362,11 +365,12 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
     expect(readMetadataReopenPendingConsumptionSince(reopenedRow?.metadata as Record<string, unknown> | null))
       .toBeInstanceOf(Date);
 
-    // The caller never consumed the reopen, so clear the flag.
+    // The caller never consumed the reopen, so clear the flag at its generation.
     const cleared = await svc.clearReopenPendingConsumptionForUnconsumedReopen({
       workspaceId,
       issue: { id: issueId, companyId },
       actor: { agentId: null, actorType: "user" },
+      expectedGeneration: reopenGeneration,
     });
     expect(cleared.cleared).toBe(true);
 
@@ -390,6 +394,7 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
       workspaceId,
       issue: { id: issueId, companyId },
       actor: { agentId: null, actorType: "user" },
+      expectedGeneration: reopenGeneration,
     });
     expect(second.cleared).toBe(false);
     const eventsAfter = await db
@@ -397,5 +402,61 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
       .from(activityLog)
       .where(eq(activityLog.entityId, workspaceId));
     expect(eventsAfter.filter((event) => event.action === "execution_workspace.reopen_unconsumed").length).toBe(1);
+  });
+
+  it("does not clear a newer reopen's fence when a stale request presents an old generation", async () => {
+    const { companyId, projectId, projectWorkspaceId } = await seedCompanyProject();
+    const cwd = await makeExistingDir();
+    const workspaceId = await seedClosedWorkspace({ companyId, projectId, projectWorkspaceId, cwd });
+    const issueId = await seedIssue({ companyId, projectId, workspaceId, issueNumber: 4115 });
+
+    const svc = executionWorkspaceService(db);
+    const reopenResult = await svc.reopenClosedIsolatedExecutionWorkspaceForIssue({
+      workspaceId,
+      issue: { id: issueId, companyId, projectId },
+      actor: { agentId: null, actorType: "user" },
+    });
+    expect(reopenResult.ok).toBe(true);
+    if (!reopenResult.ok) throw new Error("reopen failed");
+    const staleGeneration = reopenResult.generation;
+
+    // Simulate a newer reopen that raised the generation and installed its own
+    // fence with a fresh timestamp. This models two overlapping reopen requests.
+    const newerGeneration = staleGeneration + 1;
+    await db
+      .update(executionWorkspaces)
+      .set({
+        metadata: {
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: newerGeneration,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY]: true,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY]: new Date().toISOString(),
+        },
+      })
+      .where(eq(executionWorkspaces.id, workspaceId));
+
+    // The stale request's response-end clear presents the old generation. It must
+    // not clear the newer reopen's live fence.
+    const staleClear = await svc.clearReopenPendingConsumptionForUnconsumedReopen({
+      workspaceId,
+      issue: { id: issueId, companyId },
+      actor: { agentId: null, actorType: "user" },
+      expectedGeneration: staleGeneration,
+    });
+    expect(staleClear.cleared).toBe(false);
+    const afterStale = await readWorkspace(workspaceId);
+    expect(metadataHasReopenPendingConsumption(afterStale?.metadata as Record<string, unknown> | null)).toBe(true);
+    expect(readExecutionWorkspaceLifecycleGeneration(afterStale?.metadata as Record<string, unknown> | null))
+      .toBe(newerGeneration);
+
+    // The newer owner clears its own fence at the matching generation.
+    const ownerClear = await svc.clearReopenPendingConsumptionForUnconsumedReopen({
+      workspaceId,
+      issue: { id: issueId, companyId },
+      actor: { agentId: null, actorType: "user" },
+      expectedGeneration: newerGeneration,
+    });
+    expect(ownerClear.cleared).toBe(true);
+    const afterOwner = await readWorkspace(workspaceId);
+    expect(metadataHasReopenPendingConsumption(afterOwner?.metadata as Record<string, unknown> | null)).toBe(false);
   });
 });

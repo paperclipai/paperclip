@@ -216,6 +216,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
       ok: true,
       reopened: true,
       workspace: { ...makeClosedWorkspace(), status: "active", closedAt: null },
+      generation: 4,
     });
   });
 
@@ -332,6 +333,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
         expect.objectContaining({
           workspaceId: closedWorkspaceId,
           issue: expect.objectContaining({ id: issueId }),
+          expectedGeneration: 4,
         }),
       );
     });
@@ -356,6 +358,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
         expect.objectContaining({
           workspaceId: closedWorkspaceId,
           issue: expect.objectContaining({ id: issueId }),
+          expectedGeneration: 4,
         }),
       );
     });
@@ -392,6 +395,7 @@ describe.sequential("closed isolated workspace issue routes", () => {
       ok: true,
       reopened: false,
       workspace: { ...makeClosedWorkspace(), status: "active", closedAt: null },
+      generation: 4,
     });
     mockIssueService.checkout.mockResolvedValue(null);
 

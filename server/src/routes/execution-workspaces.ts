@@ -740,15 +740,24 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         } else {
           const cleanupResult = fenced.result;
           cleanupWarnings = cleanupResult.warnings;
-          const cleanupPatch: Record<string, unknown> = {
-            closedAt,
-            cleanupReason: cleanupWarnings.length > 0 ? cleanupWarnings.join(" | ") : null,
-          };
-          if (!cleanupResult.cleaned) {
-            cleanupPatch.status = "cleanup_failed";
-          }
           if (cleanupResult.warnings.length > 0 || !cleanupResult.cleaned) {
-            workspace = (await svc.update(id, cleanupPatch)) ?? workspace;
+            // Record the cleanup outcome under the lifecycle lock at the captured
+            // generation. If a resume reopened the workspace after the destruction
+            // fence returned, the guarded write skips the row, so a stale patch
+            // never overwrites the rebuilt worktree's active state.
+            const applied = await svc.applyClosedWorkspaceCleanupOutcome({
+              id,
+              closedAt,
+              capturedGeneration,
+              cleanupReason: cleanupWarnings.length > 0 ? cleanupWarnings.join(" | ") : null,
+              markCleanupFailed: !cleanupResult.cleaned,
+            });
+            if (applied) {
+              workspace = applied;
+            } else {
+              // A resume reopened the workspace. Return the current (active) row.
+              workspace = (await svc.getById(id)) ?? workspace;
+            }
           }
         }
       } catch (error) {

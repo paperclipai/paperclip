@@ -195,8 +195,11 @@ async function acquireExecutionWorkspaceLifecycleLock(
 }
 
 export type ReopenClosedIsolatedExecutionWorkspaceResult =
-  | { ok: true; workspace: ExecutionWorkspace; reopened: true }
-  | { ok: true; workspace: ExecutionWorkspace; reopened: false }
+  // `generation` is the lifecycle generation the reopen published the active row
+  // at. It owns the reopen-pending flag. A later clear must present this same
+  // generation, so a stale actor never clears a newer reopen's fence.
+  | { ok: true; workspace: ExecutionWorkspace; reopened: true; generation: number }
+  | { ok: true; workspace: ExecutionWorkspace; reopened: false; generation: number }
   | { ok: false; code: "not_reopenable" | "rebuild_failed"; message: string };
 
 export type ExecutionWorkspaceServiceOptions = {
@@ -1411,12 +1414,22 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     return active.length > 0;
   }
 
-  // Clear the reopen-pending flag under the per-workspace lifecycle lock. The
-  // reaper calls this after it observes that the source issue left the terminal
-  // state, so the reopen transition committed. The clear keeps every other
-  // metadata key and runs only while the flag is still set, so it never clobbers
-  // a concurrent write.
-  async function clearReopenPendingConsumptionUnderLock(workspaceId: string): Promise<boolean> {
+  // Clear the reopen-pending flag under the per-workspace lifecycle lock. Every
+  // caller presents the lifecycle generation that owns the fence it wants to
+  // clear. The clear reads the fresh row under the lock and removes the flag only
+  // when the current generation still equals `expectedGeneration`. A newer reopen
+  // raises the generation and re-sets the flag, so its fence has a different
+  // owner. This check stops a stale actor (a delayed response cleanup, a retry,
+  // or an aged reaper snapshot) from clearing a newer reopen's live fence.
+  //
+  // A caller that reclaims a stranded flag passes `requireStaleSinceBefore`. The
+  // clear then re-reads the flag timestamp from the fresh row and removes the flag
+  // only when that timestamp is still older than the cutoff. This re-confirms the
+  // strand decision against the live row instead of an aged snapshot.
+  async function clearReopenPendingConsumptionUnderLock(
+    workspaceId: string,
+    options: { expectedGeneration: number; requireStaleSinceBefore?: Date },
+  ): Promise<boolean> {
     return db.transaction(async (tx) => {
       await acquireExecutionWorkspaceLifecycleLock(tx, workspaceId);
       const fresh = await tx
@@ -1424,13 +1437,28 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         .from(executionWorkspaces)
         .where(eq(executionWorkspaces.id, workspaceId))
         .then((rows) => rows[0] ?? null);
-      if (!fresh || !metadataHasReopenPendingConsumption(fresh.metadata as Record<string, unknown> | null)) {
+      const metadata = fresh?.metadata as Record<string, unknown> | null;
+      if (!fresh || !metadataHasReopenPendingConsumption(metadata)) {
         return false;
+      }
+      if (readExecutionWorkspaceLifecycleGeneration(metadata) !== options.expectedGeneration) {
+        // A newer reopen owns the flag now. Do not clear another owner's fence.
+        return false;
+      }
+      if (options.requireStaleSinceBefore) {
+        const freshSince = readMetadataReopenPendingConsumptionSince(metadata);
+        const stillStale =
+          freshSince === null
+          || freshSince.getTime() <= options.requireStaleSinceBefore.getTime();
+        if (!stillStale) {
+          // The live row shows a fresh flag, so the consumer is still in flight.
+          return false;
+        }
       }
       await tx
         .update(executionWorkspaces)
         .set({
-          metadata: clearMetadataReopenPendingConsumption(fresh.metadata as Record<string, unknown> | null),
+          metadata: clearMetadataReopenPendingConsumption(metadata),
           updatedAt: new Date(),
         })
         .where(eq(executionWorkspaces.id, workspaceId));
@@ -2351,8 +2379,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           if (reopenPending) {
             // The source issue left the terminal state, so the reopen transition
             // committed. Clear the reopen-pending flag under the lifecycle lock so
-            // a later terminal cycle can archive the workspace again.
-            await clearReopenPendingConsumptionUnderLock(workspace.id);
+            // a later terminal cycle can archive the workspace again. Pass the
+            // generation from this snapshot, so the clear skips a newer reopen that
+            // raised the generation and installed its own fence after this read.
+            await clearReopenPendingConsumptionUnderLock(workspace.id, {
+              expectedGeneration: readExecutionWorkspaceLifecycleGeneration(
+                workspace.metadata as Record<string, unknown> | null,
+              ),
+            });
           }
           result.skippedNonTerminalTree += 1;
           continue;
@@ -2372,9 +2406,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           const pendingSince = readMetadataReopenPendingConsumptionSince(
             workspace.metadata as Record<string, unknown> | null,
           );
+          const staleBefore = new Date(now().getTime() - STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS);
           const stranded =
             pendingSince === null
-            || now().getTime() - pendingSince.getTime() >= STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS;
+            || pendingSince.getTime() <= staleBefore.getTime();
           if (!stranded) {
             // A reopen published this workspace as active while the source issue
             // is still terminal, and the consuming request is still in flight. Do
@@ -2389,8 +2424,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           // the server exited before it cleared the flag. Clear the stranded flag
           // under the lifecycle lock so a later sweep can reclaim the workspace.
           // Keep the row active, so a retried resume can still reuse the rebuilt
-          // worktree.
-          const cleared = await clearReopenPendingConsumptionUnderLock(workspace.id);
+          // worktree. Pass this snapshot's generation and re-confirm staleness
+          // against the fresh row under the lock, so a newer reopen that raised the
+          // generation or refreshed the timestamp keeps its live fence.
+          const cleared = await clearReopenPendingConsumptionUnderLock(workspace.id, {
+            expectedGeneration: readExecutionWorkspaceLifecycleGeneration(
+              workspace.metadata as Record<string, unknown> | null,
+            ),
+            requireStaleSinceBefore: staleBefore,
+          });
           if (cleared) {
             result.clearedStaleReopenPending += 1;
             logger.info(
@@ -2598,8 +2640,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         }
         if (!isClosedExecutionWorkspaceStatus(row.status)) {
           // A concurrent reopen already restored the row. Report success without a
-          // second rebuild so the caller continues normally.
-          return { ok: true, reopened: false, workspace: toExecutionWorkspace(row) };
+          // second rebuild so the caller continues normally. The other request
+          // owns the reopen-pending flag, so return its generation and let the
+          // caller skip the consumption guard.
+          return {
+            ok: true,
+            reopened: false,
+            workspace: toExecutionWorkspace(row),
+            generation: readExecutionWorkspaceLifecycleGeneration(row.metadata as Record<string, unknown> | null),
+          };
         }
 
         const [{ ensurePersistedExecutionWorkspaceAvailable }, { workspaceOperationService }] =
@@ -2784,7 +2833,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             generation: nextGeneration,
           },
         });
-        return { ok: true, reopened: true, workspace: toExecutionWorkspace(activeRow) };
+        return { ok: true, reopened: true, workspace: toExecutionWorkspace(activeRow), generation: nextGeneration };
       });
     },
 
@@ -2804,8 +2853,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       workspaceId: string;
       issue: { id: string; companyId: string };
       actor: { agentId: string | null; actorType: string };
+      // The generation the reopen published the active row at. It owns the flag.
+      // The clear runs only while the current generation still matches, so it never
+      // clears a newer reopen's fence.
+      expectedGeneration: number;
     }): Promise<{ cleared: boolean }> => {
-      const cleared = await clearReopenPendingConsumptionUnderLock(input.workspaceId);
+      const cleared = await clearReopenPendingConsumptionUnderLock(input.workspaceId, {
+        expectedGeneration: input.expectedGeneration,
+      });
       if (cleared) {
         logger.info(
           {
@@ -2939,6 +2994,54 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         .returning()
         .then((rows) => rows[0] ?? null);
       return row ? toExecutionWorkspace(row) : null;
+    },
+
+    // Apply the terminal cleanup outcome to a workspace row under the per-workspace
+    // lifecycle lock. The archive route calls this after the destruction fence ran,
+    // to record cleanup warnings and, when the destroy failed, the cleanup_failed
+    // status. A reopen that raced after the fence returned restores the row to an
+    // open status and raises the generation. The method re-reads the fresh row
+    // under the lock and writes only while the row is still closed at
+    // `capturedGeneration`. So a stale cleanup patch never overwrites the closedAt,
+    // the cleanup reason, or the status of a freshly rebuilt worktree. The method
+    // returns the updated row, or null when the guard skipped the write.
+    applyClosedWorkspaceCleanupOutcome: async (input: {
+      id: string;
+      closedAt: Date;
+      capturedGeneration: number;
+      cleanupReason: string | null;
+      markCleanupFailed: boolean;
+    }): Promise<ExecutionWorkspace | null> => {
+      return db.transaction(async (tx) => {
+        await acquireExecutionWorkspaceLifecycleLock(tx, input.id);
+        const fresh = await tx
+          .select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
+          .from(executionWorkspaces)
+          .where(eq(executionWorkspaces.id, input.id))
+          .then((rows) => rows[0] ?? null);
+        if (
+          !fresh
+          || !isClosedExecutionWorkspaceStatus(fresh.status)
+          || readExecutionWorkspaceLifecycleGeneration(fresh.metadata as Record<string, unknown> | null)
+            !== input.capturedGeneration
+        ) {
+          // A reopen restored the row after the destruction fence returned. Do not
+          // overwrite the newly active lifecycle state.
+          return null;
+        }
+        const row = await tx
+          .update(executionWorkspaces)
+          .set({
+            closedAt: input.closedAt,
+            cleanupReason: input.cleanupReason,
+            ...(input.markCleanupFailed ? { status: "cleanup_failed" as const } : {}),
+            updatedAt: new Date(),
+          })
+          .where(eq(executionWorkspaces.id, input.id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        return row ? toExecutionWorkspace(row) : null;
+      });
     },
 
     // Read the lifecycle generation of a workspace row. The archive route captures
