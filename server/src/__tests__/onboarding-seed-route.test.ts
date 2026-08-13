@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { and, eq } from "drizzle-orm";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -11,6 +11,7 @@ import {
   projects,
 } from "@paperclipai/db";
 import { onboardingSeedRoutes } from "../routes/onboarding-seed.js";
+import { logActivity } from "../services/activity-log.js";
 import {
   describeEmbeddedPostgres,
   resetCompanyIssueFixtures,
@@ -19,6 +20,14 @@ import {
   useEmbeddedPostgres,
   type BoardActor,
 } from "./helpers/route-test-harness.js";
+
+// Wrapped, not replaced: every other test here asserts the real activity row,
+// so the default implementation stays the genuine one and a single test opts
+// into failure with `mockRejectedValueOnce`.
+vi.mock("../services/activity-log.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/activity-log.js")>();
+  return { ...actual, logActivity: vi.fn(actual.logActivity) };
+});
 
 const SEED = {
   revision: "a".repeat(32),
@@ -199,6 +208,45 @@ describeEmbeddedPostgres("POST /api/companies/:companyId/onboarding-seed", () =>
         eq(activityLog.action, "company.onboarding_seed_applied"),
       ));
     expect(entries).toHaveLength(1);
+  });
+
+  it("rolls the whole seed back when the audit entry cannot be written", async () => {
+    // The audit entry shares the seed's transaction, so a failure to write it
+    // must leave nothing behind. The alternative — commit the seed and lose the
+    // entry — is unrecoverable: Cloud stops retrying on a 2xx, and a later
+    // replay reports `changed: false` and never logs, so the entry would be
+    // permanently absent.
+    const { companyId, app } = await seedCompany();
+
+    // Injected at the module boundary, not on `ctx.db`: the audit write goes
+    // through the transaction handle, so a spy on the outer connection would
+    // never be reached and the test would pass for the wrong reason.
+    vi.mocked(logActivity).mockRejectedValueOnce(new Error("activity log unavailable"));
+
+    const failed = await post(app, companyId, SEED);
+    expect(failed.status).toBeGreaterThanOrEqual(500);
+
+    // Nothing committed: no seed record, so Cloud has no acknowledged revision
+    // and keeps retrying, and no orphaned agent from the rolled-back attempt.
+    expect(
+      await ctx.db
+        .select()
+        .from(companyOnboardingSeeds)
+        .where(eq(companyOnboardingSeeds.companyId, companyId)),
+    ).toHaveLength(0);
+    expect(await ctx.db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(0);
+
+    // And the retry recovers completely — seed applied, entry present.
+    await post(app, companyId, SEED).expect(200);
+    expect(
+      await ctx.db
+        .select()
+        .from(activityLog)
+        .where(and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.action, "company.onboarding_seed_applied"),
+        )),
+    ).toHaveLength(1);
   });
 
   it("refuses a caller without access to the company", async () => {

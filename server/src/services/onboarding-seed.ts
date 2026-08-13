@@ -7,6 +7,7 @@ import { goalService } from "./goals.js";
 import { projectService } from "./projects.js";
 import { issueService } from "./issues.js";
 import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
+import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 
 /**
  * The project the seeded first task lands in, matching the name the tenant's
@@ -59,6 +60,19 @@ export type OnboardingSeedApplication = {
   goalId: string | null;
   agentId: string | null;
   issueId: string | null;
+};
+
+/**
+ * The actor fields the audit entry needs, as `getActorInfo` produces them.
+ * Narrowed to what {@link LogActivityInput} reads so the route can hand its
+ * actor straight through without the service depending on Express.
+ */
+export type OnboardingSeedAuditActor = {
+  actorType: "agent" | "user" | "system" | "plugin";
+  actorId: string;
+  agentId?: string | null;
+  runId?: string | null;
+  agentApiKeyId?: string | null;
 };
 
 export function onboardingSeedService(db: Db) {
@@ -338,17 +352,63 @@ export function onboardingSeedService(db: Db) {
    * same idiom `folders` and `decision-queues` use — so the second push sees
    * the first push's writes (the record, the reused goal/agent/project) and
    * updates in place instead of duplicating.
+   *
+   * Auditing: when `audit` is supplied and the push changed anything, the
+   * `company.onboarding_seed_applied` entry is written *inside* this same
+   * transaction. That is the only arrangement in which the entry cannot go
+   * permanently missing. Logging after the commit forces a choice between two
+   * broken outcomes — answer 500 and the retry returns `changed: false` and
+   * never logs, or answer 200 and Cloud stops retrying while the entry stays
+   * absent. Writing it transactionally removes the choice: either both land, or
+   * neither does and the retry re-applies from a clean slate.
    */
   async function apply(
     companyId: string,
     seed: ApplyOnboardingSeed,
+    audit?: OnboardingSeedAuditActor,
   ): Promise<OnboardingSeedApplication> {
-    return db.transaction(async (tx) => {
+    // Collected inside the transaction, published only after it commits: the
+    // activity row is transactional but its realtime/plugin fan-out is not, and
+    // announcing a seed that then rolled back would be worse than announcing it
+    // late.
+    const publications: ActivityPublication[] = [];
+
+    const result = await db.transaction(async (tx) => {
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`paperclip:onboarding-seed:${companyId}`}, 0))`,
       );
-      return applyWithin(tx as unknown as Db, companyId, seed);
+      const dbx = tx as unknown as Db;
+      const applied = await applyWithin(dbx, companyId, seed);
+
+      if (applied.changed && audit) {
+        await logActivity(
+          dbx,
+          {
+            companyId,
+            actorType: audit.actorType,
+            actorId: audit.actorId,
+            agentId: audit.agentId,
+            runId: audit.runId,
+            agentApiKeyId: audit.agentApiKeyId,
+            action: "company.onboarding_seed_applied",
+            entityType: "company",
+            entityId: companyId,
+            details: {
+              revision: applied.revision,
+              goalId: applied.goalId,
+              agentId: applied.agentId,
+              issueId: applied.issueId,
+            },
+          },
+          publications,
+        );
+      }
+
+      return applied;
     });
+
+    for (const publication of publications) publishActivity(publication);
+    return result;
   }
 
   return { apply, get: (companyId: string) => readRecord(db, companyId) };

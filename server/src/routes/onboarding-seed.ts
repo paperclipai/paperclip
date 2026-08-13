@@ -2,8 +2,6 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { applyOnboardingSeedSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/index.js";
-import { logger } from "../middleware/logger.js";
-import { logActivity } from "../services/index.js";
 import { onboardingSeedService } from "../services/onboarding-seed.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
@@ -25,6 +23,11 @@ import { assertCompanyAccess, getActorInfo } from "./authz.js";
  * fetch otherwise. So this route answers 200 only once every part of the seed
  * has been applied, and a replay of an already-applied revision is a
  * successful no-op rather than a second agent and a second task.
+ *
+ * "Every part" includes the audit entry, which `apply` writes inside the same
+ * transaction as the seed. Because Cloud stops retrying on a 2xx, anything this
+ * route reports as applied must already be durable — a half that can still be
+ * lost after the response is a half that is lost for good.
  */
 export function onboardingSeedRoutes(db: Db) {
   const router = Router();
@@ -37,42 +40,14 @@ export function onboardingSeedRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
 
-      const result = await svc.apply(companyId, req.body);
-
-      if (result.changed) {
-        const actor = getActorInfo(req);
-        // Best-effort. The seed and its revision are already committed by the
-        // time we get here, and Cloud reads any 2xx as "applied" and stops
-        // retrying. If this audit write threw and we let it 500, the retry
-        // would come back `changed: false` and skip the log for good — the
-        // entry would be permanently absent *and* the caller would have seen a
-        // spurious failure for an application that succeeded. So a logging
-        // failure is recorded server-side and the request still answers 200.
-        try {
-          await logActivity(db, {
-            companyId,
-            actorType: actor.actorType,
-            actorId: actor.actorId,
-            agentId: actor.agentId,
-            runId: actor.runId,
-            agentApiKeyId: actor.agentApiKeyId,
-            action: "company.onboarding_seed_applied",
-            entityType: "company",
-            entityId: companyId,
-            details: {
-              revision: result.revision,
-              goalId: result.goalId,
-              agentId: result.agentId,
-              issueId: result.issueId,
-            },
-          });
-        } catch (err) {
-          logger.error(
-            { err, companyId, revision: result.revision },
-            "onboarding seed applied but its activity-log entry could not be written",
-          );
-        }
-      }
+      // The audit entry is written inside `apply`'s own transaction, so it
+      // commits with the seed or not at all. A logging failure therefore rolls
+      // the seed back and surfaces as a 500 — which is the *recoverable*
+      // outcome, because Cloud's retry then finds no stored revision, re-applies
+      // and re-logs. Handling it here instead, as this route used to, could only
+      // pick which half to lose: 500 and the retry reports `changed: false` and
+      // never logs; 200 and Cloud stops retrying with the entry still absent.
+      const result = await svc.apply(companyId, req.body, getActorInfo(req));
 
       res.status(200).json({
         companyId,
