@@ -914,6 +914,8 @@ export type {
   DocumentAnnotationThread,
   DocumentAnnotationThreadWithComments,
   PlanReviewContext,
+  DocumentReviewContext,
+  DocumentReviewContextDocument,
   PlanReviewContextAuthor,
   PlanReviewContextComment,
   PlanReviewContextThread,

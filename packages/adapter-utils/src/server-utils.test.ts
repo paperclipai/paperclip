@@ -1740,6 +1740,52 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt.indexOf("Open plan comments to incorporate:")).toBeLessThan(prompt.indexOf("New comments in order:"));
   });
 
+  it("renders grouped non-plan document annotations with editing scope", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-522", title: "Document annotations", status: "in_progress" },
+      documentReviewContext: {
+        issueId: "issue-1",
+        documents: [{
+          documentKey: "qa-evidence",
+          documentId: "document-2",
+          title: "QA evidence",
+          latestRevisionId: "revision-3",
+          latestRevisionNumber: 3,
+          threads: [{
+            id: "thread-2",
+            documentKey: "qa-evidence",
+            documentId: "document-2",
+            status: "open",
+            revisionNumber: 3,
+            anchorState: "active",
+            anchorConfidence: "exact",
+            selectedText: "Passed in Chrome",
+            prefixText: "Evidence: ",
+            suffixText: ".",
+            comments: [{ id: "comment-2", threadId: "thread-2", body: "Attach the run id.", author: { type: "user", id: "board-user" } }],
+            commentCount: 1,
+          }],
+          totals: { openThreadCount: 1, includedThreadCount: 1, omittedThreadCount: 0, commentCount: 1, includedCommentCount: 1, omittedCommentCount: 0 },
+          truncated: true,
+        }],
+        totals: { openThreadCount: 1, includedThreadCount: 1, omittedThreadCount: 0, commentCount: 1, includedCommentCount: 1, omittedCommentCount: 0 },
+        truncated: true,
+      },
+      comments: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: true,
+    });
+
+    expect(prompt).toContain("## Open document annotations");
+    expect(prompt).toContain("### QA evidence");
+    expect(prompt).toContain("selected text: Passed in Chrome");
+    expect(prompt).toContain("Attach the run id.");
+    expect(prompt).toContain("propose a child issue before making code changes");
+    expect(prompt).toContain("prefer replying and resolving the thread over rewriting the snapshot");
+    expect(prompt).toContain("[document review context truncated]");
+  });
+
   it("renders dependency-blocked interaction guidance", () => {
     const prompt = renderPaperclipWakePrompt({
       reason: "issue_commented",

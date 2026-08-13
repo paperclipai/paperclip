@@ -232,3 +232,22 @@ export interface PlanReviewContext {
   };
   truncated: boolean;
 }
+
+export interface DocumentReviewContextDocument {
+  documentKey: string;
+  documentId: string;
+  title: string | null;
+  latestRevisionId: string | null;
+  latestRevisionNumber: number | null;
+  threads: PlanReviewContextThread[];
+  totals: PlanReviewContext["totals"];
+  truncated: boolean;
+}
+
+export interface DocumentReviewContext {
+  issueId: string;
+  documents: DocumentReviewContextDocument[];
+  totals: PlanReviewContext["totals"];
+  limits: PlanReviewContext["limits"];
+  truncated: boolean;
+}

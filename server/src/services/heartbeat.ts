@@ -172,7 +172,7 @@ import {
   getIssueContinuationSummaryDocument,
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
-import { buildPlanReviewContext } from "./plan-review-context.js";
+import { buildDocumentReviewContext, buildPlanReviewContext } from "./plan-review-context.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService, type WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
@@ -5687,7 +5687,16 @@ export async function buildPaperclipWakePayload(input: {
       interactionId,
     })
     : null;
-  const payloadTruncated = truncated || issueDescriptionTruncated || planReviewContext?.truncated === true;
+  const documentReviewContext = issueId
+    ? await buildDocumentReviewContext({
+      db: input.db,
+      companyId: input.companyId,
+      issueId,
+      includeForIssueComment: commentIds.length > 0,
+      includeForAnnotationDelta: annotationDeltas.length > 0,
+    })
+    : null;
+  const payloadTruncated = truncated || issueDescriptionTruncated || planReviewContext?.truncated === true || documentReviewContext?.truncated === true;
   const recoveryActionId = readNonEmptyString(input.contextSnapshot.recoveryActionId);
   const recoveryCause = readNonEmptyString(input.contextSnapshot.recoveryCause);
   const recoveryAction = recoveryActionId
@@ -5799,6 +5808,7 @@ export async function buildPaperclipWakePayload(input: {
     comments,
     annotationDeltas,
     planReviewContext,
+    documentReviewContext,
     commentWindow: {
       requestedCount: commentIds.length,
       includedCount: comments.length,
