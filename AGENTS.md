@@ -285,3 +285,28 @@ This section is local to the ThinkStack served tree (not upstream).
 - A close that cites a run, model, or benchmark result must quote the artifact — run id, file path, or ledger row. A prose description of work is not evidence. Model labels name the REQUEST; served-model truth requires the retirement/alias map (grok-4-fast→grok-4.3 class).
 - An incident or defect close must name its recurrence mechanism AND the layer it is encoded in, preferring the highest that fits: platform guard > pipeline script/driver > standing rule (this registry) > skill > KB note. A lesson that exists only as prose in a comment is NOT closed.
 <!-- END THINKSTACK OPS RULE: verify-by-artifact-block -->
+
+<!-- BEGIN THINKSTACK OPS RULE: operating-model-qec-block -->
+## Gate OM1 — Operating model: role architecture + QEC (standing rule)
+
+Binding across all companies (operator directive 2026-08-06, TSMC-20266; forensics TSKB0403).
+
+**Role architecture — who does what:**
+- **Lower lanes (drafters / specialists / general):** cheap models + skills, biased for action, PRODUCE the deliverables. Cheap+skill is the target and beats strong for execution classes (validated).
+- **C-level lanes (CTO/CMO/CFO): GUARD and DELEGATE.** Delegate with authority in SMALL BATCHES to able lanes; verify outcomes; keep the team unblocked. C-levels do NOT do routine work, do NOT write copy, do NOT execute deliverables. A C-level caught executing is a routing defect — file it.
+- **CEO lanes:** orchestrate and delegate to C-level and down-chain. Focus on shipping, revenue, unblocking.
+- **Routine work runs on cheap lanes or shell handlers ONLY** — never CEO/C-level lanes (TSMC-20230 script demotions, TSMC-20025 rail diet).
+
+**Escalations flow to the NEXT IN LINE and resolve THERE.** specialist → their C-level → CEO(-Codex) → board (governance/spend) or TSMC (platform/runtime only). An escalation that skips a level is itself a defect. Rarely reach C-level; almost never the board.
+
+**QEC gates — link every closure to them:**
+- **Q**uality: two-tier QA (TSMC-20243) — cheap first-pass, strong on failure; G-class gates untouched; defect-escape reported weekly.
+- **E**fficiency: batch pickup (TSMC-20250) + thread checkpoints (TSMC-20242) + delegation-in-small-batches; fresh-session ratio and runs/day on the daily rollup.
+- **C**ost: price-weighted model selection (TSMC-20229 ledger weights) — every lane's model choice justified by weighted score for its role class; bench audit locks choices per role.
+<!-- END THINKSTACK OPS RULE: operating-model-qec-block -->
+
+<!-- BEGIN THINKSTACK OPS RULE: fleet-class-fix-escalation-block -->
+## Gate FLEET1 — fleet-class local fix + TSMC card (standing rule)
+
+When any OpCo fixes a defect whose CLASS plausibly exists in other OpCos (shared adapters, static-assignee dispatch, guard behaviours, poller patterns, platform-surface quirks), filing an **assigned** TSMC card is part of the fix in the same session — not optional follow-up. Local product/config stays yours; do not modify Paperclip the platform (see `escalate-platform-work-to-tsmc`). Card must describe the class (not only your instance), attach the local fix as template, and carry an assignee. Reference the TSMC id in the close comment. Canonical process: **TSKB0385**. TSMC owns dedupe/standardise/rollout — do not invent parallel fleet alert paths.
+<!-- END THINKSTACK OPS RULE: fleet-class-fix-escalation-block -->
