@@ -35,9 +35,12 @@ import {
 // --- Test fixtures -----------------------------------------------------------
 
 const COMPANY_ID = "company-1";
+const OTHER_COMPANY_ID = "company-2";
 const OWNER_USER_ID = "owner-user-1";
 const OTHER_USER_ID = "other-user-2";
 const AGENT_ID = "11111111-1111-4111-8111-111111111111";
+const ENVIRONMENT_ID = "22222222-2222-4222-8222-222222222222";
+const OTHER_ENVIRONMENT_ID = "33333333-3333-4333-8333-333333333333";
 
 // The distinctive secret values. Each holds a unique marker, so a substring
 // check proves the value never reached a sink.
@@ -71,6 +74,10 @@ function expectNoSecret(text: string): void {
 // --- Service mocks -----------------------------------------------------------
 
 const mockAgentService = vi.hoisted(() => ({ getById: vi.fn() }));
+// The environment service the company-and-environment routes call to resolve the
+// sandbox environment server-side. A test sets the resolved environment shape to
+// prove the fail-closed environment guard.
+const mockEnvironmentService = vi.hoisted(() => ({ getById: vi.fn() }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockHeartbeatService = vi.hoisted(() => ({ wakeup: vi.fn() }));
 const mockIssueService = vi.hoisted(() => ({ getById: vi.fn(), getByIdentifier: vi.fn() }));
@@ -87,6 +94,9 @@ const mockRunSecretRedactionRegistry = vi.hoisted(() => ({
 function registerModuleMocks(): void {
   vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
   vi.doMock("../services/agents.js", () => ({ agentService: () => mockAgentService }));
+  vi.doMock("../services/environments.js", () => ({
+    environmentService: () => mockEnvironmentService,
+  }));
   vi.doMock("../services/heartbeat.js", () => ({ heartbeatService: () => mockHeartbeatService }));
   vi.doMock("../services/instance-settings.js", () => ({
     instanceSettingsService: () => mockInstanceSettingsService,
@@ -151,6 +161,9 @@ interface TransportHandle {
   completeCredential: SetupTokenSecretWriter;
   submittedCodes: string[];
   secretWrites: string[];
+  // Every cleanup record the store persisted. A test asserts the route writes no
+  // empty environment scope, so a rejected environment never reaches the store.
+  records: SetupTokenCleanupRecord[];
 }
 
 /**
@@ -169,9 +182,11 @@ function buildTransport(opts: { onSubmit?: "complete" | "throw" | "pending" } = 
     secretWrites.push(input.token);
   };
   const rows = new Map<string, SetupTokenCleanupRecord>();
+  const records: SetupTokenCleanupRecord[] = [];
   const store: SetupTokenCleanupStore = {
     async record(record) {
       rows.set(record.sessionId, { ...record });
+      records.push({ ...record });
     },
     async markState(identity, state) {
       const row = rows.get(identity.sessionId);
@@ -225,7 +240,7 @@ function buildTransport(opts: { onSubmit?: "complete" | "throw" | "pending" } = 
       stop() {},
     };
   };
-  return { factory, leases, store, completeCredential, submittedCodes, secretWrites };
+  return { factory, leases, store, completeCredential, submittedCodes, secretWrites, records };
 }
 
 // --- App builder with a capturing request logger -----------------------------
@@ -344,7 +359,16 @@ beforeEach(() => {
     companyId: COMPANY_ID,
     name: "Claude agent",
     adapterType: "claude_local",
-    defaultEnvironmentId: null,
+    defaultEnvironmentId: ENVIRONMENT_ID,
+  });
+  // The default resolved environment is an active sandbox with a real provider,
+  // so the company-and-environment start route passes the fail-closed guard. A
+  // test overrides this to prove the guard rejects an invalid environment.
+  mockEnvironmentService.getById.mockResolvedValue({
+    id: ENVIRONMENT_ID,
+    driver: "sandbox",
+    status: "active",
+    config: { provider: "kubernetes" },
   });
 });
 
@@ -558,5 +582,266 @@ describe("setup-token login route — SR-6 and SR-7 (fail-closed transport guard
     expect(promptRes.status).toBe(403);
     expect(promptRes.body.error).toBe(SETUP_TOKEN_TRANSPORT_INSECURE);
     expectNoSecret(JSON.stringify(promptRes.body));
+  });
+});
+
+// --- Company-and-environment routes ------------------------------------------
+//
+// These tests drive the agentless Claude login. The scope binds one login to one
+// company, one owner, one adapter, and one environment. The route carries no
+// agent id, resolves the environment server-side, and returns the same not-found
+// error for a foreign session as for a missing session (Control 2).
+
+const COMPANY_BASE = `/api/companies/${COMPANY_ID}/setup-token-login-sessions`;
+
+// Starts a company-and-environment login and returns the session id. The default
+// body names the Claude adapter and the resolved sandbox environment.
+async function startCompanySession(
+  app: express.Express,
+  body: Record<string, unknown> = { environmentId: ENVIRONMENT_ID, adapterType: "claude_local" },
+): Promise<request.Response> {
+  return request(app).post(COMPANY_BASE).send(body);
+}
+
+describe("company-and-environment setup-token route — full path", () => {
+  it("drives start, status, prompt, code, and completion with no agent id", async () => {
+    const transport = buildTransport({ onSubmit: "complete" });
+    const { app } = await createApp({ transport });
+
+    // Start. The response carries the environment, the panel mode, and no prompt
+    // and no secret. The full login URL rides only in the guarded prompt read.
+    const startRes = await startCompanySession(app);
+    expect(startRes.status, JSON.stringify(startRes.body)).toBe(201);
+    const sessionId = startRes.body.sessionId as string;
+    expect(sessionId).toBeTruthy();
+    expect(startRes.body.environmentId).toBe(ENVIRONMENT_ID);
+    expect(startRes.body.status).toBe("waiting_for_user");
+    expect(startRes.body.panelMode).toBe("submitted_browser_code");
+    expect(startRes.body.prompt).toBeNull();
+    expect(startRes.body.failure).toBeNull();
+    expect(startRes.headers["cache-control"]).toBe("no-store");
+    // The scope carries no agent id, so the response holds none.
+    expect(JSON.stringify(startRes.body)).not.toContain(AGENT_ID);
+    expectNoSecret(JSON.stringify(startRes.body));
+
+    // The store persisted the resolved environment, never an empty value.
+    expect(transport.records.map((r) => r.environmentId)).toEqual([ENVIRONMENT_ID]);
+
+    // Read the public status. It carries no prompt and no secret.
+    const statusRes = await request(app).get(`${COMPANY_BASE}/${sessionId}`).send();
+    expect(statusRes.status, JSON.stringify(statusRes.body)).toBe(200);
+    expect(statusRes.body.status).toBe("waiting_for_user");
+    expect(statusRes.body.environmentId).toBe(ENVIRONMENT_ID);
+    expect(statusRes.body.prompt).toBeUndefined();
+    expectNoSecret(JSON.stringify(statusRes.body));
+
+    // Read the prompt. The owner response carries the full URL, with no-store.
+    const promptRes = await request(app).get(`${COMPANY_BASE}/${sessionId}/prompt`).send();
+    expect(promptRes.status, JSON.stringify(promptRes.body)).toBe(200);
+    expect(promptRes.body.authorizationUrl).toBe(FULL_LOGIN_URL);
+    expect(promptRes.headers["cache-control"]).toBe("no-store");
+
+    // Submit the one browser code. The response carries no secret.
+    const codeRes = await request(app)
+      .post(`${COMPANY_BASE}/${sessionId}/code`)
+      .send({ browserCode: BROWSER_CODE });
+    expect(codeRes.status, JSON.stringify(codeRes.body)).toBe(200);
+    expect(transport.submittedCodes).toEqual([BROWSER_CODE]);
+    expectNoSecret(JSON.stringify(codeRes.body));
+
+    await settle();
+    expect(transport.secretWrites).toEqual([MINTED_TOKEN]);
+
+    // Read the completion. The owner response carries the non-secret
+    // storedSessionId and no token, with no-store.
+    const completionRes = await request(app).post(`${COMPANY_BASE}/${sessionId}/completion`).send();
+    expect(completionRes.status, JSON.stringify(completionRes.body)).toBe(200);
+    expect(completionRes.body.storedSessionId).toBe(sessionId);
+    expect(completionRes.body.token).toBeUndefined();
+    expect(completionRes.headers["cache-control"]).toBe("no-store");
+    expectNoSecret(JSON.stringify(completionRes.body));
+  });
+
+  it("addresses no agent-scoped session: an agent read cannot reach a company session", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+
+    const startRes = await startCompanySession(app);
+    const sessionId = startRes.body.sessionId as string;
+
+    // The agent-scoped read builds a scope with the agent id, so it cannot
+    // resolve the agentless company session. It returns the same not-found error.
+    const agentRead = await request(app).get(`${BASE}/${sessionId}/prompt`).send();
+    expect(agentRead.status).toBe(404);
+    expect(agentRead.body.error).toBe(SETUP_TOKEN_SESSION_NOT_FOUND);
+  });
+
+  it("returns the fixed no-secret error when no transport is bound", async () => {
+    const { app } = await createApp({});
+    const startRes = await startCompanySession(app);
+    expect(startRes.status).toBe(503);
+    expect(startRes.headers["cache-control"]).toBe("no-store");
+    expectNoSecret(JSON.stringify(startRes.body));
+  });
+});
+
+describe("company-and-environment setup-token route — object-level authorization", () => {
+  it("returns the same not-found for a cross-owner caller on every action", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+
+    const startRes = await startCompanySession(app);
+    const sessionId = startRes.body.sessionId as string;
+
+    // A different owner reads the same id. Every action returns the not-found
+    // error, so a caller cannot tell a cross-owner session from a missing one.
+    useOwner(OTHER_USER_ID);
+    const paths: Array<() => request.Test> = [
+      () => request(app).get(`${COMPANY_BASE}/${sessionId}`).send(),
+      () => request(app).get(`${COMPANY_BASE}/${sessionId}/prompt`).send(),
+      () => request(app).post(`${COMPANY_BASE}/${sessionId}/code`).send({ browserCode: BROWSER_CODE }),
+      () => request(app).post(`${COMPANY_BASE}/${sessionId}/completion`).send(),
+      () => request(app).post(`${COMPANY_BASE}/${sessionId}/cancel`).send(),
+    ];
+    for (const call of paths) {
+      const res = await call();
+      expect(res.status).toBe(404);
+      expect(res.body.error).toBe(SETUP_TOKEN_SESSION_NOT_FOUND);
+      expectNoSecret(JSON.stringify(res.body));
+    }
+    expect(transport.submittedCodes).toEqual([]);
+  });
+
+  it("returns the same not-found for a cross-company caller", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+
+    const startRes = await startCompanySession(app);
+    const sessionId = startRes.body.sessionId as string;
+
+    // The same owner reads the session under a different company path. The
+    // session belongs to the first company, so the read returns the not-found
+    // error and never confirms the session across a company boundary.
+    const crossCompanyBase = `/api/companies/${OTHER_COMPANY_ID}/setup-token-login-sessions`;
+    const res = await request(app).get(`${crossCompanyBase}/${sessionId}`).send();
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe(SETUP_TOKEN_SESSION_NOT_FOUND);
+  });
+
+  it("rejects an adapter other than claude_local at start", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+
+    const res = await startCompanySession(app, {
+      environmentId: ENVIRONMENT_ID,
+      adapterType: "codex_local",
+    });
+    expect(res.status).toBe(400);
+    // The route rejected the adapter before it started a session, so the store
+    // holds no record.
+    expect(transport.records).toEqual([]);
+  });
+});
+
+describe("company-and-environment setup-token route — fail-closed environment", () => {
+  it("rejects a missing environment and writes no scope", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+    mockEnvironmentService.getById.mockResolvedValue(null);
+
+    const res = await startCompanySession(app);
+    expect(res.status).toBe(422);
+    // The route rejected the environment before it started a session, so no
+    // store holds an empty environment scope.
+    expect(transport.records).toEqual([]);
+  });
+
+  it("rejects an absent environment id in the request body", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+
+    const res = await startCompanySession(app, { adapterType: "claude_local" });
+    expect(res.status).toBe(400);
+    expect(transport.records).toEqual([]);
+  });
+
+  it("rejects an archived, a local, an ssh, and a fake-provider environment", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+
+    const cases = [
+      { id: ENVIRONMENT_ID, driver: "sandbox", status: "archived", config: { provider: "kubernetes" } },
+      { id: ENVIRONMENT_ID, driver: "local", status: "active", config: {} },
+      { id: ENVIRONMENT_ID, driver: "ssh", status: "active", config: {} },
+      { id: ENVIRONMENT_ID, driver: "sandbox", status: "active", config: { provider: "fake" } },
+    ];
+    for (const environment of cases) {
+      mockEnvironmentService.getById.mockResolvedValueOnce(environment);
+      const res = await startCompanySession(app);
+      expect(res.status, JSON.stringify(environment)).toBe(422);
+    }
+    // No rejected environment reached the store.
+    expect(transport.records).toEqual([]);
+  });
+});
+
+describe("company-and-environment setup-token route — browser-code grammar", () => {
+  it("rejects a missing, an oversized, and a control-byte code before it forwards", async () => {
+    const transport = buildTransport({ onSubmit: "complete" });
+    const { app } = await createApp({ transport });
+
+    const startRes = await startCompanySession(app);
+    const sessionId = startRes.body.sessionId as string;
+
+    // A missing code.
+    const missing = await request(app).post(`${COMPANY_BASE}/${sessionId}/code`).send({});
+    expect(missing.status).toBe(400);
+
+    // An oversized code (one character over the bounded maximum).
+    const oversized = await request(app)
+      .post(`${COMPANY_BASE}/${sessionId}/code`)
+      .send({ browserCode: "a".repeat(513) });
+    expect(oversized.status).toBe(400);
+
+    // A control byte and a space are both rejected.
+    for (const badCode of ["abc\ndef", "abc def"]) {
+      const res = await request(app)
+        .post(`${COMPANY_BASE}/${sessionId}/code`)
+        .send({ browserCode: badCode });
+      expect(res.status).toBe(400);
+    }
+
+    // No malformed code reached the live login process.
+    expect(transport.submittedCodes).toEqual([]);
+  });
+});
+
+describe("company-and-environment setup-token route — fail-closed transport guard", () => {
+  it("rejects a non-TLS prompt and code request", async () => {
+    const transport = buildTransport({ onSubmit: "complete" });
+    const { app } = await createApp({
+      transport,
+      deploymentMode: "authenticated",
+      confidentialProxyAllowlist: [],
+    });
+
+    const startRes = await startCompanySession(app);
+    const sessionId = startRes.body.sessionId as string;
+
+    // The prompt over plain HTTP fails closed and returns no URL.
+    const promptRes = await request(app).get(`${COMPANY_BASE}/${sessionId}/prompt`).send();
+    expect(promptRes.status).toBe(403);
+    expect(promptRes.body.error).toBe(SETUP_TOKEN_TRANSPORT_INSECURE);
+    expect(promptRes.body.authorizationUrl).toBeUndefined();
+    expectNoSecret(JSON.stringify(promptRes.body));
+
+    // The code over plain HTTP fails closed. The code never reaches the process.
+    const codeRes = await request(app)
+      .post(`${COMPANY_BASE}/${sessionId}/code`)
+      .send({ browserCode: BROWSER_CODE });
+    expect(codeRes.status).toBe(403);
+    expect(codeRes.body.error).toBe(SETUP_TOKEN_TRANSPORT_INSECURE);
+    expect(transport.submittedCodes).toEqual([]);
+    expectNoSecret(JSON.stringify(codeRes.body));
   });
 });

@@ -310,13 +310,23 @@ describe("SetupTokenSessionService authorization boundary", () => {
   const crossCompany: SetupTokenSessionScope = { ...OWNER_SCOPE, companyId: "company-2" };
   const sameCompanyOtherUser: SetupTokenSessionScope = { ...OWNER_SCOPE, ownerUserId: "user-9" };
   const otherAgent: SetupTokenSessionScope = { ...OWNER_SCOPE, targetAgentId: "agent-9" };
+  const otherAdapter: SetupTokenSessionScope = { ...OWNER_SCOPE, adapterType: "codex_local" };
+  const otherEnvironment: SetupTokenSessionScope = { ...OWNER_SCOPE, environmentId: "env-9" };
 
   it("returns the same not-found for a cross-scope caller on every operation", async () => {
     const { service, processes } = buildService();
     const { sessionId } = await service.start(OWNER_SCOPE);
     processes[0].surfacePrompt(FULL_LOGIN_URL);
 
-    for (const scope of [crossCompany, sameCompanyOtherUser, otherAgent]) {
+    // The full-scope match rejects a mismatch in any of the five scope fields:
+    // the company, the owner, the agent, the adapter, and the environment.
+    for (const scope of [
+      crossCompany,
+      sameCompanyOtherUser,
+      otherAgent,
+      otherAdapter,
+      otherEnvironment,
+    ]) {
       expect(() => service.readPrompt(sessionId, scope)).toThrow(SETUP_TOKEN_SESSION_NOT_FOUND);
       expect(() => service.submitCode(sessionId, scope, "code")).toThrow(SETUP_TOKEN_SESSION_NOT_FOUND);
       expect(() => service.completeSession(sessionId, scope)).toThrow(SETUP_TOKEN_SESSION_NOT_FOUND);
@@ -328,6 +338,57 @@ describe("SetupTokenSessionService authorization boundary", () => {
   it("returns the same not-found for a missing session", async () => {
     const { service } = buildService();
     expect(() => service.readPrompt("missing", OWNER_SCOPE)).toThrow(SETUP_TOKEN_SESSION_NOT_FOUND);
+  });
+});
+
+describe("SetupTokenSessionService company-and-environment scope", () => {
+  // The agentless company scope. It carries a null agent id.
+  const COMPANY_SCOPE: SetupTokenSessionScope = { ...OWNER_SCOPE, targetAgentId: null };
+  const companyKey = {
+    companyId: COMPANY_SCOPE.companyId,
+    ownerUserId: COMPANY_SCOPE.ownerUserId,
+    adapterType: COMPANY_SCOPE.adapterType,
+  };
+
+  it("resolves an agentless session by the company key and returns the intrinsic environment", async () => {
+    const { service, processes } = buildService();
+    const { sessionId } = await service.start(COMPANY_SCOPE);
+    processes[0].surfacePrompt(FULL_LOGIN_URL);
+
+    const scope = service.resolveCompanyScope(sessionId, companyKey);
+    expect(scope.targetAgentId).toBeNull();
+    expect(scope.environmentId).toBe(COMPANY_SCOPE.environmentId);
+
+    const descriptor = service.describeOwned(sessionId, scope);
+    expect(descriptor.sessionId).toBe(sessionId);
+    expect(descriptor.environmentId).toBe(COMPANY_SCOPE.environmentId);
+    expect(descriptor.loginUrl).toBe(FULL_LOGIN_URL);
+  });
+
+  it("rejects an agent-scoped session through the company key", async () => {
+    const { service } = buildService();
+    // The session carries a non-null agent id. The company key requires the
+    // agentless marker, so a company route cannot reach an agent session.
+    const { sessionId } = await service.start(OWNER_SCOPE);
+    expect(() => service.resolveCompanyScope(sessionId, companyKey)).toThrow(
+      SETUP_TOKEN_SESSION_NOT_FOUND,
+    );
+  });
+
+  it("returns the same not-found for a foreign company key", async () => {
+    const { service } = buildService();
+    const { sessionId } = await service.start(COMPANY_SCOPE);
+    // A cross-company, a cross-owner, and a cross-adapter key each return the
+    // same not-found error as a missing session.
+    for (const key of [
+      { ...companyKey, companyId: "company-2" },
+      { ...companyKey, ownerUserId: "user-9" },
+      { ...companyKey, adapterType: "codex_local" },
+    ]) {
+      expect(() => service.resolveCompanyScope(sessionId, key)).toThrow(
+        SETUP_TOKEN_SESSION_NOT_FOUND,
+      );
+    }
   });
 });
 

@@ -68,14 +68,20 @@ export function isTerminalSessionState(state: SetupTokenSessionState): boolean {
 }
 
 /**
- * The immutable owner scope of a session. Every operation verifies all three
+ * The immutable owner scope of a session. Every operation verifies all five
  * fields against the stored scope. The service builds the scope once at start
  * and never changes it.
+ *
+ * The `targetAgentId` is null for a company-and-environment login. That login
+ * has no agent id: a hire flow starts one session before an agent exists. The
+ * agent-scoped login sets `targetAgentId` to the agent id. The full-scope match
+ * treats null as one immutable value, so a company login and an agent login
+ * never resolve one another.
  */
 export interface SetupTokenSessionScope {
   companyId: string;
   ownerUserId: string;
-  targetAgentId: string;
+  targetAgentId: string | null;
   // The adapter and the environment of the login. The durable cleanup record
   // keys on the company, the owner, the adapter, and the environment, so a hire
   // flow with no agent id still resolves one record.
@@ -499,6 +505,23 @@ export interface SetupTokenPromptView {
 }
 
 /**
+ * The owner descriptor of a session. The company-and-environment routes read it
+ * to build the response contract. It carries the immutable environment and the
+ * session deadline, plus the current state and the full login URL. The route
+ * projects it: the public status response drops the login URL; the owner prompt
+ * response returns the login URL through the confidential transport guard.
+ */
+export interface SetupTokenSessionDescriptor {
+  sessionId: string;
+  state: SetupTokenSessionState;
+  environmentId: string;
+  /** The session deadline in epoch milliseconds. */
+  deadline: number;
+  /** The full login URL, present only after the prompt surfaces (SR-5). */
+  loginUrl: string | null;
+}
+
+/**
  * The completion contract for the authorized owner. It carries the non-secret
  * `storedSessionId` claim and no token (Control 1). The `storedSessionId` is the
  * durable session id; the agent-create transaction consumes it as the one-time
@@ -626,7 +649,13 @@ export class SetupTokenSessionService {
     if (this.countActive((s) => s.scope.ownerUserId === scope.ownerUserId) >= this.caps.perOwner) {
       throw new SetupTokenSessionError(429, SETUP_TOKEN_CAP_EXCEEDED);
     }
-    if (this.countActive((s) => s.scope.targetAgentId === scope.targetAgentId) >= this.caps.perAgent) {
+    // The per-agent cap applies only to an agent-scoped login. A company login
+    // has no agent id, so the per-owner cap above bounds it. A null agent id is
+    // not a shared key across owners, so the service does not cap on it.
+    if (
+      scope.targetAgentId !== null &&
+      this.countActive((s) => s.scope.targetAgentId === scope.targetAgentId) >= this.caps.perAgent
+    ) {
       throw new SetupTokenSessionError(429, SETUP_TOKEN_CAP_EXCEEDED);
     }
     if (this.countActive((s) => s.scope.companyId === scope.companyId) >= this.caps.perCompany) {
@@ -758,9 +787,12 @@ export class SetupTokenSessionService {
 
   /**
    * Resolves a session for an operation. It returns the session only when the
-   * id exists and the stored scope equals the caller scope in all three fields.
-   * A missing session and a cross-scope session both throw the same not-found
-   * error, so a caller cannot tell them apart (SR-3).
+   * id exists and the stored scope equals the caller scope in all five fields:
+   * the company, the owner, the agent, the adapter, and the environment. A
+   * missing session and a cross-scope session both throw the same not-found
+   * error, so a caller cannot tell them apart (SR-3). The full-scope match makes
+   * a cross-adapter and a cross-environment session return the same not-found
+   * error as a missing session.
    */
   private resolveOwned(sessionId: string, scope: SetupTokenSessionScope): StoredSession {
     const session = this.sessions.get(sessionId);
@@ -768,11 +800,63 @@ export class SetupTokenSessionService {
       !session ||
       session.scope.companyId !== scope.companyId ||
       session.scope.ownerUserId !== scope.ownerUserId ||
-      session.scope.targetAgentId !== scope.targetAgentId
+      session.scope.targetAgentId !== scope.targetAgentId ||
+      session.scope.adapterType !== scope.adapterType ||
+      session.scope.environmentId !== scope.environmentId
     ) {
       throw new SetupTokenSessionError(404, SETUP_TOKEN_SESSION_NOT_FOUND);
     }
     return session;
+  }
+
+  /**
+   * Resolves the immutable scope of a company-and-environment session. The
+   * caller provides the company, the owner, and the adapter it derived from the
+   * request; the route path gives the company, the actor gives the owner, and
+   * the route fixes the adapter. The lookup matches these three fields and the
+   * agentless marker, then returns the full scope, including the intrinsic
+   * environment.
+   *
+   * A caller never supplies the environment on a read, a submit, a cancel, or a
+   * completion. The environment is intrinsic to the session, so a foreign
+   * environment cannot address the session. A missing session and a
+   * cross-company, cross-owner, or cross-adapter session all throw the same
+   * not-found error (SR-3, Control 2). The agentless marker rejects an
+   * agent-scoped session, so a company route never resolves an agent session.
+   */
+  resolveCompanyScope(
+    sessionId: string,
+    key: { companyId: string; ownerUserId: string; adapterType: string },
+  ): SetupTokenSessionScope {
+    const session = this.sessions.get(sessionId);
+    if (
+      !session ||
+      session.scope.targetAgentId !== null ||
+      session.scope.companyId !== key.companyId ||
+      session.scope.ownerUserId !== key.ownerUserId ||
+      session.scope.adapterType !== key.adapterType
+    ) {
+      throw new SetupTokenSessionError(404, SETUP_TOKEN_SESSION_NOT_FOUND);
+    }
+    return session.scope;
+  }
+
+  /**
+   * Returns the owner descriptor for a session. The company-and-environment
+   * routes read it to build the response contract. The scope check runs first,
+   * so a cross-scope caller gets the same not-found error (SR-3). The route
+   * projects the descriptor: the public status response drops the login URL; the
+   * owner prompt response returns the login URL behind the transport guard.
+   */
+  describeOwned(sessionId: string, scope: SetupTokenSessionScope): SetupTokenSessionDescriptor {
+    const session = this.resolveOwned(sessionId, scope);
+    return {
+      sessionId: session.id,
+      state: session.state,
+      environmentId: session.scope.environmentId,
+      deadline: session.deadline,
+      loginUrl: session.loginUrl,
+    };
   }
 
   /**

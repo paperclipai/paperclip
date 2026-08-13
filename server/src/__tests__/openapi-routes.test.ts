@@ -74,18 +74,11 @@ const explicitOpenApiCoverageExclusions = new Set([
   "smoke-lab.ts",
 ]);
 
-// The company-and-environment Claude setup-token login routes are contract-first.
-// The OpenAPI document describes the route contract before the request handler
-// exists. The request handler arrives in a later change; until then the spec
-// leads the mounted routes for these paths only.
-const specOnlyContractFirstRoutes = new Set([
-  "POST /api/companies/{companyId}/setup-token-login-sessions",
-  "GET /api/companies/{companyId}/setup-token-login-sessions/{sessionId}",
-  "GET /api/companies/{companyId}/setup-token-login-sessions/{sessionId}/prompt",
-  "POST /api/companies/{companyId}/setup-token-login-sessions/{sessionId}/code",
-  "POST /api/companies/{companyId}/setup-token-login-sessions/{sessionId}/completion",
-  "POST /api/companies/{companyId}/setup-token-login-sessions/{sessionId}/cancel",
-]);
+// The set of contract-first routes whose OpenAPI document leads the mounted
+// request handler. The company-and-environment Claude setup-token login routes
+// now have request handlers, so the set is empty. A new contract-first route
+// belongs here only until its handler lands.
+const specOnlyContractFirstRoutes = new Set<string>([]);
 
 function createApp() {
   const app = express();
