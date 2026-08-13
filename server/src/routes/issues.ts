@@ -66,7 +66,6 @@ import {
   updateDocumentAnnotationThreadSchema,
   upsertIssueDocumentSchema,
   updateIssueSchema,
-  getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
@@ -5018,14 +5017,30 @@ export function issueRoutes(
     return workspace;
   }
 
-  function respondClosedIssueExecutionWorkspace(
+  // Reopen the closed isolated workspace that a guard found, so the request can
+  // continue. Return true when the workspace is open again. Return false after
+  // this function sends an error response, so the caller must stop. The reopen is
+  // scoped to the issue company and project inside the service, and it runs only
+  // after the route already authorized the request on the issue.
+  async function reopenClosedIssueExecutionWorkspaceOrRespond(
+    req: Request,
     res: Response,
-    workspace: Pick<ExecutionWorkspace, "closedAt" | "id" | "mode" | "name" | "status">,
-  ) {
-    res.status(409).json({
-      error: getClosedIsolatedExecutionWorkspaceMessage(workspace),
-      executionWorkspace: workspace,
+    issue: { id: string; companyId: string; projectId?: string | null },
+    workspace: Pick<ExecutionWorkspace, "id">,
+  ): Promise<boolean> {
+    const actor = getActorInfo(req);
+    const result = await executionWorkspacesSvc.reopenClosedIsolatedExecutionWorkspaceForIssue({
+      workspaceId: workspace.id,
+      issue: { id: issue.id, companyId: issue.companyId, projectId: issue.projectId ?? null },
+      actor: { agentId: actor.agentId, actorType: actor.actorType },
     });
+    if (result.ok) return true;
+    if (result.code === "not_reopenable") {
+      res.status(409).json({ error: "This issue is linked to a closed workspace that cannot be reopened." });
+    } else {
+      res.status(503).json({ error: "Could not reopen the workspace for this issue. Please try again." });
+    }
+    return false;
   }
 
   async function destroyReusableSandboxLeasesForTerminalIssue(issue: {
@@ -8738,8 +8753,9 @@ export function issueRoutes(
       (Object.keys(updateFields).length > 0 || reviewRequest !== undefined || hiddenAtRaw !== undefined);
 
     if (closedExecutionWorkspace && (commentBody || isAgentWorkUpdate)) {
-      respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
-      return;
+      if (!(await reopenClosedIssueExecutionWorkspaceOrRespond(req, res, existing, closedExecutionWorkspace))) {
+        return;
+      }
     }
     if (
       isAgentWorkUpdate &&
@@ -10120,8 +10136,9 @@ export function issueRoutes(
 
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
     if (closedExecutionWorkspace) {
-      respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
-      return;
+      if (!(await reopenClosedIssueExecutionWorkspaceOrRespond(req, res, issue, closedExecutionWorkspace))) {
+        return;
+      }
     }
 
     const checkoutRunId = requireAgentRunId(req, res);
@@ -11110,8 +11127,9 @@ export function issueRoutes(
     })) return;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
     if (closedExecutionWorkspace) {
-      respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
-      return;
+      if (!(await reopenClosedIssueExecutionWorkspaceOrRespond(req, res, issue, closedExecutionWorkspace))) {
+        return;
+      }
     }
 
     const actor = getActorInfo(req);

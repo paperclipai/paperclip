@@ -35,6 +35,7 @@ import type {
 } from "@paperclipai/shared";
 import { deriveProjectUrlKey, WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
@@ -61,11 +62,72 @@ import {
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 type RuntimeServiceReadDb = Pick<Db, "select">;
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 const execFileAsync = promisify(execFile);
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const WORKSPACE_BRANCH_INCOHERENCE_REASON = "git_worktree_branch_incoherence";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 export const ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON = "issue_terminal";
+
+// The closed statuses a workspace holds after an archive or a failed cleanup.
+// A reopen restores one of these rows back to "active".
+const CLOSED_EXECUTION_WORKSPACE_STATUSES = ["archived", "cleanup_failed"] as const;
+
+// The reopen-failure reason kept on the row when a rebuild does not finish. The
+// value is sanitized: it never contains a repository URL, a host path, or git
+// output.
+export const EXECUTION_WORKSPACE_REOPEN_FAILED_REASON = "reopen_failed";
+
+// The metadata key that holds the workspace lifecycle generation. The generation
+// is a monotonic integer. Every archive and every reopen increases it by one. A
+// destructive cleanup captures the generation it archived at, then re-reads the
+// generation under the lifecycle lock immediately before it deletes the worktree.
+// A reopen that ran in between raises the generation, so the stale cleanup finds
+// a mismatch and does nothing. This fences a queued or in-flight cleanup against
+// a workspace that a reopen already restored.
+export const EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY = "lifecycleGeneration";
+
+export function readExecutionWorkspaceLifecycleGeneration(
+  metadata: Record<string, unknown> | null | undefined,
+): number {
+  const raw = metadata?.[EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY];
+  return typeof raw === "number" && Number.isInteger(raw) && raw >= 0 ? raw : 0;
+}
+
+// Return a metadata object with the lifecycle generation increased by one. The
+// caller keeps every other metadata key.
+export function bumpExecutionWorkspaceLifecycleGeneration(
+  metadata: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  return {
+    ...(metadata ?? {}),
+    [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]:
+      readExecutionWorkspaceLifecycleGeneration(metadata) + 1,
+  };
+}
+
+function isClosedExecutionWorkspaceStatus(status: string | null | undefined): boolean {
+  return status === "archived" || status === "cleanup_failed";
+}
+
+// Acquire the per-workspace, transaction-scoped Postgres advisory lock. Postgres
+// releases the lock when the transaction that holds `tx` commits or rolls back.
+// Both the reopen path and the destructive cleanup path acquire the same lock,
+// so they never run against the same workspace at the same time, even on
+// different server processes.
+async function acquireExecutionWorkspaceLifecycleLock(
+  tx: DbTransaction,
+  workspaceId: string,
+): Promise<void> {
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${`execution_workspace_lifecycle:${workspaceId}`}, 0))`,
+  );
+}
+
+export type ReopenClosedIsolatedExecutionWorkspaceResult =
+  | { ok: true; workspace: ExecutionWorkspace; reopened: true }
+  | { ok: true; workspace: ExecutionWorkspace; reopened: false }
+  | { ok: false; code: "not_reopenable" | "rebuild_failed"; message: string };
 
 export type ExecutionWorkspaceServiceOptions = {
   resolvePullRequestDetails?: PullRequestMergeDetailsResolver;
@@ -1279,7 +1341,52 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     return active.length > 0;
   }
 
-  async function cleanupTerminalWorkspace(workspace: ExecutionWorkspaceRow, expectedHeadSha: string | null) {
+  async function cleanupTerminalWorkspace(
+    workspace: ExecutionWorkspaceRow,
+    expectedHeadSha: string | null,
+    capturedGeneration: number,
+  ): Promise<{ cleaned: boolean; warnings: string[]; skippedReopened?: boolean }> {
+    return db.transaction(async (tx) => {
+      // Hold the per-workspace lifecycle lock across the destructive actions. A
+      // reopen takes the same lock, so a reopen cannot rebuild the worktree while
+      // this cleanup runs, and this cleanup cannot delete a worktree that a
+      // reopen already restored. The advisory lock (not a row FOR UPDATE) gives
+      // the exclusion, so the cleanup body can still update the same row on the
+      // pooled connection without a self-block.
+      await acquireExecutionWorkspaceLifecycleLock(tx, workspace.id);
+      const fresh = await tx
+        .select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, workspace.id))
+        .then((rows) => rows[0] ?? null);
+      const currentGeneration = fresh
+        ? readExecutionWorkspaceLifecycleGeneration(fresh.metadata as Record<string, unknown> | null)
+        : null;
+      if (
+        !fresh
+        || !isClosedExecutionWorkspaceStatus(fresh.status)
+        || currentGeneration !== capturedGeneration
+      ) {
+        // A reopen restored this workspace after it was archived. Do not destroy
+        // the rebuilt worktree.
+        logger.info(
+          {
+            event: "execution_workspace.cleanup_skipped",
+            reason: "reopened",
+            executionWorkspaceId: workspace.id,
+            capturedGeneration,
+            currentGeneration,
+            currentStatus: fresh?.status ?? null,
+          },
+          "execution workspace cleanup skipped because it was reopened",
+        );
+        return { cleaned: false, warnings: [], skippedReopened: true };
+      }
+      return runTerminalWorkspaceCleanup(workspace, expectedHeadSha);
+    });
+  }
+
+  async function runTerminalWorkspaceCleanup(workspace: ExecutionWorkspaceRow, expectedHeadSha: string | null) {
     const [
       {
         acquireGitWorktreeCleanupLock,
@@ -2069,6 +2176,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           skippedNonTerminalTree: 0,
           skippedUndelivered: 0,
           skippedRace: 0,
+          skippedReopened: 0,
         };
       }
       terminalSweepInProgress = true;
@@ -2130,6 +2238,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         skippedNonTerminalTree: 0,
         skippedUndelivered: 0,
         skippedRace: 0,
+        skippedReopened: 0,
       };
 
       for (const workspace of candidates) {
@@ -2157,6 +2266,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         }
         result.eligible += 1;
         const closedAt = now();
+        // Raise the lifecycle generation on archive. The cleanup below captures
+        // this generation and re-checks it before it deletes the worktree, so a
+        // reopen that runs in between fences the cleanup off.
+        const archivedMetadata = bumpExecutionWorkspaceLifecycleGeneration(
+          workspace.metadata as Record<string, unknown> | null,
+        );
         const archived = await db
           .update(executionWorkspaces)
           .set({
@@ -2164,6 +2279,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             closedAt,
             cleanupEligibleAt: workspace.cleanupEligibleAt ?? closedAt,
             cleanupReason: ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON,
+            metadata: archivedMetadata,
             updatedAt: closedAt,
           })
           .where(and(
@@ -2229,13 +2345,19 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           },
         });
 
+        const capturedGeneration = readExecutionWorkspaceLifecycleGeneration(
+          archived.metadata as Record<string, unknown> | null,
+        );
         try {
-          const cleanup = await cleanupTerminalWorkspace(archived, assessment.workspaceHeadSha);
-          if (!cleanup.cleaned) result.cleanupFailed += 1;
+          const cleanup = await cleanupTerminalWorkspace(archived, assessment.workspaceHeadSha, capturedGeneration);
+          if (cleanup.skippedReopened) result.skippedReopened += 1;
+          else if (!cleanup.cleaned) result.cleanupFailed += 1;
           else result.archived += 1;
         } catch (error) {
           result.cleanupFailed += 1;
           const failure = error instanceof Error ? error.message : String(error);
+          // Mark cleanup_failed only while the row is still closed. A reopen that
+          // raced after the failure leaves the row active; do not clobber it.
           await db
             .update(executionWorkspaces)
             .set({
@@ -2243,7 +2365,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               cleanupReason: `${ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON} | ${failure}`,
               updatedAt: now(),
             })
-            .where(eq(executionWorkspaces.id, archived.id));
+            .where(and(
+              eq(executionWorkspaces.id, archived.id),
+              inArray(executionWorkspaces.status, [...CLOSED_EXECUTION_WORKSPACE_STATUSES]),
+            ));
           await logActivity(db, {
             companyId: archived.companyId,
             actorType: "system",
@@ -2278,6 +2403,283 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         .returning()
         .then((rows) => rows[0] ?? null);
       return row ? toExecutionWorkspace(row) : null;
+    },
+
+    // Reopen one closed isolated execution workspace so an authorized issue can
+    // use it again. The caller must first authorize the request on the issue.
+    // The whole operation runs under the per-workspace lifecycle lock: it reads
+    // the row in the issue scope, rebuilds the worktree, and only then publishes
+    // the row as "active". A rebuild failure keeps the row closed and returns an
+    // error, so the caller never dispatches a run against a broken workspace.
+    reopenClosedIsolatedExecutionWorkspaceForIssue: async (input: {
+      workspaceId: string;
+      issue: { id: string; companyId: string; projectId: string | null };
+      actor: { agentId: string | null; actorType: string };
+    }): Promise<ReopenClosedIsolatedExecutionWorkspaceResult> => {
+      const { issue, actor } = input;
+      // Bind the workspace to the issue company and project. A null project on
+      // the issue must match a null project on the row (IS NOT DISTINCT FROM).
+      const projectIdCondition =
+        issue.projectId == null
+          ? sql`${executionWorkspaces.projectId} IS NULL`
+          : eq(executionWorkspaces.projectId, issue.projectId);
+
+      return db.transaction(async (tx): Promise<ReopenClosedIsolatedExecutionWorkspaceResult> => {
+        await acquireExecutionWorkspaceLifecycleLock(tx, input.workspaceId);
+        const row = await tx
+          .select()
+          .from(executionWorkspaces)
+          .where(and(
+            eq(executionWorkspaces.id, input.workspaceId),
+            eq(executionWorkspaces.companyId, issue.companyId),
+            projectIdCondition,
+            eq(executionWorkspaces.mode, "isolated_workspace"),
+          ))
+          .then((rows) => rows[0] ?? null);
+        if (!row) {
+          // Wrong company, wrong project, wrong mode, or missing. Fail closed and
+          // disclose no workspace detail.
+          return { ok: false, code: "not_reopenable", message: "Execution workspace is not reopenable" };
+        }
+        if (!isClosedExecutionWorkspaceStatus(row.status)) {
+          // A concurrent reopen already restored the row. Report success without a
+          // second rebuild so the caller continues normally.
+          return { ok: true, reopened: false, workspace: toExecutionWorkspace(row) };
+        }
+
+        const [{ ensurePersistedExecutionWorkspaceAvailable }, { workspaceOperationService }] =
+          await Promise.all([
+            import("./workspace-runtime.js"),
+            import("./workspace-operations.js"),
+          ]);
+        const [projectWorkspace, projectPolicy] = await Promise.all([
+          row.projectWorkspaceId
+            ? db
+                .select({ cwd: projectWorkspaces.cwd })
+                .from(projectWorkspaces)
+                .where(and(
+                  eq(projectWorkspaces.companyId, row.companyId),
+                  eq(projectWorkspaces.id, row.projectWorkspaceId),
+                ))
+                .then((rows) => rows[0] ?? null)
+            : null,
+          db
+            .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
+            .from(projects)
+            .where(and(eq(projects.companyId, row.companyId), eq(projects.id, row.projectId)))
+            .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy)),
+        ]);
+        const config = readExecutionWorkspaceConfig(row.metadata as Record<string, unknown> | null);
+        const nextGeneration = readExecutionWorkspaceLifecycleGeneration(
+          row.metadata as Record<string, unknown> | null,
+        ) + 1;
+        const nextMetadata = bumpExecutionWorkspaceLifecycleGeneration(
+          row.metadata as Record<string, unknown> | null,
+        );
+        const recorder = workspaceOperationService(db).createRecorder({
+          companyId: row.companyId,
+          executionWorkspaceId: row.id,
+        });
+
+        let rebuildError: string | null = null;
+        try {
+          const realized = await ensurePersistedExecutionWorkspaceAvailable({
+            db: tx as unknown as Db,
+            base: {
+              baseCwd: projectWorkspace?.cwd ?? row.cwd ?? "",
+              source: "task_session",
+              projectId: row.projectId,
+              workspaceId: row.projectWorkspaceId,
+              repoUrl: row.repoUrl,
+              repoRef: row.baseRef,
+            },
+            workspace: {
+              id: row.id,
+              mode: row.mode,
+              strategyType: row.strategyType,
+              cwd: row.cwd,
+              providerRef: row.providerRef,
+              projectId: row.projectId,
+              projectWorkspaceId: row.projectWorkspaceId,
+              repoUrl: row.repoUrl,
+              baseRef: row.baseRef,
+              branchName: row.branchName,
+              metadata: row.metadata as Record<string, unknown> | null,
+              config: {
+                ...config,
+                provisionCommand:
+                  config?.provisionCommand
+                  ?? projectPolicy?.workspaceStrategy?.provisionCommand
+                  ?? null,
+              },
+            },
+            issue: row.sourceIssueId
+              ? { id: row.sourceIssueId, identifier: null, title: row.name }
+              : null,
+            agent: {
+              id: actor.agentId ?? null,
+              name: actor.actorType === "user" ? "Board" : "Agent",
+              companyId: row.companyId,
+            },
+            recorder,
+          });
+          if (!realized) {
+            rebuildError = "Execution workspace could not be rebuilt";
+          }
+        } catch (error) {
+          rebuildError = error instanceof Error ? error.message : String(error);
+        }
+
+        if (rebuildError) {
+          // The rebuild failed. Keep the row closed and retryable. Raise the
+          // generation so a queued cleanup that captured the old generation does
+          // nothing. Clear cleanupEligibleAt so the reaper does not destroy the
+          // half-built worktree while a later reopen retries.
+          await tx
+            .update(executionWorkspaces)
+            .set({
+              cleanupReason: EXECUTION_WORKSPACE_REOPEN_FAILED_REASON,
+              cleanupEligibleAt: null,
+              metadata: nextMetadata,
+              updatedAt: new Date(),
+            })
+            .where(eq(executionWorkspaces.id, row.id));
+          // The server log carries the underlying cause for diagnosis. The audit
+          // event and the returned message stay free of repo URLs, host paths,
+          // and git output.
+          logger.warn(
+            {
+              event: "execution_workspace.reopen",
+              outcome: "rebuild_failed",
+              executionWorkspaceId: row.id,
+              issueId: issue.id,
+              companyId: row.companyId,
+              actorType: actor.actorType,
+              actorAgentId: actor.agentId ?? null,
+              generation: nextGeneration,
+              error: rebuildError,
+            },
+            "execution workspace reopen rebuild failed",
+          );
+          await logActivity(tx as unknown as Db, {
+            companyId: row.companyId,
+            actorType: actor.actorType === "user" ? "user" : "agent",
+            actorId: actor.agentId ?? "system",
+            agentId: actor.actorType === "user" ? null : actor.agentId,
+            action: "execution_workspace.reopen_failed",
+            entityType: "execution_workspace",
+            entityId: row.id,
+            details: {
+              issueId: issue.id,
+              outcome: "rebuild_failed",
+              generation: nextGeneration,
+            },
+          });
+          return { ok: false, code: "rebuild_failed", message: "Failed to rebuild the execution workspace" };
+        }
+
+        // The rebuild succeeded. Publish the row as active in one write, and clear
+        // the closed markers.
+        const activeRow = await tx
+          .update(executionWorkspaces)
+          .set({
+            status: "active",
+            closedAt: null,
+            cleanupReason: null,
+            cleanupEligibleAt: null,
+            metadata: nextMetadata,
+            lastUsedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(executionWorkspaces.id, row.id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!activeRow) {
+          return { ok: false, code: "rebuild_failed", message: "Failed to rebuild the execution workspace" };
+        }
+        logger.info(
+          {
+            event: "execution_workspace.reopen",
+            outcome: "reopened",
+            executionWorkspaceId: row.id,
+            issueId: issue.id,
+            companyId: row.companyId,
+            actorType: actor.actorType,
+            actorAgentId: actor.agentId ?? null,
+            generation: nextGeneration,
+          },
+          "execution workspace reopened",
+        );
+        await logActivity(tx as unknown as Db, {
+          companyId: row.companyId,
+          actorType: actor.actorType === "user" ? "user" : "agent",
+          actorId: actor.agentId ?? "system",
+          agentId: actor.actorType === "user" ? null : actor.agentId,
+          action: "execution_workspace.reopened",
+          entityType: "execution_workspace",
+          entityId: row.id,
+          details: {
+            issueId: issue.id,
+            outcome: "reopened",
+            generation: nextGeneration,
+          },
+        });
+        return { ok: true, reopened: true, workspace: toExecutionWorkspace(activeRow) };
+      });
+    },
+
+    // Read the lifecycle generation of a workspace row. The archive route captures
+    // this before it destroys, so it can hand the value to the destruction fence.
+    readLifecycleGeneration: async (id: string): Promise<number | null> => {
+      const row = await db
+        .select({ metadata: executionWorkspaces.metadata })
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, id))
+        .then((rows) => rows[0] ?? null);
+      return row ? readExecutionWorkspaceLifecycleGeneration(row.metadata as Record<string, unknown> | null) : null;
+    },
+
+    // Run a destructive workspace cleanup under the per-workspace lifecycle lock.
+    // The caller passes the generation it captured at archive time. If a reopen
+    // raised the generation or restored the row to an open status, the fence skips
+    // the destroy callback, so a cleanup never deletes a worktree that a reopen
+    // rebuilt.
+    fenceClosedWorkspaceDestruction: async <T>(input: {
+      workspaceId: string;
+      capturedGeneration: number;
+      destroy: () => Promise<T>;
+    }): Promise<{ skippedReopened: true } | { skippedReopened: false; result: T }> => {
+      return db.transaction(async (tx) => {
+        await acquireExecutionWorkspaceLifecycleLock(tx, input.workspaceId);
+        const fresh = await tx
+          .select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
+          .from(executionWorkspaces)
+          .where(eq(executionWorkspaces.id, input.workspaceId))
+          .then((rows) => rows[0] ?? null);
+        const currentGeneration = fresh
+          ? readExecutionWorkspaceLifecycleGeneration(fresh.metadata as Record<string, unknown> | null)
+          : null;
+        if (
+          !fresh
+          || !isClosedExecutionWorkspaceStatus(fresh.status)
+          || currentGeneration !== input.capturedGeneration
+        ) {
+          logger.info(
+            {
+              event: "execution_workspace.cleanup_skipped",
+              reason: "reopened",
+              executionWorkspaceId: input.workspaceId,
+              capturedGeneration: input.capturedGeneration,
+              currentGeneration,
+              currentStatus: fresh?.status ?? null,
+            },
+            "execution workspace cleanup skipped because it was reopened",
+          );
+          return { skippedReopened: true as const };
+        }
+        const result = await input.destroy();
+        return { skippedReopened: false as const, result };
+      });
     },
 
     reconcileExecutionWorkspaceBranch: async (

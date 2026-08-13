@@ -13,7 +13,12 @@ import {
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { accessService, executionWorkspaceService, heartbeatService, logActivity, workspaceOperationService } from "../services/index.js";
-import { mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
+import {
+  bumpExecutionWorkspaceLifecycleGeneration,
+  mergeExecutionWorkspaceConfig,
+  readExecutionWorkspaceConfig,
+  readExecutionWorkspaceLifecycleGeneration,
+} from "../services/execution-workspaces.js";
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
 import {
@@ -634,17 +639,25 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       }
 
       const closedAt = new Date();
+      // Raise the lifecycle generation on archive so the destruction below (and
+      // any queued reaper cleanup) can detect a reopen that runs in between.
+      const archiveMetadata = bumpExecutionWorkspaceLifecycleGeneration(
+        ((patch.metadata as Record<string, unknown> | null | undefined)
+          ?? (existing.metadata as Record<string, unknown> | null)) ?? null,
+      );
       const archivedWorkspace = await svc.update(id, {
         ...patch,
         status: "archived",
         closedAt,
         cleanupReason: null,
+        metadata: archiveMetadata,
       });
       if (!archivedWorkspace) {
         res.status(404).json({ error: "Execution workspace not found" });
         return;
       }
       workspace = archivedWorkspace;
+      const capturedGeneration = readExecutionWorkspaceLifecycleGeneration(archiveMetadata);
 
       await environmentRuntime.destroyReusableSandboxLeases({
         companyId: existing.companyId,
@@ -668,11 +681,6 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       }
 
       try {
-        await stopRuntimeServicesForExecutionWorkspace({
-          db,
-          executionWorkspaceId: existing.id,
-          workspaceCwd: existing.cwd,
-        });
         const projectWorkspace = existing.projectWorkspaceId
           ? await db
               .select({
@@ -697,26 +705,45 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
               .where(and(eq(projects.id, existing.projectId), eq(projects.companyId, existing.companyId)))
               .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy))
           : null;
-        const cleanupResult = await cleanupExecutionWorkspaceArtifacts({
-          workspace: existing,
-          projectWorkspace,
-          teardownCommand: configForCleanup?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,
-          cleanupCommand: configForCleanup?.cleanupCommand ?? null,
-          recorder: workspaceOperationsSvc.createRecorder({
-            companyId: existing.companyId,
-            executionWorkspaceId: existing.id,
-          }),
+        // Destroy under the lifecycle lock. If a resume reopened the workspace in
+        // the meantime, the fence skips destruction and keeps the reopened row.
+        const fenced = await svc.fenceClosedWorkspaceDestruction({
+          workspaceId: id,
+          capturedGeneration,
+          destroy: async () => {
+            await stopRuntimeServicesForExecutionWorkspace({
+              db,
+              executionWorkspaceId: existing.id,
+              workspaceCwd: existing.cwd,
+            });
+            return cleanupExecutionWorkspaceArtifacts({
+              workspace: existing,
+              projectWorkspace,
+              teardownCommand: configForCleanup?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,
+              cleanupCommand: configForCleanup?.cleanupCommand ?? null,
+              recorder: workspaceOperationsSvc.createRecorder({
+                companyId: existing.companyId,
+                executionWorkspaceId: existing.id,
+              }),
+            });
+          },
         });
-        cleanupWarnings = cleanupResult.warnings;
-        const cleanupPatch: Record<string, unknown> = {
-          closedAt,
-          cleanupReason: cleanupWarnings.length > 0 ? cleanupWarnings.join(" | ") : null,
-        };
-        if (!cleanupResult.cleaned) {
-          cleanupPatch.status = "cleanup_failed";
-        }
-        if (cleanupResult.warnings.length > 0 || !cleanupResult.cleaned) {
-          workspace = (await svc.update(id, cleanupPatch)) ?? workspace;
+        if (fenced.skippedReopened) {
+          // A resume reopened the workspace. Return the current (active) row.
+          workspace = (await svc.getById(id)) ?? workspace;
+        } else {
+          const cleanupResult = fenced.result;
+          cleanupWarnings = cleanupResult.warnings;
+          const cleanupPatch: Record<string, unknown> = {
+            closedAt,
+            cleanupReason: cleanupWarnings.length > 0 ? cleanupWarnings.join(" | ") : null,
+          };
+          if (!cleanupResult.cleaned) {
+            cleanupPatch.status = "cleanup_failed";
+          }
+          if (cleanupResult.warnings.length > 0 || !cleanupResult.cleaned) {
+            workspace = (await svc.update(id, cleanupPatch)) ?? workspace;
+          }
         }
       } catch (error) {
         const failureReason = error instanceof Error ? error.message : String(error);
