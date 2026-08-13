@@ -887,28 +887,40 @@ export async function createApp(
     logger.error({ err }, "Failed to load ready plugins on startup");
   });
   app.locals.bundledPluginsStartup = bundledPluginsStartup;
-  let appServicesShutdown = false;
-  const shutdownAppServices = () => {
-    if (appServicesShutdown) return;
-    appServicesShutdown = true;
-    disableFeedbackExportFlushes();
-    if (importTransferSweepTimer) {
-      clearInterval(importTransferSweepTimer);
-      importTransferSweepTimer = null;
-    }
-    devWatcher?.close();
-    viteHtmlRenderer?.dispose();
-    void viteDevServer?.close().catch(() => undefined);
-    viteHmrServer?.close();
-    hostServiceCleanup.disposeAll();
-    hostServiceCleanup.teardown();
-    // Cancel every live setup-token login session, so each direct child stops
-    // before the server releases each lease (SR-4).
-    void setupTokenLoginService?.shutdown();
+  // The shutdown hook runs at most once. It caches the in-flight promise, so a
+  // second caller (for example the `exit` handler) awaits the same completion
+  // instead of starting a second teardown.
+  let appServicesShutdown: Promise<void> | null = null;
+  const shutdownAppServices = (): Promise<void> => {
+    if (appServicesShutdown) return appServicesShutdown;
+    appServicesShutdown = (async () => {
+      disableFeedbackExportFlushes();
+      if (importTransferSweepTimer) {
+        clearInterval(importTransferSweepTimer);
+        importTransferSweepTimer = null;
+      }
+      devWatcher?.close();
+      viteHtmlRenderer?.dispose();
+      void viteDevServer?.close().catch(() => undefined);
+      viteHmrServer?.close();
+      hostServiceCleanup.disposeAll();
+      hostServiceCleanup.teardown();
+      // Cancel every live setup-token login session and AWAIT the cancellation,
+      // so each direct child stops and the server releases each lease before the
+      // caller stops the database and the provider (SR-4). A lease release that
+      // fails stays a durable record for the startup reaper.
+      await setupTokenLoginService?.shutdown();
+    })();
+    return appServicesShutdown;
   };
   app.locals.paperclipShutdown = shutdownAppServices;
 
-  process.once("exit", shutdownAppServices);
+  // The `exit` event is synchronous. It cannot await the teardown, so it runs
+  // the best-effort cleanup and drops the returned promise. The orderly signal
+  // path awaits `shutdownAppServices` in full before the process exits.
+  process.once("exit", () => {
+    void shutdownAppServices();
+  });
   process.once("beforeExit", () => {
     void flushPluginLogBuffer();
   });

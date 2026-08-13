@@ -91,6 +91,7 @@ import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
 import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
 import {
   coordinateHeartbeatSchedulerShutdown,
+  finalizeServerShutdown,
   loadWithoutCoordinatedShutdownSignalHooks,
 } from "./shutdown.js";
 import { systemdNotify } from "./services/systemd-notify.js";
@@ -1577,21 +1578,22 @@ export async function startServer(): Promise<StartedServer> {
         logger.error({ err, signal }, "run-log in-flight mirror flush failed");
       }
 
-      const appShutdown = (app as { locals?: { paperclipShutdown?: () => void } }).locals?.paperclipShutdown;
-      appShutdown?.();
+      const appShutdown = (app as { locals?: { paperclipShutdown?: () => Promise<void> } }).locals
+        ?.paperclipShutdown;
+      const embeddedPostgresToStop =
+        embeddedPostgres && embeddedPostgresStartedByThisProcess ? embeddedPostgres : null;
 
-      if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
-        logger.info({ signal }, "Stopping embedded PostgreSQL");
-        try {
-          await embeddedPostgres?.stop();
-        } catch (err) {
-          logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
-        }
-      }
-
-      // Flush buffered OTel spans before the process goes away; without this
-      // await the exporter's final batch is dropped on exit.
-      await shutdownInstrumentation();
+      // Await the ordered application teardown before the process exits. A live
+      // setup-token login session must stop and release its sandbox lease before
+      // the database and the provider stop, so an orderly shutdown never leaves a
+      // sandbox lease or confidential login state alive past the process exit.
+      await finalizeServerShutdown({
+        signal,
+        shutdownAppServices: appShutdown,
+        stopEmbeddedPostgres: embeddedPostgresToStop ? () => embeddedPostgresToStop.stop() : null,
+        shutdownInstrumentation,
+        log: logger,
+      });
 
       process.exit(0);
     };
