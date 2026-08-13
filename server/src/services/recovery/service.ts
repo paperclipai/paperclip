@@ -160,6 +160,22 @@ export const SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS = parseSuccessfulRunMissi
   process.env.SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS,
 );
 
+// Honor the cap persisted on the recovery-action row. A later env change must
+// not re-open or prematurely stop an in-flight missing-disposition action.
+export function resolveSuccessfulRunMissingStateMaxAttempts(
+  persistedMaxAttempts: number | null | undefined,
+): number {
+  if (
+    typeof persistedMaxAttempts === "number" &&
+    Number.isSafeInteger(persistedMaxAttempts) &&
+    persistedMaxAttempts >= 1 &&
+    persistedMaxAttempts <= SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS_CEILING
+  ) {
+    return persistedMaxAttempts;
+  }
+  return SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS;
+}
+
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
@@ -4675,22 +4691,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         // SPC-21292). The exhausted action stays as first-class evidence for
         // board/human intervention.
         const existingActive = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id);
-        if (
-          existingActive &&
-          existingActive.cause === SUCCESSFUL_RUN_MISSING_STATE_REASON &&
-          existingActive.attemptCount >= SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS
-        ) {
-          logger.warn(
-            {
-              issueId: issue.id,
-              actionId: existingActive.id,
-              attemptCount: existingActive.attemptCount,
-              maxAttempts: existingActive.maxAttempts ?? SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS,
-            },
-            "recovery.stranded.repeated_missing_disposition — skipping re-escalation",
+        if (existingActive && existingActive.cause === SUCCESSFUL_RUN_MISSING_STATE_REASON) {
+          const existingActiveMaxAttempts = resolveSuccessfulRunMissingStateMaxAttempts(
+            existingActive.maxAttempts,
           );
-          result.skipped += 1;
-          continue;
+          if (existingActive.attemptCount >= existingActiveMaxAttempts) {
+            logger.warn(
+              {
+                issueId: issue.id,
+                actionId: existingActive.id,
+                attemptCount: existingActive.attemptCount,
+                maxAttempts: existingActiveMaxAttempts,
+              },
+              "recovery.stranded.repeated_missing_disposition — skipping re-escalation",
+            );
+            result.skipped += 1;
+            continue;
+          }
         }
 
         const updated = await escalateStrandedAssignedIssue({
