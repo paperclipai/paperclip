@@ -31,6 +31,9 @@ const levelLabels: Record<string, string> = {
   team: "Team",
   agent: "Agent",
   task: "Task",
+  objective: "Objective",
+  initiative: "Initiative",
+  epic: "Epic",
 };
 
 export function NewGoalDialog() {
@@ -40,7 +43,7 @@ export function NewGoalDialog() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState("planned");
-  const [level, setLevel] = useState("task");
+  const [level, setLevel] = useState("");
   const [parentId, setParentId] = useState("");
   const [expanded, setExpanded] = useState(false);
 
@@ -51,6 +54,7 @@ export function NewGoalDialog() {
 
   // Apply defaults when dialog opens
   const appliedParentId = parentId || newGoalDefaults.parentId || "";
+  const appliedLevel = level || newGoalDefaults.level || "task";
 
   const { data: goals } = useQuery({
     queryKey: queryKeys.goals.list(selectedCompanyId!),
@@ -63,6 +67,7 @@ export function NewGoalDialog() {
       goalsApi.create(selectedCompanyId!, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.goals.list(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.goals.map(selectedCompanyId!) });
       reset();
       closeNewGoal();
     },
@@ -79,7 +84,7 @@ export function NewGoalDialog() {
     setTitle("");
     setDescription("");
     setStatus("planned");
-    setLevel("task");
+    setLevel("");
     setParentId("");
     setExpanded(false);
   }
@@ -90,7 +95,7 @@ export function NewGoalDialog() {
       title: title.trim(),
       description: description.trim() || undefined,
       status,
-      level,
+      level: appliedLevel,
       ...(appliedParentId ? { parentId: appliedParentId } : {}),
     });
   }
@@ -213,7 +218,7 @@ export function NewGoalDialog() {
             <PopoverTrigger asChild>
               <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors">
                 <Layers className="h-3 w-3 text-muted-foreground" />
-                {levelLabels[level] ?? level}
+                {levelLabels[appliedLevel] ?? appliedLevel}
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-40 p-1" align="start">
@@ -222,7 +227,7 @@ export function NewGoalDialog() {
                   key={l}
                   className={cn(
                     "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                    l === level && "bg-accent"
+                    l === appliedLevel && "bg-accent"
                   )}
                   onClick={() => { setLevel(l); setLevelOpen(false); }}
                 >

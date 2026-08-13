@@ -605,6 +605,7 @@ export function NewIssueDialog() {
     },
     onSuccess: ({ issue, companyId, failures }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.goals.map(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });

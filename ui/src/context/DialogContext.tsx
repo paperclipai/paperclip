@@ -22,6 +22,7 @@ interface NewIssueDefaults {
 
 interface NewGoalDefaults {
   parentId?: string;
+  level?: string;
 }
 
 interface OnboardingOptions {

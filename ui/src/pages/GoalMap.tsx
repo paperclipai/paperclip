@@ -9,6 +9,7 @@ import { agentsApi } from "../api/agents";
 import { issuesApi } from "../api/issues";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useDialogActions } from "../context/DialogContext";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 import { Card } from "@/components/ui/card";
@@ -398,20 +399,31 @@ export function GoalMap() {
   });
 
   // Create-from-the-map: initiative + -> epic, epic + -> task, task + -> sub-task.
-  const [createDraft, setCreateDraft] = useState<
-    | { kind: "epic"; parentGoalId: string; parentTitle: string }
-    | { kind: "task"; goalId: string; goalTitle: string }
-    | { kind: "subtask"; goalId: string; parentIssueId: string; parentTitle: string }
-    | null
-  >(null);
-  const [createTitle, setCreateTitle] = useState("");
-  const createEpic = useMutation({
-    mutationFn: ({ title, parentGoalId }: { title: string; parentGoalId: string }) =>
-      goalsApi.create(selectedCompanyId!, { title, level: "epic", status: "active", parentId: parentGoalId }),
-    onSettled: () => {
-      if (selectedCompanyId) queryClient.invalidateQueries({ queryKey: queryKeys.goals.list(selectedCompanyId) });
+  // All creates go through the global modals (NewGoalDialog / NewIssueDialog) so
+  // the full form — including the agent to execute — is available everywhere.
+  const { openNewIssue, openNewGoal } = useDialogActions();
+  const openCreateForGoal = useCallback(
+    (goal: { id: string; level: string; title: string }) => {
+      if (goal.level === "initiative") {
+        openNewGoal({ parentId: goal.id, level: "epic" });
+      } else {
+        openNewIssue({ goalId: goal.id, status: "todo" });
+      }
     },
-  });
+    [openNewGoal, openNewIssue],
+  );
+  const openCreateSubtask = useCallback(
+    (issue: { id: string; goalId: string; title: string; identifier: string | null }) => {
+      openNewIssue({
+        goalId: issue.goalId,
+        parentId: issue.id,
+        parentIdentifier: issue.identifier ?? undefined,
+        parentTitle: issue.title,
+        status: "todo",
+      });
+    },
+    [openNewIssue],
+  );
   const updateGoal = useMutation({
     mutationFn: ({ goalId, data }: { goalId: string; data: Record<string, unknown> }) =>
       goalsApi.update(goalId, data),
@@ -425,29 +437,6 @@ export function GoalMap() {
       if (selectedCompanyId) queryClient.invalidateQueries({ queryKey: queryKeys.goals.list(selectedCompanyId) });
     },
   });
-  const createTask = useMutation({
-    mutationFn: (data: Record<string, unknown>) => issuesApi.create(selectedCompanyId!, data),
-    onSettled: () => {
-      if (selectedCompanyId) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.goals.map(selectedCompanyId) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
-      }
-    },
-  });
-  const submitCreate = useCallback(() => {
-    const title = createTitle.trim();
-    if (!createDraft || !title) return;
-    if (createDraft.kind === "epic") {
-      createEpic.mutate({ title, parentGoalId: createDraft.parentGoalId });
-    } else if (createDraft.kind === "task") {
-      createTask.mutate({ title, goalId: createDraft.goalId, status: "backlog" });
-    } else {
-      createTask.mutate({ title, goalId: createDraft.goalId, parentId: createDraft.parentIssueId, status: "backlog" });
-    }
-    setCreateDraft(null);
-    setCreateTitle("");
-  }, [createDraft, createTitle, createEpic, createTask]);
-
   // Hide-completed: open tasks stay, plus (a) their done ancestors so trees
   // keep their shape, and (b) the completed blockers that unlocked a shown
   // task, so green "path clear" arrows keep their context.
@@ -1193,22 +1182,13 @@ export function GoalMap() {
                   </div>
                   <button
                     data-map-plus
-                    aria-label={node.goal.level === "initiative" ? "New epic in this initiative" : "New task in this epic"}
-                    title={node.goal.level === "initiative" ? "New epic in this initiative" : "New task in this epic"}
+                    aria-label={node.goal.level === "initiative" ? "New epic in this initiative" : node.goal.level === "company" ? "New unassigned task" : "New task in this epic"}
+                    title={node.goal.level === "initiative" ? "New epic in this initiative" : node.goal.level === "company" ? "New unassigned task" : "New task in this epic"}
                     style={PLUS_BTN_STYLE}
                     onClick={(e) => {
                       e.stopPropagation();
                       setSelection({ kind: "goal", id: node.goal.id });
-                      setCreateTitle("");
-                      if (node.goal.level === "initiative") {
-                        setCreateDraft({ kind: "epic", parentGoalId: node.goal.id, parentTitle: node.goal.title });
-                      } else {
-                        setCreateDraft({
-                          kind: "task",
-                          goalId: node.goal.id,
-                          goalTitle: node.goal.level === "company" ? "New / unassigned" : node.goal.title,
-                        });
-                      }
+                      openCreateForGoal(node.goal);
                     }}
                   >
                     +
@@ -1306,8 +1286,7 @@ export function GoalMap() {
                     onClick={(e) => {
                       e.stopPropagation();
                       setSelection({ kind: "issue", id: issue.id });
-                      setCreateTitle("");
-                      setCreateDraft({ kind: "subtask", goalId: issue.goalId, parentIssueId: issue.id, parentTitle: issue.title });
+                      openCreateSubtask(issue);
                     }}
                   >
                     +
@@ -1328,30 +1307,6 @@ export function GoalMap() {
 
         {/* Inspector */}
         <aside className="flex w-full shrink-0 flex-col gap-4 overflow-y-auto border-t border-border bg-background p-4 md:w-80 md:border-t-0 md:border-l">
-          {createDraft && (
-            <div className="rounded-lg border border-ring/50 bg-accent/30 p-3">
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                {createDraft.kind === "epic" && `New epic in ${createDraft.parentTitle}`}
-                {createDraft.kind === "task" && `New task in ${createDraft.goalTitle}`}
-                {createDraft.kind === "subtask" && `New sub-task of ${createDraft.parentTitle}`}
-              </p>
-              <input
-                autoFocus
-                value={createTitle}
-                onChange={(e) => setCreateTitle(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") submitCreate();
-                  if (e.key === "Escape") setCreateDraft(null);
-                }}
-                placeholder="Title…"
-                className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm focus-visible:ring-ring focus-visible:ring-[3px] focus-visible:outline-none"
-              />
-              <div className="mt-2 flex gap-2">
-                <Button size="sm" onClick={submitCreate} disabled={!createTitle.trim()}>Create</Button>
-                <Button size="sm" variant="outline" onClick={() => setCreateDraft(null)}>Cancel</Button>
-              </div>
-            </div>
-          )}
           {!selectedGoal && !selectedIssue && (
             <p className="text-sm text-muted-foreground">
               Select a goal or task. Drag cards to move, nest, or place them freely; double-click a parent to
@@ -1408,14 +1363,7 @@ export function GoalMap() {
                     <Button
                       size="sm"
                       variant="outline"
-                      onClick={() => {
-                        setCreateTitle("");
-                        if (selectedGoal.goal.level === "initiative") {
-                          setCreateDraft({ kind: "epic", parentGoalId: selectedGoal.goal.id, parentTitle: selectedGoal.goal.title });
-                        } else {
-                          setCreateDraft({ kind: "task", goalId: selectedGoal.goal.id, goalTitle: selectedGoal.goal.title });
-                        }
-                      }}
+                      onClick={() => openCreateForGoal(selectedGoal.goal)}
                     >
                       {selectedGoal.goal.level === "initiative" ? "+ New epic" : "+ New task"}
                     </Button>
@@ -1602,6 +1550,9 @@ export function GoalMap() {
                       })}
                     </PopoverContent>
                   </Popover>
+                  <Button variant="outline" size="sm" onClick={() => openCreateSubtask(selectedIssue)}>
+                    + New sub-task
+                  </Button>
                   <Link to={`/issues/${selectedIssue.id}`} className="ml-auto">
                     <Button variant="outline" size="sm">Open task</Button>
                   </Link>
