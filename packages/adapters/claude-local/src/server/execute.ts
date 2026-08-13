@@ -62,6 +62,7 @@ import {
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeMaxTurnsResult,
+  isClaudeContextLimitError,
   isClaudeProviderQuotaError,
   isClaudeRefusalResult,
   isClaudeTransientUpstreamError,
@@ -974,6 +975,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     if (!parsed) {
       const fallbackErrorMessage = parseFallbackErrorMessage(proc);
+      const contextLimit =
+        !loginMeta.requiresLogin &&
+        isClaudeContextLimitError({
+          parsed: null,
+          stdout: proc.stdout,
+          stderr: proc.stderr,
+          errorMessage: fallbackErrorMessage,
+        });
       const providerQuota =
         !loginMeta.requiresLogin &&
         (proc.exitCode ?? 0) !== 0 &&
@@ -985,6 +994,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       const transientUpstream =
         !loginMeta.requiresLogin &&
+        !contextLimit &&
         !providerQuota &&
         (proc.exitCode ?? 0) !== 0 &&
         isClaudeTransientUpstreamError({
@@ -1010,6 +1020,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           errorMessage: fallbackErrorMessage,
         })
         ? "model_not_found"
+        : contextLimit
+        ? "claude_context_limit"
         : providerQuota
         ? "provider_quota"
         : transientUpstream
@@ -1028,6 +1040,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         resultJson: {
           stdout: proc.stdout,
           stderr: proc.stderr,
+          ...(contextLimit ? { stopReason: "context_limit", errorCategory: "context_limit" } : {}),
           ...(errorFamily ? { errorFamily } : {}),
           ...(transientRetryNotBefore
             ? { retryNotBefore: transientRetryNotBefore.toISOString() }
@@ -1040,7 +1053,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             : {}),
           ...(proc.terminalResultCleanup ? { unmanagedBackgroundTask: proc.terminalResultCleanup } : {}),
         },
-        clearSession: Boolean(opts.clearSessionOnMissingSession),
+        clearSession: contextLimit || Boolean(opts.clearSessionOnMissingSession),
       };
     }
 
@@ -1103,10 +1116,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const errorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
+    const clearSessionForContextLimit =
+      failed && isClaudeContextLimitError({ parsed, stdout: proc.stdout, stderr: proc.stderr, errorMessage });
     const providerQuota =
       failed &&
       !loginMeta.requiresLogin &&
       !clearSessionForMaxTurns &&
+      !clearSessionForContextLimit &&
       !poisonedPreviousMessageId &&
       isClaudeProviderQuotaError({
         parsed,
@@ -1145,6 +1161,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? "model_not_found"
       : failed && clearSessionForMaxTurns
       ? "max_turns_exhausted"
+      : clearSessionForContextLimit
+      ? "claude_context_limit"
       : failed && poisonedPreviousMessageId
       ? "claude_poisoned_previous_message_id"
       : providerQuota
@@ -1164,6 +1182,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const mergedResultJson: Record<string, unknown> = {
       ...parsed,
       ...(failed && clearSessionForMaxTurns ? { stopReason: "max_turns_exhausted" } : {}),
+      ...(clearSessionForContextLimit ? { stopReason: "context_limit", errorCategory: "context_limit" } : {}),
       ...(failed && poisonedPreviousMessageId ? { stopReason: "claude_poisoned_previous_message_id" } : {}),
       ...(claudeRefusal ? { stopReason: "refusal", errorFamily: "model_refusal" } : {}),
       ...(errorFamily ? { errorFamily } : {}),
@@ -1196,6 +1215,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       summary: parsedStream.summary || asString(parsed.result, ""),
       clearSession:
         clearSessionForMaxTurns ||
+        clearSessionForContextLimit ||
         // Clear-on-error: a poisoned previous_message_id is a deterministic
         // state error. Force the server to drop persisted session state for
         // this issue so the next continuation starts from a clean slate.
