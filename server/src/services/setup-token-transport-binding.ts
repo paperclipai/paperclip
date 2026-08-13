@@ -251,7 +251,7 @@ export function createProductionSetupTokenSandboxProvider(
   };
 
   return {
-    async acquire({ scope, deadline: _deadline }) {
+    async acquire({ scope, deadline }) {
       const environment = await deps.environments.getById(scope.environmentId);
       if (!environment) {
         log("[paperclip] Setup-token login: the selected environment is not found.");
@@ -286,9 +286,27 @@ export function createProductionSetupTokenSandboxProvider(
         // Apply the active custom-image template, so the sandbox binds to the
         // trusted image and runtime identity.
         applyCustomImageTemplate: true,
+        // Bound the lease expiry to the session deadline. The runtime records
+        // the earlier of this deadline and the provider expiry on the lease row.
+        requestedExpiresAt: new Date(deadline),
       });
       const leaseId = leaseRecord.lease.id;
       leaseRecords.set(leaseId, leaseRecord);
+
+      // Enforce an independent, provider-backed expiry at or before the session
+      // deadline. A crash or an outage stops the in-process cleanup, so the
+      // lease row must carry a durable expiry that a lease reaper acts on. When
+      // the acquired lease has no expiry, an invalid expiry, or an expiry after
+      // the deadline, the server cannot guarantee the hard stop. Release the
+      // remote lease and fail closed, so the login holds no lease and leaves no
+      // durable cleanup row.
+      const expiresAt = leaseRecord.lease.expiresAt;
+      const expiresAtMs = expiresAt instanceof Date ? expiresAt.getTime() : Number.NaN;
+      if (!Number.isFinite(expiresAtMs) || expiresAtMs > deadline) {
+        await this.release(leaseId);
+        log("[paperclip] Setup-token login: the acquired lease expiry does not bound the session deadline.");
+        return failClosed();
+      }
 
       try {
         const openPtySession = await deps.openLivePtySession({

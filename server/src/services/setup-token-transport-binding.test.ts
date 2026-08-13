@@ -411,6 +411,7 @@ describe("production sandbox provider", () => {
       async close(): Promise<void> {},
     });
     const releaseRunLease = vi.fn(async () => null);
+    const deadline = Date.now() + 1000;
     const provider = createProductionSetupTokenSandboxProvider({
       environments: {
         getById: async () => ({ id: "env-1", name: "Sandbox", driver: "sandbox", status: "active" }) as never,
@@ -421,7 +422,8 @@ describe("production sandbox provider", () => {
         acquireRunLease: async () =>
           ({
             environment: { id: "env-1", driver: "sandbox" },
-            lease: { id: "lease-live" },
+            // The runtime bounds the lease expiry to the session deadline.
+            lease: { id: "lease-live", expiresAt: new Date(deadline - 1) },
             leaseContext: {},
           }) as never,
         getDriver: () => ({ releaseRunLease }) as never,
@@ -429,11 +431,96 @@ describe("production sandbox provider", () => {
       openLivePtySession: async () => openPtySession,
     });
 
-    const acquired = await provider.acquire({ scope: SCOPE, deadline: Date.now() + 1000 });
+    const acquired = await provider.acquire({ scope: SCOPE, deadline });
     expect(acquired.leaseId).toBe("lease-live");
 
     await provider.release(acquired.leaseId);
     expect(releaseRunLease).toHaveBeenCalledTimes(1);
+  });
+
+  it("forwards the session deadline and records a lease expiry at or before it", async () => {
+    const openPtySession: SetupTokenPtySessionOpener = async () => ({
+      onData(): void {},
+      write(): void {},
+      wait: async () => ({ exitCode: 0 }),
+      kill(): void {},
+      async close(): Promise<void> {},
+    });
+    const releaseRunLease = vi.fn(async () => null);
+    const deadline = Date.now() + 60_000;
+    let forwardedExpiresAt: Date | null | undefined;
+    const provider = createProductionSetupTokenSandboxProvider({
+      environments: {
+        getById: async () => ({ id: "env-1", name: "Sandbox", driver: "sandbox", status: "active" }) as never,
+        getLeaseById: async () => null,
+        releaseLease: async () => ({}) as never,
+      },
+      environmentRuntime: {
+        // The runtime bounds the lease expiry to the requested deadline, so the
+        // recorded expiry is the earlier of the two.
+        acquireRunLease: async (input: { requestedExpiresAt?: Date | null }) => {
+          forwardedExpiresAt = input.requestedExpiresAt;
+          const bounded = new Date(Math.min(deadline, deadline + 5_000));
+          return {
+            environment: { id: "env-1", driver: "sandbox" },
+            lease: { id: "lease-live", expiresAt: bounded },
+            leaseContext: {},
+          } as never;
+        },
+        getDriver: () => ({ releaseRunLease }) as never,
+      },
+      openLivePtySession: async () => openPtySession,
+    });
+
+    const acquired = await provider.acquire({ scope: SCOPE, deadline });
+
+    // The provider forwarded the session deadline to the runtime acquire.
+    expect(forwardedExpiresAt).toBeInstanceOf(Date);
+    expect((forwardedExpiresAt as Date).getTime()).toBe(deadline);
+    expect(acquired.leaseId).toBe("lease-live");
+    // The lease held no expiry after the deadline.
+    expect(releaseRunLease).not.toHaveBeenCalled();
+  });
+
+  it("releases the remote lease and fails closed when the acquired expiry is absent, invalid, or later", async () => {
+    const deadline = Date.now() + 60_000;
+    const cases: Array<{ label: string; expiresAt: unknown }> = [
+      { label: "absent", expiresAt: null },
+      { label: "invalid", expiresAt: new Date("not-a-date") },
+      { label: "later", expiresAt: new Date(deadline + 1) },
+    ];
+
+    for (const testCase of cases) {
+      const releaseRunLease = vi.fn(async () => null);
+      const openLivePtySession = vi.fn(async () => {
+        throw new Error("must not open a pty for an unbounded lease");
+      });
+      const provider = createProductionSetupTokenSandboxProvider({
+        environments: {
+          getById: async () => ({ id: "env-1", name: "Sandbox", driver: "sandbox", status: "active" }) as never,
+          getLeaseById: async () => null,
+          releaseLease: async () => ({}) as never,
+        },
+        environmentRuntime: {
+          acquireRunLease: async () =>
+            ({
+              environment: { id: "env-1", driver: "sandbox" },
+              lease: { id: "lease-unbounded", expiresAt: testCase.expiresAt },
+              leaseContext: {},
+            }) as never,
+          getDriver: () => ({ releaseRunLease }) as never,
+        },
+        openLivePtySession,
+      });
+
+      await expect(provider.acquire({ scope: SCOPE, deadline })).rejects.toMatchObject({
+        status: 503,
+      });
+      // The provider released the acquired remote lease through the driver.
+      expect(releaseRunLease, testCase.label).toHaveBeenCalledTimes(1);
+      // The provider failed closed before it opened the login pseudo-terminal.
+      expect(openLivePtySession, testCase.label).not.toHaveBeenCalled();
+    }
   });
 
   it("runs the provider driver release by id for a fresh instance with an empty lease map", async () => {
