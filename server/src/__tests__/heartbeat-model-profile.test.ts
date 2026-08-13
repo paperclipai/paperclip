@@ -219,6 +219,69 @@ describe("heartbeat model profile application", () => {
   });
 });
 
+describe("mergeModelProfileAdapterConfig maxTokensPerRun precedence (TMSC-20802)", () => {
+  // A model profile carries a per-run token cap reflecting its model tier. That
+  // cap is a DEFAULT: an explicit per-agent or per-issue cap (reviewed exceptional
+  // work) must win. Before the fix the model profile overrode the per-agent cap,
+  // so setting a lane's adapter_config cap had no effect and heavy-but-legitimate
+  // lanes were silently pinned to the tier ceiling.
+  const capProfile: AdapterModelProfileDefinition = {
+    key: "cheap",
+    label: "Cheap",
+    adapterConfig: {
+      model: "adapter-cheap",
+      maxTokensPerRun: 100_000,
+    },
+    source: "adapter_default",
+  };
+
+  const resolveCapProfile = () =>
+    resolveModelProfileApplication({
+      adapterModelProfiles: [capProfile],
+      agentRuntimeConfig: {},
+      issueModelProfile: "cheap",
+      contextSnapshot: {},
+    });
+
+  it("carries the model-profile cap through when neither agent nor issue sets one", () => {
+    const profile = resolveCapProfile();
+    expect((profile.adapterConfig ?? {}).maxTokensPerRun).toBe(100_000);
+    const merged = mergeModelProfileAdapterConfig({
+      baseConfig: { model: "primary" },
+      modelProfile: profile,
+      issueAdapterConfig: null,
+    });
+    expect(merged.maxTokensPerRun).toBe(100_000);
+  });
+
+  it("lets an explicit per-agent cap override the model-profile cap", () => {
+    const merged = mergeModelProfileAdapterConfig({
+      baseConfig: { maxTokensPerRun: 200_000 },
+      modelProfile: resolveCapProfile(),
+      issueAdapterConfig: null,
+    });
+    expect(merged.maxTokensPerRun).toBe(200_000);
+  });
+
+  it("lets a per-issue cap override both the agent and the model-profile cap", () => {
+    const merged = mergeModelProfileAdapterConfig({
+      baseConfig: { maxTokensPerRun: 200_000 },
+      modelProfile: resolveCapProfile(),
+      issueAdapterConfig: { maxTokensPerRun: 350_000 },
+    });
+    expect(merged.maxTokensPerRun).toBe(350_000);
+  });
+
+  it("ignores a non-positive agent cap and keeps the model-profile default", () => {
+    const merged = mergeModelProfileAdapterConfig({
+      baseConfig: { maxTokensPerRun: 0 },
+      modelProfile: resolveCapProfile(),
+      issueAdapterConfig: null,
+    });
+    expect(merged.maxTokensPerRun).toBe(100_000);
+  });
+});
+
 describe("readActiveForcedModelProfile (limit-failover swap-back)", () => {
   const now = new Date("2026-06-16T12:00:00.000Z");
 

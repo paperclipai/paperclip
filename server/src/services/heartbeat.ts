@@ -3895,16 +3895,41 @@ export function resolveModelProfileApplication(input: {
   };
 }
 
+function firstFiniteMaxTokensPerRun(values: unknown[]): number | null {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+      return Math.floor(value);
+    }
+  }
+  return null;
+}
+
 export function mergeModelProfileAdapterConfig(input: {
   baseConfig: Record<string, unknown>;
   modelProfile: ModelProfileApplication;
   issueAdapterConfig: Record<string, unknown> | null | undefined;
 }): Record<string, unknown> {
-  return {
+  const issueAdapterConfig = input.issueAdapterConfig ?? {};
+  const merged = {
     ...input.baseConfig,
     ...(input.modelProfile.adapterConfig ?? {}),
-    ...(input.issueAdapterConfig ?? {}),
+    ...issueAdapterConfig,
   };
+  // TMSC-20802: maxTokensPerRun precedence must be issue > agent > model-profile.
+  // A model profile's per-run token cap reflects the model TIER and is only a
+  // default. The generic spread above places the model profile after the agent
+  // base config, so its cap silently overrode an explicit per-agent cap — which
+  // meant the per-agent adapter_config cap had no effect and lanes were pinned to
+  // the tier ceiling with no working override. An explicit per-agent or per-issue
+  // cap (reviewed exceptional work) must win; re-apply it with the right precedence.
+  const explicitCap = firstFiniteMaxTokensPerRun([
+    issueAdapterConfig.maxTokensPerRun,
+    input.baseConfig.maxTokensPerRun,
+  ]);
+  if (explicitCap !== null) {
+    merged.maxTokensPerRun = explicitCap;
+  }
+  return merged;
 }
 
 function modelProfileRunMetadata(
