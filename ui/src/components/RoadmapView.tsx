@@ -341,11 +341,14 @@ export function RoadmapView({ companyId, goals }: { companyId: string; goals: Go
                   <span className="truncate text-xs font-semibold">{block.title}</span>
                   {linked ? (
                     <span
-                      className="truncate text-(length:--text-nano) font-medium text-(--hex-22d3ee)"
+                      className="flex min-w-0 items-baseline gap-1 text-(length:--text-nano) font-medium text-(--hex-22d3ee)"
                       title={blockLinks.map(({ goal }) => goal.title).join(" · ")}
                     >
-                      {linked.level === "initiative" ? "⬖" : "◆"} {linked.title}
-                      {blockLinks.length > 1 ? ` +${blockLinks.length - 1}` : ""}
+                      {/* One diamond per linked goal, so the count survives truncation. */}
+                      <span className="shrink-0">
+                        {blockLinks.map(({ goal }) => (goal.level === "initiative" ? "⬖" : "◆")).join("")}
+                      </span>
+                      <span className="truncate">{linked.title}</span>
                     </span>
                   ) : (
                     <span className="truncate text-(length:--text-nano) text-muted-foreground">{block.detail ?? block.status}</span>
