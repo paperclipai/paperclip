@@ -506,9 +506,20 @@ type ContinuationRetryClassification = {
 
 export function isMissingExecutableFailure(latestRun: LatestIssueRun): boolean {
   if (!latestRun) return false;
+  // Scoped to the named failure-message fields, never the whole blob:
+  // `resultJson` also carries the run's raw `stdout`/`stderr` capture (up to
+  // MAX_CAPTURE_BYTES), and claude_local runs the CLI with
+  // `--output-format stream-json --verbose`, so stdout contains every
+  // `tool_result` the agent produced. Matching the serialized object would let
+  // an agent's own `spawn npm ENOENT` masquerade as our binary going missing.
+  // Mirrors the field-scoped test in heartbeat.ts's spawn-failure check.
   const resultJson = parseObject(latestRun.resultJson);
   return MISSING_EXECUTABLE_ERROR_RE.test(
-    [latestRun.error ?? "", JSON.stringify(resultJson)].join("\n"),
+    [
+      latestRun.error ?? "",
+      readNonEmptyString(resultJson.errorMessage) ?? "",
+      readNonEmptyString(resultJson.message) ?? "",
+    ].join("\n"),
   );
 }
 

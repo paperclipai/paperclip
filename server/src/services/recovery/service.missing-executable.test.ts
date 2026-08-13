@@ -68,4 +68,63 @@ describe("missing-executable continuation classification", () => {
     expect(isMissingExecutableFailure(run({ error: null }))).toBe(false);
     expect(isMissingExecutableFailure(null)).toBe(false);
   });
+
+  it("does not match captured agent output in resultJson.stdout/stderr", () => {
+    // `resultJson` is not small metadata: the claude_local failure path stores
+    // the raw `{ stdout, stderr }` capture (up to MAX_CAPTURE_BYTES), and the
+    // CLI runs with `--output-format stream-json --verbose`, so stdout carries
+    // every `tool_result` block the agent produced. An agent that shelled out
+    // and hit its own ENOENT must not be read as OUR binary going missing.
+    expect(
+      isMissingExecutableFailure(
+        run({
+          errorCode: "adapter_failed",
+          error: "upstream returned 503",
+          resultJson: {
+            stdout:
+              '{"type":"user","message":{"content":[{"type":"tool_result","content":"spawn npm ENOENT"}]}}',
+          },
+        }),
+      ),
+    ).toBe(false);
+
+    expect(
+      isMissingExecutableFailure(
+        run({
+          errorCode: "adapter_failed",
+          resultJson: { stderr: "npm: command not found in PATH" },
+        }),
+      ),
+    ).toBe(false);
+
+    // ...and the misclassification must not leak through the classifier either.
+    expect(
+      classifyContinuationFailure(
+        run({
+          errorCode: "adapter_failed",
+          error: "upstream returned 503",
+          resultJson: { stdout: "Error: spawn npm ENOENT" },
+        }),
+      ).kind,
+    ).toBe("transient_infra");
+  });
+
+  it("still matches the named string fields the adapter actually sets", () => {
+    expect(isMissingExecutableFailure(run({ error: "spawn claude ENOENT" }))).toBe(true);
+    expect(
+      isMissingExecutableFailure(run({ resultJson: { errorMessage: "spawn claude ENOENT" } })),
+    ).toBe(true);
+    expect(
+      isMissingExecutableFailure(
+        run({ resultJson: { message: 'Command not found in PATH: "claude"' } }),
+      ),
+    ).toBe(true);
+  });
+
+  it("tolerates non-string values in the named fields", () => {
+    expect(
+      isMissingExecutableFailure(run({ resultJson: { errorMessage: 42, message: null } })),
+    ).toBe(false);
+    expect(isMissingExecutableFailure(run({ resultJson: "spawn claude ENOENT" }))).toBe(false);
+  });
 });
