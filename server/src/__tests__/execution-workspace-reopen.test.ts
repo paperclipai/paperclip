@@ -338,4 +338,55 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
     expect(skipped.skippedReopened).toBe(true);
     expect(destroyStale).not.toHaveBeenCalled();
   });
+
+  it("clears the reopen-pending flag after an unconsumed reopen and stays idempotent", async () => {
+    const { companyId, projectId, projectWorkspaceId } = await seedCompanyProject();
+    const cwd = await makeExistingDir();
+    const workspaceId = await seedClosedWorkspace({ companyId, projectId, projectWorkspaceId, cwd });
+    const issueId = await seedIssue({ companyId, projectId, workspaceId, issueNumber: 4109 });
+
+    const svc = executionWorkspaceService(db);
+    // The reopen publishes the row as active and sets the reopen-pending flag.
+    const reopenResult = await svc.reopenClosedIsolatedExecutionWorkspaceForIssue({
+      workspaceId,
+      issue: { id: issueId, companyId, projectId },
+      actor: { agentId: null, actorType: "user" },
+    });
+    expect(reopenResult.ok).toBe(true);
+    const reopenedRow = await readWorkspace(workspaceId);
+    expect(metadataHasReopenPendingConsumption(reopenedRow?.metadata as Record<string, unknown> | null)).toBe(true);
+
+    // The caller never consumed the reopen, so clear the flag.
+    const cleared = await svc.clearReopenPendingConsumptionForUnconsumedReopen({
+      workspaceId,
+      issue: { id: issueId, companyId },
+      actor: { agentId: null, actorType: "user" },
+    });
+    expect(cleared.cleared).toBe(true);
+
+    const clearedRow = await readWorkspace(workspaceId);
+    // The flag is gone, so the terminal reaper can archive and reclaim the row.
+    expect(metadataHasReopenPendingConsumption(clearedRow?.metadata as Record<string, unknown> | null)).toBe(false);
+    // The row stays active, so a retried resume can still reuse the rebuilt worktree.
+    expect(clearedRow?.status).toBe("active");
+
+    const events = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, workspaceId));
+    expect(events.some((event) => event.action === "execution_workspace.reopen_unconsumed")).toBe(true);
+
+    // A second call finds no flag and does nothing.
+    const second = await svc.clearReopenPendingConsumptionForUnconsumedReopen({
+      workspaceId,
+      issue: { id: issueId, companyId },
+      actor: { agentId: null, actorType: "user" },
+    });
+    expect(second.cleared).toBe(false);
+    const eventsAfter = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, workspaceId));
+    expect(eventsAfter.filter((event) => event.action === "execution_workspace.reopen_unconsumed").length).toBe(1);
+  });
 });

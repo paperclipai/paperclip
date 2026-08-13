@@ -5034,22 +5034,7 @@ export function issueRoutes(
       issue: { id: issue.id, companyId: issue.companyId, projectId: issue.projectId ?? null },
       actor: { agentId: actor.agentId, actorType: actor.actorType },
     });
-    if (result.ok) {
-      if (result.reopened) {
-        // The reopen published the workspace as active and set the reopen-pending
-        // flag while the issue is still terminal. A later gate or the persistence
-        // step can still return an error after this point. On an error the issue
-        // stays terminal and the flag would block the reaper and the archive route
-        // from cleaning the workspace forever. Register a rollback that clears the
-        // flag when the response ends with an error status.
-        registerReopenRollbackOnErrorResponse(res, {
-          workspaceId: workspace.id,
-          issue: { id: issue.id, companyId: issue.companyId, projectId: issue.projectId ?? null },
-          actor: { agentId: actor.agentId, actorType: actor.actorType },
-        });
-      }
-      return true;
-    }
+    if (result.ok) return true;
     if (result.code === "not_reopenable") {
       res.status(409).json({ error: "This issue is linked to a closed workspace that cannot be reopened." });
     } else {
@@ -5058,32 +5043,52 @@ export function issueRoutes(
     return false;
   }
 
-  // Clear the reopen-pending flag if the request fails after a reopen. The reopen
-  // publishes the workspace as active and sets the flag while the issue is still
-  // terminal. A success response leaves the flag for the normal consumption path.
-  // An error response means the issue stays terminal, so clear the flag to let the
-  // reaper archive the workspace again. The rollback runs after the response ends,
-  // so it covers every error branch that follows the reopen, and it never blocks
-  // the response.
-  function registerReopenRollbackOnErrorResponse(
-    res: Response,
-    context: {
-      workspaceId: string;
-      issue: { id: string; companyId: string; projectId: string | null };
-      actor: { agentId: string | null; actorType: string };
-    },
-  ): void {
-    res.on("finish", () => {
-      if (res.statusCode < 400) return;
+  // Guard a reopen against a caller that never consumes it.
+  // `reopenClosedIssueExecutionWorkspaceOrRespond` publishes the rebuilt worktree
+  // as active and sets the reopen-pending flag while the source issue is still
+  // terminal. The route then moves the issue out of the terminal state, and the
+  // terminal reaper clears the flag once it sees the non-terminal issue. If the
+  // route mutation returns null, throws, or leaves the issue terminal, the flag
+  // stays set and both the reaper and the archive route skip the row forever, so
+  // the rebuilt worktree leaks and no path can reclaim it.
+  //
+  // This guard runs when the response ends, so it covers every exit: a success, a
+  // rejected mutation, and a thrown error. It reads the final issue status through
+  // a getter. When the issue is null or still terminal, it clears the flag so the
+  // reaper can reclaim the worktree. When the issue left the terminal state, it
+  // does nothing and the reaper clears the flag. The guard never touches the
+  // response, and the underlying clear is idempotent.
+  function guardReopenedWorkspaceConsumption(input: {
+    req: Request;
+    res: Response;
+    issue: { id: string; companyId: string };
+    workspace: Pick<ExecutionWorkspace, "id"> | null;
+    finalIssueStatus: () => string | null | undefined;
+  }): void {
+    const { req, res, issue, workspace, finalIssueStatus } = input;
+    if (!workspace) return;
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      const status = finalIssueStatus();
+      if (typeof status === "string" && !isClosedIssueStatus(status)) return;
+      const actor = getActorInfo(req);
       void executionWorkspacesSvc
-        .rollbackReopenedIsolatedExecutionWorkspaceForIssue(context)
+        .clearReopenPendingConsumptionForUnconsumedReopen({
+          workspaceId: workspace.id,
+          issue: { id: issue.id, companyId: issue.companyId },
+          actor: { agentId: actor.agentId, actorType: actor.actorType },
+        })
         .catch((err) =>
           logger.warn(
-            { err, workspaceId: context.workspaceId, issueId: context.issue.id },
-            "failed to roll back reopened execution workspace after error response",
+            { err, issueId: issue.id, executionWorkspaceId: workspace.id },
+            "failed to clear the reopen-pending flag after an unconsumed reopen",
           ),
         );
-    });
+    };
+    res.once("finish", settle);
+    res.once("close", settle);
   }
 
   async function destroyReusableSandboxLeasesForTerminalIssue(issue: {
@@ -9124,12 +9129,24 @@ export function issueRoutes(
     // and policy gate passes, and just before the update persists. A rejected
     // update must not rebuild and republish the workspace as active, because the
     // issue stays terminal and the reaper then skips the leaked workspace.
+    let reopenedWorkspace: Pick<ExecutionWorkspace, "id"> | null = null;
     if (closedExecutionWorkspace && (commentBody || isAgentWorkUpdate)) {
       if (!(await reopenClosedIssueExecutionWorkspaceOrRespond(req, res, existing, closedExecutionWorkspace))) {
         return;
       }
+      reopenedWorkspace = closedExecutionWorkspace;
     }
     let issue: Awaited<ReturnType<typeof svc.update>>;
+    // Clear the reopen-pending flag if this update leaves the issue terminal, so
+    // the rebuilt worktree does not leak. The guard reads `issue` when the
+    // response ends, so it also covers a null return and a thrown error.
+    guardReopenedWorkspaceConsumption({
+      req,
+      res,
+      issue: existing,
+      workspace: reopenedWorkspace,
+      finalIssueStatus: () => issue?.status,
+    });
     try {
       if (transition.decision && decisionId) {
         const decision = transition.decision;
@@ -10188,12 +10205,24 @@ export function issueRoutes(
 
     // Reopen the closed isolated workspace only after the run-id gate passes. A
     // rejected checkout must not rebuild and republish the workspace as active.
+    let reopenedWorkspace: Pick<ExecutionWorkspace, "id"> | null = null;
     if (closedExecutionWorkspace) {
       if (!(await reopenClosedIssueExecutionWorkspaceOrRespond(req, res, issue, closedExecutionWorkspace))) {
         return;
       }
+      reopenedWorkspace = closedExecutionWorkspace;
     }
-    let updated;
+    let updated: Awaited<ReturnType<typeof svc.checkout>> | undefined;
+    // Clear the reopen-pending flag if the checkout leaves the issue terminal, so
+    // the rebuilt worktree does not leak. The guard reads `updated` when the
+    // response ends, so it covers a null return and a thrown error.
+    guardReopenedWorkspaceConsumption({
+      req,
+      res,
+      issue,
+      workspace: reopenedWorkspace,
+      finalIssueStatus: () => updated?.status,
+    });
     try {
       updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     } catch (error) {
@@ -11260,15 +11289,29 @@ export function issueRoutes(
     // blocker, and run-cap gate passes. A rejected comment must not rebuild and
     // republish the workspace as active, because the issue stays terminal and the
     // reaper then skips the leaked workspace.
+    let reopenedWorkspace: Pick<ExecutionWorkspace, "id"> | null = null;
     if (closedExecutionWorkspace) {
       if (!(await reopenClosedIssueExecutionWorkspaceOrRespond(req, res, issue, closedExecutionWorkspace))) {
         return;
       }
+      reopenedWorkspace = closedExecutionWorkspace;
     }
     let reopened = false;
     let reopenFromStatus: string | null = null;
     let interruptedRunId: string | null = null;
     let currentIssue = issue;
+    // Clear the reopen-pending flag if this comment leaves the issue terminal, so
+    // the rebuilt worktree does not leak. A comment reopens the workspace but only
+    // moves the issue out of the terminal state when it resumes the work. The
+    // guard reads `currentIssue` when the response ends, so it covers a rejected
+    // move, a thrown error, and a comment that keeps the issue terminal.
+    guardReopenedWorkspaceConsumption({
+      req,
+      res,
+      issue,
+      workspace: reopenedWorkspace,
+      finalIssueStatus: () => currentIssue.status,
+    });
     let issueBeforeCommentDecision = issue;
     let commentDecisionStageWakeup: ReturnType<typeof buildExecutionStageWakeup> | null = null;
     const commentReferenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);

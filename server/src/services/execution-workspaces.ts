@@ -1384,8 +1384,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   // state, so the reopen transition committed. The clear keeps every other
   // metadata key and runs only while the flag is still set, so it never clobbers
   // a concurrent write.
-  async function clearReopenPendingConsumptionUnderLock(workspaceId: string): Promise<void> {
-    await db.transaction(async (tx) => {
+  async function clearReopenPendingConsumptionUnderLock(workspaceId: string): Promise<boolean> {
+    return db.transaction(async (tx) => {
       await acquireExecutionWorkspaceLifecycleLock(tx, workspaceId);
       const fresh = await tx
         .select({ metadata: executionWorkspaces.metadata })
@@ -1393,7 +1393,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         .where(eq(executionWorkspaces.id, workspaceId))
         .then((rows) => rows[0] ?? null);
       if (!fresh || !metadataHasReopenPendingConsumption(fresh.metadata as Record<string, unknown> | null)) {
-        return;
+        return false;
       }
       await tx
         .update(executionWorkspaces)
@@ -1402,6 +1402,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           updatedAt: new Date(),
         })
         .where(eq(executionWorkspaces.id, workspaceId));
+      return true;
     });
   }
 
@@ -2724,86 +2725,52 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       });
     },
 
-    // Roll back a reopen that the request could not consume. A reopen publishes
-    // the workspace as active and sets the reopen-pending flag while the source
-    // issue is still terminal. The flag stops the terminal reaper and the archive
-    // route from cleaning the workspace during the consumption window. If the
-    // request then returns an error, the issue stays terminal and the flag would
-    // block the reaper and the archive route forever, so the rebuilt worktree
-    // leaks. This method clears the flag under the lifecycle lock. The reaper then
-    // archives the active workspace of the terminal issue on its next sweep, and a
-    // manual archive succeeds again.
-    //
-    // The method never changes the status. It only clears the flag. A concurrent
-    // request may consume the workspace and move the issue out of the terminal
-    // state before this method runs. In that case the workspace is live, and
-    // clearing the flag matches what the reaper does for a committed reopen. So
-    // the rollback is safe in every order: it cannot destroy a live workspace.
-    rollbackReopenedIsolatedExecutionWorkspaceForIssue: async (input: {
+    // Clear the reopen-pending flag after a caller failed to consume a reopened
+    // workspace. A reopen publishes the rebuilt worktree as active and sets the
+    // flag while the source issue is still terminal. The route then moves the
+    // issue out of the terminal state, and the terminal reaper clears the flag
+    // once it observes the non-terminal issue. If that move never lands (the
+    // route mutation returns null, throws, or leaves the issue terminal), the
+    // issue stays terminal and the flag stays set. The terminal reaper and the
+    // archive route both skip a reopen-pending row, so the rebuilt worktree leaks
+    // and no path can reclaim it. This method clears the flag under the lifecycle
+    // lock, so the reaper can archive and reclaim the worktree. It keeps the row
+    // active, so a retried resume can still reuse the rebuilt worktree. The
+    // method is idempotent: it does nothing when the flag is already clear.
+    clearReopenPendingConsumptionForUnconsumedReopen: async (input: {
       workspaceId: string;
-      issue: { id: string; companyId: string; projectId: string | null };
+      issue: { id: string; companyId: string };
       actor: { agentId: string | null; actorType: string };
-    }): Promise<{ rolledBack: boolean }> => {
-      const { issue, actor } = input;
-      // Bind the workspace to the issue company and project. A null project on
-      // the issue must match a null project on the row (IS NOT DISTINCT FROM).
-      const projectIdCondition =
-        issue.projectId == null
-          ? sql`${executionWorkspaces.projectId} IS NULL`
-          : eq(executionWorkspaces.projectId, issue.projectId);
-
-      return db.transaction(async (tx): Promise<{ rolledBack: boolean }> => {
-        await acquireExecutionWorkspaceLifecycleLock(tx, input.workspaceId);
-        const row = await tx
-          .select()
-          .from(executionWorkspaces)
-          .where(and(
-            eq(executionWorkspaces.id, input.workspaceId),
-            eq(executionWorkspaces.companyId, issue.companyId),
-            projectIdCondition,
-            eq(executionWorkspaces.mode, "isolated_workspace"),
-          ))
-          .then((rows) => rows[0] ?? null);
-        if (!row || !metadataHasReopenPendingConsumption(row.metadata as Record<string, unknown> | null)) {
-          // The row is missing, out of scope, or already cleared by another path
-          // (for example the reaper cleared the flag when the issue left the
-          // terminal state). Nothing to roll back.
-          return { rolledBack: false };
-        }
-        await tx
-          .update(executionWorkspaces)
-          .set({
-            metadata: clearMetadataReopenPendingConsumption(row.metadata as Record<string, unknown> | null),
-            updatedAt: new Date(),
-          })
-          .where(eq(executionWorkspaces.id, row.id));
+    }): Promise<{ cleared: boolean }> => {
+      const cleared = await clearReopenPendingConsumptionUnderLock(input.workspaceId);
+      if (cleared) {
         logger.info(
           {
             event: "execution_workspace.reopen",
-            outcome: "rolled_back",
-            executionWorkspaceId: row.id,
-            issueId: issue.id,
-            companyId: row.companyId,
-            actorType: actor.actorType,
-            actorAgentId: actor.agentId ?? null,
+            outcome: "unconsumed_reopen_cleared",
+            executionWorkspaceId: input.workspaceId,
+            issueId: input.issue.id,
+            companyId: input.issue.companyId,
+            actorType: input.actor.actorType,
+            actorAgentId: input.actor.agentId ?? null,
           },
-          "execution workspace reopen rolled back after failed request",
+          "execution workspace reopen-pending flag cleared after an unconsumed reopen",
         );
-        await logActivity(tx as unknown as Db, {
-          companyId: row.companyId,
-          actorType: actor.actorType === "user" ? "user" : "agent",
-          actorId: actor.agentId ?? "system",
-          agentId: actor.actorType === "user" ? null : actor.agentId,
-          action: "execution_workspace.reopen_rolled_back",
+        await logActivity(db, {
+          companyId: input.issue.companyId,
+          actorType: input.actor.actorType === "user" ? "user" : "agent",
+          actorId: input.actor.agentId ?? "system",
+          agentId: input.actor.actorType === "user" ? null : input.actor.agentId,
+          action: "execution_workspace.reopen_unconsumed",
           entityType: "execution_workspace",
-          entityId: row.id,
+          entityId: input.workspaceId,
           details: {
-            issueId: issue.id,
-            outcome: "rolled_back",
+            issueId: input.issue.id,
+            outcome: "unconsumed_reopen_cleared",
           },
         });
-        return { rolledBack: true };
-      });
+      }
+      return { cleared };
     },
 
     // Archive one workspace under the per-workspace lifecycle lock. The archive
