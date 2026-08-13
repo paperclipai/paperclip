@@ -514,6 +514,21 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(promptMetrics?.runtimeNoteChars).toBeGreaterThan(0);
   });
 
+  it("uses the disposition-only note instead of HTTP instructions for confined Codex ACP runs", async () => {
+    const { meta } = await runExecutor(
+      { agent: "codex", agentCommand: "node ./fake-acp.js", paperclipAcpDispositionOnly: true },
+      { authToken: "runtime-secret-token", context: { taskId: "issue-1" } },
+    );
+
+    const prompt = String(meta[0]?.prompt ?? "");
+    const env = meta[0]?.env as Record<string, string>;
+    expect(env.PAPERCLIP_ACP_DISPOSITION_ONLY).toBe("1");
+    expect(prompt).toContain("Paperclip ACP disposition note:");
+    expect(prompt).toContain("PAPERCLIP_DISPOSITION JSON record");
+    expect(prompt).not.toContain("Paperclip API access note:");
+    expect(prompt).not.toContain("curl -s");
+  });
+
   it("does not replay a continuation summary into a fresh ACP task-context prompt", async () => {
     const { meta } = await runExecutor(
       { agent: "codex", agentCommand: "node ./fake-acp.js" },

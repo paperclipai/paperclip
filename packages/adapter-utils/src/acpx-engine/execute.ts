@@ -1700,6 +1700,9 @@ async function buildRuntime(input: {
     resolvedAdapterEnv[key] = value;
   }
   if (authToken) env.PAPERCLIP_API_KEY = authToken;
+  if (config.paperclipAcpDispositionOnly === true) {
+    env.PAPERCLIP_ACP_DISPOSITION_ONLY = "1";
+  }
   // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than
   // via session/set_config_option — the ACP server's set_config_option handler
   // validates the value against its internal available-models list and rejects
@@ -2364,6 +2367,13 @@ function renderPaperclipEnvNote(env: Record<string, string>): string {
 }
 
 function renderApiAccessNote(env: Record<string, string>): string {
+  if (env.PAPERCLIP_ACP_DISPOSITION_ONLY === "1") {
+    return [
+      "Paperclip ACP disposition note:",
+      "This Codex ACP lane receives scoped issue context through ACP and reports its final disposition through the final PAPERCLIP_DISPOSITION JSON record.",
+      "Board HTTP is intentionally unavailable in this lane. Do not invoke curl, board-api.sh, or other HTTP calls to read or mutate Paperclip mid-run.",
+    ].join("\n");
+  }
   if (!env.PAPERCLIP_API_URL || !env.PAPERCLIP_API_KEY) return "";
   const lines = [
     "Paperclip API access note:",

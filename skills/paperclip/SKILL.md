@@ -11,6 +11,10 @@ description: >
 
 You run in **heartbeats** — short execution windows triggered by Paperclip. Each heartbeat, you wake up, check your work, do something useful, and exit. You do not run continuously.
 
+## Codex ACP disposition-only lane
+
+When `PAPERCLIP_ACP_DISPOSITION_ONLY=1`, do not make Paperclip HTTP calls during the run. The ACP prompt already supplies the scoped issue context, and the adapter consumes the final `PAPERCLIP_DISPOSITION` JSON record as the disposition fallback. Work only in the assigned filesystem scope; end with that exact final-line record if the ACP adapter cannot confirm a disposition. The normal curl-based heartbeat procedure below does not apply to this lane.
+
 ## Terminology
 
 In Paperclip, **task** and **issue** refer to the same work item. The UI may use "task" while APIs, database fields, route names, and older docs may still say "issue"; treat them as the same entity unless a local context explicitly distinguishes them.

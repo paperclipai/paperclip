@@ -155,6 +155,11 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
   return {
     ...config,
     agent: "codex",
+    // Codex ACP receives its scoped issue packet through ACP and the adapter
+    // consumes its final PAPERCLIP_DISPOSITION record. In confined Codex
+    // environments the board HTTP bridge is deliberately unavailable, so the
+    // shared ACP prompt must not teach this lane to retry curl calls.
+    paperclipAcpDispositionOnly: true,
     mode,
     permissionMode,
     nonInteractivePermissions,
