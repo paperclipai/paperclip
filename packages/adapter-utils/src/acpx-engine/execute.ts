@@ -105,8 +105,14 @@ const PAPERCLIP_DISPOSITION_RE = /(?:^|(?<=[\s`*_]))`?PAPERCLIP_DISPOSITION\s*:?
 const ACPX_FINALIZATION_REMINDER =
   "Before ending this ACP run, record the real issue state through Paperclip. " +
   "If that write cannot be confirmed, your FINAL response line MUST be exactly a " +
-  "PAPERCLIP_DISPOSITION JSON record (done, cancelled, in_review, or blocked); " +
-  "a prose status line or comment is not a disposition.";
+  "PAPERCLIP_DISPOSITION JSON record on a SINGLE line (done, cancelled, in_review, " +
+  "or blocked); a prose status line or comment is not a disposition. " +
+  "If the work is large and you have used most of your tool-turn or time budget " +
+  "without finishing, STOP and emit a PAPERCLIP_DISPOSITION with status \"in_review\" " +
+  "that summarizes what you completed and the concrete next step for the following run. " +
+  "Never keep working until the run is force-ended: a run that ends with no disposition " +
+  "loses the handoff and blocks the issue. Every run must end with exactly one " +
+  "PAPERCLIP_DISPOSITION line — in_review while work remains, done when it is complete.";
 
 type ParsedDisposition = {
   status: string;
