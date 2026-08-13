@@ -38,6 +38,7 @@ import { buildClaudeProbePermissionArgs } from "./permissions.js";
 import { materializeRemoteClaudeConfig, prepareClaudeConfigSeed } from "./claude-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveClaudeExecutionEngineForRun, testClaudeAcpEnvironment } from "./acp.js";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -416,6 +417,18 @@ export async function testEnvironment(
             ? `Run \`claude login\` and complete sign-in at ${loginMeta.loginUrl}, then retry.`
             : "Run `claude login` in this environment, then retry the probe.",
         });
+        if (targetIsSandbox) {
+          // Emit the neutral canonical check so the user interface can decide
+          // login eligibility from a stable code. The user interface does not
+          // read the message text or the top-level status.
+          checks.push({
+            code: ADAPTER_AUTH_MISSING_CHECK_CODE,
+            level: "warn",
+            message: "The sandbox has no ready authentication for this adapter.",
+            ...(detail ? { detail } : {}),
+            hint: "Provide credentials for this adapter, or start login in the sandbox.",
+          });
+        }
       } else if ((probe.exitCode ?? 1) === 0) {
         const summary = parsedStream.summary.trim();
         const hasHello = /\bhello\b/i.test(summary);

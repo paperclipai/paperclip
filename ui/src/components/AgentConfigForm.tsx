@@ -795,15 +795,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setTestActionError(null);
   }, [adapterType, effectiveLoginEnvironmentId]);
 
-  // Show the login affordance only for a current `codex_local` sandbox whose most
-  // recent Test result carries the canonical auth-missing check. The result keeps
-  // its own `adapterType`, so a result from another adapter never gates the panel.
+  // Show the login affordance only for a current `codex_local` or `claude_local`
+  // sandbox whose most recent Test result carries the canonical auth-missing
+  // check. Both adapters emit the same neutral code. The result keeps its own
+  // `adapterType`, so a result from another adapter never gates the panel.
+  const adapterSupportsSandboxLogin =
+    adapterType === "codex_local" || adapterType === "claude_local";
   const authMissingCheck =
-    testEnvironment.data?.adapterType === "codex_local"
+    testEnvironment.data?.adapterType === "codex_local" ||
+    testEnvironment.data?.adapterType === "claude_local"
       ? testEnvironment.data.checks.find((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE) ?? null
       : null;
   const showAdapterLogin =
-    adapterType === "codex_local" &&
+    adapterSupportsSandboxLogin &&
     effectiveLoginEnvironment?.driver === "sandbox" &&
     Boolean(effectiveLoginEnvironmentId) &&
     Boolean(selectedCompanyId) &&

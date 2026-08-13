@@ -306,6 +306,24 @@ const AUTH_MISSING_RESULT = {
   testedAt: new Date(0).toISOString(),
 };
 
+const CLAUDE_AUTH_MISSING_RESULT = {
+  adapterType: "claude_local",
+  status: "warn",
+  checks: [
+    {
+      code: "claude_hello_probe_auth_required",
+      level: "warn",
+      message: "Claude CLI is installed, but login is required.",
+    },
+    {
+      code: "adapter_auth_missing",
+      level: "warn",
+      message: "The sandbox has no ready authentication for this adapter.",
+    },
+  ],
+  testedAt: new Date(0).toISOString(),
+};
+
 function findButton(container: HTMLElement, label: string) {
   return Array.from(container.querySelectorAll("button")).find(
     (button) => button.textContent?.trim() === label,
@@ -328,6 +346,22 @@ async function renderCodexSandbox(agentOverrides: Partial<Agent> = {}) {
       }),
     ],
     { defaultEnvironmentId: "sandbox-1", ...agentOverrides },
+    { showAdapterTestEnvironmentButton: true },
+  );
+}
+
+async function renderClaudeSandbox(agentOverrides: Partial<Agent> = {}) {
+  return renderForm(
+    [
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+      makeEnvironment({
+        id: "sandbox-1",
+        name: "E2B",
+        driver: "sandbox",
+        config: { provider: "e2b" },
+      }),
+    ],
+    { adapterType: "claude_local", defaultEnvironmentId: "sandbox-1", ...agentOverrides },
     { showAdapterTestEnvironmentButton: true },
   );
 }
@@ -738,6 +772,18 @@ describe("AgentConfigForm environment selector", () => {
   it("hides the Login button before Test and shows it after the adapter_auth_missing check for a Codex sandbox", async () => {
     mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
     const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    expect(findButton(result.container, "Log in")).toBeFalsy();
+
+    await runTest(result.container);
+
+    expect(findButton(result.container, "Log in")).toBeTruthy();
+  });
+
+  it("hides the Login button before Test and shows it after the adapter_auth_missing check for a Claude sandbox", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderClaudeSandbox();
     roots.push(result.root);
 
     expect(findButton(result.container, "Log in")).toBeFalsy();
