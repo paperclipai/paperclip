@@ -6,9 +6,10 @@
 // Security (strict validation): the prompt parser accepts only the exact origin
 // and path of the authorization URL, and only the exact set of query keys. It
 // rejects any other origin, path, query, or fragment. It binds the browser-code
-// prompt to a dedicated line right after the URL line, so an unrelated code-like
-// value on the wrong line cannot form a prompt. It rejects an API-key-shaped
-// value inside the URL.
+// prompt to the dedicated line after the URL block. The terminal repeats the
+// same URL once per wrapped display row, so the parser skips the repeated URL
+// lines and rejects any other unrelated line, so a code-like value on the wrong
+// line cannot form a prompt. It rejects an API-key-shaped value inside the URL.
 //
 // The token parser binds the token to the exact success record: it requires the
 // before-anchor line and the after-anchor line, in that order, exactly one time
@@ -58,6 +59,18 @@ export const SETUP_TOKEN_URL_QUERY_KEYS = [
 // a colored prompt reads the same as a plain one.
 // eslint-disable-next-line no-control-regex
 const ANSI_CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
+
+// A horizontal-move CSI sequence: Cursor Horizontal Absolute (final byte `G`)
+// and Cursor Forward (final byte `C`). The Claude login UI lays out each word at
+// an absolute column with one of these sequences, so it emits no literal space
+// between two words. The parser replaces each horizontal-move sequence with one
+// space, so a word gap reads as a space. Without this step the later CSI removal
+// deletes the sequence and glues the two words, and the URL preamble line, the
+// browser-code prompt line, and the success anchor lines never match. The
+// vertical and color sequences carry no horizontal text gap; the CSI removal
+// below drops them.
+// eslint-disable-next-line no-control-regex
+const CSI_HORIZONTAL_MOVE_RE = /\x1b\[[0-9;]*[GC]/g;
 
 // An OSC 8 hyperlink. The terminal emits the URL through an OSC 8 hyperlink plus
 // wrapped display text. The hyperlink carries the true, unwrapped URL in its URI
@@ -109,10 +122,14 @@ const API_KEY_RE = /sk-ant-[a-z0-9-]{2,}/i;
 const MAX_PREAMBLE_TO_URL_GAP = 512;
 
 // The maximum number of characters after the end of the URL line that the parser
-// reads for the browser-code prompt. The Claude UI prints the prompt one line
-// after the URL. The window is large enough for the real prompt line and small
-// enough to reject distant noise.
-const MAX_URL_TO_PROMPT_GAP = 256;
+// reads for the browser-code prompt. The Claude UI prints the URL as one OSC 8
+// hyperlink per wrapped display row, so it repeats the full authorization URL on
+// a few consecutive lines before the prompt. Each repeated line holds the full
+// URL, so the window must span several full-length URL lines and still reach the
+// prompt. The window is still small enough to reject distant noise, because the
+// parser bails on the first non-blank line that is neither the prompt nor a
+// repeat of the authorization URL.
+const MAX_URL_TO_PROMPT_GAP = 8192;
 
 // The result of a URL search: the validated URL and the index of the first
 // character after the matched URL token in the search window.
@@ -124,14 +141,17 @@ interface SetupTokenUrlMatch {
 /**
  * Removes the terminal control sequences from `text`. Replaces each OSC 8
  * hyperlink with its true URI, so the parser reads the unwrapped URL and drops
- * the wrapped display text. Removes each leftover OSC sequence and each ANSI CSI
- * sequence. Returns plain text. The function only normalizes the input; the URL
- * and the prompt still pass the strict validation below.
+ * the wrapped display text. Removes each leftover OSC sequence. Replaces each
+ * horizontal-move CSI sequence with one space, so a word that the login UI lays
+ * out at an absolute column reads as a space-separated word. Removes each
+ * remaining ANSI CSI sequence. Returns plain text. The function only normalizes
+ * the input; the URL and the prompt still pass the strict validation below.
  */
 function stripTerminalControls(text: string): string {
   return text
     .replace(OSC8_HYPERLINK_RE, "$1")
     .replace(OSC_ANY_RE, "")
+    .replace(CSI_HORIZONTAL_MOVE_RE, " ")
     .replace(ANSI_CSI_RE, "");
 }
 
@@ -193,21 +213,30 @@ function findExactUrl(window: string): SetupTokenUrlMatch | null {
 
 /**
  * Returns the canonical browser-code prompt when `text` holds it on a dedicated
- * line after the URL line. The parser advances past the URL line to the first
- * newline, then reads the first non-blank line inside a window after it. That
- * line must match the exact prompt shape. So the prompt binds to the dedicated
- * line that the UI prints right after the URL. A code-like value on that line, or
- * the prompt phrase mixed with other prose, cannot bind. Returns null when the
- * URL line has no line break after it, or when the first non-blank line is not
- * the prompt.
+ * line after the URL block. The parser advances past the URL line to the first
+ * newline, then reads the non-blank lines inside a window after it. The Claude UI
+ * prints the URL as one OSC 8 hyperlink per wrapped display row, so it repeats
+ * the same full authorization URL on a few consecutive lines. The parser skips a
+ * line that repeats `url`, then binds the prompt on the first non-blank line that
+ * follows the URL block. That line must match the exact prompt shape. So the
+ * prompt binds to the dedicated line that the UI prints after the URL block. A
+ * code-like value on that line, an unrelated line, or the prompt phrase mixed
+ * with other prose, cannot bind. Returns null when the URL line has no line break
+ * after it, or when the first non-blank, non-URL line is not the prompt.
  */
-function findBrowserCodePrompt(text: string, urlEnd: number): string | null {
+function findBrowserCodePrompt(text: string, urlEnd: number, url: string): string | null {
   const lineBreak = text.indexOf("\n", urlEnd);
   if (lineBreak === -1) return null;
   const window = gapWindow(text, lineBreak + 1, MAX_URL_TO_PROMPT_GAP);
   for (const line of window.split("\n")) {
     const trimmed = line.trim();
     if (trimmed.length === 0) continue;
+    // The terminal re-emits the full authorization URL once per wrapped display
+    // row. Skip a line that repeats the URL, so the prompt after the URL block
+    // still binds. Strip the trailing prose punctuation first, the same way the
+    // URL search does, so a repeated URL with a trailing punctuation mark still
+    // matches.
+    if (trimmed.replace(TRAILING_PUNCTUATION_RE, "") === url) continue;
     return PROMPT_LINE_RE.test(trimmed) ? SETUP_TOKEN_PROMPT : null;
   }
   return null;
@@ -218,7 +247,7 @@ function findBrowserCodePrompt(text: string, urlEnd: number): string | null {
  * hyperlink sequences first, so colored and hyperlinked output reads the same as
  * plain output. The parser finds the URL preamble, then the exact authorization
  * URL inside a window after the preamble, then the browser-code prompt on the
- * dedicated line after the URL line. So the URL binds to the login context and
+ * dedicated line after the URL block. So the URL binds to the login context and
  * the prompt binds to the URL. Returns the authorization URL and the browser-code
  * prompt when both are present and valid. Returns null for any other input,
  * including a non-string input, an absent preamble, a URL with a wrong origin,
@@ -236,7 +265,7 @@ export function parseSetupTokenPrompt(text: string): SetupTokenPrompt | null {
   const urlMatch = findExactUrl(urlWindow);
   if (!urlMatch) return null;
   const urlEnd = afterPreamble + urlMatch.end;
-  const prompt = findBrowserCodePrompt(clean, urlEnd);
+  const prompt = findBrowserCodePrompt(clean, urlEnd, urlMatch.url);
   if (!prompt) return null;
   return { url: urlMatch.url, prompt };
 }

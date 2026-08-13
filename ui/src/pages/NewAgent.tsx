@@ -28,6 +28,8 @@ import {
   type CreateConfigValues,
 } from "../components/AgentConfigForm";
 import { defaultCreateValues } from "../components/agent-config-defaults";
+import { buildFixedClaudeOAuthBinding } from "../components/environment-variables-editor/model";
+import type { EnvBinding } from "@paperclipai/shared";
 import { getUIAdapter, listUIAdapters } from "../adapters";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { isValidAdapterType } from "../adapters/metadata";
@@ -195,6 +197,23 @@ export function NewAgent() {
       return prev.filter((value) => value !== key);
     });
   }
+
+  // Add the fixed CLAUDE_CODE_OAUTH_TOKEN binding after a Claude subscription
+  // login reaches the server `stored` state. The new-agent page lifts the login
+  // feedback and renders the panel itself, so it holds the stored-session claim
+  // and the fixed binding in the create-mode values here. The claim is a
+  // reference, not a token; the create request sends it, and the server binds
+  // and enforces the token. Keep every unrelated binding.
+  const handleClaudeLoginStored = useCallback((storedSessionId: string) => {
+    setConfigValues((prev) => ({
+      ...prev,
+      envBindings: {
+        ...((prev.envBindings ?? {}) as Record<string, EnvBinding>),
+        ...buildFixedClaudeOAuthBinding(),
+      },
+      claudeStoredSessionId: storedSessionId,
+    }));
+  }, []);
 
   const handleTestAgentActionChange = useCallback((fn: (() => void) | null) => {
     setTestAgentAction(() => fn);
@@ -370,6 +389,7 @@ export function NewAgent() {
                 companyId={testAgentFeedback.login.companyId}
                 adapterType={testAgentFeedback.login.adapterType}
                 environmentId={testAgentFeedback.login.environmentId}
+                onStored={handleClaudeLoginStored}
               />
             )}
             <div className="flex items-center justify-between gap-2">

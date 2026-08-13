@@ -56,6 +56,15 @@ function osc8Hyperlink(url: string, display: string): string {
   return `${ESC}]8;;${url}${ESC}\\${display}${ESC}]8;;${ESC}\\`;
 }
 
+// Joins `words` with a Cursor Horizontal Absolute (CHA) sequence. The live
+// Claude login UI lays out each word at an absolute column with a CHA sequence
+// instead of a literal space, so this reproduces one Ink-rendered line. The
+// column number does not matter to the parser, so this uses a fixed number. The
+// parser must render each CHA sequence as a space to read the line.
+function chaSpaced(words: string[]): string {
+  return words.join("\x1b[9G");
+}
+
 describe("parseSetupTokenPrompt", () => {
   it("returns the exact URL and prompt from a complete output", () => {
     const result = parseSetupTokenPrompt(completeOutput(VALID_URL));
@@ -151,6 +160,66 @@ describe("parseSetupTokenPrompt", () => {
     expect(parseSetupTokenPrompt("")).toBeNull();
   });
 
+  it("reads the preamble and the prompt when the terminal spaces words with cursor-column sequences", () => {
+    // The live Claude login UI lays out each word at an absolute column with a
+    // CHA sequence, so it emits no literal space between two words. The parser
+    // renders each CHA sequence as a space; without that step the words glue
+    // together and the preamble and the prompt never match.
+    const preamble = chaSpaced([
+      "Browser",
+      "didn't",
+      "open?",
+      "Use",
+      "the",
+      "url",
+      "below",
+      "to",
+      "sign",
+      "in",
+      "(c",
+      "to",
+      "copy)",
+    ]);
+    const prompt = chaSpaced(["Paste", "code", "here", "if", "prompted", ">"]);
+    const text = [preamble, VALID_URL, prompt].join("\n");
+    const result = parseSetupTokenPrompt(text);
+    expect(result).not.toBeNull();
+    expect(result?.url).toBe(VALID_URL);
+    expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
+  });
+
+  it("binds the prompt after the terminal repeats the URL once per wrapped display row", () => {
+    // The terminal emits one OSC 8 hyperlink per wrapped display row, so it
+    // repeats the same full authorization URL on a few consecutive lines. The
+    // parser skips the repeated URL lines and binds the prompt on the line after
+    // the URL block.
+    const text = [
+      "Browser didn't open? Use the url below to sign in (c to copy)",
+      VALID_URL,
+      VALID_URL,
+      VALID_URL,
+      "",
+      "Paste code here if prompted >",
+    ].join("\n");
+    const result = parseSetupTokenPrompt(text);
+    expect(result).not.toBeNull();
+    expect(result?.url).toBe(VALID_URL);
+    expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
+  });
+
+  it("returns null when an unrelated line sits after the URL block", () => {
+    // A non-blank line that is neither the prompt nor a repeat of the URL breaks
+    // the bind, so a stray value between the URL and the prompt cannot pass.
+    const text = [
+      "Browser didn't open? Use the url below to sign in (c to copy)",
+      VALID_URL,
+      VALID_URL,
+      "an unrelated line",
+      "Paste code here if prompted >",
+    ].join("\n");
+    expect(parseSetupTokenPrompt(text)).toBeNull();
+  });
+
   it("keeps its contract in sync with the characterization fixture", () => {
     // The fixture documents the prompt text, the URL path, and the query keys.
     // This test fails if the parser contract drifts from the fixture.
@@ -202,6 +271,38 @@ describe("parseSetupTokenCredential", () => {
     const cyan = "\x1b[36m";
     const reset = "\x1b[0m";
     const text = successScreen([`${cyan}${TOKEN_FRAGMENT_A}`, `${TOKEN_FRAGMENT_B}${reset}`]);
+    expect(parseSetupTokenCredential(text)).toBe(FULL_TOKEN);
+  });
+
+  it("reads the token when the terminal spaces the anchor words with cursor-column sequences", () => {
+    // The success screen renders the anchor lines the same way as the prompt: it
+    // lays out each word at an absolute column with a CHA sequence. The parser
+    // renders each CHA sequence as a space, so the anchor lines match the exact
+    // anchor text and the token binds between them.
+    const beforeAnchor = chaSpaced([
+      "Your",
+      "OAuth",
+      "token",
+      "(valid",
+      "for",
+      "1",
+      "year):",
+    ]);
+    const afterAnchor = chaSpaced([
+      "Store",
+      "this",
+      "token",
+      "securely.",
+      "You",
+      "won't",
+      "be",
+      "able",
+      "to",
+      "see",
+      "it",
+      "again.",
+    ]);
+    const text = [beforeAnchor, "", TOKEN_FRAGMENT_A, TOKEN_FRAGMENT_B, "", afterAnchor].join("\n");
     expect(parseSetupTokenCredential(text)).toBe(FULL_TOKEN);
   });
 
