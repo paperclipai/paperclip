@@ -495,6 +495,137 @@ describe("SetupTokenSessionService.completeSession", () => {
   });
 });
 
+// A deferred owner-bound secret writer. The test controls when the write
+// settles, so it can hold the write in flight and drive a cancel or an expiry
+// into the exact window that used to race the write. It records only the
+// non-secret ids and the token, and it counts how many times the writer started.
+function buildDeferredWriter() {
+  const calls: RecordedSecretWrite[] = [];
+  let started = 0;
+  let resolveWrite: (() => void) | null = null;
+  let rejectWrite: ((error: Error) => void) | null = null;
+  const writer: SetupTokenSecretWriter = (input) => {
+    started += 1;
+    calls.push({ scope: input.scope, sessionId: input.sessionId, token: input.token });
+    return new Promise<void>((resolve, reject) => {
+      resolveWrite = resolve;
+      rejectWrite = reject;
+    });
+  };
+  return {
+    writer,
+    calls,
+    startedCount: () => started,
+    resolve: () => resolveWrite?.(),
+    reject: () => rejectWrite?.(new Error("storage down")),
+  };
+}
+
+// Yields to the microtask queue, so a scheduled sink or lock step can run.
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+describe("SetupTokenSessionService terminal-race credential write", () => {
+  for (const variant of [
+    { label: "cancel", run: (service: SetupTokenSessionService, sessionId: string) => service.cancel(sessionId, OWNER_SCOPE), terminalState: "cancelled" as const },
+    { label: "expiry", run: (service: SetupTokenSessionService, sessionId: string) => service.expire(sessionId, OWNER_SCOPE), terminalState: "timed_out" as const },
+  ]) {
+    it(`writes no secret when a ${variant.label} wins the race, and leaves no stored claim`, async () => {
+      const deferred = buildDeferredWriter();
+      const { service, processes, store, leases } = buildService({ completeCredential: deferred.writer });
+      const { sessionId } = await service.start(OWNER_SCOPE);
+      processes[0].surfacePrompt(FULL_LOGIN_URL);
+      service.submitCode(sessionId, OWNER_SCOPE, "code");
+
+      // The terminal transition wins: it reaches the terminal state before the
+      // credential arrives. The cleanup removes the durable row.
+      await variant.run(service, sessionId);
+      expect(store.rows.has(sessionId)).toBe(false);
+
+      // The credential arrives after the terminal transition. The sink fails
+      // closed: it never calls the writer and it rejects with the fixed,
+      // non-secret error.
+      await expect(processes[0].surfaceCredential(SYNTH_TOKEN)).rejects.toMatchObject({
+        message: SETUP_TOKEN_STORAGE_FAILED,
+      });
+
+      // The writer never committed, so no unintended secret write happened.
+      expect(deferred.startedCount()).toBe(0);
+      expect(deferred.calls).toHaveLength(0);
+      // The durable row holds no stored claim.
+      expect(store.rows.has(sessionId)).toBe(false);
+      // The completion has no success: a read returns the same not-found error.
+      expect(() => service.completeSession(sessionId, OWNER_SCOPE)).toThrow(SETUP_TOKEN_SESSION_NOT_FOUND);
+      // The session released its lease and holds no live session.
+      expect(leases.released).toEqual(["lease-1"]);
+      expect(service.activeSessionCount()).toBe(0);
+    });
+
+    it(`does not erase the stored claim when the write wins the race, then a ${variant.label} arrives`, async () => {
+      const deferred = buildDeferredWriter();
+      const { service, processes, store, leases } = buildService({ completeCredential: deferred.writer });
+      const { sessionId } = await service.start(OWNER_SCOPE);
+      processes[0].surfacePrompt(FULL_LOGIN_URL);
+      service.submitCode(sessionId, OWNER_SCOPE, "code");
+
+      // Start the credential write. It is in flight and holds the session lock, so
+      // a terminal transition that arrives now must wait for the write to settle.
+      const credentialSettled = processes[0].surfaceCredential(SYNTH_TOKEN);
+      await flush();
+      expect(deferred.startedCount()).toBe(1);
+
+      // The terminal transition arrives while the write is in flight. It blocks on
+      // the lock; it does not interleave with the write.
+      const terminalSettled = variant.run(service, sessionId);
+      await flush();
+
+      // The write wins the serialized ordering: it commits, then the service
+      // records the non-secret markers and releases the lock.
+      deferred.resolve();
+      await credentialSettled;
+      await terminalSettled;
+
+      // The writer committed exactly once. No duplicate write is possible.
+      expect(deferred.startedCount()).toBe(1);
+      expect(deferred.calls).toEqual([{ scope: OWNER_SCOPE, sessionId, token: SYNTH_TOKEN }]);
+      // The terminal transition did not erase the claim: the durable row stays
+      // `stored` and the terminal API reports the completed state.
+      expect(store.rows.get(sessionId)?.state).toBe("stored");
+      const completion = service.completeSession(sessionId, OWNER_SCOPE);
+      expect(completion.storedSessionId).toBe(sessionId);
+      // The service released the sandbox lease at once.
+      expect(leases.released).toEqual(["lease-1"]);
+    });
+  }
+
+  it("does not erase the claim when the process reports success after the write wins a cancel race", async () => {
+    // This proves the natural success path stays intact when a cancel loses the
+    // race: the write commits, the cancel completes the session, and the later
+    // process-done success transition is an idempotent no-op.
+    const deferred = buildDeferredWriter();
+    const { service, processes, store } = buildService({ completeCredential: deferred.writer });
+    const { sessionId } = await service.start(OWNER_SCOPE);
+    processes[0].surfacePrompt(FULL_LOGIN_URL);
+    service.submitCode(sessionId, OWNER_SCOPE, "code");
+
+    const credentialSettled = processes[0].surfaceCredential(SYNTH_TOKEN);
+    await flush();
+    const cancelSettled = service.cancel(sessionId, OWNER_SCOPE);
+    await flush();
+    deferred.resolve();
+    await credentialSettled;
+    await cancelSettled;
+
+    // The process reports success after the sink resolved. The transition finds a
+    // completed, cleaned-up session and does nothing.
+    processes[0].finish("success");
+    await flush();
+
+    expect(deferred.startedCount()).toBe(1);
+    expect(store.rows.get(sessionId)?.state).toBe("stored");
+    expect(service.completeSession(sessionId, OWNER_SCOPE).storedSessionId).toBe(sessionId);
+  });
+});
+
 describe("no secret reaches a sink (SR-1, SR-5)", () => {
   it("keeps the full login URL, the code, and the token out of the durable record", async () => {
     const store = new FakeStore();

@@ -483,6 +483,12 @@ interface StoredSession {
   // completion, so the in-memory session drops even if the owner never reads it.
   retentionTimer: ReturnType<typeof setTimeout> | null;
   cleanupDone: boolean;
+  // The per-session mutex tail. It serializes the owner-bound secret write
+  // against a cancel, an expiry, and the process-done transition, so a terminal
+  // transition and the write never interleave (complete mediation). The service
+  // holds this lock across the awaited secret write, so a cancel or an expiry
+  // that arrives during the write waits for the write to settle first.
+  lock: Promise<void>;
 }
 
 /** The public read view of a session prompt. */
@@ -576,6 +582,28 @@ export class SetupTokenSessionService {
     };
   }
 
+  /**
+   * Runs `fn` under the per-session lock. The lock serializes the owner-bound
+   * secret write against a cancel, an expiry, and the process-done transition, so
+   * a terminal transition and the write never interleave (complete mediation).
+   * The caller inside `fn` must not call another locked method, or it deadlocks;
+   * the failure path of {@link onCredential} calls {@link terminateLocked}, the
+   * lock-free variant, for this reason.
+   */
+  private async withSessionLock<T>(session: StoredSession, fn: () => Promise<T>): Promise<T> {
+    const prior = session.lock;
+    let release: () => void = () => {};
+    session.lock = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await prior;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
   private countActive(predicate: (session: StoredSession) => boolean): number {
     let count = 0;
     for (const session of this.sessions.values()) {
@@ -636,6 +664,7 @@ export class SetupTokenSessionService {
       timer: null,
       retentionTimer: null,
       cleanupDone: false,
+      lock: Promise.resolve(),
     };
 
     let process: SetupTokenLoginProcess;
@@ -688,9 +717,17 @@ export class SetupTokenSessionService {
    * service never stores the token: it passes the token to the writer, then it
    * drops the reference (Control 1, SR-1).
    *
+   * The service runs the whole sink under the per-session lock, so a cancel or an
+   * expiry cannot interleave with the write. A cancel or an expiry that wins the
+   * lock first sets a terminal state; the service then writes no secret and fails
+   * closed with the fixed, non-secret error. This is complete mediation: a
+   * terminal session never commits a secret write.
+   *
    * On a successful write the service marks the durable row `stored` and records
    * the non-secret `secretStored` marker. The process outcome then moves the
-   * session to `completed`.
+   * session to `completed`. A cancel or an expiry that arrives after the write
+   * committed sees the `secretStored` marker and reports the completed state; it
+   * does not erase the claim (see {@link terminateLocked}).
    *
    * On a storage failure the service fails closed: it moves the session to
    * `failed`, writes no binding, and rejects with a fixed, non-secret error. The
@@ -698,19 +735,25 @@ export class SetupTokenSessionService {
    * login as a failure and the process never reports success.
    */
   private async onCredential(session: StoredSession, token: string): Promise<void> {
-    if (isTerminalSessionState(session.state)) return;
-    try {
-      await this.completeCredential({ scope: session.scope, sessionId: session.id, token });
-    } catch {
-      await this.terminate(session, "failed");
-      throw new SetupTokenSessionError(500, SETUP_TOKEN_STORAGE_FAILED);
-    }
-    // A cancel or an expiry can race the write. Do not claim a stored state after
-    // a terminal transition.
-    if (isTerminalSessionState(session.state)) return;
-    session.secretStored = true;
-    // Mark the durable row `stored`. The row then persists as the one-time claim.
-    await this.store.markState(this.identityOf(session), "stored").catch(() => {});
+    await this.withSessionLock(session, async () => {
+      // A cancel or an expiry won the lock first and set a terminal state. Do not
+      // write the secret for a terminal session. Fail closed with the fixed,
+      // non-secret error, so the runner ends the run as a failure.
+      if (isTerminalSessionState(session.state)) {
+        throw new SetupTokenSessionError(500, SETUP_TOKEN_STORAGE_FAILED);
+      }
+      try {
+        await this.completeCredential({ scope: session.scope, sessionId: session.id, token });
+      } catch {
+        await this.terminateLocked(session, "failed");
+        throw new SetupTokenSessionError(500, SETUP_TOKEN_STORAGE_FAILED);
+      }
+      // The write committed while the service held the lock, so a cancel or an
+      // expiry could not interleave. Record the non-secret markers.
+      session.secretStored = true;
+      // Mark the durable row `stored`. The row then persists as the one-time claim.
+      await this.store.markState(this.identityOf(session), "stored").catch(() => {});
+    });
   }
 
   /**
@@ -813,39 +856,61 @@ export class SetupTokenSessionService {
   }
 
   /**
-   * Stops the direct child, then runs the idempotent cleanup. The order stops
-   * the child before the lease release on every terminal path (SR-4).
+   * Stops the direct child, then runs the idempotent cleanup under the
+   * per-session lock. The lock serializes the terminal transition against the
+   * owner-bound secret write, so a cancel or an expiry never interleaves with the
+   * write (complete mediation). The order stops the child before the lease
+   * release on every terminal path (SR-4).
    */
   private async terminate(session: StoredSession, state: SetupTokenSessionState): Promise<void> {
+    await this.withSessionLock(session, () => this.terminateLocked(session, state));
+  }
+
+  /**
+   * The lock-free terminal transition. The caller must already hold the
+   * per-session lock. The failure path of {@link onCredential} calls it directly,
+   * because that path already holds the lock.
+   *
+   * If the owner-bound secret write already committed, the delivery won the
+   * serialized ordering. The service completes the session and keeps the stored
+   * claim; it does not cancel, expire, or erase the claim. This makes the
+   * terminal API report the completed state after a successful write, rather than
+   * erase it.
+   */
+  private async terminateLocked(session: StoredSession, state: SetupTokenSessionState): Promise<void> {
     if (isTerminalSessionState(session.state)) return;
-    session.state = state;
+    const resolved: SetupTokenSessionState = session.secretStored ? "completed" : state;
+    session.state = resolved;
     session.abort.abort();
     try {
       session.process.stop();
     } catch {
       this.log("[paperclip] Setup-token session: the process stop step errored.");
     }
-    await this.runCleanup(session, state);
+    await this.runCleanup(session, resolved);
   }
 
   /**
-   * Maps the live process outcome to the terminal state and runs the cleanup.
-   * A cancel or an expire already set the state, so this call is a no-op then.
+   * Maps the live process outcome to the terminal state and runs the cleanup
+   * under the per-session lock. A cancel or an expire already set the state, so
+   * this call is a no-op then.
    */
   private async onProcessDone(session: StoredSession, outcome: SetupTokenLoginOutcome): Promise<void> {
-    if (isTerminalSessionState(session.state) && session.cleanupDone) return;
-    const state: SetupTokenSessionState =
-      outcome === "success"
-        ? "completed"
-        : outcome === "timeout"
-        ? "timed_out"
-        : outcome === "cancelled"
-        ? "cancelled"
-        : "failed";
-    if (!isTerminalSessionState(session.state)) {
-      session.state = state;
-    }
-    await this.runCleanup(session, session.state);
+    await this.withSessionLock(session, async () => {
+      if (isTerminalSessionState(session.state) && session.cleanupDone) return;
+      const state: SetupTokenSessionState =
+        outcome === "success"
+          ? "completed"
+          : outcome === "timeout"
+          ? "timed_out"
+          : outcome === "cancelled"
+          ? "cancelled"
+          : "failed";
+      if (!isTerminalSessionState(session.state)) {
+        session.state = state;
+      }
+      await this.runCleanup(session, session.state);
+    });
   }
 
   /**
