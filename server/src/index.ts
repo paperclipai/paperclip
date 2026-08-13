@@ -39,6 +39,7 @@ import {
 } from "./services/managed-config.js";
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
+import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./middleware/auth.js";
 import {
   feedbackService,
   applyManagedEnvironments,
@@ -50,6 +51,7 @@ import {
   decisionService,
   decisionRetentionService,
   externalObjectService,
+  executionWorkspaceService,
   heartbeatService,
   issueThreadInteractionService,
   issueService,
@@ -62,6 +64,13 @@ import {
   toolAccessService,
 } from "./services/index.js";
 import { queueIssueAssignmentWakeup } from "./services/issue-assignment-wakeup.js";
+import { createSecretProposalsService } from "./services/secret-proposals.js";
+import { environmentRuntimeService } from "./services/environment-runtime.js";
+import { createDbAdapterAuthSessionStore } from "./services/codex-device-login-service.js";
+import {
+  createCodexDeviceLoginReaper,
+  createProductionLoginSessionReaperRuntime,
+} from "./services/codex-device-login-reaper.js";
 import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
 import {
   parseAdapterRegistryEnv,
@@ -69,6 +78,7 @@ import {
 } from "./services/adapter-registry-bootstrap.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
+import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
@@ -226,11 +236,6 @@ export async function startServer(): Promise<StartedServer> {
     return "applied (pending migrations)";
   }
   
-  function isLoopbackHost(host: string): boolean {
-    const normalized = host.trim().toLowerCase();
-    return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1";
-  }
-
   function isPostgresConnectionString(connectionString: string): boolean {
     try {
       const parsed = new URL(connectionString);
@@ -256,19 +261,6 @@ export async function startServer(): Promise<StartedServer> {
     }
   }
 
-  function rewriteLocalUrlPort(rawUrl: string | undefined, port: number): string | undefined {
-    if (!rawUrl) return undefined;
-    try {
-      const parsed = new URL(rawUrl);
-      // The URL API normalizes default ports like :80/:443 to "", so treat them as stable URLs.
-      if (!parsed.port) return rawUrl;
-      parsed.port = String(port);
-      return parsed.toString();
-    } catch {
-      return rawUrl;
-    }
-  }
-  
   const LOCAL_BOARD_USER_ID = "local-board";
   const LOCAL_BOARD_USER_EMAIL = "local@paperclip.local";
   const LOCAL_BOARD_USER_NAME = "Board";
@@ -549,7 +541,7 @@ export async function startServer(): Promise<StartedServer> {
   const requestedListenPort = config.port;
   const listenPort = await detectPort(requestedListenPort);
   if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
-    config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
+    config.authPublicBaseUrl = rewriteLoopbackUrlPort(config.authPublicBaseUrl, listenPort);
   }
   
   let authReady = config.deploymentMode === "local_trusted";
@@ -759,6 +751,7 @@ export async function startServer(): Promise<StartedServer> {
     deploymentExposure: config.deploymentExposure,
     allowedHostnames: config.allowedHostnames,
     bindHost: config.host,
+    authPublicBaseUrl: config.authPublicBaseUrl,
     authReady,
     companyDeletionEnabled: config.companyDeletionEnabled,
     pluginMigrationDb: pluginMigrationDb as any,
@@ -807,6 +800,20 @@ export async function startServer(): Promise<StartedServer> {
   setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
     resolveSessionFromHeaders,
+    // Cloud-proxied browsers carry trusted x-paperclip-cloud-* headers instead
+    // of a local Better Auth session; without this lane every live-events
+    // upgrade behind the Cloud front door 403s forever. The resolver is
+    // self-gating: it returns null unless PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN
+    // is configured and the request presents the matching trust token, so
+    // self-hosted deployments never take this path.
+    resolveCloudActor: async (req) => {
+      const actor = await resolveCloudTenantActor(
+        db as any,
+        cloudActorHeaderSourceFromHeaders(req.headers),
+      );
+      if (!actor?.userId || !actor.companyIds) return null;
+      return { userId: actor.userId, companyIds: actor.companyIds };
+    },
   });
 
   void reconcilePersistedRuntimeServicesOnStartup(db as any)
@@ -957,6 +964,7 @@ export async function startServer(): Promise<StartedServer> {
   };
 
   if (heartbeat) {
+    const secretProposals = createSecretProposalsService(db as any);
     const decisionExecutor = decisionService(db as any, decisionServiceOptions);
     const retentionExecutor = decisionRetentionService(db as any, {
       notifyOriginAgent: createDecisionRetentionNotifyOriginAgent(heartbeat.wakeup),
@@ -969,6 +977,87 @@ export async function startServer(): Promise<StartedServer> {
     const routines = routineService(db as any, { pluginWorkerManager });
     const statusCards = statusCardService(db as any);
     const issues = issueService(db as any);
+    const mergedPullRequestConfirmations = issueThreadInteractionService(db as any, {
+      wakeup: heartbeat.wakeup,
+    });
+    const terminalWorkspaces = executionWorkspaceService(db as any);
+    const scheduleMergedPullRequestConfirmationSweep = () => {
+      if (heartbeatSchedulerStopped) return;
+      trackHeartbeatSchedulerWork(mergedPullRequestConfirmations
+        .sweepMergedPullRequestConfirmations()
+        .then((result) => {
+          if (result.accepted > 0) {
+            logger.info(result, "accepted merge confirmations for merged pull requests");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "merged pull-request confirmation sweep failed");
+        }));
+    };
+    // Emit a periodic signal when the reaper inspects candidates but archives
+    // none, so an inert reaper that skips every candidate is never fully silent.
+    // The throttle keeps the 30s cadence from flooding the log.
+    let lastTerminalWorkspaceSkipLogAt = 0;
+    const terminalWorkspaceSkipLogIntervalMs = 10 * 60 * 1000;
+    const scheduleTerminalWorkspaceSweep = () => {
+      if (heartbeatSchedulerStopped) return;
+      trackHeartbeatSchedulerWork(terminalWorkspaces
+        .sweepTerminalWorkspaces()
+        .then((result) => {
+          if (result.archived > 0 || result.cleanupFailed > 0) {
+            logger.info(result, "terminal issue workspace reaper changed workspace state");
+            return;
+          }
+          const skipped =
+            result.skippedActiveRun
+            + result.skippedNonTerminalTree
+            + result.skippedUndelivered
+            + result.skippedRace;
+          const nowMs = Date.now();
+          if (skipped > 0 && nowMs - lastTerminalWorkspaceSkipLogAt >= terminalWorkspaceSkipLogIntervalMs) {
+            lastTerminalWorkspaceSkipLogAt = nowMs;
+            logger.info(result, "terminal issue workspace reaper skipped all candidates");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "terminal issue workspace reaper failed");
+        }));
+    };
+
+    // The restart-safe cleanup backstop for adapter login sessions. The
+    // in-process five-minute timer stays the primary control. This reaper runs
+    // on startup and on the scheduler interval. It deletes the login sandbox for
+    // any expired non-terminal session, retries the delete for any terminal
+    // session left in `cleanup_pending`, and deletes a tagged lease that no live
+    // session references.
+    const adapterLoginReaper = createCodexDeviceLoginReaper({
+      store: createDbAdapterAuthSessionStore(db as any),
+      runtime: createProductionLoginSessionReaperRuntime({
+        db: db as any,
+        environmentRuntime: environmentRuntimeService(db as any, { pluginWorkerManager }),
+      }),
+    });
+    const logAdapterLoginReaperResult = (
+      result: Awaited<ReturnType<typeof adapterLoginReaper.sweep>>,
+    ) => {
+      if (
+        result.expiredTimedOut > 0 ||
+        result.cleanupCleared > 0 ||
+        result.orphanLeasesDeleted > 0 ||
+        result.cleanupPendingRemaining > 0
+      ) {
+        logger.info(result, "adapter login reaper swept login sessions");
+      }
+    };
+    const scheduleAdapterLoginReaperSweep = () => {
+      if (heartbeatSchedulerStopped) return;
+      trackHeartbeatSchedulerWork(adapterLoginReaper
+        .sweep()
+        .then(logAdapterLoginReaperResult)
+        .catch((err) => {
+          logger.error({ err }, "adapter login reaper sweep failed");
+        }));
+    };
     const tools = toolAccessService(db as any, {
       deploymentMode: config.deploymentMode,
       deploymentExposure: config.deploymentExposure,
@@ -1096,22 +1185,29 @@ export async function startServer(): Promise<StartedServer> {
       logger.warn({ ...toolHealthSweep }, "startup tool connection health sweep found failing connections");
     }
     await decisionExecutor.sweepExpired();
+
+    // Run the adapter login reaper once at startup, so a login sandbox that
+    // outlived a server restart is deleted before timer ticks start.
+    await adapterLoginReaper
+      .sweep()
+      .then(logAdapterLoginReaperResult)
+      .catch((err) => {
+        logger.error({ err }, "startup adapter login reaper sweep failed");
+      });
+
     const runRetentionSweep = async () => {
       const activeCompanies = await db.select({ id: companies.id }).from(companies).where(eq(companies.status, "active"));
       let archived = 0;
       for (const company of activeCompanies) {
-        const items = [];
-        let cursor: string | undefined;
-        do {
-          const page = await attentionService(db as any).list(company.id, {
-            includeDismissed: true,
-            limit: 100,
-            cursor,
-          });
-          items.push(...page.items);
-          cursor = page.nextCursor ?? undefined;
-        } while (cursor);
-        archived += await retentionExecutor.autoArchive({ companyId: company.id, items });
+        // Cursor pagination rebuilds the whole feed for every page; one
+        // unscoped all-items build keeps this sweep at a single feed build
+        // per company per tick.
+        const page = await attentionService(db as any).list(company.id, {
+          includeDismissed: true,
+          all: true,
+          allowUnscopedAll: true,
+        });
+        archived += await retentionExecutor.autoArchive({ companyId: company.id, items: page.items });
       }
       const notifications = await retentionExecutor.deliverNotifications();
       return { archived, ...notifications };
@@ -1153,6 +1249,11 @@ export async function startServer(): Promise<StartedServer> {
 
         if (heartbeatSchedulerStopped) return;
         scheduleExternalObjectRefreshSweep(new Date());
+
+        if (heartbeatSchedulerStopped) return;
+        scheduleMergedPullRequestConfirmationSweep();
+        scheduleTerminalWorkspaceSweep();
+        scheduleAdapterLoginReaperSweep();
 
         if (heartbeatSchedulerStopped) return;
         trackHeartbeatSchedulerWork(routines
@@ -1217,6 +1318,14 @@ export async function startServer(): Promise<StartedServer> {
           })
           .catch((err) => {
             logger.error({ err }, "periodic tool connection health sweep failed");
+          }));
+
+        trackHeartbeatSchedulerWork(secretProposals.sweepExpired()
+          .then((expired) => {
+            if (expired > 0) logger.warn({ expired }, "periodic secret proposal expiry scrubbed proposals");
+          })
+          .catch((err) => {
+            logger.error({ err }, "periodic secret proposal expiry sweep failed");
           }));
 
         if (heartbeatSchedulerStopped) return;

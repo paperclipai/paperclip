@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
+import os from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -3218,6 +3219,106 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   };
 }
 
+export async function acquireGitWorktreeCleanupLock(worktreePath: string) {
+  const branchRef = await runGit(["symbolic-ref", "--quiet", "HEAD"], worktreePath).catch(() => null);
+  const rawLocks = await Promise.all([
+    runGit(["rev-parse", "--git-path", "index.lock"], worktreePath)
+      .then((lockPath) => ({ kind: "index" as const, lockPath })),
+    runGit(["rev-parse", "--git-path", "HEAD.lock"], worktreePath)
+      .then((lockPath) => ({ kind: "head" as const, lockPath })),
+    ...(branchRef
+      ? [runGit(["rev-parse", "--git-path", `${branchRef}.lock`], worktreePath)
+          .then((lockPath) => ({ kind: "branch" as const, lockPath }))]
+      : []),
+  ]);
+  const locks = [...new Map(rawLocks.map(({ kind, lockPath }) => {
+    const resolvedLockPath = path.isAbsolute(lockPath)
+      ? lockPath
+      : path.resolve(worktreePath, lockPath);
+    return [resolvedLockPath, { kind, lockPath: resolvedLockPath }];
+  })).values()];
+  const lockHandles: Array<{
+    handle: fs.FileHandle;
+    kind: "index" | "head" | "branch";
+    lockPath: string;
+  }> = [];
+
+  async function releaseLocks(kind?: "branch") {
+    for (let index = lockHandles.length - 1; index >= 0; index -= 1) {
+      const lock = lockHandles[index];
+      if (!lock || (kind && lock.kind !== kind)) continue;
+      lockHandles.splice(index, 1);
+      await lock.handle.close().catch(() => {});
+      await fs.rm(lock.lockPath, { force: true }).catch(() => {});
+    }
+  }
+
+  try {
+    for (const lock of locks) {
+      lockHandles.push({
+        ...lock,
+        handle: await fs.open(lock.lockPath, "wx", 0o600),
+      });
+    }
+  } catch (error) {
+    await releaseLocks();
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error("git worktree cleanup lock is already held");
+    }
+    throw error;
+  }
+
+  return {
+    // Branch deletion must acquire this native ref lock itself. Callers release
+    // only that lock after the guarded worktree removal, while retaining the
+    // index and HEAD locks until the whole cleanup transaction finishes.
+    releaseBranchRefLock: () => releaseLocks("branch"),
+    release: () => releaseLocks(),
+  };
+}
+
+async function deleteGitBranchAtVerifiedTip(input: {
+  repoRoot: string;
+  branchName: string;
+  expectedHeadSha: string;
+  recorder?: WorkspaceOperationRecorder | null;
+  metadata: Record<string, unknown>;
+}) {
+  const commonDirRaw = await runGit(["rev-parse", "--git-common-dir"], input.repoRoot);
+  const commonDir = path.isAbsolute(commonDirRaw)
+    ? commonDirRaw
+    : path.resolve(input.repoRoot, commonDirRaw);
+  const detachedGitDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-branch-delete-"));
+  const detachedWorktree = `${detachedGitDir}-worktree`;
+
+  try {
+    // `git branch -d` refuses branches checked out by another worktree and its
+    // ref transaction fails if the tip changes concurrently. A detached HEAD
+    // at the delivered SHA additionally lets squash/cross-branch deliveries
+    // delete only the exact branch history that was verified before cleanup.
+    await Promise.all([
+      fs.writeFile(path.join(detachedGitDir, "HEAD"), `${input.expectedHeadSha}\n`, "utf8"),
+      fs.writeFile(path.join(detachedGitDir, "commondir"), `${commonDir}\n`, "utf8"),
+    ]);
+    await recordGitOperation(input.recorder, {
+      phase: "worktree_cleanup",
+      args: [
+        `--git-dir=${detachedGitDir}`,
+        `--work-tree=${detachedWorktree}`,
+        "branch",
+        "-d",
+        input.branchName,
+      ],
+      cwd: input.repoRoot,
+      metadata: input.metadata,
+      successMessage: `Deleted branch ${input.branchName}\n`,
+      failureLabel: `git branch -d ${input.branchName}`,
+    });
+  } finally {
+    await fs.rm(detachedGitDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 export async function cleanupExecutionWorkspaceArtifacts(input: {
   workspace: {
     id: string;
@@ -3239,6 +3340,11 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   cleanupCommand?: string | null;
   teardownCommand?: string | null;
   recorder?: WorkspaceOperationRecorder | null;
+  assertSafeToCleanup?: (() => Promise<void>) | null;
+  beforeBranchDelete?: (() => Promise<void>) | null;
+  expectedBranchHeadSha?: string | null;
+  runCleanupCommands?: boolean;
+  forceWorktreeRemoval?: boolean;
 }) {
   const warnings: string[] = [];
   const workspacePath = input.workspace.providerRef ?? input.workspace.cwd;
@@ -3252,6 +3358,9 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     workspace: input.workspace,
     projectWorkspaceCwd: input.projectWorkspace?.cwd ?? null,
   });
+  // Callers can require the workspace to match an assessed snapshot before
+  // cleanup begins. Destructive paths recheck immediately before removal.
+  await input.assertSafeToCleanup?.();
   let worktreeInstancePointer: WorktreeInstancePointer | null = null;
   let expectedWorktreeInstanceId: string | null = null;
   if (input.workspace.providerType === "git_worktree" && workspacePath) {
@@ -3264,13 +3373,15 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
   }
   const createdByRuntime = input.workspace.metadata?.createdByRuntime === true;
-  const cleanupCommands = [
-    input.cleanupCommand ?? null,
-    input.projectWorkspace?.cleanupCommand ?? null,
-    input.teardownCommand ?? null,
-  ]
-    .map((value) => asString(value, "").trim())
-    .filter(Boolean);
+  const cleanupCommands = input.runCleanupCommands === false
+    ? []
+    : [
+        input.cleanupCommand ?? null,
+        input.projectWorkspace?.cleanupCommand ?? null,
+        input.teardownCommand ?? null,
+      ]
+        .map((value) => asString(value, "").trim())
+        .filter(Boolean);
 
   for (const command of cleanupCommands) {
     try {
@@ -3324,9 +3435,15 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
         warnings.push(`Could not resolve git repo root for "${workspacePath}".`);
       } else {
         try {
+          await input.assertSafeToCleanup?.();
           await recordGitOperation(input.recorder, {
             phase: "worktree_cleanup",
-            args: ["worktree", "remove", "--force", workspacePath],
+            args: [
+              "worktree",
+              "remove",
+              ...(input.forceWorktreeRemoval === false ? [] : ["--force"]),
+              workspacePath,
+            ],
             cwd: repoRoot,
             metadata: {
               workspaceId: input.workspace.id,
@@ -3347,19 +3464,31 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
         warnings.push(`Could not resolve git repo root to delete branch "${input.workspace.branchName}".`);
       } else {
         try {
-          await recordGitOperation(input.recorder, {
-            phase: "worktree_cleanup",
-            args: ["branch", "-d", input.workspace.branchName],
-            cwd: repoRoot,
-            metadata: {
-              workspaceId: input.workspace.id,
-              workspacePath,
+          await input.beforeBranchDelete?.();
+          const metadata = {
+            workspaceId: input.workspace.id,
+            workspacePath,
+            branchName: input.workspace.branchName,
+            cleanupAction: "branch_delete",
+          };
+          if (input.expectedBranchHeadSha) {
+            await deleteGitBranchAtVerifiedTip({
+              repoRoot,
               branchName: input.workspace.branchName,
-              cleanupAction: "branch_delete",
-            },
-            successMessage: `Deleted branch ${input.workspace.branchName}\n`,
-            failureLabel: `git branch -d ${input.workspace.branchName}`,
-          });
+              expectedHeadSha: input.expectedBranchHeadSha,
+              recorder: input.recorder,
+              metadata,
+            });
+          } else {
+            await recordGitOperation(input.recorder, {
+              phase: "worktree_cleanup",
+              args: ["branch", "-d", input.workspace.branchName],
+              cwd: repoRoot,
+              metadata,
+              successMessage: `Deleted branch ${input.workspace.branchName}\n`,
+              failureLabel: `git branch -d ${input.workspace.branchName}`,
+            });
+          }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           warnings.push(`Skipped deleting branch "${input.workspace.branchName}": ${message}`);
@@ -3378,6 +3507,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     if (containsProjectWorkspace) {
       warnings.push(`Refusing to remove path "${workspacePath}" because it contains the project workspace.`);
     } else {
+      await input.assertSafeToCleanup?.();
       await fs.rm(resolvedWorkspacePath, { recursive: true, force: true });
       if (input.recorder) {
         await input.recorder.recordOperation({
@@ -3977,6 +4107,34 @@ function readRuntimeProvisionCommand(config: Record<string, unknown>) {
     config.runtimeProvisionCommand,
     asString(workspaceStrategy.runtimeProvisionCommand, ""),
   ).trim();
+}
+
+export function resolveRuntimeProvisionCommand(input: {
+  config: Record<string, unknown>;
+  workspace: RealizedExecutionWorkspace;
+}) {
+  const configuredCommand = readRuntimeProvisionCommand(input.config);
+  if (configuredCommand) return configuredCommand;
+
+  if (input.workspace.strategy !== "git_worktree") return "";
+
+  const stateDir = path.join(input.workspace.cwd, ".paperclip");
+  const pendingMarker = path.join(stateDir, "seed-pending");
+  const completeMarker = path.join(stateDir, "seed-complete");
+  const provisionScript = path.join(
+    input.workspace.baseCwd,
+    "scripts",
+    "provision-worktree-runtime.sh",
+  );
+  if (
+    !existsSync(pendingMarker)
+    || existsSync(completeMarker)
+    || !existsSync(provisionScript)
+  ) {
+    return "";
+  }
+
+  return "bash ./scripts/provision-worktree-runtime.sh";
 }
 
 function runtimeProvisionWorkspaceKey(input: StartLocalRuntimeServiceInput) {
@@ -4664,7 +4822,7 @@ export async function ensureRuntimeServicesForRun(input: {
   });
   const acquiredServiceIds: string[] = [];
   const refs: RuntimeServiceRef[] = [];
-  const runtimeProvisionCommand = readRuntimeProvisionCommand(input.config);
+  const runtimeProvisionCommand = resolveRuntimeProvisionCommand(input);
   const provisionCoordinator = createRuntimeProvisionCoordinator();
   runtimeServiceLeasesByRun.set(input.runId, acquiredServiceIds);
 
@@ -4877,7 +5035,7 @@ export async function startRuntimeServicesForWorkspaceControl(
     serviceStates: readConfiguredServiceStates(input.config),
   });
   const invocationId = input.invocationId ?? randomUUID();
-  const runtimeProvisionCommand = readRuntimeProvisionCommand(input.config);
+  const runtimeProvisionCommand = resolveRuntimeProvisionCommand(input);
   const provisionCoordinator = createRuntimeProvisionCoordinator();
 
   if (rawServices.length === 0 || !input.db || (!input.executionWorkspaceId && !input.workspace.workspaceId)) {

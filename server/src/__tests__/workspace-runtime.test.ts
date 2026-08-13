@@ -37,6 +37,7 @@ import {
   refreshRemoteTrackingBaseRef,
   releaseRuntimeServicesForRun,
   resetRuntimeServicesForTests,
+  resolveRuntimeProvisionCommand,
   resolveWorkspaceRuntimeReadinessTimeoutSec,
   resolveShell,
   sanitizeRuntimeServiceBaseEnv,
@@ -377,6 +378,41 @@ describe("sanitizeRuntimeServiceBaseEnv", () => {
     expect(sanitized.npm_config_tailscale_auth).toBeUndefined();
     expect(sanitized.npm_config_authenticated_private).toBeUndefined();
     expect(sanitized.HOST).toBe("0.0.0.0");
+  });
+});
+
+describe("resolveRuntimeProvisionCommand", () => {
+  it("backfills deferred seeding for legacy managed git worktrees", async () => {
+    const baseCwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-provision-"));
+    const cwd = path.join(baseCwd, "worktree");
+    try {
+      await fs.mkdir(path.join(baseCwd, "scripts"), { recursive: true });
+      await fs.writeFile(
+        path.join(baseCwd, "scripts", "provision-worktree-runtime.sh"),
+        "#!/usr/bin/env bash\n",
+      );
+      await fs.mkdir(path.join(cwd, ".paperclip"), { recursive: true });
+      await fs.writeFile(path.join(cwd, ".paperclip", "seed-pending"), "{}\n");
+      const workspace = {
+        ...buildWorkspace(cwd),
+        baseCwd,
+        strategy: "git_worktree" as const,
+        worktreePath: cwd,
+      };
+
+      expect(resolveRuntimeProvisionCommand({ config: {}, workspace })).toBe(
+        "bash ./scripts/provision-worktree-runtime.sh",
+      );
+      expect(resolveRuntimeProvisionCommand({
+        config: { runtimeProvisionCommand: "./custom-provision.sh" },
+        workspace,
+      })).toBe("./custom-provision.sh");
+
+      await fs.writeFile(path.join(cwd, ".paperclip", "seed-complete"), "{}\n");
+      expect(resolveRuntimeProvisionCommand({ config: {}, workspace })).toBe("");
+    } finally {
+      await fs.rm(baseCwd, { recursive: true, force: true });
+    }
   });
 });
 
@@ -3254,6 +3290,70 @@ describe("realizeExecutionWorkspace", () => {
     ).resolves.toMatchObject({
       stdout: "",
     });
+  });
+
+  it("keeps a runtime-created branch when its tip changes after guarded worktree removal", async () => {
+    const repoRoot = await createTempRepo();
+    const workspace = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-450",
+        title: "Race branch cleanup",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+    const expectedHeadSha = await readGit(workspace.cwd, ["rev-parse", "HEAD"]);
+    await fs.writeFile(path.join(repoRoot, "raced.txt"), "new work\n", "utf8");
+    await runGit(repoRoot, ["add", "raced.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Raced branch update"]);
+    const racedHeadSha = await readGit(repoRoot, ["rev-parse", "HEAD"]);
+
+    const cleanup = await cleanupExecutionWorkspaceArtifacts({
+      workspace: {
+        id: "execution-workspace-1",
+        cwd: workspace.cwd,
+        providerType: "git_worktree",
+        providerRef: workspace.worktreePath,
+        branchName: workspace.branchName,
+        repoUrl: workspace.repoUrl,
+        baseRef: workspace.repoRef,
+        projectId: workspace.projectId,
+        projectWorkspaceId: workspace.workspaceId,
+        sourceIssueId: "issue-1",
+        metadata: { createdByRuntime: true },
+      },
+      projectWorkspace: {
+        cwd: repoRoot,
+        cleanupCommand: null,
+      },
+      expectedBranchHeadSha: expectedHeadSha,
+      beforeBranchDelete: async () => {
+        await runGit(repoRoot, ["update-ref", `refs/heads/${workspace.branchName}`, racedHeadSha]);
+      },
+    });
+
+    expect(cleanup.cleaned).toBe(true);
+    expect(cleanup.warnings).toHaveLength(1);
+    expect(cleanup.warnings[0]).toContain(`Skipped deleting branch "${workspace.branchName}"`);
+    expect(await readGit(repoRoot, ["rev-parse", `refs/heads/${workspace.branchName}`])).toBe(racedHeadSha);
   });
 
   it("keeps an unmerged runtime-created branch and warns instead of force deleting it", async () => {

@@ -17,6 +17,8 @@ const {
   deriveAuthTrustedOriginsMock,
   environmentCustomImagesServiceMock,
   environmentCustomImagesServiceFactoryMock,
+  executionWorkspaceServiceFactoryMock,
+  executionWorkspaceServiceMock,
   externalObjectsServiceMock,
   externalObjectsServiceFactoryMock,
   feedbackExportServiceMock,
@@ -73,12 +75,31 @@ const {
   const heartbeatServiceFactoryMock = vi.fn(() => heartbeatServiceMock);
   const issueThreadInteractionServiceMock = {
     sweepSupersededPendingRequestConfirmations: vi.fn(async () => ({ expired: 0 })),
+    sweepMergedPullRequestConfirmations: vi.fn(async () => ({
+      checked: 0,
+      candidates: 0,
+      accepted: 0,
+      woken: 0,
+    })),
   };
   const issueThreadInteractionServiceFactoryMock = vi.fn(() => issueThreadInteractionServiceMock);
   const environmentCustomImagesServiceMock = {
     cleanupExpiredSetupSessions: vi.fn(async () => ({ scanned: 0, timedOut: 0, failed: 0 })),
   };
   const environmentCustomImagesServiceFactoryMock = vi.fn(() => environmentCustomImagesServiceMock);
+  const executionWorkspaceServiceMock = {
+    sweepTerminalWorkspaces: vi.fn(async () => ({
+      checked: 0,
+      eligible: 0,
+      archived: 0,
+      cleanupFailed: 0,
+      skippedActiveRun: 0,
+      skippedNonTerminalTree: 0,
+      skippedUndelivered: 0,
+      skippedRace: 0,
+    })),
+  };
+  const executionWorkspaceServiceFactoryMock = vi.fn(() => executionWorkspaceServiceMock);
   const externalObjectsServiceMock = {
     refreshDueObjectsForActiveCompanies: vi.fn(async () => ({ companies: 0, checked: 0, refreshed: 0 })),
   };
@@ -110,6 +131,8 @@ const {
     deriveAuthTrustedOriginsMock,
     environmentCustomImagesServiceMock,
     environmentCustomImagesServiceFactoryMock,
+    executionWorkspaceServiceFactoryMock,
+    executionWorkspaceServiceMock,
     externalObjectsServiceMock,
     externalObjectsServiceFactoryMock,
     feedbackExportServiceMock,
@@ -241,6 +264,7 @@ vi.mock("../services/index.js", () => ({
   bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
   applyManagedEnvironments: vi.fn(async () => null),
   environmentCustomImageService: environmentCustomImagesServiceFactoryMock,
+  executionWorkspaceService: executionWorkspaceServiceFactoryMock,
   externalObjectService: externalObjectsServiceFactoryMock,
   heartbeatService: heartbeatServiceFactoryMock,
   issueThreadInteractionService: issueThreadInteractionServiceFactoryMock,
@@ -285,6 +309,12 @@ vi.mock("../services/index.js", () => ({
       needsAttention: 0,
       failed: 0,
     })),
+  })),
+}));
+
+vi.mock("../services/secret-proposals.js", () => ({
+  createSecretProposalsService: vi.fn(() => ({
+    sweepExpired: vi.fn(async () => 0),
   })),
 }));
 
@@ -467,6 +497,8 @@ describe("startServer feedback export wiring", () => {
 
       expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
       expect(externalObjectsServiceMock.refreshDueObjectsForActiveCompanies).toHaveBeenCalledTimes(1);
+      expect(issueThreadInteractionServiceMock.sweepMergedPullRequestConfirmations).toHaveBeenCalledTimes(1);
+      expect(executionWorkspaceServiceMock.sweepTerminalWorkspaces).toHaveBeenCalledTimes(1);
       expect(routineServiceMock.tickScheduledTriggers).toHaveBeenCalledTimes(1);
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).toHaveBeenCalledTimes(2);
     } finally {
@@ -661,7 +693,7 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     );
   });
 
-  it("rewrites explicit-port auth public URLs when detect-port selects a new port", async () => {
+  it("preserves explicit-port external auth public URLs when detect-port selects a new port", async () => {
     loadConfigMock.mockReturnValueOnce(buildTestConfig({
       port: 3100,
       authBaseUrlMode: "explicit",
@@ -671,9 +703,12 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
 
     const started = await startServer();
 
+    // The server listens internally on 3110, but an explicit *external* base URL must keep
+    // its advertised port. Rewriting it to the internal listen port produced an unreachable
+    // URL that leaked to spawned agents as a dead PAPERCLIP_API_URL. (BRO-1558)
     expect(started.listenPort).toBe(3110);
-    expect(started.apiUrl).toBe("http://my-host.ts.net:3110");
-    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://my-host.ts.net:3110");
+    expect(started.apiUrl).toBe("http://my-host.ts.net:3100");
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://my-host.ts.net:3100");
   });
 
   it("keeps no-port auth public URLs stable when detect-port selects a new port", async () => {

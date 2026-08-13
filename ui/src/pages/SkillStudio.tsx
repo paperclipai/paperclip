@@ -2097,7 +2097,7 @@ function InputPane({
                             <DropdownMenuItem
                               onClick={() => {
                                 const input = inputs.find((i) => i.id === id);
-                                if (input) navigator.clipboard?.writeText(input.content).catch(() => {});
+                                if (input) void copyTextToClipboard(input.content).catch(() => {});
                               }}
                             >
                               <Copy className="mr-2 h-4 w-4" /> Copy content

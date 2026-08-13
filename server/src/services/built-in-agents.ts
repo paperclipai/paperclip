@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -22,6 +21,12 @@ import { companySkillService } from "./company-skills.js";
 import { routineService } from "./routines.js";
 import { accessService } from "./access.js";
 import { listAdapterModels } from "../adapters/registry.js";
+import {
+  resourceStatus,
+  stableJson,
+  stockHash,
+  type ManagedResourceStockStatus,
+} from "./managed-resource-drift.js";
 
 export type BuiltInAgentStatus = "not_provisioned" | "pending_approval" | "needs_setup" | "ready" | "paused";
 
@@ -72,11 +77,7 @@ export interface BuiltInAgentProvisionResult {
 }
 
 export type BuiltInManagedResourceKind = "instructions" | "skill" | "routine";
-export type BuiltInManagedResourceStockStatus =
-  | "missing"
-  | "stock_current"
-  | "stock_update_available"
-  | "operator_modified";
+export type BuiltInManagedResourceStockStatus = ManagedResourceStockStatus;
 
 export interface BuiltInManagedResourceState {
   resourceKind: BuiltInManagedResourceKind;
@@ -180,7 +181,7 @@ const FALLBACK_REFLECTION_COACH_SKILL = [
 const FALLBACK_SUMMARIZER_INSTRUCTIONS = [
   "You are Summarizer, a built-in reporting agent at Paperclip.",
   "",
-  "Turn the current state of a Paperclip scope (project, workspaces overview, or a single project workspace) into a short, honest, human-readable Markdown summary and write it back to that scope's summary slot as a new revision. Use the `summarize-status` skill as your operating procedure.",
+  "Turn the current state of a Paperclip scope (project, workspaces overview, project workspace, or execution workspace) into a short, honest, human-readable Markdown summary and write it back to that scope's summary slot as a new revision. Use the `summarize-status` skill as your operating procedure.",
   "",
   "Read-and-report only: never change issues, workspaces, or code. Cite issue identifiers, never fabricate status, keep every read company-scoped, and run on the low-cost model profile lane by default.",
   "",
@@ -400,7 +401,7 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     displayName: "Summarizer",
     featureKeys: ["summarizer"],
     shortPurpose:
-      "Writes short, human-readable Markdown status summaries into project, workspaces-overview, and project-workspace summary slots on demand.",
+      "Writes short, human-readable Markdown status summaries into project, workspaces-overview, project-workspace, and execution-workspace summary slots on demand.",
     defaultInstructions: SUMMARIZER_INSTRUCTIONS,
     defaultRole: "general",
     defaultTitle: "Summarizer",
@@ -418,7 +419,7 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     },
     defaultBudgetMonthlyCents: 0,
     bundle: {
-      stockVersion: "2026-07-15",
+      stockVersion: "2026-08-02",
       instructions: {
         entryFile: "AGENTS.md",
         files: {
@@ -451,7 +452,7 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
             type: "select",
             defaultValue: "all",
             required: true,
-            options: ["all", "project", "workspaces_overview", "project_workspace"],
+            options: ["all", "project", "workspaces_overview", "project_workspace", "execution_workspace"],
           },
         ],
         triggers: [
@@ -469,6 +470,12 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
 ]);
 
 const DEFINITIONS_BY_KEY = new Map(DEFINITIONS.map((definition) => [definition.key, definition]));
+
+// Bundled built-in agents that should be provisioned automatically when a
+// company is created (and re-ensured on startup reconcile). Empty by default so
+// a new user starts clean — the Reflection Coach and Summarizer are opt-in, not
+// seeded. Add a definition key here to restore automatic provisioning.
+const AUTO_PROVISION_ON_COMPANY_CREATE_KEYS = new Set<string>([]);
 
 const ROOT_AGENT_DEFAULT_CHANGE_GRANTS: PermissionKey[] = ["agents:configure", "skills:create"];
 const BUILT_IN_AGENT_DEFAULT_GRANTS: Record<string, PermissionKey[]> = {
@@ -495,40 +502,11 @@ function uniqueNonEmptyStrings(values: string[]) {
   return result;
 }
 
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function stockHash(value: unknown) {
-  return `sha256:${createHash("sha256").update(stableJson(value)).digest("hex")}`;
-}
-
 function changedFileList(currentFiles: Record<string, string | null>, stockFiles: Record<string, string>) {
   const paths = new Set([...Object.keys(currentFiles), ...Object.keys(stockFiles)]);
   return [...paths]
     .filter((filePath) => (currentFiles[filePath] ?? null) !== (stockFiles[filePath] ?? null))
     .sort((left, right) => left.localeCompare(right));
-}
-
-function resourceStatus(input: {
-  resourceId: string | null;
-  currentHash: string | null;
-  bindingStockHash: string | null;
-  latestStockHash: string;
-}): BuiltInManagedResourceStockStatus {
-  if (!input.resourceId || !input.currentHash) return "missing";
-  if (input.currentHash === input.latestStockHash) return "stock_current";
-  if (input.bindingStockHash && input.currentHash === input.bindingStockHash) {
-    return "stock_update_available";
-  }
-  return "operator_modified";
 }
 
 function stockState(input: {
@@ -1945,7 +1923,17 @@ export function builtInAgentService(db: Db) {
     const company = await ensureCompany(companyId);
     let autoEnsured = 0;
     let pendingApprovals = 0;
+    // A fresh company starts with only its own lead agent — the Reflection
+    // Coach and Summarizer are no longer auto-created for new users. They stay
+    // available to enable on demand (via ensure / provision / the built-in
+    // bundle panel). We still reconcile any bundled agent that already exists
+    // (e.g. one an operator enabled) so its instructions/skill/routine keep
+    // tracking stock. Add a key to AUTO_PROVISION_ON_COMPANY_CREATE_KEYS to
+    // restore automatic creation for that definition.
     for (const definition of DEFINITIONS.filter((entry) => entry.bundle)) {
+      const existing = await findSingleAgent(companyId, definition);
+      const shouldProvision = existing !== null || AUTO_PROVISION_ON_COMPANY_CREATE_KEYS.has(definition.key);
+      if (!shouldProvision) continue;
       if (company.requireBoardApprovalForNewAgents) {
         const result = await provision(companyId, definition.key);
         if (result.approval) pendingApprovals += 1;

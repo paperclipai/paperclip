@@ -453,6 +453,70 @@ describe("resolveEnvironmentExecutionTarget", () => {
     expect(environmentRuntime.execute).toHaveBeenCalledTimes(2);
   });
 
+  it("forwards the session flags to the environment runtime execute", async () => {
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "sandbox",
+      config: {
+        provider: "fake-plugin",
+        reuseLease: false,
+        timeoutMs: 30_000,
+      },
+    });
+
+    const environmentRuntime = {
+      execute: vi.fn().mockResolvedValue({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "ok",
+        stderr: "",
+        metadata: { durationMs: 600, getDurationMs: 15 },
+      }),
+      supportsSync: vi.fn().mockReturnValue(false),
+    };
+
+    const target = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      adapterType: "codex_local",
+      environment: { id: "env-1", driver: "sandbox", config: { provider: "fake-plugin" } },
+      leaseId: "lease-1",
+      leaseMetadata: { remoteCwd: "/workspace" },
+      lease: { id: "lease-1" } as never,
+      environmentRuntime: environmentRuntime as never,
+    });
+
+    const runner = (target as { runner?: {
+      execute(input: {
+        command: string;
+        args?: string[];
+        useSession?: boolean;
+        bypassSession?: boolean;
+      }): Promise<unknown>;
+    } }).runner!;
+
+    // The agent command opts onto the persistent session with `useSession`,
+    // which the seam maps to `forceSession`. It never bypasses the session.
+    await runner.execute({ command: "node", args: ["script.js"], useSession: true });
+    // A bridge control-plane exec opts off the persistent session with
+    // `bypassSession`, which the seam forwards unchanged.
+    await runner.execute({ command: "sh", args: ["-c", "cat"], bypassSession: true });
+
+    const first = environmentRuntime.execute.mock.calls[0]![0] as {
+      forceSession?: boolean;
+      bypassSession?: boolean;
+    };
+    expect(first.forceSession).toBe(true);
+    expect(first.bypassSession).toBeUndefined();
+
+    const second = environmentRuntime.execute.mock.calls[1]![0] as {
+      forceSession?: boolean;
+      bypassSession?: boolean;
+    };
+    expect(second.forceSession).toBeUndefined();
+    expect(second.bypassSession).toBe(true);
+  });
+
   // A recording tracer that captures each provider-exec span's name, attribute
   // map, and end. It satisfies the structural tracer the seam calls.
   function createRecordingExecTracer() {
@@ -548,6 +612,122 @@ describe("resolveEnvironmentExecutionTarget", () => {
       execute(input: { command: string; args?: string[] }): Promise<unknown>;
     } }).runner!;
   }
+
+  // Run the sandbox runner's execute with an incremental log sink and collect
+  // the ordered deliveries. The runner's execute accepts an `onLog`, so this
+  // casts past the narrowed helper return type.
+  async function runExecuteCollectingLogs(
+    runner: { execute(input: unknown): Promise<unknown> },
+  ): Promise<Array<[string, string]>> {
+    const delivered: Array<[string, string]> = [];
+    await runner.execute({
+      command: "echo",
+      onLog: async (stream: "stdout" | "stderr", chunk: string) => {
+        delivered.push([stream, chunk]);
+      },
+    });
+    return delivered;
+  }
+
+  it("delivers only the un-streamed suffix after a provider streams a prefix then polls the complete result", async () => {
+    // The provider streams a prefix through the incremental sink, then its
+    // stream fails and it polls the complete output as the final result. The
+    // reconciler must deliver the remaining tail once, so no output byte is lost
+    // or repeated.
+    const { tracer } = createRecordingExecTracer();
+    const runner = await runnerWithExecute({
+      provider: "daytona",
+      tracer,
+      execute: async (input: unknown) => {
+        const typed = input as { onLog?: (s: "stdout" | "stderr", c: string) => Promise<void> };
+        await typed.onLog?.("stdout", "hello ");
+        await typed.onLog?.("stderr", "warn:");
+        return { exitCode: 0, signal: null, timedOut: false, stdout: "hello world", stderr: "warn:done" };
+      },
+    });
+    const delivered = await runExecuteCollectingLogs(
+      runner as { execute(input: unknown): Promise<unknown> },
+    );
+    expect(delivered).toEqual([
+      ["stdout", "hello "],
+      ["stderr", "warn:"],
+      ["stdout", "world"],
+      ["stderr", "done"],
+    ]);
+  });
+
+  it("does not repeat output when the provider already streamed the complete result", async () => {
+    // The provider streams the whole output through the incremental sink and
+    // returns the same complete result. The suffix is empty, so the reconciler
+    // never re-delivers the streamed bytes.
+    const { tracer } = createRecordingExecTracer();
+    const runner = await runnerWithExecute({
+      provider: "daytona",
+      tracer,
+      execute: async (input: unknown) => {
+        const typed = input as { onLog?: (s: "stdout" | "stderr", c: string) => Promise<void> };
+        await typed.onLog?.("stdout", "full");
+        return { exitCode: 0, signal: null, timedOut: false, stdout: "full", stderr: "" };
+      },
+    });
+    const delivered = await runExecuteCollectingLogs(
+      runner as { execute(input: unknown): Promise<unknown> },
+    );
+    expect(delivered).toEqual([["stdout", "full"]]);
+  });
+
+  it("delivers the full captured output when the provider streams nothing incrementally", async () => {
+    // The provider streams no incremental chunk, so the whole final result is
+    // the suffix and reaches the sink once.
+    const { tracer } = createRecordingExecTracer();
+    const runner = await runnerWithExecute({
+      provider: "daytona",
+      tracer,
+      execute: async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "batch-out",
+        stderr: "batch-err",
+      }),
+    });
+    const delivered = await runExecuteCollectingLogs(
+      runner as { execute(input: unknown): Promise<unknown> },
+    );
+    expect(delivered).toEqual([
+      ["stdout", "batch-out"],
+      ["stderr", "batch-err"],
+    ]);
+  });
+
+  it("delivers the whole final output when the poll fallback buffer does not continue the streamed prefix", async () => {
+    // The provider streams a prefix, then its stream fails and it polls a
+    // buffer that does NOT start with that prefix. A length slice would drop
+    // the leading bytes of the poll buffer and corrupt the durable log, so the
+    // reconciler delivers the whole final output instead. The streamed prefix
+    // repeats, but no output byte is lost or truncated.
+    const { tracer } = createRecordingExecTracer();
+    const runner = await runnerWithExecute({
+      provider: "daytona",
+      tracer,
+      execute: async (input: unknown) => {
+        const typed = input as { onLog?: (s: "stdout" | "stderr", c: string) => Promise<void> };
+        await typed.onLog?.("stdout", "hello ");
+        await typed.onLog?.("stderr", "warn:");
+        // The poll buffer starts with different leading text on both streams.
+        return { exitCode: 0, signal: null, timedOut: false, stdout: "RESYNCED output", stderr: "RESET err" };
+      },
+    });
+    const delivered = await runExecuteCollectingLogs(
+      runner as { execute(input: unknown): Promise<unknown> },
+    );
+    expect(delivered).toEqual([
+      ["stdout", "hello "],
+      ["stderr", "warn:"],
+      ["stdout", "RESYNCED output"],
+      ["stderr", "RESET err"],
+    ]);
+  });
 
   it("sets the provider duration attributes from finite Daytona-shaped metadata", async () => {
     const { tracer, spans } = createRecordingExecTracer();
@@ -945,6 +1125,138 @@ describe("resolveEnvironmentExecutionTarget", () => {
     expect(span!.attributes[A.execExitCode]).toBe(0);
     // The seam reached the log callback exactly once (the stdout delivery).
     expect(onLog).toHaveBeenCalledTimes(1);
+  });
+
+  it("delivers incremental logs before the final result and does not duplicate them", async () => {
+    const { tracer } = createRecordingExecTracer();
+    const runner = await runnerWithExecute({
+      provider: "daytona",
+      tracer,
+      execute: vi.fn(async (input: { onLog?: (s: string, c: string) => Promise<void> }) => {
+        // The provider streams the output while the command runs.
+        await input.onLog?.("stdout", "chunk-1");
+        await input.onLog?.("stderr", "chunk-2");
+        await input.onLog?.("stdout", "chunk-3");
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: "chunk-1chunk-3",
+          stderr: "chunk-2",
+        };
+      }),
+    });
+
+    const onLog = vi.fn();
+    const result = await (runner as {
+      execute(input: unknown): Promise<{ stdout: string; stderr: string; exitCode: number }>;
+    }).execute({ command: "echo", onLog });
+
+    // The runner receives the incremental chunks in order, and NOT a repeated
+    // delivery of the final stdout/stderr.
+    expect(onLog.mock.calls).toEqual([
+      ["stdout", "chunk-1"],
+      ["stderr", "chunk-2"],
+      ["stdout", "chunk-3"],
+    ]);
+    // The final result stays available to the caller for parsing and fallback.
+    expect(result).toMatchObject({ exitCode: 0, stdout: "chunk-1chunk-3", stderr: "chunk-2" });
+  });
+
+  it("still delivers the final result to the runner when the provider does not stream", async () => {
+    const { tracer } = createRecordingExecTracer();
+    const runner = await runnerWithExecute({
+      provider: "daytona",
+      tracer,
+      // A provider that never calls onLog returns only the final result.
+      execute: vi.fn(async () => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "final-out",
+        stderr: "final-err",
+      })),
+    });
+
+    const onLog = vi.fn();
+    const result = await (runner as {
+      execute(input: unknown): Promise<{ stdout: string; stderr: string }>;
+    }).execute({ command: "echo", onLog });
+
+    expect(onLog.mock.calls).toEqual([
+      ["stdout", "final-out"],
+      ["stderr", "final-err"],
+    ]);
+    expect(result).toMatchObject({ stdout: "final-out", stderr: "final-err" });
+  });
+
+  it("creates exactly one sandbox.exec span for one streamed provider call", async () => {
+    const { tracer, spans } = createRecordingExecTracer();
+    const runner = await runnerWithExecute({
+      provider: "daytona",
+      tracer,
+      execute: vi.fn(async (input: { onLog?: (s: string, c: string) => Promise<void> }) => {
+        await input.onLog?.("stdout", "chunk-a");
+        await input.onLog?.("stdout", "chunk-b");
+        await input.onLog?.("stderr", "chunk-c");
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: "chunk-achunk-b",
+          stderr: "chunk-c",
+        };
+      }),
+    });
+
+    const onLog = vi.fn();
+    await (runner as { execute(input: unknown): Promise<unknown> }).execute({
+      command: "echo",
+      onLog,
+    });
+
+    // One long-lived provider call opens one span; each stream chunk opens none.
+    expect(spans).toHaveLength(1);
+    expect(spans[0]!.name).toBe("sandbox.exec");
+    expect(spans[0]!.ended).toBe(true);
+  });
+
+  it("keeps streamed log text and secret values out of span attributes", async () => {
+    const { tracer, spans } = createRecordingExecTracer();
+    const secret = "sk-super-secret-value";
+    const runner = await runnerWithExecute({
+      provider: "daytona",
+      tracer,
+      execute: vi.fn(async (input: { onLog?: (s: string, c: string) => Promise<void> }) => {
+        await input.onLog?.("stdout", `token=${secret}\n`);
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: `token=${secret}\n`,
+          stderr: "",
+        };
+      }),
+    });
+
+    const onLog = vi.fn();
+    // The secret rides the env and the streamed chunk, never the command label.
+    await (runner as { execute(input: unknown): Promise<unknown> }).execute({
+      command: "run-agent",
+      env: { API_KEY: secret },
+      onLog,
+    });
+
+    expect(spans).toHaveLength(1);
+    const span = spans[0]!;
+    // Attributes carry only the closed allowlist — never log text or secrets.
+    for (const key of Object.keys(span.attributes)) {
+      expect(ALLOWED_EXEC_SPAN_ATTRIBUTE_KEYS.has(key), `non-allowlisted key "${key}"`).toBe(true);
+    }
+    const serialized = JSON.stringify(span.attributes);
+    expect(serialized).not.toContain(secret);
+    expect(serialized).not.toContain("token=");
+    expect(serialized).not.toContain("chunk");
   });
 
   // Fire one run-time exec from a bridge continuation that runs after the step

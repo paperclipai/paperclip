@@ -22,8 +22,8 @@ describe("createApiProxy", () => {
   });
 
   it("injects x-forwarded-host and defaults x-forwarded-proto to http on plain sockets", () => {
-    const setHeader = fireProxyReq({ headers: { host: "goldie.gerbil-company.ts.net:3101" } });
-    expect(setHeader).toHaveBeenCalledWith("x-forwarded-host", "goldie.gerbil-company.ts.net:3101");
+    const setHeader = fireProxyReq({ headers: { host: "dev-box.tail1234.ts.net:3101" } });
+    expect(setHeader).toHaveBeenCalledWith("x-forwarded-host", "dev-box.tail1234.ts.net:3101");
     expect(setHeader).toHaveBeenCalledWith("x-forwarded-proto", "http");
   });
 

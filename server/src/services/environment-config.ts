@@ -77,6 +77,7 @@ const fakeSandboxEnvironmentConfigSchema = z.object({
     .default("ubuntu:24.04"),
   reuseLease: z.boolean().optional().default(false),
   streamRunLogs: z.boolean().optional(),
+  streamAgentSessionOutput: z.boolean().optional(),
   archiveOnRelease: z.boolean().optional(),
 }).strict();
 
@@ -93,6 +94,7 @@ const pluginSandboxEnvironmentConfigSchema = z.object({
   timeoutMs: z.coerce.number().int().min(1).max(86_400_000).optional(),
   reuseLease: z.boolean().optional().default(false),
   streamRunLogs: z.boolean().optional(),
+  streamAgentSessionOutput: z.boolean().optional(),
   archiveOnRelease: z.boolean().optional(),
 }).catchall(z.unknown());
 
@@ -371,6 +373,30 @@ export function stripSandboxProviderEnvelope(config: SandboxEnvironmentConfig): 
   return driverConfig;
 }
 
+// The host owns these sandbox run-behavior flags, not the provider plugin. The
+// host reads them to select the run-log stream and the ACP session output
+// stream. The host passes the whole config to the plugin, so a plugin that
+// allowlists its own driver fields drops these flags from its normalized
+// config. Re-apply them from the parsed envelope after the plugin normalizes,
+// or a saved environment loses the operator opt-in and the stream never starts.
+const HOST_OWNED_SANDBOX_STREAM_FLAGS = [
+  "streamRunLogs",
+  "streamAgentSessionOutput",
+] as const;
+
+function applyHostOwnedSandboxStreamFlags(
+  normalizedConfig: Record<string, unknown>,
+  envelope: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...normalizedConfig };
+  for (const key of HOST_OWNED_SANDBOX_STREAM_FLAGS) {
+    if (envelope[key] !== undefined) {
+      merged[key] = envelope[key];
+    }
+  }
+  return merged;
+}
+
 export function normalizeEnvironmentConfig(input: {
   driver: EnvironmentDriver;
   config: Record<string, unknown> | null | undefined;
@@ -458,7 +484,7 @@ export function normalizeEnvironmentConfigForProbe(input: {
       ...(await resolveConfigSecretRefsForProbe({
         db: input.db,
         companyId: input.companyId,
-        config: validated.normalizedConfig,
+        config: applyHostOwnedSandboxStreamFlags(validated.normalizedConfig, parsed.data),
         accessContext: input.accessContext,
         schema:
           validated.driver.configSchema &&
@@ -550,7 +576,7 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
       secretProvider: input.secretProvider,
       config: {
         provider: parsed.data.provider,
-        ...validated.normalizedConfig,
+        ...applyHostOwnedSandboxStreamFlags(validated.normalizedConfig, parsed.data),
       },
       schema:
         validated.driver.configSchema && typeof validated.driver.configSchema === "object" && !Array.isArray(validated.driver.configSchema)

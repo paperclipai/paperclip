@@ -56,6 +56,7 @@ export const queryKeys = {
     agentActions: (
       companyId: string,
       filters: {
+        actorScope?: "agents" | "all" | null;
         agentId?: string | null;
         responsibleUserId?: string | null;
         runId?: string | null;
@@ -70,6 +71,7 @@ export const queryKeys = {
         "audit",
         companyId,
         "agent-actions",
+        filters.actorScope ?? "agents",
         filters.agentId ?? "__all",
         filters.responsibleUserId ?? "__all",
         filters.runId ?? "__all",
@@ -225,6 +227,13 @@ export const queryKeys = {
       query: { path: string; workspace?: string; projectId?: string | null; workspaceId?: string | null },
     ) =>
       ["issues", "file-resources", issueId, "content", query] as const,
+    /**
+     * Batched availability preflight. `refKeys` are the deduplicated,
+     * lexicographically sorted reference keys in the request so identical
+     * batches share one cache entry.
+     */
+    fileResourceAvailability: (issueId: string, refKeys: readonly string[]) =>
+      ["issues", "file-resources", issueId, "availability", refKeys] as const,
   },
   routines: {
     list: (companyId: string, filters?: { projectId?: string | null }) =>
@@ -367,6 +376,9 @@ export const queryKeys = {
     experimentalSettings: ["instance", "experimental-settings"] as const,
   },
   health: ["health"] as const,
+  cloud: {
+    stacks: ["cloud", "stacks"] as const,
+  },
   secrets: {
     list: (companyId: string) => ["secrets", companyId] as const,
     providers: (companyId: string) => ["secret-providers", companyId] as const,
@@ -377,6 +389,8 @@ export const queryKeys = {
     userDefinitionCoverage: (companyId: string, definitionId: string) =>
       ["user-secret-definitions", companyId, definitionId, "coverage"] as const,
     myUserSecrets: (companyId: string) => ["my-user-secrets", companyId] as const,
+    proposals: (companyId: string, status: string = "pending") =>
+      ["secret-proposals", companyId, status] as const,
   },
   companySearch: {
     search: (companyId: string, q: string, scope: string, limit: number, offset: number) =>
@@ -384,10 +398,6 @@ export const queryKeys = {
   },
   dashboard: (companyId: string) => ["dashboard", companyId] as const,
   attention: (companyId: string) => ["attention", companyId] as const,
-  decisionTraining: {
-    list: (companyId: string) => ["decision-training", companyId] as const,
-    detail: (id: string) => ["decision-training", "detail", id] as const,
-  },
   decisions: {
     list: (companyId: string, status?: string) =>
       ["decisions", companyId, status ?? "__all-statuses__"] as const,

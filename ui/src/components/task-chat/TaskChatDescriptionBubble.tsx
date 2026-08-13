@@ -148,7 +148,14 @@ export function TaskChatDescriptionBubble({ brief }: TaskChatDescriptionBubblePr
             // toggle's muted colors need a lift on the solid blue bubble.
             toggleClassName={isHuman ? "text-white/80 hover:text-white hover:bg-white/10" : undefined}
           >
-            <MarkdownBody softBreaks linkIssueReferences externalReferences={brief.externalReferences}>
+            <MarkdownBody
+              // On the solid --liveness-blue human bubble, keep prose body text
+              // following the bubble's `text-white` in both themes.
+              className={isHuman ? "paperclip-markdown-on-accent" : undefined}
+              softBreaks
+              linkIssueReferences
+              externalReferences={brief.externalReferences}
+            >
               {brief.description}
             </MarkdownBody>
           </FoldCurtain>

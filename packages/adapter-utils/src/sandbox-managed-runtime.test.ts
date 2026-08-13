@@ -19,6 +19,15 @@ import {
   prepareCommandManagedRuntime,
   type CommandManagedRuntimeRunner,
 } from "./command-managed-runtime.js";
+import {
+  createRuntimeSpanRunner,
+  getActiveStepContext,
+  measureStartupStep,
+  type RuntimeSpanRunner,
+  type StartupSpan,
+  type StartupTraceContext,
+  type StartupTracer,
+} from "./acpx-engine/startup-timing.js";
 import type { RunProcessResult } from "./server-utils.js";
 
 function toArrayBuffer(bytes: Buffer): ArrayBuffer {
@@ -154,6 +163,87 @@ async function listTarMembers(rootDir: string, name: string, bytes: Buffer): Pro
   await writeFile(tarPath, bytes);
   const { stdout } = await execFile("tar", ["-tf", tarPath], { maxBuffer: 32 * 1024 * 1024 });
   return stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
+// Build a filesystem-backed managed-runtime client. The host tarball path runs
+// unchanged; the client just materializes the mappings on the local disk, so a
+// pack-span test needs no provider.
+function makeFilesystemClient(): SandboxManagedRuntimeClient {
+  const client: SandboxManagedRuntimeClient = {
+    makeDir: async (remotePath) => {
+      await mkdir(remotePath, { recursive: true });
+    },
+    writeFile: async (remotePath, bytes) => {
+      await mkdir(path.dirname(remotePath), { recursive: true });
+      await writeFile(remotePath, Buffer.from(bytes));
+    },
+    readFile: async (remotePath) => await readFile(remotePath),
+    listFiles: async (remotePath) => {
+      const entries = await readdir(remotePath, { withFileTypes: true }).catch(() => []);
+      return entries
+        .filter((entry) => entry.isFile())
+        .map((entry) => entry.name)
+        .sort((left, right) => left.localeCompare(right));
+    },
+    remove: async (remotePath) => {
+      await rm(remotePath, { recursive: true, force: true });
+    },
+    run: async (command) => {
+      await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+    },
+  };
+  attachFallbackSyncIn(client);
+  return client;
+}
+
+// One recorded span from the fake tracer. `parentName` is the name of the span
+// that the start context carried, so a test can assert the parent relationship.
+interface RecordedSpan {
+  name: string;
+  parentName: string | null;
+  ended: boolean;
+  attributes: Record<string, string | number | boolean>;
+}
+
+// A fake trace context that records every span and its parent by name. It
+// satisfies the structural `StartupTraceContext` contract, so the real
+// `createRuntimeSpanRunner` and `measureStartupStep` drive it unchanged. The
+// opaque parent token is the parent's `RecordedSpan`, so a child span reads its
+// parent name from the start context.
+function createRecordingTraceContext(): {
+  traceContext: StartupTraceContext;
+  spans: RecordedSpan[];
+} {
+  const spans: RecordedSpan[] = [];
+  const byHandle = new WeakMap<StartupSpan, RecordedSpan>();
+  const tracer: StartupTracer = {
+    startSpan(name, options, context) {
+      const parent = context as RecordedSpan | undefined;
+      const record: RecordedSpan = {
+        name,
+        parentName: parent?.name ?? null,
+        ended: false,
+        attributes: { ...(options?.attributes ?? {}) },
+      };
+      spans.push(record);
+      const handle: StartupSpan = {
+        setAttribute(key, value) {
+          record.attributes[key] = value;
+        },
+        setStatus() {},
+        end() {
+          record.ended = true;
+        },
+      };
+      byHandle.set(handle, record);
+      return handle;
+    },
+  };
+  const traceContext: StartupTraceContext = {
+    tracer,
+    contextWithSpan: (span) => byHandle.get(span),
+  };
+  return { traceContext, spans };
 }
 
 describe("sandbox managed runtime", () => {
@@ -1927,6 +2017,118 @@ describe("sandbox managed runtime", () => {
     } finally {
       if (priorFlag === undefined) delete process.env[flagKey];
       else process.env[flagKey] = priorFlag;
+    }
+  });
+
+  it("builds the workspace tarball inside one host pack span for a usual workspace sync", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pack-span-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "workspace body\n", "utf8");
+
+    // Record every span name the runner opens and run the wrapped work, so the
+    // test proves the host opens a span around each host-side staging sub-step
+    // for the usual (plain) workspace sync: the git enumeration, the baseline
+    // content-hash walk, and the tarball build, in that order.
+    const openedSpans: string[] = [];
+    const runtimeSpan: RuntimeSpanRunner = async (name, work) => {
+      openedSpans.push(name);
+      return await work();
+    };
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-pack",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "test-adapter",
+      client: makeFilesystemClient(),
+      workspaceLocalDir: localWorkspaceDir,
+      runtimeSpan,
+    });
+
+    expect(openedSpans).toEqual(["snapshot.git", "snapshot.baseline", "pack"]);
+    // The tarball build still lands the workspace inside the span, so the wrap
+    // changes no staging behavior.
+    await expect(readFile(path.join(remoteWorkspaceDir, "README.md"), "utf8")).resolves.toBe("workspace body\n");
+    expect(prepared.workspaceRemoteDir).toBe(remoteWorkspaceDir);
+  });
+
+  it("nests the host pack span under the stage.sync step span", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pack-nest-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "workspace body\n", "utf8");
+
+    const { traceContext, spans } = createRecordingTraceContext();
+    // The root span stands in for `sandbox.startup`. Its child context is the
+    // step span's parent, exactly as the executor wires it.
+    const rootHandle = traceContext.tracer.startSpan("sandbox.startup", undefined, undefined);
+    const rootContext = traceContext.contextWithSpan(rootHandle);
+
+    // The stage runner parents each span to the ACTIVE startup step, so the
+    // `pack` span nests under `stage.sync`. This is the exact runner the
+    // executor threads into the staging seam.
+    const stageRuntimeSpan = createRuntimeSpanRunner(
+      traceContext,
+      () => getActiveStepContext()?.parentContext,
+    );
+
+    // A deterministic monotonic clock, so the step timing stays test-stable.
+    let clock = 0;
+    const now = () => (clock += 1000);
+
+    await measureStartupStep(
+      {},
+      now,
+      "stage.sync",
+      async () => {
+        await prepareSandboxManagedRuntime({
+          spec: {
+            transport: "sandbox",
+            provider: "test",
+            sandboxId: "sandbox-nest",
+            remoteCwd: remoteWorkspaceDir,
+            timeoutMs: 30_000,
+            apiKey: null,
+          },
+          adapterKey: "test-adapter",
+          client: makeFilesystemClient(),
+          workspaceLocalDir: localWorkspaceDir,
+          runtimeSpan: stageRuntimeSpan,
+        });
+      },
+      {
+        tracer: traceContext.tracer,
+        parentContext: rootContext,
+        contextWithSpan: (span) => traceContext.contextWithSpan(span),
+      },
+    );
+
+    const stageSpan = spans.find((span) => span.name === "stage.sync");
+    const packSpan = spans.find((span) => span.name === "pack");
+    expect(stageSpan).toBeDefined();
+    expect(packSpan).toBeDefined();
+    expect(packSpan!.ended).toBe(true);
+    // The `pack` span parents to `stage.sync`, not to the root span, so it nests
+    // under the step in a real trace.
+    expect(packSpan!.parentName).toBe("stage.sync");
+
+    // The two pre-`pack` staging sub-steps nest under `stage.sync` the same way,
+    // so the previously hidden gap at the head of the step is now attributed.
+    for (const name of ["snapshot.git", "snapshot.baseline"]) {
+      const span = spans.find((candidate) => candidate.name === name);
+      expect(span, name).toBeDefined();
+      expect(span!.ended).toBe(true);
+      expect(span!.parentName).toBe("stage.sync");
     }
   });
 });

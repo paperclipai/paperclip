@@ -11,6 +11,10 @@ const mockAgentService = vi.hoisted(() => ({
   update: vi.fn(),
 }));
 
+const mockAdapterPluginStore = vi.hoisted(() => ({
+  getDisabledAdapterTypes: vi.fn<() => string[]>(() => []),
+}));
+
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
   decide: vi.fn(),
@@ -114,6 +118,18 @@ function registerModuleMocks() {
   vi.doMock("../services/secrets.js", () => ({
     secretService: () => mockSecretService,
   }));
+
+  // The adapter registry reads the disabled set from this store. Mock it so a
+  // test can declare an adapter disabled without writing to the real
+  // ~/.paperclip/adapter-settings.json.
+  vi.doMock("../services/adapter-plugin-store.js", () => ({
+    getDisabledAdapterTypes: mockAdapterPluginStore.getDisabledAdapterTypes,
+    isAdapterDisabled: (type: string) =>
+      mockAdapterPluginStore.getDisabledAdapterTypes().includes(type),
+    listAdapterPlugins: () => [],
+    getAdapterPluginByType: () => undefined,
+    setAdapterDisabled: vi.fn(),
+  }));
 }
 
 const externalAdapter: ServerAdapterModule = {
@@ -204,6 +220,7 @@ describe("agent routes adapter validation", () => {
     vi.doUnmock("../routes/agents.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue([]);
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockResolvedValue([]);
     mockAccessService.canUser.mockResolvedValue(true);
@@ -422,5 +439,78 @@ describe("agent routes adapter validation", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(String(res.body.error ?? res.body.message ?? "")).toContain(`Unknown adapter type: ${missingAdapterType}`);
+  });
+
+  it("refuses to create an agent on an adapter the instance has disabled", async () => {
+    // A disabled adapter is one the instance cannot run (e.g. curated out of
+    // PAPERCLIP_ADAPTERS). Creating an agent on it "succeeds" and then every
+    // run of that agent dies at lease time with "not in the configured adapter
+    // registry", so the refusal belongs here, where it can name the choices.
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter(externalAdapter);
+    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue(["external_test"]);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({ name: "Disabled Harness", adapterType: "external_test" }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    const message = String(res.body.error ?? res.body.message ?? "");
+    expect(message).toContain('Adapter "external_test" is not available on this instance');
+    // The message must be actionable: it names what CAN be chosen.
+    expect(message).toMatch(/Available adapters?: .+/);
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses to switch an existing agent onto a disabled adapter", async () => {
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter(externalAdapter);
+    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue(["external_test"]);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ adapterType: "external_test" }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(String(res.body.error ?? res.body.message ?? "")).toContain(
+      'Adapter "external_test" is not available on this instance',
+    );
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("still lets an agent already on a disabled adapter be edited", async () => {
+    // Disabling an adapter must not make the agents that already use it
+    // uneditable — only NEW selections of it are refused.
+    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue(["codex_local"]);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({ adapterType: "codex_local", adapterConfig: { model: "gpt-5.4" } }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+  });
+
+  it("still creates an agent on an adapter that is registered and enabled", async () => {
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter(externalAdapter);
+    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue(["some_other_adapter"]);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({ name: "Enabled Harness", adapterType: "external_test" }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
   });
 });

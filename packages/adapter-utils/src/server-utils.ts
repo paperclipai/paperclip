@@ -170,6 +170,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- Create child issues directly when you know what needs to be done; use issue-thread interactions when the board/user must choose suggested tasks, answer structured questions, or confirm a proposal.",
   "- Use `PAPERCLIP_SCRATCH_DIR` / `PAPERCLIP_RUN_SCRATCH_DIR` for temporary scratch files instead of ad hoc `/tmp` paths; Paperclip removes that run-owned directory after the run ends.",
   "- To ask for that input, create an interaction on the current issue with POST /api/issues/{issueId}/interactions using kind suggest_tasks, ask_user_questions, or request_confirmation. Use continuationPolicy wake_assignee when you need to resume after a response (it wakes on acceptance and rejection alike; only expiry does not wake); use wake_assignee_on_accept when you want to resume only after acceptance.",
+  "- Never create probe or throwaway issue-thread interactions to discover the interactions API shape or your permissions; schema discovery goes through the OpenAPI spec and explicit validation errors, not placeholder cards. Every ask_user_questions, suggest_tasks, or request_confirmation you post must carry a real, answerable prompt; withdraw one you no longer need instead of leaving it pending.",
   "- When you intentionally restart follow-up work on a completed assigned issue, include structured `resume: true` with the POST /api/issues/{issueId}/comments or PATCH /api/issues/{issueId} comment payload. Generic agent comments on closed issues are inert by default.",
   "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
   "- If blocked, mark the issue blocked and name the unblock owner and action.",
@@ -589,6 +590,14 @@ type PaperclipWakePlanReviewContext = {
   truncated: boolean;
 };
 
+type PaperclipWakeDocumentReviewContext = {
+  issueId: string | null;
+  documents: Array<PaperclipWakePlanReviewContext & { title: string | null }>;
+  totals: PaperclipWakePlanReviewContext["totals"];
+  limits: PaperclipWakePlanReviewContext["limits"];
+  truncated: boolean;
+};
+
 type PaperclipWakeContinuationSummary = {
   key: string | null;
   title: string | null;
@@ -666,6 +675,9 @@ type PaperclipWakePayload = {
   recovery: PaperclipWakeRecovery | null;
   issue: PaperclipWakeIssue | null;
   checkedOutByHarness: boolean;
+  // Experimental: write user-interaction content in ASD-STE100 Simplified
+  // Technical English with brief decision context.
+  simplifiedEnglishInteractions: boolean;
   dependencyBlockedInteraction: boolean;
   treeHoldInteraction: boolean;
   activeTreeHold: PaperclipWakeTreeHoldSummary | null;
@@ -674,6 +686,7 @@ type PaperclipWakePayload = {
   executionStage: PaperclipWakeExecutionStage | null;
   continuationSummary: PaperclipWakeContinuationSummary | null;
   planReviewContext: PaperclipWakePlanReviewContext | null;
+  documentReviewContext: PaperclipWakeDocumentReviewContext | null;
   livenessContinuation: PaperclipWakeLivenessContinuation | null;
   taskWatchdog: PaperclipWakeTaskWatchdogContext | null;
   interactionKind: string | null;
@@ -989,6 +1002,41 @@ function normalizePaperclipWakePlanReviewContext(value: unknown): PaperclipWakeP
   };
 }
 
+function normalizePaperclipWakeDocumentReviewContext(value: unknown): PaperclipWakeDocumentReviewContext | null {
+  const context = parseObject(value);
+  const issueId = asString(context.issueId, "").trim() || null;
+  const documents = Array.isArray(context.documents)
+    ? context.documents.flatMap((value) => {
+        const document = parseObject(value);
+        const normalized = normalizePaperclipWakePlanReviewContext({ ...document, issueId });
+        return normalized
+          ? [{ ...normalized, title: asString(document.title, "").trim() || null }]
+          : [];
+      })
+    : [];
+  if (!issueId && documents.length === 0) return null;
+  const totalsRaw = parseObject(context.totals);
+  const openThreadCount = asNumber(totalsRaw.openThreadCount, documents.reduce((sum, doc) => sum + doc.totals.openThreadCount, 0));
+  const includedThreadCount = asNumber(totalsRaw.includedThreadCount, documents.reduce((sum, doc) => sum + doc.totals.includedThreadCount, 0));
+  const commentCount = asNumber(totalsRaw.commentCount, documents.reduce((sum, doc) => sum + doc.totals.commentCount, 0));
+  const includedCommentCount = asNumber(totalsRaw.includedCommentCount, documents.reduce((sum, doc) => sum + doc.totals.includedCommentCount, 0));
+  const limits = documents[0]?.limits ?? null;
+  return {
+    issueId,
+    documents,
+    totals: {
+      openThreadCount,
+      includedThreadCount,
+      omittedThreadCount: asNumber(totalsRaw.omittedThreadCount, Math.max(0, openThreadCount - includedThreadCount)),
+      commentCount,
+      includedCommentCount,
+      omittedCommentCount: asNumber(totalsRaw.omittedCommentCount, Math.max(0, commentCount - includedCommentCount)),
+    },
+    limits,
+    truncated: asBoolean(context.truncated, false),
+  };
+}
+
 function normalizePaperclipWakeContinuationSummary(value: unknown): PaperclipWakeContinuationSummary | null {
   const summary = parseObject(value);
   const body = asString(summary.body, "").trim();
@@ -1280,6 +1328,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   const executionStage = normalizePaperclipWakeExecutionStage(payload.executionStage);
   const continuationSummary = normalizePaperclipWakeContinuationSummary(payload.continuationSummary);
   const planReviewContext = normalizePaperclipWakePlanReviewContext(payload.planReviewContext);
+  const documentReviewContext = normalizePaperclipWakeDocumentReviewContext(payload.documentReviewContext);
   const annotationDeltas = Array.isArray(payload.annotationDeltas)
     ? payload.annotationDeltas
         .map((entry) => normalizePaperclipWakeAnnotationDelta(entry))
@@ -1308,7 +1357,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   const checkboxSelection = normalizePaperclipWakeCheckboxSelection(payload.checkboxSelection);
   const executionWorkspace = normalizePaperclipWakeExecutionWorkspace(payload.executionWorkspace);
   const agentMessage = normalizePaperclipWakeAgentMessage(payload.agentMessage);
-  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !agentMessage && !recovery && !normalizePaperclipWakeIssue(payload.issue)) {
+  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !documentReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !agentMessage && !recovery && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -1317,6 +1366,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     recovery,
     issue: normalizePaperclipWakeIssue(payload.issue),
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
+    simplifiedEnglishInteractions: asBoolean(payload.simplifiedEnglishInteractions, false),
     dependencyBlockedInteraction: asBoolean(payload.dependencyBlockedInteraction, false),
     treeHoldInteraction: asBoolean(payload.treeHoldInteraction, false),
     activeTreeHold,
@@ -1325,6 +1375,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     executionStage,
     continuationSummary,
     planReviewContext,
+    documentReviewContext,
     annotationDeltas,
     livenessContinuation,
     taskWatchdog,
@@ -1624,6 +1675,11 @@ export function renderPaperclipWakePrompt(
       `- execution workspace branch: you are running in an execution workspace on branch ${markdownInlineCode(normalized.executionWorkspace.branchName)}. Do not switch, rename, or re-point this branch; keep all commits on it.`,
     );
   }
+  if (normalized.simplifiedEnglishInteractions) {
+    lines.push(
+      "- interaction language (experimental): write every user interaction you post (request_confirmation, ask_user_questions, suggest_tasks, checkbox prompts and options, and any other content rendered inside an interaction block) in ASD-STE100 Simplified Technical English. In each interaction, briefly tell the user what information they need to make the decision and what happens for each choice. This applies only to interaction content — write your thinking, comments, documents, and other responses in your usual style.",
+    );
+  }
   if (normalized.dependencyBlockedInteraction) {
     lines.push("- dependency-blocked interaction: yes");
     lines.push("- execution scope: respond or triage the human comment; do not treat blocker-dependent deliverable work as unblocked");
@@ -1748,6 +1804,50 @@ export function renderPaperclipWakePrompt(
     if (context.totals.omittedThreadCount > 0 || context.totals.omittedCommentCount > 0 || context.truncated) {
       lines.push("[plan review context truncated]");
     }
+  }
+
+  if (normalized.documentReviewContext) {
+    const context = normalized.documentReviewContext;
+    lines.push(
+      "",
+      "## Open document annotations",
+      "",
+      "These open annotations are grouped by issue document. Resolved annotations were intentionally omitted.",
+      "Scope: a document annotation authorizes document edits and thread replies only; propose a child issue before making code changes.",
+      "For snapshot documents such as QA evidence and run summaries, prefer replying and resolving the thread over rewriting the snapshot.",
+      `- open annotation threads included: ${context.totals.includedThreadCount}/${context.totals.openThreadCount}`,
+      `- annotation comments included: ${context.totals.includedCommentCount}/${context.totals.commentCount}`,
+    );
+    for (const document of context.documents) {
+      lines.push(
+        "",
+        `### ${document.title ?? document.documentKey ?? "Document"}`,
+        `- document key: ${document.documentKey ?? "unknown"}`,
+        `- latest revision: ${document.latestRevisionNumber ?? "unknown"}${document.latestRevisionId ? ` (${document.latestRevisionId})` : ""}`,
+      );
+      for (const thread of document.threads) {
+        const state = [
+          thread.status,
+          thread.revisionNumber ? `revision #${thread.revisionNumber}` : null,
+          thread.anchorState,
+          thread.anchorConfidence,
+        ].filter(Boolean).join(", ");
+        lines.push(`- thread ${thread.id ?? "unknown"}${state ? ` (${state})` : ""}`);
+        renderPlanReviewText("  selected text", thread.selectedText, thread.selectedTextTruncated);
+        renderPlanReviewText("  context before", thread.prefixText, thread.prefixTextTruncated);
+        renderPlanReviewText("  context after", thread.suffixText, thread.suffixTextTruncated);
+        for (const comment of thread.comments) {
+          lines.push(
+            `  comment ${comment.id ?? "unknown"} by ${planReviewAuthorLabel(comment.author)}${comment.createdAt ? ` at ${comment.createdAt}` : ""}:`,
+            comment.body,
+          );
+          if (comment.bodyTruncated) lines.push("[document annotation comment body truncated]");
+        }
+        if (thread.commentsTruncated) lines.push("[document annotation thread comments truncated]");
+      }
+      if (document.truncated) lines.push("[document annotation context truncated]");
+    }
+    if (context.truncated) lines.push("[document review context truncated]");
   }
 
   if (executionStage) {
@@ -1983,9 +2083,12 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     process.env.PAPERCLIP_LISTEN_HOST ?? process.env.HOST ?? "localhost",
   );
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
+  // An explicit PAPERCLIP_API_URL override must win over the URL derived from
+  // authPublicBaseUrl: the derived URL can be unreachable from inside the
+  // runtime container (e.g. when the public base URL is VPN/tailnet-only).
   const apiUrl =
-    process.env.PAPERCLIP_RUNTIME_API_URL ??
     process.env.PAPERCLIP_API_URL ??
+    process.env.PAPERCLIP_RUNTIME_API_URL ??
     `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
   return vars;

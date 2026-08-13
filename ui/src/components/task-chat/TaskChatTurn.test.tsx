@@ -226,6 +226,28 @@ describe("TaskChatTurn", () => {
     expect(fold()?.getAttribute("data-folded")).toBe("false");
   });
 
+  it("rides the `leading` slot on the header row, anchored above the fold (PAP-413)", () => {
+    flushSync(() => {
+      root.render(
+        <TaskChatTurn
+          item={SETTLED}
+          leading={<div data-testid="turn-lead">actions</div>}
+          renderChild={(c) => <span>{c.id}</span>}
+        />,
+      );
+    });
+    const lead = container.querySelector('[data-testid="turn-lead"]');
+    expect(lead).not.toBeNull();
+    // It sits beside the summary button on the header row — NOT inside the
+    // expandable fold — so expanding the tool history can't drag it down.
+    expect(fold()?.contains(lead!)).toBe(false);
+    expect(summaryBtn()).not.toBeNull();
+    // Expanding still works and the leading slot stays put outside the fold.
+    flushSync(() => summaryBtn()!.click());
+    expect(fold()?.getAttribute("data-folded")).toBe("false");
+    expect(fold()?.contains(lead!)).toBe(false);
+  });
+
   it("leads the settled summary with the bubble timestamp when attached (round 9)", () => {
     flushSync(() => {
       root.render(

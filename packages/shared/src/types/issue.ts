@@ -17,6 +17,7 @@ import type {
   IssueHarnessKind,
   IssueOriginKind,
   IssuePriority,
+  IssueReviewPolicy,
   IssueRecoveryActionKind,
   IssueRecoveryActionOutcome,
   IssueRecoveryActionOwnerType,
@@ -151,6 +152,7 @@ export interface AcceptedPlanDecompositionChild {
   workMode: IssueWorkMode;
   harnessKind?: IssueHarnessKind | null;
   priority: IssuePriority;
+  reviewPolicy?: IssueReviewPolicy | null;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
   requestDepth?: number;
@@ -780,6 +782,7 @@ export interface Issue {
   status: IssueStatus;
   workMode: IssueWorkMode;
   priority: IssuePriority;
+  reviewPolicy: IssueReviewPolicy | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   checkoutRunId: string | null;
@@ -864,6 +867,7 @@ export type CompactIssue = Pick<
   | "status"
   | "workMode"
   | "priority"
+  | "reviewPolicy"
   | "assigneeAgentId"
   | "assigneeUserId"
   | "checkoutRunId"
@@ -988,6 +992,7 @@ export interface IssueCommentMetadataAgentLinkRow extends IssueCommentMetadataRo
 export interface IssueCommentMetadataRunLinkRow extends IssueCommentMetadataRowBase {
   type: "run_link";
   runId: string;
+  agentId?: string | null;
   title?: string | null;
 }
 
@@ -1072,6 +1077,14 @@ export interface AskUserQuestionsQuestionOption {
   id: string;
   label: string;
   description?: string | null;
+  /**
+   * When true, selecting this option reveals an inline free-text field instead
+   * of acting as an inert choice. The typed answer is submitted as the
+   * question's `otherText`. Author at most one free-text option per question and
+   * do not add dead "I'll describe it" options that only duplicate the built-in
+   * free-text affordance.
+   */
+  freeText?: boolean;
 }
 
 export interface AskUserQuestionsQuestion {
@@ -1104,8 +1117,11 @@ export interface AskUserQuestionsResult {
   answers: AskUserQuestionsAnswer[];
   cancelled?: true;
   cancellationReason?: string | null;
-  expirationReason?: "superseded_by_comment";
+  expirationReason?: "superseded_by_comment" | "superseded_by_newer_interaction";
   commentId?: string | null;
+  // Set with expirationReason "superseded_by_newer_interaction": the newer
+  // sibling ask_user_questions that replaced this one (PAP-437).
+  supersededByInteractionId?: string | null;
   summaryMarkdown?: string | null;
 }
 

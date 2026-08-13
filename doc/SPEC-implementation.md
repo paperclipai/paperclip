@@ -230,6 +230,7 @@ Routine execution issues add a routine-scoped env overlay after project env and 
 - `description` text null
 - `status` enum: `backlog | todo | in_progress | in_review | done | blocked | cancelled`
 - `priority` enum: `critical | high | medium | low`
+- `review_policy` nullable enum: `anyone | not_creator | human_only`; null is equivalent to `anyone`
 - `assignee_agent_id` uuid fk `agents.id` null
 - `assignee_user_id` text null
 - checkout/execution locks: `checkout_run_id`, `execution_run_id`, `execution_agent_name_key`, `execution_locked_at`
@@ -555,7 +556,7 @@ Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and
 | Set company budget | yes | no |
 | Set subordinate budget | yes | yes (manager subtree only) |
 | Manage responsible user's inbox state | yes | yes (default-open policy) |
-| Manage another user's inbox state | yes | scoped `inbox:manage` grant |
+| Manage another user's inbox state | yes | saved target-user opt-in or scoped `inbox:manage` grant |
 | Set work-object visibility (issue/project) | no | no (pro gate) |
 
 ### 9.3.1 Shared default-open issue writes
@@ -623,7 +624,7 @@ The approved term set is:
 | Work-object visibility | All issues and projects in-company are visible to board and agents | Project/issue ACLs and reviewer-only channels |
 | Tool/secret policy | Secret refs, log redaction, and adapter-level command/webhook restrictions | Tool allowlists with centralized policy evaluation |
 | Company skills | Open to authenticated company agents; core enforces invariants and any stored restriction policy | Paperclip EE policy editor, protected-skill controls, presets, simulation, and policy audit UX |
-| Inbox management | Responsible agent may archive/unarchive its responsible user's Mine items under a default-open user policy; cross-user access requires `inbox:manage`; all mutations are audited | Policy administration UX, organization presets, simulations, bulk controls, and richer audit/reporting surfaces |
+| Inbox management | Responsible agent may archive/unarchive its responsible user's Mine items under a default-open user policy; explicit cross-user access requires saved target-user opt-in or `inbox:manage`; all mutations are audited | Policy administration UX, organization presets, simulations, bulk controls, and richer audit/reporting surfaces |
 | Escalation | Escalate from agent to manager to board; board approval/budget gates remain authoritative | Escalation routing and SLA windows |
 
 ## 9.7 Recommended first-slice implementation order
@@ -645,6 +646,15 @@ The approved term set is:
 - Managed-subtree scope: `managerAgentId`, `managerAgentIds`, `managedSubtreeAgentId`, `managedSubtreeAgentIds`, `subtreeAgentId`, `subtreeAgentIds`, `subtreeRootAgentId`, `subtreeRootAgentIds`, or `allow: ["subtree:<agentId>"]`.
 
 When multiple constraint families are present, assignment must satisfy all of them. Denials return `403` with a generic scope explanation and do not disclose details about hidden or unrelated resources.
+
+A protected-agent hard block is represented canonically as
+`authorizationPolicy.protectedAgent.blockAssignment: true`. It denies assignment
+even when the caller has a broad or scoped assignment grant. A company
+administrator must remove the block before assignment can be retried; no pending
+approval is created. The legacy fields `protectedAgent.requiresApproval` and
+`assignmentPolicy.protectedAgentRequiresApproval` remain fail-closed compatibility
+aliases for the same hard block, but API denial copy must describe the block and
+administrator remediation rather than promising a nonexistent approval step.
 
 ## 9.9 Task Watchdog Authority Contract
 
@@ -860,7 +870,7 @@ Core authorization follows these rules:
 - Board users may archive or unarchive inbox entries for users in the company.
 - An agent may manage the responsible user's inbox without an explicit grant when the authenticated run resolves that user and the user's inbox-agent policy permits the agent. This is the default-open path.
 - A user may set inbox-agent policy to `disabled` or `allowlist`. Policy restrictions override the default-open path, and low-trust agents are denied.
-- An agent targeting any user other than its resolved responsible user requires an explicit `inbox:manage` grant. Grants may be unscoped or constrained by `scope.userIds`.
+- An agent targeting any user other than its resolved responsible user requires either a materialized target-user policy that permits that agent (`open` or matching `allowlist`) or an explicit `inbox:manage` grant. The implicit default-open policy for a missing row remains responsible-user-only, so it never becomes a blanket cross-user grant. Grants may be unscoped or constrained by `scope.userIds` and act as administrative overrides, including over a disabled target-user policy.
 - Archive and unarchive operations are company-scoped, reversible, and activity logged with actor, agent, run, target user, target-resolution source, and policy mode.
 - New qualifying issue activity may invalidate an archive so the item resurfaces; archival is not a substitute for resolving or closing work.
 - Viewing an issue may update its per-user read receipt, but read receipts alone do not enroll the issue in Mine. Mine participation begins with a user-authored comment, issue creation/assignment, or another audited user mutation; explicit product actions such as manually running a routine may record an audited inbox touch.
@@ -882,6 +892,20 @@ All endpoints are under `/api` and return JSON.
 - `PATCH /companies/:companyId`
 - `PATCH /companies/:companyId/branding`
 - `POST /companies/:companyId/archive`
+
+On a Paperclip Cloud-managed instance, `POST /companies` returns `403` with
+code `cloud_managed`; the trusted-header provisioning path and company import
+routes remain the only company-creation paths there.
+
+## 10.1.1 Cloud Stack Portfolio
+
+- `GET /cloud/stacks`
+
+The route exists only on a Cloud-managed instance, requires a trusted
+`cloud_tenant` actor, and proxies the current actor's user id plus the current
+stack id to the Cloud tenant portfolio endpoint. Client-supplied user ids are
+never forwarded. Successful responses are cached briefly per user; self-hosted
+instances return `404`.
 
 ## 10.2 Goals
 
@@ -1008,13 +1032,17 @@ Dashboard payload must include:
 
 The current app also exposes V1-supporting surfaces for:
 
+- company-scoped summary slots for projects, the workspaces overview, project workspaces, and individual execution workspaces; execution-workspace slots are keyed by execution workspace id so a new workspace never inherits another workspace's summary
 - issue thread interactions (`suggest_tasks`, `ask_user_questions`, `request_confirmation`)
 - issue approvals, issue references/search, labels, read state, inbox/archive state, and work products
 - company search through `GET /companies/:companyId/search` plus agent-oriented bulk extraction through
   `GET /companies/:companyId/search/extract`; extraction accepts a server-escaped literal `contains`, optional
   server-owned URL expansion, issue/comment/document scopes, status/date filters, issue-level pagination, a
   bounded `matchesPerIssue` override for machine consumers, and explicit issue/match truncation flags
-- execution workspaces, project workspaces, workspace runtime services, and workspace operations
+- execution workspaces, project workspaces, workspace runtime services, and workspace operations. Workspace reads
+  derive `deliveryState` as `merged_via_pr | merged_by_ancestry | unmerged | unknown`; terminal issue trees with a
+  merged delivery and no active checkout run become cleanup-eligible with reason `issue_terminal` and are archived
+  through the workspace cleanup path. Reopening the source issue records activity but does not restore that workspace.
 - task watchdog configuration and reusable watchdog issue orchestration for explicitly watched issue subtrees
 - routines and scheduled/API/webhook triggers
 - plugin installation, configuration, state, jobs, logs, webhooks, and plugin database namespace migration

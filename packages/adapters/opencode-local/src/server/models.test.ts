@@ -37,13 +37,13 @@ describe("openCode models", () => {
     );
   });
 
-  it("rejects when discovery cannot run for configured model", async () => {
+  it("proceeds with the configured model when discovery cannot run (probe is best-effort, never fatal)", async () => {
     process.env.PAPERCLIP_OPENCODE_COMMAND = "__paperclip_missing_opencode_command__";
     await expect(
       ensureOpenCodeModelConfiguredAndAvailable({
         model: "openai/gpt-5",
       }),
-    ).rejects.toThrow("Failed to start command");
+    ).resolves.toEqual([{ id: "openai/gpt-5", label: "openai/gpt-5" }]);
   });
 
   it("skips the availability check when OPENCODE_ALLOW_ALL_MODELS is set in the run env", async () => {

@@ -40,13 +40,14 @@ export const patchInstanceGeneralSettingsSchema = instanceGeneralSettingsSchema.
 
 export const instanceExperimentalSettingsSchema = z.object({
   enableEnvironments: z.boolean().default(false),
+  enableManagedSandboxOnly: z.boolean().default(false),
   enableIsolatedWorkspaces: z.boolean().default(false),
   enableStreamlinedLeftNavigation: z.boolean().default(true),
   enableApps: z.boolean().default(false),
   enablePipelines: z.boolean().default(false),
   enableCases: z.boolean().default(false),
   enableConferenceRoomChat: z.boolean().default(false),
-  enableTaskChatRedesign: z.boolean().default(false),
+  enableClassicTaskInterface: z.boolean().default(false),
   enableTaskWatchdogs: z.boolean().default(false),
   enableIssuePlanDecompositions: z.boolean().default(false),
   enableExperimentalFileViewer: z.boolean().default(false),
@@ -59,6 +60,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableDecisions: z.boolean().default(false),
   enableGoalsSidebarLink: z.boolean().default(false),
   enableServerInfoDebugView: z.boolean().default(false),
+  enableSimplifiedEnglishInteractions: z.boolean().default(false),
   autoRestartDevServerWhenIdle: z.boolean().default(false),
   enableIssueGraphLivenessAutoRecovery: z.boolean().default(false),
   enableWorkspaceBranchReconcileForward: z.boolean().default(true),

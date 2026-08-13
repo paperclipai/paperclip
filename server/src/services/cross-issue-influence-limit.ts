@@ -1,7 +1,7 @@
 import { and, count, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, heartbeatRuns } from "@paperclipai/db";
-import { isUuidLike } from "@paperclipai/shared";
+import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 
@@ -22,10 +22,10 @@ export type CrossIssueInfluenceDecision = {
 };
 
 export function crossIssueInfluenceRunContextError() {
-  return forbidden(
-    "Agent issue comments and updates require a valid heartbeat run so cross-issue influence can be contained",
-    { code: "cross_issue_influence_run_context_required" },
-  );
+  // Copy comes from the shared issue-write denial contract (the open cross-task write design (failure UX))
+  // so the agent reading this 403 is told the fix, not just the refusal.
+  const { body } = issueWriteDenialResponse("cross_issue_influence_run_context_required");
+  return forbidden(body.error, body.details);
 }
 
 function readRunSourceIssueId(contextSnapshot: unknown) {
@@ -172,11 +172,22 @@ export async function observeCrossIssueInfluence(
   });
 }
 
-export function crossIssueInfluenceLimitError(decision: CrossIssueInfluenceDecision) {
+export function crossIssueInfluenceLimitError(
+  decision: CrossIssueInfluenceDecision,
+  context: { actorLabel?: string | null; assigneeLabel?: string | null; issueIdentifier?: string | null } = {},
+) {
+  // The cap is a rate backstop, not a permission decision — the shared copy
+  // contract says so explicitly, and names the next run as the way forward.
+  const { body } = issueWriteDenialResponse("cross_issue_influence_cap_exceeded", {
+    ...context,
+    cap: decision.cap,
+    count: decision.count,
+    enforceAt: decision.enforceAt,
+  });
   return {
-    error: `Cross-issue influence cap exceeded: this run is limited to ${decision.cap} cross-issue comments or updates`,
+    error: body.error,
     details: {
-      code: "cross_issue_influence_cap_exceeded",
+      ...body.details,
       cap: decision.cap,
       count: decision.count,
       mode: decision.mode,

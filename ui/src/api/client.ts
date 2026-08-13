@@ -165,6 +165,14 @@ export const api = {
     }),
   put: <T>(path: string, body: unknown, options?: RequestOptions) =>
     request<T>(path, { method: "PUT", body: JSON.stringify(body), signal: options?.signal }),
+  /** Raw binary upload (e.g. one chunked import-transfer part); the body travels as-is. */
+  putRaw: <T>(path: string, body: Blob, options?: RequestOptions) =>
+    request<T>(path, {
+      method: "PUT",
+      body,
+      signal: options?.signal,
+      headers: { "Content-Type": "application/octet-stream", ...(options?.headers ?? {}) },
+    }),
   patch: <T>(path: string, body: unknown, options?: RequestOptions) =>
     request<T>(path, { method: "PATCH", body: JSON.stringify(body), signal: options?.signal }),
   delete: <T>(path: string, bodyOrOptions?: unknown, options?: RequestOptions) => {

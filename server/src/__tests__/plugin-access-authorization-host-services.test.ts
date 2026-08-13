@@ -209,11 +209,10 @@ describeEmbeddedPostgres("plugin access and authorization host services", () => 
       policy: {
         assignmentPolicy: {
           mode: "protected",
-          protectedAgentRequiresApproval: true,
         },
         protectedAgent: {
-          requiresApproval: true,
-          approvalReason: "Needs board approval",
+          blockAssignment: true,
+          blockReason: "Protected assignment",
         },
         managedBy: "permissions-extension",
       },
@@ -235,12 +234,15 @@ describeEmbeddedPostgres("plugin access and authorization host services", () => 
     ]);
 
     expect(policy.policy).toMatchObject({
-      protectedAgent: { requiresApproval: true },
+      protectedAgent: { blockAssignment: true },
     });
     expect(preview).toMatchObject({
       allowed: false,
       reason: "deny_policy_restricted",
     });
+    expect(preview.explanation).toContain("assignment is blocked");
+    expect(preview.explanation).toContain("company administrator");
+    expect(preview.explanation).not.toContain("approval");
     expect(explanation).toMatchObject(preview);
 
     const injectedBoardPreview = await services.authorization.previewAssignment({

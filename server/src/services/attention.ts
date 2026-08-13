@@ -1704,7 +1704,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             .select({
               agentId: heartbeatRuns.agentId,
               createdAt: heartbeatRuns.createdAt,
-              contextSnapshot: heartbeatRuns.contextSnapshot,
+              // Project just the ids readRunIssueId needs; pulling the whole
+              // context_snapshot detoasts megabytes per feed build.
+              runIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+              runTaskId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskId'`,
             })
             .from(heartbeatRuns)
             .where(and(
@@ -1716,7 +1719,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       ]);
       const latestRunCreatedAtByKey = new Map<string, Date>();
       for (const newerRun of newerRuns) {
-        const newerRunKey = `${newerRun.agentId}:${readRunIssueId(newerRun.contextSnapshot) ?? ""}`;
+        const newerRunIssueId = readRunIssueId({ issueId: newerRun.runIssueId, taskId: newerRun.runTaskId });
+        const newerRunKey = `${newerRun.agentId}:${newerRunIssueId ?? ""}`;
         const latestCreatedAt = latestRunCreatedAtByKey.get(newerRunKey);
         if (!latestCreatedAt || newerRun.createdAt > latestCreatedAt) {
           latestRunCreatedAtByKey.set(newerRunKey, newerRun.createdAt);

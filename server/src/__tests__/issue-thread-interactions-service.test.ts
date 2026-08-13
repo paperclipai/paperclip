@@ -24,6 +24,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
@@ -1262,6 +1263,190 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(interactions.find((interaction) => interaction.id === otherKind.id)?.status).toBe("pending");
   });
 
+  it("supersedes an agent's own older pending ask_user_questions without crossing agent, kind, or issue", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Question supersedes older sibling");
+    const otherIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: otherIssueId,
+      companyId,
+      goalId,
+      title: "Other issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    const probingAgentId = randomUUID();
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: probingAgentId,
+        companyId,
+        name: "Probing agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: otherAgentId,
+        companyId,
+        name: "Other agent",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const question = (prompt: string) => ({
+      kind: "ask_user_questions" as const,
+      payload: {
+        version: 1 as const,
+        questions: [{
+          id: "q",
+          prompt,
+          selectionMode: "single" as const,
+          options: [{ id: "opt", label: "Option" }],
+        }],
+      },
+    });
+
+    const older = await interactionsSvc.create(
+      { id: issueId, companyId }, question("Older question"), { agentId: probingAgentId },
+    );
+    const otherKind = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Approve the draft?" },
+    }, { agentId: probingAgentId });
+    const otherAgentQuestion = await interactionsSvc.create(
+      { id: issueId, companyId }, question("Other agent question"), { agentId: otherAgentId },
+    );
+    const otherIssueQuestion = await interactionsSvc.create(
+      { id: otherIssueId, companyId }, question("Other issue question"), { agentId: probingAgentId },
+    );
+    const replacement = await interactionsSvc.create(
+      { id: issueId, companyId }, question("Newer question"), { agentId: probingAgentId },
+    );
+
+    const interactions = await interactionsSvc.listForIssue(issueId);
+    expect(interactions.find((interaction) => interaction.id === older.id)).toMatchObject({
+      status: "expired",
+      resolvedByAgentId: probingAgentId,
+      result: {
+        answers: [],
+        expirationReason: "superseded_by_newer_interaction",
+        supersededByInteractionId: replacement.id,
+      },
+    });
+    expect(interactions.find((interaction) => interaction.id === replacement.id)?.status).toBe("pending");
+    // A different agent's pending question is untouched.
+    expect(interactions.find((interaction) => interaction.id === otherAgentQuestion.id)?.status).toBe("pending");
+    // A different kind from the same agent is untouched.
+    expect(interactions.find((interaction) => interaction.id === otherKind.id)?.status).toBe("pending");
+
+    // The same agent's question on a different issue is untouched.
+    const otherIssueInteractions = await interactionsSvc.listForIssue(otherIssueId);
+    expect(otherIssueInteractions.find((interaction) => interaction.id === otherIssueQuestion.id)?.status)
+      .toBe("pending");
+  });
+
+  it("leaves exactly one pending ask_user_questions on the onboarding first task after probe cards and the real question arrive", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Chief of staff",
+      role: "chief_of_staff",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Your first task",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Your first task",
+      status: "in_progress",
+      priority: "medium",
+      originKind: ONBOARDING_FIRST_TASK_ORIGIN_KIND,
+      assigneeAgentId: agentId,
+    });
+
+    // Reproduces PAP-436: the assigned agent posts two throwaway schema probes
+    // (title/prompt/option "t"/"p"/"L") before the genuine question.
+    const probe = (prompt: string) => ({
+      kind: "ask_user_questions" as const,
+      payload: {
+        version: 1 as const,
+        questions: [{
+          id: "q",
+          prompt,
+          selectionMode: "single" as const,
+          options: [{ id: "L", label: "L" }],
+        }],
+      },
+    });
+    await interactionsSvc.create({ id: issueId, companyId }, probe("t"), { agentId });
+    await interactionsSvc.create({ id: issueId, companyId }, probe("p"), { agentId });
+    await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "ask_user_questions",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "focus",
+          prompt: "What would you like your team to focus on first?",
+          selectionMode: "single",
+          options: [
+            { id: "mvp", label: "Ship the MVP" },
+            { id: "bugs", label: "Fix bugs" },
+          ],
+        }],
+      },
+    }, { agentId });
+
+    const interactions = await interactionsSvc.listForIssue(issueId);
+    const pendingQuestions = interactions.filter(
+      (interaction) => interaction.kind === "ask_user_questions" && interaction.status === "pending",
+    );
+    expect(pendingQuestions).toHaveLength(1);
+    expect(pendingQuestions[0]?.kind).toBe("ask_user_questions");
+    const [remaining] = pendingQuestions;
+    if (remaining?.kind === "ask_user_questions") {
+      expect(remaining.payload.questions[0]?.prompt).toContain("focus on first");
+    }
+
+    // Both probe cards auto-expired with the sibling-supersede reason.
+    const expiredQuestions = interactions.filter(
+      (interaction) => interaction.kind === "ask_user_questions" && interaction.status === "expired",
+    );
+    expect(expiredQuestions).toHaveLength(2);
+    for (const card of expiredQuestions) {
+      expect(card.result).toMatchObject({ expirationReason: "superseded_by_newer_interaction" });
+    }
+  });
+
   it("sweeps historical confirmation pile-ups idempotently per issue, kind, and agent", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Historical confirmation sweep");
     const firstAgentId = randomUUID();
@@ -1470,6 +1655,117 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     }, requiresReason.id, {}, {
       userId: "local-board",
     })).rejects.toThrow("A decline reason is required for this confirmation");
+  });
+
+  it("records an authorized agent as the review-confirmation resolver", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Agent review verdict");
+    const resolverAgentId = randomUUID();
+    const resolverRunId = randomUUID();
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+    await db.insert(agents).values({
+      id: resolverAgentId,
+      companyId,
+      name: "Review agent",
+      role: "reviewer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: resolverRunId,
+      companyId,
+      agentId: resolverAgentId,
+      invocationSource: "manual",
+      status: "running",
+      startedAt: new Date(),
+    });
+    const created = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Approve this review?" },
+    }, {
+      userId: "local-board",
+    });
+
+    const accepted = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {}, {
+      agentId: resolverAgentId,
+      runId: resolverRunId,
+      reviewVerdictAuthorized: true,
+    });
+
+    expect(accepted.interaction).toMatchObject({
+      status: "accepted",
+      resolvedByAgentId: resolverAgentId,
+      resolvedByRunId: resolverRunId,
+      resolvedByUserId: null,
+    });
+  });
+
+  it("preserves creator and same-run guards for authorized agent review verdicts", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Guard agent review verdicts");
+    const resolverAgentId = randomUUID();
+    const resolverRunId = randomUUID();
+    await db.insert(agents).values({
+      id: resolverAgentId,
+      companyId,
+      name: "Review agent",
+      role: "reviewer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: resolverRunId,
+      companyId,
+      agentId: resolverAgentId,
+      invocationSource: "manual",
+      status: "running",
+      startedAt: new Date(),
+    });
+
+    const createdByResolver = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Approve your own request?" },
+    }, {
+      userId: "local-board",
+    });
+    await db.update(issueThreadInteractions)
+      .set({ createdByAgentId: resolverAgentId })
+      .where(eq(issueThreadInteractions.id, createdByResolver.id));
+
+    const createdBySameRun = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_checkbox_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Approve the same run?",
+        options: [{ id: "approve", label: "Approve" }],
+      },
+    }, {
+      userId: "local-board",
+    });
+    await db.update(issueThreadInteractions)
+      .set({ sourceRunId: resolverRunId })
+      .where(eq(issueThreadInteractions.id, createdBySameRun.id));
+
+    const issue = { id: issueId, companyId, goalId, projectId: null };
+    const actor = {
+      agentId: resolverAgentId,
+      runId: resolverRunId,
+      reviewVerdictAuthorized: true,
+    };
+    await expect(interactionsSvc.acceptInteraction(issue, createdByResolver.id, {}, actor))
+      .rejects.toThrow("Agents cannot resolve interactions they created");
+    await expect(interactionsSvc.acceptInteraction(issue, createdBySameRun.id, {
+      selectedOptionIds: ["approve"],
+    }, actor)).rejects.toThrow("Agents cannot resolve interactions created by the same run");
   });
 
   it("accepts request_checkbox_confirmation interactions with selected option ids", async () => {
@@ -1867,7 +2163,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
-  it("returns agent-authored request confirmations to the creating agent when a board user accepts", async () => {
+  it("returns accepted agent confirmations from review without resetting active work", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
     const issueId = randomUUID();
@@ -1944,6 +2240,90 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(updatedIssue).toMatchObject({
       id: issueId,
       status: "todo",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+    });
+
+    await db
+      .update(issues)
+      .set({
+        status: "in_review",
+        assigneeAgentId: agentId,
+        assigneeUserId: null,
+      })
+      .where(eq(issues.id, issueId));
+
+    const agentOwnedConfirmation = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee_on_accept",
+      payload: {
+        version: 1,
+        prompt: "Approve the next step?",
+      },
+    }, {
+      agentId,
+    });
+
+    const resumed = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, agentOwnedConfirmation.id, {}, {
+      userId: "local-board",
+    });
+
+    expect(resumed.continuationIssue).toEqual({
+      id: issueId,
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      status: "todo",
+    });
+
+    const resumedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+    expect(resumedIssue).toMatchObject({
+      id: issueId,
+      status: "todo",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+    });
+
+    await db
+      .update(issues)
+      .set({ status: "in_progress" })
+      .where(eq(issues.id, issueId));
+
+    const activeConfirmation = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee_on_accept",
+      payload: {
+        version: 1,
+        prompt: "Approve while work is active?",
+      },
+    }, {
+      agentId,
+    });
+
+    const acceptedWhileActive = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, activeConfirmation.id, {}, {
+      userId: "local-board",
+    });
+
+    expect(acceptedWhileActive.continuationIssue).toBeNull();
+    const activeIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+    expect(activeIssue).toMatchObject({
+      id: issueId,
+      status: "in_progress",
       assigneeAgentId: agentId,
       assigneeUserId: null,
     });
@@ -2095,6 +2475,43 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     // The unparseable result degrades to null; the interaction still lists.
     expect(listed[0]?.result).toBeNull();
     expect(listed[0]?.status).toBe("cancelled");
+  });
+
+  it("derives legacy pending interactions as expired on closed issues without mutating the GET", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Legacy pending interaction on closed issue");
+    const created = await interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Proceed?" },
+    }, { userId: "local-board" });
+
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+
+    const listed = await interactionsSvc.listForIssue(issueId);
+    expect(listed[0]).toMatchObject({
+      id: created.id,
+      status: "expired",
+      result: { version: 1, outcome: "issue_closed" },
+    });
+
+    const stored = await db
+      .select({ status: issueThreadInteractions.status })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, created.id))
+      .then((rows) => rows[0]);
+    expect(stored?.status).toBe("pending");
+
+    await expect(interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      projectId: null,
+      goalId: null,
+      status: "done",
+    }, created.id, {}, { userId: "local-board" })).rejects.toThrow(
+      "Interaction is no longer actionable because the issue is closed",
+    );
+    await expect(interactionsSvc.withdrawInteraction({ id: issueId, companyId, status: "done" }, created.id, {}, {
+      userId: "local-board",
+    })).rejects.toThrow("Interaction is no longer actionable because the issue is closed");
   });
 
   it("does not supersede request confirmations for agent, system, or older user comments", async () => {
@@ -2438,6 +2855,130 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         },
       },
     });
+  });
+
+  it("rejects creating a plan confirmation against a stale document revision and accepts the current one", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const documentId = randomUUID();
+    const revisionId = randomUUID();
+    const nextRevisionId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Stale plan confirmation",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+    // Document is already at revision 2 — revision 1 is stale.
+    await db.insert(documents).values({
+      id: documentId,
+      companyId,
+      title: "Plan",
+      format: "markdown",
+      latestBody: "v2",
+      latestRevisionId: nextRevisionId,
+      latestRevisionNumber: 2,
+    });
+    await db.insert(issueDocuments).values({
+      companyId,
+      issueId,
+      documentId,
+      key: "plan",
+    });
+    await db.insert(documentRevisions).values([
+      {
+        id: revisionId,
+        companyId,
+        documentId,
+        revisionNumber: 1,
+        title: "Plan",
+        format: "markdown",
+        body: "v1",
+      },
+      {
+        id: nextRevisionId,
+        companyId,
+        documentId,
+        revisionNumber: 2,
+        title: "Plan",
+        format: "markdown",
+        body: "v2",
+      },
+    ]);
+
+    const staleTarget = {
+      type: "issue_document" as const,
+      issueId,
+      documentId,
+      key: "plan",
+      revisionId,
+      revisionNumber: 1,
+    };
+
+    // The revision check runs inside the create transaction (locking the
+    // document row), so a target pointing at an older revision is rejected
+    // atomically with the would-be insert rather than by a racy pre-check.
+    await expect(interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Apply the plan document?",
+        target: staleTarget,
+      },
+    }, {
+      userId: "local-board",
+    })).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining("current issue document revision"),
+    });
+
+    const noRows = await db
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(noRows).toHaveLength(0);
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Apply the plan document?",
+        target: {
+          ...staleTarget,
+          revisionId: nextRevisionId,
+          revisionNumber: 2,
+        },
+      },
+    }, {
+      userId: "local-board",
+    });
+    expect(created).toMatchObject({ status: "pending", kind: "request_confirmation" });
   });
 
   it("preserves resolved request_item_verdicts items when the watched issue document revision changes", async () => {

@@ -1,6 +1,6 @@
 /**
- * Normalized presentation model for the Task Chat Redesign (flag:
- * enableTaskChatRedesign).
+ * Normalized presentation model for the chat-style task thread (the default
+ * task view; the classic legacy view sits behind enableClassicTaskInterface).
  *
  * This is a deliberately small, protocol-agnostic model that the new render
  * layer consumes. Two producers feed it:
@@ -12,6 +12,7 @@
  * inventory for the mapping. No timing/motion values live here — those are
  * CSS motion tokens in ui/src/index.css.
  */
+import type { IssueCommentMetadata, IssueCommentPresentation } from "@paperclipai/shared";
 import type { IssueThreadInteraction } from "@/lib/issue-thread-interactions";
 
 /** Who authored a thread row — the primary legibility signal. */
@@ -69,13 +70,14 @@ export interface TaskChatMessageItem {
   streaming?: boolean;
   /** Optimistic local echo state (matches IssueChatComment.clientStatus). */
   optimistic?: "pending" | "queued";
-  /**
-   * Per-message mode tag ("Agent mode" / "Plan mode" / "Ask mode"). Shown as a
-   * chip in the agent header and under a sent human bubble (v6 decision).
-   */
-  modeLabel?: string;
   /** Assigned agent icon name (AgentIconName) for the avatar header. */
   agentIcon?: string | null;
+  /**
+   * Responsible user's display name, set only when this agent comment is a
+   * cross-issue write (the author is not the assignee). Renders as a
+   * "for {user}" chip beside the author name (the open cross-task write design (attribution)).
+   */
+  onBehalfOfUserName?: string;
   /**
    * Agent text streamed inside a run turn (interstitial updates between tool
    * calls). Ephemeral in the redesigned view (PAP-361): while streaming it
@@ -94,6 +96,17 @@ export interface TaskChatMessageItem {
    * Expanding still nests the tool history beneath the bubble.
    */
   attachedTurn?: TaskChatTurnItem;
+  /**
+   * Structured system-notice fields (PAP-443), carried only for
+   * author === "system": the comment's server-authored presentation hints and
+   * metadata sections drive the collapsed one-line row + expandable detail.
+   */
+  presentation?: IssueCommentPresentation | null;
+  metadata?: IssueCommentMetadata | null;
+  /** Agent that owns the source run, used to build run-detail links in metadata rows. */
+  runAgentId?: string | null;
+  /** Raw comment timestamp (ISO) — the collapsed system row shows relative time. */
+  createdAtIso?: string;
 }
 
 /** Collapsed chain-of-thought (ACP agent_thought_chunk). */
@@ -183,6 +196,19 @@ export interface TaskChatUsageItem {
   usage: TaskChatTokenUsage;
 }
 
+export interface TaskChatActivityPhaseItem {
+  id: string;
+  kind: "activity_phase";
+  /** Historical assistant update that introduced this phase. */
+  interstitial?: TaskChatMessageItem;
+  /** Chronological tool/usage rows owned exclusively by this phase. */
+  items: Array<TaskChatToolItem | TaskChatUsageItem>;
+  /** Deterministic, taxonomy-based summary (for example "Read 3 files, ran 1 command"). */
+  summary: string;
+  /** The tail phase of an in-flight run stays foregrounded. */
+  active: boolean;
+}
+
 /**
  * The task description rendered as the requester's first chat bubble
  * (PAP-375). A placeholder kind only — the host supplies the render
@@ -214,7 +240,8 @@ export type TaskChatTurnChildItem =
   | TaskChatToolItem
   | TaskChatStatusItem
   | TaskChatMarkerItem
-  | TaskChatUsageItem;
+  | TaskChatUsageItem
+  | TaskChatActivityPhaseItem;
 
 /**
  * One agent turn's activity (thinking/tools/diffs) grouped so a finished turn
@@ -258,6 +285,7 @@ export type TaskChatItem =
   | TaskChatStatusItem
   | TaskChatMarkerItem
   | TaskChatUsageItem
+  | TaskChatActivityPhaseItem
   | TaskChatInteractionItem
   | TaskChatTurnItem
   | TaskChatBriefItem;

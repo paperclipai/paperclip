@@ -71,7 +71,8 @@ export type AuthorizationAction =
   | "issue:read"
   | "project:read"
   | "runtime:manage"
-  | "secrets:read";
+  | "secrets:read"
+  | "secrets:propose";
 
 export type AuthorizationResource =
   | { type: "company"; companyId: string }
@@ -101,6 +102,7 @@ export type AuthorizationDecision = {
     | "allow_local_board"
     | "allow_instance_admin"
     | "allow_explicit_grant"
+    | "allow_user_inbox_policy"
     | "allow_direct_change"
     | "allow_consented_change"
     | "allow_legacy_agent_creator"
@@ -155,7 +157,8 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
     action === "issue:read" ||
     action === "project:read" ||
     action === "runtime:manage" ||
-    action === "secrets:read"
+    action === "secrets:read" ||
+    action === "secrets:propose"
   ) {
     return null;
   }
@@ -221,7 +224,7 @@ function readBoolean(value: unknown): boolean | null {
 type AssignmentPolicyEffect =
   | { kind: "none" }
   | { kind: "restricted"; explanation: string }
-  | { kind: "requires_approval"; explanation: string }
+  | { kind: "blocked"; explanation: string }
   | { kind: "unknown"; explanation: string };
 
 type AgentHierarchyRow = { id: string; reportsTo: string | null };
@@ -293,13 +296,19 @@ function evaluateAuthorizationPolicyForAssignment(
     };
   }
 
-  const requiresApproval =
+  // `requiresApproval` and `protectedAgentRequiresApproval` are legacy aliases.
+  // They never had an approval workflow behind them, so preserve their hard-block
+  // behavior without continuing to promise an approval step that does not exist.
+  const blockAssignment =
+    readBoolean(protectedAgent?.blockAssignment) === true ||
     readBoolean(protectedAgent?.requiresApproval) === true ||
     readBoolean(assignmentPolicy?.protectedAgentRequiresApproval) === true;
-  if (requiresApproval) {
+  if (blockAssignment) {
     return {
-      kind: "requires_approval",
-      explanation: `${label} requires approval before task assignment.`,
+      kind: "blocked",
+      explanation:
+        `${label} assignment is blocked by protected-agent policy. ` +
+        "A company administrator can remove the assignment block, then retry.",
     };
   }
 
@@ -459,18 +468,6 @@ type ResponsibleUserActorWithMemo = AuthorizationActor & {
   __responsibleUserSnapshotMemo?: Map<string, Promise<ResponsibleUserSnapshot>>;
 };
 
-const responsibleUserSnapshotCache = new Map<
-  string,
-  { expiresAt: number; promise: Promise<ResponsibleUserSnapshot> }
->();
-
-function responsibleUserSnapshotTtlMs() {
-  const raw = process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_CACHE_TTL_MS?.trim();
-  if (!raw) return 5_000;
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 5_000;
-}
-
 export function responsibleUserAuthzShadowMode() {
   const mode = process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_MODE?.trim().toLowerCase();
   const shadow = process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_SHADOW?.trim().toLowerCase();
@@ -618,24 +615,13 @@ export function authorizationService(db: Db) {
       return promise;
     }
 
-    const now = Date.now();
-    const cached = responsibleUserSnapshotCache.get(key);
-    if (cached && cached.expiresAt > now) {
-      actorWithMemo.__responsibleUserSnapshotMemo.set(key, cached.promise);
-      return cached.promise;
-    }
-
-    const ttlMs = responsibleUserSnapshotTtlMs();
     const promise = loadResponsibleUserSnapshot(input.companyId, input.userId);
-    if (ttlMs > 0) {
-      responsibleUserSnapshotCache.set(key, { expiresAt: now + ttlMs, promise });
-      promise.catch(() => {
-        if (responsibleUserSnapshotCache.get(key)?.promise === promise) {
-          responsibleUserSnapshotCache.delete(key);
-        }
-      });
-    }
     actorWithMemo.__responsibleUserSnapshotMemo.set(key, promise);
+    void promise.catch(() => {
+      if (actorWithMemo.__responsibleUserSnapshotMemo?.get(key) === promise) {
+        actorWithMemo.__responsibleUserSnapshotMemo.delete(key);
+      }
+    });
     return promise;
   }
 
@@ -984,7 +970,8 @@ export function authorizationService(db: Db) {
       input.action === "skill_config:update" ||
       input.action === "inbox:manage" ||
       input.action === "runtime:manage" ||
-      input.action === "secrets:read"
+      input.action === "secrets:read" ||
+      input.action === "secrets:propose"
     ) {
       return lowTrustDeny(
         `${LOW_TRUST_REVIEW_PRESET} agents cannot use company-wide or privileged ${input.action} APIs by default.`,
@@ -1157,7 +1144,8 @@ export function authorizationService(db: Db) {
       input.action === "agent:wake" ||
       input.action === "project:read" ||
       input.action === "runtime:manage" ||
-      input.action === "secrets:read"
+      input.action === "secrets:read" ||
+      input.action === "secrets:propose"
     ) {
       return denyBridge("Task bridge keys cannot use company-wide, peer-agent, project, runtime, or secret APIs.");
     }
@@ -1227,6 +1215,7 @@ export function authorizationService(db: Db) {
       input.action === "project:read" ||
       input.action === "runtime:manage" ||
       input.action === "secrets:read" ||
+      input.action === "secrets:propose" ||
       input.action === "tasks:assign"
     ) {
       return denySkillTest("Skill-test run tokens cannot use company-wide, peer-agent, project, runtime, secret, or task-create APIs.");
@@ -1300,7 +1289,7 @@ export function authorizationService(db: Db) {
     const effects = await Promise.all(checks);
     return (
       effects.find((effect) => effect.kind === "unknown") ??
-      effects.find((effect) => effect.kind === "requires_approval") ??
+      effects.find((effect) => effect.kind === "blocked") ??
       effects.find((effect) => effect.kind === "restricted") ??
       { kind: "none" }
     );
@@ -1727,6 +1716,41 @@ export function authorizationService(db: Db) {
         });
       }
       if (!permissionKey) {
+        if (input.action === "issue:comment" || input.action === "issue:mutate") {
+          if (
+            input.resource.type !== "issue" ||
+            !input.resource.issueId ||
+            typeof input.resource.status !== "string" ||
+            input.resource.assigneeAgentId === undefined ||
+            input.resource.assigneeUserId === undefined
+          ) {
+            return deny({
+              action: input.action,
+              reason: "deny_unsupported_action",
+              explanation: `No board permission mapping exists for ${input.action}.`,
+            });
+          }
+          const membership = await getActiveMembership(companyId, "user", input.actor.userId);
+          if (membership && membership.membershipRole !== "viewer") {
+            return allow({
+              action: input.action,
+              reason: "allow_simple_company_member",
+              explanation: "Allowed by standard same-company board membership issue mutation.",
+            });
+          }
+          if (membership) {
+            return deny({
+              action: input.action,
+              reason: "deny_missing_grant",
+              explanation: `Viewer membership does not grant ${input.action}.`,
+            });
+          }
+          return deny({
+            action: input.action,
+            reason: "deny_missing_membership",
+            explanation: `user principal ${input.actor.userId} is not an active member of company ${companyId}.`,
+          });
+        }
         if (
           input.action === "agent:read" ||
           input.action === "company_scope:read" ||
@@ -1736,7 +1760,8 @@ export function authorizationService(db: Db) {
           input.action === "issue:read" ||
           input.action === "project:read" ||
           input.action === "runtime:manage" ||
-          input.action === "secrets:read"
+          input.action === "secrets:read" ||
+          input.action === "secrets:propose"
         ) {
           const membership = await getActiveMembership(companyId, "user", input.actor.userId);
           // Mirroring the tasks:assign carve-out above, viewers keep the
@@ -1874,7 +1899,8 @@ export function authorizationService(db: Db) {
         input.action === "issue:read" ||
         input.action === "project:read" ||
         input.action === "runtime:manage" ||
-        input.action === "secrets:read"
+        input.action === "secrets:read" ||
+        input.action === "secrets:propose"
       ) {
         return lowTrustDecision;
       }
@@ -1936,43 +1962,6 @@ export function authorizationService(db: Db) {
         });
       }
 
-      if (targetUserId !== responsibleUserId) {
-        // Cross-user grants are board-admin overrides; user policies only govern responsible-user default access.
-        const grant = await findGrant(companyId, "agent", actorAgentId, "inbox:manage");
-        if (!grant) {
-          return deny({
-            action: input.action,
-            reason: "deny_missing_grant",
-            explanation: "Missing permission: inbox:manage.",
-          });
-        }
-        if (!(await scopeAllows(db, companyId, grant.scope, { userId: targetUserId }))) {
-          return deny({
-            action: input.action,
-            reason: "deny_scope",
-            explanation: "Permission inbox:manage does not cover the requested user.",
-            grant: {
-              principalType: "agent",
-              principalId: actorAgentId,
-              permissionKey: "inbox:manage",
-              scope: grant.scope ?? null,
-            },
-          });
-        }
-        return allow({
-          action: input.action,
-          reason: "allow_explicit_grant",
-          explanation: "Allowed by explicit grant inbox:manage.",
-          inboxPolicyMode: "grant_override",
-          grant: {
-            principalType: "agent",
-            principalId: actorAgentId,
-            permissionKey: "inbox:manage",
-            scope: grant.scope ?? null,
-          },
-        });
-      }
-
       const policy = await db
         .select({
           mode: userInboxAgentPolicies.mode,
@@ -1986,6 +1975,73 @@ export function authorizationService(db: Db) {
           ),
         )
         .then((rows) => rows[0] ?? null);
+
+      if (targetUserId !== responsibleUserId) {
+        // A scoped grant remains an administrative override, including over a
+        // disabled user policy. Otherwise, a materialized target-user policy is
+        // explicit consent for agents selected in the profile control. The
+        // implicit default-open policy remains responsible-user-only so an
+        // absent row never becomes a company-wide cross-user grant.
+        const grant = await findGrant(companyId, "agent", actorAgentId, "inbox:manage");
+        if (grant && (await scopeAllows(db, companyId, grant.scope, { userId: targetUserId }))) {
+          return allow({
+            action: input.action,
+            reason: "allow_explicit_grant",
+            explanation: "Allowed by explicit grant inbox:manage.",
+            inboxPolicyMode: "grant_override",
+            grant: {
+              principalType: "agent",
+              principalId: actorAgentId,
+              permissionKey: "inbox:manage",
+              scope: grant.scope ?? null,
+            },
+          });
+        }
+
+        if (policy?.mode === "disabled") {
+          return deny({
+            action: input.action,
+            reason: "inbox_management_disabled",
+            explanation: `Inbox management is disabled for user ${targetUserId}.`,
+          });
+        }
+        if (policy?.mode === "allowlist" && !policy.allowedAgentIds.includes(actorAgentId)) {
+          return deny({
+            action: input.action,
+            reason: "inbox_agent_not_allowed",
+            explanation: `Agent ${actorAgentId} is not allowed to manage user ${targetUserId}'s inbox.`,
+          });
+        }
+        if (policy?.mode === "open" || policy?.mode === "allowlist") {
+          return allow({
+            action: input.action,
+            reason: "allow_user_inbox_policy",
+            inboxPolicyMode: policy.mode,
+            explanation: policy.mode === "allowlist"
+              ? "Allowed by the target user's inbox agent allowlist."
+              : "Allowed by the target user's saved open inbox policy.",
+          });
+        }
+
+        if (grant) {
+          return deny({
+            action: input.action,
+            reason: "deny_scope",
+            explanation: "Permission inbox:manage does not cover the requested user.",
+            grant: {
+              principalType: "agent",
+              principalId: actorAgentId,
+              permissionKey: "inbox:manage",
+              scope: grant.scope ?? null,
+            },
+          });
+        }
+        return deny({
+          action: input.action,
+          reason: "deny_missing_grant",
+          explanation: "Missing permission: inbox:manage.",
+        });
+      }
 
       if (policy?.mode === "disabled") {
         return deny({
@@ -2019,7 +2075,8 @@ export function authorizationService(db: Db) {
       input.action === "issue:read" ||
       input.action === "project:read" ||
       input.action === "runtime:manage" ||
-      input.action === "secrets:read"
+      input.action === "secrets:read" ||
+      input.action === "secrets:propose"
     ) {
       return allow({
         action: input.action,

@@ -540,7 +540,7 @@ DELETE /api/issues/issue-310/inbox-archive
 
 Both mutations require `X-Paperclip-Run-Id` and write activity-log entries. Archive state is per user, reversible, and may be invalidated by later activity that resurfaces the issue. Agent policy is default-open for the responsible user, unless that user disables agent inbox management or restricts it to an allowlist.
 
-Pass `{ "userId": "user-9" }` only for an intentional cross-user operation. The agent must have `inbox:manage`, optionally scoped to that user. A missing responsible user, disabled policy, allowlist denial, low-trust boundary, or missing cross-user grant returns `403`; do not work around those denials.
+Pass `{ "userId": "user-9" }` only for an intentional cross-user operation. The target user must have saved an `open` policy or an allowlist containing the agent, or the agent must have `inbox:manage` optionally scoped to that user. An unsaved implicit-open policy is responsible-user-only. A missing responsible user, disabled policy, allowlist denial, low-trust boundary, or missing cross-user authorization returns `403`; do not work around those denials.
 
 ### Worked Example: Reviewer / Approver Heartbeat
 
@@ -1253,7 +1253,7 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
 | GET    | `/api/issues/:issueId/comments/:commentId` | Get a specific comment by ID                                                     |
 | POST   | `/api/issues/:issueId/comments`    | Add comment (@-mentions trigger wakeups)                                                 |
-| POST   | `/api/issues/:issueId/inbox-archive` | Archive issue from responsible user's inbox; optional `userId` requires cross-user grant |
+| POST   | `/api/issues/:issueId/inbox-archive` | Archive issue from responsible user's inbox; optional `userId` requires saved target-user opt-in or cross-user grant |
 | DELETE | `/api/issues/:issueId/inbox-archive` | Reverse inbox archive; same target and policy rules                                    |
 | GET    | `/api/issues/:issueId/interactions` | List issue-thread interactions                                                          |
 | POST   | `/api/issues/:issueId/interactions` | Create issue-thread interaction (`suggest_tasks`, `ask_user_questions`, `request_confirmation`, `request_checkbox_confirmation`, `request_item_verdicts`) |
@@ -1345,8 +1345,72 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/companies/:companyId/secrets` | List secrets (metadata only)        |
 | POST   | `/api/companies/:companyId/secrets` | Create secret                       |
 | PATCH  | `/api/secrets/:secretId`            | Update secret value (creates new version) |
+| POST   | `/api/agents/me/secret-proposals`   | Propose a secret or agent binding for board approval |
+| GET    | `/api/agents/me/secret-proposals`   | List proposals created by the agent and incoming bindings targeting it |
+| DELETE | `/api/agents/me/secret-proposals/:id` | Withdraw one pending proposal created by the agent |
 | GET    | `/api/agents/me/secrets`             | List secrets accessible to the current run (metadata only) |
 | POST   | `/api/agents/me/secrets/:key/value`  | Fetch one granted secret value; request body is empty |
+
+#### Agent secret proposals
+
+**Never paste a credential into a comment, document, file, or transcript.** When a credential is supplied to an agent or returned by a secure flow — pasted by a user, returned by an OAuth flow, delivered by email, or obtained from another secure source — send it directly to `POST /api/agents/me/secret-proposals` using the current run-bound agent JWT. Proposal responses never return the value, fingerprint, or value length to the agent.
+
+Keep the credential in memory or pass it directly from the secure source; do not place the literal value in the command text or echo it. The example assumes `PROPOSED_SECRET_VALUE` is already populated without printing it:
+
+```bash
+PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"
+PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
+jq -n \
+  --arg name "integrations/vendor/api-token" \
+  --arg value "$PROPOSED_SECRET_VALUE" \
+  --arg justification "Credential supplied for the current task" \
+  '{kind:"secret", name:$name, value:$value, justification:$justification}' |
+curl -s -X POST \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data-binary @- \
+  "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
+unset PROPOSED_SECRET_VALUE
+```
+
+Full request body fields for a secret proposal:
+
+```json
+{
+  "kind": "secret",
+  "name": "integrations/vendor/api-token",
+  "description": "Optional operator-facing description",
+  "value": "<pass directly from the secure source; do not paste into a transcript>",
+  "justification": "Credential supplied for the current task"
+}
+```
+
+`name` is a slash-separated path without whitespace or empty segments. The value is limited to 64 KiB. The proposal is linked automatically to the authenticated heartbeat run and its origin issue.
+
+The response omits the credential. Use the returned proposal `id` to propose a binding; a binding to the proposing agent omits `targetAgentId`:
+
+```bash
+jq -n \
+  --arg secretProposalId "$SECRET_PROPOSAL_ID" \
+  --arg configPath "env.VENDOR_API_TOKEN" \
+  --arg justification "Inject the approved credential into my adapter environment" \
+  '{kind:"binding", secretProposalId:$secretProposalId, configPath:$configPath, justification:$justification}' |
+curl -s -X POST \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data-binary @- \
+  "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
+```
+
+A binding must specify exactly one of `secretProposalId` or `secretId`. `configPath` accepts `env.<KEY>` for environment injection or `access.<ALIAS>` for API-only access. Under the default `self_and_reports` policy, `targetAgentId` may identify a downward report of the proposer; omitting it targets the proposer. Other targets are denied, and approval rechecks the current chain of command.
+
+`GET /api/agents/me/secret-proposals` returns `{ "proposals": [...] }` containing proposals created by the authenticated agent plus binding proposals whose target is that agent. Secret values, value fingerprints, and value lengths are omitted. `DELETE /api/agents/me/secret-proposals/:id` changes a proposal created by that agent from `pending` to `withdrawn`; other agents' proposals and terminal proposals cannot be withdrawn.
+
+Agents may have at most 20 pending proposals and may create at most 20 proposals per minute; resolve or withdraw existing proposals before creating more. Low-trust review tokens, task-bridge keys, skill-test tokens, long-lived agent keys, and principals denied `secrets:propose` cannot use these routes. Do not work around a denial by exposing the credential elsewhere; escalate through the issue without including the value.
+
+Board approval creates a secret through the normal secret service. Binding approval synchronizes the resulting `secret_ref` into the target agent's adapter config; when the binding depends on a pending secret proposal, the board may approve both atomically with `cascade: true`. Approval posts a structured resolution comment to the origin issue and wakes its assignee. Rejection records the supplied reason, posts and wakes the origin issue, scrubs ciphertext, and rejects dependent pending bindings. Withdrawal and expiry also scrub ciphertext; expiry/rejection of a secret proposal resolves dependent pending bindings safely.
+
+#### Agent secret access
 
 Agent secret access requires the current run-bound agent JWT. An `env.*` binding implies API read access; an `access.*` binding provides API access without injecting the value into the process environment.
 

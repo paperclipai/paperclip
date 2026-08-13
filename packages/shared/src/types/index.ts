@@ -1,3 +1,4 @@
+export { decisionEffectTargetIssueIds } from "./decision.js";
 export type {
   Company,
   InteractionResolverGovernance,
@@ -127,6 +128,8 @@ export {
   type LowTrustOutputPromotionTarget,
   type LowTrustBoundary,
   type LowTrustReviewPresetPolicy,
+  type AssignmentAuthorizationPolicy,
+  type ProtectedAgentAuthorizationPolicy,
   type TrustAuthorizationPolicy,
 } from "../trust-policy.js";
 export type {
@@ -247,6 +250,7 @@ export type {
 } from "./teams-catalog.js";
 export type {
   AgentSkillSyncMode,
+  AgentSkillAssignmentMode,
   AgentSkillState,
   AgentSkillOrigin,
   AgentDesiredSkillEntry,
@@ -273,6 +277,17 @@ export type {
   AdapterEnvironmentTestStatus,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
+  AdapterAuthSessionStatus,
+  AdapterAuthSessionInternalStatus,
+  AdapterAuthSessionFailure,
+  AdapterAuthSessionResponse,
+  AdapterAuthSessionPrompt,
+  AdapterAuthSessionOwnerResponse,
+  StartAdapterAuthSessionRequest,
+} from "./agent.js";
+export {
+  ADAPTER_AUTH_SESSION_STATUSES,
+  ADAPTER_AUTH_SESSION_INTERNAL_STATUSES,
 } from "./agent.js";
 export type {
   AgentEligibilityAgent,
@@ -296,6 +311,8 @@ export type {
   DocumentAnnotationThread,
   DocumentAnnotationThreadWithComments,
   PlanReviewContext,
+  DocumentReviewContext,
+  DocumentReviewContextDocument,
   PlanReviewContextAuthor,
   PlanReviewContextComment,
   PlanReviewContextThread,
@@ -348,6 +365,7 @@ export type {
   ExecutionWorkspaceCloseLinkedIssue,
   ExecutionWorkspaceCloseReadiness,
   ExecutionWorkspaceCloseReadinessState,
+  ExecutionWorkspaceDeliveryState,
   WorkspaceOverviewItem,
   WorkspaceOverviewLinkedIssue,
   WorkspaceOverviewPrimaryService,
@@ -379,6 +397,11 @@ export type {
   WorkspaceOperationStatus,
 } from "./workspace-operation.js";
 export type {
+  NormalizedWorkspaceFileAvailabilityQuery,
+  WorkspaceFileAvailabilityQuery,
+  WorkspaceFileAvailabilityRequest,
+  WorkspaceFileAvailabilityResponse,
+  WorkspaceFileAvailabilityResult,
   WorkspaceFileContent,
   WorkspaceFileContentEncoding,
   WorkspaceFileListDirectoryItem,
@@ -749,6 +772,13 @@ export type {
   SecretProviderDescriptor,
   SecretStatus,
   SecretVersionStatus,
+  SecretProposalKind,
+  SecretProposalStatus,
+  SecretProposalAgentRef,
+  SecretProposalIssueRef,
+  SecretProposalView,
+  ApproveSecretProposalInput,
+  RejectSecretProposalInput,
 } from "./secrets.js";
 export type {
   Routine,

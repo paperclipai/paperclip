@@ -214,8 +214,16 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
   };
 }
 
-export async function logActivity(db: Db, input: LogActivityInput) {
+export async function logActivity(
+  db: Db,
+  input: LogActivityInput,
+  postCommitPublications?: ActivityPublication[],
+) {
   const { activity, publication } = await persistActivity(db, input);
-  publishActivity(publication);
+  if (postCommitPublications) {
+    postCommitPublications.push(publication);
+  } else {
+    publishActivity(publication);
+  }
   return activity;
 }

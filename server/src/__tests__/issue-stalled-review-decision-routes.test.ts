@@ -71,6 +71,7 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
     const assigneeAgentId = randomUUID();
     const peerAgentId = randomUUID();
     const memberUserId = `${prefix.toLowerCase()}-member`;
+    const peerUserId = `${prefix.toLowerCase()}-peer`;
     const viewerUserId = `${prefix.toLowerCase()}-viewer`;
     await db.insert(companies).values({
       id: companyId,
@@ -113,12 +114,19 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
       {
         companyId,
         principalType: "user",
+        principalId: peerUserId,
+        status: "active",
+        membershipRole: "operator",
+      },
+      {
+        companyId,
+        principalType: "user",
         principalId: viewerUserId,
         status: "active",
         membershipRole: "viewer",
       },
     ]);
-    return { companyId, assigneeAgentId, peerAgentId, memberUserId, viewerUserId };
+    return { companyId, assigneeAgentId, peerAgentId, memberUserId, peerUserId, viewerUserId };
   }
 
   async function seedReview(input: {
@@ -127,6 +135,7 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
     identifier: string;
     status?: string;
     covered?: boolean;
+    reviewPolicy?: "anyone" | "not_creator" | "human_only" | null;
   }) {
     const issueId = randomUUID();
     await db.insert(issues).values({
@@ -137,6 +146,7 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
       status: input.status ?? "in_review",
       priority: "medium",
       assigneeAgentId: input.assigneeAgentId,
+      reviewPolicy: input.reviewPolicy ?? null,
     });
     if (input.covered) {
       await db.insert(issueThreadInteractions).values({
@@ -176,14 +186,28 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
     };
   }
 
-  function agentActor(companyId: string, agentId: string) {
+  function agentActor(companyId: string, agentId: string, runId = randomUUID()) {
     return {
       type: "agent",
       source: "agent_key",
       companyId,
       agentId,
-      runId: randomUUID(),
+      runId,
     };
+  }
+
+  async function seedRun(companyId: string, agentId: string, issueId: string) {
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+    });
+    return runId;
   }
 
   it("denies agents, viewers, and cross-company users without exposing issue existence", async () => {
@@ -219,10 +243,12 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
       .expect(404);
     expect(crossCompany.body).toEqual(missing.body);
 
-    await request(app(agentActor(primary.companyId, primary.assigneeAgentId)))
+    const selfRunId = await seedRun(primary.companyId, primary.assigneeAgentId, issueId);
+    const selfApproval = await request(app(agentActor(primary.companyId, primary.assigneeAgentId, selfRunId)))
       .patch(`/api/issues/${issueId}`)
-      .send({ status: "done" })
-      .expect(403, { error: "Agents cannot approve their own in-review work" });
+      .send({ status: "done" });
+    expect(selfApproval.status, JSON.stringify(selfApproval.body)).toBe(200);
+    expect(selfApproval.body).toMatchObject({ id: issueId, status: "done" });
   });
 
   it("still lets the pending execution-policy stage participant sign off as done", async () => {
@@ -235,10 +261,21 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
       assigneeAgentId: seeded.assigneeAgentId,
       identifier: "SGN-1",
     });
+    const stageId = randomUUID();
     await db.update(issues).set({
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ id: randomUUID(), type: "agent", agentId: seeded.assigneeAgentId }],
+        }],
+      },
       executionState: {
         status: "pending",
-        currentStageId: randomUUID(),
+        currentStageId: stageId,
         currentStageIndex: 0,
         currentStageType: "review",
         currentParticipant: { type: "agent", agentId: seeded.assigneeAgentId },
@@ -248,12 +285,169 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
         lastDecisionOutcome: null,
       },
     }).where(eq(issues.id, issueId));
+    const stageRunId = await seedRun(seeded.companyId, seeded.assigneeAgentId, issueId);
 
-    const res = await request(app(agentActor(seeded.companyId, seeded.assigneeAgentId)))
+    const res = await request(app(agentActor(seeded.companyId, seeded.assigneeAgentId, stageRunId)))
       .patch(`/api/issues/${issueId}`)
       .send({ status: "done", comment: "Stage signoff." });
 
-    expect(res.body?.error).not.toBe("Agents cannot approve their own in-review work");
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({ id: issueId, status: "done" });
+  });
+
+  it("enforces not_creator for status verdicts and admits another agent", async () => {
+    const seeded = await seedCompany("NCR");
+    const issueId = await seedReview({
+      companyId: seeded.companyId,
+      assigneeAgentId: seeded.assigneeAgentId,
+      identifier: "NCR-1",
+      reviewPolicy: "not_creator",
+    });
+    await db.insert(activityLog).values({
+      companyId: seeded.companyId,
+      actorType: "agent",
+      actorId: seeded.assigneeAgentId,
+      agentId: seeded.assigneeAgentId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+      details: { status: "in_review", _previous: { status: "in_progress" } },
+    });
+
+    const requesterVerdict = await request(app(agentActor(seeded.companyId, seeded.assigneeAgentId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done" });
+    expect(requesterVerdict.status).toBe(403);
+    expect(requesterVerdict.body).toMatchObject({
+      error: expect.stringContaining("someone other than"),
+      details: {
+        code: "review_policy_denied",
+        policy: "not_creator",
+        allowedActor: "writer_other_than_review_requester",
+        remediation: expect.stringContaining("another writer"),
+      },
+    });
+
+    const peerRunId = await seedRun(seeded.companyId, seeded.peerAgentId, issueId);
+    const peerVerdict = await request(app(agentActor(seeded.companyId, seeded.peerAgentId, peerRunId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done" });
+    expect(peerVerdict.status, JSON.stringify(peerVerdict.body)).toBe(200);
+    expect(peerVerdict.body).toMatchObject({ id: issueId, status: "done" });
+  });
+
+  it("enforces human_only from the authenticated principal and admits a user", async () => {
+    const seeded = await seedCompany("HUM");
+    const issueId = await seedReview({
+      companyId: seeded.companyId,
+      assigneeAgentId: seeded.assigneeAgentId,
+      identifier: "HUM-1",
+      reviewPolicy: "human_only",
+    });
+
+    const agentVerdict = await request(app(agentActor(seeded.companyId, seeded.assigneeAgentId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "cancelled" });
+    expect(agentVerdict.status).toBe(403);
+    expect(agentVerdict.body).toMatchObject({
+      error: expect.stringContaining("authenticated user"),
+      details: {
+        code: "review_policy_denied",
+        policy: "human_only",
+        allowedActor: "authenticated_user_with_issue_write_access",
+        remediation: expect.stringContaining("authenticated user"),
+      },
+    });
+
+    const userVerdict = await request(app(boardActor(seeded.companyId, seeded.memberUserId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "cancelled" });
+    expect(userVerdict.status, JSON.stringify(userVerdict.body)).toBe(200);
+    expect(userVerdict.body).toMatchObject({ id: issueId, status: "cancelled" });
+  });
+
+  it("allows an agent writer to relax reviewPolicy in the verdict patch", async () => {
+    const seeded = await seedCompany("RLP");
+    const issueId = await seedReview({
+      companyId: seeded.companyId,
+      assigneeAgentId: seeded.assigneeAgentId,
+      identifier: "RLP-1",
+      reviewPolicy: "human_only",
+    });
+    const runId = await seedRun(seeded.companyId, seeded.assigneeAgentId, issueId);
+
+    const verdict = await request(app(agentActor(seeded.companyId, seeded.assigneeAgentId, runId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", reviewPolicy: "anyone" });
+
+    expect(verdict.status, JSON.stringify(verdict.body)).toBe(200);
+    expect(verdict.body).toMatchObject({ id: issueId, status: "done", reviewPolicy: "anyone" });
+  });
+
+  it("enforces not_creator when accepting or rejecting pending review interactions", async () => {
+    const seeded = await seedCompany("INT");
+    const issueId = await seedReview({
+      companyId: seeded.companyId,
+      assigneeAgentId: seeded.assigneeAgentId,
+      identifier: "INT-1",
+      reviewPolicy: "not_creator",
+    });
+    await db.insert(activityLog).values({
+      companyId: seeded.companyId,
+      actorType: "user",
+      actorId: seeded.memberUserId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+      details: { status: "in_review", _previous: { status: "in_progress" } },
+    });
+    await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, issueId));
+    const interactions = await db.insert(issueThreadInteractions).values([
+      {
+        companyId: seeded.companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "none",
+        payload: { version: 1, prompt: "Accept this review?" },
+      },
+      {
+        companyId: seeded.companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "none",
+        payload: { version: 1, prompt: "Reject this review?" },
+      },
+    ]).returning();
+    const [acceptInteraction, rejectInteraction] = interactions;
+
+    for (const [interactionId, action] of [
+      [acceptInteraction.id, "accept"],
+      [rejectInteraction.id, "reject"],
+    ] as const) {
+      const blocked = await request(app(boardActor(seeded.companyId, seeded.memberUserId)))
+        .post(`/api/issues/${issueId}/interactions/${interactionId}/${action}`)
+        .send(action === "reject" ? { reason: "Not yet" } : {});
+      expect(blocked.status).toBe(403);
+      expect(blocked.body.details).toMatchObject({
+        code: "review_policy_denied",
+        policy: "not_creator",
+        allowedActor: "writer_other_than_review_requester",
+      });
+    }
+
+    const accepted = await request(app(boardActor(seeded.companyId, seeded.peerUserId)))
+      .post(`/api/issues/${issueId}/interactions/${acceptInteraction.id}/accept`)
+      .send({});
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+    expect(accepted.body).toMatchObject({ id: acceptInteraction.id, status: "accepted" });
+
+    const rejected = await request(app(boardActor(seeded.companyId, seeded.peerUserId)))
+      .post(`/api/issues/${issueId}/interactions/${rejectInteraction.id}/reject`)
+      .send({ reason: "Needs revision" });
+    expect(rejected.status, JSON.stringify(rejected.body)).toBe(200);
+    expect(rejected.body).toMatchObject({ id: rejectInteraction.id, status: "rejected" });
   });
 
   it("persists request-changes notes as attributed comments and only wakes with a typed reference", async () => {

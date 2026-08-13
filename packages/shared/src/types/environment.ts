@@ -31,6 +31,11 @@ export interface FakeSandboxEnvironmentConfig {
   /** Stream agent CLI stdout/stderr during sandbox runs (bridge log-tail loop). */
   streamRunLogs?: boolean;
   /**
+   * Stream the interactive ACP agent output through the persistent session log
+   * stream instead of the host output-file poll. Default OFF.
+   */
+  streamAgentSessionOutput?: boolean;
+  /**
    * Archive the sandbox on lease release instead of deleting it, so operators
    * can inspect it from the provider dashboard. Injected by test/probe paths;
    * providers without archive support delete as usual.
@@ -44,6 +49,11 @@ export interface PluginSandboxEnvironmentConfig {
   timeoutMs?: number;
   /** Stream agent CLI stdout/stderr during sandbox runs (bridge log-tail loop). */
   streamRunLogs?: boolean;
+  /**
+   * Stream the interactive ACP agent output through the persistent session log
+   * stream instead of the host output-file poll. Default OFF.
+   */
+  streamAgentSessionOutput?: boolean;
   /**
    * Archive the sandbox on lease release instead of deleting it, so operators
    * can inspect it from the provider dashboard. Injected by test/probe paths;

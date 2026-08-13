@@ -257,7 +257,7 @@ type PackageSkillConflictStrategy = "replace" | "rename" | "skip";
 
 export type ImportPackageSkillResult = {
   skill: CompanySkill;
-  action: "created" | "updated" | "skipped";
+  action: "created" | "renamed" | "replaced" | "skipped";
   originalKey: string;
   originalSlug: string;
   requestedRefs: string[];
@@ -5826,6 +5826,14 @@ export function companySkillService(db: Db) {
     const importedSkills = readInlineSkillImports(companyId, normalizedFiles);
     if (importedSkills.length === 0) return [];
 
+    // Conflict handling must never bypass source and reserved-key checks. In
+    // particular, the safe default "skip" path still validates the incoming
+    // package before returning the existing skill.
+    for (const skill of importedSkills) {
+      assertImportedSkillKeyAllowed(skill);
+      assertImportedSkillSourceAllowed(skill);
+    }
+
     for (const skill of importedSkills) {
       if (skill.sourceType !== "catalog") continue;
       const materializedDir = await materializeCatalogSkillFiles(companyId, skill, normalizedFiles);
@@ -5834,7 +5842,7 @@ export function companySkillService(db: Db) {
       }
     }
 
-    const conflictStrategy = options?.onConflict ?? "replace";
+    const conflictStrategy = options?.onConflict ?? "skip";
     const existingSkills = await listFull(companyId);
     const existingByKey = new Map(existingSkills.map((skill) => [skill.key, skill]));
     const existingBySlug = new Map(
@@ -5848,8 +5856,7 @@ export function companySkillService(db: Db) {
       skill: ImportedSkill;
       originalKey: string;
       originalSlug: string;
-      existingBefore: CompanySkill | null;
-      actionHint: "created" | "updated";
+      actionHint: "created" | "renamed" | "replaced";
       reason: string | null;
     }> = [];
     const out: ImportPackageSkillResult[] = [];
@@ -5863,17 +5870,29 @@ export function companySkillService(db: Db) {
       const conflict = existingByIncomingKey ?? existingByIncomingSlug;
 
       if (!conflict || conflictStrategy === "replace") {
-        toPersist.push(importedSkill);
+        const skillToPersist = conflict && conflict.key !== importedSkill.key
+          ? {
+              ...importedSkill,
+              key: conflict.key,
+              slug: conflict.slug,
+              metadata: {
+                ...(importedSkill.metadata ?? {}),
+                skillKey: conflict.key,
+                importedFromSkillKey: originalKey,
+                importedFromSkillSlug: originalSlug,
+              },
+            }
+          : importedSkill;
+        toPersist.push(skillToPersist);
         prepared.push({
-          skill: importedSkill,
+          skill: skillToPersist,
           originalKey,
           originalSlug,
-          existingBefore: existingByIncomingKey,
-          actionHint: existingByIncomingKey ? "updated" : "created",
-          reason: existingByIncomingKey ? "Existing skill key matched; replace strategy." : null,
+          actionHint: conflict ? "replaced" : "created",
+          reason: conflict ? "Existing skill matched; explicit replace strategy." : null,
         });
-        usedSlugs.add(normalizedSlug);
-        usedKeys.add(importedSkill.key);
+        usedSlugs.add(normalizeSkillSlug(skillToPersist.slug) ?? skillToPersist.slug);
+        usedKeys.add(skillToPersist.key);
         continue;
       }
 
@@ -5907,8 +5926,7 @@ export function companySkillService(db: Db) {
         skill: renamedSkill,
         originalKey,
         originalSlug,
-        existingBefore: null,
-        actionHint: "created",
+        actionHint: "renamed",
         reason: `Existing skill matched; renamed to ${renamedSlug}.`,
       });
       usedSlugs.add(renamedSlug);

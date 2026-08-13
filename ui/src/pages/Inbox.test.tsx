@@ -184,6 +184,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     description: null,
     status: "todo",
     priority: "medium",
+    reviewPolicy: null,
     assigneeAgentId: null,
     assigneeUserId: null,
     responsibleUserId: null,
@@ -342,6 +343,80 @@ describe("Inbox toolbar", () => {
     expect(container.querySelector('[aria-label^="External objects:"]')).toBeNull();
 
     act(() => root.unmount());
+  });
+
+  it("restores folded and unfolded sub-tasks across remounts", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const storageKey = "paperclip:inbox:collapsed-parents:company-1";
+    localStorage.removeItem(storageKey);
+
+    const parent = createIssue({
+      id: "parent-issue",
+      identifier: "PAP-1001",
+      title: "Parent inbox task",
+    });
+    const child = createIssue({
+      id: "child-issue",
+      identifier: "PAP-1002",
+      parentId: parent.id,
+      title: "Nested inbox task",
+    });
+    apiMocks.issuesList.mockResolvedValue([parent, child]);
+
+    const mountInbox = async () => {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+      });
+      const root = createRoot(container);
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Inbox />
+          </QueryClientProvider>,
+        );
+      });
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain(parent.title);
+      });
+      return root;
+    };
+    const parentToggle = () => {
+      const parentRow = Array.from(container.querySelectorAll("[data-inbox-item]"))
+        .find((row) => row.textContent?.includes(parent.title));
+      return parentRow?.querySelector<HTMLButtonElement>('button[data-slot="icon-button"]') ?? null;
+    };
+
+    let root = await mountInbox();
+    try {
+      expect(container.textContent).toContain(child.title);
+
+      await act(async () => {
+        parentToggle()?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await vi.waitFor(() => {
+        expect(container.textContent).not.toContain(child.title);
+      });
+      expect(JSON.parse(localStorage.getItem(storageKey) ?? "[]")).toEqual([parent.id]);
+
+      act(() => root.unmount());
+      root = await mountInbox();
+      expect(container.textContent).not.toContain(child.title);
+
+      await act(async () => {
+        parentToggle()?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain(child.title);
+      });
+      expect(JSON.parse(localStorage.getItem(storageKey) ?? "[]")).toEqual([]);
+
+      act(() => root.unmount());
+      root = await mountInbox();
+      expect(container.textContent).toContain(child.title);
+    } finally {
+      localStorage.removeItem(storageKey);
+      act(() => root.unmount());
+    }
   });
 
   it("shows blocked toolbar controls on the Blocked tab", async () => {

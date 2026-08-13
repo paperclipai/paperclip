@@ -17,9 +17,38 @@ import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@pap
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
+
+const CLOUD_TENANT_WRITE_DEBOUNCE_MS = 5_000;
+const CLOUD_TENANT_WRITE_DEBOUNCE_MAX = 1_000;
+const cloudTenantWriteDebounces = new WeakMap<Db, Map<string, { fingerprint: string; syncedAt: number }>>();
+
+function cloudTenantWriteDebounceFor(db: Db) {
+  let debounce = cloudTenantWriteDebounces.get(db);
+  if (!debounce) {
+    debounce = new Map();
+    cloudTenantWriteDebounces.set(db, debounce);
+  }
+  return debounce;
+}
+
+function pruneCloudTenantWriteDebounce(
+  debounce: Map<string, { fingerprint: string; syncedAt: number }>,
+  nowMs: number,
+) {
+  for (const [subject, entry] of debounce) {
+    if (entry.syncedAt <= nowMs - CLOUD_TENANT_WRITE_DEBOUNCE_MS) debounce.delete(subject);
+  }
+  while (debounce.size > CLOUD_TENANT_WRITE_DEBOUNCE_MAX) {
+    const oldestSubject = debounce.keys().next().value;
+    if (!oldestSubject) break;
+    debounce.delete(oldestSubject);
+  }
+}
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { forbidden, unprocessable } from "../errors.js";
+
+export { isCloudManagedInstance } from "../services/cloud-instance.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -386,22 +415,6 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 }
 
 /**
- * Whether this instance is managed by a Paperclip Cloud control plane.
- * When the tenant server token is configured, the control plane owns the
- * user/identity lifecycle for this instance: users arrive through trusted
- * headers (resolveCloudTenantActor) and are deliberately never granted the
- * `instance_admin` DB role. The only elevation a cloud tenant can carry is
- * computed per request at the trusted-header boundary (owner stack role +
- * the `enableOwnerInstanceAdmin` flag) and floored by code on
- * platform-owned surfaces. Surfaces that assume a self-hosted operator
- * will claim the instance (e.g. the first-admin bootstrap gate) should
- * treat a cloud-managed instance as already set up.
- */
-export function isCloudManagedInstance(): boolean {
-  return Boolean(process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim());
-}
-
-/**
  * Whether the trusted-header actor being resolved should carry computed
  * instance-admin elevation: only the stack `owner` role elevates, and only
  * while `enableOwnerInstanceAdmin` is enabled. The flag is resolved through
@@ -426,7 +439,33 @@ async function resolveOwnerInstanceAdmin(
   }
 }
 
-export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Request["actor"] | null> {
+/**
+ * Minimal header accessor `resolveCloudTenantActor` needs. Express `Request`
+ * satisfies it directly; websocket upgrade paths adapt a raw
+ * `IncomingMessage` with {@link cloudActorHeaderSourceFromHeaders} since
+ * trusted-header authentication must work identically for upgrades — a
+ * cloud-proxied browser has no local Better Auth session to fall back on.
+ */
+export interface CloudActorHeaderSource {
+  header(name: string): string | undefined;
+}
+
+/** Adapts a raw header map (e.g. `IncomingMessage.headers`) to {@link CloudActorHeaderSource}. */
+export function cloudActorHeaderSourceFromHeaders(
+  headers: Record<string, string | string[] | undefined>,
+): CloudActorHeaderSource {
+  return {
+    header(name: string) {
+      const value = headers[name.toLowerCase()];
+      return Array.isArray(value) ? value[0] : value;
+    },
+  };
+}
+
+export async function resolveCloudTenantActor(
+  db: Db,
+  req: CloudActorHeaderSource,
+): Promise<Express.Request["actor"] | null> {
   const expectedToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim();
   if (!expectedToken) return null;
 
@@ -445,8 +484,20 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
   const companyId = cloudTenantCompanyId(stackId);
   const companyName = paperclipCompanyName || humanizeCloudStackSlug(stackId);
   const now = new Date();
+  const membershipRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
+  const syncFingerprint = [userEmail, userName, stackId, stackRole, paperclipCompanyId ?? ""].join(":");
+  const cloudTenantWriteDebounce = cloudTenantWriteDebounceFor(db);
+  pruneCloudTenantWriteDebounce(cloudTenantWriteDebounce, now.getTime());
+  const previousSync = cloudTenantWriteDebounce.get(userId);
+  const shouldSync = previousSync?.fingerprint !== syncFingerprint
+    || previousSync.syncedAt <= now.getTime() - CLOUD_TENANT_WRITE_DEBOUNCE_MS;
+  let effectiveMembership: { companyId: string; membershipRole: string | null; status: string } = {
+    companyId,
+    membershipRole,
+    status: "active",
+  };
 
-  await db
+  if (shouldSync) await db
     .insert(authUsers)
     .values({
       id: userId,
@@ -476,7 +527,7 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
     .delete(instanceUserRoles)
     .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
 
-  await db
+  if (shouldSync) await db
     .insert(companies)
     .values({
       id: companyId,
@@ -490,7 +541,7 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
       target: companies.id,
     });
 
-  if (paperclipCompanyName) {
+  if (shouldSync && paperclipCompanyName) {
     await repairCloudTenantCompanyName(db, {
       companyId,
       paperclipCompanyId,
@@ -499,8 +550,7 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
     });
   }
 
-  const membershipRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
-  const membership = await db
+  effectiveMembership = shouldSync ? await db
     .insert(companyMemberships)
     .values({
       companyId,
@@ -527,17 +577,22 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
       companyId,
       membershipRole,
       status: "active",
-    });
+    }) : { companyId, membershipRole, status: "active" as const };
 
   // Without instance-admin elevation, cloud tenant users are authorized purely
   // through company-scoped permission grants — seed the same role defaults the
   // regular membership flows create.
-  await ensureHumanRoleDefaultGrants(db, {
+  if (shouldSync) await ensureHumanRoleDefaultGrants(db, {
     companyId,
     principalId: userId,
-    membershipRole: membership.membershipRole,
+    membershipRole: effectiveMembership.membershipRole ?? membershipRole,
     grantedByUserId: null,
   });
+  if (shouldSync) {
+    cloudTenantWriteDebounce.delete(userId);
+    cloudTenantWriteDebounce.set(userId, { fingerprint: syncFingerprint, syncedAt: Date.now() });
+    pruneCloudTenantWriteDebounce(cloudTenantWriteDebounce, Date.now());
+  }
 
   // The stack's seeded company is only where Cloud provisioned this user.
   // Companies created afterwards on the instance (imports, in-app company
@@ -570,8 +625,8 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
     memberships: [
       {
         companyId,
-        membershipRole: membership.membershipRole,
-        status: membership.status,
+        membershipRole: effectiveMembership.membershipRole ?? membershipRole,
+        status: effectiveMembership.status,
       },
       ...additionalMemberships,
     ],
@@ -585,7 +640,7 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
   };
 }
 
-function requiredCloudHeader(req: Request, name: string): string {
+function requiredCloudHeader(req: CloudActorHeaderSource, name: string): string {
   const value = req.header(name)?.trim();
   if (!value) {
     throw new Error(`Missing trusted Cloud tenant header ${name}`);

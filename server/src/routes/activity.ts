@@ -99,7 +99,10 @@ const createActivitySchema = z.object({
   details: z.record(z.unknown()).optional().nullable(),
 });
 
+const agentActionAuditActorScopeSchema = z.enum(["agents", "all"]);
+
 const agentActionAuditQuerySchema = z.object({
+  actorScope: agentActionAuditActorScopeSchema.default("agents"),
   agentId: z.string().uuid().optional(),
   responsibleUserId: z.string().min(1).optional(),
   runId: z.string().uuid().optional(),
@@ -121,12 +124,52 @@ export function activityRoutes(db: Db) {
   const issueSvc = issueService(db);
   const agentAudit = agentActionAuditService(db);
 
+  async function hasAgentAuditPermission(req: import("express").Request, companyId: string) {
+    if (req.actor.type !== "board") return false;
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
+    return Boolean(
+      req.actor.userId
+      && await access.canUser(companyId, req.actor.userId, "audit:view_agent_actions"),
+    );
+  }
+
   async function assertAgentAuditPermission(req: import("express").Request, companyId: string) {
     assertBoard(req);
     assertCompanyAccess(req, companyId);
-    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
-    if (req.actor.userId && await access.canUser(companyId, req.actor.userId, "audit:view_agent_actions")) return;
+    if (await hasAgentAuditPermission(req, companyId)) return;
     throw forbidden("Missing permission: audit:view_agent_actions");
+  }
+
+  function hasAttributionFilters(query: z.infer<typeof agentActionAuditQuerySchema>) {
+    return query.agentId !== undefined
+      || query.responsibleUserId !== undefined
+      || query.runId !== undefined
+      || query.entityType !== undefined
+      || query.entityId !== undefined
+      || query.action !== undefined
+      || query.actorType !== undefined
+      || query.from !== undefined
+      || query.to !== undefined;
+  }
+
+  function stripAuditAttribution<T extends {
+    items: Array<{
+      agentId: string | null;
+      runId: string | null;
+      responsibleUserId: string | null;
+      details: unknown;
+    }>;
+  }>(result: T): T {
+    return {
+      ...result,
+      items: result.items.map((item) => ({
+        ...item,
+        agentId: null,
+        runId: null,
+        responsibleUserId: null,
+        details: null,
+      })),
+    };
   }
 
   async function assertCompanyScopeReadAllowed(req: Parameters<typeof assertCompanyAccess>[0], res: any, companyId: string) {
@@ -194,12 +237,38 @@ export function activityRoutes(db: Db) {
 
   router.get("/companies/:companyId/audit/agent-actions", async (req, res) => {
     const companyId = req.params.companyId as string;
-    await assertAgentAuditPermission(req, companyId);
+    const parsedActorScope = agentActionAuditActorScopeSchema.safeParse(req.query.actorScope ?? "agents");
+    if (!parsedActorScope.success) {
+      throw badRequest("Invalid agent action audit query", parsedActorScope.error.issues);
+    }
+    if (parsedActorScope.data === "agents") {
+      // Keep the legacy authorization-before-validation behavior for callers
+      // that omit the new flag.
+      await assertAgentAuditPermission(req, companyId);
+    } else {
+      assertCompanyAccess(req, companyId);
+      if (!(await assertCompanyScopeReadAllowed(req, res, companyId))) return;
+    }
+
     const parsedQuery = agentActionAuditQuerySchema.safeParse(req.query);
     if (!parsedQuery.success) {
       throw badRequest("Invalid agent action audit query", parsedQuery.error.issues);
     }
-    res.json(await agentAudit.list({ companyId, ...parsedQuery.data }));
+    if (parsedQuery.data.actorScope === "agents") {
+      const result = await agentAudit.list({ companyId, ...parsedQuery.data });
+      res.json({ ...result, accessTier: "full" });
+      return;
+    }
+
+    const canViewAttribution = await hasAgentAuditPermission(req, companyId);
+    if (!canViewAttribution && hasAttributionFilters(parsedQuery.data)) {
+      throw forbidden("Audit filters require permission: audit:view_agent_actions");
+    }
+    const result = await agentAudit.list({ companyId, ...parsedQuery.data });
+    res.json({
+      ...(canViewAttribution ? result : stripAuditAttribution(result)),
+      accessTier: canViewAttribution ? "full" : "basic",
+    });
   });
 
   router.get("/companies/:companyId/audit/agent-actions.csv", async (req, res) => {
@@ -238,6 +307,7 @@ export function activityRoutes(db: Db) {
         rowCount: rows.length,
         truncated: rows.length >= AUDIT_CSV_EXPORT_MAX_ROWS && Boolean(cursor),
         filters: {
+          actorScope: filters.actorScope,
           agentId: filters.agentId ?? null,
           responsibleUserId: filters.responsibleUserId ?? null,
           runId: filters.runId ?? null,

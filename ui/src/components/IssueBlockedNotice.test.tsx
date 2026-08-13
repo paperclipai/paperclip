@@ -187,6 +187,80 @@ describe("IssueBlockedNotice", () => {
     });
   });
 
+  it("hides the next-step notice while a live continuation is running the issue", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="in_progress"
+        blockers={[]}
+        agentName="CodexCoder"
+        successfulRunHandoff={{
+          state: "required",
+          required: true,
+          hasLiveContinuation: true,
+          liveRunId: "87654321-dddd-eeee-ffff-123456789abc",
+          sourceRunId: "12345678-aaaa-bbbb-cccc-123456789abc",
+          correctiveRunId: null,
+          assigneeAgentId: "agent-1",
+          detectedProgressSummary: "Updated the plan and left follow-up work.",
+          createdAt: "2026-05-01T00:00:00.000Z",
+        }}
+      />,
+    );
+
+    expect(node.querySelector('[data-successful-run-handoff="required"]')).toBeNull();
+    expect(node.textContent).toBe("");
+  });
+
+  it("hides the next-step notice when the live-run set includes this issue", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueId="issue-1"
+        issueStatus="in_progress"
+        blockers={[]}
+        liveIssueIds={new Set(["issue-1"])}
+        agentName="CodexCoder"
+        successfulRunHandoff={{
+          state: "required",
+          required: true,
+          hasLiveContinuation: false,
+          sourceRunId: "12345678-aaaa-bbbb-cccc-123456789abc",
+          correctiveRunId: null,
+          assigneeAgentId: "agent-1",
+          detectedProgressSummary: null,
+          createdAt: "2026-05-01T00:00:00.000Z",
+        }}
+      />,
+    );
+
+    expect(node.querySelector('[data-successful-run-handoff="required"]')).toBeNull();
+    expect(node.textContent).toBe("");
+  });
+
+  it("keeps the next-step notice and retry-now when the only continuation is an unpromoted scheduled retry", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueId="issue-1"
+        issueStatus="in_progress"
+        blockers={[]}
+        agentName="CodexCoder"
+        scheduledRetry={baseRetry}
+        successfulRunHandoff={{
+          state: "required",
+          required: true,
+          hasLiveContinuation: true,
+          sourceRunId: "12345678-aaaa-bbbb-cccc-123456789abc",
+          correctiveRunId: null,
+          assigneeAgentId: "agent-1",
+          detectedProgressSummary: null,
+          createdAt: "2026-05-01T00:00:00.000Z",
+        }}
+      />,
+    );
+
+    expect(node.querySelector('[data-successful-run-handoff="required"]')).not.toBeNull();
+    expect(node.querySelector('[data-testid="issue-next-step-retry-now"]')).not.toBeNull();
+  });
+
   it("does not render when the issue is done even if a stale handoff state is required", () => {
     const node = render(
       <IssueBlockedNotice
