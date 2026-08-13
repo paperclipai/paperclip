@@ -122,6 +122,151 @@ export interface ClaudeOAuthUserSecretResult {
   definitionId: string;
 }
 
+// --- Control 6: the server-enforced Claude OAuth binding invariant ------------
+
+/** The adapter that owns the fixed Claude Code OAuth token binding. */
+export const CLAUDE_LOCAL_ADAPTER_TYPE = "claude_local";
+
+// The fixed, non-secret error for a removal, a replacement, or a weaker Claude
+// Code OAuth token binding. A normal caller cannot change the managed binding. A
+// controlled internal override (migration or administrator repair) is the only
+// exception. The text echoes no caller input (Control 6).
+export const CLAUDE_OAUTH_BINDING_LOCKED =
+  "The Claude Code OAuth token binding is managed by the Claude login and cannot be removed or replaced.";
+
+// The one fixed, non-secret error for every rejected stored-session claim. The
+// text is byte-identical for a missing, foreign, cross-company, cross-owner,
+// cross-adapter, cross-environment, expired, non-stored, or already-consumed
+// claim, so a caller cannot tell the reasons apart (Control 6).
+export const CLAUDE_OAUTH_CLAIM_REJECTED =
+  "The Claude login binding requires a valid stored-session claim.";
+
+// The generic credential-conflict text. It names no token value and no owner
+// configuration. It tells the caller only that a higher-priority credential is
+// configured together with the Claude login token (Control 6).
+export const CLAUDE_OAUTH_CREDENTIAL_CONFLICT =
+  "A higher-priority Claude credential is configured. Remove it to use the Claude login token.";
+
+const ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY";
+
+/** Reads the `env` record of an adapter config, or an empty record. */
+function readAdapterEnvRecord(config: unknown): Record<string, unknown> {
+  if (typeof config !== "object" || config === null || Array.isArray(config)) return {};
+  const env = (config as Record<string, unknown>).env;
+  if (typeof env !== "object" || env === null || Array.isArray(env)) return {};
+  return env as Record<string, unknown>;
+}
+
+/**
+ * Returns true when a binding is the exact fixed Claude Code OAuth user-secret
+ * reference. The fixed binding is a `user_secret_ref` whose key is the fixed
+ * key. Any other shape (a plain value, a company secret reference, or a
+ * different user-secret key) is a replacement or a weaker binding (Control 6).
+ */
+export function isFixedClaudeOAuthBinding(binding: unknown): boolean {
+  if (typeof binding !== "object" || binding === null) return false;
+  const record = binding as Record<string, unknown>;
+  return record.type === "user_secret_ref" && record.key === CLAUDE_CODE_OAUTH_TOKEN_KEY;
+}
+
+/** True when the config carries any binding for the fixed OAuth key. */
+function hasClaudeOAuthEnvKey(config: unknown): boolean {
+  return Object.prototype.hasOwnProperty.call(readAdapterEnvRecord(config), CLAUDE_CODE_OAUTH_TOKEN_KEY);
+}
+
+/** True when the config carries the exact fixed OAuth binding. */
+function hasFixedClaudeOAuthBinding(config: unknown): boolean {
+  return isFixedClaudeOAuthBinding(readAdapterEnvRecord(config)[CLAUDE_CODE_OAUTH_TOKEN_KEY]);
+}
+
+/**
+ * Returns true when the config delivers a non-empty ANTHROPIC_API_KEY. A plain
+ * binding counts only when it has a non-empty value. A company or user secret
+ * reference always counts, because it resolves to a value at runtime.
+ */
+function hasAnthropicApiKeyCredential(config: unknown): boolean {
+  const binding = readAdapterEnvRecord(config)[ANTHROPIC_API_KEY_ENV];
+  if (typeof binding === "string") return binding.trim().length > 0;
+  if (typeof binding !== "object" || binding === null) return false;
+  const record = binding as Record<string, unknown>;
+  if (record.type === "plain") {
+    return typeof record.value === "string" && record.value.trim().length > 0;
+  }
+  return record.type === "secret_ref" || record.type === "user_secret_ref";
+}
+
+export interface ClaudeOAuthBindingInvariantInput {
+  /** The effective adapter type of the write. */
+  adapterType: string | null | undefined;
+  /** The normalized adapter config the write persists. */
+  nextConfig: unknown;
+  /** The stored adapter config before the write. Null on a create. */
+  priorConfig?: unknown;
+  /** A controlled internal override for migration or administrator repair. */
+  allowInternalOverride?: boolean;
+}
+
+export interface ClaudeOAuthBindingInvariantDecision {
+  /** True when the write adds the fixed binding that the prior config lacked. */
+  introducesBinding: boolean;
+  /** True when the write keeps an existing fixed binding unchanged. */
+  keepsBinding: boolean;
+}
+
+/**
+ * The server-enforced Claude OAuth binding invariant. It runs after generic
+ * normalization and before every database write on a `claude_local` create,
+ * hire, update, approval activation, and configuration rollback path.
+ *
+ * The function fails closed for a normal caller in these cases:
+ *   * A present but non-fixed OAuth binding (a replacement or a weaker binding).
+ *   * A prior fixed binding that the next config drops (a removal).
+ *
+ * A controlled internal override skips the removal and replacement checks for a
+ * migration or an administrator repair. The precedence policy runs on every
+ * path, with or without the override: the fixed binding together with a
+ * non-empty ANTHROPIC_API_KEY is a conflict, and the function rejects it with a
+ * generic message that names no token value and no owner configuration.
+ *
+ * The function returns whether the write introduces the fixed binding or keeps
+ * an existing one. The create and hire paths consume a stored-session claim when
+ * the write introduces the binding. The update, approval, and rollback paths
+ * reject a newly introduced binding, because they carry no claim.
+ */
+export function assertClaudeOAuthBindingInvariant(
+  input: ClaudeOAuthBindingInvariantInput,
+): ClaudeOAuthBindingInvariantDecision {
+  if (input.adapterType !== CLAUDE_LOCAL_ADAPTER_TYPE) {
+    return { introducesBinding: false, keepsBinding: false };
+  }
+  const nextHasKey = hasClaudeOAuthEnvKey(input.nextConfig);
+  const nextIsFixed = hasFixedClaudeOAuthBinding(input.nextConfig);
+  const priorIsFixed = hasFixedClaudeOAuthBinding(input.priorConfig);
+
+  if (!input.allowInternalOverride) {
+    if (nextHasKey && !nextIsFixed) {
+      throw new HttpError(409, CLAUDE_OAUTH_BINDING_LOCKED, { code: "claude_oauth_binding_locked" });
+    }
+    if (priorIsFixed && !nextIsFixed) {
+      throw new HttpError(409, CLAUDE_OAUTH_BINDING_LOCKED, { code: "claude_oauth_binding_locked" });
+    }
+  }
+  if (nextIsFixed && hasAnthropicApiKeyCredential(input.nextConfig)) {
+    throw new HttpError(409, CLAUDE_OAUTH_CREDENTIAL_CONFLICT, {
+      code: "claude_oauth_credential_conflict",
+    });
+  }
+  return {
+    introducesBinding: nextIsFixed && !priorIsFixed,
+    keepsBinding: nextIsFixed && priorIsFixed,
+  };
+}
+
+/** The fixed error the create and hire paths raise for a rejected claim. */
+export function claudeOAuthClaimRejectedError(): HttpError {
+  return new HttpError(409, CLAUDE_OAUTH_CLAIM_REJECTED, { code: "claude_oauth_claim_rejected" });
+}
+
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type SecretBindingDb = Pick<Db | DbTransaction, "select" | "delete" | "insert">;
 
