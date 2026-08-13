@@ -66,6 +66,7 @@ import {
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
+import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import {
@@ -572,6 +573,8 @@ export interface IssueFilters {
   offset?: number;
   sortField?: "updated";
   sortDir?: "asc" | "desc";
+  /** ISO 8601 timestamp — only return issues with updatedAt strictly after this value. */
+  updatedSince?: string;
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -5531,6 +5534,12 @@ export function issueService(db: Db) {
           )!,
         );
       }
+      if (filters?.updatedSince) {
+        const since = new Date(filters.updatedSince);
+        if (Number.isFinite(since.getTime())) {
+          conditions.push(gt(issues.updatedAt, since));
+        }
+      }
       if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
         conditions.push(ne(issues.originKind, "routine_execution"));
       }
@@ -7933,11 +7942,23 @@ export function issueService(db: Db) {
           .from(issueDocuments)
           .where(eq(issueDocuments.issueId, id));
 
-        const removedIssue = await tx
-          .delete(issues)
-          .where(eq(issues.id, id))
-          .returning()
-          .then((rows) => rows[0] ?? null);
+        let removedIssue;
+        try {
+          removedIssue = await tx
+            .delete(issues)
+            .where(eq(issues.id, id))
+            .returning()
+            .then((rows) => rows[0] ?? null);
+        } catch (err) {
+          // A foreign key to issues.id without a delete policy blocks the delete
+          // and raises SQLSTATE 23503. Map it to a clear 409 instead of a bare
+          // 500. This also covers the decisions table, whose NOT NULL references
+          // to issues.id stay restricted on purpose.
+          if (isForeignKeyViolation(err)) {
+            throw conflict("Issue cannot be deleted because another record still references it.");
+          }
+          throw err;
+        }
 
         if (removedIssue && attachmentAssetIds.length > 0) {
           await tx

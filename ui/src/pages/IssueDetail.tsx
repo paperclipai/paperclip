@@ -208,7 +208,6 @@ import {
 import { Badge } from "@/components/ui/badge";
 import {
   deriveOriginatingActor,
-  getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
@@ -1759,12 +1758,16 @@ export function IssueDetail() {
   });
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
   const externalObjectsState = useIssueExternalObjects(issue?.id ?? null);
-  const commentComposerDisabledReason = useMemo(() => {
-    if (!issue?.currentExecutionWorkspace || !isClosedIsolatedExecutionWorkspace(issue.currentExecutionWorkspace)) {
-      return null;
-    }
-    return getClosedIsolatedExecutionWorkspaceMessage(issue.currentExecutionWorkspace);
-  }, [issue?.currentExecutionWorkspace]);
+  // A closed isolated workspace no longer blocks the composer. The server reopens
+  // the workspace when the next comment or resume arrives, so the composer stays
+  // enabled and a hint tells the user what happens.
+  const closedIsolatedWorkspaceReopenPending = useMemo(
+    () => Boolean(
+      issue?.currentExecutionWorkspace
+      && isClosedIsolatedExecutionWorkspace(issue.currentExecutionWorkspace),
+    ),
+    [issue?.currentExecutionWorkspace],
+  );
 
   const {
     data: commentPages,
@@ -4333,7 +4336,10 @@ export function IssueDetail() {
         : "Assign an agent to wake them for triage while the subtree remains paused."
     )
     : null;
-  const composerHint = pausedComposerHint;
+  const reopenComposerHint = closedIsolatedWorkspaceReopenPending
+    ? "This issue's isolated workspace was archived. Your next comment or resume reopens it and rebuilds the worktree."
+    : null;
+  const composerHint = pausedComposerHint ?? reopenComposerHint;
   const queuedCommentReason: "hold" | "active_run" | "other" = activePauseHold ? "hold" : "active_run";
   const canApplyTreeControl =
     Boolean(treeControlPreview)
@@ -5244,7 +5250,7 @@ export function IssueDetail() {
               currentAssigneeValue={actualAssigneeValue}
               suggestedAssigneeValue={suggestedAssigneeValue}
               mentions={mentionOptions}
-              composerDisabledReason={commentComposerDisabledReason}
+              composerDisabledReason={null}
               composerHint={composerHint}
               queuedCommentReason={queuedCommentReason}
               onVote={handleCommentVote}
