@@ -692,7 +692,17 @@ export async function startSandboxCallbackBridgeWorker(input: {
   // through `runtimeSpan`. Defaults to DEFAULT_BRIDGE_WATCHDOG_TIMEOUT_MS.
   watchdogTimeoutMs?: number | null;
   authorizeRequest?: (request: SandboxCallbackBridgeRequest) => string | null | Promise<string | null>;
-  handleRequest: (request: SandboxCallbackBridgeRequest) => Promise<{
+  // Handle one bridge request. The worker passes an `AbortSignal` through
+  // `options.signal`. The per-iteration timeout, the watchdog, and worker
+  // failure recovery abort it, so a handler that threads the signal into its
+  // work (for example a `fetch`) stops and rejects instead of running forever.
+  // The handler then finalizes with its own error response, so the request does
+  // not strand with no response. A handler that ignores the signal keeps its
+  // earlier behavior.
+  handleRequest: (
+    request: SandboxCallbackBridgeRequest,
+    options?: { signal: AbortSignal },
+  ) => Promise<{
     status: number;
     headers?: Record<string, string>;
     body?: string;
@@ -765,13 +775,24 @@ export async function startSandboxCallbackBridgeWorker(input: {
   // recovery path abandons only a request that the handler did not yet claim; the
   // handler, when it later reaches the host-operation claim, sees the abandon and
   // does not run the mutation. This keeps a retry after the 503 exactly-once.
-  type RequestFinalizeGuard = { claim: "unclaimed" | "handler" | "abandon" };
+  //
+  // Each guard also holds an `AbortController`. The recovery path aborts it, so a
+  // handler that already started (claim `handler`) stops its work and finalizes
+  // with its own error response. Without this, a handler that never settles keeps
+  // the request without a response, because the recovery path skips a
+  // handler-owned request (it must not write a competing 503 for an in-flight
+  // mutation). The abort turns that stranded request into a prompt error
+  // response for a handler that threads the signal into its work.
+  type RequestFinalizeGuard = {
+    claim: "unclaimed" | "handler" | "abandon";
+    controller: AbortController;
+  };
   const inFlightRequestGuards = new Map<string, RequestFinalizeGuard>();
 
   const processRequestFile = async (fileName: string) => {
     const requestPath = path.posix.join(directories.requestsDir, fileName);
     const responsePath = path.posix.join(directories.responsesDir, fileName);
-    const guard: RequestFinalizeGuard = { claim: "unclaimed" };
+    const guard: RequestFinalizeGuard = { claim: "unclaimed", controller: new AbortController() };
     inFlightRequestGuards.set(fileName, guard);
     // Claim the request for the handler. Return `false` when the recovery path
     // already claimed it; the caller must then not run the mutation and must not
@@ -835,7 +856,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
       // claim, so `finalize` writes the real response.
       let response: SandboxCallbackBridgeResponse;
       try {
-        const result = await input.handleRequest(request);
+        const result = await input.handleRequest(request, { signal: guard.controller.signal });
         const responseBody = result.body ?? "";
         if (Buffer.byteLength(responseBody, "utf8") > maxBodyBytes) {
           throw new Error(`Bridge response body exceeded the configured size limit of ${maxBodyBytes} bytes.`);
@@ -886,6 +907,21 @@ export async function startSandboxCallbackBridgeWorker(input: {
     message: string,
     options: { abandonInFlight?: boolean } = {},
   ) => {
+    if (options.abandonInFlight) {
+      // Abort every in-flight handler first. The loop already gave up on the
+      // request. A handler that threads the signal into its work stops and
+      // rejects, then finalizes with its own error response, so the request does
+      // not strand with no response. This reads the guard map directly, so it
+      // runs even when the request listing below fails on the same dead channel.
+      // It never writes a 503 for a handler-owned request: the recovery path
+      // cannot cancel a committed host mutation, so a 503 there could apply the
+      // mutation twice.
+      for (const guard of inFlightRequestGuards.values()) {
+        if (guard.claim === "handler") {
+          guard.controller.abort(new Error(message));
+        }
+      }
+    }
     // Wrap each client call in the per-iteration timeout. When the sandbox
     // channel is unresponsive, a client call hangs with no reject. The timeout
     // keeps this recovery path fail-fast, so it never re-hangs on the same dead
@@ -904,8 +940,9 @@ export async function startSandboxCallbackBridgeWorker(input: {
             // already finalized the request. The timeout and watchdog cannot
             // cancel a host operation that is in flight. A competing 503 here
             // makes the caller retry while the original mutation still completes,
-            // so the mutation applies twice. Leave the request for the handler to
-            // finalize with its real response.
+            // so the mutation applies twice. The abort above already signalled
+            // the handler; leave the request for the handler to finalize with its
+            // own response.
             continue;
           }
           // The handler did not start the host operation yet. Claim the request,

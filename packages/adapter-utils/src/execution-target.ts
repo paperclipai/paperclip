@@ -2162,7 +2162,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       maxBodyBytes,
       getRuntimeParentContext: input.getRuntimeParentContext,
       runtimeSpan: input.runtimeSpan,
-      handleRequest: async (request) => {
+      handleRequest: async (request, options) => {
         const method = request.method.trim().toUpperCase() || "GET";
         if (bridgeDebugEnabled) {
           await onLog(
@@ -2177,11 +2177,19 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
         }
         headers.set("authorization", `Bearer ${hostApiToken}`);
         headers.set("x-paperclip-run-id", input.runId);
+        // Abort the forward when the worker aborts the request (its per-iteration
+        // timeout or watchdog fired), or after the 30s ceiling, whichever comes
+        // first. The worker abort lets the bridge fail a hung forward fast
+        // instead of stranding the request until the 30s ceiling.
+        const timeoutSignal = AbortSignal.timeout(30_000);
+        const forwardSignal = options?.signal
+          ? AbortSignal.any([options.signal, timeoutSignal])
+          : timeoutSignal;
         const response = await fetch(buildBridgeForwardUrl(hostApiUrl, request), {
           method,
           headers,
           ...(method === "GET" || method === "HEAD" ? {} : { body: request.body }),
-          signal: AbortSignal.timeout(30_000),
+          signal: forwardSignal,
         });
         if (bridgeDebugEnabled) {
           await onLog(

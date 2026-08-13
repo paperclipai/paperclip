@@ -1654,6 +1654,101 @@ describe("sandbox callback bridge", () => {
     await worker.stop({ drainTimeoutMs: 10 });
   });
 
+  it("aborts an in-flight handler on timeout, so a cooperating handler finalizes instead of stranding the request", async () => {
+    // A handler that threads the worker signal into its work must stop when the
+    // per-iteration timeout fires. It then finalizes with its own error
+    // response, so the request does not strand with no response. The recovery
+    // path still writes no 503 for the handler-owned request, so a started
+    // mutation is not applied twice.
+    const waitFor = async (predicate: () => boolean, timeoutMs: number) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (predicate()) {
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      throw new Error("waitFor timed out");
+    };
+
+    const queueDir = "/virtual-bridge/queue";
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const requestFile = "req-abort.json";
+    const requestPath = path.posix.join(directories.requestsDir, requestFile);
+    const responsePath = path.posix.join(directories.responsesDir, requestFile);
+
+    const requestBodies = new Map<string, string>();
+    requestBodies.set(requestPath, bridgeRequestJson("req-abort"));
+    const responseWrites: Array<{ path: string; status: number }> = [];
+    const requestRemovals: string[] = [];
+
+    const client: SandboxCallbackBridgeQueueClient = {
+      makeDir: async () => {},
+      makeDirs: async () => {},
+      listJsonFiles: async (dir) =>
+        dir === directories.requestsDir
+          ? [...requestBodies.keys()].map((entry) => path.posix.basename(entry)).sort()
+          : [],
+      readTextFile: async (remotePath) => {
+        const body = requestBodies.get(remotePath);
+        if (body === undefined) {
+          throw new Error(`missing request ${remotePath}`);
+        }
+        return body;
+      },
+      writeTextFile: async () => {},
+      writeResponseFile: async (remotePath, body) => {
+        responseWrites.push({ path: remotePath, status: JSON.parse(body.trim()).status });
+        return { wrote: true };
+      },
+      rename: async () => {},
+      remove: async (remotePath) => {
+        requestRemovals.push(remotePath);
+        requestBodies.delete(remotePath);
+      },
+    };
+
+    const { runtimeSpan, workerErrors } = createWorkerErrorCapture();
+    let handlerAborted = false;
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      iterationTimeoutMs: 50,
+      watchdogTimeoutMs: 10_000,
+      runtimeSpan,
+      authorizeRequest: async () => null,
+      // The handler stays pending until the worker aborts the signal. It then
+      // rejects, so the request finalizes with the handler's own error response.
+      handleRequest: (_request, options) =>
+        new Promise<{ status: number; body?: string }>((_resolve, reject) => {
+          options?.signal.addEventListener("abort", () => {
+            handlerAborted = true;
+            reject(new Error("aborted by worker"));
+          });
+        }),
+    });
+
+    // The handler finalizes only after the worker aborts it. The request gets a
+    // terminal response (a 502 from the handler failure), never stranded.
+    await waitFor(() => responseWrites.some((write) => write.path === responsePath), 3_000);
+
+    expect(handlerAborted).toBe(true);
+    expect(workerErrors.some((message) => message.includes("timed out"))).toBe(true);
+    // Exactly one response landed: the handler's 502. The recovery path wrote no
+    // competing 503.
+    expect(responseWrites.filter((write) => write.path === responsePath)).toEqual([
+      { path: responsePath, status: 502 },
+    ]);
+    expect(responseWrites.some((write) => write.status === 503)).toBe(false);
+    // The handler removed the request file after it finalized. The recovery path
+    // may issue a redundant idempotent remove for the same path when the handler
+    // finalized first, so assert the removal happened rather than a fixed count.
+    expect(requestRemovals).toContain(requestPath);
+
+    await worker.stop({ drainTimeoutMs: 10 });
+  });
+
   it("abandons a request before its handler starts, so the mutation never runs", async () => {
     // Prove the reverse race. When the recovery path claims a request before the
     // handler starts its host operation, the handler must bail without running
