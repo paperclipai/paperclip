@@ -55,6 +55,19 @@ describe("browser-code grammar", () => {
     }
   });
 
+  it("rejects a trailing newline that an anchored regex would let pass", () => {
+    // The runtime `.refine()` is the authoritative guard. JavaScript `$`
+    // matches before a final line feed, so an anchored printable-ASCII regex
+    // accepts a trailing newline. The `.refine()` closes that trap.
+    expect(browserCodeSchema.safeParse("abc\n").success).toBe(false);
+    expect(isValidBrowserCode("abc\n")).toBe(false);
+  });
+
+  it("rejects a single control byte and accepts a printable code", () => {
+    expect(browserCodeSchema.safeParse("abc").success).toBe(true);
+    expect(browserCodeSchema.safeParse("valid-code_123").success).toBe(true);
+  });
+
   it("rejects an empty code", () => {
     expect(browserCodeSchema.safeParse("").success).toBe(false);
     expect(isValidBrowserCode("")).toBe(false);

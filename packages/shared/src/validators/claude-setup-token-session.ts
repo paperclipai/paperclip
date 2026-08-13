@@ -86,12 +86,23 @@ export function isValidBrowserCode(code: string): boolean {
   );
 }
 
+// The printable-ASCII allowlist pattern for the published contract. It is an
+// anchored allowlist of the visible ASCII range (0x21-0x7E). The converter reads
+// this `.regex()` from the inner `ZodString` and emits it as the OpenAPI
+// `pattern`. It is NOT the authoritative guard: JavaScript `$` matches before a
+// final line feed, so this pattern accepts a trailing newline. The `.refine()`
+// below is the authoritative guard that rejects a trailing newline.
+export const BROWSER_CODE_PATTERN = /^[\x21-\x7E]+$/u;
+
 // The browser-code grammar schema. It rejects an empty code, an oversized code,
-// and a code with a control byte or any other non-printable character.
+// and a code with a control byte or any other non-printable character. The
+// `.regex()` runs before the `.refine()` so the converter serializes its
+// `pattern`; the `.refine()` stays the authoritative guard.
 export const browserCodeSchema = z
   .string()
   .min(1, "A browser code is required.")
   .max(BROWSER_CODE_MAX_LENGTH, "The browser code is too long.")
+  .regex(BROWSER_CODE_PATTERN, "The browser code has an invalid character.")
   .refine((code) => !BROWSER_CODE_DISALLOWED_CHAR.test(code), {
     message: "The browser code has an invalid character.",
   });
