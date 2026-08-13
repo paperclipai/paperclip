@@ -2853,6 +2853,71 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
+  it("normalizes an explicit execution workspace id into a durable reuse pin", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace project",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Pinned workspace",
+      status: "active",
+      providerType: "git_worktree",
+      providerRef: `/tmp/${executionWorkspaceId}`,
+    });
+
+    const created = await svc.create(companyId, {
+      title: "Pinned issue",
+      projectId,
+      executionWorkspaceId,
+    });
+
+    expect(created.executionWorkspaceId).toBe(executionWorkspaceId);
+    expect(created.executionWorkspacePreference).toBe("reuse_existing");
+    expect(created.executionWorkspaceSettings).toEqual({
+      mode: "isolated_workspace",
+      workspaceStrategy: { type: "git_worktree" },
+    });
+
+    const unpinned = await svc.create(companyId, {
+      title: "Pin on update",
+      projectId,
+    });
+    const updated = await svc.update(unpinned.id, { executionWorkspaceId });
+
+    expect(updated?.executionWorkspaceId).toBe(executionWorkspaceId);
+    expect(updated?.executionWorkspacePreference).toBe("reuse_existing");
+    expect(updated?.executionWorkspaceSettings).toEqual({
+      mode: "isolated_workspace",
+      workspaceStrategy: { type: "git_worktree" },
+    });
+  });
+
   it("inherits responsible user for agent-created child issues", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

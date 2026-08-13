@@ -359,7 +359,6 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       responsibleUserId: "responsible-user",
       assigneeAgentId: agentId,
       identifier: "PAP-9122",
-      executionWorkspaceId: sharedExecutionWorkspaceId,
       executionWorkspaceSettings: {
         mode: "isolated_workspace",
       },

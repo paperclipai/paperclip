@@ -1039,7 +1039,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
   });
 
   it.each([
-    ["workspace-runtime fresh worktree reuse", "fresh_realize" as const, null],
+    ["workspace-runtime fresh worktree reuse", "fresh_realize" as const, "source-workspace"],
     ["workspace-runtime persisted restore", "persisted_restore" as const, "source-workspace"],
   ])("contains mid-change branch divergence at %s", async (_name, callSite, expectedWorkspaceId) => {
     const repoRoot = await createGitRepo();

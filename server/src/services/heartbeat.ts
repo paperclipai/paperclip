@@ -394,6 +394,12 @@ const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
 const CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE = "configuration_incomplete";
+export const PINNED_EXECUTION_WORKSPACE_RESTORE_FAILED_ERROR_CODE =
+  "pinned_execution_workspace_restore_failed";
+export const PINNED_EXECUTION_WORKSPACE_UNAVAILABLE_ERROR_CODE =
+  "pinned_execution_workspace_unavailable";
+export const PINNED_EXECUTION_WORKSPACE_INCOMPATIBLE_ERROR_CODE =
+  "pinned_execution_workspace_incompatible";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON = "execution_review_participant_recovery";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON = "execution_review_participant_recovery";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE = "execution_review_participant_recovery";
@@ -4334,7 +4340,11 @@ export function resolveExecutionWorkspaceReuseRequestForIssue(input: {
 }): ExecutionWorkspaceReuseRequestForIssue {
   const requestedExecutionWorkspaceId = readNonEmptyString(input.issueExecutionWorkspaceId);
   const requestedShouldReuseExisting =
-    input.issueExecutionWorkspacePreference === "reuse_existing" && requestedExecutionWorkspaceId !== null;
+    requestedExecutionWorkspaceId !== null &&
+    (
+      input.issueExecutionWorkspacePreference === "reuse_existing" ||
+      input.issueExecutionWorkspacePreference == null
+    );
 
   return {
     requestedExecutionWorkspaceId,
@@ -4345,6 +4355,22 @@ export function resolveExecutionWorkspaceReuseRequestForIssue(input: {
       input.existingExecutionWorkspaceStatus !== undefined &&
       input.existingExecutionWorkspaceStatus !== "archived",
   };
+}
+
+export function isPinnedExecutionWorkspaceIncompatibleWithTrust(input: {
+  requestedShouldReuseExisting: boolean;
+  trustPresetKind: TrustPresetResolution["kind"];
+  requestedExecutionWorkspaceMode: ReturnType<typeof resolveExecutionWorkspaceMode>;
+  existingExecutionWorkspaceMode: string | null;
+}): boolean {
+  if (!input.requestedShouldReuseExisting) return false;
+
+  return (
+    input.trustPresetKind === "low_trust_review"
+    && input.requestedExecutionWorkspaceMode === "isolated_workspace"
+    && input.existingExecutionWorkspaceMode !== null
+    && input.existingExecutionWorkspaceMode !== "isolated_workspace"
+  );
 }
 
 export function resolveExecutionWorkspaceReuseProvisioningPolicy(input: {
@@ -4365,8 +4391,13 @@ export function resolveExecutionWorkspaceReuseProvisioningPolicy(input: {
   };
 }
 
-function formatInheritedExecutionWorkspaceReuseFailure(input: {
-  reason: "inherited_workspace_reuse_failed" | "inherited_workspace_reuse_unavailable";
+type ExecutionWorkspaceReuseFailureReason =
+  | typeof PINNED_EXECUTION_WORKSPACE_RESTORE_FAILED_ERROR_CODE
+  | typeof PINNED_EXECUTION_WORKSPACE_UNAVAILABLE_ERROR_CODE
+  | typeof PINNED_EXECUTION_WORKSPACE_INCOMPATIBLE_ERROR_CODE;
+
+function formatPinnedExecutionWorkspaceReuseFailure(input: {
+  reason: ExecutionWorkspaceReuseFailureReason;
   issueRef: WorkspaceReuseIssueRef;
   runId: string;
   executionWorkspaceId: string | null | undefined;
@@ -4380,14 +4411,50 @@ function formatInheritedExecutionWorkspaceReuseFailure(input: {
     : input.cause != null
       ? String(input.cause)
       : null;
-  const remediation = input.reason === "inherited_workspace_reuse_failed"
-    ? "Inspect the referenced execution workspace restore/provision logs, repair or unarchive the workspace, or intentionally clear the issue's reuse_existing workspace binding before retrying."
-    : "Repair or unarchive the referenced execution workspace, or intentionally clear the issue's reuse_existing workspace binding before retrying.";
-  const message = causeMessage
-    ? `Issue ${issueLabel} requested inherited execution workspace reuse for ${workspaceLabel}, but the workspace could not be restored because ${causeMessage}.`
-    : `Issue ${issueLabel} requested inherited execution workspace reuse for ${workspaceLabel}, but the workspace could not be restored.`;
+  const incompatible = input.reason === PINNED_EXECUTION_WORKSPACE_INCOMPATIBLE_ERROR_CODE;
+  const remediation = input.reason === PINNED_EXECUTION_WORKSPACE_RESTORE_FAILED_ERROR_CODE
+    ? "Inspect the pinned execution workspace restore/provision logs, repair or unarchive the workspace, or intentionally clear the issue's execution workspace binding before retrying."
+    : incompatible
+      ? "Pin an isolated workspace, change the task trust policy, or intentionally clear the issue's execution workspace binding before retrying."
+      : "Repair or unarchive the pinned execution workspace, or intentionally clear the issue's execution workspace binding before retrying.";
+  const message = incompatible
+    ? `Issue ${issueLabel} pinned execution workspace ${workspaceLabel}, but that workspace is incompatible with the run's isolation policy.`
+    : causeMessage
+      ? `Issue ${issueLabel} pinned execution workspace ${workspaceLabel}, but the workspace could not be restored because ${causeMessage}.`
+      : `Issue ${issueLabel} pinned execution workspace ${workspaceLabel}, but the workspace could not be restored.`;
 
   return `${message} ${remediation}`;
+}
+
+export class ExecutionWorkspaceReuseFailure extends Error {
+  code: ExecutionWorkspaceReuseFailureReason;
+  resultJson: Record<string, unknown>;
+
+  constructor(input: {
+    reason: ExecutionWorkspaceReuseFailureReason;
+    issueRef: WorkspaceReuseIssueRef;
+    runId: string;
+    executionWorkspaceId: string | null | undefined;
+    workspaceConfigFreshness: ExecutionWorkspaceConfigFreshnessDecision;
+    cause?: unknown;
+  }) {
+    super(formatPinnedExecutionWorkspaceReuseFailure(input));
+    this.name = "ExecutionWorkspaceReuseFailure";
+    this.code = input.reason;
+    this.resultJson = {
+      executionWorkspaceReuse: {
+        reason: input.reason,
+        issueId: input.issueRef?.id ?? null,
+        issueIdentifier: input.issueRef?.identifier ?? null,
+        executionWorkspaceId: input.executionWorkspaceId ?? null,
+        workspaceConfigFreshnessAction: input.workspaceConfigFreshness.action,
+      },
+    };
+  }
+}
+
+function isExecutionWorkspaceReuseFailure(error: unknown): error is ExecutionWorkspaceReuseFailure {
+  return error instanceof ExecutionWorkspaceReuseFailure;
 }
 
 export async function provisionExecutionWorkspaceForFreshnessDecision<T extends { warnings?: string[] }>(input: {
@@ -4418,15 +4485,15 @@ export async function provisionExecutionWorkspaceForFreshnessDecision<T extends 
   }
 
   let restored: T | null = null;
-  let reuseFailure: string | null = null;
+  let reuseFailure: ExecutionWorkspaceReuseFailure | null = null;
   try {
     restored = (await input.restoreExistingWorkspace?.()) ?? null;
   } catch (error) {
     if (isWorkspaceValidationFailure(error)) {
       throw error;
     }
-    reuseFailure = formatInheritedExecutionWorkspaceReuseFailure({
-      reason: "inherited_workspace_reuse_failed",
+    reuseFailure = new ExecutionWorkspaceReuseFailure({
+      reason: PINNED_EXECUTION_WORKSPACE_RESTORE_FAILED_ERROR_CODE,
       issueRef: input.issueRef,
       runId: input.runId,
       executionWorkspaceId: input.existingExecutionWorkspaceId,
@@ -4436,8 +4503,8 @@ export async function provisionExecutionWorkspaceForFreshnessDecision<T extends 
   }
 
   if (!restored) {
-    reuseFailure = reuseFailure ?? formatInheritedExecutionWorkspaceReuseFailure({
-      reason: "inherited_workspace_reuse_unavailable",
+    reuseFailure = reuseFailure ?? new ExecutionWorkspaceReuseFailure({
+      reason: PINNED_EXECUTION_WORKSPACE_UNAVAILABLE_ERROR_CODE,
       issueRef: input.issueRef,
       runId: input.runId,
       executionWorkspaceId: input.existingExecutionWorkspaceId,
@@ -4445,7 +4512,7 @@ export async function provisionExecutionWorkspaceForFreshnessDecision<T extends 
     });
   }
 
-  if (reuseFailure) throw new Error(reuseFailure);
+  if (reuseFailure) throw reuseFailure;
   if (!restored) {
     throw new Error("Expected restored execution workspace after reuse fallback handling");
   }
@@ -13816,7 +13883,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueSettings: issueExecutionWorkspaceSettings,
       legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
     });
-    const requestedExecutionWorkspaceMode =
+    let requestedExecutionWorkspaceMode =
       trustPreset.kind === "low_trust_review" && resolvedExecutionWorkspaceMode === "shared_workspace"
         ? "isolated_workspace"
         : resolvedExecutionWorkspaceMode;
@@ -13977,10 +14044,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueExecutionWorkspacePreference: issueRef?.executionWorkspacePreference ?? null,
       existingExecutionWorkspaceStatus: existingExecutionWorkspace?.status ?? null,
     });
+    const pinnedExecutionWorkspaceIncompatibleWithTrust = isPinnedExecutionWorkspaceIncompatibleWithTrust({
+      requestedShouldReuseExisting: workspaceReuseRequest.requestedShouldReuseExisting,
+      trustPresetKind: trustPreset.kind,
+      requestedExecutionWorkspaceMode,
+      existingExecutionWorkspaceMode: workspaceReuseRequest.existingExecutionWorkspaceAvailable
+        ? existingExecutionWorkspace?.mode ?? null
+        : null,
+    });
     const requestedShouldReuseExisting = workspaceReuseRequest.requestedShouldReuseExisting;
     const reusableExistingExecutionWorkspace = workspaceReuseRequest.existingExecutionWorkspaceAvailable
       ? existingExecutionWorkspace
       : null;
+    if (
+      requestedShouldReuseExisting &&
+      reusableExistingExecutionWorkspace &&
+      !pinnedExecutionWorkspaceIncompatibleWithTrust &&
+      (
+        issueExecutionWorkspaceSettings?.mode == null ||
+        issueExecutionWorkspaceSettings.mode === "inherit" ||
+        issueExecutionWorkspaceSettings.mode === "reuse_existing"
+      )
+    ) {
+      requestedExecutionWorkspaceMode = issueExecutionWorkspaceModeForPersistedWorkspace(
+        reusableExistingExecutionWorkspace.mode,
+      );
+    }
     const requestedReusableExecutionWorkspaceConfig = reusableExistingExecutionWorkspace?.config ?? null;
     const localEnvironment = await environmentsSvc.ensureLocalEnvironment(agent.companyId);
     const resolvedInstanceSettings = await instanceSettings.get();
@@ -14471,6 +14560,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       inferredMetadata: inferredExistingWorkspaceConfigMetadata,
       nextMetadata: latestWorkspaceConfigMetadata,
     });
+    if (pinnedExecutionWorkspaceIncompatibleWithTrust) {
+      throw new ExecutionWorkspaceReuseFailure({
+        reason: PINNED_EXECUTION_WORKSPACE_INCOMPATIBLE_ERROR_CODE,
+        issueRef,
+        runId: run.id,
+        executionWorkspaceId: workspaceReuseRequest.requestedExecutionWorkspaceId,
+        workspaceConfigFreshness,
+      });
+    }
     const workspaceReuseProvisioningPolicy = resolveExecutionWorkspaceReuseProvisioningPolicy({
       requestedShouldReuseExisting,
       workspaceConfigFreshness,
@@ -14726,7 +14824,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (issueId && persistedExecutionWorkspace) {
       const nextIssueWorkspaceMode = issueExecutionWorkspaceModeForPersistedWorkspace(persistedExecutionWorkspace.mode);
       const shouldSwitchIssueToExistingWorkspace =
-        issueRef?.executionWorkspacePreference === "reuse_existing" ||
+        requestedShouldReuseExisting ||
         requestedExecutionWorkspaceMode === "isolated_workspace" ||
         requestedExecutionWorkspaceMode === "operator_branch";
       const nextIssuePatch: Record<string, unknown> = {};
@@ -16085,11 +16183,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       );
       const workspaceValidationFailure = isWorkspaceValidationFailure(err) ? err : null;
       const configurationIncompleteFailure = isConfigurationIncompleteFailure(err) ? err : null;
+      const executionWorkspaceReuseFailure = isExecutionWorkspaceReuseFailure(err) ? err : null;
       const recordedResponsibleUserDenialCode =
         normalizeResponsibleUserDenialCode((await getRun(run.id).catch(() => null))?.errorCode);
       const failureErrorCode =
         workspaceValidationFailure?.code
         ?? configurationIncompleteFailure?.code
+        ?? executionWorkspaceReuseFailure?.code
         ?? recordedResponsibleUserDenialCode
         ?? "adapter_failed";
       logger.error({ err, runId }, "heartbeat execution failed");
@@ -16117,7 +16217,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
           errorCode: failureErrorCode,
           errorMessage: message,
-          resultJson: workspaceValidationFailure?.resultJson ?? configurationIncompleteFailure?.resultJson ?? null,
+          resultJson:
+            workspaceValidationFailure?.resultJson
+            ?? configurationIncompleteFailure?.resultJson
+            ?? executionWorkspaceReuseFailure?.resultJson
+            ?? null,
         }),
         stdoutExcerpt,
         stderrExcerpt,
@@ -16229,11 +16333,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // recovery path routes it to a human owner instead of looping retries.
           const workspaceValidationSetupFailure = isWorkspaceValidationFailure(outerErr) ? outerErr : null;
           const configurationIncompleteSetupFailure = isConfigurationIncompleteFailure(outerErr) ? outerErr : null;
+          const executionWorkspaceReuseSetupFailure = isExecutionWorkspaceReuseFailure(outerErr) ? outerErr : null;
           const recordedResponsibleUserDenialCode =
             normalizeResponsibleUserDenialCode((await getRun(runId).catch(() => null))?.errorCode);
           const setupFailureErrorCode =
             workspaceValidationSetupFailure?.code ??
             configurationIncompleteSetupFailure?.code ??
+            executionWorkspaceReuseSetupFailure?.code ??
             recordedResponsibleUserDenialCode ??
             "setup_failed";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
@@ -16247,7 +16353,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 errorCode: setupFailureErrorCode,
                 errorMessage: message,
                 resultJson:
-                  workspaceValidationSetupFailure?.resultJson ?? configurationIncompleteSetupFailure?.resultJson ?? null,
+                  workspaceValidationSetupFailure?.resultJson
+                  ?? configurationIncompleteSetupFailure?.resultJson
+                  ?? executionWorkspaceReuseSetupFailure?.resultJson
+                  ?? null,
               }),
             } : {}),
           }).catch(() => ({ run: null, updated: false as const }));

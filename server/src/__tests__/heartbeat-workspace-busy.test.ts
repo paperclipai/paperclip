@@ -45,6 +45,8 @@ import {
   heartbeatService,
 } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { issueService } from "../services/issues.ts";
+import { assertCanManageExecutionWorkspaceRuntimeServices } from "../routes/workspace-runtime-service-authz.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -486,6 +488,104 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.scheduledRetryReason, WORKSPACE_BUSY_RETRY_REASON));
     expect(retryRuns).toHaveLength(0);
+  });
+
+  it("preserves an explicit isolated workspace pin under shared-workspace contention", async () => {
+    const fixture = await seedWorkspaceFixture({
+      issueWorkspaceSettings: { sharedWorkspaceConcurrency: "allow" },
+    });
+    const sourceIssueId = randomUUID();
+    const pinnedExecutionWorkspaceId = randomUUID();
+
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId: fixture.companyId,
+      title: "Completed source issue",
+      status: "done",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: fixture.holderAgentId,
+      projectId: fixture.projectId,
+      projectWorkspaceId: fixture.projectWorkspaceId,
+      issueNumber: 3,
+      identifier: `SRC-${sourceIssueId.slice(0, 8)}`,
+      completedAt: new Date(),
+    });
+    await db.insert(executionWorkspaces).values({
+      id: pinnedExecutionWorkspaceId,
+      companyId: fixture.companyId,
+      projectId: fixture.projectId,
+      projectWorkspaceId: fixture.projectWorkspaceId,
+      sourceIssueId,
+      mode: "isolated_workspace",
+      strategyType: "project_primary",
+      name: "Pinned isolated workspace",
+      status: "active",
+      cwd: workspaceCwd,
+      providerType: "local_fs",
+    });
+    await db
+      .update(issues)
+      .set({ executionWorkspaceId: pinnedExecutionWorkspaceId })
+      .where(eq(issues.id, sourceIssueId));
+
+    const pinnedIssue = await issueService(db).create(fixture.companyId, {
+      title: "Run in the pinned isolated workspace",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: fixture.agentId,
+      projectId: fixture.projectId,
+      projectWorkspaceId: fixture.projectWorkspaceId,
+      executionWorkspaceId: pinnedExecutionWorkspaceId,
+    });
+    expect(pinnedIssue.executionWorkspacePreference).toBe("reuse_existing");
+    expect(pinnedIssue.executionWorkspaceSettings).toEqual({
+      mode: "isolated_workspace",
+      workspaceStrategy: { type: "project_primary" },
+    });
+
+    const run = await heartbeat.invoke(
+      fixture.agentId,
+      "assignment",
+      { issueId: pinnedIssue.id, wakeReason: "issue_assigned" },
+      "system",
+    );
+    expect(run).not.toBeNull();
+
+    const finishedRun = await waitForRunToLeaveActiveStates(run!.id);
+    expect(finishedRun?.status).toBe("succeeded");
+    expect(finishedRun?.errorCode).not.toBe(WORKSPACE_BUSY_ERROR_CODE);
+    expect(executedRunIds).toContain(run!.id);
+
+    const realizedIssue = await db
+      .select({
+        executionWorkspaceId: issues.executionWorkspaceId,
+        executionWorkspacePreference: issues.executionWorkspacePreference,
+        executionWorkspaceSettings: issues.executionWorkspaceSettings,
+      })
+      .from(issues)
+      .where(eq(issues.id, pinnedIssue.id))
+      .then((rows) => rows[0] ?? null);
+    expect(realizedIssue).toMatchObject({
+      executionWorkspaceId: pinnedExecutionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        workspaceStrategy: { type: "project_primary" },
+      },
+    });
+
+    await expect(assertCanManageExecutionWorkspaceRuntimeServices(db, {
+      actor: {
+        type: "agent",
+        agentId: fixture.agentId,
+        companyId: fixture.companyId,
+        source: "agent_key",
+      },
+    } as any, {
+      companyId: fixture.companyId,
+      executionWorkspaceId: pinnedExecutionWorkspaceId,
+    })).resolves.toBeUndefined();
   });
 
   it("defers a run whose issue targets a busy shared workspace and schedules a bounded retry", async () => {

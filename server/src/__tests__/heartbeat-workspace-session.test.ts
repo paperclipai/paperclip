@@ -24,6 +24,10 @@ import {
   preflightLowTrustWorkspaceIsolation,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  PINNED_EXECUTION_WORKSPACE_RESTORE_FAILED_ERROR_CODE,
+  PINNED_EXECUTION_WORKSPACE_UNAVAILABLE_ERROR_CODE,
+  PINNED_EXECUTION_WORKSPACE_INCOMPATIBLE_ERROR_CODE,
+  ExecutionWorkspaceReuseFailure,
   provisionExecutionWorkspaceForFreshnessDecision,
   reconcileReusedExecutionWorkspaceProjectWorkspaceId,
   resolveExecutionWorkspaceConfigFreshness,
@@ -39,6 +43,7 @@ import {
   stripHostWorkspaceProvisionForLowTrustSandbox,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   shouldResetTaskSessionForModelChange,
+  isPinnedExecutionWorkspaceIncompatibleWithTrust,
   stripConfiguredModelFromSessionParams,
   stripPaperclipSessionMetadataFromSessionParams,
   normalizeSessionParams,
@@ -1633,8 +1638,83 @@ describe("effective run execution workspace config freshness", () => {
         throw new Error("restore command failed");
       },
       realizeWorkspace,
-    })).rejects.toThrow(/restore command failed/);
+    })).rejects.toMatchObject({
+      code: PINNED_EXECUTION_WORKSPACE_RESTORE_FAILED_ERROR_CODE,
+      message: expect.stringContaining("restore command failed"),
+      resultJson: {
+        executionWorkspaceReuse: expect.objectContaining({
+          reason: PINNED_EXECUTION_WORKSPACE_RESTORE_FAILED_ERROR_CODE,
+          executionWorkspaceId: "workspace-old",
+        }),
+      },
+    });
     expect(realizeWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("treats a workspace id without a preference as an explicit reuse pin", () => {
+    expect(resolveExecutionWorkspaceReuseRequestForIssue({
+      issueExecutionWorkspaceId: "workspace-old",
+      issueExecutionWorkspacePreference: null,
+      existingExecutionWorkspaceStatus: "active",
+    })).toEqual({
+      requestedExecutionWorkspaceId: "workspace-old",
+      requestedShouldReuseExisting: true,
+      existingExecutionWorkspaceAvailable: true,
+    });
+  });
+
+  it("marks an available shared pin incompatible with a low-trust isolated run", () => {
+    expect(isPinnedExecutionWorkspaceIncompatibleWithTrust({
+      requestedShouldReuseExisting: true,
+      trustPresetKind: "low_trust_review",
+      requestedExecutionWorkspaceMode: "isolated_workspace",
+      existingExecutionWorkspaceMode: "shared_workspace",
+    })).toBe(true);
+  });
+
+  it("accepts an available isolated pin for a low-trust isolated run", () => {
+    expect(isPinnedExecutionWorkspaceIncompatibleWithTrust({
+      requestedShouldReuseExisting: true,
+      trustPresetKind: "low_trust_review",
+      requestedExecutionWorkspaceMode: "isolated_workspace",
+      existingExecutionWorkspaceMode: "isolated_workspace",
+    })).toBe(false);
+  });
+
+  it("keeps unavailable low-trust pins on the named availability-failure path", () => {
+    expect(isPinnedExecutionWorkspaceIncompatibleWithTrust({
+      requestedShouldReuseExisting: true,
+      trustPresetKind: "low_trust_review",
+      requestedExecutionWorkspaceMode: "isolated_workspace",
+      existingExecutionWorkspaceMode: null,
+    })).toBe(false);
+  });
+
+  it("reports a named incompatibility without realizing a replacement workspace", () => {
+    const metadata = buildWorkspaceConfigMetadata();
+    const workspaceConfigFreshness = resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: true,
+      existingWorkspaceMetadata: persistedWorkspaceConfigFingerprint(metadata),
+      nextMetadata: metadata,
+    });
+    const failure = new ExecutionWorkspaceReuseFailure({
+      reason: PINNED_EXECUTION_WORKSPACE_INCOMPATIBLE_ERROR_CODE,
+      issueRef: { id: "issue-1", identifier: "PAP-42" },
+      runId: "run-1",
+      executionWorkspaceId: "workspace-shared",
+      workspaceConfigFreshness,
+    });
+
+    expect(failure).toMatchObject({
+      code: PINNED_EXECUTION_WORKSPACE_INCOMPATIBLE_ERROR_CODE,
+      message: expect.stringContaining("incompatible with the run's isolation policy"),
+      resultJson: {
+        executionWorkspaceReuse: expect.objectContaining({
+          reason: PINNED_EXECUTION_WORKSPACE_INCOMPATIBLE_ERROR_CODE,
+          executionWorkspaceId: "workspace-shared",
+        }),
+      },
+    });
   });
 
   it.each([
@@ -1672,7 +1752,16 @@ describe("effective run execution workspace config freshness", () => {
         ? async () => ({ id: "workspace-old", warnings: [] })
         : null,
       realizeWorkspace,
-    })).rejects.toThrow(/could not be restored/);
+    })).rejects.toMatchObject({
+      code: PINNED_EXECUTION_WORKSPACE_UNAVAILABLE_ERROR_CODE,
+      message: expect.stringContaining("could not be restored"),
+      resultJson: {
+        executionWorkspaceReuse: expect.objectContaining({
+          reason: PINNED_EXECUTION_WORKSPACE_UNAVAILABLE_ERROR_CODE,
+          executionWorkspaceId: "workspace-old",
+        }),
+      },
+    });
     expect(realizeWorkspace).not.toHaveBeenCalled();
   });
 

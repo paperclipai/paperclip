@@ -311,7 +311,7 @@ export function defaultIssueExecutionWorkspaceSettingsForProject(
 
 export function issueExecutionWorkspaceModeForPersistedWorkspace(
   mode: string | null | undefined,
-): IssueExecutionWorkspaceSettings["mode"] {
+): ParsedExecutionWorkspaceMode {
   if (mode === null || mode === undefined) {
     return "agent_default";
   }

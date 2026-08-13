@@ -4148,7 +4148,7 @@ describeEmbeddedPostgres("tool access service", () => {
       schemaHash: "s1",
     }).returning();
     const canonicalArguments = canonicalToolArguments({ key: "alpha", value: "one" });
-    const invocationValues = [1, 2, 3].map(() => ({
+    const invocationValues = [1, 2, 3, 4].map(() => ({
       companyId: company.id,
       applicationId: application.id,
       connectionId: connection.id,
@@ -4160,7 +4160,7 @@ describeEmbeddedPostgres("tool access service", () => {
       approvalState: "pending" as const,
       status: "awaiting_approval" as const,
     }));
-    const [validInvocation, missingSignatureInvocation, oldSecretInvocation] =
+    const [validInvocation, missingSignatureInvocation, oldSecretInvocation, inFlightInvocation] =
       await db.insert(toolInvocations).values(invocationValues).returning();
     const validSignedArguments = signToolArguments({
       invocationId: validInvocation.id,
@@ -4174,7 +4174,7 @@ describeEmbeddedPostgres("tool access service", () => {
       canonicalArguments,
       signingSecret: "old-secret",
     });
-    const [validRequest, missingSignatureRequest, oldSecretRequest] = await db.insert(toolActionRequests).values([
+    const [validRequest, missingSignatureRequest, oldSecretRequest, inFlightRequest] = await db.insert(toolActionRequests).values([
       {
         companyId: company.id,
         invocationId: validInvocation.id,
@@ -4190,6 +4190,7 @@ describeEmbeddedPostgres("tool access service", () => {
         canonicalArgumentsHash: "args-hash",
         canonicalArgumentsSummary: { summary: canonicalArguments, sha256: "args-hash", sizeBytes: canonicalArguments.length },
         signedArguments: null,
+        createdAt: new Date(Date.now() - 60_000),
       },
       {
         companyId: company.id,
@@ -4198,6 +4199,14 @@ describeEmbeddedPostgres("tool access service", () => {
         canonicalArgumentsHash: "args-hash",
         canonicalArgumentsSummary: { summary: canonicalArguments, sha256: "args-hash", sizeBytes: canonicalArguments.length },
         signedArguments: oldSecretSignedArguments,
+      },
+      {
+        companyId: company.id,
+        invocationId: inFlightInvocation.id,
+        status: "pending",
+        canonicalArgumentsHash: "args-hash",
+        canonicalArgumentsSummary: { summary: canonicalArguments, sha256: "args-hash", sizeBytes: canonicalArguments.length },
+        signedArguments: null,
       },
     ]).returning();
 
@@ -4209,6 +4218,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(statusById.get(validRequest.id)).toBe("pending");
     expect(statusById.get(missingSignatureRequest.id)).toBe("cancelled");
     expect(statusById.get(oldSecretRequest.id)).toBe("cancelled");
+    expect(statusById.get(inFlightRequest.id)).toBe("pending");
   });
 
   it("tracks new profile tools, reviews mixed allow/block decisions, and clears pending counts", async () => {

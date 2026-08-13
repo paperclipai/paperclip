@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveViteHmrHost, resolveViteHmrPort } from "../app.ts";
+import { resolveViteHmrHost, resolveViteHmrPort, resolveViteHmrProtocol } from "../app.ts";
 
 describe("resolveViteHmrPort", () => {
   it("uses serverPort + 10000 when the result stays in range", () => {
@@ -19,13 +19,29 @@ describe("resolveViteHmrPort", () => {
 });
 
 describe("resolveViteHmrHost", () => {
-  it("omits wildcard bind hosts so Vite uses the browser hostname", () => {
+  it("omits wildcard and loopback bind hosts so Vite uses the browser hostname", () => {
     expect(resolveViteHmrHost("0.0.0.0")).toBeUndefined();
     expect(resolveViteHmrHost("::")).toBeUndefined();
+    expect(resolveViteHmrHost("127.0.0.1")).toBeUndefined();
+    expect(resolveViteHmrHost("::1")).toBeUndefined();
+    expect(resolveViteHmrHost("localhost")).toBeUndefined();
   });
 
-  it("keeps concrete bind hosts", () => {
-    expect(resolveViteHmrHost("127.0.0.1")).toBe("127.0.0.1");
+  it("keeps externally addressable concrete bind hosts", () => {
     expect(resolveViteHmrHost("paperclip-dev")).toBe("paperclip-dev");
+  });
+});
+
+describe("resolveViteHmrProtocol", () => {
+  it("accepts supported websocket protocols", () => {
+    expect(resolveViteHmrProtocol(undefined)).toBeUndefined();
+    expect(resolveViteHmrProtocol("ws")).toBe("ws");
+    expect(resolveViteHmrProtocol("wss")).toBe("wss");
+  });
+
+  it("rejects unsupported websocket protocols", () => {
+    expect(() => resolveViteHmrProtocol("https")).toThrow(
+      "PAPERCLIP_VITE_HMR_PROTOCOL must be ws or wss",
+    );
   });
 });

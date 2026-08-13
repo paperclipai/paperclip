@@ -147,6 +147,7 @@ type OAuthProviderEndpoints = {
 };
 
 const oauthRegistrationFlights = new Map<string, Promise<unknown>>();
+const PENDING_ACTION_REQUEST_SIGNING_GRACE_MS = 5_000;
 
 async function oauthSingleFlight<T>(
   flights: Map<string, Promise<unknown>>,
@@ -6749,10 +6750,19 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       const invocationById = new Map(invocations.map((invocation) => [invocation.id, invocation]));
       let visibleRequests = requests;
       if (status === "pending") {
+        const hiddenInFlightRequestIds = new Set<string>();
+        const signingGraceDeadline = now().getTime() - PENDING_ACTION_REQUEST_SIGNING_GRACE_MS;
         const invalidRequestIds = requests
           .filter((request) => {
             const invocation = invocationById.get(request.invocationId);
             if (!invocation) return true;
+            if (!request.signedArguments && request.createdAt.getTime() > signingGraceDeadline) {
+              // recordInvocation inserts the pending row before executeTestCall adds
+              // its signed payload. A concurrent review-queue poll must not cancel
+              // that short-lived intermediate state.
+              hiddenInFlightRequestIds.add(request.id);
+              return false;
+            }
             try {
               return !readSignedToolArgumentsPayload({
                 signedArguments: request.signedArguments,
@@ -6775,6 +6785,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
             ));
           const invalidIds = new Set(invalidRequestIds);
           visibleRequests = requests.filter((request) => !invalidIds.has(request.id));
+        }
+        if (hiddenInFlightRequestIds.size > 0) {
+          visibleRequests = visibleRequests.filter((request) => !hiddenInFlightRequestIds.has(request.id));
         }
       }
       if (visibleRequests.length === 0) return [];

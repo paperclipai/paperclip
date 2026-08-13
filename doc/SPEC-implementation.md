@@ -258,6 +258,7 @@ Invariants:
 - single assignee only
 - task must trace to company goal chain via `goal_id`, `parent_id`, or project-goal linkage
 - `in_progress` requires assignee
+- a non-null `execution_workspace_id` with an absent or `reuse_existing` preference is a durable workspace pin: create/update normalizes an absent preference to `reuse_existing`, realization must not silently replace the pin, and unavailable pins fail with a named workspace-reuse reason
 - terminal states: `done | cancelled`
 
 ## 7.7 `issue_comments`

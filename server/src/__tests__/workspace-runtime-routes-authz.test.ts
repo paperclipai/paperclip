@@ -25,7 +25,12 @@ const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
-const mockWorkspaceOperationService = vi.hoisted(() => ({}));
+const mockWorkspaceOperationRecorder = vi.hoisted(() => ({
+  recordOperation: vi.fn(async (input: { run: () => Promise<unknown> }) => await input.run()),
+}));
+const mockWorkspaceOperationService = vi.hoisted(() => ({
+  createRecorder: vi.fn(() => mockWorkspaceOperationRecorder),
+}));
 const mockHeartbeatService = vi.hoisted(() => ({}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
@@ -34,6 +39,8 @@ const mockAccessService = vi.hoisted(() => ({
 }));
 const mockAssertCanManageProjectWorkspaceRuntimeServices = vi.hoisted(() => vi.fn());
 const mockAssertCanManageExecutionWorkspaceRuntimeServices = vi.hoisted(() => vi.fn());
+const mockEnsurePersistedExecutionWorkspaceAvailable = vi.hoisted(() => vi.fn());
+const mockStartRuntimeServicesForWorkspaceControl = vi.hoisted(() => vi.fn());
 
 vi.mock("../telemetry.js", () => ({
   getTelemetryClient: mockGetTelemetryClient,
@@ -51,8 +58,15 @@ vi.mock("../services/index.js", () => ({
 }));
 
 vi.mock("../services/workspace-runtime.js", () => ({
+  buildWorkspaceRuntimeDesiredStatePatch: vi.fn(() => ({
+    desiredState: "running",
+    serviceStates: null,
+  })),
   cleanupExecutionWorkspaceArtifacts: vi.fn(),
-  startRuntimeServicesForWorkspaceControl: vi.fn(),
+  ensurePersistedExecutionWorkspaceAvailable: mockEnsurePersistedExecutionWorkspaceAvailable,
+  listConfiguredRuntimeServiceEntries: vi.fn(() => [{ serviceIndex: 0 }]),
+  runWorkspaceJobForControl: vi.fn(),
+  startRuntimeServicesForWorkspaceControl: mockStartRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace: vi.fn(),
   stopRuntimeServicesForProjectWorkspace: vi.fn(),
 }));
@@ -79,8 +93,15 @@ function registerWorkspaceRouteMocks() {
   }));
 
   vi.doMock("../services/workspace-runtime.js", () => ({
+    buildWorkspaceRuntimeDesiredStatePatch: vi.fn(() => ({
+      desiredState: "running",
+      serviceStates: null,
+    })),
     cleanupExecutionWorkspaceArtifacts: vi.fn(),
-    startRuntimeServicesForWorkspaceControl: vi.fn(),
+    ensurePersistedExecutionWorkspaceAvailable: mockEnsurePersistedExecutionWorkspaceAvailable,
+    listConfiguredRuntimeServiceEntries: vi.fn(() => [{ serviceIndex: 0 }]),
+    runWorkspaceJobForControl: vi.fn(),
+    startRuntimeServicesForWorkspaceControl: mockStartRuntimeServicesForWorkspaceControl,
     stopRuntimeServicesForExecutionWorkspace: vi.fn(),
     stopRuntimeServicesForProjectWorkspace: vi.fn(),
   }));
@@ -129,6 +150,10 @@ async function createExecutionWorkspaceApp(actor: Record<string, unknown>) {
     next();
   });
   app.use("/api", executionWorkspaceRoutes({} as any));
+  app.use((err: unknown, _req: unknown, _res: unknown, next: (error: unknown) => void) => {
+    app.locals.lastRouteError = err;
+    next(err);
+  });
   app.use(errorHandler);
   return app;
 }
@@ -283,6 +308,13 @@ describe.sequential("workspace runtime service route authorization", () => {
     mockExecutionWorkspaceService.update.mockResolvedValue(buildExecutionWorkspace());
     mockAssertCanManageProjectWorkspaceRuntimeServices.mockResolvedValue(undefined);
     mockAssertCanManageExecutionWorkspaceRuntimeServices.mockResolvedValue(undefined);
+    mockEnsurePersistedExecutionWorkspaceAvailable.mockResolvedValue({
+      strategy: "project_primary",
+      cwd: "/tmp/workspace",
+      warnings: [],
+      created: false,
+    });
+    mockStartRuntimeServicesForWorkspaceControl.mockResolvedValue([]);
   });
 
   it("rejects agent callers for project workspace runtime service mutations when workspace auth denies access", async () => {
@@ -473,6 +505,45 @@ describe.sequential("workspace runtime service route authorization", () => {
     expect(res.body.error).toContain("Missing permission");
     expect(mockExecutionWorkspaceService.getById).toHaveBeenCalledWith(executionWorkspaceId);
     expect(mockAssertCanManageExecutionWorkspaceRuntimeServices).toHaveBeenCalled();
+  }, 15000);
+
+  it("returns 200 for an agent allowed to start its pinned execution workspace runtime", async () => {
+    const workspace = buildExecutionWorkspace({
+      id: executionWorkspaceId,
+      projectId: null,
+      config: {
+        workspaceRuntime: {
+          services: [{ name: "dev", command: "pnpm dev", port: 3100 }],
+        },
+        desiredState: "stopped",
+      },
+    });
+    mockExecutionWorkspaceService.getById.mockResolvedValue(workspace);
+    mockExecutionWorkspaceService.update.mockResolvedValue(workspace);
+    const app = await createExecutionWorkspaceApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-services/start`)
+      .send({});
+
+    expect(
+      res.status,
+      app.locals.lastRouteError instanceof Error
+        ? app.locals.lastRouteError.stack ?? app.locals.lastRouteError.message
+        : JSON.stringify(res.body),
+    ).toBe(200);
+    expect(mockAssertCanManageExecutionWorkspaceRuntimeServices).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ companyId: "company-1", executionWorkspaceId }),
+    );
+    expect(mockStartRuntimeServicesForWorkspaceControl).toHaveBeenCalled();
   }, 15000);
 
   it("rejects agent callers that patch execution workspace command config", async () => {
