@@ -28,9 +28,12 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import {
+  EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY,
+  EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY,
   executionWorkspaceService,
   deriveExecutionWorkspaceDeliveryState,
   mergeExecutionWorkspaceConfig,
+  metadataHasReopenPendingConsumption,
   readExecutionWorkspaceConfig,
 } from "../services/execution-workspaces.ts";
 import { issueService } from "../services/issues.ts";
@@ -950,6 +953,73 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(workspace?.status).toBe("archived");
     await expect(fs.access(seeded.worktreePath)).rejects.toThrow();
     await expect(fs.access(cleanupMarker)).rejects.toThrow();
+  });
+
+  it("does not reap a reopened workspace while the source issue is still terminal", async () => {
+    // Reproduce the reverse-ordering race. A resume reopens the archived
+    // workspace and publishes it active, but the route has not yet changed the
+    // source issue out of the terminal state. The sweep must not archive and
+    // destroy the rebuilt worktree in this window.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "active",
+        closedAt: null,
+        cleanupReason: null,
+        cleanupEligibleAt: null,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 4,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY]: true,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    const [workspace] = await db
+      .select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    expect(sweep).toMatchObject({ archived: 0, skippedReopened: 1 });
+    expect(workspace?.status).toBe("active");
+    // The reopen flag stays until the source issue leaves the terminal state.
+    expect(metadataHasReopenPendingConsumption(workspace?.metadata as Record<string, unknown> | null)).toBe(true);
+    // The rebuilt worktree is intact.
+    await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+  });
+
+  it("clears the reopen flag once the source issue leaves the terminal state", async () => {
+    // The resume transition committed, so the source issue is non-terminal. The
+    // sweep clears the stale reopen flag so a later terminal cycle can reap the
+    // workspace normally.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    await db
+      .update(executionWorkspaces)
+      .set({
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 4,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY]: true,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    await db
+      .update(issues)
+      .set({ status: "in_progress" })
+      .where(eq(issues.id, seeded.sourceIssueId));
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    const [workspace] = await db
+      .select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    expect(sweep).toMatchObject({ archived: 0, skippedNonTerminalTree: 1 });
+    expect(workspace?.status).toBe("active");
+    expect(metadataHasReopenPendingConsumption(workspace?.metadata as Record<string, unknown> | null)).toBe(false);
+    await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
   });
 
   it("holds Git index and ref locks across terminal cleanup", async () => {

@@ -21,6 +21,7 @@ import {
   EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY,
   EXECUTION_WORKSPACE_REOPEN_FAILED_REASON,
   executionWorkspaceService,
+  metadataHasReopenPendingConsumption,
   readExecutionWorkspaceLifecycleGeneration,
 } from "../services/execution-workspaces.js";
 
@@ -176,6 +177,9 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
     expect(row?.cleanupReason).toBeNull();
     expect(row?.cleanupEligibleAt).toBeNull();
     expect(readExecutionWorkspaceLifecycleGeneration(row?.metadata as Record<string, unknown> | null)).toBe(4);
+    // The reopen flags the row so the terminal reaper does not archive and
+    // destroy the rebuilt worktree before the caller consumes it.
+    expect(metadataHasReopenPendingConsumption(row?.metadata as Record<string, unknown> | null)).toBe(true);
 
     // The reopen never changes the issue-to-workspace link.
     const issueRow = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
