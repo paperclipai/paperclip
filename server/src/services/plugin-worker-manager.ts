@@ -297,6 +297,23 @@ export interface WorkerStartOptions {
     /** Max total characters one execute call may stream through `execute.log`. */
     maxTotalCharsPerExecute?: number;
   };
+
+  /**
+   * Bounds and timeouts for the login pseudo-terminal route (Control 7). The
+   * defaults bound one output notification, the cumulative output per route, and
+   * the open and the close timeouts. A test overrides them to exercise the
+   * terminalize paths without huge inputs or long waits.
+   */
+  setupTokenPtyLimits?: {
+    /** Max characters for one login pseudo-terminal output notification. */
+    maxChunkChars?: number;
+    /** Max cumulative output characters for one login pseudo-terminal route. */
+    maxTotalChars?: number;
+    /** The open timeout for one login pseudo-terminal route, in milliseconds. */
+    openTimeoutMs?: number;
+    /** The close timeout for one login pseudo-terminal route, in milliseconds. */
+    closeTimeoutMs?: number;
+  };
 }
 
 /**
@@ -630,6 +647,17 @@ export function createPluginWorkerHandle(
     options.executeLogLimits?.maxIncomingMessageChars ?? MAX_WORKER_MESSAGE_CHARS;
   const maxExecuteLogTotalChars =
     options.executeLogLimits?.maxTotalCharsPerExecute ?? MAX_EXECUTE_LOG_TOTAL_CHARS;
+
+  // Bounds and timeouts for the login pseudo-terminal route (Control 7). A caller
+  // (a test) can lower them to exercise the terminalize paths.
+  const maxSetupTokenPtyChunkChars =
+    options.setupTokenPtyLimits?.maxChunkChars ?? MAX_SETUP_TOKEN_PTY_CHUNK_CHARS;
+  const maxSetupTokenPtyTotalChars =
+    options.setupTokenPtyLimits?.maxTotalChars ?? MAX_SETUP_TOKEN_PTY_TOTAL_CHARS;
+  const setupTokenPtyOpenTimeoutMs =
+    options.setupTokenPtyLimits?.openTimeoutMs ?? SETUP_TOKEN_PTY_OPEN_TIMEOUT_MS;
+  const setupTokenPtyCloseTimeoutMs =
+    options.setupTokenPtyLimits?.closeTimeoutMs ?? SETUP_TOKEN_PTY_CLOSE_TIMEOUT_MS;
 
   // ------------------------------------------------------------------
   // Proactive company scopes (LOOA-629)
@@ -1037,7 +1065,7 @@ export function createPluginWorkerHandle(
       const ack = await callInternal(
         "setupTokenPtyClose",
         { hostRouteId },
-        SETUP_TOKEN_PTY_CLOSE_TIMEOUT_MS,
+        setupTokenPtyCloseTimeoutMs,
       );
       return isRecord(ack) && readNonEmptyString(ack.hostRouteId) === hostRouteId;
     } catch {
@@ -1084,11 +1112,11 @@ export function createPluginWorkerHandle(
     if (
       typeof chunk !== "string" ||
       chunk.length === 0 ||
-      chunk.length > MAX_SETUP_TOKEN_PTY_CHUNK_CHARS
+      chunk.length > maxSetupTokenPtyChunkChars
     ) {
       return;
     }
-    if (route.deliveredChars + chunk.length > MAX_SETUP_TOKEN_PTY_TOTAL_CHARS) {
+    if (route.deliveredChars + chunk.length > maxSetupTokenPtyTotalChars) {
       // The cumulative output passed the per-route bound. Terminalize the route.
       void terminalizeSetupTokenPtyRoute(route);
       return;
@@ -1167,7 +1195,7 @@ export function createPluginWorkerHandle(
           providerLeaseId: input.providerLeaseId,
           command: input.command,
         },
-        SETUP_TOKEN_PTY_OPEN_TIMEOUT_MS,
+        setupTokenPtyOpenTimeoutMs,
       );
     } catch (err) {
       // A send failure, an RPC rejection, or an open timeout. Terminalize the
@@ -1204,7 +1232,7 @@ export function createPluginWorkerHandle(
         void callInternal(
           "setupTokenPtyInput",
           { workerSessionId: sid, data },
-          SETUP_TOKEN_PTY_OPEN_TIMEOUT_MS,
+          setupTokenPtyOpenTimeoutMs,
         ).catch(() => {});
       },
       wait(): Promise<{ exitCode: number | null }> {
@@ -1216,7 +1244,7 @@ export function createPluginWorkerHandle(
         void callInternal(
           "setupTokenPtyStop",
           { workerSessionId: sid },
-          SETUP_TOKEN_PTY_OPEN_TIMEOUT_MS,
+          setupTokenPtyOpenTimeoutMs,
         ).catch(() => {});
       },
       async close(): Promise<void> {

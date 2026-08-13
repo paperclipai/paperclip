@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   buildSetupTokenLoginTransport,
   createProductionSetupTokenSandboxProvider,
+  createWorkerBoundSetupTokenPtyOpener,
   type SetupTokenSandboxProvider,
 } from "./setup-token-transport-binding.js";
 import {
@@ -550,6 +551,77 @@ describe("production sandbox provider", () => {
     // The provider tore down the remote sandbox through the driver, not only the
     // database lease row.
     expect(releaseLease).not.toHaveBeenCalled();
+  });
+});
+
+describe("worker-bound live pseudo-terminal opener", () => {
+  it("resolves the lease to its provider lease id and drives the worker route gate", async () => {
+    const session = {
+      onData: () => {},
+      write: () => {},
+      wait: async () => ({ exitCode: 0 }),
+      kill: () => {},
+      close: async () => {},
+    };
+    const openSetupTokenPtySession = vi.fn(async () => session);
+    const getLeaseById = vi.fn(async () => ({
+      providerLeaseId: "provider-lease-9",
+      metadata: { pluginId: "paperclip.daytona", provider: "daytona" },
+    }));
+
+    const openLivePtySession = createWorkerBoundSetupTokenPtyOpener({
+      workerManager: { openSetupTokenPtySession },
+      environments: { getLeaseById },
+    });
+
+    const opener = await openLivePtySession({
+      scope: SCOPE,
+      environmentId: "env-1",
+      leaseId: "lease-42",
+    });
+    // The opener resolved the server lease id to the provider lease id.
+    expect(getLeaseById).toHaveBeenCalledWith("lease-42");
+
+    const opened = await opener("claude setup-token");
+    // The opener drove the manager route gate with the resolved worker target and
+    // the fixed command. The manager mints the host route id, so the opener passes
+    // none.
+    expect(openSetupTokenPtySession).toHaveBeenCalledWith("paperclip.daytona", {
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      providerLeaseId: "provider-lease-9",
+      command: "claude setup-token",
+    });
+    expect(opened).toBe(session);
+  });
+
+  it("fails closed when the lease carries no sandbox worker binding", async () => {
+    const openSetupTokenPtySession = vi.fn();
+    const openLivePtySession = createWorkerBoundSetupTokenPtyOpener({
+      workerManager: { openSetupTokenPtySession },
+      // The lease resolves but carries no provider lease id or plugin id.
+      environments: {
+        getLeaseById: async () => ({ providerLeaseId: null, metadata: {} }),
+      },
+    });
+
+    await expect(
+      openLivePtySession({ scope: SCOPE, environmentId: "env-1", leaseId: "lease-42" }),
+    ).rejects.toMatchObject({ status: 503 });
+    // The opener never reached the worker manager.
+    expect(openSetupTokenPtySession).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the lease is missing", async () => {
+    const openLivePtySession = createWorkerBoundSetupTokenPtyOpener({
+      workerManager: { openSetupTokenPtySession: vi.fn() },
+      environments: { getLeaseById: async () => null },
+    });
+
+    await expect(
+      openLivePtySession({ scope: SCOPE, environmentId: "env-1", leaseId: "missing" }),
+    ).rejects.toMatchObject({ status: 503 });
   });
 });
 
