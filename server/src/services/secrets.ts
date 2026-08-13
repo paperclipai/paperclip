@@ -80,6 +80,12 @@ const FALLBACK_ADAPTER_SCHEMA_SECRET_FIELDS: Readonly<Record<string, readonly st
 };
 const USER_SECRET_DEFINITION_KEY_UNIQUE_CONSTRAINT = "user_secret_definitions_company_key_uq";
 const USER_SECRET_VALUE_UNIQUE_CONSTRAINT = "company_secrets_user_definition_owner_uq";
+// The unique index on (secretId, version). A concurrent rotation that inserts the
+// same next version first makes the loser's insert fail this constraint.
+const COMPANY_SECRET_VERSION_UNIQUE_CONSTRAINT = "company_secret_versions_secret_version_uq";
+// The one stale-rotation conflict text. The rotate function returns it for every
+// stale race, so the caller sees one fixed 409 and no owner-value state.
+const SECRET_VERSION_STALE_CONFLICT = "The secret version is stale. Reload and confirm the rotation again.";
 
 // The fixed Claude Code OAuth user-secret definition. The Claude login flow owns
 // only this compile-time key and these fixed properties. A caller never selects
@@ -3841,7 +3847,7 @@ export function secretService(db: Db) {
       if (!secret) throw notFound("Secret not found");
       if (secret.status !== "active") throw unprocessable("Cannot rotate a non-active secret");
       if (input.expectedLatestVersion !== undefined && secret.latestVersion !== input.expectedLatestVersion) {
-        throw conflict("The secret version is stale. Reload and confirm the rotation again.");
+        throw conflict(SECRET_VERSION_STALE_CONFLICT);
       }
       const providerId = secret.provider as SecretProvider;
       const provider = getSecretProvider(providerId);
@@ -3944,6 +3950,17 @@ export function secretService(db: Db) {
             operation: "rotate.prepare_rollback",
           });
         }
+        // A guarded concurrent rotation inserted the same next version first, so
+        // this insert fails the (secretId, version) unique index. The loser never
+        // reaches the compare-and-set guard below. Normalize only that one
+        // collision to the same stale conflict, so a guarded rotation always
+        // returns one fixed 409. Re-throw every other error unchanged.
+        if (
+          input.expectedLatestVersion !== undefined &&
+          isUniqueConstraintViolation(error, COMPANY_SECRET_VERSION_UNIQUE_CONSTRAINT)
+        ) {
+          throw conflict(SECRET_VERSION_STALE_CONFLICT);
+        }
         throw error;
       }
 
@@ -3990,7 +4007,7 @@ export function secretService(db: Db) {
             // unguarded rotation means the secret is gone.
             throw input.expectedLatestVersion === undefined
               ? notFound("Secret not found")
-              : conflict("The secret version is stale. Reload and confirm the rotation again.");
+              : conflict(SECRET_VERSION_STALE_CONFLICT);
           }
           return updated;
         });

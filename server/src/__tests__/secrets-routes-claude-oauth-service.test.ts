@@ -333,6 +333,112 @@ describeEmbeddedPostgres("secretService Claude Code OAuth helper and compare-and
     expect(await countVersions(first.secretId)).toBe(2);
   });
 
+  it("two concurrent confirmed rotations return one fixed stale 409 and add one version", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1");
+    const svc = secretService(db);
+
+    const first = await svc.completeClaudeOAuthUserSecret(companyId, "user-1", {
+      sessionId: "session-a",
+      mode: "first_write",
+      value: "oauth-token-value",
+    });
+    expect(first.latestVersion).toBe(1);
+
+    // Both confirmations read the same latest version 1 and both target the next
+    // version 2. The unique index on (secretId, version) lets one insert win. The
+    // loser must return the same fixed stale 409, not a raw database error.
+    const [a, b] = await Promise.allSettled([
+      svc.completeClaudeOAuthUserSecret(companyId, "user-1", {
+        sessionId: "session-b",
+        mode: "confirmed_rotation",
+        value: "rotated-token-b",
+        expectedSecretId: first.secretId,
+        expectedLatestVersion: 1,
+      }),
+      svc.completeClaudeOAuthUserSecret(companyId, "user-1", {
+        sessionId: "session-c",
+        mode: "confirmed_rotation",
+        value: "rotated-token-c",
+        expectedSecretId: first.secretId,
+        expectedLatestVersion: 1,
+      }),
+    ]);
+
+    const fulfilled = [a, b].filter((r) => r.status === "fulfilled");
+    const rejected = [a, b].filter((r) => r.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+
+    // The loser returns the one fixed stale-confirmation 409. The text is the
+    // same for every stale race, so it discloses no owner-value state.
+    const loser = (rejected[0] as PromiseRejectedResult).reason;
+    expect(loser).toBeInstanceOf(HttpError);
+    expect((loser as HttpError).status).toBe(409);
+    expect((loser as HttpError).message).toContain("The Claude login confirmation is stale");
+
+    const winner = fulfilled[0] as PromiseFulfilledResult<{ latestVersion: number }>;
+    expect(winner.value.latestVersion).toBe(2);
+
+    // Only the two winning versions remain. The loser left no extra version row.
+    expect(await countVersions(first.secretId)).toBe(2);
+  });
+
+  it("normalizes a next-version unique collision to the fixed stale 409 and adds no row", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1");
+    const svc = secretService(db);
+
+    const first = await svc.completeClaudeOAuthUserSecret(companyId, "user-1", {
+      sessionId: "session-a",
+      mode: "first_write",
+      value: "oauth-token-value",
+    });
+    expect(first.latestVersion).toBe(1);
+
+    // Reproduce the exact race window. A concurrent winner inserted the next
+    // version row but has not yet committed its owner-bound compare-and-set, so
+    // the latest version still reads 1. A second confirmation that carries the
+    // same expected version 1 passes the pre-check, then hits the (secretId,
+    // version) unique index on its own insert. That one collision must return the
+    // fixed stale 409, not a raw database error.
+    await db.insert(companySecretVersions).values({
+      secretId: first.secretId,
+      version: 2,
+      material: {},
+      valueSha256: "placeholder-sha256",
+      fingerprintSha256: "placeholder-sha256",
+      status: "disabled",
+    });
+    expect(await countVersions(first.secretId)).toBe(2);
+
+    let caught: unknown;
+    try {
+      await svc.completeClaudeOAuthUserSecret(companyId, "user-1", {
+        sessionId: "session-b",
+        mode: "confirmed_rotation",
+        value: "rotated-token-value",
+        expectedSecretId: first.secretId,
+        expectedLatestVersion: 1,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(HttpError);
+    expect((caught as HttpError).status).toBe(409);
+    expect((caught as HttpError).message).toContain("The Claude login confirmation is stale");
+
+    // The failed insert added no new row and did not advance the latest version.
+    expect(await countVersions(first.secretId)).toBe(2);
+    const row = await db
+      .select()
+      .from(companySecrets)
+      .where(eq(companySecrets.id, first.secretId))
+      .then((rows) => rows[0]);
+    expect(row?.latestVersion).toBe(1);
+  });
+
   it("two concurrent first writes leave exactly one owner value through the partial unique index", async () => {
     const companyId = await seedCompany();
     await seedCompanyMember(companyId, "user-1");
