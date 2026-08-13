@@ -19,6 +19,20 @@ const DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS = 30_000;
 const DEFAULT_BRIDGE_STOP_TIMEOUT_MS = 2_000;
 const DEFAULT_BRIDGE_MAX_QUEUE_DEPTH = 64;
 const DEFAULT_BRIDGE_MAX_BODY_BYTES = 256 * 1024;
+// Per-iteration timeout for one poll-loop client call. A healthy control-plane
+// round trip finishes in well under one second, so 10s is far above a normal
+// iteration and never false-fires on a slow-but-live call. It is also well
+// under the in-sandbox 30s response deadline
+// (PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS), so the host loop fails fast and writes
+// 503 responses before the in-sandbox client gives up. A silently unresponsive
+// sandbox channel makes a client call hang with no reject; this timeout turns
+// that hang into a caught error, so the loop `catch` runs `failPendingRequests`.
+const DEFAULT_BRIDGE_ITERATION_TIMEOUT_MS = 10_000;
+// Watchdog backstop for a hang that the per-iteration timeout does not catch
+// (for example many slow-but-under-timeout calls, or a stall outside the awaited
+// calls). It is larger than one iteration timeout, so a single slow iteration
+// never trips it, and it stays under the in-sandbox 30s response deadline.
+const DEFAULT_BRIDGE_WATCHDOG_TIMEOUT_MS = 20_000;
 const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
 const SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT = "paperclip-bridge-server.mjs";
 const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
@@ -27,6 +41,12 @@ const SANDBOX_EXEC_CHANNEL_BRIDGE = "bridge";
 /** Span name that wraps one Paperclip-API callback request — read the request,
  * write the response, and remove the request file. */
 const CALLBACK_BRIDGE_RELAY_REQUEST_SPAN = "sandbox.callbackBridge.relayRequest";
+
+/** Span name for a failed or hung bridge worker. The worker runs a throwing
+ * function under this span through `input.runtimeSpan`, so the failure lands in
+ * the run trace. The run and the orchestrator then see the hang, not only
+ * stdout. */
+const CALLBACK_BRIDGE_WORKER_FAILED_SPAN = "sandbox.callbackBridge.workerFailed";
 
 export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES = DEFAULT_BRIDGE_MAX_BODY_BYTES;
 
@@ -201,6 +221,27 @@ function normalizeMethod(value: string | null | undefined): string {
 
 function normalizeTimeoutMs(value: number | null | undefined, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.trunc(value) : fallback;
+}
+
+/**
+ * Race a promise against a timeout. On timeout the returned promise rejects with
+ * a clear error. The helper clears the timer on every settle path, so it leaks
+ * no `setTimeout`. The wrapped promise is not cancelable; when it never settles,
+ * it keeps running in the background, but the caller already moved on through
+ * the reject.
+ */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms.`));
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  });
 }
 
 function toBuffer(bytes: Buffer | Uint8Array | ArrayBuffer): Buffer {
@@ -642,6 +683,14 @@ export async function startSandboxCallbackBridgeWorker(input: {
   client: SandboxCallbackBridgeQueueClient;
   queueDir: string;
   pollIntervalMs?: number | null;
+  // Per-iteration timeout for one poll-loop client call (the `listJsonFiles`
+  // poll and one `processRequestFile`). On timeout the loop `catch` runs
+  // `failPendingRequests`. Defaults to DEFAULT_BRIDGE_ITERATION_TIMEOUT_MS.
+  iterationTimeoutMs?: number | null;
+  // Watchdog threshold. When the loop makes no successful iteration within this
+  // time, the watchdog runs `failPendingRequests` and surfaces a run-level error
+  // through `runtimeSpan`. Defaults to DEFAULT_BRIDGE_WATCHDOG_TIMEOUT_MS.
+  watchdogTimeoutMs?: number | null;
   authorizeRequest?: (request: SandboxCallbackBridgeRequest) => string | null | Promise<string | null>;
   handleRequest: (request: SandboxCallbackBridgeRequest) => Promise<{
     status: number;
@@ -663,6 +712,8 @@ export async function startSandboxCallbackBridgeWorker(input: {
   runtimeSpan?: RuntimeSpanRunner;
 }): Promise<SandboxCallbackBridgeWorkerHandle> {
   const pollIntervalMs = normalizeTimeoutMs(input.pollIntervalMs, DEFAULT_BRIDGE_POLL_INTERVAL_MS);
+  const iterationTimeoutMs = normalizeTimeoutMs(input.iterationTimeoutMs, DEFAULT_BRIDGE_ITERATION_TIMEOUT_MS);
+  const watchdogTimeoutMs = normalizeTimeoutMs(input.watchdogTimeoutMs, DEFAULT_BRIDGE_WATCHDOG_TIMEOUT_MS);
   const maxBodyBytes = normalizeTimeoutMs(input.maxBodyBytes, DEFAULT_BRIDGE_MAX_BODY_BYTES);
   const directories = sandboxCallbackBridgeDirectories(input.queueDir);
   const queueDirectories = [
@@ -759,24 +810,40 @@ export async function startSandboxCallbackBridgeWorker(input: {
   };
 
   const failPendingRequests = async (message: string) => {
-    const fileNames = await input.client.listJsonFiles(directories.requestsDir).catch(() => []);
+    // Wrap each client call in the per-iteration timeout. When the sandbox
+    // channel is unresponsive, a client call hangs with no reject. The timeout
+    // keeps this recovery path fail-fast, so it never re-hangs on the same dead
+    // channel that triggered the recovery.
+    const fileNames = await withTimeout(
+      input.client.listJsonFiles(directories.requestsDir),
+      iterationTimeoutMs,
+      "Sandbox callback bridge list pending requests",
+    ).catch(() => [] as string[]);
     for (const fileName of fileNames) {
       const requestPath = path.posix.join(directories.requestsDir, fileName);
       const responsePath = path.posix.join(directories.responsesDir, fileName);
       const requestId = fileName.replace(/\.json$/i, "") || randomUUID();
       try {
-        const raw = await input.client.readTextFile(requestPath);
+        const raw = await withTimeout(
+          input.client.readTextFile(requestPath),
+          iterationTimeoutMs,
+          `Sandbox callback bridge read pending request ${requestId}`,
+        );
         const parsed = JSON.parse(raw) as Partial<SandboxCallbackBridgeRequest>;
         await input.client.remove(requestPath).catch(() => undefined);
-        await writeBridgeResponse(input.client, requestPath, responsePath, {
-          id: typeof parsed.id === "string" && parsed.id.length > 0 ? parsed.id : requestId,
-          status: 503,
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ error: message }),
-          completedAt: new Date().toISOString(),
-        }, {
-          requireRequestPath: false,
-        });
+        await withTimeout(
+          writeBridgeResponse(input.client, requestPath, responsePath, {
+            id: typeof parsed.id === "string" && parsed.id.length > 0 ? parsed.id : requestId,
+            status: 503,
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ error: message }),
+            completedAt: new Date().toISOString(),
+          }, {
+            requireRequestPath: false,
+          }),
+          iterationTimeoutMs,
+          `Sandbox callback bridge write 503 for ${requestId}`,
+        );
       } catch (error) {
         console.warn(
           `[paperclip] sandbox callback bridge failed to abort pending request ${requestId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -787,6 +854,47 @@ export async function startSandboxCallbackBridgeWorker(input: {
     }
   };
 
+  // Surface a bridge-worker failure through the run trace, not only stdout. A
+  // failed span under `input.runtimeSpan` records the error against the live run
+  // span, so the run and the orchestrator see the hang. When no `runtimeSpan`
+  // runner is wired (no injected tracer), the helper still writes a warn line,
+  // so the failure is never silent.
+  const surfaceRunError = async (error: Error) => {
+    if (input.runtimeSpan) {
+      try {
+        await input.runtimeSpan(CALLBACK_BRIDGE_WORKER_FAILED_SPAN, async () => {
+          throw error;
+        });
+      } catch {
+        // `runtimeSpan` re-throws after it records the failed span. The error is
+        // now on the trace; swallow it here so the worker recovery continues.
+      }
+    }
+    console.warn(`[paperclip] ${error.message}`);
+  };
+
+  // The timestamp of the last successful loop iteration. The watchdog compares
+  // it to the current time. The idle branch and every processed request update
+  // it, so steady progress keeps the watchdog re-armed.
+  let lastSuccessfulIterationAt = Date.now();
+  let watchdogTrippedAt: number | null = null;
+  let watchdogTripInFlight = false;
+  // Check often enough to fire soon after the threshold, but not so often that
+  // the check adds load. One fifth of the threshold, with a 10ms floor.
+  const watchdogCheckIntervalMs = Math.max(10, Math.floor(watchdogTimeoutMs / 5));
+
+  const handleWatchdogTrip = async (idleMs: number) => {
+    const message = `Sandbox callback bridge made no successful poll iteration for ${idleMs}ms; the sandbox connection is unresponsive.`;
+    await surfaceRunError(new Error(message));
+    try {
+      await failPendingRequests(message);
+    } catch (error) {
+      console.warn(
+        `[paperclip] sandbox callback bridge watchdog failed to abort queued requests: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
+
   // Start the long-lived poll loop outside the measured startup-step store.
   // The `makeDir` calls above are startup work and must keep the active
   // `bridge.paperclip` step. The loop runs run-time execs for the whole run,
@@ -794,10 +902,37 @@ export async function startSandboxCallbackBridgeWorker(input: {
   // its `criticalPath` flag. `runWithoutActiveStep` empties the store for the
   // loop only; Node keeps the empty store on every later poll continuation.
   const loop = runWithoutActiveStep(() => (async () => {
+    // The watchdog runs on its own timer, so it fires even while the loop is
+    // stuck on an awaited client call. It is the backstop for a hang the
+    // per-iteration timeout does not catch. `unref` keeps it from holding the
+    // process open. The loop `finally` clears it on every exit.
+    const watchdogTimer = setInterval(() => {
+      if (settled || stopping) return;
+      const idleMs = Date.now() - lastSuccessfulIterationAt;
+      if (idleMs < watchdogTimeoutMs) return;
+      // Fire once per hang period. Re-arm only after the loop advances
+      // `lastSuccessfulIterationAt` past the last trip (a new successful
+      // iteration), so a persistent hang never fires the watchdog repeatedly.
+      if (watchdogTrippedAt !== null && watchdogTrippedAt >= lastSuccessfulIterationAt) return;
+      if (watchdogTripInFlight) return;
+      watchdogTrippedAt = Date.now();
+      watchdogTripInFlight = true;
+      void handleWatchdogTrip(idleMs).finally(() => {
+        watchdogTripInFlight = false;
+      });
+    }, watchdogCheckIntervalMs);
+    if (typeof watchdogTimer.unref === "function") {
+      watchdogTimer.unref();
+    }
     try {
       while (true) {
-        const fileNames = await input.client.listJsonFiles(directories.requestsDir);
+        const fileNames = await withTimeout(
+          input.client.listJsonFiles(directories.requestsDir),
+          iterationTimeoutMs,
+          "Sandbox callback bridge list requests",
+        );
         if (fileNames.length === 0) {
+          lastSuccessfulIterationAt = Date.now();
           if (stopping) {
             break;
           }
@@ -815,24 +950,32 @@ export async function startSandboxCallbackBridgeWorker(input: {
             // live parent switches to `agent.turn` during the turn and back to
             // `task.run` after it. Without a runner, the request runs under the
             // run parent with no wrapper span, exactly like the earlier behavior.
-            await (input.runtimeSpan
-              ? input.runtimeSpan(CALLBACK_BRIDGE_RELAY_REQUEST_SPAN, () =>
-                  processRequestFile(fileName),
-                )
-              : runWithRuntimeParent(input.getRuntimeParentContext?.(), () =>
-                  processRequestFile(fileName),
-                ));
+            // The per-iteration timeout wraps the whole request, so a hung
+            // request rejects and the loop `catch` runs `failPendingRequests`.
+            await withTimeout(
+              input.runtimeSpan
+                ? input.runtimeSpan(CALLBACK_BRIDGE_RELAY_REQUEST_SPAN, () =>
+                    processRequestFile(fileName),
+                  )
+                : runWithRuntimeParent(input.getRuntimeParentContext?.(), () =>
+                    processRequestFile(fileName),
+                  ),
+              iterationTimeoutMs,
+              `Sandbox callback bridge process request ${fileName}`,
+            );
+            lastSuccessfulIterationAt = Date.now();
           } finally {
             inFlight -= 1;
           }
         }
+        lastSuccessfulIterationAt = Date.now();
         if (stopping && Date.now() >= stopDeadline) {
           break;
         }
       }
     } catch (error) {
       const message = buildWorkerFailureMessage(error);
-      console.warn(`[paperclip] ${message}`);
+      await surfaceRunError(new Error(message));
       try {
         await failPendingRequests(message);
       } catch (failPendingError) {
@@ -841,6 +984,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
         );
       }
     } finally {
+      clearInterval(watchdogTimer);
       settled = true;
       if (settleResolve) {
         settleResolve();

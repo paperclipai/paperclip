@@ -19,6 +19,8 @@ import {
   startSandboxCallbackBridgeServer,
   startSandboxCallbackBridgeWorker,
 } from "./sandbox-callback-bridge.js";
+import type { SandboxCallbackBridgeQueueClient } from "./sandbox-callback-bridge.js";
+import type { RuntimeSpanRunner } from "./acpx-engine/startup-timing.js";
 import type { RunProcessResult } from "./server-utils.js";
 
 const execFile = promisify(execFileCallback);
@@ -1459,5 +1461,156 @@ describe("sandbox callback bridge", () => {
     expect(script).toContain("/workspace/a");
     expect(script).toContain("/workspace/b");
     expect(script).toContain("/workspace/c");
+  });
+
+  // Capture the run-level error the worker surfaces through `runtimeSpan`. The
+  // worker runs a throwing function under the `sandbox.callbackBridge.workerFailed`
+  // span; this double records that error and re-throws, like the real runner.
+  function createWorkerErrorCapture(): {
+    runtimeSpan: RuntimeSpanRunner;
+    workerErrors: string[];
+  } {
+    const workerErrors: string[] = [];
+    const runtimeSpan: RuntimeSpanRunner = async (name, work) => {
+      try {
+        return await work();
+      } catch (error) {
+        if (name === "sandbox.callbackBridge.workerFailed") {
+          workerErrors.push(error instanceof Error ? error.message : String(error));
+        }
+        throw error;
+      }
+    };
+    return { runtimeSpan, workerErrors };
+  }
+
+  function bridgeRequestJson(id: string): string {
+    return `${JSON.stringify({
+      id,
+      method: "GET",
+      path: "/api/agents/me",
+      query: "",
+      headers: {},
+      body: "",
+      createdAt: new Date().toISOString(),
+    })}\n`;
+  }
+
+  it("times out a hung request, writes a 503, and surfaces a run-level error", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-hang-"));
+    cleanupDirs.push(rootDir);
+
+    const queueDir = path.posix.join(rootDir, "queue");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    await mkdir(directories.requestsDir, { recursive: true });
+    await writeFile(path.posix.join(directories.requestsDir, "req-a.json"), bridgeRequestJson("req-a"), "utf8");
+
+    const { runtimeSpan, workerErrors } = createWorkerErrorCapture();
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client: createFileSystemSandboxCallbackBridgeQueueClient(),
+      queueDir,
+      iterationTimeoutMs: 50,
+      watchdogTimeoutMs: 10_000,
+      runtimeSpan,
+      authorizeRequest: async () => null,
+      // The handler never resolves — a silently unresponsive host call. The
+      // per-iteration timeout must convert the hang into a caught error.
+      handleRequest: () => new Promise<{ status: number; body?: string }>(() => {}),
+    });
+
+    const responseFile = await waitForJsonFile(directories.responsesDir, 3_000);
+    const responseBody = await readFile(path.posix.join(directories.responsesDir, responseFile), "utf8");
+    expect(JSON.parse(responseBody).status).toBe(503);
+    expect(workerErrors.length).toBeGreaterThan(0);
+    expect(workerErrors[0]).toContain("timed out");
+
+    await worker.stop({ drainTimeoutMs: 10 });
+  });
+
+  it("trips the watchdog on a stalled poll, writes a 503, and surfaces a run-level error", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-watchdog-"));
+    cleanupDirs.push(rootDir);
+
+    const queueDir = path.posix.join(rootDir, "queue");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    await mkdir(directories.requestsDir, { recursive: true });
+    await writeFile(path.posix.join(directories.requestsDir, "req-w.json"), bridgeRequestJson("req-w"), "utf8");
+
+    const base = createFileSystemSandboxCallbackBridgeQueueClient();
+    let listCalls = 0;
+    const client: SandboxCallbackBridgeQueueClient = {
+      ...base,
+      listJsonFiles: async (dir) => {
+        listCalls += 1;
+        // The first poll (the loop) never resolves — a stalled channel that the
+        // per-iteration timeout does not catch soon enough. Later calls (the
+        // watchdog's failPendingRequests) resolve, so it enumerates and 503s.
+        if (listCalls === 1) {
+          return await new Promise<string[]>(() => {});
+        }
+        return await base.listJsonFiles(dir);
+      },
+    };
+
+    const { runtimeSpan, workerErrors } = createWorkerErrorCapture();
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      // The per-iteration timeout is far larger than the watchdog threshold, so
+      // the watchdog — not the per-iteration timeout — is the mechanism proven.
+      iterationTimeoutMs: 400,
+      watchdogTimeoutMs: 50,
+      runtimeSpan,
+      authorizeRequest: async () => null,
+      handleRequest: async () => ({ status: 200, body: "ok" }),
+    });
+
+    const responseFile = await waitForJsonFile(directories.responsesDir, 3_000);
+    const responseBody = await readFile(path.posix.join(directories.responsesDir, responseFile), "utf8");
+    expect(JSON.parse(responseBody).status).toBe(503);
+    expect(workerErrors.some((message) => message.includes("no successful poll iteration"))).toBe(true);
+
+    await worker.stop({ drainTimeoutMs: 400 });
+  });
+
+  it("processes a fast request with no false-positive timeout and no run-level error", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-fast-"));
+    cleanupDirs.push(rootDir);
+
+    const queueDir = path.posix.join(rootDir, "queue");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    await mkdir(directories.requestsDir, { recursive: true });
+    await writeFile(path.posix.join(directories.requestsDir, "req-ok.json"), bridgeRequestJson("req-ok"), "utf8");
+
+    const { runtimeSpan, workerErrors } = createWorkerErrorCapture();
+    const processed: string[] = [];
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client: createFileSystemSandboxCallbackBridgeQueueClient(),
+      queueDir,
+      iterationTimeoutMs: 200,
+      watchdogTimeoutMs: 1_000,
+      runtimeSpan,
+      authorizeRequest: async () => null,
+      handleRequest: async (request) => {
+        processed.push(request.id);
+        return { status: 200, body: request.id };
+      },
+    });
+
+    const responseFile = await waitForJsonFile(directories.responsesDir, 3_000);
+    const responseBody = await readFile(path.posix.join(directories.responsesDir, responseFile), "utf8");
+    expect(JSON.parse(responseBody).status).toBe(200);
+    expect(JSON.parse(responseBody).body).toBe("req-ok");
+
+    // Let several idle poll iterations and watchdog checks pass. A healthy idle
+    // loop must never trip the watchdog and never surface a run-level error.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(processed).toEqual(["req-ok"]);
+    expect(workerErrors).toEqual([]);
+
+    await worker.stop({ drainTimeoutMs: 50 });
   });
 });
