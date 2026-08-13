@@ -567,6 +567,10 @@ export function IssueProperties({
   const assigneeOverrideAdapterConfig = asRecord(assigneeAdapterOverrides?.adapterConfig);
   const assigneeOverrideModel =
     typeof assigneeOverrideAdapterConfig.model === "string" ? assigneeOverrideAdapterConfig.model : "";
+  const assigneePrimaryModel = typeof asRecord(assignee?.adapterConfig).model === "string"
+    ? String(asRecord(assignee?.adapterConfig).model)
+    : "";
+  const assigneeEffectiveModel = assigneeOverrideModel || assigneePrimaryModel;
   const assigneeOverrideThinkingEffort = thinkingEffortValueFor(
     assigneeAdapterType,
     assigneeOverrideAdapterConfig,
@@ -725,13 +729,26 @@ export function IssueProperties({
               noneLabel="Default model"
               searchPlaceholder="Search models..."
               emptyMessage="No models found."
-              onChange={(model) => updateAssigneeOverrideConfig({ model: model || undefined })}
+              onChange={(model) => {
+                const nextModel = model || undefined;
+                const effectiveModel = nextModel || assigneePrimaryModel;
+                const next: Record<string, unknown> = { model: nextModel };
+                if (
+                  assigneeAdapterType === "grok_local"
+                  && assigneeOverrideThinkingEffort === "xhigh"
+                  && !thinkingEffortOptionsFor("grok_local", effectiveModel).some((option) => option.value === "xhigh")
+                ) {
+                  next.reasoningEffort = "high";
+                  next.effort = "high";
+                }
+                updateAssigneeOverrideConfig(next);
+              }}
             />
           </div>
           <div className="space-y-1.5">
             <div className="text-xs text-muted-foreground">Thinking effort</div>
             <div className="flex items-center gap-1.5 flex-wrap">
-              {thinkingEffortOptionsFor(assigneeAdapterType).map((option) => (
+              {thinkingEffortOptionsFor(assigneeAdapterType, assigneeEffectiveModel).map((option) => (
                 <button
                   key={option.value || "default"}
                   className={cn(

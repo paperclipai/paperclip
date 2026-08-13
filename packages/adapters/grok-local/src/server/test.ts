@@ -249,7 +249,7 @@ export async function testEnvironment(
       "dontAsk",
       "--disable-web-search",
     ];
-    if (configuredModel && configuredModel !== DEFAULT_GROK_LOCAL_MODEL) {
+    if (configuredModel) {
       probeArgs.push("--model", configuredModel);
     }
     probeArgs.push("--single", "Respond with exactly hello.");
