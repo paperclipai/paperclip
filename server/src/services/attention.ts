@@ -1,5 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notExists, notInArray, sql } from "drizzle-orm";
-import { alias } from "drizzle-orm/pg-core";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -1653,60 +1652,100 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
-      const newerHeartbeatRuns = alias(heartbeatRuns, "newer_attention_heartbeat_runs");
-      const failedRunIssueId = sql<string | null>`coalesce(
-        nullif(${heartbeatRuns.contextSnapshot} ->> 'issueId', ''),
-        nullif(${heartbeatRuns.contextSnapshot} ->> 'taskId', '')
-      )`;
-      const newerRunIssueId = sql<string | null>`coalesce(
-        nullif(${newerHeartbeatRuns.contextSnapshot} ->> 'issueId', ''),
-        nullif(${newerHeartbeatRuns.contextSnapshot} ->> 'taskId', '')
-      )`;
-      const exhaustedRunRows = await db
-        .select({
-          id: heartbeatRuns.id,
-          companyId: heartbeatRuns.companyId,
-          agentId: heartbeatRuns.agentId,
-          agentName: agents.name,
-          status: heartbeatRuns.status,
-          error: heartbeatRuns.error,
-          errorCode: heartbeatRuns.errorCode,
-          contextSnapshot: heartbeatRuns.contextSnapshot,
-          createdAt: heartbeatRuns.createdAt,
-          updatedAt: heartbeatRuns.updatedAt,
-          finishedAt: heartbeatRuns.finishedAt,
-          exhaustionMessage: heartbeatRunEvents.message,
-        })
-        .from(heartbeatRuns)
-        .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
-        .innerJoin(heartbeatRunEvents, eq(heartbeatRunEvents.runId, heartbeatRuns.id))
-        .where(and(
-          eq(heartbeatRuns.companyId, companyId),
-          eq(agents.companyId, companyId),
-          notInArray(agents.status, ["terminated"]),
-          inArray(heartbeatRuns.status, [...FAILED_RUN_STATUSES]),
-          eq(heartbeatRunEvents.companyId, companyId),
-          eq(heartbeatRunEvents.eventType, "lifecycle"),
-          sql`${heartbeatRunEvents.message} like 'Bounded retry exhausted%'`,
-          notExists(
-            db
-              .select({ id: newerHeartbeatRuns.id })
-              .from(newerHeartbeatRuns)
-              .where(and(
-                eq(newerHeartbeatRuns.companyId, companyId),
-                eq(newerHeartbeatRuns.agentId, heartbeatRuns.agentId),
-                gt(newerHeartbeatRuns.createdAt, heartbeatRuns.createdAt),
-                sql`${newerRunIssueId} is not distinct from ${failedRunIssueId}`,
-              )),
-          ),
-        ))
-        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRunEvents.id));
+      // Failed-run attention is useful context, but it must never make the
+      // complete Decisions feed unavailable. Keep the broad event lookup
+      // separate from the newer-run checks so each latter query has a concrete
+      // issue id and can use the company/issue/created expression indexes.
+      const failedRows = await (async () => {
+        try {
+          const exhaustedRunRows = await db
+            .select({
+              id: heartbeatRuns.id,
+              companyId: heartbeatRuns.companyId,
+              agentId: heartbeatRuns.agentId,
+              agentName: agents.name,
+              status: heartbeatRuns.status,
+              error: heartbeatRuns.error,
+              errorCode: heartbeatRuns.errorCode,
+              contextSnapshot: heartbeatRuns.contextSnapshot,
+              createdAt: heartbeatRuns.createdAt,
+              updatedAt: heartbeatRuns.updatedAt,
+              finishedAt: heartbeatRuns.finishedAt,
+              exhaustionMessage: heartbeatRunEvents.message,
+            })
+            .from(heartbeatRuns)
+            .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+            .innerJoin(heartbeatRunEvents, eq(heartbeatRunEvents.runId, heartbeatRuns.id))
+            .where(and(
+              eq(heartbeatRuns.companyId, companyId),
+              eq(agents.companyId, companyId),
+              notInArray(agents.status, ["terminated"]),
+              inArray(heartbeatRuns.status, [...FAILED_RUN_STATUSES]),
+              eq(heartbeatRunEvents.companyId, companyId),
+              eq(heartbeatRunEvents.eventType, "lifecycle"),
+              sql`${heartbeatRunEvents.message} like 'Bounded retry exhausted%'`,
+            ))
+            .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRunEvents.id));
 
-      const latestExhaustedByRunId = new Map<string, (typeof exhaustedRunRows)[number]>();
-      for (const row of exhaustedRunRows) {
-        if (!latestExhaustedByRunId.has(row.id)) latestExhaustedByRunId.set(row.id, row);
-      }
-      const failedRows = [...latestExhaustedByRunId.values()];
+          const latestExhaustedByRunId = new Map<string, (typeof exhaustedRunRows)[number]>();
+          for (const row of exhaustedRunRows) {
+            if (!latestExhaustedByRunId.has(row.id)) latestExhaustedByRunId.set(row.id, row);
+          }
+
+          // Rows are newest-first. An older exhausted run for the same pair is
+          // necessarily superseded by the newer exhausted run itself, so only
+          // one indexed existence lookup is needed per agent/issue pair.
+          const latestExhaustedByPair = new Map<string, (typeof exhaustedRunRows)[number]>();
+          for (const row of latestExhaustedByRunId.values()) {
+            const issueId = readRunIssueId(row.contextSnapshot);
+            const pairKey = `${row.agentId}:${issueId ?? ""}`;
+            if (!latestExhaustedByPair.has(pairKey)) latestExhaustedByPair.set(pairKey, row);
+          }
+
+          const candidates = [...latestExhaustedByPair.values()];
+          const unsuppressed: typeof candidates = [];
+          const lookupBatchSize = 8;
+          for (let start = 0; start < candidates.length; start += lookupBatchSize) {
+            const batch = candidates.slice(start, start + lookupBatchSize);
+            const batchResults = await Promise.all(batch.map(async (run) => {
+              const issueId = readRunIssueId(run.contextSnapshot);
+              const sameIssueCondition = issueId
+                ? or(
+                  sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+                  and(
+                    sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' is null`,
+                    sql`${heartbeatRuns.contextSnapshot} ->> 'taskId' = ${issueId}`,
+                  ),
+                )
+                : sql`(
+                  ${heartbeatRuns.contextSnapshot} ->> 'issueId' = ''
+                  or (
+                    ${heartbeatRuns.contextSnapshot} ->> 'issueId' is null
+                    and coalesce(${heartbeatRuns.contextSnapshot} ->> 'taskId', '') = ''
+                  )
+                )`;
+              const newerRun = await db
+                .select({ id: heartbeatRuns.id })
+                .from(heartbeatRuns)
+                .where(and(
+                  eq(heartbeatRuns.companyId, companyId),
+                  eq(heartbeatRuns.agentId, run.agentId),
+                  gt(heartbeatRuns.createdAt, run.createdAt),
+                  sameIssueCondition,
+                ))
+                .limit(1);
+              return newerRun.length === 0;
+            }));
+            for (let index = 0; index < batch.length; index += 1) {
+              if (batchResults[index]) unsuppressed.push(batch[index]!);
+            }
+          }
+          return unsuppressed;
+        } catch (error) {
+          console.warn("failed-run attention lookup failed; continuing without failed-run rows", error);
+          return [];
+        }
+      })();
       const failedIssueIds = failedRows.map((row) => readRunIssueId(row.contextSnapshot));
       const [failedIssueMap, failedImageMap] = await Promise.all([
         issueSummaryMap(
