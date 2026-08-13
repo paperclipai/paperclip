@@ -16,6 +16,7 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
   getById: vi.fn(),
+  reopenClosedIsolatedExecutionWorkspaceForIssue: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -208,30 +209,39 @@ describe.sequential("closed isolated workspace issue routes", () => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockExecutionWorkspaceService.getById.mockResolvedValue(makeClosedWorkspace());
+    // The guard reopens a closed isolated workspace and lets the request
+    // continue. The default is a successful reopen.
+    mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockResolvedValue({
+      ok: true,
+      reopened: true,
+      workspace: { ...makeClosedWorkspace(), status: "active", closedAt: null },
+    });
   });
 
-  it("rejects new issue comments when the linked isolated workspace is closed", async () => {
+  it("reopens the closed isolated workspace and accepts a new comment", async () => {
     const res = await request(await createApp())
       .post(`/api/issues/${issueId}/comments`)
       .send({ body: "hello" });
 
-    expect(res.status).toBe(409);
-    expect(res.body.error).toContain("closed workspace");
-    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue).toHaveBeenCalledWith({
+      workspaceId: closedWorkspaceId,
+      issue: { id: issueId, companyId: "company-1", projectId: null },
+      actor: expect.objectContaining({ actorType: "user" }),
+    });
+    // The closed-workspace dead end is gone.
+    expect(res.status).not.toBe(409);
   });
 
-  it("rejects comment updates when the linked isolated workspace is closed", async () => {
+  it("reopens the closed isolated workspace and accepts a comment update", async () => {
     const res = await request(await createApp())
       .patch(`/api/issues/${issueId}`)
       .send({ comment: "hello" });
 
-    expect(res.status).toBe(409);
-    expect(res.body.error).toContain("closed workspace");
-    expect(mockIssueService.update).not.toHaveBeenCalled();
-    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue).toHaveBeenCalledTimes(1);
+    expect(res.status).not.toBe(409);
   });
 
-  it("rejects checkout when the linked isolated workspace is closed", async () => {
+  it("reopens the closed isolated workspace and accepts a checkout", async () => {
     const res = await request(await createApp())
       .post(`/api/issues/${issueId}/checkout`)
       .send({
@@ -239,8 +249,40 @@ describe.sequential("closed isolated workspace issue routes", () => {
         expectedStatuses: ["todo", "backlog", "blocked"],
       });
 
+    expect(mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue).toHaveBeenCalledTimes(1);
+    expect(res.status).not.toBe(409);
+  });
+
+  it("returns 409 and blocks the comment when the workspace cannot be reopened", async () => {
+    mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockResolvedValue({
+      ok: false,
+      code: "not_reopenable",
+      message: "Execution workspace is not reopenable",
+    });
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "hello" });
+
     expect(res.status).toBe(409);
-    expect(res.body.error).toContain("closed workspace");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("returns 503 and blocks the checkout when the rebuild fails", async () => {
+    mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockResolvedValue({
+      ok: false,
+      code: "rebuild_failed",
+      message: "Failed to rebuild the execution workspace",
+    });
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked"],
+      });
+
+    expect(res.status).toBe(503);
     expect(mockIssueService.checkout).not.toHaveBeenCalled();
   });
 
