@@ -305,6 +305,24 @@ export function agentConfigHistoryRestoreDelta(currentIndex: unknown, nextIndex:
   return delta === 0 ? null : delta;
 }
 
+export function restoreAgentConfigHistoryEntry(
+  history: Pick<History, "go" | "pushState">,
+  currentEntry: { index: unknown; state: unknown; url: string },
+  nextIndex: unknown,
+): boolean {
+  const restoreDelta = agentConfigHistoryRestoreDelta(currentEntry.index, nextIndex);
+  if (restoreDelta === null) {
+    // Some legacy URL-cleanup paths erased React Router's history index. A
+    // fresh copy of the guarded entry is the only safe way to return without
+    // letting Router consume the unindexed destination and discard the form.
+    history.pushState(currentEntry.state, "", currentEntry.url);
+    return false;
+  }
+
+  history.go(restoreDelta);
+  return true;
+}
+
 export function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "instructions" || value === "prompts") return "instructions";
   if (value === "configure" || value === "configuration") return "configuration";
@@ -1137,7 +1155,11 @@ export function AgentDetail() {
     // BrowserRouter updates after popstate. Run first in the capture phase so a
     // rejected Back/Forward navigation can be restored before React Router
     // consumes it and unmounts the route-backed form.
-    const currentIndex = window.history.state?.idx;
+    const currentEntry = {
+      index: window.history.state?.idx,
+      state: window.history.state,
+      url: window.location.href,
+    };
     let restoring = false;
 
     function handlePopState(event: PopStateEvent) {
@@ -1146,12 +1168,10 @@ export function AgentDetail() {
         return;
       }
 
-      const restoreDelta = agentConfigHistoryRestoreDelta(currentIndex, event.state?.idx);
-      if (restoreDelta === null || prepareAgentNavigation()) return;
+      if (prepareAgentNavigation()) return;
 
       event.stopImmediatePropagation();
-      restoring = true;
-      window.history.go(restoreDelta);
+      restoring = restoreAgentConfigHistoryEntry(window.history, currentEntry, event.state?.idx);
     }
 
     window.addEventListener("popstate", handlePopState, true);

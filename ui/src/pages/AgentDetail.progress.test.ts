@@ -10,6 +10,7 @@ import {
   confirmAgentConfigNavigation,
   heartbeatProgressLogLineKey,
   parseAgentDetailView,
+  restoreAgentConfigHistoryEntry,
   runDetailRefetchIntervalMs,
   shouldPollRunShellLog,
   syncAgentRouteAfterRename,
@@ -38,6 +39,26 @@ describe("agent detail tabs", () => {
     expect(agentConfigHistoryRestoreDelta(2, 4)).toBe(-2);
     expect(agentConfigHistoryRestoreDelta(2, 2)).toBeNull();
     expect(agentConfigHistoryRestoreDelta(undefined, 1)).toBeNull();
+  });
+
+  it("restores the guarded URL when React Router history indexes are unavailable", () => {
+    const history = {
+      go: vi.fn(),
+      pushState: vi.fn(),
+    };
+    const currentState = { key: "agent-config" };
+
+    expect(restoreAgentConfigHistoryEntry(history, {
+      index: undefined,
+      state: currentState,
+      url: "https://paperclip.test/agents/eng/secrets",
+    }, undefined)).toBe(false);
+    expect(history.pushState).toHaveBeenCalledWith(
+      currentState,
+      "",
+      "https://paperclip.test/agents/eng/secrets",
+    );
+    expect(history.go).not.toHaveBeenCalled();
   });
 });
 
