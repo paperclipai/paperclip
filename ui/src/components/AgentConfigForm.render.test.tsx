@@ -20,6 +20,12 @@ const mockAgentsApi = vi.hoisted(() => ({
   startAdapterAuthLogin: vi.fn(),
   getAdapterAuthLoginStatus: vi.fn(),
   cancelAdapterAuthLogin: vi.fn(),
+  startClaudeSetupTokenLogin: vi.fn(),
+  getClaudeSetupTokenLoginStatus: vi.fn(),
+  getClaudeSetupTokenLoginPrompt: vi.fn(),
+  submitClaudeSetupTokenBrowserCode: vi.fn(),
+  completeClaudeSetupTokenLogin: vi.fn(),
+  cancelClaudeSetupTokenLogin: vi.fn(),
 }));
 
 const mockClipboard = vi.hoisted(() => ({
@@ -390,6 +396,19 @@ async function startLogin(container: HTMLElement) {
   await flushReact();
 }
 
+// Flush React effects and pending promises until a condition holds. The Claude
+// login chains a start, a status poll, and a completion read, so a single flush
+// does not settle every state transition.
+async function flushUntil(check: () => boolean, timeoutMs = 4000) {
+  const start = Date.now();
+  while (!check()) {
+    if (Date.now() - start > timeoutMs) break;
+    await flushReact();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  await flushReact();
+}
+
 describe("AgentConfigForm environment selector", () => {
   let roots: Root[] = [];
 
@@ -433,6 +452,36 @@ describe("AgentConfigForm environment selector", () => {
       prompt: null,
     });
     mockClipboard.copyTextToClipboard.mockResolvedValue(undefined);
+    mockAgentsApi.startClaudeSetupTokenLogin.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "starting",
+      expiresAt: null,
+      failure: null,
+      panelMode: "submitted_browser_code",
+      prompt: null,
+    });
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+    });
+    mockAgentsApi.getClaudeSetupTokenLoginPrompt.mockResolvedValue({
+      authorizationUrl: "https://claude.example.test/authorize",
+    });
+    mockAgentsApi.submitClaudeSetupTokenBrowserCode.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+    });
+    mockAgentsApi.completeClaudeSetupTokenLogin.mockResolvedValue({
+      storedSessionId: "stored-session-1",
+    });
+    mockAgentsApi.cancelClaudeSetupTokenLogin.mockResolvedValue(undefined);
   });
 
   afterEach(async () => {
@@ -1124,5 +1173,248 @@ describe("AgentConfigForm environment selector", () => {
     await flushReact();
 
     expect(findButton(result.container, "Log in")).toBeFalsy();
+  });
+
+  it("shows the authorization URL and a browser-code input for a Claude sandbox", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      (result.container.textContent ?? "").includes("https://claude.example.test/authorize"),
+    );
+
+    expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledWith("company-1", {
+      environmentId: "sandbox-1",
+    });
+    // The panel shows the authorization URL and a browser-code input. It never
+    // shows a server-displayed code.
+    expect(result.container.textContent).toContain("https://claude.example.test/authorize");
+    expect(
+      result.container.querySelector('input[aria-label="Browser code"]'),
+    ).toBeTruthy();
+  });
+
+  it("submits one browser code and clears the input after submit", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      Boolean(result.container.querySelector('input[aria-label="Browser code"]')),
+    );
+
+    const input = result.container.querySelector<HTMLInputElement>(
+      'input[aria-label="Browser code"]',
+    );
+    setInputValue(input!, "BROWSERCODE-9");
+    await flushReact();
+    await clickByText(result.container, "Submit");
+    await flushReact();
+
+    expect(mockAgentsApi.submitClaudeSetupTokenBrowserCode).toHaveBeenCalledWith(
+      "company-1",
+      "claude-session-1",
+      "BROWSERCODE-9",
+    );
+    // The panel clears the browser code after submit, so the secret does not
+    // linger in the input.
+    const clearedInput = result.container.querySelector<HTMLInputElement>(
+      'input[aria-label="Browser code"]',
+    );
+    expect(clearedInput?.value).toBe("");
+  });
+
+  it("treats the server stored state as success and captures the stored-session claim", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+    });
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() => (result.container.textContent ?? "").includes("Authenticated"));
+
+    expect(mockAgentsApi.completeClaudeSetupTokenLogin).toHaveBeenCalledWith(
+      "company-1",
+      "claude-session-1",
+    );
+    expect(result.container.textContent).toContain("Authenticated");
+  });
+
+  it("reports the non-secret stored-session claim to the parent on success", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+    });
+    const onStored = vi.fn();
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AdapterLoginPanel
+                companyId="company-1"
+                adapterType="claude_local"
+                environmentId="sandbox-1"
+                onStored={onStored}
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await startLogin(container);
+    await flushUntil(() => onStored.mock.calls.length > 0);
+
+    expect(onStored).toHaveBeenCalledWith("stored-session-1");
+  });
+
+  it("returns to its start state with a fixed message on a server failed state", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "failed",
+      failure: { reason: "rejected", message: "the provider rejected the browser code" },
+      expiresAt: null,
+    });
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      (result.container.textContent ?? "").includes("The login did not finish"),
+    );
+
+    // The panel shows a fixed message and returns to its start state. The Log in
+    // button is available again.
+    expect(result.container.textContent).toContain("The login did not finish");
+    expect(findButton(result.container, "Log in")?.disabled).toBe(false);
+    // The panel never shows the provider failure message, which could carry a
+    // secret.
+    expect(result.container.textContent).not.toContain("the provider rejected the browser code");
+  });
+
+  it("returns to its start state on a server timed_out state", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "timed_out",
+      failure: null,
+      expiresAt: null,
+    });
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      (result.container.textContent ?? "").includes("The login did not finish"),
+    );
+
+    expect(result.container.textContent).toContain("The login did not finish");
+    expect(findButton(result.container, "Log in")?.disabled).toBe(false);
+  });
+
+  it("cancels an active Claude login and returns to its start state", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      (result.container.textContent ?? "").includes("https://claude.example.test/authorize"),
+    );
+
+    expect(findButton(result.container, "Cancel")).toBeTruthy();
+
+    await clickByText(result.container, "Cancel");
+    await flushReact();
+
+    expect(mockAgentsApi.cancelClaudeSetupTokenLogin).toHaveBeenCalledWith(
+      "company-1",
+      "claude-session-1",
+    );
+    // The panel resets: the Log in button is available again, and the URL and the
+    // browser-code input are gone.
+    expect(findButton(result.container, "Log in")?.disabled).toBe(false);
+    expect(findButton(result.container, "Cancel")).toBeFalsy();
+    expect(result.container.textContent).not.toContain("https://claude.example.test/authorize");
+    expect(result.container.querySelector('input[aria-label="Browser code"]')).toBeFalsy();
+  });
+
+  it("opens the authorization URL in a new tab with a safe rel", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      Boolean(
+        result.container.querySelector('a[href="https://claude.example.test/authorize"]'),
+      ),
+    );
+
+    const link = result.container.querySelector(
+      'a[href="https://claude.example.test/authorize"]',
+    );
+    expect(link).toBeTruthy();
+    expect(link?.getAttribute("target")).toBe("_blank");
+    expect(link?.getAttribute("rel")).toBe("noreferrer noopener");
+  });
+
+  it("never renders the OAuth token in the Document Object Model", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    // The mocks add a token field that the real response never carries. The
+    // panel must render neither the token nor any other unknown response field.
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+      oauthToken: "sk-ant-SECRET-TOKEN",
+    });
+    mockAgentsApi.completeClaudeSetupTokenLogin.mockResolvedValue({
+      storedSessionId: "stored-session-1",
+      oauthToken: "sk-ant-SECRET-TOKEN",
+    });
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() => (result.container.textContent ?? "").includes("Authenticated"));
+
+    expect(result.container.textContent).toContain("Authenticated");
+    expect(result.container.textContent).not.toContain("sk-ant-SECRET-TOKEN");
   });
 });

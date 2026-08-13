@@ -10,6 +10,11 @@ import type {
   AdapterEnvironmentTestResult,
   AdapterAuthSessionResponse,
   AdapterAuthSessionOwnerResponse,
+  ClaudeSetupTokenSessionResponse,
+  ClaudeSetupTokenSessionOwnerResponse,
+  ClaudeSetupTokenSessionPrompt,
+  ClaudeSetupTokenCompletionResponse,
+  SubmitBrowserCodeRequest,
   AgentKeyCreated,
   AgentRuntimeState,
   AgentTaskSession,
@@ -255,6 +260,42 @@ export const agentsApi = {
   cancelAdapterAuthLogin: (companyId: string, type: string, sessionId: string) =>
     api.post<AdapterAuthSessionOwnerResponse>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions/${encodeURIComponent(sessionId)}/cancel`,
+      {},
+    ),
+  // The Claude submitted-browser-code login uses the company-and-environment
+  // setup-token routes. The route fixes the `claude_local` adapter. The start
+  // response carries the panel mode; the authorization URL rides only through the
+  // guarded prompt read. The completion response carries a non-secret
+  // `storedSessionId` claim and no token.
+  startClaudeSetupTokenLogin: (
+    companyId: string,
+    data: { environmentId: string; ttlSeconds?: number },
+  ) =>
+    api.post<ClaudeSetupTokenSessionOwnerResponse>(
+      `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions`,
+      { adapterType: "claude_local", ...data },
+    ),
+  getClaudeSetupTokenLoginStatus: (companyId: string, sessionId: string) =>
+    api.get<ClaudeSetupTokenSessionResponse>(
+      `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions/${encodeURIComponent(sessionId)}`,
+    ),
+  getClaudeSetupTokenLoginPrompt: (companyId: string, sessionId: string) =>
+    api.get<ClaudeSetupTokenSessionPrompt>(
+      `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions/${encodeURIComponent(sessionId)}/prompt`,
+    ),
+  submitClaudeSetupTokenBrowserCode: (companyId: string, sessionId: string, browserCode: string) =>
+    api.post<ClaudeSetupTokenSessionResponse>(
+      `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions/${encodeURIComponent(sessionId)}/code`,
+      { browserCode } satisfies SubmitBrowserCodeRequest,
+    ),
+  completeClaudeSetupTokenLogin: (companyId: string, sessionId: string) =>
+    api.post<ClaudeSetupTokenCompletionResponse>(
+      `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions/${encodeURIComponent(sessionId)}/completion`,
+      {},
+    ),
+  cancelClaudeSetupTokenLogin: (companyId: string, sessionId: string) =>
+    api.post<void>(
+      `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions/${encodeURIComponent(sessionId)}/cancel`,
       {},
     ),
   availableSkills: () =>

@@ -10,9 +10,10 @@ import type {
   EnvSecretRefBinding,
   Environment,
 } from "@paperclipai/shared";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter } from "@paperclipai/shared";
+import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter, isValidBrowserCode } from "@paperclipai/shared";
 import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
+import { ApiError } from "../api/client";
 import { environmentsApi } from "../api/environments";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { secretsApi } from "../api/secrets";
@@ -1841,11 +1842,28 @@ export type AdapterLoginDescriptor = {
   environmentId: string;
 };
 
-export function AdapterLoginPanel({
+// The panel props. `onStored` reports the non-secret `storedSessionId` claim from
+// a Claude login that reaches the server `stored` state. The create-mode form
+// holds that claim for the fixed binding; the callback never carries a token.
+export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
+  onStored?: (storedSessionId: string) => void;
+};
+
+// The login panel dispatcher. It picks the panel mode from the adapter. The
+// Claude adapter shows the submitted-browser-code panel. Every other adapter
+// shows the displayed-code panel.
+export function AdapterLoginPanel(props: AdapterLoginPanelProps) {
+  if (props.adapterType === "claude_local") {
+    return <SubmittedBrowserCodeLoginPanel {...props} />;
+  }
+  return <DisplayedCodeLoginPanel {...props} />;
+}
+
+function DisplayedCodeLoginPanel({
   companyId,
   adapterType,
   environmentId,
-}: AdapterLoginDescriptor) {
+}: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
   // The server delivers the one-time prompt on the first owner read only. Latch
@@ -1994,6 +2012,305 @@ export function AdapterLoginPanel({
 
         {isTerminal && status && (
           <AdapterLoginTerminalState status={status} message={session?.failure?.message ?? null} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// The public session states that fail a Claude login. The panel returns to its
+// start state and shows a fixed message at one of these.
+const CLAUDE_LOGIN_FAILURE_STATUSES = new Set<AdapterAuthSessionStatus>([
+  "failed",
+  "timed_out",
+  "cancelled",
+]);
+
+// The fixed, non-secret message for a failed Claude login. The panel shows this
+// text and returns to its start state. It never shows a provider message that
+// could carry a secret.
+const CLAUDE_LOGIN_FAILED_MESSAGE = "The login did not finish. Start the login again.";
+
+// The submitted-browser-code login panel for the Claude adapter. It starts a
+// setup-token login, polls the status route, and reads the authorization URL
+// from the guarded prompt route. The user opens the URL, reads the browser code,
+// and submits it. The panel clears the code right after submit. The panel treats
+// only the server `stored` state as success, and it never shows the OAuth token.
+function SubmittedBrowserCodeLoginPanel({
+  companyId,
+  environmentId,
+  onStored,
+}: AdapterLoginPanelProps) {
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [startError, setStartError] = useState<string | null>(null);
+  // The server delivers the authorization URL on the guarded prompt read only.
+  // Latch it so a later poll does not hide the URL.
+  const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
+  // The browser code the user submits. The panel clears it right after submit, so
+  // the secret never lingers in the input.
+  const [browserCode, setBrowserCode] = useState("");
+  // The non-secret stored-session claim from a completed login. It marks the
+  // server `stored` state, the only success state.
+  const [storedSessionId, setStoredSessionId] = useState<string | null>(null);
+  // True after a completion read fails. The panel returns to its start state.
+  const [completionFailed, setCompletionFailed] = useState(false);
+  // Guards the one completion read per session.
+  const completionStartedRef = useRef(false);
+
+  const resetLocalState = () => {
+    setStartError(null);
+    setAuthorizationUrl(null);
+    setBrowserCode("");
+    setStoredSessionId(null);
+    setCompletionFailed(false);
+    completionStartedRef.current = false;
+  };
+
+  const startLogin = useMutation({
+    mutationFn: () => agentsApi.startClaudeSetupTokenLogin(companyId, { environmentId }),
+    onSuccess: (session) => {
+      resetLocalState();
+      setSessionId(session.sessionId);
+    },
+    onError: (error) => {
+      setStartError(error instanceof Error ? error.message : "Could not start the login.");
+    },
+  });
+
+  const cancelLogin = useMutation({
+    mutationFn: () => agentsApi.cancelClaudeSetupTokenLogin(companyId, sessionId!),
+    onSuccess: () => {
+      // Return the panel to its idle start state. The Log in button is available
+      // again.
+      setSessionId(null);
+      resetLocalState();
+    },
+    onError: (error) => {
+      setStartError(error instanceof Error ? error.message : "Could not cancel the login.");
+    },
+  });
+
+  const statusQuery = useQuery({
+    queryKey: ["claude-setup-token-status", companyId, sessionId],
+    queryFn: () => agentsApi.getClaudeSetupTokenLoginStatus(companyId, sessionId!),
+    enabled: Boolean(sessionId),
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status && ADAPTER_LOGIN_TERMINAL_STATUSES.has(status)
+        ? false
+        : ADAPTER_LOGIN_POLL_INTERVAL_MS;
+    },
+  });
+
+  // Poll the guarded prompt route until it returns the authorization URL. The
+  // route returns 404 until the URL is ready, so the panel treats a 404 as
+  // not-ready and keeps polling.
+  const promptQuery = useQuery({
+    queryKey: ["claude-setup-token-prompt", companyId, sessionId],
+    enabled: Boolean(sessionId) && !authorizationUrl,
+    queryFn: async () => {
+      try {
+        return await agentsApi.getClaudeSetupTokenLoginPrompt(companyId, sessionId!);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+    refetchInterval: (query) =>
+      query.state.data?.authorizationUrl ? false : ADAPTER_LOGIN_POLL_INTERVAL_MS,
+  });
+
+  useEffect(() => {
+    const url = promptQuery.data?.authorizationUrl ?? null;
+    if (url) setAuthorizationUrl(url);
+  }, [promptQuery.data]);
+
+  const submitCode = useMutation({
+    mutationFn: (code: string) =>
+      agentsApi.submitClaudeSetupTokenBrowserCode(companyId, sessionId!, code),
+    onError: (error) => {
+      setStartError(error instanceof Error ? error.message : "Could not submit the browser code.");
+    },
+  });
+
+  const completeLogin = useMutation({
+    mutationFn: () => agentsApi.completeClaudeSetupTokenLogin(companyId, sessionId!),
+    onSuccess: (result) => {
+      // The server reached the `stored` state. Hold the non-secret claim and
+      // report it to the parent. The response carries no token.
+      setStoredSessionId(result.storedSessionId);
+      onStored?.(result.storedSessionId);
+    },
+    onError: () => {
+      setCompletionFailed(true);
+    },
+  });
+
+  const status = statusQuery.data?.status ?? startLogin.data?.status ?? null;
+
+  // Complete the login once the server authenticates the session. The completion
+  // read returns the non-secret stored-session claim. Fire it once per session.
+  const completeLoginRef = useRef(completeLogin.mutate);
+  completeLoginRef.current = completeLogin.mutate;
+  useEffect(() => {
+    if (status === "authenticated" && !completionStartedRef.current) {
+      completionStartedRef.current = true;
+      completeLoginRef.current();
+    }
+  }, [status]);
+
+  const isStored = storedSessionId !== null;
+  const isFailure =
+    completionFailed || Boolean(status && CLAUDE_LOGIN_FAILURE_STATUSES.has(status));
+  const isCompleting = status === "authenticated" && !isStored && !completionFailed;
+  const isActive = Boolean(sessionId) && !isStored && !isFailure;
+  const startDisabled = startLogin.isPending || isActive;
+
+  const trimmedCode = browserCode.trim();
+  const canSubmit =
+    isActive &&
+    Boolean(authorizationUrl) &&
+    !isCompleting &&
+    isValidBrowserCode(trimmedCode) &&
+    !submitCode.isPending;
+
+  const handleSubmit = () => {
+    if (!canSubmit) return;
+    submitCode.mutate(trimmedCode);
+    // Clear the browser code right after submit, so the secret never lingers in
+    // the input.
+    setBrowserCode("");
+  };
+
+  return (
+    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-foreground">Sign in to the sandbox</span>
+        <div className="flex items-center gap-1.5">
+          {isActive && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2.5 text-xs text-muted-foreground hover:text-foreground"
+              disabled={cancelLogin.isPending}
+              onClick={() => cancelLogin.mutate()}
+            >
+              Cancel
+            </Button>
+          )}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-7 px-2.5 text-xs"
+            disabled={startDisabled}
+            onClick={() => startLogin.mutate()}
+          >
+            Log in
+          </Button>
+        </div>
+      </div>
+
+      {startError && (
+        <div role="alert" className="text-(length:--text-micro) text-destructive">
+          {startError}
+        </div>
+      )}
+
+      {/* One live region announces the loading, prompt, completing, and terminal
+          states, so a screen reader reports each transition. */}
+      <div role="status" aria-live="polite" className="space-y-2 empty:hidden">
+        {isActive && !authorizationUrl && !isCompleting && (
+          <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
+            <Loader2 className="size-3 animate-spin shrink-0" />
+            <span>Preparing the login…</span>
+          </div>
+        )}
+
+        {isActive && authorizationUrl && !isCompleting && (
+          <div className="space-y-2">
+            <div className="text-(length:--text-micro) text-muted-foreground">
+              Open the authorization page, then enter the browser code it shows.
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
+                  Authorization URL
+                </div>
+                <span className="font-mono text-xs text-foreground break-all">{authorizationUrl}</span>
+              </div>
+              <div className="flex items-center">
+                <AdapterLoginCopyButton value={authorizationUrl} label="Copy URL" />
+                <Button
+                  asChild
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label="Open the authorization page"
+                  title="Open the authorization page"
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  <a href={authorizationUrl} target="_blank" rel="noreferrer noopener">
+                    <ExternalLink className="size-3" />
+                  </a>
+                </Button>
+              </div>
+            </div>
+            <div className="space-y-1">
+              <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
+                Browser code
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  aria-label="Browser code"
+                  type="text"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={browserCode}
+                  onChange={(event) => setBrowserCode(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      handleSubmit();
+                    }
+                  }}
+                  className="flex-1 min-w-0 rounded-md border border-border bg-background px-2 py-1 font-mono text-xs text-foreground"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2.5 text-xs"
+                  disabled={!canSubmit}
+                  onClick={handleSubmit}
+                >
+                  Submit
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {isCompleting && (
+          <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
+            <Loader2 className="size-3 animate-spin shrink-0" />
+            <span>Completing the login…</span>
+          </div>
+        )}
+
+        {isStored && (
+          <div className="flex items-center gap-2 text-(length:--text-micro) text-foreground">
+            <Check className="size-3 shrink-0" />
+            <span>Authenticated. The sandbox has credentials now.</span>
+          </div>
+        )}
+
+        {isFailure && (
+          <div className="flex items-start gap-2 text-(length:--text-micro) text-destructive">
+            <TriangleAlert className="size-3 shrink-0" />
+            <span>{CLAUDE_LOGIN_FAILED_MESSAGE}</span>
+          </div>
         )}
       </div>
     </div>
