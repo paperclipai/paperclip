@@ -85,9 +85,11 @@ export const EXECUTION_WORKSPACE_REOPEN_FAILED_REASON = "reopen_failed";
 // reaper and the archive route skip the workspace forever. After this grace the
 // reaper reclaims the flag, but only when no run still owns it. The reaper checks
 // for a live consuming run first, so a request that outruns this grace keeps its
-// fence. The grace is a backstop for a flag whose run is gone, not a hard deadline
-// on the request.
-const STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS = 5 * 60 * 1000;
+// fence. A run has a heartbeat row the reaper can see. An HTTP consuming request
+// has none, so the route re-stamps the flag on an interval below this grace, and
+// the fresh timestamp keeps the fence. The grace is a backstop for a flag whose
+// consumer is gone, not a hard deadline on the request.
+export const STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS = 5 * 60 * 1000;
 
 // The metadata key that holds the workspace lifecycle generation. The generation
 // is a monotonic integer. Every archive and every reopen increases it by one. A
@@ -1461,6 +1463,48 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         .update(executionWorkspaces)
         .set({
           metadata: clearMetadataReopenPendingConsumption(metadata),
+          updatedAt: new Date(),
+        })
+        .where(eq(executionWorkspaces.id, workspaceId));
+      return true;
+    });
+  }
+
+  // Re-stamp the reopen-pending timestamp for a workspace whose consuming request
+  // is still in flight. The request that reopens and consumes the worktree is an
+  // HTTP request, not a heartbeat run, so `workspaceHasActiveRun` cannot see it.
+  // Without a refresh, a request that runs longer than the stale grace period lets
+  // the terminal reaper clear the live fence, and a later sweep archives and
+  // destroys the worktree under the request. The consuming route calls this on an
+  // interval shorter than the grace period, so the flag never looks stale while the
+  // request lives. The refresh runs under the lifecycle lock and re-stamps the
+  // timestamp only while the flag is still set and the current generation still
+  // equals `expectedGeneration`, so it never revives a cleared flag and never
+  // refreshes a newer reopen's fence. It returns true when it re-stamped the flag.
+  async function refreshReopenPendingConsumptionUnderLock(
+    workspaceId: string,
+    options: { expectedGeneration: number },
+  ): Promise<boolean> {
+    return db.transaction(async (tx) => {
+      await acquireExecutionWorkspaceLifecycleLock(tx, workspaceId);
+      const fresh = await tx
+        .select({ metadata: executionWorkspaces.metadata })
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, workspaceId))
+        .then((rows) => rows[0] ?? null);
+      const metadata = fresh?.metadata as Record<string, unknown> | null;
+      if (!fresh || !metadataHasReopenPendingConsumption(metadata)) {
+        return false;
+      }
+      if (readExecutionWorkspaceLifecycleGeneration(metadata) !== options.expectedGeneration) {
+        // A newer reopen or an archive raised the generation. Do not refresh
+        // another owner's fence.
+        return false;
+      }
+      await tx
+        .update(executionWorkspaces)
+        .set({
+          metadata: setMetadataReopenPendingConsumption(metadata, now()),
           updatedAt: new Date(),
         })
         .where(eq(executionWorkspaces.id, workspaceId));
@@ -2860,6 +2904,23 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     // lock, so the reaper can archive and reclaim the worktree. It keeps the row
     // active, so a retried resume can still reuse the rebuilt worktree. The
     // method is idempotent: it does nothing when the flag is already clear.
+    // Re-stamp the reopen-pending timestamp while a consuming request is still in
+    // flight. The consuming route calls this on an interval shorter than the stale
+    // grace period, so the terminal reaper never treats the live fence as stranded.
+    // The refresh runs only while the flag is still set and the generation still
+    // matches `expectedGeneration`, so it never revives a cleared flag and never
+    // refreshes a newer reopen's fence. It returns { refreshed } so the caller can
+    // stop the interval once the fence is no longer its own.
+    refreshReopenPendingConsumption: async (input: {
+      workspaceId: string;
+      expectedGeneration: number;
+    }): Promise<{ refreshed: boolean }> => {
+      const refreshed = await refreshReopenPendingConsumptionUnderLock(input.workspaceId, {
+        expectedGeneration: input.expectedGeneration,
+      });
+      return { refreshed };
+    },
+
     clearReopenPendingConsumptionForUnconsumedReopen: async (input: {
       workspaceId: string;
       issue: { id: string; companyId: string };

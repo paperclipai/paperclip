@@ -178,7 +178,10 @@ import {
   findExistingIssueBlockersResolvedWake,
 } from "../services/issue-dependency-wakeups.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
-import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
+import {
+  executionWorkspaceService as executionWorkspaceServiceDirect,
+  STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS,
+} from "../services/execution-workspaces.js";
 import { decisionTrainingService } from "../services/decision-training.js";
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -5052,6 +5055,14 @@ export function issueRoutes(
     return null;
   }
 
+  // The keepalive re-stamps the reopen-pending flag on this interval while a
+  // consuming request is in flight. The interval is one fifth of the stale grace
+  // period, so several re-stamps land before the reaper could treat the flag as
+  // stranded. This keeps a live but slow request's fence against the reaper.
+  const REOPEN_PENDING_REFRESH_INTERVAL_MS = Math.floor(
+    STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS / 5,
+  );
+
   // Guard a reopen against a caller that never consumes it.
   // `reopenClosedIssueExecutionWorkspaceOrRespond` publishes the rebuilt worktree
   // as active and sets the reopen-pending flag while the source issue is still
@@ -5077,10 +5088,44 @@ export function issueRoutes(
   }): void {
     const { req, res, issue, workspace, generation, finalIssueStatus } = input;
     if (!workspace || generation === null) return;
+    // Re-stamp the reopen-pending flag while this request is in flight. The
+    // request that consumes the rebuilt worktree is an HTTP request, not a
+    // heartbeat run, so the terminal reaper cannot see it through
+    // `workspaceHasActiveRun`. A request that outruns the stale grace period
+    // would let the reaper clear the live fence, and a later sweep would archive
+    // and destroy the worktree under the request. The keepalive re-stamps the
+    // timestamp on an interval below the grace, so the flag never looks stranded
+    // while the request lives. The refresh runs only while the flag is still set
+    // and the generation still matches, so it never revives a cleared flag and
+    // never refreshes a newer reopen's fence.
+    const keepAlive = setInterval(() => {
+      void executionWorkspacesSvc
+        .refreshReopenPendingConsumption({
+          workspaceId: workspace.id,
+          expectedGeneration: generation,
+        })
+        .then((result) => {
+          // The fence is no longer ours: a clear removed the flag, or a newer
+          // reopen or an archive raised the generation. Stop the keepalive so it
+          // does not re-stamp another owner's row.
+          if (!result.refreshed) clearInterval(keepAlive);
+        })
+        .catch((err) => {
+          // A transient database error must not stop the keepalive. Keep the
+          // interval so the next tick retries before the grace period elapses.
+          logger.warn(
+            { err, issueId: issue.id, executionWorkspaceId: workspace.id },
+            "failed to refresh the reopen-pending flag for an in-flight request",
+          );
+        });
+    }, REOPEN_PENDING_REFRESH_INTERVAL_MS);
+    // Do not keep the event loop alive for the keepalive alone.
+    keepAlive.unref?.();
     let settled = false;
     const settle = () => {
       if (settled) return;
       settled = true;
+      clearInterval(keepAlive);
       const status = finalIssueStatus();
       if (typeof status === "string" && !isClosedIssueStatus(status)) return;
       const actor = getActorInfo(req);

@@ -36,6 +36,7 @@ import {
   mergeExecutionWorkspaceConfig,
   metadataHasReopenPendingConsumption,
   readExecutionWorkspaceConfig,
+  readMetadataReopenPendingConsumptionSince,
 } from "../services/execution-workspaces.ts";
 import { issueService } from "../services/issues.ts";
 import {
@@ -1077,6 +1078,130 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(metadataHasReopenPendingConsumption(workspace?.metadata as Record<string, unknown> | null)).toBe(true);
     // The rebuilt worktree is intact.
     await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+  });
+
+  it("refreshes the reopen fence for an in-flight request, so a later sweep keeps it", async () => {
+    // The consuming request is an HTTP request, not a heartbeat run, so the sweep
+    // cannot see it through the active-run check. The request re-stamps the flag on
+    // an interval below the grace period. This test drives one re-stamp on a flag
+    // that already looks stale by age. After the re-stamp the flag looks fresh, so
+    // the sweep skips the workspace and clears nothing, even with no active run.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    const staleSince = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "active",
+        closedAt: null,
+        cleanupReason: null,
+        cleanupEligibleAt: null,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 4,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY]: true,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY]: staleSince,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const result = await svc.refreshReopenPendingConsumption({
+      workspaceId: seeded.executionWorkspaceId,
+      expectedGeneration: 4,
+    });
+    expect(result).toEqual({ refreshed: true });
+
+    const [afterRefresh] = await db
+      .select({ metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    const refreshedSince = readMetadataReopenPendingConsumptionSince(
+      afterRefresh?.metadata as Record<string, unknown> | null,
+    );
+    // The re-stamp moved the timestamp forward, so the flag no longer looks stale.
+    expect(refreshedSince).not.toBeNull();
+    expect(refreshedSince!.getTime()).toBeGreaterThan(new Date(staleSince).getTime());
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    const [workspace] = await db
+      .select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    // The fresh flag keeps the fence, so the sweep skips the workspace and clears
+    // nothing, even though no heartbeat run owns it.
+    expect(sweep).toMatchObject({ archived: 0, skippedReopened: 1, clearedStaleReopenPending: 0 });
+    expect(workspace?.status).toBe("active");
+    expect(metadataHasReopenPendingConsumption(workspace?.metadata as Record<string, unknown> | null)).toBe(true);
+    await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+  });
+
+  it("does not refresh the reopen fence when a newer generation owns it", async () => {
+    // A newer reopen or an archive raised the generation, so the flag belongs to a
+    // new owner. A stale caller must not re-stamp another owner's fence. The
+    // refresh reports refreshed=false and leaves the timestamp unchanged.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    const since = new Date(Date.now() - 60 * 1000).toISOString();
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "active",
+        closedAt: null,
+        cleanupReason: null,
+        cleanupEligibleAt: null,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 7,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY]: true,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY]: since,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const result = await svc.refreshReopenPendingConsumption({
+      workspaceId: seeded.executionWorkspaceId,
+      expectedGeneration: 4,
+    });
+    expect(result).toEqual({ refreshed: false });
+
+    const [afterRefresh] = await db
+      .select({ metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    const unchangedSince = readMetadataReopenPendingConsumptionSince(
+      afterRefresh?.metadata as Record<string, unknown> | null,
+    );
+    expect(unchangedSince?.toISOString()).toBe(since);
+  });
+
+  it("does not refresh the reopen fence when the flag is already clear", async () => {
+    // The response-end clear already removed the flag. A late keepalive tick must
+    // not revive it. The refresh reports refreshed=false and adds no flag.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "active",
+        closedAt: null,
+        cleanupReason: null,
+        cleanupEligibleAt: null,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 4,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const result = await svc.refreshReopenPendingConsumption({
+      workspaceId: seeded.executionWorkspaceId,
+      expectedGeneration: 4,
+    });
+    expect(result).toEqual({ refreshed: false });
+
+    const [afterRefresh] = await db
+      .select({ metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    expect(metadataHasReopenPendingConsumption(afterRefresh?.metadata as Record<string, unknown> | null)).toBe(false);
   });
 
   it("clears the reopen flag once the source issue leaves the terminal state", async () => {
