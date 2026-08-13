@@ -1072,6 +1072,108 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
   });
 
+  it("rolls back a reopen so the reaper can archive the workspace again", async () => {
+    // A reopen published the workspace active with the reopen-pending flag while
+    // the source issue is still terminal, but the request then failed. The
+    // rollback clears the flag without changing the status. The sweep then
+    // archives the active workspace of the terminal issue and destroys the
+    // rebuilt worktree, so the workspace no longer leaks.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "active",
+        closedAt: null,
+        cleanupReason: null,
+        cleanupEligibleAt: null,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 4,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY]: true,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const result = await svc.rollbackReopenedIsolatedExecutionWorkspaceForIssue({
+      workspaceId: seeded.executionWorkspaceId,
+      issue: { id: seeded.sourceIssueId, companyId: seeded.companyId, projectId: seeded.projectId },
+      actor: { agentId: null, actorType: "user" },
+    });
+    expect(result).toEqual({ rolledBack: true });
+
+    const [afterRollback] = await db
+      .select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    // The row stays active, but the flag is gone.
+    expect(afterRollback?.status).toBe("active");
+    expect(metadataHasReopenPendingConsumption(afterRollback?.metadata as Record<string, unknown> | null)).toBe(false);
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    expect(sweep).toMatchObject({ archived: 1 });
+    const [afterSweep] = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    expect(afterSweep?.status).toBe("archived");
+    // The reaper destroyed the worktree.
+    await expect(fs.access(seeded.worktreePath)).rejects.toThrow();
+  });
+
+  it("does not roll back a workspace that carries no reopen-pending flag", async () => {
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "active",
+        closedAt: null,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 4,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const result = await svc.rollbackReopenedIsolatedExecutionWorkspaceForIssue({
+      workspaceId: seeded.executionWorkspaceId,
+      issue: { id: seeded.sourceIssueId, companyId: seeded.companyId, projectId: seeded.projectId },
+      actor: { agentId: null, actorType: "user" },
+    });
+    expect(result).toEqual({ rolledBack: false });
+  });
+
+  it("does not roll back a reopen-pending workspace outside the issue scope", async () => {
+    // The rollback binds to the issue company. A wrong company must not clear the
+    // flag, so a caller cannot reach another company's workspace.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "active",
+        closedAt: null,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 4,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY]: true,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const result = await svc.rollbackReopenedIsolatedExecutionWorkspaceForIssue({
+      workspaceId: seeded.executionWorkspaceId,
+      issue: { id: seeded.sourceIssueId, companyId: randomUUID(), projectId: seeded.projectId },
+      actor: { agentId: null, actorType: "user" },
+    });
+    expect(result).toEqual({ rolledBack: false });
+
+    const [workspace] = await db
+      .select({ metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    // The flag stays set because the scope did not match.
+    expect(metadataHasReopenPendingConsumption(workspace?.metadata as Record<string, unknown> | null)).toBe(true);
+  });
+
   it("holds Git index and ref locks across terminal cleanup", async () => {
     const seeded = await seedTerminalWorkspace({ mergedPr: true });
     await db.update(executionWorkspaces).set({

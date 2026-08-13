@@ -5034,13 +5034,56 @@ export function issueRoutes(
       issue: { id: issue.id, companyId: issue.companyId, projectId: issue.projectId ?? null },
       actor: { agentId: actor.agentId, actorType: actor.actorType },
     });
-    if (result.ok) return true;
+    if (result.ok) {
+      if (result.reopened) {
+        // The reopen published the workspace as active and set the reopen-pending
+        // flag while the issue is still terminal. A later gate or the persistence
+        // step can still return an error after this point. On an error the issue
+        // stays terminal and the flag would block the reaper and the archive route
+        // from cleaning the workspace forever. Register a rollback that clears the
+        // flag when the response ends with an error status.
+        registerReopenRollbackOnErrorResponse(res, {
+          workspaceId: workspace.id,
+          issue: { id: issue.id, companyId: issue.companyId, projectId: issue.projectId ?? null },
+          actor: { agentId: actor.agentId, actorType: actor.actorType },
+        });
+      }
+      return true;
+    }
     if (result.code === "not_reopenable") {
       res.status(409).json({ error: "This issue is linked to a closed workspace that cannot be reopened." });
     } else {
       res.status(503).json({ error: "Could not reopen the workspace for this issue. Please try again." });
     }
     return false;
+  }
+
+  // Clear the reopen-pending flag if the request fails after a reopen. The reopen
+  // publishes the workspace as active and sets the flag while the issue is still
+  // terminal. A success response leaves the flag for the normal consumption path.
+  // An error response means the issue stays terminal, so clear the flag to let the
+  // reaper archive the workspace again. The rollback runs after the response ends,
+  // so it covers every error branch that follows the reopen, and it never blocks
+  // the response.
+  function registerReopenRollbackOnErrorResponse(
+    res: Response,
+    context: {
+      workspaceId: string;
+      issue: { id: string; companyId: string; projectId: string | null };
+      actor: { agentId: string | null; actorType: string };
+    },
+  ): void {
+    res.on("finish", () => {
+      if (res.statusCode < 400) return;
+      void executionWorkspacesSvc
+        .rollbackReopenedIsolatedExecutionWorkspaceForIssue(context)
+        .catch((err) =>
+          logger.warn(
+            { err, workspaceId: context.workspaceId, issueId: context.issue.id },
+            "failed to roll back reopened execution workspace after error response",
+          ),
+        );
+    });
   }
 
   async function destroyReusableSandboxLeasesForTerminalIssue(issue: {
