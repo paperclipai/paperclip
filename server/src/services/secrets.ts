@@ -80,6 +80,42 @@ const FALLBACK_ADAPTER_SCHEMA_SECRET_FIELDS: Readonly<Record<string, readonly st
 };
 const USER_SECRET_DEFINITION_KEY_UNIQUE_CONSTRAINT = "user_secret_definitions_company_key_uq";
 const USER_SECRET_VALUE_UNIQUE_CONSTRAINT = "company_secrets_user_definition_owner_uq";
+
+// The fixed Claude Code OAuth user-secret definition. The Claude login flow owns
+// only this compile-time key and these fixed properties. A caller never selects
+// the key, the name, the provider, the mode, or the status (Control 5).
+const CLAUDE_CODE_OAUTH_TOKEN_KEY = "CLAUDE_CODE_OAUTH_TOKEN";
+const CLAUDE_CODE_OAUTH_DEFINITION = {
+  key: CLAUDE_CODE_OAUTH_TOKEN_KEY,
+  name: "Claude Code OAuth token",
+  provider: "local_encrypted",
+  managedMode: "paperclip_managed",
+  status: "active",
+} as const;
+// The fixed, non-secret conflict text. The helper returns it when a stored
+// definition for the fixed key does not match the fixed shape. The text echoes
+// no caller input (Control 5).
+const CLAUDE_OAUTH_DEFINITION_CONFLICT =
+  "A conflicting Claude Code OAuth token definition already exists.";
+// The fixed, non-secret text for a stale confirmed rotation. The text is the
+// same for every stale reason, so it discloses no owner-value state (Control 1).
+const CLAUDE_OAUTH_STALE_CONFIRMATION =
+  "The Claude login confirmation is stale. Reload the page and confirm again.";
+// The fixed, non-secret text for a first write that finds an existing value. The
+// caller must confirm a replacement to rotate it (Control 1).
+const CLAUDE_OAUTH_VALUE_EXISTS =
+  "A Claude login value already exists. Confirm a replacement to rotate it.";
+// The metadata field that records the setup-token session id on the owner value.
+// It is the idempotency key for one completion. It is not a secret (Control 1).
+const CLAUDE_OAUTH_SESSION_METADATA_FIELD = "claudeSetupTokenSessionId";
+
+/** The stored result of one owner-bound Claude OAuth completion. It holds no secret. */
+export interface ClaudeOAuthUserSecretResult {
+  secretId: string;
+  latestVersion: number;
+  definitionId: string;
+}
+
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type SecretBindingDb = Pick<Db | DbTransaction, "select" | "delete" | "insert">;
 
@@ -2243,6 +2279,196 @@ export function secretService(db: Db) {
     }
   }
 
+  // --- Claude Code OAuth login: narrow definition and owner-bound write -------
+
+  type UserSecretDefinitionRow = typeof userSecretDefinitions.$inferSelect;
+  type CompanySecretRow = typeof companySecrets.$inferSelect;
+
+  /** True only when a stored definition matches the fixed Claude OAuth shape. */
+  function isCompatibleClaudeOAuthDefinition(definition: UserSecretDefinitionRow) {
+    return (
+      definition.key === CLAUDE_CODE_OAUTH_DEFINITION.key &&
+      definition.name === CLAUDE_CODE_OAUTH_DEFINITION.name &&
+      definition.provider === CLAUDE_CODE_OAUTH_DEFINITION.provider &&
+      definition.managedMode === CLAUDE_CODE_OAUTH_DEFINITION.managedMode &&
+      definition.status === CLAUDE_CODE_OAUTH_DEFINITION.status
+    );
+  }
+
+  /** Reads the recorded setup-token session id from an owner value, or null. */
+  function readClaudeOAuthSessionId(secret: CompanySecretRow): string | null {
+    const metadata = secret.providerMetadata;
+    if (!metadata || typeof metadata !== "object") return null;
+    const value = (metadata as Record<string, unknown>)[CLAUDE_OAUTH_SESSION_METADATA_FIELD];
+    return typeof value === "string" ? value : null;
+  }
+
+  /** Records the setup-token session id on the owner value. Not a secret. */
+  async function stampClaudeOAuthSessionId(
+    secret: CompanySecretRow,
+    sessionId: string,
+  ): Promise<CompanySecretRow> {
+    const nextMetadata: Record<string, unknown> = {
+      ...(secret.providerMetadata ?? {}),
+      [CLAUDE_OAUTH_SESSION_METADATA_FIELD]: sessionId,
+    };
+    return db
+      .update(companySecrets)
+      .set({ providerMetadata: nextMetadata, updatedAt: new Date() })
+      .where(eq(companySecrets.id, secret.id))
+      .returning()
+      .then((rows) => rows[0] ?? secret);
+  }
+
+  function toClaudeOAuthResult(secret: CompanySecretRow): ClaudeOAuthUserSecretResult {
+    return {
+      secretId: secret.id,
+      latestVersion: secret.latestVersion,
+      definitionId: secret.userSecretDefinitionId ?? "",
+    };
+  }
+
+  /**
+   * Ensures the fixed Claude Code OAuth user-secret definition for a company. The
+   * helper accepts no key, name, provider, mode, or status from a caller. It
+   * reads the existing definition by the company and the fixed key. It returns an
+   * exact compatible definition. It rejects a conflicting definition with 409 and
+   * does not mutate it. After a uniqueness conflict it re-reads the row and
+   * compares the fixed fields before it returns (Control 5).
+   */
+  async function ensureClaudeOAuthUserSecretDefinitionInternal(
+    companyId: string,
+    actor?: { userId?: string | null; agentId?: string | null },
+  ): Promise<UserSecretDefinitionRow> {
+    const existing = await getUserSecretDefinitionByKey(companyId, CLAUDE_CODE_OAUTH_DEFINITION.key);
+    if (existing) {
+      if (!isCompatibleClaudeOAuthDefinition(existing)) {
+        throw conflict(CLAUDE_OAUTH_DEFINITION_CONFLICT);
+      }
+      return existing;
+    }
+    try {
+      return await db
+        .insert(userSecretDefinitions)
+        .values({
+          companyId,
+          key: CLAUDE_CODE_OAUTH_DEFINITION.key,
+          name: CLAUDE_CODE_OAUTH_DEFINITION.name,
+          description: null,
+          status: CLAUDE_CODE_OAUTH_DEFINITION.status,
+          provider: CLAUDE_CODE_OAUTH_DEFINITION.provider,
+          providerConfigId: null,
+          managedMode: CLAUDE_CODE_OAUTH_DEFINITION.managedMode,
+          providerMetadata: null,
+          usageGuidance: null,
+          createdByAgentId: actor?.agentId ?? null,
+          createdByUserId: actor?.userId ?? null,
+          updatedByAgentId: actor?.agentId ?? null,
+          updatedByUserId: actor?.userId ?? null,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+    } catch (error) {
+      if (isUniqueConstraintViolation(error, USER_SECRET_DEFINITION_KEY_UNIQUE_CONSTRAINT)) {
+        // A concurrent create won the race. Re-read and compare the fixed fields.
+        const raced = await getUserSecretDefinitionByKey(companyId, CLAUDE_CODE_OAUTH_DEFINITION.key);
+        if (raced && isCompatibleClaudeOAuthDefinition(raced)) return raced;
+        throw conflict(CLAUDE_OAUTH_DEFINITION_CONFLICT);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * The owner-bound compare-and-set for the Claude Code OAuth value. It has two
+   * modes. `first_write` creates a value only when no owner value exists.
+   * `confirmed_rotation` rotates only after confirmation with the expected secret
+   * id and the expected latest version. The session id is the idempotency key: a
+   * repeated successful completion returns the stored result and creates no new
+   * version (Control 1).
+   */
+  async function completeClaudeOAuthUserSecretInternal(
+    companyId: string,
+    ownerUserId: string,
+    input: {
+      sessionId: string;
+      mode: "first_write" | "confirmed_rotation";
+      value: string;
+      expectedSecretId?: string | null;
+      expectedLatestVersion?: number | null;
+    },
+    actor?: { userId?: string | null; agentId?: string | null },
+  ): Promise<ClaudeOAuthUserSecretResult> {
+    const sessionId = input.sessionId?.trim();
+    if (!sessionId) throw unprocessable("A Claude login session id is required");
+    const value = input.value?.trim();
+    if (!value) throw unprocessable("A Claude login token value is required");
+
+    const definition = await ensureClaudeOAuthUserSecretDefinitionInternal(companyId, actor);
+
+    // Idempotency: a prior successful completion for this session returns the
+    // stored result and creates no new version.
+    const existing = await getUserSecretValue({ companyId, ownerUserId, definitionId: definition.id });
+    if (existing && readClaudeOAuthSessionId(existing) === sessionId) {
+      return toClaudeOAuthResult(existing);
+    }
+
+    if (input.mode === "first_write") {
+      if (existing) throw conflict(CLAUDE_OAUTH_VALUE_EXISTS);
+      let created: CompanySecretRow;
+      try {
+        created = await createUserSecretValueInternal(
+          companyId,
+          ownerUserId,
+          { definitionId: definition.id, value },
+          actor,
+        );
+      } catch (error) {
+        // Two concurrent first writes race the partial unique index. Re-read and
+        // return the stored result only when this session already won.
+        if (error instanceof HttpError && error.status === 409) {
+          const raced = await getUserSecretValue({ companyId, ownerUserId, definitionId: definition.id });
+          if (raced && readClaudeOAuthSessionId(raced) === sessionId) {
+            return toClaudeOAuthResult(raced);
+          }
+        }
+        throw error;
+      }
+      const stamped = await stampClaudeOAuthSessionId(created, sessionId);
+      return toClaudeOAuthResult(stamped);
+    }
+
+    // confirmed_rotation.
+    if (!input.expectedSecretId || input.expectedLatestVersion == null) {
+      throw unprocessable("A confirmed rotation requires expectedSecretId and expectedLatestVersion");
+    }
+    // The owner-scoped lookup fails closed for a cross-owner or cross-company id.
+    const current = await getUserSecretValueById(companyId, ownerUserId, input.expectedSecretId);
+    if (current.userSecretDefinitionId !== definition.id) {
+      throw notFound("User secret value not found");
+    }
+    if (current.latestVersion !== input.expectedLatestVersion) {
+      throw conflict(CLAUDE_OAUTH_STALE_CONFIRMATION);
+    }
+    let rotated: CompanySecretRow;
+    try {
+      rotated = await secretService(db).rotate(
+        current.id,
+        { value, expectedLatestVersion: input.expectedLatestVersion },
+        actor,
+      );
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 409) {
+        // A concurrent rotation bumped the version between the read and the
+        // predicate. Return the same fixed stale-confirmation conflict.
+        throw conflict(CLAUDE_OAUTH_STALE_CONFIRMATION);
+      }
+      throw error;
+    }
+    const stamped = await stampClaudeOAuthSessionId(rotated, sessionId);
+    return toClaudeOAuthResult(stamped);
+  }
+
   async function removeSecretInternal(secretId: string) {
     const secret = await getById(secretId);
     if (!secret) return null;
@@ -2820,6 +3046,19 @@ export function secretService(db: Db) {
     },
 
     createCurrentUserSecretValue: createUserSecretValueInternal,
+
+    // The narrow Claude Code OAuth definition helper (Control 5). A caller passes
+    // no key, name, provider, mode, or status. The route calls it only after the
+    // authenticated board-user, company, and sandbox checks pass.
+    ensureClaudeOAuthUserSecretDefinition: (
+      companyId: string,
+      actor?: { userId?: string | null; agentId?: string | null },
+    ) => ensureClaudeOAuthUserSecretDefinitionInternal(companyId, actor),
+
+    // The owner-bound Claude Code OAuth compare-and-set (Control 1). It creates a
+    // first value or rotates after a confirmed expected version. The session id
+    // is the idempotency key for one completion.
+    completeClaudeOAuthUserSecret: completeClaudeOAuthUserSecretInternal,
 
     rotateCurrentUserSecretValue: async (
       companyId: string,
@@ -3591,12 +3830,19 @@ export function secretService(db: Db) {
         externalRef?: string | null;
         providerVersionRef?: string | null;
         providerConfigId?: string | null;
+        // The optional owner-bound compare-and-set guard. When set, the final
+        // update matches the latest version, so a concurrent rotation between the
+        // read and the write cannot pass. A mismatch throws a 409 conflict.
+        expectedLatestVersion?: number;
       },
       actor?: { userId?: string | null; agentId?: string | null },
     ) => {
       const secret = await getById(secretId);
       if (!secret) throw notFound("Secret not found");
       if (secret.status !== "active") throw unprocessable("Cannot rotate a non-active secret");
+      if (input.expectedLatestVersion !== undefined && secret.latestVersion !== input.expectedLatestVersion) {
+        throw conflict("The secret version is stale. Reload and confirm the rotation again.");
+      }
       const providerId = secret.provider as SecretProvider;
       const provider = getSecretProvider(providerId);
       const providerConfigId =
@@ -3727,11 +3973,25 @@ export function secretService(db: Db) {
               lastRotatedAt: new Date(),
               updatedAt: new Date(),
             })
-            .where(eq(companySecrets.id, secret.id))
+            .where(and(
+              eq(companySecrets.id, secret.id),
+              // The compare-and-set guard. It matches the latest version, so a
+              // concurrent rotation that already bumped it fails this predicate.
+              input.expectedLatestVersion === undefined
+                ? undefined
+                : eq(companySecrets.latestVersion, input.expectedLatestVersion),
+            ))
             .returning()
             .then((rows) => rows[0] ?? null);
 
-          if (!updated) throw notFound("Secret not found");
+          if (!updated) {
+            // The predicate matched no row. A supplied expected version means a
+            // concurrent rotation won the race; return the stale conflict. An
+            // unguarded rotation means the secret is gone.
+            throw input.expectedLatestVersion === undefined
+              ? notFound("Secret not found")
+              : conflict("The secret version is stale. Reload and confirm the rotation again.");
+          }
           return updated;
         });
       } catch (error) {
