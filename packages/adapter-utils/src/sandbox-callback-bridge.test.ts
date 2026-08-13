@@ -1496,7 +1496,7 @@ describe("sandbox callback bridge", () => {
     })}\n`;
   }
 
-  it("times out a hung request, writes a 503, and surfaces a run-level error", async () => {
+  it("times out a stalled poll, writes a 503, and surfaces a run-level error", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-hang-"));
     cleanupDirs.push(rootDir);
 
@@ -1507,16 +1507,31 @@ describe("sandbox callback bridge", () => {
 
     const { runtimeSpan, workerErrors } = createWorkerErrorCapture();
 
+    const base = createFileSystemSandboxCallbackBridgeQueueClient();
+    let listCalls = 0;
+    const client: SandboxCallbackBridgeQueueClient = {
+      ...base,
+      // The first poll never resolves — a silently unresponsive sandbox channel.
+      // The per-iteration timeout must convert the hang into a caught error. The
+      // request never reaches the handler, so the recovery path can safely 503
+      // it. Later calls (the recovery's failPendingRequests) resolve.
+      listJsonFiles: async (dir) => {
+        listCalls += 1;
+        if (listCalls === 1) {
+          return await new Promise<string[]>(() => {});
+        }
+        return await base.listJsonFiles(dir);
+      },
+    };
+
     const worker = await startSandboxCallbackBridgeWorker({
-      client: createFileSystemSandboxCallbackBridgeQueueClient(),
+      client,
       queueDir,
       iterationTimeoutMs: 50,
       watchdogTimeoutMs: 10_000,
       runtimeSpan,
       authorizeRequest: async () => null,
-      // The handler never resolves — a silently unresponsive host call. The
-      // per-iteration timeout must convert the hang into a caught error.
-      handleRequest: () => new Promise<{ status: number; body?: string }>(() => {}),
+      handleRequest: async () => ({ status: 200, body: "ok" }),
     });
 
     const responseFile = await waitForJsonFile(directories.responsesDir, 3_000);
@@ -1528,11 +1543,13 @@ describe("sandbox callback bridge", () => {
     await worker.stop({ drainTimeoutMs: 10 });
   });
 
-  it("fences a late handler completion so it cannot commit after the timeout 503", async () => {
-    // Prove the completion fence. The per-iteration timeout rejects the wrapper
-    // but does not stop the handler, so the handler finishes late. The test lets
-    // the handler finish after the 503 write and proves the late completion
-    // writes no second response and removes no request file.
+  it("does not abandon an in-flight handler, so a started mutation is not applied twice", async () => {
+    // Prove the completion fence for a request whose handler already started. The
+    // per-iteration timeout rejects the wrapper but does not stop the handler, so
+    // the host operation (a mutation) is still in flight. The recovery path must
+    // not write a 503 there; a 503 makes the caller retry while the original
+    // mutation still completes, applying it twice. The test proves no 503 lands
+    // and the handler's real response is delivered exactly once.
     const waitFor = async (predicate: () => boolean, timeoutMs: number) => {
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
@@ -1551,9 +1568,9 @@ describe("sandbox callback bridge", () => {
     const responsePath = path.posix.join(directories.responsesDir, requestFile);
 
     // An in-memory queue client with no file-existence guards. A response write
-    // always lands here, so only the completion fence can stop a second write.
-    // The real filesystem and command clients add their own existence guards;
-    // this client removes them, so the test isolates the fence.
+    // always lands here, so only the completion fence controls the outcome. The
+    // real filesystem and command clients add their own existence guards; this
+    // client removes them, so the test isolates the fence.
     const requestBodies = new Map<string, string>();
     requestBodies.set(requestPath, bridgeRequestJson("req-late"));
     const responseWrites: Array<{ path: string; status: number }> = [];
@@ -1599,7 +1616,7 @@ describe("sandbox callback bridge", () => {
       authorizeRequest: async () => null,
       // The handler stays pending until the test releases it, well after the
       // per-iteration timeout fires. It records that it finished, so the test
-      // proves the late completion truly ran.
+      // proves the in-flight handler truly ran.
       handleRequest: () =>
         new Promise<{ status: number; body?: string }>((resolve) => {
           handlerControl.release = () => {
@@ -1609,25 +1626,124 @@ describe("sandbox callback bridge", () => {
         }),
     });
 
-    // Wait until the timeout recovery wrote the 503 and the handler is pending.
-    await waitFor(() => responseWrites.some((write) => write.status === 503) && handlerControl.release !== null, 3_000);
-    expect(responseWrites.map((write) => write.status)).toEqual([503]);
-    const removalsBeforeRelease = requestRemovals.length;
+    // Wait until the per-iteration timeout surfaced a run error and the handler
+    // is pending. The recovery path ran, so it already skipped the in-flight
+    // request.
+    await waitFor(
+      () => workerErrors.some((message) => message.includes("timed out")) && handlerControl.release !== null,
+      3_000,
+    );
+    // The recovery path wrote no 503 for the in-flight request.
+    expect(responseWrites.some((write) => write.status === 503)).toBe(false);
 
-    // Release the handler after the 503. The late completion must not commit.
+    // Release the handler after the timeout. It delivers the real response.
     handlerControl.release?.();
     await waitFor(() => handlerCompleted, 3_000);
-    // Give any errant late write or remove time to land.
+    // Give the finalize write and remove time to land.
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(handlerCompleted).toBe(true);
-    // Only the 503 ever committed for the request. The late 200 wrote nothing.
+    // The handler committed exactly one response for the request: the real 200.
     expect(responseWrites.filter((write) => write.path === responsePath)).toEqual([
-      { path: responsePath, status: 503 },
+      { path: responsePath, status: 200 },
     ]);
-    expect(responseWrites.some((write) => write.status === 200)).toBe(false);
-    // The late completion removed no request file after the 503.
-    expect(requestRemovals.length).toBe(removalsBeforeRelease);
+    expect(responseWrites.some((write) => write.status === 503)).toBe(false);
+    // The handler removed the request file exactly once, after it finalized.
+    expect(requestRemovals).toEqual([requestPath]);
+
+    await worker.stop({ drainTimeoutMs: 10 });
+  });
+
+  it("abandons a request before its handler starts, so the mutation never runs", async () => {
+    // Prove the reverse race. When the recovery path claims a request before the
+    // handler starts its host operation, the handler must bail without running
+    // the mutation. A retry after the 503 then applies the mutation once.
+    const waitFor = async (predicate: () => boolean, timeoutMs: number) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (predicate()) {
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      throw new Error("waitFor timed out");
+    };
+
+    const queueDir = "/virtual-bridge/queue";
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const requestFile = "req-early.json";
+    const requestPath = path.posix.join(directories.requestsDir, requestFile);
+    const responsePath = path.posix.join(directories.responsesDir, requestFile);
+
+    const requestBodies = new Map<string, string>();
+    requestBodies.set(requestPath, bridgeRequestJson("req-early"));
+    const responseWrites: Array<{ path: string; status: number }> = [];
+
+    const client: SandboxCallbackBridgeQueueClient = {
+      makeDir: async () => {},
+      makeDirs: async () => {},
+      listJsonFiles: async (dir) =>
+        dir === directories.requestsDir
+          ? [...requestBodies.keys()].map((entry) => path.posix.basename(entry)).sort()
+          : [],
+      readTextFile: async (remotePath) => {
+        const body = requestBodies.get(remotePath);
+        if (body === undefined) {
+          throw new Error(`missing request ${remotePath}`);
+        }
+        return body;
+      },
+      writeTextFile: async () => {},
+      writeResponseFile: async (remotePath, body) => {
+        responseWrites.push({ path: remotePath, status: JSON.parse(body.trim()).status });
+        return { wrote: true };
+      },
+      rename: async () => {},
+      remove: async (remotePath) => {
+        requestBodies.delete(remotePath);
+      },
+    };
+
+    const { runtimeSpan, workerErrors } = createWorkerErrorCapture();
+
+    // The authorize step stays pending until the test releases it, so the handler
+    // does not start before the per-iteration timeout fires and the recovery path
+    // claims the request.
+    const authorizeControl: { release: (() => void) | null } = { release: null };
+    let handlerCalls = 0;
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      iterationTimeoutMs: 50,
+      watchdogTimeoutMs: 10_000,
+      runtimeSpan,
+      authorizeRequest: () =>
+        new Promise<string | null>((resolve) => {
+          authorizeControl.release = () => resolve(null);
+        }),
+      handleRequest: async () => {
+        handlerCalls += 1;
+        return { status: 200, body: "req-early" };
+      },
+    });
+
+    // Wait until the recovery path wrote the 503 and the authorize step is
+    // pending.
+    await waitFor(
+      () => responseWrites.some((write) => write.status === 503) && authorizeControl.release !== null,
+      3_000,
+    );
+    expect(responseWrites.some((write) => write.path === responsePath && write.status === 503)).toBe(true);
+
+    // Release authorize after the 503. The handler must bail at its claim.
+    authorizeControl.release?.();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // The handler never ran, so the mutation never applied.
+    expect(handlerCalls).toBe(0);
+    // No competing 200 landed over the 503.
+    expect(responseWrites.some((write) => write.path === responsePath && write.status === 200)).toBe(false);
     expect(workerErrors.some((message) => message.includes("timed out"))).toBe(true);
 
     await worker.stop({ drainTimeoutMs: 10 });

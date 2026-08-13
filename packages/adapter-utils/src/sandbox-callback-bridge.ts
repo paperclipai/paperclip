@@ -747,29 +747,49 @@ export async function startSandboxCallbackBridgeWorker(input: {
 
   // Per-attempt finalization guard. Each `processRequestFile` call registers one,
   // keyed by the request file name. The guard is the completion fence between the
-  // request handler and the per-iteration timeout recovery. The per-iteration
-  // timeout rejects only the wrapper promise; it does not stop the handler, so
-  // the handler can finish late. Node runs one event loop, so a synchronous
-  // check-and-set of `settled` is atomic. The first path to set `settled` wins;
-  // the loser skips its response write and its request-file remove. So after the
-  // timeout recovery writes a 503, the late handler completion cannot write a
-  // second response over that 503, and cannot remove a request file that a retry
-  // re-queued under the same name.
-  type RequestFinalizeGuard = { settled: boolean };
+  // request handler and the per-iteration timeout or watchdog recovery. Node runs
+  // one event loop, so a synchronous check-and-set of `claim` is atomic. The
+  // first path to move `claim` off `unclaimed` wins.
+  //
+  // The `claim` value has three states:
+  // - `unclaimed`: no path owns the request yet.
+  // - `handler`: the request handler owns finalization. It set this before it
+  //   started the host operation, or when it wrote a 400/403/response. It will
+  //   write the real response.
+  // - `abandon`: the recovery path owns the request. It writes a 503.
+  //
+  // The recovery path must never write a 503 for a request whose handler already
+  // started. The per-iteration timeout and the watchdog cannot cancel a host
+  // operation that is in flight. A 503 there makes the caller retry while the
+  // original mutation still completes, so the mutation applies twice. So the
+  // recovery path abandons only a request that the handler did not yet claim; the
+  // handler, when it later reaches the host-operation claim, sees the abandon and
+  // does not run the mutation. This keeps a retry after the 503 exactly-once.
+  type RequestFinalizeGuard = { claim: "unclaimed" | "handler" | "abandon" };
   const inFlightRequestGuards = new Map<string, RequestFinalizeGuard>();
 
   const processRequestFile = async (fileName: string) => {
     const requestPath = path.posix.join(directories.requestsDir, fileName);
     const responsePath = path.posix.join(directories.responsesDir, fileName);
-    const guard: RequestFinalizeGuard = { settled: false };
+    const guard: RequestFinalizeGuard = { claim: "unclaimed" };
     inFlightRequestGuards.set(fileName, guard);
-    // Finalize the request exactly once. Claim the guard first. When the timeout
-    // recovery already won the claim, skip both the write and the remove.
+    // Claim the request for the handler. Return `false` when the recovery path
+    // already claimed it; the caller must then not run the mutation and must not
+    // write a response, because the recovery path writes a 503 and the caller
+    // may retry.
+    const claimForHandler = (): boolean => {
+      if (guard.claim === "abandon") {
+        return false;
+      }
+      guard.claim = "handler";
+      return true;
+    };
+    // Finalize the request exactly once. Claim it for the handler first. When the
+    // recovery path already won the claim, skip both the write and the remove.
     const finalize = async (response: SandboxCallbackBridgeResponse) => {
-      if (guard.settled) {
+      if (!claimForHandler()) {
         return;
       }
-      guard.settled = true;
       await writeBridgeResponse(input.client, requestPath, responsePath, response);
       await input.client.remove(requestPath);
     };
@@ -802,9 +822,17 @@ export async function startSandboxCallbackBridgeWorker(input: {
         return;
       }
 
-      // Build the response first, then finalize once. The handler runs before the
-      // guard claim, so the per-iteration timeout can win the claim while the
-      // handler still runs. When the timeout wins, `finalize` here is a no-op.
+      // Claim the request for the handler before the host operation starts. When
+      // the recovery path already claimed it, it writes a 503 and the caller may
+      // retry, so do not run the mutation; the retry then applies it once. When
+      // the handler claims first, the recovery path leaves the request alone and
+      // the handler writes the real response.
+      if (!claimForHandler()) {
+        return;
+      }
+
+      // Build the response, then finalize once. The handler already holds the
+      // claim, so `finalize` writes the real response.
       let response: SandboxCallbackBridgeResponse;
       try {
         const result = await input.handleRequest(request);
@@ -847,10 +875,13 @@ export async function startSandboxCallbackBridgeWorker(input: {
   // Abort every queued request with a 503. The `abandonInFlight` option controls
   // the completion fence for a request a `processRequestFile` attempt still owns.
   // The timeout and watchdog recovery pass `true`: the loop already gave up on
-  // the request, so claim its guard and make its late completion a no-op before
-  // the 503 write. The stop drain passes `false` (the default): a request the
-  // loop already picked up keeps its normal completion, so a late handler result
-  // still wins over the drain 503, exactly like the earlier stop behavior.
+  // the request. When the handler did not yet start the host operation, claim the
+  // request so a later handler claim bails, then write the 503. When the handler
+  // already started, skip the 503; the recovery cannot cancel an in-flight host
+  // operation, and a 503 there would make the caller retry and apply the mutation
+  // twice. The stop drain passes `false` (the default): a request the loop
+  // already picked up keeps its normal completion, so a late handler result still
+  // wins over the drain 503, exactly like the earlier stop behavior.
   const failPendingRequests = async (
     message: string,
     options: { abandonInFlight?: boolean } = {},
@@ -868,13 +899,19 @@ export async function startSandboxCallbackBridgeWorker(input: {
       if (options.abandonInFlight) {
         const guard = inFlightRequestGuards.get(fileName);
         if (guard) {
-          if (guard.settled) {
-            // The request handler already finalized this request. Do not write a
-            // competing 503.
+          if (guard.claim === "handler") {
+            // The handler already started this request's host operation, or it
+            // already finalized the request. The timeout and watchdog cannot
+            // cancel a host operation that is in flight. A competing 503 here
+            // makes the caller retry while the original mutation still completes,
+            // so the mutation applies twice. Leave the request for the handler to
+            // finalize with its real response.
             continue;
           }
-          // Claim the request, so its late handler completion becomes a no-op.
-          guard.settled = true;
+          // The handler did not start the host operation yet. Claim the request,
+          // so the handler bails at its host-operation claim instead of running
+          // the mutation. A retry after the 503 then applies the mutation once.
+          guard.claim = "abandon";
         }
       }
       const requestPath = path.posix.join(directories.requestsDir, fileName);
