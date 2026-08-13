@@ -250,7 +250,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         interaction.kind === "request_confirmation" && interaction.sourceRunId
           ? latestSameRunHandoffTimestamp({
               interactionCreatedAtMs: createdAtMs,
-              sourceRunId: interaction.sourceRunId,
+            sourceRunId: interaction.sourceRunId,
+            comments,
               timelineEvents: timelineEvents ?? [],
               linkedRuns: linkedRuns ?? [],
               liveRuns: liveRuns ?? [],

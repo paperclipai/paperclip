@@ -59,6 +59,11 @@ interface TaskChatComposerProps {
   mobile?: boolean;
   /** Storage key used to restore, persist, and clear this task's text draft. */
   draftKey?: string;
+  /** Backward-compatible test/config inputs; selection is owned by the parent runtime. */
+  defaultModel?: string;
+  modelOptions?: Array<{ id: string; label: string }>;
+  defaultThinkingEffort?: string;
+  thinkingEffortOptions?: Array<{ id: string; label: string }>;
 }
 
 /** Per-mode hue token (see ui/src/index.css `--tc-mode-*`). */

@@ -27,7 +27,7 @@ export const INBOX_GROUP_BY_KEY = "paperclip:inbox:group-by";
 export const INBOX_FILTER_PREFERENCES_KEY_PREFIX = "paperclip:inbox:filters";
 export const INBOX_COLLAPSED_GROUPS_KEY_PREFIX = "paperclip:inbox:collapsed-groups";
 export const INBOX_COLLAPSED_PARENTS_KEY_PREFIX = "paperclip:inbox:collapsed-parents";
-export type InboxTab = "mine" | "recent" | "unread" | "blocked" | "all";
+export type InboxTab = "mine" | "recent" | "unread" | "blocked" | "decisions" | "all";
 export type InboxCategoryFilter =
   | "everything"
   | "issues_i_touched"
@@ -40,12 +40,18 @@ export type InboxWorkItemGroupBy = "none" | "type" | "assignee" | "project" | "w
 export const inboxIssueColumns = [
   "status",
   "id",
+  "priority",
   "assignee",
   "kickedOffBy",
   "project",
   "workspace",
   "parent",
+  "storyPoints",
+  "estimateHours",
+  "actualHumanTime",
+  "actualAiTime",
   "labels",
+  "dueDate",
   "updated",
 ] as const;
 export type InboxIssueColumn = (typeof inboxIssueColumns)[number];

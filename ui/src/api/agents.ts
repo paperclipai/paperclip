@@ -14,6 +14,7 @@ import type {
   AgentRuntimeState,
   AgentTaskSession,
   AgentWakeupResponse,
+  AgentMcpServersSnapshot,
   HeartbeatRun,
   Approval,
   AgentConfigRevision,
@@ -58,6 +59,8 @@ export interface ClaudeLoginResult {
   stdout: string;
   stderr: string;
 }
+export interface CodexLoginPollResponse { status: "starting" | "awaiting_user" | "success" | "error"; verificationUrl: string | null; userCode: string | null; error: string | null; }
+export interface CodexLoginStartResponse { sessionId: string; }
 
 export interface OrgNode {
   id: string;
@@ -239,6 +242,11 @@ export const agentsApi = {
   ) => api.post<AgentWakeupResponse>(agentPath(id, companyId, "/wakeup"), data),
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
+  loginWithCodex: (id: string, companyId?: string) => api.post<CodexLoginStartResponse>(agentPath(id, companyId, "/codex-login"), {}),
+  pollCodexLogin: (id: string, sessionId: string, companyId?: string) => api.get<CodexLoginPollResponse>(agentPath(id, companyId, `/codex-login/${encodeURIComponent(sessionId)}`)),
+  cancelActiveHeartbeats: (id: string, companyId?: string, options?: { force?: boolean }) => api.post<{ cancelled: number }>(agentPath(id, companyId, "/heartbeat-runs/cancel-active"), options?.force ? { force: true } : {}),
+  getMcpServerRefs: (id: string, companyId?: string) => api.get<AgentMcpServersSnapshot>(agentPath(id, companyId, "/mcp-server-refs")),
+  putMcpServerRefs: (id: string, desiredMcpServers: string[], companyId?: string) => api.put<AgentMcpServersSnapshot>(agentPath(id, companyId, "/mcp-server-refs"), { desiredMcpServers }),
   startAdapterAuthLogin: (
     companyId: string,
     type: string,
