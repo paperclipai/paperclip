@@ -14,10 +14,8 @@ import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } fr
 import { validate } from "../middleware/validate.js";
 import { accessService, executionWorkspaceService, heartbeatService, logActivity, workspaceOperationService } from "../services/index.js";
 import {
-  bumpExecutionWorkspaceLifecycleGeneration,
   mergeExecutionWorkspaceConfig,
   readExecutionWorkspaceConfig,
-  readExecutionWorkspaceLifecycleGeneration,
 } from "../services/execution-workspaces.js";
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
@@ -639,25 +637,22 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       }
 
       const closedAt = new Date();
-      // Raise the lifecycle generation on archive so the destruction below (and
-      // any queued reaper cleanup) can detect a reopen that runs in between.
-      const archiveMetadata = bumpExecutionWorkspaceLifecycleGeneration(
-        ((patch.metadata as Record<string, unknown> | null | undefined)
-          ?? (existing.metadata as Record<string, unknown> | null)) ?? null,
-      );
-      const archivedWorkspace = await svc.update(id, {
-        ...patch,
-        status: "archived",
+      // Archive under the per-workspace lifecycle lock. The service takes the same
+      // lock as a reopen, raises the lifecycle generation, and clears the
+      // reopen-pending flag. The lock stops a concurrent reopen from publishing an
+      // active row between the status re-check and this archive write, so the
+      // destruction fence below never deletes a worktree that a reopen rebuilt.
+      const archiveResult = await svc.archiveWorkspaceUnderLifecycleLock({
+        id,
+        patch,
         closedAt,
-        cleanupReason: null,
-        metadata: archiveMetadata,
       });
-      if (!archivedWorkspace) {
+      if (!archiveResult) {
         res.status(404).json({ error: "Execution workspace not found" });
         return;
       }
-      workspace = archivedWorkspace;
-      const capturedGeneration = readExecutionWorkspaceLifecycleGeneration(archiveMetadata);
+      workspace = archiveResult.workspace;
+      const capturedGeneration = archiveResult.capturedGeneration;
 
       await environmentRuntime.destroyReusableSandboxLeases({
         companyId: existing.companyId,

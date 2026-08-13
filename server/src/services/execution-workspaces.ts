@@ -110,6 +110,44 @@ function isClosedExecutionWorkspaceStatus(status: string | null | undefined): bo
   return status === "archived" || status === "cleanup_failed";
 }
 
+// The metadata key that marks a workspace as reopened for a source issue that is
+// still terminal. A reopen sets this flag in the same write that publishes the
+// row as active. The source issue is still terminal at that moment, because the
+// route changes the issue out of the terminal state only after the reopen
+// returns. Both destructive paths (the terminal reaper and the archive route)
+// exclude a flagged workspace, so neither one archives and destroys a worktree
+// that a reopen rebuilt while the caller has not yet consumed it. The reaper
+// clears the flag on a later pass once the source issue leaves the terminal
+// state, so a normal terminal cycle can reap the workspace again.
+export const EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY = "reopenPendingConsumption";
+
+export function metadataHasReopenPendingConsumption(
+  metadata: Record<string, unknown> | null | undefined,
+): boolean {
+  return metadata?.[EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY] === true;
+}
+
+// Return a metadata object with the reopen-pending flag set. The caller keeps
+// every other metadata key.
+export function setMetadataReopenPendingConsumption(
+  metadata: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  return {
+    ...(metadata ?? {}),
+    [EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY]: true,
+  };
+}
+
+// Return a metadata object with the reopen-pending flag removed. The caller
+// keeps every other metadata key.
+export function clearMetadataReopenPendingConsumption(
+  metadata: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  const next = { ...(metadata ?? {}) };
+  delete next[EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY];
+  return next;
+}
+
 // Acquire the per-workspace, transaction-scoped Postgres advisory lock. Postgres
 // releases the lock when the transaction that holds `tx` commits or rolls back.
 // Both the reopen path and the destructive cleanup path acquire the same lock,
@@ -1341,6 +1379,32 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     return active.length > 0;
   }
 
+  // Clear the reopen-pending flag under the per-workspace lifecycle lock. The
+  // reaper calls this after it observes that the source issue left the terminal
+  // state, so the reopen transition committed. The clear keeps every other
+  // metadata key and runs only while the flag is still set, so it never clobbers
+  // a concurrent write.
+  async function clearReopenPendingConsumptionUnderLock(workspaceId: string): Promise<void> {
+    await db.transaction(async (tx) => {
+      await acquireExecutionWorkspaceLifecycleLock(tx, workspaceId);
+      const fresh = await tx
+        .select({ metadata: executionWorkspaces.metadata })
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, workspaceId))
+        .then((rows) => rows[0] ?? null);
+      if (!fresh || !metadataHasReopenPendingConsumption(fresh.metadata as Record<string, unknown> | null)) {
+        return;
+      }
+      await tx
+        .update(executionWorkspaces)
+        .set({
+          metadata: clearMetadataReopenPendingConsumption(fresh.metadata as Record<string, unknown> | null),
+          updatedAt: new Date(),
+        })
+        .where(eq(executionWorkspaces.id, workspaceId));
+    });
+  }
+
   async function cleanupTerminalWorkspace(
     workspace: ExecutionWorkspaceRow,
     expectedHeadSha: string | null,
@@ -2245,7 +2309,16 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         const executionWorkspace = toExecutionWorkspace(workspace);
         const { git } = await inspectGitCloseReadiness(executionWorkspace);
         const assessment = await assessDelivery(workspace, git);
+        const reopenPending = metadataHasReopenPendingConsumption(
+          workspace.metadata as Record<string, unknown> | null,
+        );
         if (!assessment.sourceIssueTerminal || !assessment.subtreeTerminal) {
+          if (reopenPending) {
+            // The source issue left the terminal state, so the reopen transition
+            // committed. Clear the reopen-pending flag under the lifecycle lock so
+            // a later terminal cycle can archive the workspace again.
+            await clearReopenPendingConsumptionUnderLock(workspace.id);
+          }
           result.skippedNonTerminalTree += 1;
           continue;
         }
@@ -2260,6 +2333,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedUndelivered += 1;
           continue;
         }
+        if (reopenPending) {
+          // A reopen published this workspace as active while the source issue is
+          // still terminal. A caller will consume the rebuilt worktree. Do not
+          // archive it now. The authoritative check is the NOT reopenPending
+          // predicate in the archive statement below; this early skip avoids the
+          // work when the snapshot already shows the flag.
+          result.skippedReopened += 1;
+          continue;
+        }
         if (await workspaceHasActiveRun(workspace)) {
           result.skippedActiveRun += 1;
           continue;
@@ -2272,59 +2354,68 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         const archivedMetadata = bumpExecutionWorkspaceLifecycleGeneration(
           workspace.metadata as Record<string, unknown> | null,
         );
-        const archived = await db
-          .update(executionWorkspaces)
-          .set({
-            status: "archived",
-            closedAt,
-            cleanupEligibleAt: workspace.cleanupEligibleAt ?? closedAt,
-            cleanupReason: ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON,
-            metadata: archivedMetadata,
-            updatedAt: closedAt,
-          })
-          .where(and(
-            eq(executionWorkspaces.id, workspace.id),
-            eq(executionWorkspaces.companyId, workspace.companyId),
-            inArray(executionWorkspaces.status, ["active", "idle", "in_review"]),
-            isNull(executionWorkspaces.closedAt),
-            sql<boolean>`EXISTS (
-              SELECT 1
-              FROM ${issues} source_issue
-              WHERE source_issue.company_id = ${workspace.companyId}
-                AND source_issue.id = ${workspace.sourceIssueId}
-                AND source_issue.status IN ('done', 'cancelled')
-            )`,
-            sql<boolean>`NOT EXISTS (
-              SELECT 1
-              FROM ${issues} linked_issue
-              JOIN ${heartbeatRuns} live_run
-                ON live_run.id = linked_issue.checkout_run_id
-                OR live_run.id = linked_issue.execution_run_id
-              WHERE linked_issue.company_id = ${workspace.companyId}
-                AND (
-                  linked_issue.execution_workspace_id = ${workspace.id}
-                  OR linked_issue.id = ${workspace.sourceIssueId}
+        // Take the per-workspace lifecycle lock before the archive decision, so a
+        // concurrent reopen cannot publish an active row between the predicate
+        // checks and the archive write. The archive statement re-checks the
+        // status, the terminal predicates, and the reopen-pending flag under the
+        // lock, so it never archives a workspace that a reopen just restored.
+        const archived = await db.transaction(async (tx) => {
+          await acquireExecutionWorkspaceLifecycleLock(tx, workspace.id);
+          return tx
+            .update(executionWorkspaces)
+            .set({
+              status: "archived",
+              closedAt,
+              cleanupEligibleAt: workspace.cleanupEligibleAt ?? closedAt,
+              cleanupReason: ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON,
+              metadata: archivedMetadata,
+              updatedAt: closedAt,
+            })
+            .where(and(
+              eq(executionWorkspaces.id, workspace.id),
+              eq(executionWorkspaces.companyId, workspace.companyId),
+              inArray(executionWorkspaces.status, ["active", "idle", "in_review"]),
+              isNull(executionWorkspaces.closedAt),
+              sql<boolean>`(${executionWorkspaces.metadata} ->> ${EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY}) IS DISTINCT FROM 'true'`,
+              sql<boolean>`EXISTS (
+                SELECT 1
+                FROM ${issues} source_issue
+                WHERE source_issue.company_id = ${workspace.companyId}
+                  AND source_issue.id = ${workspace.sourceIssueId}
+                  AND source_issue.status IN ('done', 'cancelled')
+              )`,
+              sql<boolean>`NOT EXISTS (
+                SELECT 1
+                FROM ${issues} linked_issue
+                JOIN ${heartbeatRuns} live_run
+                  ON live_run.id = linked_issue.checkout_run_id
+                  OR live_run.id = linked_issue.execution_run_id
+                WHERE linked_issue.company_id = ${workspace.companyId}
+                  AND (
+                    linked_issue.execution_workspace_id = ${workspace.id}
+                    OR linked_issue.id = ${workspace.sourceIssueId}
+                  )
+                  AND live_run.company_id = ${workspace.companyId}
+                  AND live_run.status IN ('queued', 'running')
+              )`,
+              sql<boolean>`NOT EXISTS (
+                WITH RECURSIVE issue_tree(id, status) AS (
+                  SELECT root.id, root.status
+                  FROM ${issues} root
+                  WHERE root.company_id = ${workspace.companyId}
+                    AND root.id = ${workspace.sourceIssueId}
+                  UNION ALL
+                  SELECT child.id, child.status
+                  FROM ${issues} child
+                  JOIN issue_tree parent ON child.parent_id = parent.id
+                  WHERE child.company_id = ${workspace.companyId}
                 )
-                AND live_run.company_id = ${workspace.companyId}
-                AND live_run.status IN ('queued', 'running')
-            )`,
-            sql<boolean>`NOT EXISTS (
-              WITH RECURSIVE issue_tree(id, status) AS (
-                SELECT root.id, root.status
-                FROM ${issues} root
-                WHERE root.company_id = ${workspace.companyId}
-                  AND root.id = ${workspace.sourceIssueId}
-                UNION ALL
-                SELECT child.id, child.status
-                FROM ${issues} child
-                JOIN issue_tree parent ON child.parent_id = parent.id
-                WHERE child.company_id = ${workspace.companyId}
-              )
-              SELECT 1 FROM issue_tree WHERE status NOT IN ('done', 'cancelled')
-            )`,
-          ))
-          .returning()
-          .then((rows) => rows[0] ?? null);
+                SELECT 1 FROM issue_tree WHERE status NOT IN ('done', 'cancelled')
+              )`,
+            ))
+            .returning()
+            .then((rows) => rows[0] ?? null);
+        });
         if (!archived) {
           result.skippedRace += 1;
           continue;
@@ -2579,7 +2670,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         }
 
         // The rebuild succeeded. Publish the row as active in one write, and clear
-        // the closed markers.
+        // the closed markers. Set the reopen-pending flag in the same write. The
+        // source issue is still terminal at this point, because the route changes
+        // the issue out of the terminal state only after this reopen returns. The
+        // flag stops the terminal reaper and the archive route from archiving and
+        // destroying the rebuilt worktree in that window.
+        const activeMetadata = setMetadataReopenPendingConsumption(nextMetadata);
         const activeRow = await tx
           .update(executionWorkspaces)
           .set({
@@ -2587,7 +2683,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             closedAt: null,
             cleanupReason: null,
             cleanupEligibleAt: null,
-            metadata: nextMetadata,
+            metadata: activeMetadata,
             lastUsedAt: new Date(),
             updatedAt: new Date(),
           })
@@ -2625,6 +2721,56 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           },
         });
         return { ok: true, reopened: true, workspace: toExecutionWorkspace(activeRow) };
+      });
+    },
+
+    // Archive one workspace under the per-workspace lifecycle lock. The archive
+    // route calls this so the transition to archived and the destruction fence
+    // both run under the same lock as a reopen. The lock stops a concurrent
+    // reopen from publishing an active row between the status re-check and the
+    // archive write. The archive runs only while the row is still open (not
+    // already archived by a race) and clears the reopen-pending flag.
+    archiveWorkspaceUnderLifecycleLock: async (input: {
+      id: string;
+      patch: Partial<typeof executionWorkspaces.$inferInsert>;
+      closedAt: Date;
+    }): Promise<{ workspace: ExecutionWorkspace; capturedGeneration: number } | null> => {
+      return db.transaction(async (tx) => {
+        await acquireExecutionWorkspaceLifecycleLock(tx, input.id);
+        const fresh = await tx
+          .select()
+          .from(executionWorkspaces)
+          .where(eq(executionWorkspaces.id, input.id))
+          .then((rows) => rows[0] ?? null);
+        if (!fresh || isClosedExecutionWorkspaceStatus(fresh.status)) {
+          // The row is missing or already closed by a concurrent path. Do not
+          // archive again.
+          return null;
+        }
+        const baseMetadata =
+          (input.patch.metadata as Record<string, unknown> | null | undefined)
+          ?? (fresh.metadata as Record<string, unknown> | null);
+        const archiveMetadata = clearMetadataReopenPendingConsumption(
+          bumpExecutionWorkspaceLifecycleGeneration(baseMetadata),
+        );
+        const archived = await tx
+          .update(executionWorkspaces)
+          .set({
+            ...input.patch,
+            status: "archived",
+            closedAt: input.closedAt,
+            cleanupReason: null,
+            metadata: archiveMetadata,
+            updatedAt: new Date(),
+          })
+          .where(eq(executionWorkspaces.id, input.id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!archived) return null;
+        return {
+          workspace: toExecutionWorkspace(archived),
+          capturedGeneration: readExecutionWorkspaceLifecycleGeneration(archiveMetadata),
+        };
       });
     },
 
