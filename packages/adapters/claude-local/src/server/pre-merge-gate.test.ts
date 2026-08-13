@@ -563,7 +563,29 @@ describe("buildPreMergeHookScript — end-to-end race condition (integration)", 
       },
     });
     expect(r.stdout).toMatch(/"permissionDecision":"deny"/);
-    expect(r.stdout).toMatch(/PR #459/);
+    expect(r.stdout).toMatch(/Gate #1/);
+    expect(r.stdout).toMatch(/no Paperclip ticket references PR #459/);
+  });
+
+  it("denies when ANY segment of a compound `gh pr merge` lacks a numeric PR (Greptile P1 #5 regression)", () => {
+    // Greptile round 3: `gh pr merge 459 --squash && gh pr merge main` was
+    // silently allowed because the second segment had no numeric PR and the
+    // extractor returned empty, skipping gate evaluation for 459 entirely.
+    // The fix: extractor emits a sentinel for unresolvable segments so the
+    // script can deny the whole compound command explicitly.
+    const r = runHook({
+      command: "gh pr merge 459 --squash && gh pr merge main",
+      runId: "run-self",
+      agentId: "cto",
+      companyId: "co-1",
+      routes: {
+        "/api/issues?search=PR%23459": ctoTicket,
+        "/heartbeat-runs": emptyRuns,
+        "/comments": commentOk,
+      },
+    });
+    expect(r.stdout).toMatch(/"permissionDecision":"deny"/);
+    expect(r.stdout).toMatch(/numeric PR/);
   });
 
   it("denies when a DIFFERENT concurrent run holds the PR (race condition simulated)", () => {
