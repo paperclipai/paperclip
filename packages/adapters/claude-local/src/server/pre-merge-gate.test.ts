@@ -98,6 +98,14 @@ describe("parseGhPrMergeCommand", () => {
     // bypassed the gate. The TS parser is symmetric.
     expect(parseGhPrMergeCommand("gh pr merge\t460 --squash")).toEqual([460]);
   });
+
+  it("matches a TAB between any pair of tokens in `gh pr merge` (Greptile P1 #6 round 5)", () => {
+    // Reproduces Greptile round 5 finding: tabs between `gh`/`pr`/`merge`
+    // used to bypass because the substring `gh pr merge` did not appear.
+    expect(parseGhPrMergeCommand("gh\tpr merge 460 --squash")).toEqual([460]);
+    expect(parseGhPrMergeCommand("gh pr\tmerge 460 --squash")).toEqual([460]);
+    expect(parseGhPrMergeCommand("gh\tpr\tmerge 460 --squash")).toEqual([460]);
+  });
 });
 
 describe("evaluatePreMergeGates — gate #1 (ticket state)", () => {
@@ -410,7 +418,7 @@ describe("buildPreMergeHookScript", () => {
     // BOTH PRs to pass — partial approval is never sufficient.
     expect(script).toContain("for PR_NUMBER in $PR_NUMBERS; do");
     expect(script).toContain("done");
-    expect(script).toMatch(/extract_pr_numbers\(\) \{[\s\S]*?grep -qE 'gh pr merge\[\[:space:\]\]'[\s\S]*?continue/);
+    expect(script).toMatch(/extract_pr_numbers\(\) \{[\s\S]*?grep -qE 'gh\[\[:space:\]\]\+pr\[\[:space:\]\]\+merge\[\[:space:\]\]'[\s\S]*?continue/);
   });
 });
 
