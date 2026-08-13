@@ -1624,6 +1624,43 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.access.taskAssignSource).toBe("explicit_grant");
   }, 15_000);
 
+  it("does not project scoped task assignment grants as global access", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      permissions: { canCreateAgents: false, canAssignTasks: false },
+    });
+    mockAccessService.listPrincipalGrants.mockResolvedValue([
+      {
+        id: "grant-scoped-1",
+        companyId,
+        principalType: "agent",
+        principalId: agentId,
+        permissionKey: "tasks:assign_scope",
+        scope: { assigneeAgentId: agentId },
+        grantedByUserId: "board-user",
+        createdAt: new Date("2026-03-19T00:00:00.000Z"),
+        updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      },
+    ]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.access.canAssignTasks).toBe(false);
+    expect(res.body.access.taskAssignSource).toBe("none");
+    expect(res.body.access.grants).toEqual([
+      expect.objectContaining({ permissionKey: "tasks:assign_scope" }),
+    ]);
+  }, 15_000);
+
   it("reports simple-mode task assignment as enabled for active company agent members", async () => {
     mockAccessService.listPrincipalGrants.mockResolvedValue([]);
 
@@ -1640,6 +1677,50 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.access.canAssignTasks).toBe(true);
     expect(res.body.access.taskAssignSource).toBe("simple_default");
+  }, 15_000);
+
+  it("reports task assignment as disabled when the agent explicitly opts out", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      permissions: { canCreateAgents: false, canAssignTasks: false },
+    });
+    mockAccessService.listPrincipalGrants.mockResolvedValue([]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.access.canAssignTasks).toBe(false);
+    expect(res.body.access.taskAssignSource).toBe("none");
+  }, 15_000);
+
+  it("keeps task assignment enabled for an agent creator despite an explicit opt-out", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      permissions: { canCreateAgents: true, canAssignTasks: false },
+    });
+    mockAccessService.listPrincipalGrants.mockResolvedValue([]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.access.canAssignTasks).toBe(true);
+    expect(res.body.access.taskAssignSource).toBe("agent_creator");
   }, 15_000);
 
   it("keeps task assignment enabled when agent creation privilege is enabled", async () => {

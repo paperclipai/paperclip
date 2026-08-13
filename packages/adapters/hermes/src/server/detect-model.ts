@@ -1,15 +1,16 @@
 /**
  * Detect the current model and provider from the user's Hermes config.
  *
- * Reads ~/.hermes/config.yaml and extracts the default model,
+ * Reads the selected Hermes config and extracts the default model,
  * provider, base_url, api_key presence, and api_mode settings.
  *
  * Also provides provider resolution logic that merges explicit config,
  * Hermes config detection, and model-name prefix inference.
  */
 
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, join, normalize, resolve } from "node:path";
 import { homedir } from "node:os";
 import { MODEL_PREFIX_PROVIDER_HINTS, VALID_PROVIDERS } from "../shared/constants.js";
 
@@ -28,13 +29,156 @@ export interface DetectedModel {
   source: "config";
 }
 
+export interface HermesHomePaths {
+  nativeRoot: string;
+  root: string;
+  selectedHome: string;
+  configPath: string;
+  envPath: string;
+  selection: {
+    kind: "root" | "explicit_default" | "explicit_profile" | "profile_scoped_home" | "sticky_profile" | "supervised_root";
+    profile?: string;
+  };
+}
+
+function isPathInsideOrEqual(child: string, parent: string): boolean {
+  const normalizedChild = normalize(resolve(child));
+  const normalizedParent = normalize(resolve(parent));
+  return normalizedChild === normalizedParent || normalizedChild.startsWith(`${normalizedParent}/`);
+}
+
+const HERMES_PROFILE_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const RESERVED_HERMES_PROFILES = new Set(["hermes", "test", "tmp", "root", "sudo"]);
+
+function validateProfileSelection(profile: string, source: "explicit" | "active profile"): void {
+  if (profile === "default") return;
+  if (!HERMES_PROFILE_RE.test(profile) || RESERVED_HERMES_PROFILES.has(profile)) {
+    throw new Error(`Invalid Hermes ${source} selection.`);
+  }
+}
+
+function assertExistingSelectedHome(selectedHome: string, selectionKind: HermesHomePaths["selection"]["kind"]): void {
+  if (
+    selectionKind !== "explicit_profile" &&
+    selectionKind !== "sticky_profile" &&
+    selectionKind !== "profile_scoped_home"
+  ) {
+    return;
+  }
+  try {
+    if (statSync(selectedHome).isDirectory()) return;
+  } catch {
+    // Fall through to the stable, non-sensitive error below.
+  }
+  throw new Error("Selected Hermes profile is not available.");
+}
+
+function readStickyProfile(root: string): string | undefined {
+  const activePath = join(root, "active_profile");
+  if (!existsSync(activePath)) return undefined;
+  let content: string;
+  try {
+    content = readFileSync(activePath, "utf8");
+  } catch {
+    return undefined;
+  }
+  const profile = content.trim();
+  if (!profile || profile === "default") return undefined;
+  validateProfileSelection(profile, "active profile");
+  return profile;
+}
+
+/**
+ * Resolve the effective Hermes root/profile paths using Hermes v0.18 profile
+ * semantics. Callers must avoid logging these paths because they can reveal
+ * local usernames or profile names.
+ */
+export function resolveHermesHomePaths(
+  profile?: string,
+  options: { validateSelectedHome?: boolean } = {},
+): HermesHomePaths {
+  const nativeRoot = join(homedir(), ".hermes");
+  const explicitProfile = profile && profile.length > 0 ? profile : undefined;
+  if (explicitProfile) validateProfileSelection(explicitProfile, "explicit");
+  const hermesHome = process.env.HERMES_HOME?.trim();
+  const hasHermesHome = !!hermesHome;
+  const hermesHomePath = hasHermesHome ? resolve(hermesHome) : nativeRoot;
+  const hermesHomeParent = dirname(hermesHomePath);
+  const hermesHomeIsProfileScoped = hasHermesHome && basename(hermesHomeParent) === "profiles";
+  const profileScopedRoot = hermesHomeIsProfileScoped ? dirname(hermesHomeParent) : hermesHomePath;
+  const effectiveRoot = hasHermesHome && isPathInsideOrEqual(hermesHomePath, nativeRoot)
+    ? nativeRoot
+    : profileScopedRoot;
+
+  let root: string;
+  let selectedHome: string;
+  let selection: HermesHomePaths["selection"];
+
+  if (explicitProfile === "default") {
+    root = effectiveRoot;
+    selectedHome = effectiveRoot;
+    selection = { kind: "explicit_default", profile: "default" };
+  } else if (explicitProfile) {
+    root = effectiveRoot;
+    selectedHome = join(effectiveRoot, "profiles", explicitProfile);
+    selection = { kind: "explicit_profile", profile: explicitProfile };
+  } else if (hermesHomeIsProfileScoped) {
+    root = effectiveRoot;
+    selectedHome = hermesHomePath;
+    selection = { kind: "profile_scoped_home", profile: basename(hermesHomePath) };
+  } else if (process.env.HERMES_S6_SUPERVISED_CHILD) {
+    root = effectiveRoot;
+    selectedHome = effectiveRoot;
+    selection = { kind: "supervised_root" };
+  } else {
+    root = effectiveRoot;
+    const stickyProfile = readStickyProfile(root);
+    if (stickyProfile) {
+      selectedHome = join(root, "profiles", stickyProfile);
+      selection = { kind: "sticky_profile", profile: stickyProfile };
+    } else {
+      selectedHome = root;
+      selection = { kind: "root" };
+    }
+  }
+
+  if (options.validateSelectedHome !== false) {
+    assertExistingSelectedHome(selectedHome, selection.kind);
+  }
+
+  return {
+    nativeRoot,
+    root,
+    selectedHome,
+    configPath: join(selectedHome, "config.yaml"),
+    envPath: join(selectedHome, ".env"),
+    selection,
+  };
+}
+
+/**
+ * Resolve the Hermes config file for the selected profile without exposing the
+ * path to logs or UI messages.
+ */
+export function resolveHermesConfigPath(profile?: string): string {
+  return resolveHermesHomePaths(profile).configPath;
+}
+
+/**
+ * Resolve the selected Hermes profile/root .env file without exposing the path
+ * to logs or UI messages.
+ */
+export function resolveHermesEnvPath(profile?: string): string {
+  return resolveHermesHomePaths(profile).envPath;
+}
+
 /**
  * Read the Hermes config file and extract the default model config.
  */
 export async function detectModel(
   configPath?: string,
 ): Promise<DetectedModel | null> {
-  const filePath = configPath ?? join(homedir(), ".hermes", "config.yaml");
+  const filePath = configPath ?? resolveHermesConfigPath();
 
   let content: string;
   try {

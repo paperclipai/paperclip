@@ -6,6 +6,7 @@
  *
  * Verified CLI flags (hermes chat):
  *   -q/--query         single query (non-interactive)
+ *   --profile          Hermes profile name (global option before chat)
  *   -Q/--quiet         quiet mode (no banner/spinner, only response + session_id)
  *   -m/--model         model name (e.g. anthropic/claude-sonnet-4)
  *   -t/--toolsets      comma-separated toolsets to enable
@@ -14,7 +15,7 @@
  *   -w/--worktree      isolated git worktree
  *   -v/--verbose       verbose output
  *   --checkpoints      filesystem checkpoints
- *   --yolo             bypass dangerous-command approval prompts (agents have no TTY)
+ *   --yolo             opt-in dangerous-command approval bypass
  *   --source           session source tag for filtering
  */
 
@@ -50,8 +51,10 @@ import {
 
 import {
   detectModel,
+  resolveHermesHomePaths,
   resolveProvider,
 } from "./detect-model.js";
+import type { HermesHomePaths } from "./detect-model.js";
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -73,7 +76,147 @@ function cfgStringArray(v: unknown): string[] | undefined {
 }
 
 export function resolveHermesCommand(config: Record<string, unknown>): string {
-  return cfgString(config.hermesCommand) || cfgString(config.command) || HERMES_CLI;
+  validateHermesCommandConfig(config);
+  return HERMES_CLI;
+}
+
+export function validateHermesCommandConfig(config: Record<string, unknown>): void {
+  for (const key of ["hermesCommand", "command"] as const) {
+    const value = config[key];
+    if (value === undefined || value === null) continue;
+    if (typeof value !== "string") {
+      throw new Error(`Invalid ${key}. hermes_local only permits a blank string or exactly "hermes".`);
+    }
+    if (value !== "" && value !== HERMES_CLI) {
+      throw new Error(`Invalid ${key} "${value}". hermes_local only permits the built-in "hermes" command.`);
+    }
+  }
+}
+
+const HERMES_PROFILE_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const RESERVED_HERMES_PROFILES = new Set(["hermes", "test", "tmp", "root", "sudo"]);
+
+function resolveHermesProfile(config: Record<string, unknown>): string | undefined {
+  const rawProfile = config.profile;
+  if (rawProfile === undefined || rawProfile === null) return undefined;
+  if (typeof rawProfile !== "string") {
+    throw new Error("Invalid profile. Hermes profile must be a string.");
+  }
+  if (rawProfile.trim().length === 0) return undefined;
+  if (!HERMES_PROFILE_RE.test(rawProfile)) {
+    throw new Error(
+      "Invalid profile. Use lowercase 1-64 characters, start with a letter or number, and use only lowercase letters, numbers, underscores, or hyphens.",
+    );
+  }
+  if (RESERVED_HERMES_PROFILES.has(rawProfile)) {
+    throw new Error(`Invalid profile "${rawProfile}". That Hermes profile name is reserved.`);
+  }
+  return rawProfile;
+}
+
+function assertNoExtraArgs(config: Record<string, unknown>): void {
+  const extraArgs = config.extraArgs;
+  if (extraArgs === undefined || extraArgs === null) return;
+  if (Array.isArray(extraArgs) && extraArgs.length === 0) return;
+  throw new Error("Invalid extraArgs. hermes_local does not permit arbitrary additional CLI arguments.");
+}
+
+export interface ValidatedHermesAdapterConfig {
+  command: typeof HERMES_CLI;
+  profile?: string;
+}
+
+export function validateHermesAdapterConfig(
+  config: Record<string, unknown>,
+): ValidatedHermesAdapterConfig {
+  validateHermesCommandConfig(config);
+  assertNoExtraArgs(config);
+  return {
+    command: HERMES_CLI,
+    profile: resolveHermesProfile(config),
+  };
+}
+
+export interface HermesInvocationOptions {
+  config: Record<string, unknown>;
+  prompt: string;
+  model: string;
+  resolvedProvider: string;
+  previousSessionId?: string;
+  selection?: HermesHomePaths["selection"];
+}
+
+export interface HermesInvocation {
+  command: string;
+  args: string[];
+}
+
+export function resolveHermesInvocationProfile(
+  config: Record<string, unknown>,
+  selection?: HermesHomePaths["selection"],
+): string | undefined {
+  const validatedConfig = validateHermesAdapterConfig(config);
+  if (validatedConfig.profile) return validatedConfig.profile;
+  if (selection?.kind === "root" || selection?.kind === "supervised_root") {
+    return "default";
+  }
+  return undefined;
+}
+
+export function buildHermesInvocation(options: HermesInvocationOptions): HermesInvocation {
+  const { config, prompt, model, resolvedProvider, previousSessionId, selection } = options;
+  const command = HERMES_CLI;
+  const profile = resolveHermesInvocationProfile(config, selection);
+
+  const maxTurns = cfgNumber(config.maxTurnsPerRun);
+  const toolsets = cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(",");
+  const persistSession = cfgBoolean(config.persistSession) !== false;
+  const worktreeMode = cfgBoolean(config.worktreeMode) === true;
+  const checkpoints = cfgBoolean(config.checkpoints) === true;
+
+  const args: string[] = [];
+  if (profile) args.push("--profile", profile);
+
+  // Use -Q (quiet) to get clean output: just response + session_id line.
+  const useQuiet = cfgBoolean(config.quiet) === true;
+  args.push("chat", "-q", prompt);
+  if (useQuiet) args.push("-Q");
+
+  if (model) {
+    args.push("-m", model);
+  }
+
+  // Always pass --provider when we have a resolved one (not "auto").
+  // "auto" means Hermes will decide on its own — no need to pass it.
+  if (resolvedProvider !== "auto") {
+    args.push("--provider", resolvedProvider);
+  }
+
+  if (toolsets) {
+    args.push("-t", toolsets);
+  }
+
+  if (maxTurns && maxTurns > 0) {
+    args.push("--max-turns", String(maxTurns));
+  }
+
+  if (worktreeMode) args.push("-w");
+  if (checkpoints) args.push("--checkpoints");
+  if (cfgBoolean(config.verbose) === true) args.push("-v");
+
+  // Tag sessions as "tool" source so they don't clutter the user's session history.
+  // Requires hermes-agent >= PR #3255 (feat/session-source-tag).
+  args.push("--source", "tool");
+
+  // Dangerous command approval bypass is intentionally opt-in. Paperclip does
+  // not guarantee Hermes subprocess sandboxing here.
+  if (cfgBoolean(config.dangerousCommandBypass) === true) args.push("--yolo");
+
+  if (persistSession && previousSessionId) {
+    args.push("--resume", previousSessionId);
+  }
+
+  return { command, args };
 }
 
 // ---------------------------------------------------------------------------
@@ -334,18 +477,15 @@ export async function execute(
   ctx: AdapterExecutionContext,
 ): Promise<AdapterExecutionResult> {
   const config = (ctx.config ?? ctx.agent?.adapterConfig ?? {}) as Record<string, unknown>;
+  const validatedConfig = validateHermesAdapterConfig(config);
+  const hermesPaths = resolveHermesHomePaths(validatedConfig.profile);
 
   // ── Resolve configuration ──────────────────────────────────────────────
-  const hermesCmd = resolveHermesCommand(config);
   const model = cfgString(config.model) || DEFAULT_MODEL;
   const timeoutSec = cfgNumber(config.timeoutSec) || DEFAULT_TIMEOUT_SEC;
   const graceSec = cfgNumber(config.graceSec) || DEFAULT_GRACE_SEC;
   const maxTurns = cfgNumber(config.maxTurnsPerRun);
-  const toolsets = cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(",");
-  const extraArgs = cfgStringArray(config.extraArgs);
   const persistSession = cfgBoolean(config.persistSession) !== false;
-  const worktreeMode = cfgBoolean(config.worktreeMode) === true;
-  const checkpoints = cfgBoolean(config.checkpoints) === true;
   const prevSessionId = cfgString(
     (ctx.runtime?.sessionParams as Record<string, unknown> | null)?.sessionId,
   );
@@ -353,7 +493,7 @@ export async function execute(
   // ── Resolve provider (defense in depth) ────────────────────────────────
   // Priority chain:
   //   1. Explicit provider in adapterConfig (user override)
-  //   2. Provider from ~/.hermes/config.yaml (detected at runtime)
+  //   2. Provider from selected Hermes profile/config (detected at runtime)
   //   3. Provider inferred from model name prefix
   //   4. "auto" (let Hermes decide)
   //
@@ -364,11 +504,7 @@ export async function execute(
   const explicitProvider = cfgString(config.provider);
 
   if (!explicitProvider) {
-    try {
-      detectedConfig = await detectModel();
-    } catch {
-      // Non-fatal — detection failure shouldn't block execution
-    }
+    detectedConfig = await detectModel(hermesPaths.configPath);
   }
 
   const { provider: resolvedProvider, resolvedFrom } = resolveProvider({
@@ -415,51 +551,14 @@ export async function execute(
   }
 
   // ── Build command args ─────────────────────────────────────────────────
-  // Use -Q (quiet) to get clean output: just response + session_id line
-  const useQuiet = cfgBoolean(config.quiet) === true; // default false
-  const args: string[] = ["chat", "-q", prompt];
-  if (useQuiet) args.push("-Q");
-
-  if (model) {
-    args.push("-m", model);
-  }
-
-  // Always pass --provider when we have a resolved one (not "auto").
-  // "auto" means Hermes will decide on its own — no need to pass it.
-  if (resolvedProvider !== "auto") {
-    args.push("--provider", resolvedProvider);
-  }
-
-  if (toolsets) {
-    args.push("-t", toolsets);
-  }
-
-  if (maxTurns && maxTurns > 0) {
-    args.push("--max-turns", String(maxTurns));
-  }
-
-  if (worktreeMode) args.push("-w");
-  if (checkpoints) args.push("--checkpoints");
-  if (cfgBoolean(config.verbose) === true) args.push("-v");
-
-  // Tag sessions as "tool" source so they don't clutter the user's session history.
-  // Requires hermes-agent >= PR #3255 (feat/session-source-tag).
-  args.push("--source", "tool");
-
-  // Bypass Hermes dangerous-command approval prompts.
-  // Paperclip agents run as non-interactive subprocesses with no TTY,
-  // so approval prompts would always timeout and deny legitimate commands
-  // (curl, python3 -c, etc.). Agents operate in a sandbox — the approval
-  // system is designed for human-attended interactive sessions.
-  args.push("--yolo");
-
-  if (persistSession && prevSessionId) {
-    args.push("--resume", prevSessionId);
-  }
-
-  if (extraArgs?.length) {
-    args.push(...extraArgs);
-  }
+  const invocation = buildHermesInvocation({
+    config,
+    prompt,
+    model,
+    resolvedProvider,
+    previousSessionId: prevSessionId,
+    selection: hermesPaths.selection,
+  });
 
   // ── Build environment ──────────────────────────────────────────────────
   const userEnv = config.env as Record<string, string> | undefined;
@@ -468,6 +567,10 @@ export async function execute(
     ...(userEnv && typeof userEnv === "object" ? userEnv : {}),
     ...buildPaperclipEnv(ctx.agent),
   };
+  env.HERMES_HOME = hermesPaths.selectedHome;
+  if (hermesPaths.selection.kind === "supervised_root" && process.env.HERMES_S6_SUPERVISED_CHILD) {
+    env.HERMES_S6_SUPERVISED_CHILD = process.env.HERMES_S6_SUPERVISED_CHILD;
+  }
 
   if (ctx.runId) env.PAPERCLIP_RUN_ID = ctx.runId;
 
@@ -532,7 +635,7 @@ export async function execute(
     return ctx.onLog(stream, chunk);
   };
 
-  const result = await runChildProcess(ctx.runId, hermesCmd, args, {
+  const result = await runChildProcess(ctx.runId, invocation.command, invocation.args, {
     cwd,
     env,
     timeoutSec,

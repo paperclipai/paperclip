@@ -29,7 +29,13 @@ export function getConfigSchema(): AdapterConfigSchema {
           value: provider,
           label: providerLabel(provider),
         })),
-        hint: "Usually auto. Set this only when Hermes cannot infer the provider from the model or ~/.hermes/config.yaml.",
+        hint: "Usually auto. Set this only when Hermes cannot infer the provider from the model or selected profile/config.",
+      },
+      {
+        key: "profile",
+        label: "Hermes profile",
+        type: "text",
+        hint: "Optional Hermes profile name. Use default or lowercase 1-64 letters, numbers, underscores, or hyphens; must start with a letter or number.",
       },
       {
         key: "timeoutSec",
@@ -90,6 +96,13 @@ export function getConfigSchema(): AdapterConfigSchema {
         type: "toggle",
         default: false,
         hint: "Pass Hermes --verbose.",
+      },
+      {
+        key: "dangerousCommandBypass",
+        label: "Dangerous: bypass command approvals",
+        type: "toggle",
+        default: false,
+        hint: "Advanced opt-in after separate sandbox validation. When false, approvals follow the selected Hermes profile.",
       },
       {
         key: "paperclipApiUrl",

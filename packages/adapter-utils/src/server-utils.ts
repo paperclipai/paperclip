@@ -2401,9 +2401,32 @@ async function resolveSpawnTarget(
 }
 
 export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  if (typeof env.PATH === "string" && env.PATH.length > 0) return env;
-  if (typeof env.Path === "string" && env.Path.length > 0) return env;
-  return { ...env, PATH: defaultPathForPlatform() };
+  const pathKey = typeof env.Path === "string" && env.Path.length > 0 ? "Path" : "PATH";
+  const pathValue =
+    typeof env[pathKey] === "string" && env[pathKey]!.length > 0
+      ? env[pathKey]!
+      : defaultPathForPlatform();
+
+  if (process.platform === "win32") {
+    return { ...env, [pathKey]: pathValue };
+  }
+
+  // Services launched by package managers/systemd often inherit a minimal PATH
+  // that omits user install locations. Hermes and other local CLIs are commonly
+  // installed in ~/.local/bin or ~/bin, so make those resolvable even when PATH
+  // is otherwise non-empty.
+  const homeDir = env.HOME || os.homedir();
+  const candidates = [path.join(homeDir, ".local", "bin"), path.join(homeDir, "bin")];
+  const parts = [...candidates, ...pathValue.split(":")].filter(Boolean);
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+  for (const part of parts) {
+    if (seen.has(part)) continue;
+    seen.add(part);
+    deduped.push(part);
+  }
+
+  return { ...env, [pathKey]: deduped.join(":") };
 }
 
 export async function ensureAbsoluteDirectory(

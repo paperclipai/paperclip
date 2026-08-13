@@ -19,17 +19,16 @@ type keys did not change during package consolidation.
 
 This adapter provides:
 
-- **8 inference providers** — Anthropic, OpenRouter, OpenAI, Nous, OpenAI Codex, ZAI, Kimi Coding, MiniMax
+- **8 inference providers plus Hermes's `moa` virtual provider** — Anthropic, OpenRouter, OpenAI, Nous, OpenAI Codex, ZAI, Kimi Coding, MiniMax; `moa` is backed by the selected Hermes profile/config
 - **Skills integration** — Scans both Paperclip-managed and Hermes-native skills (`~/.hermes/skills/`), with sync/list/resolve APIs
 - **Structured transcript parsing** — Raw Hermes stdout is parsed into typed `TranscriptEntry` objects so Paperclip renders proper tool cards with status icons and expand/collapse
 - **Rich post-processing** — Converts Hermes ASCII banners, setext headings, and `+--+` table borders into clean GFM markdown
 - **Comment-driven wakes** — Agents wake to respond to issue comments, not just task assignments
-- **Auto model detection** — Reads `~/.hermes/config.yaml` to pre-populate the UI with the user's configured model
+- **Auto model detection** — Reads the selected Hermes profile/config to pre-populate the UI with the user's configured model
 - **Session codec** — Structured validation and migration of session state across heartbeats
 - **Benign stderr reclassification** — MCP init messages and structured logs are reclassified so they don't appear as errors in the UI
 - **Session source tagging** — Sessions are tagged as `tool` source so they don't clutter the user's interactive history
 - **Filesystem checkpoints** — Optional `--checkpoints` for rollback safety
-- **Thinking effort control** — Passes `--reasoning-effort` for thinking/reasoning models
 
 ### Hermes Agent Capabilities
 
@@ -96,6 +95,7 @@ In the Paperclip UI or via API, create an agent with adapter type `hermes_local`
   "adapterType": "hermes_local",
   "adapterConfig": {
     "model": "anthropic/claude-sonnet-4",
+    "profile": "paperclip-engineer",
     "maxIterations": 50,
     "timeoutSec": 300,
     "persistSession": true,
@@ -106,6 +106,8 @@ In the Paperclip UI or via API, create an agent with adapter type `hermes_local`
 
 This mode shells out to the local `hermes` CLI. Paperclip injects runtime
 environment variables and captures stdout/stderr from the child process.
+The local adapter always uses the built-in `hermes` command; custom binaries,
+paths, shell aliases, and wrapper commands are rejected before execution.
 
 ### 3. Create a Hermes gateway agent in Paperclip
 
@@ -220,8 +222,9 @@ Create issues in Paperclip and assign them to your Hermes agent. On each heartbe
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `model` | string | `anthropic/claude-sonnet-4` | Model in `provider/model` format |
-| `provider` | string | *(auto-detected)* | API provider: `auto`, `openrouter`, `nous`, `openai-codex`, `zai`, `kimi-coding`, `minimax`, `minimax-cn` |
+| `model` | string | Hermes configured default | Optional model in `provider/model` format. Leave unset to use the selected Hermes profile's configured default. |
+| `provider` | string | *(auto-detected)* | API provider: `auto`, `openrouter`, `nous`, `openai-codex`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, or Hermes's virtual `moa` provider backed by the selected profile/config |
+| `profile` | string | *(none)* | Optional Hermes profile name passed as `--profile <name>` before `chat`. `default` is allowed. Other names must match `[a-z0-9][a-z0-9_-]{0,63}`; reserved names `hermes`, `test`, `tmp`, `root`, and `sudo` are rejected. Hermes pre-parses `--profile` before `chat`, even though top-level help may omit it. |
 | `timeoutSec` | number | `300` | Execution timeout in seconds |
 | `graceSec` | number | `10` | Grace period before SIGKILL |
 
@@ -245,13 +248,21 @@ Available toolsets: `terminal`, `file`, `web`, `browser`, `code_execution`, `vis
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `hermesCommand` | string | `hermes` | Custom CLI binary path |
+| `command` / `hermesCommand` | string | `hermes` | Must be blank or exactly `hermes`; custom binaries, paths, aliases, and wrapper commands are rejected |
 | `verbose` | boolean | `false` | Enable verbose output |
 | `quiet` | boolean | `true` | Quiet mode (clean output, no banner/spinner) |
-| `extraArgs` | string[] | `[]` | Additional CLI arguments |
+| `dangerousCommandBypass` | boolean | `false` | Dangerous advanced opt-in. When false, Hermes follows the selected profile's `approvals.mode`; smart mode may auto-approve low-risk commands and auto-deny dangerous commands. When true, Paperclip passes `--yolo` after separate sandbox validation; the adapter does not prove sandboxing. |
+| `extraArgs` | string[] | `[]` | Must be empty; arbitrary CLI arguments are rejected before execution |
 | `env` | object | `{}` | Extra environment variables |
 | `promptTemplate` | string | *(built-in)* | Custom prompt template |
 | `paperclipApiUrl` | string | `http://127.0.0.1:3100/api` | Paperclip API base URL |
+
+### Synthetic smoke requirements
+
+For this canary, use Hermes profiles that enable no
+`terminal`/`file`/`browser`/`code_execution`/`computer_use`/`messaging`
+toolsets and do not provide Paperclip credentials during synthetic smoke. This
+validates adapter wiring only; it is not a full worker cohort readiness claim.
 
 ### Prompt Template Variables
 

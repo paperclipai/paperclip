@@ -11,6 +11,7 @@ import {
   buildRuntimeMountedSkillSnapshot,
   buildInvocationEnvForLogs,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  ensurePathInEnv,
   materializePaperclipSkillCopy,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
@@ -70,6 +71,38 @@ describe("buildInvocationEnvForLogs", () => {
     expect(loggedEnv.PAPERCLIP_RESOLVED_COMMAND).toBe(
       "env OPENAI_API_KEY=***REDACTED*** PAPERCLIP_API_KEY='***REDACTED***' custom-acp --paperclip-api-key=***REDACTED*** --token ***REDACTED***",
     );
+  });
+});
+
+describe("ensurePathInEnv", () => {
+  it("prepends user install bins to an existing POSIX PATH", () => {
+    if (process.platform === "win32") return;
+
+    const env = ensurePathInEnv({
+      HOME: "/home/example",
+      PATH: "/usr/local/bin:/usr/bin:/bin",
+    });
+
+    expect(env.PATH?.split(":").slice(0, 2)).toEqual([
+      "/home/example/.local/bin",
+      "/home/example/bin",
+    ]);
+    expect(env.PATH).toContain("/usr/bin");
+  });
+
+  it("does not duplicate user install bins already present in PATH", () => {
+    if (process.platform === "win32") return;
+
+    const env = ensurePathInEnv({
+      HOME: "/home/example",
+      PATH: "/home/example/.local/bin:/usr/bin:/home/example/bin",
+    });
+
+    expect(env.PATH?.split(":")).toEqual([
+      "/home/example/.local/bin",
+      "/home/example/bin",
+      "/usr/bin",
+    ]);
   });
 });
 

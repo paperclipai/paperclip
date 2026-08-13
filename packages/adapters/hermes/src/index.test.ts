@@ -19,11 +19,31 @@ test("root package export exposes Paperclip external adapter entrypoint", () => 
   expect(adapter.supportsLocalAgentJwt).toBe(true);
   expect(adapter.supportsInstructionsBundle).toBe(true);
   expect(adapter.instructionsPathKey).toBe("instructionsFilePath");
-  expect(adapter.getRuntimeCommandSpec?.({ command: "hermes-dev" })).toMatchObject({
-    command: "hermes-dev",
-    detectCommand: "hermes-dev",
+  expect(adapter.getRuntimeCommandSpec?.({})).toMatchObject({
+    command: "hermes",
+    detectCommand: "hermes",
     installCommand: null,
   });
+  expect(adapter.getRuntimeCommandSpec?.({ command: "hermes" })).toMatchObject({
+    command: "hermes",
+    detectCommand: "hermes",
+    installCommand: null,
+  });
+  expect(() => adapter.getRuntimeCommandSpec?.({ command: "hermes-dev" })).toThrow(/command/i);
+  expect(() => adapter.getRuntimeCommandSpec?.({ command: 1 })).toThrow(/command/i);
+  expect(() => adapter.getRuntimeCommandSpec?.({ command: true })).toThrow(/command/i);
+  expect(() => adapter.getRuntimeCommandSpec?.({ command: { value: "hermes" } })).toThrow(/command/i);
+  expect(() => adapter.getRuntimeCommandSpec?.({ command: ["hermes"] })).toThrow(/command/i);
+  expect(() => adapter.getRuntimeCommandSpec?.({ hermesCommand: 1 })).toThrow(/hermesCommand/i);
+  expect(() => adapter.getRuntimeCommandSpec?.({ hermesCommand: false })).toThrow(/hermesCommand/i);
+  expect(() => adapter.getRuntimeCommandSpec?.({ hermesCommand: { value: "hermes" } })).toThrow(/hermesCommand/i);
+  expect(() => adapter.getRuntimeCommandSpec?.({ hermesCommand: ["hermes"] })).toThrow(/hermesCommand/i);
+  expect(() => adapter.getRuntimeCommandSpec?.({ profile: "Agent" })).toThrow(/profile/i);
+  expect(() => adapter.getRuntimeCommandSpec?.({ profile: "root" })).toThrow(/reserved/i);
+  expect(() => adapter.getRuntimeCommandSpec?.({ extraArgs: ["--profile", "other"] })).toThrow(/extraArgs/i);
+  expect(() => adapter.getRuntimeCommandSpec?.({ extraArgs: [1] })).toThrow(/extraArgs/i);
+  expect(() => adapter.getRuntimeCommandSpec?.({ extraArgs: "--profile other" })).toThrow(/extraArgs/i);
+  expect(() => adapter.getRuntimeCommandSpec?.({ extraArgs: { value: "--profile other" } })).toThrow(/extraArgs/i);
   expect(typeof adapter.detectModel).toBe("function");
   expect(typeof adapter.getConfigSchema).toBe("function");
 });

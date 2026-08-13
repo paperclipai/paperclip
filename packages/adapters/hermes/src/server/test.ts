@@ -16,10 +16,19 @@ import { readFileSync } from "node:fs";
 import { promisify } from "node:util";
 
 import { HERMES_CLI, DEFAULT_MODEL, ADAPTER_TYPE, VALID_PROVIDERS } from "../shared/constants.js";
-import { detectModel, resolveProvider, inferProviderFromModel } from "./detect-model.js";
-import { resolveHermesCommand } from "./execute.js";
+import { detectModel, resolveHermesHomePaths, resolveProvider } from "./detect-model.js";
+import { validateHermesAdapterConfig } from "./execute.js";
 
 const execFileAsync = promisify(execFile);
+
+export type SubprocessRunner = (
+  command: string,
+  args: readonly string[],
+  options: { timeout: number },
+) => Promise<{ stdout: string; stderr: string }>;
+
+const realSubprocessRunner: SubprocessRunner = async (command, args, options) =>
+  execFileAsync(command, [...args], options);
 
 function asString(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
@@ -31,10 +40,11 @@ function asString(v: unknown): string | undefined {
 
 async function checkCliInstalled(
   command: string,
+  runner: SubprocessRunner,
 ): Promise<AdapterEnvironmentCheck | null> {
   try {
     // Try to run the command to see if it exists
-    await execFileAsync(command, ["--version"], { timeout: 10_000 });
+    await runner(command, ["--version"], { timeout: 10_000 });
     return null; // OK — it ran successfully
   } catch (err: unknown) {
     const e = err as NodeJS.ErrnoException;
@@ -54,9 +64,10 @@ async function checkCliInstalled(
 
 async function checkCliVersion(
   command: string,
+  runner: SubprocessRunner,
 ): Promise<AdapterEnvironmentCheck | null> {
   try {
-    const { stdout } = await execFileAsync(command, ["--version"], {
+    const { stdout } = await runner(command, ["--version"], {
       timeout: 10_000,
     });
     const version = stdout.trim();
@@ -83,9 +94,9 @@ async function checkCliVersion(
   }
 }
 
-async function checkPython(): Promise<AdapterEnvironmentCheck | null> {
+async function checkPython(runner: SubprocessRunner): Promise<AdapterEnvironmentCheck | null> {
   try {
-    const { stdout } = await execFileAsync("python3", ["--version"], {
+    const { stdout } = await runner("python3", ["--version"], {
       timeout: 5_000,
     });
     const version = stdout.trim();
@@ -113,6 +124,28 @@ async function checkPython(): Promise<AdapterEnvironmentCheck | null> {
   }
 }
 
+async function checkProfile(
+  profile: string | undefined,
+  runner: SubprocessRunner,
+): Promise<AdapterEnvironmentCheck | null> {
+  if (!profile) return null;
+  try {
+    await runner(HERMES_CLI, ["profile", "show", profile], { timeout: 10_000 });
+    return {
+      level: "info",
+      message: `Hermes profile "${profile}" is available`,
+      code: "hermes_profile_available",
+    };
+  } catch {
+    return {
+      level: "error",
+      message: `Hermes profile "${profile}" is not available or could not be loaded`,
+      hint: "Create the profile with Hermes or select an existing profile before using this adapter.",
+      code: "hermes_profile_unavailable",
+    };
+  }
+}
+
 function checkModel(
   config: Record<string, unknown>,
 ): AdapterEnvironmentCheck | null {
@@ -135,25 +168,24 @@ function checkModel(
 async function checkApiKeys(
   config: Record<string, unknown>,
   detectedConfig: Awaited<ReturnType<typeof detectModel>> | null,
+  selectedEnvPath: string,
 ): Promise<AdapterEnvironmentCheck | null> {
   // The server resolves secret refs into config.env before calling testEnvironment,
   // so we check config.env first (adapter-configured secrets), then fall back to
-  // process.env (server/host environment), then ~/.hermes/.env (Hermes local config).
+  // process.env (server/host environment), then the selected Hermes profile/root
+  // .env file that Hermes itself would load.
   const envConfig = (config.env ?? {}) as Record<string, unknown>;
   const resolvedEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string" && value.length > 0) resolvedEnv[key] = value;
   }
 
-  // Also read ~/.hermes/.env — Hermes stores API keys there by default and does
-  // not export them to the parent process, so Paperclip's process.env won't
-  // contain them.  Parsing this file ensures the environment test reports
-  // accurate results for keys that Hermes already knows about.
+  // Also read the selected Hermes .env. Hermes stores API keys there by default
+  // and does not export them to the parent process, so Paperclip's process.env
+  // won't contain them.
   const hermesEnvKeys: Record<string, string> = {};
   try {
-    const homeDir = process.env.HOME || process.env.USERPROFILE || "/root";
-    const hermesEnvPath = `${homeDir}/.hermes/.env`;
-    const content = readFileSync(hermesEnvPath, "utf-8");
+    const content = readFileSync(selectedEnvPath, "utf-8");
     for (const line of content.split("\n")) {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith("#")) continue;
@@ -165,7 +197,7 @@ async function checkApiKeys(
       }
     }
   } catch {
-    // ~/.hermes/.env may not exist — that's fine
+    // The selected Hermes .env may not exist — that's fine.
   }
 
   const has = (key: string): boolean =>
@@ -211,8 +243,8 @@ async function checkApiKeys(
     if (!providerLabel) {
       return {
         level: "info",
-        message: "Hermes config includes an API key for the requested model via ~/.hermes/config.yaml without an explicit provider",
-        hint: "Skipping the built-in API-key warning because Hermes can use model.api_key from the local Hermes config.",
+        message: "Selected Hermes profile/config includes an API key for the requested model without an explicit provider",
+        hint: "Skipping the built-in API-key warning because Hermes can use model.api_key from the selected profile/config.",
         code: "hermes_api_key_in_config",
       };
     }
@@ -220,7 +252,7 @@ async function checkApiKeys(
     if (!supportedProviders.includes(providerLabel)) {
       return {
         level: "info",
-        message: `Hermes config includes runtime settings for unsupported adapter provider "${providerLabel}" via ~/.hermes/config.yaml`,
+        message: `Selected Hermes profile/config includes runtime settings for unsupported adapter provider "${providerLabel}"`,
         hint: "Skipping the built-in API-key warning because Hermes can resolve this provider at runtime.",
         code: "hermes_custom_provider_config",
       };
@@ -228,8 +260,8 @@ async function checkApiKeys(
 
     return {
       level: "info",
-      message: `Hermes config includes an API key for provider "${providerLabel}" via ~/.hermes/config.yaml`,
-      hint: "Skipping the built-in API-key warning because Hermes can use model.api_key from the local Hermes config.",
+      message: `Selected Hermes profile/config includes an API key for provider "${providerLabel}"`,
+      hint: "Skipping the built-in API-key warning because Hermes can use model.api_key from the selected profile/config.",
       code: "hermes_api_key_in_config",
     };
   }
@@ -237,7 +269,7 @@ async function checkApiKeys(
   return {
     level: "warn",
     message: "No LLM API keys found in environment",
-    hint: "Set API keys in the agent's env secrets or ~/.hermes/.env. Hermes supports: ANTHROPIC_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, ZAI_API_KEY, KIMI_API_KEY, MINIMAX_API_KEY",
+    hint: "Set API keys in the agent's env secrets, process environment, or selected Hermes profile/config. Hermes supports: ANTHROPIC_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, ZAI_API_KEY, KIMI_API_KEY, MINIMAX_API_KEY",
     code: "hermes_no_api_keys",
   };
 }
@@ -254,6 +286,9 @@ async function checkProviderConsistency(
   if (!model) return null;
 
   const explicitProvider = asString(config.provider);
+  const providerOverride = explicitProvider && explicitProvider !== "auto"
+    ? explicitProvider
+    : undefined;
 
   const { provider: resolved, resolvedFrom } = resolveProvider({
     explicitProvider,
@@ -267,40 +302,40 @@ async function checkProviderConsistency(
 
   // If provider was explicitly set but doesn't match what Hermes config says,
   // that's worth flagging.
-  if (explicitProvider && detectedConfig?.provider && explicitProvider !== detectedConfig.provider) {
+  if (providerOverride && detectedConfig?.provider && providerOverride !== detectedConfig.provider) {
     return {
       level: "warn",
-      message: `Provider mismatch: adapterConfig has "${explicitProvider}" but ~/.hermes/config.yaml has "${detectedConfig.provider}". Using adapterConfig value.`,
-      hint: `Model "${model}" may not work correctly with provider "${explicitProvider}". Consider aligning with your Hermes config or removing the explicit provider to use auto-detection.`,
+      message: `Provider mismatch: adapterConfig has "${providerOverride}" but selected Hermes profile/config has "${detectedConfig.provider}". Using adapterConfig value.`,
+      hint: `Model "${model}" may not work correctly with provider "${providerOverride}". Consider aligning with your Hermes config or removing the explicit provider to use auto-detection.`,
       code: "hermes_provider_mismatch",
     };
   }
 
   // If Hermes config matches the requested model but uses an adapter-unsupported
   // provider such as "custom", do not report a false provider inference.
-  if (!explicitProvider && resolvedFrom.startsWith("hermesConfigUnsupported:")) {
+  if (!providerOverride && resolvedFrom.startsWith("hermesConfigUnsupported:")) {
     const unsupportedProvider = resolvedFrom.split(":", 2)[1] || detectedConfig?.provider || "unknown";
     return {
       level: "info",
       message: `Hermes config uses unsupported adapter provider "${unsupportedProvider}" for model "${model}" — deferring to Hermes auto-detection`,
-      hint: "Paperclip will avoid model-name provider inference here and let Hermes resolve the provider from ~/.hermes/config.yaml at runtime.",
+      hint: "Paperclip will avoid model-name provider inference here and let Hermes resolve the provider from the selected profile/config at runtime.",
       code: "hermes_provider_unsupported",
     };
   }
 
   // If matching Hermes config provides runtime signals without an explicit provider,
   // also defer to Hermes rather than inventing a provider from the model name.
-  if (!explicitProvider && resolvedFrom === "hermesConfigRuntime") {
+  if (!providerOverride && resolvedFrom === "hermesConfigRuntime") {
     return {
       level: "info",
       message: `Hermes config provides runtime settings for model "${model}" without an explicit adapter provider — deferring to Hermes auto-detection`,
-      hint: "Paperclip will avoid model-name provider inference here and let Hermes resolve the provider from ~/.hermes/config.yaml at runtime.",
+      hint: "Paperclip will avoid model-name provider inference here and let Hermes resolve the provider from the selected profile/config at runtime.",
       code: "hermes_provider_runtime_config",
     };
   }
 
   // If provider was auto-detected (not explicitly set), log what was resolved
-  if (!explicitProvider && resolvedFrom !== "auto") {
+  if (!providerOverride && resolvedFrom !== "auto") {
     return {
       level: "info",
       message: `Provider auto-detected as "${resolved}" (from ${resolvedFrom}) for model "${model}"`,
@@ -309,11 +344,11 @@ async function checkProviderConsistency(
   }
 
   // If we couldn't resolve any provider, warn
-  if (resolvedFrom === "auto" && !explicitProvider) {
+  if (resolvedFrom === "auto" && !providerOverride) {
     return {
       level: "warn",
       message: `Could not determine provider for model "${model}" — will use Hermes auto-detection`,
-      hint: "Set an explicit provider in the agent config or ensure ~/.hermes/config.yaml has a matching provider for this model.",
+      hint: "Set an explicit provider in the agent config or ensure the selected Hermes profile/config has a matching provider for this model.",
       code: "hermes_provider_unknown",
     };
   }
@@ -328,60 +363,118 @@ async function checkProviderConsistency(
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
-  const config = (ctx.config ?? {}) as Record<string, unknown>;
-  const command = resolveHermesCommand(config);
-  const checks: AdapterEnvironmentCheck[] = [];
+  return createHermesEnvironmentTester({ runner: realSubprocessRunner })(ctx);
+}
 
-  // 1. CLI installed?
-  const cliCheck = await checkCliInstalled(command);
-  if (cliCheck) {
-    checks.push(cliCheck);
-    if (cliCheck.level === "error") {
+export function createHermesEnvironmentTester(options: {
+  runner: SubprocessRunner;
+}) {
+  return async function testHermesEnvironment(
+    ctx: AdapterEnvironmentTestContext,
+  ): Promise<AdapterEnvironmentTestResult> {
+    const config = (ctx.config ?? {}) as Record<string, unknown>;
+    let validatedConfig: ReturnType<typeof validateHermesAdapterConfig>;
+    try {
+      validatedConfig = validateHermesAdapterConfig(config);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
       return {
         adapterType: ADAPTER_TYPE,
         status: "fail",
-        checks,
+        checks: [{
+          level: "error",
+          message: reason,
+          code: "hermes_invalid_config",
+        }],
         testedAt: new Date().toISOString(),
       };
     }
-  }
+    const command = validatedConfig.command;
+    let hermesPaths: ReturnType<typeof resolveHermesHomePaths>;
+    try {
+      hermesPaths = resolveHermesHomePaths(validatedConfig.profile, {
+        validateSelectedHome: !validatedConfig.profile,
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      return {
+        adapterType: ADAPTER_TYPE,
+        status: "fail",
+        checks: [{
+          level: "error",
+          message: reason,
+          code: "hermes_profile_resolution_failed",
+        }],
+        testedAt: new Date().toISOString(),
+      };
+    }
+    const checks: AdapterEnvironmentCheck[] = [];
 
-  // 2. CLI version
-  const versionCheck = await checkCliVersion(command);
-  if (versionCheck) checks.push(versionCheck);
+    // 1. CLI installed?
+    const cliCheck = await checkCliInstalled(command, options.runner);
+    if (cliCheck) {
+      checks.push(cliCheck);
+      if (cliCheck.level === "error") {
+        return {
+          adapterType: ADAPTER_TYPE,
+          status: "fail",
+          checks,
+          testedAt: new Date().toISOString(),
+        };
+      }
+    }
 
-  // 3. Python available?
-  const pythonCheck = await checkPython();
-  if (pythonCheck) checks.push(pythonCheck);
+    // 2. CLI version
+    const versionCheck = await checkCliVersion(command, options.runner);
+    if (versionCheck) checks.push(versionCheck);
 
-  // 4. Model config
-  const modelCheck = checkModel(config);
-  if (modelCheck) checks.push(modelCheck);
+    // 3. Python available?
+    const pythonCheck = await checkPython(options.runner);
+    if (pythonCheck) checks.push(pythonCheck);
 
-  // 5. Detect Hermes config once for the remaining checks.
-  let detectedConfig: Awaited<ReturnType<typeof detectModel>> | null = null;
-  try {
-    detectedConfig = await detectModel();
-  } catch {
-    // Non-fatal
-  }
+    // 4. Named profile available?
+    const profileCheck = await checkProfile(validatedConfig.profile, options.runner);
+    if (profileCheck) {
+      checks.push(profileCheck);
+      if (profileCheck.level === "error") {
+        return {
+          adapterType: ADAPTER_TYPE,
+          status: "fail",
+          checks,
+          testedAt: new Date().toISOString(),
+        };
+      }
+    }
 
-  // 6. API keys (check config.env — server resolves secrets before calling us)
-  const apiKeyCheck = await checkApiKeys(config, detectedConfig);
-  if (apiKeyCheck) checks.push(apiKeyCheck);
+    // 5. Model config
+    const modelCheck = checkModel(config);
+    if (modelCheck) checks.push(modelCheck);
 
-  // 7. Provider/model consistency
-  const providerCheck = await checkProviderConsistency(config, detectedConfig);
-  if (providerCheck) checks.push(providerCheck);
+    // 6. Detect Hermes config once for the remaining checks.
+    let detectedConfig: Awaited<ReturnType<typeof detectModel>> | null = null;
+    try {
+      detectedConfig = await detectModel(hermesPaths.configPath);
+    } catch {
+      // Non-fatal
+    }
 
-  // Determine overall status
-  const hasErrors = checks.some((c) => c.level === "error");
-  const hasWarnings = checks.some((c) => c.level === "warn");
+    // 7. API keys (check config.env — server resolves secrets before calling us)
+    const apiKeyCheck = await checkApiKeys(config, detectedConfig, hermesPaths.envPath);
+    if (apiKeyCheck) checks.push(apiKeyCheck);
 
-  return {
-    adapterType: ADAPTER_TYPE,
-    status: hasErrors ? "fail" : hasWarnings ? "warn" : "pass",
-    checks,
-    testedAt: new Date().toISOString(),
+    // 8. Provider/model consistency
+    const providerCheck = await checkProviderConsistency(config, detectedConfig);
+    if (providerCheck) checks.push(providerCheck);
+
+    // Determine overall status
+    const hasErrors = checks.some((c) => c.level === "error");
+    const hasWarnings = checks.some((c) => c.level === "warn");
+
+    return {
+      adapterType: ADAPTER_TYPE,
+      status: hasErrors ? "fail" : hasWarnings ? "warn" : "pass",
+      checks,
+      testedAt: new Date().toISOString(),
+    };
   };
 }

@@ -7,7 +7,7 @@
  * NOTE: Provider resolution happens at runtime in execute.ts, not here.
  * The UI may or may not pass a provider field. If it does, we persist it
  * as the user's explicit override. If not, execute.ts will detect it from
- * ~/.hermes/config.yaml at runtime.
+ * the selected Hermes profile/config at runtime.
  */
 
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
@@ -34,7 +34,7 @@ export function buildHermesConfig(
   // Instead, provider is resolved at runtime in execute.ts using
   // a priority chain:
   //   1. adapterConfig.provider (if set via API directly)
-  //   2. ~/.hermes/config.yaml detection
+  //   2. Selected Hermes profile/config detection
   //   3. Model-name prefix inference
   //   4. "auto" fallback
   // This ensures correct provider routing even for agents created
@@ -57,23 +57,6 @@ export function buildHermesConfig(
   // Working directory
   if (v.cwd) {
     ac.cwd = v.cwd;
-  }
-
-  // Custom hermes binary path
-  if (v.command) {
-    ac.hermesCommand = v.command;
-  }
-
-  // Extra CLI arguments
-  if (v.extraArgs) {
-    ac.extraArgs = v.extraArgs.split(/\s+/).filter(Boolean);
-  }
-
-  // Thinking/reasoning effort
-  if (v.thinkingEffort) {
-    const existing = (ac.extraArgs as string[]) || [];
-    existing.push("--reasoning-effort", String(v.thinkingEffort));
-    ac.extraArgs = existing;
   }
 
   // Prompt template

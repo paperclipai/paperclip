@@ -1437,6 +1437,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             },
             createdAt: now,
             updatedAt: now,
+            lastUsedAt: null,
           } satisfies CompanySkill;
           const nowIso = now.toISOString();
           const record: PluginEntityRecord = {

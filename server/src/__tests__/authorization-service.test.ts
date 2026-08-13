@@ -699,6 +699,139 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("denies simple-mode task assignment when the actor explicitly opts out", async () => {
+    const company = await createCompany(db, "AssignmentOptOut");
+    const actorAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      permissions: { canAssignTasks: false },
+    });
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: actorAgent.id,
+      status: "active",
+      membershipRole: "member",
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, assigneeAgentId: targetAgent.id },
+      scope: { assigneeAgentId: targetAgent.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+    });
+    expect(decision.explanation).toContain("explicitly opted out");
+  });
+
+  it("allows a direct task assignment grant despite an explicit opt-out", async () => {
+    const company = await createCompany(db, "AssignmentOptOutDirectGrant");
+    const actorAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      permissions: { canAssignTasks: false },
+    });
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+    await grantAgentPermission(db, company.id, actorAgent.id, "tasks:assign");
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, assigneeAgentId: targetAgent.id },
+      scope: { assigneeAgentId: targetAgent.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      reason: "allow_explicit_grant",
+      grant: { permissionKey: "tasks:assign" },
+    });
+  });
+
+  it("allows a scoped task assignment grant despite an explicit opt-out", async () => {
+    const company = await createCompany(db, "AssignmentOptOutScopedGrant");
+    const actorAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      permissions: { canAssignTasks: false },
+    });
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+    await grantAgentPermission(db, company.id, actorAgent.id, "tasks:assign_scope", {
+      assigneeAgentId: targetAgent.id,
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, assigneeAgentId: targetAgent.id },
+      scope: { assigneeAgentId: targetAgent.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      reason: "allow_explicit_grant",
+      grant: { permissionKey: "tasks:assign_scope" },
+    });
+  });
+
+  it("preserves agent-creator task assignment authority over an explicit opt-out", async () => {
+    const company = await createCompany(db, "AssignmentOptOutCreator");
+    const actorAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      permissions: { canCreateAgents: true, canAssignTasks: false },
+    });
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: actorAgent.id,
+      status: "active",
+      membershipRole: "member",
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, assigneeAgentId: targetAgent.id },
+      scope: { assigneeAgentId: targetAgent.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      reason: "allow_simple_company_member",
+    });
+  });
+
+  it("preserves CEO task assignment authority over an explicit opt-out", async () => {
+    const company = await createCompany(db, "AssignmentOptOutCeo");
+    const actorAgent = await createAgent(db, company.id, {
+      role: "ceo",
+      permissions: { canAssignTasks: false },
+    });
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: actorAgent.id,
+      status: "active",
+      membershipRole: "member",
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: company.id, assigneeAgentId: targetAgent.id },
+      scope: { assigneeAgentId: targetAgent.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      reason: "allow_simple_company_member",
+    });
+  });
+
   it("denies delegated protected assignment when the responsible user lacks matching authority", async () => {
     const company = await createCompany(db, "ResponsibleUserDenied");
     const actorAgent = await createAgent(db, company.id, { role: "engineer" });
