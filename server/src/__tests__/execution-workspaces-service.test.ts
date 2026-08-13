@@ -1457,6 +1457,129 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(row?.cleanupReason).toBeNull();
   });
 
+  it("routes every terminal-workspace write through one generation-fenced gateway that skips a stale generation", async () => {
+    // One gateway gates every destructive terminal-workspace write. This test
+    // raises the lifecycle generation past the value each writer captured, then
+    // drives all four refactored writers. Each writer must skip, because the one
+    // gateway sees the newer generation. This proves the single choke-point.
+
+    // Writer 1 (clearReopenPendingConsumptionUnderLock), reached through
+    // clearReopenPendingConsumptionForUnconsumedReopen. A reopen published the row
+    // active at generation 5 and set the flag. A newer reopen then raised the
+    // generation to 6. A clear that presents the stale generation 5 must skip.
+    const clearSeed = await seedTerminalWorkspace({ mergedPr: true });
+    const clearSince = new Date(Date.now() - 60_000).toISOString();
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "active",
+        closedAt: null,
+        cleanupReason: null,
+        cleanupEligibleAt: null,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 6,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY]: true,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY]: clearSince,
+        },
+      })
+      .where(eq(executionWorkspaces.id, clearSeed.executionWorkspaceId));
+    const clearResult = await svc.clearReopenPendingConsumptionForUnconsumedReopen({
+      workspaceId: clearSeed.executionWorkspaceId,
+      issue: { id: clearSeed.sourceIssueId, companyId: clearSeed.companyId },
+      actor: { agentId: null, actorType: "user" },
+      expectedGeneration: 5,
+    });
+    expect(clearResult).toEqual({ cleared: false });
+    const [afterClear] = await db
+      .select({ metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, clearSeed.executionWorkspaceId));
+    // The newer owner keeps its flag, so the stale clear did not touch the fence.
+    expect(metadataHasReopenPendingConsumption(afterClear?.metadata as Record<string, unknown> | null)).toBe(true);
+
+    // Writer 2 (refreshReopenPendingConsumptionUnderLock), reached through
+    // refreshReopenPendingConsumption. A refresh that presents the stale
+    // generation 5 must skip and leave the timestamp unchanged.
+    const refreshResult = await svc.refreshReopenPendingConsumption({
+      workspaceId: clearSeed.executionWorkspaceId,
+      expectedGeneration: 5,
+    });
+    expect(refreshResult).toEqual({ refreshed: false });
+    const [afterRefresh] = await db
+      .select({ metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, clearSeed.executionWorkspaceId));
+    expect(
+      readMetadataReopenPendingConsumptionSince(afterRefresh?.metadata as Record<string, unknown> | null)?.toISOString(),
+    ).toBe(clearSince);
+
+    // Writer 3 (cleanupTerminalWorkspace) runs its destructive cleanup through the
+    // same gateway call as fenceClosedWorkspaceDestruction, with the same
+    // closed-status guard. The row is closed at generation 3, but the caller
+    // captured generation 2, so the gateway skips and never runs the destroy body.
+    const destroySeed = await seedTerminalWorkspace({ mergedPr: true });
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "archived",
+        closedAt: new Date(),
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 3,
+        },
+      })
+      .where(eq(executionWorkspaces.id, destroySeed.executionWorkspaceId));
+    const destroy = vi.fn(async () => "destroyed");
+    const destroyResult = await svc.fenceClosedWorkspaceDestruction({
+      workspaceId: destroySeed.executionWorkspaceId,
+      capturedGeneration: 2,
+      destroy,
+    });
+    expect(destroyResult).toEqual({ skippedReopened: true });
+    expect(destroy).not.toHaveBeenCalled();
+
+    // Writer 4 (markTerminalCleanupFailedFenced). The reaper archives the row at
+    // one generation and captures it. The cleanup then throws. Before the catch
+    // handler writes cleanup_failed, a reopen and a fresh archive raise the
+    // generation. The fenced write must skip, so the newer archive survives.
+    const failSeed = await seedTerminalWorkspace({ mergedPr: true });
+    const newerReason = "newer_archive_lifecycle_marker";
+    const racingService = executionWorkspaceService(db, {
+      resolvePullRequestDetails: async (_companyId, reference) =>
+        pullRequestDetailsByKey.get(`${failSeed.companyId}:${reference.number}`) ?? { state: "unknown" },
+      beforeTerminalWorkspaceCleanup: async (workspace) => {
+        await db
+          .update(executionWorkspaces)
+          .set({
+            status: "archived",
+            cleanupReason: newerReason,
+            metadata: { [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 2 },
+            updatedAt: new Date(),
+          })
+          .where(eq(executionWorkspaces.id, workspace.id));
+        throw new Error("forced cleanup failure");
+      },
+    });
+    const sweep = await racingService.sweepTerminalWorkspaces();
+    expect(sweep).toMatchObject({ cleanupFailed: 1 });
+    const [afterFail] = await db
+      .select({
+        status: executionWorkspaces.status,
+        cleanupReason: executionWorkspaces.cleanupReason,
+        metadata: executionWorkspaces.metadata,
+      })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, failSeed.executionWorkspaceId));
+    // The fenced write saw the raised generation and skipped, so the newer
+    // lifecycle state survives untouched.
+    expect(afterFail?.status).toBe("archived");
+    expect(afterFail?.cleanupReason).toBe(newerReason);
+    expect(
+      (afterFail?.metadata as Record<string, unknown> | null)?.[EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY],
+    ).toBe(2);
+  });
+
   it("holds Git index and ref locks across terminal cleanup", async () => {
     const seeded = await seedTerminalWorkspace({ mergedPr: true });
     await db.update(executionWorkspaces).set({

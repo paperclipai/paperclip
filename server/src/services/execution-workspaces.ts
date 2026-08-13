@@ -1414,55 +1414,106 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     return active.length > 0;
   }
 
-  // Clear the reopen-pending flag under the per-workspace lifecycle lock. Every
-  // caller presents the lifecycle generation that owns the fence it wants to
-  // clear. The clear reads the fresh row under the lock and removes the flag only
-  // when the current generation still equals `expectedGeneration`. A newer reopen
-  // raises the generation and re-sets the flag, so its fence has a different
-  // owner. This check stops a stale actor (a delayed response cleanup, a retry,
-  // or an aged reaper snapshot) from clearing a newer reopen's live fence.
+  type FenceableWorkspaceRow = {
+    status: string;
+    metadata: Record<string, unknown> | null;
+  };
+
+  // The single generation-fenced gateway for a terminal-workspace write. It owns
+  // the whole guarded step. It acquires the per-workspace lifecycle lock, it
+  // re-reads the fresh row, and it compares the current lifecycle generation to
+  // the generation the caller captured. It runs the caller's write body only
+  // when the current generation still equals `expectedGeneration` and the fresh
+  // row still passes the caller's `isWriteTarget` guard. Otherwise it emits the
+  // optional skip log and returns the caller's skip value. Every fenced
+  // terminal-workspace write routes through this function, so no other function
+  // re-derives the lock, the fresh read, or the generation compare.
+  async function fenceLifecycleGenerationWrite<T>(input: {
+    workspaceId: string;
+    expectedGeneration: number;
+    isWriteTarget: (fresh: FenceableWorkspaceRow) => boolean;
+    onSkip: () => T;
+    skipLog?: { event: string; message: string };
+    write: (context: { tx: DbTransaction; fresh: FenceableWorkspaceRow }) => Promise<T>;
+  }): Promise<T> {
+    return db.transaction(async (tx) => {
+      await acquireExecutionWorkspaceLifecycleLock(tx, input.workspaceId);
+      const row = await tx
+        .select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, input.workspaceId))
+        .then((rows) => rows[0] ?? null);
+      const fresh: FenceableWorkspaceRow | null = row
+        ? { status: row.status, metadata: row.metadata as Record<string, unknown> | null }
+        : null;
+      const currentGeneration = fresh ? readExecutionWorkspaceLifecycleGeneration(fresh.metadata) : null;
+      if (
+        !fresh
+        || currentGeneration !== input.expectedGeneration
+        || !input.isWriteTarget(fresh)
+      ) {
+        if (input.skipLog) {
+          logger.info(
+            {
+              event: input.skipLog.event,
+              reason: "reopened",
+              executionWorkspaceId: input.workspaceId,
+              capturedGeneration: input.expectedGeneration,
+              currentGeneration,
+              currentStatus: fresh?.status ?? null,
+            },
+            input.skipLog.message,
+          );
+        }
+        return input.onSkip();
+      }
+      return input.write({ tx, fresh });
+    });
+  }
+
+  // Clear the reopen-pending flag through the lifecycle gateway. Every caller
+  // presents the lifecycle generation that owns the fence it wants to clear. The
+  // gateway removes the flag only when the current generation still equals
+  // `expectedGeneration`. A newer reopen raises the generation and re-sets the
+  // flag, so its fence has a different owner. This check stops a stale actor (a
+  // delayed response cleanup, a retry, or an aged reaper snapshot) from clearing
+  // a newer reopen's live fence.
   //
   // A caller that reclaims a stranded flag passes `requireStaleSinceBefore`. The
-  // clear then re-reads the flag timestamp from the fresh row and removes the flag
-  // only when that timestamp is still older than the cutoff. This re-confirms the
-  // strand decision against the live row instead of an aged snapshot.
+  // write-target guard then re-reads the flag timestamp from the fresh row and
+  // clears the flag only when that timestamp is still older than the cutoff. This
+  // re-confirms the strand decision against the live row instead of an aged
+  // snapshot.
   async function clearReopenPendingConsumptionUnderLock(
     workspaceId: string,
     options: { expectedGeneration: number; requireStaleSinceBefore?: Date },
   ): Promise<boolean> {
-    return db.transaction(async (tx) => {
-      await acquireExecutionWorkspaceLifecycleLock(tx, workspaceId);
-      const fresh = await tx
-        .select({ metadata: executionWorkspaces.metadata })
-        .from(executionWorkspaces)
-        .where(eq(executionWorkspaces.id, workspaceId))
-        .then((rows) => rows[0] ?? null);
-      const metadata = fresh?.metadata as Record<string, unknown> | null;
-      if (!fresh || !metadataHasReopenPendingConsumption(metadata)) {
-        return false;
-      }
-      if (readExecutionWorkspaceLifecycleGeneration(metadata) !== options.expectedGeneration) {
-        // A newer reopen owns the flag now. Do not clear another owner's fence.
-        return false;
-      }
-      if (options.requireStaleSinceBefore) {
-        const freshSince = readMetadataReopenPendingConsumptionSince(metadata);
-        const stillStale =
-          freshSince === null
-          || freshSince.getTime() <= options.requireStaleSinceBefore.getTime();
-        if (!stillStale) {
+    return fenceLifecycleGenerationWrite<boolean>({
+      workspaceId,
+      expectedGeneration: options.expectedGeneration,
+      isWriteTarget: (fresh) => {
+        if (!metadataHasReopenPendingConsumption(fresh.metadata)) return false;
+        if (options.requireStaleSinceBefore) {
+          const freshSince = readMetadataReopenPendingConsumptionSince(fresh.metadata);
+          const stillStale =
+            freshSince === null
+            || freshSince.getTime() <= options.requireStaleSinceBefore.getTime();
           // The live row shows a fresh flag, so the consumer is still in flight.
-          return false;
+          if (!stillStale) return false;
         }
-      }
-      await tx
-        .update(executionWorkspaces)
-        .set({
-          metadata: clearMetadataReopenPendingConsumption(metadata),
-          updatedAt: new Date(),
-        })
-        .where(eq(executionWorkspaces.id, workspaceId));
-      return true;
+        return true;
+      },
+      onSkip: () => false,
+      write: async ({ tx, fresh }) => {
+        await tx
+          .update(executionWorkspaces)
+          .set({
+            metadata: clearMetadataReopenPendingConsumption(fresh.metadata),
+            updatedAt: new Date(),
+          })
+          .where(eq(executionWorkspaces.id, workspaceId));
+        return true;
+      },
     });
   }
 
@@ -1481,30 +1532,23 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     workspaceId: string,
     options: { expectedGeneration: number },
   ): Promise<boolean> {
-    return db.transaction(async (tx) => {
-      await acquireExecutionWorkspaceLifecycleLock(tx, workspaceId);
-      const fresh = await tx
-        .select({ metadata: executionWorkspaces.metadata })
-        .from(executionWorkspaces)
-        .where(eq(executionWorkspaces.id, workspaceId))
-        .then((rows) => rows[0] ?? null);
-      const metadata = fresh?.metadata as Record<string, unknown> | null;
-      if (!fresh || !metadataHasReopenPendingConsumption(metadata)) {
-        return false;
-      }
-      if (readExecutionWorkspaceLifecycleGeneration(metadata) !== options.expectedGeneration) {
-        // A newer reopen or an archive raised the generation. Do not refresh
-        // another owner's fence.
-        return false;
-      }
-      await tx
-        .update(executionWorkspaces)
-        .set({
-          metadata: setMetadataReopenPendingConsumption(metadata, now()),
-          updatedAt: new Date(),
-        })
-        .where(eq(executionWorkspaces.id, workspaceId));
-      return true;
+    return fenceLifecycleGenerationWrite<boolean>({
+      workspaceId,
+      expectedGeneration: options.expectedGeneration,
+      // A newer reopen or an archive raised the generation. The gateway then
+      // skips, so this refresh never re-stamps another owner's fence.
+      isWriteTarget: (fresh) => metadataHasReopenPendingConsumption(fresh.metadata),
+      onSkip: () => false,
+      write: async ({ tx, fresh }) => {
+        await tx
+          .update(executionWorkspaces)
+          .set({
+            metadata: setMetadataReopenPendingConsumption(fresh.metadata, now()),
+            updatedAt: new Date(),
+          })
+          .where(eq(executionWorkspaces.id, workspaceId));
+        return true;
+      },
     });
   }
 
@@ -1513,43 +1557,24 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     expectedHeadSha: string | null,
     capturedGeneration: number,
   ): Promise<{ cleaned: boolean; warnings: string[]; skippedReopened?: boolean }> {
-    return db.transaction(async (tx) => {
-      // Hold the per-workspace lifecycle lock across the destructive actions. A
-      // reopen takes the same lock, so a reopen cannot rebuild the worktree while
-      // this cleanup runs, and this cleanup cannot delete a worktree that a
-      // reopen already restored. The advisory lock (not a row FOR UPDATE) gives
-      // the exclusion, so the cleanup body can still update the same row on the
-      // pooled connection without a self-block.
-      await acquireExecutionWorkspaceLifecycleLock(tx, workspace.id);
-      const fresh = await tx
-        .select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
-        .from(executionWorkspaces)
-        .where(eq(executionWorkspaces.id, workspace.id))
-        .then((rows) => rows[0] ?? null);
-      const currentGeneration = fresh
-        ? readExecutionWorkspaceLifecycleGeneration(fresh.metadata as Record<string, unknown> | null)
-        : null;
-      if (
-        !fresh
-        || !isClosedExecutionWorkspaceStatus(fresh.status)
-        || currentGeneration !== capturedGeneration
-      ) {
-        // A reopen restored this workspace after it was archived. Do not destroy
-        // the rebuilt worktree.
-        logger.info(
-          {
-            event: "execution_workspace.cleanup_skipped",
-            reason: "reopened",
-            executionWorkspaceId: workspace.id,
-            capturedGeneration,
-            currentGeneration,
-            currentStatus: fresh?.status ?? null,
-          },
-          "execution workspace cleanup skipped because it was reopened",
-        );
-        return { cleaned: false, warnings: [], skippedReopened: true };
-      }
-      return runTerminalWorkspaceCleanup(workspace, expectedHeadSha);
+    // The gateway holds the per-workspace lifecycle lock across the destructive
+    // actions. A reopen takes the same lock, so a reopen cannot rebuild the
+    // worktree while this cleanup runs, and this cleanup cannot delete a worktree
+    // that a reopen already restored. The advisory lock (not a row FOR UPDATE)
+    // gives the exclusion, so the cleanup body can still update the same row on
+    // the pooled connection without a self-block. A reopen restored this
+    // workspace after it was archived when the guard fails, so the cleanup skips
+    // and does not destroy the rebuilt worktree.
+    return fenceLifecycleGenerationWrite<{ cleaned: boolean; warnings: string[]; skippedReopened?: boolean }>({
+      workspaceId: workspace.id,
+      expectedGeneration: capturedGeneration,
+      isWriteTarget: (fresh) => isClosedExecutionWorkspaceStatus(fresh.status),
+      skipLog: {
+        event: "execution_workspace.cleanup_skipped",
+        message: "execution workspace cleanup skipped because it was reopened",
+      },
+      onSkip: () => ({ cleaned: false, warnings: [], skippedReopened: true }),
+      write: () => runTerminalWorkspaceCleanup(workspace, expectedHeadSha),
     });
   }
 
@@ -1655,45 +1680,29 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     capturedGeneration: number;
     cleanupReason: string;
   }): Promise<boolean> {
-    return db.transaction(async (tx) => {
-      await acquireExecutionWorkspaceLifecycleLock(tx, input.workspaceId);
-      const fresh = await tx
-        .select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
-        .from(executionWorkspaces)
-        .where(eq(executionWorkspaces.id, input.workspaceId))
-        .then((rows) => rows[0] ?? null);
-      const currentGeneration = fresh
-        ? readExecutionWorkspaceLifecycleGeneration(fresh.metadata as Record<string, unknown> | null)
-        : null;
-      if (
-        !fresh
-        || !isClosedExecutionWorkspaceStatus(fresh.status)
-        || currentGeneration !== input.capturedGeneration
-      ) {
-        // A reopen restored the row after the cleanup threw. Do not overwrite the
-        // newer lifecycle state with the stale cleanup-failure status.
-        logger.info(
-          {
-            event: "execution_workspace.cleanup_failed_write_skipped",
-            reason: "reopened",
-            executionWorkspaceId: input.workspaceId,
-            capturedGeneration: input.capturedGeneration,
-            currentGeneration,
-            currentStatus: fresh?.status ?? null,
-          },
-          "execution workspace cleanup-failure write skipped because it was reopened",
-        );
-        return false;
-      }
-      await tx
-        .update(executionWorkspaces)
-        .set({
-          status: "cleanup_failed",
-          cleanupReason: input.cleanupReason,
-          updatedAt: now(),
-        })
-        .where(eq(executionWorkspaces.id, input.workspaceId));
-      return true;
+    // A reopen restored the row after the cleanup threw when the guard fails. The
+    // gateway then skips, so the stale cleanup-failure status never overwrites the
+    // newer lifecycle state.
+    return fenceLifecycleGenerationWrite<boolean>({
+      workspaceId: input.workspaceId,
+      expectedGeneration: input.capturedGeneration,
+      isWriteTarget: (fresh) => isClosedExecutionWorkspaceStatus(fresh.status),
+      skipLog: {
+        event: "execution_workspace.cleanup_failed_write_skipped",
+        message: "execution workspace cleanup-failure write skipped because it was reopened",
+      },
+      onSkip: () => false,
+      write: async ({ tx }) => {
+        await tx
+          .update(executionWorkspaces)
+          .set({
+            status: "cleanup_failed",
+            cleanupReason: input.cleanupReason,
+            updatedAt: now(),
+          })
+          .where(eq(executionWorkspaces.id, input.workspaceId));
+        return true;
+      },
     });
   }
 
@@ -3089,11 +3098,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       });
     },
 
-    // Apply the terminal cleanup outcome to a workspace row under the per-workspace
-    // lifecycle lock. The archive route calls this after the destruction fence ran,
-    // to record cleanup warnings and, when the destroy failed, the cleanup_failed
+    // Apply the terminal cleanup outcome to a workspace row through the lifecycle
+    // gateway. The archive route calls this after the destruction fence ran, to
+    // record cleanup warnings and, when the destroy failed, the cleanup_failed
     // status. A reopen that raced after the fence returned restores the row to an
-    // open status and raises the generation. The method re-reads the fresh row
+    // open status and raises the generation. The gateway re-reads the fresh row
     // under the lock and writes only while the row is still closed at
     // `capturedGeneration`. So a stale cleanup patch never overwrites the closedAt,
     // the cleanup reason, or the status of a freshly rebuilt worktree. The method
@@ -3105,35 +3114,28 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       cleanupReason: string | null;
       markCleanupFailed: boolean;
     }): Promise<ExecutionWorkspace | null> => {
-      return db.transaction(async (tx) => {
-        await acquireExecutionWorkspaceLifecycleLock(tx, input.id);
-        const fresh = await tx
-          .select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
-          .from(executionWorkspaces)
-          .where(eq(executionWorkspaces.id, input.id))
-          .then((rows) => rows[0] ?? null);
-        if (
-          !fresh
-          || !isClosedExecutionWorkspaceStatus(fresh.status)
-          || readExecutionWorkspaceLifecycleGeneration(fresh.metadata as Record<string, unknown> | null)
-            !== input.capturedGeneration
-        ) {
-          // A reopen restored the row after the destruction fence returned. Do not
-          // overwrite the newly active lifecycle state.
-          return null;
-        }
-        const row = await tx
-          .update(executionWorkspaces)
-          .set({
-            closedAt: input.closedAt,
-            cleanupReason: input.cleanupReason,
-            ...(input.markCleanupFailed ? { status: "cleanup_failed" as const } : {}),
-            updatedAt: new Date(),
-          })
-          .where(eq(executionWorkspaces.id, input.id))
-          .returning()
-          .then((rows) => rows[0] ?? null);
-        return row ? toExecutionWorkspace(row) : null;
+      // A reopen restored the row after the destruction fence returned when the
+      // guard fails. The gateway then skips, so the write never overwrites the
+      // newly active lifecycle state.
+      return fenceLifecycleGenerationWrite<ExecutionWorkspace | null>({
+        workspaceId: input.id,
+        expectedGeneration: input.capturedGeneration,
+        isWriteTarget: (fresh) => isClosedExecutionWorkspaceStatus(fresh.status),
+        onSkip: () => null,
+        write: async ({ tx }) => {
+          const row = await tx
+            .update(executionWorkspaces)
+            .set({
+              closedAt: input.closedAt,
+              cleanupReason: input.cleanupReason,
+              ...(input.markCleanupFailed ? { status: "cleanup_failed" as const } : {}),
+              updatedAt: new Date(),
+            })
+            .where(eq(executionWorkspaces.id, input.id))
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          return row ? toExecutionWorkspace(row) : null;
+        },
       });
     },
 
@@ -3148,46 +3150,28 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       return row ? readExecutionWorkspaceLifecycleGeneration(row.metadata as Record<string, unknown> | null) : null;
     },
 
-    // Run a destructive workspace cleanup under the per-workspace lifecycle lock.
-    // The caller passes the generation it captured at archive time. If a reopen
-    // raised the generation or restored the row to an open status, the fence skips
-    // the destroy callback, so a cleanup never deletes a worktree that a reopen
+    // Run a destructive workspace cleanup through the lifecycle gateway. The
+    // caller passes the generation it captured at archive time. If a reopen raised
+    // the generation or restored the row to an open status, the gateway skips the
+    // destroy callback, so a cleanup never deletes a worktree that a reopen
     // rebuilt.
     fenceClosedWorkspaceDestruction: async <T>(input: {
       workspaceId: string;
       capturedGeneration: number;
       destroy: () => Promise<T>;
     }): Promise<{ skippedReopened: true } | { skippedReopened: false; result: T }> => {
-      return db.transaction(async (tx) => {
-        await acquireExecutionWorkspaceLifecycleLock(tx, input.workspaceId);
-        const fresh = await tx
-          .select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
-          .from(executionWorkspaces)
-          .where(eq(executionWorkspaces.id, input.workspaceId))
-          .then((rows) => rows[0] ?? null);
-        const currentGeneration = fresh
-          ? readExecutionWorkspaceLifecycleGeneration(fresh.metadata as Record<string, unknown> | null)
-          : null;
-        if (
-          !fresh
-          || !isClosedExecutionWorkspaceStatus(fresh.status)
-          || currentGeneration !== input.capturedGeneration
-        ) {
-          logger.info(
-            {
-              event: "execution_workspace.cleanup_skipped",
-              reason: "reopened",
-              executionWorkspaceId: input.workspaceId,
-              capturedGeneration: input.capturedGeneration,
-              currentGeneration,
-              currentStatus: fresh?.status ?? null,
-            },
-            "execution workspace cleanup skipped because it was reopened",
-          );
-          return { skippedReopened: true as const };
-        }
-        const result = await input.destroy();
-        return { skippedReopened: false as const, result };
+      return fenceLifecycleGenerationWrite<
+        { skippedReopened: true } | { skippedReopened: false; result: T }
+      >({
+        workspaceId: input.workspaceId,
+        expectedGeneration: input.capturedGeneration,
+        isWriteTarget: (fresh) => isClosedExecutionWorkspaceStatus(fresh.status),
+        skipLog: {
+          event: "execution_workspace.cleanup_skipped",
+          message: "execution workspace cleanup skipped because it was reopened",
+        },
+        onSkip: () => ({ skippedReopened: true as const }),
+        write: async () => ({ skippedReopened: false as const, result: await input.destroy() }),
       });
     },
 
