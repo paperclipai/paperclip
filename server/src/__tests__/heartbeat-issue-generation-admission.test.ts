@@ -116,11 +116,11 @@ describeEmbeddedPostgres("issue generation pre-dispatch admission", () => {
     return heartbeat.getRun(run!.id);
   }
 
-  it("rejects a fourth generation run before the adapter is called", async () => {
+  it("rejects the run past the generation-run ceiling before the adapter is called", async () => {
     executeAdapter.mockClear();
     const target = await seedScopedTarget(1);
     const now = new Date();
-    const priorAgentIds = Array.from({ length: 3 }, () => randomUUID());
+    const priorAgentIds = Array.from({ length: 10 }, () => randomUUID());
     await db.insert(agents).values(priorAgentIds.map((id, index) => ({
       id,
       companyId: target.companyId,
@@ -152,7 +152,7 @@ describeEmbeddedPostgres("issue generation pre-dispatch admission", () => {
       errorCode: "issue_generation_ceiling_exceeded",
       resultJson: {
         reason: "generation_run_ceiling",
-        priorGenerationRuns: 3,
+        priorGenerationRuns: 10,
         modelDispatched: false,
       },
     });

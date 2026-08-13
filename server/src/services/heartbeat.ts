@@ -369,7 +369,15 @@ const HUNG_RUN_USAGE_RECOVERY_TAIL_BYTES = 256 * 1024;
  * routed to a deterministic handler, or explicitly approved as an exception.
  */
 export const HIGH_INPUT_TOKEN_RUN_THRESHOLD = 1_000_000;
-export const ISSUE_GENERATION_RUN_CEILING = 3;
+// Raised 3 -> 10 on 2026-08-13 (TSMC-20820). At 3 this was a hard lifetime cap on
+// generation runs per issue (counted across all runs ever, with no per-issue override),
+// so any legitimate multi-run task — a multi-board job scan, a multi-file change —
+// blocked after 3 runs and spawned "recover missing next step" / "no invokable recovery
+// owner" issues that also hit it: fleet-wide recovery-spiral churn. The 1M aggregate-input
+// ceiling (HIGH_INPUT_TOKEN_RUN_THRESHOLD) remains the real burn backstop underneath this.
+// Proper follow-up (TSMC-20820): count runs since the last productive disposition instead
+// of all-runs-ever, so the guard measures "stuck without progress", not "total work".
+export const ISSUE_GENERATION_RUN_CEILING = 10;
 
 export type IssueGenerationAdmissionDecision =
   | { decision: "allow"; remainingInputTokens: number }
