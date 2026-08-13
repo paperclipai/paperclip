@@ -68,6 +68,12 @@ const mockFetchAllQuotaWindows = vi.hoisted(() => vi.fn());
 const mockCostService = vi.hoisted(() => ({
   createEvent: vi.fn(),
   summary: vi.fn().mockResolvedValue({ spendCents: 0 }),
+  tokenOutcomeLedger: vi.fn().mockResolvedValue({
+    rows: [],
+    suppressedWakeCount: 0,
+    intentionalPauseCount: 0,
+    suppressionEvidence: "agent_wakeup_requests.status=skipped",
+  }),
   byAgent: vi.fn().mockResolvedValue([]),
   byAgentModel: vi.fn().mockResolvedValue([]),
   byProvider: vi.fn().mockResolvedValue([]),
@@ -247,6 +253,35 @@ describe("cost routes", () => {
       estimatedDebitCents: 0,
       eventCount: 0,
     });
+  });
+
+  it("returns date-filtered token outcome ledger rows and CSV export", async () => {
+    mockCostService.tokenOutcomeLedger.mockResolvedValue({
+      rows: [{
+        runId: "run-1", occurredAt: new Date("2026-08-11T10:00:00.000Z"), companyId: "company-1", companyName: "Paperclip",
+        agentId: "agent-1", agentName: "Ledger", model: "gpt-5", issueId: "issue-1", issueIdentifier: "TST-1",
+        issueTitle: "Scoped work", wakeSource: "assignment", inputTokens: 12, cachedInputTokens: 3, outputTokens: 4,
+        costCents: 0, costAttribution: "token_equivalent", deterministicOutcome: "run:completed; exit:0", toolOutcome: "script:completed",
+      }],
+      suppressedWakeCount: 2,
+      intentionalPauseCount: 1,
+      suppressionEvidence: "agent_wakeup_requests.status=skipped",
+    });
+    const app = await createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/costs/token-outcome-ledger")
+      .query({ from: "2026-08-01T00:00:00.000Z", to: "2026-08-31T23:59:59.999Z" });
+
+    expect(res.status).toBe(200);
+    expect(mockCostService.tokenOutcomeLedger).toHaveBeenCalledWith("company-1", {
+      from: new Date("2026-08-01T00:00:00.000Z"), to: new Date("2026-08-31T23:59:59.999Z"),
+    }, 100);
+    expect(res.body).toMatchObject({ suppressedWakeCount: 2, intentionalPauseCount: 1 });
+
+    const csv = await request(app).get("/api/companies/company-1/costs/token-outcome-ledger").query({ format: "csv" });
+    expect(csv.status).toBe(200);
+    expect(csv.text).toContain("costAttribution");
+    expect(csv.text).toContain("token_equivalent");
   });
 
   it("returns issue subtree cost summaries for issue refs", async () => {

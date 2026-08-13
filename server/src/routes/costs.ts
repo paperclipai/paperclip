@@ -24,6 +24,7 @@ import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo }
 import { fetchAllQuotaWindows } from "../services/quota-windows.js";
 import { badRequest } from "../errors.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { tokenOutcomeLedgerCsv } from "../services/costs.js";
 
 export function parseCostDateRange(query: Record<string, unknown>) {
   const fromRaw = query.from as string | undefined;
@@ -177,6 +178,18 @@ export function costRoutes(
     const range = parseCostDateRange(req.query);
     const summary = await costs.summary(companyId, range);
     res.json(summary);
+  });
+
+  router.get("/companies/:companyId/costs/token-outcome-ledger", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
+    const ledger = await costs.tokenOutcomeLedger(companyId, parseCostDateRange(req.query), parseCostLimit(req.query));
+    if (req.query.format === "csv") {
+      res.type("text/csv").attachment("token-outcome-ledger.csv").send(tokenOutcomeLedgerCsv(ledger));
+      return;
+    }
+    res.json(ledger);
   });
 
   router.get("/issues/:id/cost-summary", async (req, res) => {

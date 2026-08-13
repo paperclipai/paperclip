@@ -1,7 +1,18 @@
-import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import {
+  activityLog,
+  agents,
+  agentWakeupRequests,
+  companies,
+  costEvents,
+  heartbeatRuns,
+  issues,
+  projects,
+  toolInvocations,
+} from "@paperclipai/db";
+import type { TokenOutcomeLedger, TokenOutcomeLedgerRow } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
@@ -13,6 +24,27 @@ export interface CostDateRange {
 
 const METERED_BILLING_TYPE = "metered_api";
 const SUBSCRIPTION_BILLING_TYPES = ["subscription_included", "subscription_overage"] as const;
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function readTokenCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+}
+
+export function tokenOutcomeLedgerCsv(ledger: TokenOutcomeLedger) {
+  const columns: Array<keyof TokenOutcomeLedgerRow> = [
+    "runId", "occurredAt", "companyId", "companyName", "agentId", "agentName", "model",
+    "issueId", "issueIdentifier", "issueTitle", "wakeSource", "inputTokens", "cachedInputTokens",
+    "outputTokens", "costCents", "costAttribution", "deterministicOutcome", "toolOutcome",
+  ];
+  const escape = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+  return [
+    columns.join(","),
+    ...ledger.rows.map((row) => columns.map((column) => escape(row[column] instanceof Date ? row[column].toISOString() : row[column])).join(",")),
+  ].join("\n");
+}
 
 function sumAsNumber(column: typeof costEvents.costCents | typeof costEvents.inputTokens | typeof costEvents.cachedInputTokens | typeof costEvents.outputTokens) {
   return sql<number>`coalesce(sum(${column}), 0)::double precision`;
@@ -100,6 +132,128 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       await budgets.evaluateCostEvent(event);
 
       return event;
+    },
+
+    /**
+     * Read-only attribution export. Heartbeat runs are the canonical row grain;
+     * cost events, tool invocations, and skipped wake requests enrich each run.
+     */
+    tokenOutcomeLedger: async (companyId: string, range?: CostDateRange, limit = 500): Promise<TokenOutcomeLedger> => {
+      const runConditions = [eq(heartbeatRuns.companyId, companyId)];
+      const wakeConditions = [eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.status, "skipped")];
+      if (range?.from) {
+        runConditions.push(gte(heartbeatRuns.createdAt, range.from));
+        wakeConditions.push(gte(agentWakeupRequests.requestedAt, range.from));
+      }
+      if (range?.to) {
+        runConditions.push(lte(heartbeatRuns.createdAt, range.to));
+        wakeConditions.push(lte(agentWakeupRequests.requestedAt, range.to));
+      }
+
+      const [company, runs, skippedWakeRows] = await Promise.all([
+        db.select({ id: companies.id, name: companies.name }).from(companies).where(eq(companies.id, companyId)).then((rows) => rows[0] ?? null),
+        db.select({
+          id: heartbeatRuns.id,
+          agentId: heartbeatRuns.agentId,
+          invocationSource: heartbeatRuns.invocationSource,
+          status: heartbeatRuns.status,
+          exitCode: heartbeatRuns.exitCode,
+          createdAt: heartbeatRuns.createdAt,
+          usageJson: heartbeatRuns.usageJson,
+          resultJson: heartbeatRuns.resultJson,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+          agentName: agents.name,
+          issueId: issues.id,
+          issueIdentifier: issues.identifier,
+          issueTitle: issues.title,
+        })
+          .from(heartbeatRuns)
+          .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+          .leftJoin(issues, sql`${issues.id} = coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId')::uuid`)
+          .where(and(...runConditions))
+          .orderBy(desc(heartbeatRuns.createdAt))
+          .limit(limit),
+        db.select({ error: agentWakeupRequests.error }).from(agentWakeupRequests).where(and(...wakeConditions)),
+      ]);
+
+      if (!company) throw notFound("Company not found");
+      const runIds = runs.map((run) => run.id);
+      const [events, toolRows] = runIds.length === 0 ? [[], []] : await Promise.all([
+        db.select({
+          heartbeatRunId: costEvents.heartbeatRunId,
+          model: costEvents.model,
+          billingType: costEvents.billingType,
+          costStatus: costEvents.costStatus,
+          inputTokens: costEvents.inputTokens,
+          cachedInputTokens: costEvents.cachedInputTokens,
+          outputTokens: costEvents.outputTokens,
+          costCents: costEvents.costCents,
+        }).from(costEvents).where(and(eq(costEvents.companyId, companyId), inArray(costEvents.heartbeatRunId, runIds))),
+        db.select({
+          runId: toolInvocations.runId,
+          toolName: toolInvocations.toolName,
+          status: toolInvocations.status,
+        }).from(toolInvocations).where(and(eq(toolInvocations.companyId, companyId), inArray(toolInvocations.runId, runIds))),
+      ]);
+
+      const eventsByRun = new Map<string, typeof events>();
+      for (const event of events) {
+        if (!event.heartbeatRunId) continue;
+        eventsByRun.set(event.heartbeatRunId, [...(eventsByRun.get(event.heartbeatRunId) ?? []), event]);
+      }
+      const toolsByRun = new Map<string, string[]>();
+      for (const tool of toolRows) {
+        if (!tool.runId) continue;
+        toolsByRun.set(tool.runId, [...(toolsByRun.get(tool.runId) ?? []), `${tool.toolName}:${tool.status}`]);
+      }
+
+      const rows = runs.map((run): TokenOutcomeLedgerRow => {
+        const usage = run.usageJson ?? {};
+        const result = run.resultJson ?? {};
+        const eventRows = eventsByRun.get(run.id) ?? [];
+        const event = eventRows[0];
+        const inputTokens = readTokenCount(usage.inputTokens) || eventRows.reduce((total, row) => total + row.inputTokens, 0);
+        const cachedInputTokens = readTokenCount(usage.cachedInputTokens) || eventRows.reduce((total, row) => total + row.cachedInputTokens, 0);
+        const outputTokens = readTokenCount(usage.outputTokens) || eventRows.reduce((total, row) => total + row.outputTokens, 0);
+        const hasTokens = inputTokens + cachedInputTokens + outputTokens > 0;
+        const subscription = eventRows.some((row) => SUBSCRIPTION_BILLING_TYPES.includes(row.billingType as typeof SUBSCRIPTION_BILLING_TYPES[number]));
+        const costCents = eventRows.length ? eventRows.reduce((total, row) => total + row.costCents, 0) : null;
+        const costAttribution = subscription && costCents === 0 && hasTokens
+          ? "token_equivalent"
+          : costCents != null || !hasTokens
+            ? "priced"
+            : "unpriced";
+        const toolOutcome = toolsByRun.get(run.id)?.sort().join("; ") ?? null;
+        const resultSummary = readString(result.summary) ?? readString(result.result) ?? readString(result.message);
+
+        return {
+          runId: run.id,
+          occurredAt: run.createdAt,
+          companyId,
+          companyName: company.name,
+          agentId: run.agentId,
+          agentName: run.agentName,
+          model: readString(usage.servedModel) ?? readString(usage.model) ?? event?.model ?? "unknown",
+          issueId: run.issueId,
+          issueIdentifier: run.issueIdentifier,
+          issueTitle: run.issueTitle,
+          wakeSource: readString((run.contextSnapshot ?? {}).wakeSource) ?? run.invocationSource,
+          inputTokens,
+          cachedInputTokens,
+          outputTokens,
+          costCents,
+          costAttribution,
+          deterministicOutcome: resultSummary ?? `run:${run.status}${run.exitCode == null ? "" : `; exit:${run.exitCode}`}`,
+          toolOutcome,
+        };
+      });
+
+      return {
+        rows,
+        suppressedWakeCount: skippedWakeRows.length,
+        intentionalPauseCount: skippedWakeRows.filter((wake) => wake.error?.includes("intentional company pause")).length,
+        suppressionEvidence: "agent_wakeup_requests.status=skipped",
+      };
     },
 
     summary: async (companyId: string, range?: CostDateRange) => {

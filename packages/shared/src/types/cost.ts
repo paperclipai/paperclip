@@ -127,3 +127,33 @@ export interface CostByProject {
   cachedInputTokens: number;
   outputTokens: number;
 }
+
+/** A single heartbeat run with its durable token, scope, and execution outcome attribution. */
+export interface TokenOutcomeLedgerRow {
+  runId: string;
+  occurredAt: Date;
+  companyId: string;
+  companyName: string | null;
+  agentId: string;
+  agentName: string | null;
+  model: string;
+  issueId: string | null;
+  issueIdentifier: string | null;
+  issueTitle: string | null;
+  wakeSource: string;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  costCents: number | null;
+  /** Token-equivalent means the tokens are real but a subscription lane did not report a price. */
+  costAttribution: "priced" | "token_equivalent" | "unpriced";
+  deterministicOutcome: string;
+  toolOutcome: string | null;
+}
+
+export interface TokenOutcomeLedger {
+  rows: TokenOutcomeLedgerRow[];
+  suppressedWakeCount: number;
+  intentionalPauseCount: number;
+  suppressionEvidence: "agent_wakeup_requests.status=skipped";
+}

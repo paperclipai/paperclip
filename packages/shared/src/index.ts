@@ -1038,6 +1038,8 @@ export type {
   CostByAgentModel,
   CostWindowSpendRow,
   CostByProject,
+  TokenOutcomeLedger,
+  TokenOutcomeLedgerRow,
   FinanceEvent,
   FinanceSummary,
   FinanceByBiller,
