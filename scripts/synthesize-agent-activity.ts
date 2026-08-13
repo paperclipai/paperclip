@@ -10,7 +10,7 @@
 //
 // Purely read-only: SELECTs only, via the pg client the drizzle instance already holds. Each
 // query is guarded so a missing table/column degrades that section instead of aborting.
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { createDb } from "../packages/db/src/index.js";
@@ -149,6 +149,66 @@ async function main() {
     const fallback = join(process.cwd(), "agent-activity-synthesis.md");
     writeFileSync(fallback, report, "utf8");
     console.log(`\n(vault write failed: ${(e as Error).message}) — wrote ${fallback}`);
+  }
+
+  // ---- flywheel close (WS2a): bucket -> ONE auto-filed improvement issue ----
+  // The report alone required a human to transcribe the worklist; this files it. One idempotent
+  // issue per knob bucket at/above --improve-min (default 5) block-comments in the window.
+  // Dedup: an OPEN issue with the same "[flywheel] Tune:" marker title — at most one per knob
+  // while it remains open; a done/cancelled one no longer blocks re-filing on a later recurrence.
+  // Assigned to the human OWNER (user principal): every auto-oracle (orphan/stuck/heal) skips
+  // user-owned issues, so this creates zero agent churn — the knob CHANGE stays human-approved
+  // (WS2b, deliberately: no auto-tuner).
+  const improveMin = Number(flag("--improve-min", "5"));
+  if (!process.argv.includes("--no-file-issues")) {
+    try {
+      const auth = JSON.parse(readFileSync(join(homedir(), ".paperclip/auth.json"), "utf8")) as {
+        credentials?: Record<string, Record<string, unknown>>;
+      };
+      const tok = Object.values(auth.credentials ?? {})
+        .map((c) => c && (c.token || c.accessToken || c.sessionToken || c.apiKey))
+        .find(Boolean) as string | undefined;
+      if (!tok) throw new Error("no API token in ~/.paperclip/auth.json");
+      const base = "http://localhost:3100";
+      const H = { Authorization: `Bearer ${tok}`, "Content-Type": "application/json" };
+      const openStatuses = new Set(["backlog", "todo", "in_progress", "blocked", "in_review"]);
+      const issuesRes = await fetch(`${base}/api/companies/${company}/issues?limit=400`, { headers: H });
+      const issuesJson = (await issuesRes.json()) as { issues?: Row[] } | Row[];
+      const allIssues = Array.isArray(issuesJson) ? issuesJson : (issuesJson.issues ?? []);
+      const membersRes = await fetch(`${base}/api/companies/${company}/members`, { headers: H });
+      const membersJson = (await membersRes.json()) as { members?: Array<Record<string, string>> };
+      const ownerUserId = (membersJson.members ?? []).find(
+        (m) => m.principalType === "user" && m.membershipRole === "owner" && m.status === "active",
+      )?.principalId ?? null;
+      let filed = 0;
+      for (const [knob, n] of knobRanked) {
+        if (knob === "—" || n < improveMin) continue;
+        const title = `[flywheel] Tune: ${knob.split(" (")[0]}`.slice(0, 80);
+        if (allIssues.some((i) => i.title === title && openStatuses.has(String(i.status)))) continue;
+        const samples = blockBuckets.filter((b) => b.knob === knob).slice(0, 3)
+          .map((b) => `- (${b.n}x, ${b.tone}) ${b.lead}`).join("\n");
+        const body: Record<string, unknown> = {
+          title,
+          status: "todo",
+          description:
+            `Auto-filed by the weekly agent-activity synthesis (flywheel WS2a): ${n} warning/danger ` +
+            `block-comments in the last ${days}d map to this tuning knob.\n\nKnob: ${knob}\n\nSample leads:\n${samples}\n\n` +
+            `This is a HUMAN-approved tuning decision (no auto-tuner by design): apply the knob change or close ` +
+            `as won't-fix. Deduplicated — at most one open issue per knob; closing it allows a later recurrence to re-file.`,
+        };
+        if (ownerUserId) body.assigneeUserId = ownerUserId;
+        let res = await fetch(`${base}/api/companies/${company}/issues`, { method: "POST", headers: H, body: JSON.stringify(body) });
+        if (!res.ok && ownerUserId) {
+          delete body.assigneeUserId; // owner-assign rejected by validation -> file unassigned rather than not at all
+          res = await fetch(`${base}/api/companies/${company}/issues`, { method: "POST", headers: H, body: JSON.stringify(body) });
+        }
+        if (res.ok) { filed++; console.log(`  filed improvement issue: ${title} (${n} block-comments)`); }
+        else console.log(`  improvement-issue POST failed HTTP ${res.status} for "${title}"`);
+      }
+      console.log(`flywheel: ${filed} improvement issue(s) filed (threshold ${improveMin}, dedup'd)`);
+    } catch (e) {
+      console.log(`flywheel: issue filing skipped (${(e as Error).message.slice(0, 100)}) — report still written`);
+    }
   }
 
   console.log(`=== SUMMARY (${days}d, company ${company.slice(0, 8)}) ===`);
