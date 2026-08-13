@@ -1073,8 +1073,11 @@ export function GoalMap() {
             style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: "0 0" }}
           >
             {layout.placedGoals.map(({ node, x, y }) => {
-              const denom = progressDenominator(node.subtreeCounts);
-              const pct = denom > 0 ? Math.round((node.subtreeCounts.done / denom) * 100) : 0;
+              // The company card is the "New / unassigned" bucket — its subtree
+              // rollup spans the whole company, so show its direct counts.
+              const cardCounts = node.goal.level === "company" ? node.counts : node.subtreeCounts;
+              const denom = progressDenominator(cardCounts);
+              const pct = denom > 0 ? Math.round((cardCounts.done / denom) * 100) : 0;
               const isSelected = selection?.kind === "goal" && selection.id === node.goal.id;
               const isDropTarget = dropTarget?.kind === "goal" && dropTarget.id === node.goal.id;
               const isDraggingThis = dragging?.kind === "goal" && dragging.id === node.goal.id;
@@ -1142,7 +1145,7 @@ export function GoalMap() {
                         <div className="h-full rounded-full bg-green-400" style={{ width: `${pct}%` }} />
                       </div>
                       <span className="font-mono text-xs tabular-nums text-muted-foreground">
-                        {node.subtreeCounts.done}/{denom}{depth > 0 ? ` · d${depth}` : ""}
+                        {cardCounts.done}/{denom}{depth > 0 ? ` · d${depth}` : ""}
                       </span>
                     </div>
                   </div>
