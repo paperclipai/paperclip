@@ -10,11 +10,10 @@ import { ApiError } from "../api/client";
 import type { CompanyImportJobAccepted } from "../api/companies";
 import { CompanyImport } from "./CompanyImport";
 
-// jsdom's crypto has no SubtleCrypto; the chunked transfer path hashes parts
-// with WebCrypto, so back the global with Node's implementation.
-if (!globalThis.crypto?.subtle) {
-  vi.stubGlobal("crypto", webcrypto);
-}
+// jsdom may expose a partial crypto object whose SubtleCrypto rejects the
+// Blob-backed buffers used by this fixture. The chunked transfer path hashes
+// parts with WebCrypto, so use Node's complete implementation consistently.
+vi.stubGlobal("crypto", webcrypto);
 
 const mockCompaniesApi = vi.hoisted(() => ({
   importPreview: vi.fn(),
