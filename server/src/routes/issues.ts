@@ -2720,6 +2720,12 @@ export function issueRoutes(
       actionRequestId: string;
       actor: { agentId?: string | null; userId?: string | null };
     }) => Promise<unknown>;
+    afterRecoveryAuthorizationBeforeMutation?: (input: {
+      issueId: string;
+      recoveryActionId: string;
+      attemptCount: number;
+      mutation: "accept" | "resolve";
+    }) => Promise<void> | void;
   } = {},
 ) {
   const router = Router();
@@ -6261,6 +6267,12 @@ export function issueRoutes(
       context.source !== "issue_recovery_action" || context.wakeReason !== "source_scoped_recovery_action") {
       throw forbidden("Only the active recovery owner may accept this handoff from its recovery run");
     }
+    await opts.afterRecoveryAuthorizationBeforeMutation?.({
+      issueId: existing.id,
+      recoveryActionId: action.id,
+      attemptCount: action.attemptCount,
+      mutation: "accept",
+    });
     const result = await db.transaction(async (tx) => {
       const [lockedAction] = await tx
         .select()
