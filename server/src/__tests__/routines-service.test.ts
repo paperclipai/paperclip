@@ -1102,10 +1102,10 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
           source: "assignment",
           triggerDetail: "system",
           reason: "issue_assigned",
-          payload: { issueId: run.linkedIssueId, mutation: "create" },
+          payload: { issueId: run.linkedIssueId, mutation: "create", assignmentHandoff: true },
           requestedByActorType: undefined,
           requestedByActorId: null,
-          contextSnapshot: { issueId: run.linkedIssueId, source: "routine.dispatch" },
+          contextSnapshot: { issueId: run.linkedIssueId, source: "routine.dispatch", assignmentHandoff: true },
         },
       },
     ]);
