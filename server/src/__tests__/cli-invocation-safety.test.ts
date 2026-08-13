@@ -187,19 +187,26 @@ describe("paperclipai CLI invocation safety", () => {
 
   // ── Direct assertions on the runtime-generated instruction surfaces ──────
 
-  it("emits the safe form from the private-hostname guard messages", () => {
+  it("emits a static, non-interpolated safe form from the private-hostname guard messages", () => {
     const source = read("server/src/middleware/private-hostname-guard.ts");
-    // The blocked-host message interpolates the request Host header, so a
-    // requester controls the value.
-    expect(source).toContain("npx paperclipai allowed-hostname ${hostname}");
+    // The blocked-host and missing-host messages must never interpolate the
+    // request Host header into the guidance command. An operator or an agent
+    // can paste the guidance into a shell, and that outer shell evaluates a
+    // metacharacter span in the host before any CLI receives argv. `npx`
+    // does not stop the outer shell. Emit a static `<host>` placeholder only.
     expect(source).toContain("run npx paperclipai allowed-hostname <host>");
+    expect(source).not.toContain("allowed-hostname ${hostname}");
     expect(source).not.toContain("pnpm paperclipai allowed-hostname");
   });
 
-  it("emits the safe form from the onboarding access diagnostics", () => {
+  it("emits a static, non-interpolated safe form from the onboarding access diagnostics", () => {
     const source = read("server/src/routes/access.ts");
     expect(source).not.toMatch(/pnpm paperclipai allowed-hostname/);
-    expect(source).toContain("npx paperclipai allowed-hostname");
+    expect(source).toContain("npx paperclipai allowed-hostname <host>");
+    // The onboarding host comes from the request base URL, so a requester
+    // controls it. The emitted command must carry a static `<host>` placeholder
+    // and never interpolate that value.
+    expect(source).not.toMatch(/allowed-hostname \$\{/);
   });
 
   it("emits the safe form from the agent onboarding prompt", () => {

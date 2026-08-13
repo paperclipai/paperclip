@@ -1642,9 +1642,13 @@ function buildOnboardingDiscoveryDiagnostics(input: {
       code: "openclaw_onboarding_private_host_not_allowed",
       level: "warn",
       message: `Onboarding host "${apiHost}" is not in allowed hostnames for authenticated/private mode.`,
-      // Use `npx paperclipai`. `apiHost` is a non-fixed value; `pnpm` would run
-      // it through a shell and evaluate any embedded shell span.
-      hint: `Run npx paperclipai allowed-hostname ${apiHost}`
+      // `apiHost` comes from the request base URL, so a requester controls it.
+      // Never put that value into the guidance command. An operator or an agent
+      // can paste the command into a shell, and that outer shell evaluates a
+      // metacharacter span in the host before any CLI receives argv. The choice
+      // of `npx` over `pnpm` does not stop the outer shell. Emit a static
+      // `<host>` placeholder and keep the raw host in the message only.
+      hint: `Run npx paperclipai allowed-hostname <host>`
     });
   }
 
