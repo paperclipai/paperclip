@@ -2981,6 +2981,24 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/companies/{companyId}/roadmap-block-links",
+  tags: ["goals"],
+  summary: "Link a roadmap block to a goal (a block can link several goals)",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 201: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/roadmap-block-links/{id}",
+  tags: ["goals"],
+  summary: "Unlink a roadmap block from a goal",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/roadmap-blocks/{id}/promote",
   tags: ["goals"],
   summary: "Promote a roadmap block into an initiative or epic",

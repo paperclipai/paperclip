@@ -13,6 +13,7 @@ import {
   goals,
   principalPermissionGrants,
   roadmapBlockEdges,
+  roadmapBlockLinks,
   roadmapBlocks,
 } from "@paperclipai/db";
 import {
@@ -46,6 +47,7 @@ describeEmbeddedPostgres("goal platform routes", () => {
     await db.delete(goalRelations);
     await db.delete(goalTargets);
     await db.delete(roadmapBlockEdges);
+    await db.delete(roadmapBlockLinks);
     await db.delete(roadmapBlocks);
     await db.delete(goals);
     await db.delete(activityLog);
@@ -192,11 +194,28 @@ describeEmbeddedPostgres("goal platform routes", () => {
     expect(promoted.status).toBe(201);
     expect(promoted.body.goal.level).toBe("epic");
     expect(promoted.body.goal.parentId).toBe(initiative.body.id);
-    expect(promoted.body.block.linkedGoalId).toBe(promoted.body.goal.id);
+    expect(promoted.body.link.blockId).toBe(blockB.body.id);
+    expect(promoted.body.link.goalId).toBe(promoted.body.goal.id);
+
+    // A block can link several goals at once; linking is idempotent.
+    const secondLink = await request(app)
+      .post(`/api/companies/${companyId}/roadmap-block-links`)
+      .send({ blockId: blockB.body.id, goalId: initiative.body.id });
+    expect(secondLink.status).toBe(201);
+    const duplicateLink = await request(app)
+      .post(`/api/companies/${companyId}/roadmap-block-links`)
+      .send({ blockId: blockB.body.id, goalId: initiative.body.id });
+    expect(duplicateLink.body.id).toBe(secondLink.body.id);
 
     const board = await request(app).get(`/api/companies/${companyId}/roadmap`);
     expect(board.body.blocks).toHaveLength(2);
     expect(board.body.edges).toHaveLength(1);
+    expect(board.body.links).toHaveLength(2);
+
+    const unlinked = await request(app).delete(`/api/roadmap-block-links/${secondLink.body.id}`);
+    expect(unlinked.status).toBe(200);
+    const afterUnlink = await request(app).get(`/api/companies/${companyId}/roadmap`);
+    expect(afterUnlink.body.links).toHaveLength(1);
   });
 
   it("agents cannot touch the human planning layer", async () => {

@@ -721,6 +721,7 @@ export type {
   GoalRelation,
   RoadmapBlock,
   RoadmapBlockEdge,
+  RoadmapBlockLink,
   RoadmapResponse,
 } from "./goal-platform.js";
 export type { Approval, ApprovalComment } from "./approval.js";

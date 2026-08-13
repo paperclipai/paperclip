@@ -10,6 +10,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { InlineEditor } from "./InlineEditor";
+import { PlusGlyph } from "./PlusGlyph";
 
 const BLOCK_W = 190;
 const BLOCK_H = 52;
@@ -91,6 +92,14 @@ export function RoadmapView({ companyId, goals }: { companyId: string; goals: Go
     mutationFn: (id: string) => goalsApi.roadmapEdgeRemove(id),
     onSettled: invalidate,
   });
+  const linkCreate = useMutation({
+    mutationFn: (data: { blockId: string; goalId: string }) => goalsApi.roadmapLinkCreate(companyId, data),
+    onSettled: invalidate,
+  });
+  const linkRemove = useMutation({
+    mutationFn: (id: string) => goalsApi.roadmapLinkRemove(id),
+    onSettled: invalidate,
+  });
 
   const blocks = useMemo(() => roadmap?.blocks ?? [], [roadmap]);
   const edges = useMemo(() => roadmap?.edges ?? [], [roadmap]);
@@ -98,6 +107,17 @@ export function RoadmapView({ companyId, goals }: { companyId: string; goals: Go
   const goalById = useMemo(() => new Map(goals.map((g) => [g.id, g])), [goals]);
   const initiatives = useMemo(() => goals.filter((g) => g.level === "initiative"), [goals]);
   const epics = useMemo(() => goals.filter((g) => g.level === "epic"), [goals]);
+  const linksByBlockId = useMemo(() => {
+    const map = new Map<string, { linkId: string; goal: Goal }[]>();
+    for (const link of roadmap?.links ?? []) {
+      const goal = goalById.get(link.goalId);
+      if (!goal) continue;
+      const list = map.get(link.blockId) ?? [];
+      list.push({ linkId: link.id, goal });
+      map.set(link.blockId, list);
+    }
+    return map;
+  }, [roadmap, goalById]);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = selectedId ? blockById.get(selectedId) ?? null : null;
@@ -194,7 +214,8 @@ export function RoadmapView({ companyId, goals }: { companyId: string; goals: Go
   }, [blockCreate, pan, zoom]);
 
   const statusOf = (block: RoadmapBlock): string => {
-    if (block.linkedGoalId && goalById.get(block.linkedGoalId)?.status === "achieved") return "done";
+    const links = linksByBlockId.get(block.id) ?? [];
+    if (links.length > 0 && links.every(({ goal }) => goal.status === "achieved")) return "done";
     return block.status;
   };
 
@@ -287,7 +308,9 @@ export function RoadmapView({ companyId, goals }: { companyId: string; goals: Go
             const isSelected = selectedId === block.id;
             const isDragging = draggingId === block.id;
             const status = statusOf(block);
-            const linked = block.linkedGoalId ? goalById.get(block.linkedGoalId) : null;
+            const blockLinks = linksByBlockId.get(block.id) ?? [];
+            const linked = blockLinks[0]?.goal ?? null;
+            const linkedGoalIds = new Set(blockLinks.map(({ goal }) => goal.id));
             return (
               <Card
                 key={block.id}
@@ -317,8 +340,12 @@ export function RoadmapView({ companyId, goals }: { companyId: string; goals: Go
                 <div className="flex h-full flex-col justify-center gap-0.5 py-1 pl-2.5 pr-6">
                   <span className="truncate text-xs font-semibold">{block.title}</span>
                   {linked ? (
-                    <span className="truncate text-(length:--text-nano) font-medium text-(--hex-22d3ee)">
+                    <span
+                      className="truncate text-(length:--text-nano) font-medium text-(--hex-22d3ee)"
+                      title={blockLinks.map(({ goal }) => goal.title).join(" · ")}
+                    >
                       {linked.level === "initiative" ? "⬖" : "◆"} {linked.title}
+                      {blockLinks.length > 1 ? ` +${blockLinks.length - 1}` : ""}
                     </span>
                   ) : (
                     <span className="truncate text-(length:--text-nano) text-muted-foreground">{block.detail ?? block.status}</span>
@@ -332,24 +359,26 @@ export function RoadmapView({ companyId, goals }: { companyId: string; goals: Go
                       title="Make initiative / epic, or link existing"
                       style={PLUS_BTN_STYLE}
                     >
-                      +
+                      <PlusGlyph />
                     </button>
                   </PopoverTrigger>
                   <PopoverContent className="w-72 p-1" align="start">
-                    {linked && (
+                    {blockLinks.length > 0 && (
                       <>
-                        <div className="flex items-center justify-between gap-2 rounded bg-accent/40 px-2 py-1.5">
-                          <span className="truncate text-sm">
-                            {linked.level === "initiative" ? "⬖" : "◆"} {linked.title}
-                          </span>
-                          <button
-                            data-roadmap-action
-                            className="shrink-0 rounded px-1.5 py-0.5 text-xs text-destructive hover:bg-destructive/10"
-                            onClick={() => blockUpdate.mutate({ id: block.id, data: { linkedGoalId: null } })}
-                          >
-                            Unlink
-                          </button>
-                        </div>
+                        {blockLinks.map(({ linkId, goal }) => (
+                          <div key={linkId} className="flex items-center justify-between gap-2 rounded bg-accent/40 px-2 py-1.5">
+                            <span className="truncate text-sm">
+                              {goal.level === "initiative" ? "⬖" : "◆"} {goal.title}
+                            </span>
+                            <button
+                              data-roadmap-action
+                              className="shrink-0 rounded px-1.5 py-0.5 text-xs text-destructive hover:bg-destructive/10"
+                              onClick={() => linkRemove.mutate(linkId)}
+                            >
+                              Unlink
+                            </button>
+                          </div>
+                        ))}
                         <div className="my-1 border-t border-border" />
                       </>
                     )}
@@ -373,20 +402,20 @@ export function RoadmapView({ companyId, goals }: { companyId: string; goals: Go
                     ))}
                     <div className="my-1 border-t border-border" />
                     <p className="px-2 pt-0.5 text-xs text-muted-foreground">
-                      {linked ? "Re-link to another epic…" : "Link existing epic…"}
+                      {linked ? "Link another epic…" : "Link existing epic…"}
                     </p>
                     {epics.map((epic) => {
-                      const isCurrent = epic.id === block.linkedGoalId;
+                      const isCurrent = linkedGoalIds.has(epic.id);
                       return (
                         <button
                           key={epic.id}
                           data-roadmap-action
                           className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent/50 disabled:opacity-50"
                           disabled={isCurrent}
-                          onClick={() => blockUpdate.mutate({ id: block.id, data: { linkedGoalId: epic.id } })}
+                          onClick={() => linkCreate.mutate({ blockId: block.id, goalId: epic.id })}
                         >
                           <span className="truncate">◆ {epic.title}</span>
-                          {isCurrent && <span className="ml-auto shrink-0 text-xs text-muted-foreground">current</span>}
+                          {isCurrent && <span className="ml-auto shrink-0 text-xs text-muted-foreground">linked</span>}
                         </button>
                       );
                     })}
@@ -424,24 +453,27 @@ export function RoadmapView({ companyId, goals }: { companyId: string; goals: Go
               />
             </div>
 
-            {selected.linkedGoalId && (
+            {(linksByBlockId.get(selected.id)?.length ?? 0) > 0 && (
               <div>
-                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Linked goal</h3>
-                <div className="flex items-center gap-2">
-                  <span className="min-w-0 flex-1 truncate text-sm" style={{ color: "#0891b2" }}>
-                    {goalById.get(selected.linkedGoalId)?.level === "initiative" ? "⬖" : "◆"}{" "}
-                    {goalById.get(selected.linkedGoalId)?.title ?? "unknown goal"}
-                  </span>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => blockUpdate.mutate({ id: selected.id, data: { linkedGoalId: null } })}
-                  >
-                    Unlink
-                  </Button>
+                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Linked goals</h3>
+                <div className="space-y-1">
+                  {(linksByBlockId.get(selected.id) ?? []).map(({ linkId, goal }) => (
+                    <div key={linkId} className="flex items-center gap-2 text-sm">
+                      <span className="min-w-0 flex-1 truncate" style={{ color: "#0891b2" }}>
+                        {goal.level === "initiative" ? "⬖" : "◆"} {goal.title}
+                      </span>
+                      <button
+                        className="text-muted-foreground hover:text-destructive"
+                        aria-label={`Unlink ${goal.title}`}
+                        onClick={() => linkRemove.mutate(linkId)}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
                 </div>
                 <p className="mt-1.5 text-xs text-muted-foreground">
-                  The block mirrors this goal (done when it is achieved). Unlink to make it a plain note again.
+                  The block mirrors its linked goals (done when all are achieved). Use the block's + to link more.
                 </p>
               </div>
             )}

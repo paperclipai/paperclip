@@ -30,9 +30,16 @@ export interface RoadmapBlock {
   status: RoadmapBlockStatus;
   x: number;
   y: number;
-  linkedGoalId: string | null;
   createdAt: Date | string;
   updatedAt: Date | string;
+}
+
+export interface RoadmapBlockLink {
+  id: string;
+  companyId: string;
+  blockId: string;
+  goalId: string;
+  createdAt: Date | string;
 }
 
 export interface RoadmapBlockEdge {
@@ -46,4 +53,5 @@ export interface RoadmapBlockEdge {
 export interface RoadmapResponse {
   blocks: RoadmapBlock[];
   edges: RoadmapBlockEdge[];
+  links: RoadmapBlockLink[];
 }

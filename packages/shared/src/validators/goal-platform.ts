@@ -40,9 +40,14 @@ export const createRoadmapBlockSchema = z.object({
   status: z.enum(ROADMAP_BLOCK_STATUSES).optional().default("planned"),
   x: z.number().int(),
   y: z.number().int(),
-  linkedGoalId: z.string().uuid().optional().nullable(),
 });
 export type CreateRoadmapBlock = z.infer<typeof createRoadmapBlockSchema>;
+
+export const createRoadmapBlockLinkSchema = z.object({
+  blockId: z.string().uuid(),
+  goalId: z.string().uuid(),
+});
+export type CreateRoadmapBlockLink = z.infer<typeof createRoadmapBlockLinkSchema>;
 
 export const updateRoadmapBlockSchema = createRoadmapBlockSchema.partial();
 export type UpdateRoadmapBlock = z.infer<typeof updateRoadmapBlockSchema>;

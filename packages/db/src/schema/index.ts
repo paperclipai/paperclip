@@ -39,6 +39,7 @@ export { goalTargets } from "./goal_targets.js";
 export { goalRelations } from "./goal_relations.js";
 export { roadmapBlocks } from "./roadmap_blocks.js";
 export { roadmapBlockEdges } from "./roadmap_block_edges.js";
+export { roadmapBlockLinks } from "./roadmap_block_links.js";
 export { folders } from "./folders.js";
 export { issues } from "./issues.js";
 export { issueWatchdogs } from "./issue_watchdogs.js";

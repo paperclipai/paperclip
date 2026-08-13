@@ -22,6 +22,7 @@ import { StatusGlyph } from "../components/StatusGlyph";
 import { StatusIcon } from "../components/StatusIcon";
 import { RoadmapView } from "../components/RoadmapView";
 import { InlineEditor } from "../components/InlineEditor";
+import { PlusGlyph } from "../components/PlusGlyph";
 
 // Layout constants (left-to-right layered tree; task pills match the approved
 // grouping preview: slim leaves, two-row parents with subtree progress).
@@ -1209,7 +1210,7 @@ export function GoalMap() {
                       openCreateForGoal(node.goal);
                     }}
                   >
-                    +
+                    <PlusGlyph />
                   </button>
                 </Card>
               );
@@ -1307,7 +1308,7 @@ export function GoalMap() {
                       openCreateSubtask(issue);
                     }}
                   >
-                    +
+                    <PlusGlyph size={10} />
                   </button>
                 </Card>
               );

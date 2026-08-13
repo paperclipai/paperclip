@@ -4,6 +4,7 @@ import {
   createGoalRelationSchema,
   createGoalTargetSchema,
   createRoadmapBlockEdgeSchema,
+  createRoadmapBlockLinkSchema,
   createRoadmapBlockSchema,
   promoteRoadmapBlockSchema,
   updateGoalTargetSchema,
@@ -129,6 +130,21 @@ export function goalPlatformRoutes(db: Db) {
     if (!existing) return;
     assertHumanPlanningActor(req);
     res.json(await roadmap.removeEdge(id));
+  });
+
+  router.post("/companies/:companyId/roadmap-block-links", validate(createRoadmapBlockLinkSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertHumanPlanningActor(req);
+    res.status(201).json(await roadmap.createLink(companyId, req.body));
+  });
+
+  router.delete("/roadmap-block-links/:id", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await getAccessibleResource(req, res, roadmap.getLinkById(id), "Roadmap block link not found");
+    if (!existing) return;
+    assertHumanPlanningActor(req);
+    res.json(await roadmap.removeLink(id));
   });
 
   router.post("/roadmap-blocks/:id/promote", validate(promoteRoadmapBlockSchema), async (req, res) => {

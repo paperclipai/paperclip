@@ -7,6 +7,7 @@ import type {
   PromoteRoadmapBlock,
   RoadmapBlock,
   RoadmapBlockEdge,
+  RoadmapBlockLink,
   RoadmapResponse,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -41,6 +42,9 @@ export const goalsApi = {
   roadmapEdgeCreate: (companyId: string, data: Record<string, unknown>) =>
     api.post<RoadmapBlockEdge>(`/companies/${companyId}/roadmap-block-edges`, data),
   roadmapEdgeRemove: (id: string) => api.delete<RoadmapBlockEdge>(`/roadmap-block-edges/${id}`),
+  roadmapLinkCreate: (companyId: string, data: { blockId: string; goalId: string }) =>
+    api.post<RoadmapBlockLink>(`/companies/${companyId}/roadmap-block-links`, data),
+  roadmapLinkRemove: (id: string) => api.delete<RoadmapBlockLink>(`/roadmap-block-links/${id}`),
   roadmapBlockPromote: (id: string, data: PromoteRoadmapBlock) =>
     api.post<{ goal: Goal; block: RoadmapBlock }>(`/roadmap-blocks/${id}/promote`, data),
 };

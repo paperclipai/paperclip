@@ -1,7 +1,7 @@
 import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { goalRelations, goalTargets, goals, roadmapBlockEdges, roadmapBlocks } from "@paperclipai/db";
-import type { CreateGoalRelation, CreateGoalTarget, CreateRoadmapBlock, CreateRoadmapBlockEdge, PromoteRoadmapBlock, UpdateGoalTarget, UpdateRoadmapBlock } from "@paperclipai/shared";
+import { goalRelations, goalTargets, goals, roadmapBlockEdges, roadmapBlockLinks, roadmapBlocks } from "@paperclipai/db";
+import type { CreateGoalRelation, CreateGoalTarget, CreateRoadmapBlock, CreateRoadmapBlockEdge, CreateRoadmapBlockLink, PromoteRoadmapBlock, UpdateGoalTarget, UpdateRoadmapBlock } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 
@@ -103,13 +103,16 @@ export function goalRelationService(db: Db) {
 export function roadmapService(db: Db) {
   return {
     get: async (companyId: string) => {
-      const [blocks, edges] = await Promise.all([
+      const [blocks, edges, links] = await Promise.all([
         db.select().from(roadmapBlocks)
           .where(eq(roadmapBlocks.companyId, companyId))
           .orderBy(asc(roadmapBlocks.createdAt)),
         db.select().from(roadmapBlockEdges).where(eq(roadmapBlockEdges.companyId, companyId)),
+        db.select().from(roadmapBlockLinks)
+          .where(eq(roadmapBlockLinks.companyId, companyId))
+          .orderBy(asc(roadmapBlockLinks.createdAt)),
       ]);
-      return { blocks, edges };
+      return { blocks, edges, links };
     },
 
     getBlockById: (id: string) =>
@@ -126,23 +129,45 @@ export function roadmapService(db: Db) {
         status: data.status ?? "planned",
         x: data.x,
         y: data.y,
-        linkedGoalId: data.linkedGoalId ?? null,
       }).returning().then((rows) => rows[0]),
 
     updateBlock: async (id: string, data: UpdateRoadmapBlock) => {
       const existing = await db.select().from(roadmapBlocks).where(eq(roadmapBlocks.id, id)).then((rows) => rows[0] ?? null);
       if (!existing) return null;
-      if (data.linkedGoalId) {
-        const goal = await db.select().from(goals)
-          .where(and(eq(goals.id, data.linkedGoalId), eq(goals.companyId, existing.companyId)))
-          .then((rows) => rows[0] ?? null);
-        if (!goal) throw unprocessable("linkedGoalId not found in this company");
-      }
       return db.update(roadmapBlocks)
         .set({ ...data, updatedAt: new Date() })
         .where(eq(roadmapBlocks.id, id))
         .returning().then((rows) => rows[0] ?? null);
     },
+
+    getLinkById: (id: string) =>
+      db.select().from(roadmapBlockLinks).where(eq(roadmapBlockLinks.id, id)).then((rows) => rows[0] ?? null),
+
+    createLink: async (companyId: string, data: CreateRoadmapBlockLink) => {
+      const [block, goal] = await Promise.all([
+        db.select().from(roadmapBlocks)
+          .where(and(eq(roadmapBlocks.id, data.blockId), eq(roadmapBlocks.companyId, companyId)))
+          .then((rows) => rows[0] ?? null),
+        db.select().from(goals)
+          .where(and(eq(goals.id, data.goalId), eq(goals.companyId, companyId)))
+          .then((rows) => rows[0] ?? null),
+      ]);
+      if (!block) throw unprocessable("blockId not found in this company");
+      if (!goal) throw unprocessable("goalId not found in this company");
+      const inserted = await db.insert(roadmapBlockLinks)
+        .values({ companyId, blockId: data.blockId, goalId: data.goalId })
+        .onConflictDoNothing()
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (inserted) return inserted;
+      // Already linked — return the existing row so the call is idempotent.
+      return db.select().from(roadmapBlockLinks)
+        .where(and(eq(roadmapBlockLinks.blockId, data.blockId), eq(roadmapBlockLinks.goalId, data.goalId)))
+        .then((rows) => rows[0] ?? null);
+    },
+
+    removeLink: (id: string) =>
+      db.delete(roadmapBlockLinks).where(eq(roadmapBlockLinks.id, id)).returning().then((rows) => rows[0] ?? null),
 
     removeBlock: (id: string) =>
       db.delete(roadmapBlocks).where(eq(roadmapBlocks.id, id)).returning().then((rows) => rows[0] ?? null),
@@ -193,11 +218,15 @@ export function roadmapService(db: Db) {
           status: "active",
           parentId,
         }).returning();
+        const [link] = await tx.insert(roadmapBlockLinks)
+          .values({ companyId: block.companyId, blockId: id, goalId: goal.id })
+          .onConflictDoNothing()
+          .returning();
         const [updatedBlock] = await tx.update(roadmapBlocks)
-          .set({ linkedGoalId: goal.id, updatedAt: new Date() })
+          .set({ updatedAt: new Date() })
           .where(eq(roadmapBlocks.id, id))
           .returning();
-        return { goal, block: updatedBlock };
+        return { goal, block: updatedBlock, link: link ?? null };
       });
     },
   };

@@ -591,6 +591,7 @@ export {
   createRoadmapBlockSchema,
   updateRoadmapBlockSchema,
   createRoadmapBlockEdgeSchema,
+  createRoadmapBlockLinkSchema,
   promoteRoadmapBlockSchema,
   type CreateGoalTarget,
   type UpdateGoalTarget,
@@ -598,6 +599,7 @@ export {
   type CreateRoadmapBlock,
   type UpdateRoadmapBlock,
   type CreateRoadmapBlockEdge,
+  type CreateRoadmapBlockLink,
   type PromoteRoadmapBlock,
 } from "./goal-platform.js";
 
