@@ -73,6 +73,7 @@ import type {
   AdapterEnvironmentTestResult,
   AdapterModelProfileDefinition,
 } from "@paperclipai/adapter-utils";
+import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
@@ -80,6 +81,7 @@ import {
   detectAdapterModel,
   findActiveServerAdapter,
   findServerAdapter,
+  listServerAdapters,
   listAdapterModels,
   listAdapterModelProfiles,
   refreshAdapterModels,
@@ -94,6 +96,23 @@ import {
   resolveWorktreeRunExecutionActivationState,
 } from "../services/instance-settings.js";
 import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
+import { createInviteRateLimiter } from "../services/invite-rate-limit.js";
+import {
+  SetupTokenSessionService,
+  SetupTokenSessionError,
+  assessConfidentialStartup,
+  evaluateConfidentialTransport,
+  SETUP_TOKEN_START_FAILED,
+  SETUP_TOKEN_TRANSPORT_INSECURE,
+  type ConfidentialTransportConfig,
+  type SetupTokenCleanupRecord,
+  type SetupTokenCleanupStore,
+  type SetupTokenLease,
+  type SetupTokenLeaseManager,
+  type SetupTokenLoginProcessFactory,
+  type SetupTokenSessionScope,
+} from "../services/setup-token-session.js";
+import type { DeploymentMode } from "@paperclipai/shared";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import {
   checkStagedCredentialReadiness,
@@ -185,7 +204,37 @@ function readRunIssueId(context: Record<string, unknown> | null) {
 
 export function agentRoutes(
   db: Db,
-  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+  options: {
+    pluginWorkerManager?: PluginWorkerManager;
+    /** The active deployment mode. The confidential transport guard reads it. */
+    deploymentMode?: DeploymentMode;
+    /**
+     * The dedicated proxy IP or CIDR allowlist for the confidential setup-token
+     * responses (SR-7). The global `TRUST_PROXY` setting does not satisfy the
+     * guard; only a peer on this explicit allowlist may forward a TLS protocol.
+     */
+    confidentialProxyAllowlist?: string[];
+    /**
+     * Receives the setup-token login session service once the router builds it.
+     * The caller registers the startup reaper and the graceful-shutdown cleanup.
+     */
+    onSetupTokenLoginService?: (service: SetupTokenSessionService) => void;
+    /**
+     * Binds the live setup-token login transport. When the caller provides it,
+     * the session route is the live login path: the start route acquires a real
+     * sandbox lease through `leases` and drives one live login process through
+     * `factory`. When the caller omits it, the start route fails closed with the
+     * fixed no-secret error, because the sandbox pseudo-terminal transport is not
+     * bound yet. A test injects a fake factory and a fake lease manager to drive
+     * the full route path.
+     */
+    setupTokenLogin?: {
+      factory: SetupTokenLoginProcessFactory;
+      leases: SetupTokenLeaseManager;
+      /** The durable cleanup store. Defaults to the in-memory record store. */
+      store?: SetupTokenCleanupStore;
+    };
+  } = {},
 ) {
   // Legacy hardcoded maps — used as fallback when adapter module does not
   // declare capability flags explicitly.
@@ -234,6 +283,102 @@ export function agentRoutes(
   const environmentRuntime = environmentRuntimeService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
+
+  // --- Setup-token login session (Claude in-product login) -------------------
+  //
+  // The service owns a company-scoped, owner-bound login session, the
+  // confidential transport guard (SR-6, SR-7), the session caps, and the start
+  // rate limit. The `options.setupTokenLogin` transport binds the live sandbox
+  // pseudo-terminal login process and the real sandbox-lease acquisition. When a
+  // caller provides the transport, the session route is the live login path and
+  // `SETUP_TOKEN_LOGIN_TRANSPORT_READY` is true. When a caller omits it, the
+  // start route returns the fixed no-secret error and the login never spawns a
+  // process or holds a lease. The full session state machine, the cleanup order,
+  // and the reaper are covered by setup-token-session.test.ts.
+  const SETUP_TOKEN_LOGIN_TRANSPORT_READY = options.setupTokenLogin != null;
+
+  const setupTokenConfidentialConfig: ConfidentialTransportConfig = {
+    deploymentMode: options.deploymentMode ?? "local_trusted",
+    trustedProxies: options.confidentialProxyAllowlist ?? [],
+  };
+
+  // Rate-limit the start route: a small window per company and owner (SR-4).
+  const setupTokenRateLimiter = createInviteRateLimiter({ windowMs: 60_000, maxRequests: 5 });
+
+  // The deferred lease manager. It fails closed on acquire until a caller binds
+  // the live transport. It still releases a lease by handle or by id, so a
+  // reaper or a shutdown can free a lease that an injected transport acquired.
+  const deferredSetupTokenLeaseManager: SetupTokenLeaseManager = {
+    async acquire(): Promise<SetupTokenLease> {
+      // The real sandbox-lease acquisition binds through `options.setupTokenLogin`.
+      // Until then the start route fails closed before it reaches here.
+      throw new SetupTokenSessionError(503, SETUP_TOKEN_START_FAILED);
+    },
+    async release(lease): Promise<void> {
+      await environmentsSvc.releaseLease(lease.id, "released").catch(() => {});
+    },
+    async releaseById(leaseId): Promise<void> {
+      await environmentsSvc.releaseLease(leaseId, "released").catch(() => {});
+    },
+  };
+
+  // The in-memory non-secret cleanup record store. It is the default store when a
+  // caller does not inject a durable database-backed store.
+  const setupTokenCleanupRows = new Map<string, SetupTokenCleanupRecord>();
+  const inMemorySetupTokenCleanupStore: SetupTokenCleanupStore = {
+    async record(record): Promise<void> {
+      setupTokenCleanupRows.set(record.sessionId, { ...record });
+    },
+    async markState(sessionId, state): Promise<void> {
+      const row = setupTokenCleanupRows.get(sessionId);
+      if (row) row.state = state;
+    },
+    async remove(sessionId): Promise<void> {
+      setupTokenCleanupRows.delete(sessionId);
+    },
+    async listReapable(): Promise<SetupTokenCleanupRecord[]> {
+      return [];
+    },
+  };
+
+  const deferredSetupTokenLoginFactory: SetupTokenLoginProcessFactory = () => {
+    // The runner-over-pseudo-terminal binding arrives through
+    // `options.setupTokenLogin`. Until then the start route fails closed.
+    throw new SetupTokenSessionError(503, SETUP_TOKEN_START_FAILED);
+  };
+
+  // Resolve the transport: use the injected factory, lease manager, and store
+  // when a caller binds them; otherwise use the deferred, fail-closed defaults.
+  const setupTokenLoginFactory =
+    options.setupTokenLogin?.factory ?? deferredSetupTokenLoginFactory;
+  const setupTokenLeaseManager =
+    options.setupTokenLogin?.leases ?? deferredSetupTokenLeaseManager;
+  const setupTokenCleanupStore =
+    options.setupTokenLogin?.store ?? inMemorySetupTokenCleanupStore;
+
+  const setupTokenLoginService = new SetupTokenSessionService({
+    factory: setupTokenLoginFactory,
+    leases: setupTokenLeaseManager,
+    store: setupTokenCleanupStore,
+    rateLimiter: setupTokenRateLimiter,
+  });
+
+  {
+    // Log the startup transport assessment, so an operator can see whether a
+    // forwarded proxy protocol is trusted for the confidential routes (SR-7).
+    const startupAssessment = assessConfidentialStartup(setupTokenConfidentialConfig);
+    logger.info(
+      {
+        proxyForwardingEnabled: startupAssessment.proxyForwardingEnabled,
+        reason: startupAssessment.reason,
+        deploymentMode: setupTokenConfidentialConfig.deploymentMode,
+      },
+      "Setup-token login confidential transport startup assessment",
+    );
+  }
+
+  options.onSetupTokenLoginService?.(setupTokenLoginService);
+
   const runRedactions = createRunSecretRedactionRegistry(db);
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
@@ -1143,6 +1288,37 @@ export function agentRoutes(
       throw unprocessable(`Unknown adapter type: ${adapterType}`);
     }
     return adapterType;
+  }
+
+  /**
+   * Adapter validation for the paths that CHOOSE a harness for a new agent
+   * (hire + create), as opposed to the paths that operate on an existing one.
+   *
+   * A disabled adapter is one this instance cannot run — most often because a
+   * declarative registry (PAPERCLIP_ADAPTERS) curated it out, which
+   * reconcileAdapterAvailability turns into a disabled type at boot. Registered
+   * but disabled still passes assertKnownAdapterType, so an agent could be
+   * created on it and then fail EVERY run at lease time with
+   * `Adapter "..." is not in the configured adapter registry` — an error that
+   * arrives minutes later, in a run log, with no way back to the choice that
+   * caused it. Refuse at selection time instead, and name what can be chosen.
+   *
+   * Existing agents on a now-disabled adapter are deliberately untouched
+   * (listEnabledServerAdapters documents the same rule: hidden from selection,
+   * still functional for agents that already use them).
+   */
+  function assertSelectableAdapterType(type: string | null | undefined): string {
+    const adapterType = assertKnownAdapterType(type);
+    const disabled = new Set(getDisabledAdapterTypes());
+    if (!disabled.has(adapterType)) return adapterType;
+    const available = listServerAdapters()
+      .map((a) => a.type)
+      .filter((t) => !disabled.has(t))
+      .sort();
+    throw unprocessable(
+      `Adapter "${adapterType}" is not available on this instance. `
+      + `Available adapters: ${available.length > 0 ? available.join(", ") : "(none configured)"}`,
+    );
   }
 
   async function assertAgentDefaultEnvironmentSelection(
@@ -2802,7 +2978,7 @@ export function agentRoutes(
       sourceIssueIds: _sourceIssueIds,
       ...hireInput
     } = req.body;
-    hireInput.adapterType = assertKnownAdapterType(hireInput.adapterType);
+    hireInput.adapterType = assertSelectableAdapterType(hireInput.adapterType);
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertNoNewAgentLegacyPromptTemplate(
       hireInput.adapterType,
@@ -2998,7 +3174,7 @@ export function agentRoutes(
       instructionsBundle,
       ...createInput
     } = req.body;
-    createInput.adapterType = assertKnownAdapterType(createInput.adapterType);
+    createInput.adapterType = assertSelectableAdapterType(createInput.adapterType);
     const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertNoNewAgentLegacyPromptTemplate(
       createInput.adapterType,
@@ -3410,8 +3586,15 @@ export function agentRoutes(
       patchData.adapterConfig = adapterConfig;
     }
 
+    // Switching an existing agent ONTO another adapter is a new selection, so
+    // it gets the selectable check; keeping the agent's current adapter (even
+    // one since disabled) stays allowed, so a disabled harness does not make an
+    // existing agent uneditable.
     const requestedAdapterType = hasOwn(patchData, "adapterType")
-      ? assertKnownAdapterType(patchData.adapterType as string | null | undefined)
+      ? (() => {
+        const next = assertKnownAdapterType(patchData.adapterType as string | null | undefined);
+        return next === existing.adapterType ? next : assertSelectableAdapterType(next);
+      })()
       : existing.adapterType;
     let requestedRuntimeConfig: Record<string, unknown> | null = null;
     if (hasOwn(patchData, "runtimeConfig")) {
@@ -4042,6 +4225,192 @@ export function agentRoutes(
     });
 
     res.json(result);
+  });
+
+  // --- Setup-token login session routes --------------------------------------
+  //
+  // The routes give the harness the operations against one live login session.
+  // Every operation verifies the company, the owner user, and the target agent
+  // through the session scope. A missing session and a cross-scope session both
+  // return the same 404. The confidential responses (read-prompt and
+  // receive-token) pass through the fail-closed transport guard and set
+  // `Cache-Control: no-store`. The routes write no prompt, code, token, or raw
+  // process chunk to a log or an activity detail, and they return fixed error
+  // text only.
+  //
+  // Operator requirement (SR-7): to serve the confidential responses behind a
+  // TLS-terminating reverse proxy, set `CLAUDE_LOGIN_TRUSTED_PROXIES` to the
+  // explicit proxy IP or CIDR allowlist. The global `TRUST_PROXY` setting,
+  // including `TRUST_PROXY=true` and a hop-count value, does not satisfy the
+  // guard. A direct TLS request is always valid; a non-TLS request is valid only
+  // on a loopback peer in the `local_trusted` deployment mode.
+  //
+  // Each route below writes its full path as a plain string literal. The static
+  // OpenAPI coverage test reads the route paths from the source text; it does
+  // not evaluate a template variable. A shared base constant would leave the
+  // test with an unresolved path, so the routes repeat the base path instead.
+
+  /**
+   * Builds the immutable session scope from the authenticated owner user and the
+   * target agent (SR-3, FU-1). Only a user actor owns a login session; the route
+   * uses this dedicated login scope, not the broad agent-manage permission.
+   */
+  const buildSetupTokenScope = (
+    req: Request,
+    agent: { id: string; companyId: string },
+  ): SetupTokenSessionScope => {
+    const actor = getActorInfo(req);
+    if (actor.actorType !== "user") {
+      throw forbidden("A user must own a setup-token login session.");
+    }
+    return { companyId: agent.companyId, ownerUserId: actor.actorId, targetAgentId: agent.id };
+  };
+
+  /**
+   * Applies the fail-closed confidential transport guard (SR-6, SR-7). It reads
+   * the raw socket TLS bit and the immediate peer address, so the global
+   * `trust proxy` setting cannot influence the decision. It returns false and
+   * sends the fixed no-secret error when the transport is not confidential.
+   */
+  const enforceSetupTokenTransport = (req: Request, res: Response): boolean => {
+    const socket = req.socket as { encrypted?: boolean; remoteAddress?: string };
+    const forwardedProto = req.headers["x-forwarded-proto"];
+    const decision = evaluateConfidentialTransport(setupTokenConfidentialConfig, {
+      socketEncrypted: socket?.encrypted === true,
+      remoteAddress: socket?.remoteAddress,
+      forwardedProto: Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto,
+    });
+    if (!decision.allowed) {
+      res.setHeader("Cache-Control", "no-store");
+      res.status(403).json({ error: SETUP_TOKEN_TRANSPORT_INSECURE });
+      return false;
+    }
+    return true;
+  };
+
+  const sendSetupTokenError = (res: Response, err: unknown): void => {
+    if (err instanceof SetupTokenSessionError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    throw err;
+  };
+
+  /**
+   * Resolves the target agent for a login-session route and verifies it is a
+   * `claude_local` agent. Returns null and sends the response when the agent is
+   * missing, inaccessible, or the wrong adapter type.
+   */
+  const resolveSetupTokenAgent = async (req: Request, res: Response) => {
+    const id = req.params.id as string;
+    const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
+    if (!agent) return null;
+    if (agent.adapterType !== "claude_local") {
+      res.status(400).json({ error: "Login is only supported for claude_local agents" });
+      return null;
+    }
+    return agent;
+  };
+
+  router.post("/agents/:id/setup-token-login-sessions", async (req, res) => {
+    const agent = await resolveSetupTokenAgent(req, res);
+    if (!agent) return;
+    const scope = buildSetupTokenScope(req, agent);
+    res.setHeader("Cache-Control", "no-store");
+    if (!SETUP_TOKEN_LOGIN_TRANSPORT_READY) {
+      // The live login transport binds at a later call site. Fail closed with the
+      // fixed no-secret error until then.
+      res.status(503).json({ error: SETUP_TOKEN_START_FAILED });
+      return;
+    }
+    try {
+      const started = await setupTokenLoginService.start(scope);
+      res.status(201).json({ sessionId: started.sessionId, state: started.state });
+    } catch (err) {
+      sendSetupTokenError(res, err);
+    }
+  });
+
+  router.get("/agents/:id/setup-token-login-sessions/:sessionId/prompt", async (req, res) => {
+    const agent = await resolveSetupTokenAgent(req, res);
+    if (!agent) return;
+    const scope = buildSetupTokenScope(req, agent);
+    res.setHeader("Cache-Control", "no-store");
+    // SR-6 and SR-7: the full login URL is a confidential response.
+    if (!enforceSetupTokenTransport(req, res)) return;
+    try {
+      const view = setupTokenLoginService.readPrompt(req.params.sessionId as string, scope);
+      // SR-5: the full login URL rides only in this authorized owner response.
+      res.json({ state: view.state, loginUrl: view.loginUrl });
+    } catch (err) {
+      sendSetupTokenError(res, err);
+    }
+  });
+
+  router.post("/agents/:id/setup-token-login-sessions/:sessionId/code", async (req, res) => {
+    const agent = await resolveSetupTokenAgent(req, res);
+    if (!agent) return;
+    const scope = buildSetupTokenScope(req, agent);
+    const browserCode = typeof req.body?.browserCode === "string" ? req.body.browserCode : null;
+    res.setHeader("Cache-Control", "no-store");
+    // SR-6 and SR-7: the browser code is the confidential OAuth authorization
+    // secret. Enforce the fail-closed confidential transport guard before the
+    // route reads it, so the code never rides an untrusted transport.
+    if (!enforceSetupTokenTransport(req, res)) return;
+    if (!browserCode) {
+      // The route echoes no input; it returns fixed error text only (SR-1).
+      res.status(400).json({ error: "A browserCode is required." });
+      return;
+    }
+    try {
+      const result = setupTokenLoginService.submitCode(req.params.sessionId as string, scope, browserCode);
+      res.json({ state: result.state });
+    } catch (err) {
+      sendSetupTokenError(res, err);
+    }
+  });
+
+  router.post("/agents/:id/setup-token-login-sessions/:sessionId/cancel", async (req, res) => {
+    const agent = await resolveSetupTokenAgent(req, res);
+    if (!agent) return;
+    const scope = buildSetupTokenScope(req, agent);
+    try {
+      const result = await setupTokenLoginService.cancel(req.params.sessionId as string, scope);
+      res.json({ state: result.state });
+    } catch (err) {
+      sendSetupTokenError(res, err);
+    }
+  });
+
+  router.post("/agents/:id/setup-token-login-sessions/:sessionId/expire", async (req, res) => {
+    const agent = await resolveSetupTokenAgent(req, res);
+    if (!agent) return;
+    const scope = buildSetupTokenScope(req, agent);
+    try {
+      const result = await setupTokenLoginService.expire(req.params.sessionId as string, scope);
+      res.json({ state: result.state });
+    } catch (err) {
+      sendSetupTokenError(res, err);
+    }
+  });
+
+  router.post("/agents/:id/setup-token-login-sessions/:sessionId/token", async (req, res) => {
+    const agent = await resolveSetupTokenAgent(req, res);
+    if (!agent) return;
+    const scope = buildSetupTokenScope(req, agent);
+    res.setHeader("Cache-Control", "no-store");
+    // SR-6 and SR-7: the token is a confidential response.
+    if (!enforceSetupTokenTransport(req, res)) return;
+    try {
+      // The service returns the token one time from a completed session. It
+      // returns the fixed unavailable error when the token is not ready or the
+      // owner already received it. The full token rides only in this authorized
+      // owner response over the confidential transport (SR-5, SR-6, SR-7).
+      const result = setupTokenLoginService.receiveToken(req.params.sessionId as string, scope);
+      res.json({ token: result.token });
+    } catch (err) {
+      sendSetupTokenError(res, err);
+    }
   });
 
   router.get("/companies/:companyId/heartbeat-runs", async (req, res) => {

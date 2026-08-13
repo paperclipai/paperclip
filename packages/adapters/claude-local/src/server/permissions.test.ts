@@ -37,15 +37,43 @@ describe("claude-local remote permission args", () => {
     expect(buildClaudeProbePermissionArgs({ dangerouslySkipPermissions: false, targetIsRemote: true })).toEqual([]);
   });
 
-  it("uses dangerously-skip-permissions for local execution", () => {
-    expect(buildClaudeExecutionPermissionArgs({ dangerouslySkipPermissions: true, targetIsRemote: false })).toEqual([
-      "--dangerously-skip-permissions",
-    ]);
+  it("uses dangerously-skip-permissions for non-root local execution", () => {
+    expect(
+      buildClaudeExecutionPermissionArgs({
+        dangerouslySkipPermissions: true,
+        targetIsRemote: false,
+        localProcessUid: 1000,
+      }),
+    ).toEqual(["--dangerously-skip-permissions"]);
   });
 
-  it("uses dangerously-skip-permissions for local probes", () => {
-    expect(buildClaudeProbePermissionArgs({ dangerouslySkipPermissions: true, targetIsRemote: false })).toEqual([
-      "--dangerously-skip-permissions",
-    ]);
+  it("uses dangerously-skip-permissions for non-root local probes", () => {
+    expect(
+      buildClaudeProbePermissionArgs({
+        dangerouslySkipPermissions: true,
+        targetIsRemote: false,
+        localProcessUid: 1000,
+      }),
+    ).toEqual(["--dangerously-skip-permissions"]);
+  });
+
+  it("uses allowedTools for local root execution because Claude refuses dangerously-skip-permissions as root", () => {
+    expect(
+      buildClaudeExecutionPermissionArgs({
+        dangerouslySkipPermissions: true,
+        targetIsRemote: false,
+        localProcessUid: 0,
+      }),
+    ).toEqual(["--allowedTools", SANDBOX_ALLOWED_TOOLS]);
+  });
+
+  it("uses allowedTools for local root probes because Claude refuses dangerously-skip-permissions as root", () => {
+    expect(
+      buildClaudeProbePermissionArgs({
+        dangerouslySkipPermissions: true,
+        targetIsRemote: false,
+        localProcessUid: 0,
+      }),
+    ).toEqual(["--allowedTools", SANDBOX_ALLOWED_TOOLS]);
   });
 });

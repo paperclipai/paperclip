@@ -1836,7 +1836,14 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   actorRunId: string | null | undefined;
   checkoutRunId: string | null | undefined;
   executionRunId: string | null | undefined;
+  requestAddsExplicitBlockers?: boolean;
 }) {
+  // A request that wires a non-empty blockedByIssueIds list is declaring that
+  // the issue is waiting on other work. The implicit reopen exists for plain
+  // conversational comments ("please continue"), not structured dependency
+  // edits — flipping to todo here would contradict the caller's stated intent
+  // in the same request.
+  if (input.requestAddsExplicitBlockers) return false;
   // Local-CLI agents post comments under user auth, so the actor.type is "user"
   // even though the comment originates from the same heartbeat run that owns
   // the issue lock. Without this guard, an agent that closes its own issue and
@@ -5364,6 +5371,7 @@ export function issueRoutes(
     const includeLiveDescendantSummary = parseOptionalBooleanQuery(req.query.includeLiveDescendantSummary);
     const assigneeAgentFilterRaw = req.query.assigneeAgentId;
     let assigneeAgentId: string | null | undefined;
+    const rawUpdatedSince = req.query.updatedSince as string | undefined;
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
@@ -5430,6 +5438,10 @@ export function issueRoutes(
         return;
       }
     }
+    if (rawUpdatedSince !== undefined && !Number.isFinite(new Date(rawUpdatedSince).getTime())) {
+      res.status(400).json({ error: "updatedSince must be a valid ISO 8601 timestamp when provided" });
+      return;
+    }
     const offset = parsedOffset ?? 0;
 
     const listFilters: IssueFilters = {
@@ -5466,6 +5478,7 @@ export function issueRoutes(
       offset,
       sortField: sortField === "updated" ? "updated" : undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
+      updatedSince: rawUpdatedSince,
     };
     const requestKey = issueListRequestKey({
       req,
@@ -8703,6 +8716,8 @@ export function issueRoutes(
             actorRunId: actor.runId,
             checkoutRunId: existing.checkoutRunId,
             executionRunId: existing.executionRunId,
+            requestAddsExplicitBlockers:
+              Array.isArray(req.body.blockedByIssueIds) && req.body.blockedByIssueIds.length > 0,
           })) ||
         shouldResumeInProgressScheduledRetry);
     const updateReferenceSummaryBefore = titleOrDescriptionChanged
