@@ -38,7 +38,7 @@ Store defaults to avoid repeating flags:
 
 ```sh
 # Set defaults
-npx paperclipai context set --api-base http://localhost:3100 --company-id <id>
+pnpm exec paperclipai context set --api-base http://localhost:3100 --company-id <id>
 
 # View current context
 pnpm paperclipai context show
@@ -53,18 +53,18 @@ pnpm paperclipai context use default
 To avoid storing secrets in context, use an env var:
 
 ```sh
-npx paperclipai context set --api-key-env-var-name PAPERCLIP_API_KEY
+pnpm exec paperclipai context set --api-key-env-var-name PAPERCLIP_API_KEY
 export PAPERCLIP_API_KEY=...
 ```
 
 Secret operations are available under `paperclipai secrets`:
 
 ```sh
-npx paperclipai secrets declarations --company-id <company-id> --kind secret
-npx paperclipai secrets create --company-id <company-id> --name anthropic-api-key --value-env ANTHROPIC_API_KEY
-npx paperclipai secrets link --company-id <company-id> --name prod-stripe-key --provider aws_secrets_manager --external-ref <provider-ref>
-npx paperclipai secrets doctor --company-id <company-id>
-npx paperclipai secrets migrate-inline-env --company-id <company-id> --apply
+pnpm exec paperclipai secrets declarations --company-id <company-id> --kind secret
+pnpm exec paperclipai secrets create --company-id <company-id> --name anthropic-api-key --value-env ANTHROPIC_API_KEY
+pnpm exec paperclipai secrets link --company-id <company-id> --name prod-stripe-key --provider aws_secrets_manager --external-ref <provider-ref>
+pnpm exec paperclipai secrets doctor --company-id <company-id>
+pnpm exec paperclipai secrets migrate-inline-env --company-id <company-id> --apply
 ```
 
 Context is stored at `~/.paperclip/context.json`.

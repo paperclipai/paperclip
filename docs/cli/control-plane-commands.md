@@ -9,39 +9,39 @@ Client-side commands for managing issues, agents, approvals, and more.
 
 ```sh
 # List issues
-npx paperclipai issue list [--status todo,in_progress] [--assignee-agent-id <id>] [--match text]
+pnpm exec paperclipai issue list [--status todo,in_progress] [--assignee-agent-id <id>] [--match text]
 
 # Get issue details
-npx paperclipai issue get <issue-id-or-identifier>
+pnpm exec paperclipai issue get <issue-id-or-identifier>
 
 # Create issue
-npx paperclipai issue create --title "..." [--description "..."] [--status todo] [--priority high]
+pnpm exec paperclipai issue create --title "..." [--description "..."] [--status todo] [--priority high]
 
 # Update issue
-npx paperclipai issue update <issue-id> [--status in_progress] [--comment "..."]
+pnpm exec paperclipai issue update <issue-id> [--status in_progress] [--comment "..."]
 
 # Add comment
-npx paperclipai issue comment <issue-id> --body "..." [--reopen]
+pnpm exec paperclipai issue comment <issue-id> --body "..." [--reopen]
 
 # Checkout task
-npx paperclipai issue checkout <issue-id> --agent-id <agent-id>
+pnpm exec paperclipai issue checkout <issue-id> --agent-id <agent-id>
 
 # Release task
-npx paperclipai issue release <issue-id>
+pnpm exec paperclipai issue release <issue-id>
 ```
 
 ## Company Commands
 
 ```sh
-npx paperclipai company list
-npx paperclipai company get <company-id>
-npx paperclipai company current [--company-id <company-id>]
+pnpm exec paperclipai company list
+pnpm exec paperclipai company get <company-id>
+pnpm exec paperclipai company current [--company-id <company-id>]
 
 # Export to portable folder package (writes manifest + markdown files)
-npx paperclipai company export <company-id> --out ./exports/acme --include company,agents
+pnpm exec paperclipai company export <company-id> --out ./exports/acme --include company,agents
 
 # Preview import (no writes)
-npx paperclipai company import \
+pnpm exec paperclipai company import \
   <owner>/<repo>/<path> \
   --target existing \
   --company-id <company-id> \
@@ -50,7 +50,7 @@ npx paperclipai company import \
   --dry-run
 
 # Apply import
-npx paperclipai company import \
+pnpm exec paperclipai company import \
   ./exports/acme \
   --target new \
   --new-company-name "Acme Imported" \
@@ -67,80 +67,80 @@ command.
 ## Agent Commands
 
 ```sh
-npx paperclipai agent list
-npx paperclipai agent get <agent-id>
+pnpm exec paperclipai agent list
+pnpm exec paperclipai agent get <agent-id>
 ```
 
 ## Skills Commands
 
 ```sh
 # Browse app-shipped catalog skills without changing company state
-npx paperclipai skills browse [--kind bundled|optional] [--category software-development] [--query github]
-npx paperclipai skills search "pull request" [--json]
+pnpm exec paperclipai skills browse [--kind bundled|optional] [--category software-development] [--query github]
+pnpm exec paperclipai skills search "pull request" [--json]
 
 # Inspect catalog metadata and file inventory before install
-npx paperclipai skills inspect github-pr-workflow
+pnpm exec paperclipai skills inspect github-pr-workflow
 
 # Install a catalog skill into the company skill library
 # This does not attach the skill to any agent.
-npx paperclipai skills install github-pr-workflow --company-id <company-id>
-npx paperclipai skills install github-pr-workflow --as pr-flow --force --company-id <company-id>
+pnpm exec paperclipai skills install github-pr-workflow --company-id <company-id>
+pnpm exec paperclipai skills install github-pr-workflow --as pr-flow --force --company-id <company-id>
 
 # External sources still use import instead of catalog install
-npx paperclipai skills import ./skills/my-skill --company-id <company-id>
-npx paperclipai skills import owner/repo/path/to/skill --company-id <company-id>
+pnpm exec paperclipai skills import ./skills/my-skill --company-id <company-id>
+pnpm exec paperclipai skills import owner/repo/path/to/skill --company-id <company-id>
 
 # Attach desired company skills to an agent after install/import
-npx paperclipai skills agent sync <agent-id> --skill github-pr-workflow --mode add --company-id <company-id>
+pnpm exec paperclipai skills agent sync <agent-id> --skill github-pr-workflow --mode add --company-id <company-id>
 ```
 
 ## Approval Commands
 
 ```sh
 # List approvals
-npx paperclipai approval list [--status pending]
+pnpm exec paperclipai approval list [--status pending]
 
 # Get approval
-npx paperclipai approval get <approval-id>
+pnpm exec paperclipai approval get <approval-id>
 
 # Create approval
-npx paperclipai approval create --type hire_agent --payload '{"name":"..."}' [--issue-ids <id1,id2>]
+pnpm exec paperclipai approval create --type hire_agent --payload '{"name":"..."}' [--issue-ids <id1,id2>]
 
 # Approve
-npx paperclipai approval approve <approval-id> [--decision-note "..."]
+pnpm exec paperclipai approval approve <approval-id> [--decision-note "..."]
 
 # Reject
-npx paperclipai approval reject <approval-id> [--decision-note "..."]
+pnpm exec paperclipai approval reject <approval-id> [--decision-note "..."]
 
 # Request revision
-npx paperclipai approval request-revision <approval-id> [--decision-note "..."]
+pnpm exec paperclipai approval request-revision <approval-id> [--decision-note "..."]
 
 # Resubmit
-npx paperclipai approval resubmit <approval-id> [--payload '{"..."}']
+pnpm exec paperclipai approval resubmit <approval-id> [--payload '{"..."}']
 
 # Comment
-npx paperclipai approval comment <approval-id> --body "..."
+pnpm exec paperclipai approval comment <approval-id> --body "..."
 ```
 
 ## Activity Commands
 
 ```sh
-npx paperclipai activity list [--agent-id <id>] [--entity-type issue] [--entity-id <id>]
+pnpm exec paperclipai activity list [--agent-id <id>] [--entity-type issue] [--entity-id <id>]
 ```
 
 ## Dashboard
 
 ```sh
-npx paperclipai dashboard get
+pnpm exec paperclipai dashboard get
 ```
 
 ## Instance Settings
 
 ```sh
-npx paperclipai instance settings:general
-npx paperclipai instance settings:general:update --payload-json '{...}'
-npx paperclipai instance settings:experimental
-npx paperclipai instance settings:experimental:update --payload-json '{...}'
+pnpm exec paperclipai instance settings:general
+pnpm exec paperclipai instance settings:general:update --payload-json '{...}'
+pnpm exec paperclipai instance settings:experimental
+pnpm exec paperclipai instance settings:experimental:update --payload-json '{...}'
 ```
 
 Experimental features are opt-in and are provided without compatibility guarantees. They may break, change, or be removed at any time. Use them at your own risk.
@@ -148,5 +148,5 @@ Experimental features are opt-in and are provided without compatibility guarante
 ## Heartbeat
 
 ```sh
-npx paperclipai heartbeat run --agent-id <agent-id> [--api-base http://localhost:3100]
+pnpm exec paperclipai heartbeat run --agent-id <agent-id> [--api-base http://localhost:3100]
 ```
