@@ -10,6 +10,8 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
   listSummaries: vi.fn(),
   getById: vi.fn(),
   getCloseReadiness: vi.fn(),
+  archiveWorkspaceUnderLifecycleLock: vi.fn(),
+  fenceClosedWorkspaceDestruction: vi.fn(),
   reconcileExecutionWorkspaceBranch: vi.fn(),
   update: vi.fn(),
 }));
@@ -388,5 +390,35 @@ describe.sequential("execution workspace routes", () => {
         source: "execution_workspace.quarantine_restore",
       }),
     }));
+  });
+
+  it("returns 409 and skips destructive cleanup when the archive hits a reopen-pending workspace", async () => {
+    // A reopen published the workspace active while its source issue is still
+    // terminal. The archive control must return 409 before any lease teardown,
+    // runtime-service stop, or artifact cleanup, so it never removes the rebuilt
+    // worktree.
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+      sourceIssueId: "issue-1",
+      status: "active",
+      mode: "isolated_workspace",
+    });
+    mockExecutionWorkspaceService.getCloseReadiness.mockResolvedValue({
+      state: "ready",
+      blockingReasons: [],
+    });
+    mockExecutionWorkspaceService.archiveWorkspaceUnderLifecycleLock.mockResolvedValue({
+      outcome: "reopen_pending",
+    });
+
+    const res = await request(createApp())
+      .patch("/api/execution-workspaces/workspace-1")
+      .send({ status: "archived" });
+
+    expect(res.status).toBe(409);
+    expect(mockExecutionWorkspaceService.archiveWorkspaceUnderLifecycleLock).toHaveBeenCalledTimes(1);
+    // The destruction fence never runs, so no worktree is removed.
+    expect(mockExecutionWorkspaceService.fenceClosedWorkspaceDestruction).not.toHaveBeenCalled();
   });
 });

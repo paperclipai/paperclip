@@ -2730,11 +2730,23 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     // reopen from publishing an active row between the status re-check and the
     // archive write. The archive runs only while the row is still open (not
     // already archived by a race) and clears the reopen-pending flag.
+    //
+    // The method refuses to archive a row that carries the reopen-pending flag.
+    // A reopen sets that flag when it publishes a rebuilt worktree as active
+    // while the source issue is still terminal. The method returns a distinct
+    // "reopen_pending" outcome for that row. It does not clear the flag and does
+    // not archive. The route maps that outcome to HTTP 409 and returns before any
+    // destructive cleanup, so the archive control never removes a rebuilt
+    // worktree during the reopen consumption window.
     archiveWorkspaceUnderLifecycleLock: async (input: {
       id: string;
       patch: Partial<typeof executionWorkspaces.$inferInsert>;
       closedAt: Date;
-    }): Promise<{ workspace: ExecutionWorkspace; capturedGeneration: number } | null> => {
+    }): Promise<
+      | { outcome: "archived"; workspace: ExecutionWorkspace; capturedGeneration: number }
+      | { outcome: "reopen_pending" }
+      | null
+    > => {
       return db.transaction(async (tx) => {
         await acquireExecutionWorkspaceLifecycleLock(tx, input.id);
         const fresh = await tx
@@ -2746,6 +2758,13 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           // The row is missing or already closed by a concurrent path. Do not
           // archive again.
           return null;
+        }
+        if (metadataHasReopenPendingConsumption(fresh.metadata as Record<string, unknown> | null)) {
+          // A reopen published this row as active while its source issue is still
+          // terminal. A caller will consume the rebuilt worktree. Refuse the
+          // archive and keep the flag, so the destructive path never removes the
+          // rebuilt worktree. The route maps this to HTTP 409.
+          return { outcome: "reopen_pending" };
         }
         const baseMetadata =
           (input.patch.metadata as Record<string, unknown> | null | undefined)
@@ -2763,11 +2782,19 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             metadata: archiveMetadata,
             updatedAt: new Date(),
           })
-          .where(eq(executionWorkspaces.id, input.id))
+          .where(and(
+            eq(executionWorkspaces.id, input.id),
+            // Defense in depth: never archive a reopen-pending row even if the
+            // flag appears between the read above and this write. The lifecycle
+            // lock already serializes reopen and archive, so this predicate only
+            // adds a second, authoritative guard at the write.
+            sql<boolean>`(${executionWorkspaces.metadata} ->> ${EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY}) IS DISTINCT FROM 'true'`,
+          ))
           .returning()
           .then((rows) => rows[0] ?? null);
         if (!archived) return null;
         return {
+          outcome: "archived",
           workspace: toExecutionWorkspace(archived),
           capturedGeneration: readExecutionWorkspaceLifecycleGeneration(archiveMetadata),
         };

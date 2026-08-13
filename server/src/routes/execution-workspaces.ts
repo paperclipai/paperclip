@@ -651,6 +651,17 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         res.status(404).json({ error: "Execution workspace not found" });
         return;
       }
+      if (archiveResult.outcome === "reopen_pending") {
+        // A reopen published this workspace as active while its source issue is
+        // still terminal. A caller will consume the rebuilt worktree. Refuse the
+        // archive and return before any lease teardown, runtime-service stop, or
+        // artifact cleanup, so the archive control never removes the rebuilt
+        // worktree during the reopen consumption window.
+        res.status(409).json({
+          error: "Execution workspace was reopened and cannot be archived right now",
+        });
+        return;
+      }
       workspace = archiveResult.workspace;
       const capturedGeneration = archiveResult.capturedGeneration;
 
