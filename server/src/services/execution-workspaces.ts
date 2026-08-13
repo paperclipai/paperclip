@@ -83,8 +83,10 @@ export const EXECUTION_WORKSPACE_REOPEN_FAILED_REASON = "reopen_failed";
 // consuming request clears the flag within seconds when the request ends. If the
 // server exits first, or every clear retry fails, the flag stays set and both the
 // reaper and the archive route skip the workspace forever. After this grace the
-// reaper treats the flag as stranded and clears it, so the workspace becomes
-// reclaimable again.
+// reaper reclaims the flag, but only when no run still owns it. The reaper checks
+// for a live consuming run first, so a request that outruns this grace keeps its
+// fence. The grace is a backstop for a flag whose run is gone, not a hard deadline
+// on the request.
 const STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS = 5 * 60 * 1000;
 
 // The metadata key that holds the workspace lifecycle generation. The generation
@@ -2419,14 +2421,23 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             result.skippedReopened += 1;
             continue;
           }
-          // The reopen-pending flag outlived its consumption window. The consuming
-          // request ended without moving the issue out of the terminal state, or
-          // the server exited before it cleared the flag. Clear the stranded flag
-          // under the lifecycle lock so a later sweep can reclaim the workspace.
-          // Keep the row active, so a retried resume can still reuse the rebuilt
-          // worktree. Pass this snapshot's generation and re-confirm staleness
-          // against the fresh row under the lock, so a newer reopen that raised the
-          // generation or refreshed the timestamp keeps its live fence.
+          // The flag is older than the grace period, but age alone does not prove
+          // the consuming request ended. An authorized request can run longer than
+          // the grace period. A live consuming run still owns the fence, so keep it
+          // and skip. This stops the sweep from clearing the fence of a slow request
+          // that a later sweep would then archive and destroy under the request.
+          if (await workspaceHasActiveRun(workspace)) {
+            result.skippedReopened += 1;
+            continue;
+          }
+          // The reopen-pending flag outlived its consumption window and no run owns
+          // it. The consuming request ended without moving the issue out of the
+          // terminal state, or the server exited before it cleared the flag. Clear
+          // the stranded flag under the lifecycle lock so a later sweep can reclaim
+          // the workspace. Keep the row active, so a retried resume can still reuse
+          // the rebuilt worktree. Pass this snapshot's generation and re-confirm
+          // staleness against the fresh row under the lock, so a newer reopen that
+          // raised the generation or refreshed the timestamp keeps its live fence.
           const cleared = await clearReopenPendingConsumptionUnderLock(workspace.id, {
             expectedGeneration: readExecutionWorkspaceLifecycleGeneration(
               workspace.metadata as Record<string, unknown> | null,

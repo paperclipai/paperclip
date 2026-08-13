@@ -1040,6 +1040,45 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(afterArchive?.status).toBe("archived");
   });
 
+  it("keeps the reopen fence for a request that outruns the grace period", async () => {
+    // A reopen published the workspace active and set the flag. The consuming
+    // request still runs, but it outran the grace period, so the flag looks
+    // stale by age. A live run owns the fence, so the sweep must not clear it.
+    // If the sweep cleared it, a later sweep could archive and destroy the
+    // rebuilt worktree under the running request.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true, activeRun: true });
+    const staleSince = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "active",
+        closedAt: null,
+        cleanupReason: null,
+        cleanupEligibleAt: null,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 4,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY]: true,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY]: staleSince,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    const [workspace] = await db
+      .select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    // The live run holds the fence, so the sweep skips the workspace and keeps
+    // the flag. It clears nothing.
+    expect(sweep).toMatchObject({ archived: 0, skippedReopened: 1, clearedStaleReopenPending: 0 });
+    expect(workspace?.status).toBe("active");
+    expect(metadataHasReopenPendingConsumption(workspace?.metadata as Record<string, unknown> | null)).toBe(true);
+    // The rebuilt worktree is intact.
+    await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+  });
+
   it("clears the reopen flag once the source issue leaves the terminal state", async () => {
     // The resume transition committed, so the source issue is non-terminal. The
     // sweep clears the stale reopen flag so a later terminal cycle can reap the
