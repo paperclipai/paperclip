@@ -248,6 +248,7 @@ export const toolsApi = {
   finishApp: (companyId: string, connectionId: string, input: {
     enabledCatalogEntryIds: string[];
     askFirstCatalogEntryIds: string[];
+    reviewedCatalogEntryIds?: string[];
     access: "all_agents" | { agentIds: string[] };
   }) =>
     api.post<FinishToolAppResult>(

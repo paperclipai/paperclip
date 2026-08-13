@@ -70,7 +70,7 @@ const modelOverrideIssue: Issue = {
   title: "Verify task-level model override provenance",
   assigneeAdapterOverrides: {
     adapterConfig: {
-      model: "gpt-5.6",
+      model: "gpt-5.6-sol",
       modelReasoningEffort: "high",
     },
   },
@@ -335,6 +335,40 @@ function IssuePropertiesModelOverridePane() {
               issue={modelOverrideIssue}
               childIssues={[]}
               onAddSubIssue={() => undefined}
+              onUpdate={() => undefined}
+              inline
+            />
+          </div>
+        </div>
+      </div>
+    </StorybookData>
+  );
+}
+
+function IssuePropertiesMobileBlockerActionsPane() {
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const openTimer = window.setTimeout(() => {
+      const trigger = rootRef.current?.querySelector<HTMLButtonElement>(
+        'button[aria-label^="Actions for blocker"]',
+      );
+      if (!trigger) return;
+      trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      trigger.click();
+    }, 0);
+    return () => window.clearTimeout(openTimer);
+  }, []);
+
+  return (
+    <StorybookData>
+      <div ref={rootRef} className="paperclip-story min-h-screen p-4">
+        <div className="mx-auto max-w-sm border border-border bg-background">
+          <div className="border-b border-border px-4 py-2 text-sm font-medium">Properties</div>
+          <div className="p-4">
+            <IssueProperties
+              issue={storybookIssues[1]!}
+              childIssues={[]}
               onUpdate={() => undefined}
               inline
             />
@@ -925,6 +959,12 @@ export const IssuePropertiesLongValuesMobile: Story = {
 export const IssuePropertiesModelOverride: Story = {
   name: "IssueProperties - task model override",
   render: () => <IssuePropertiesModelOverridePane />,
+};
+
+export const IssuePropertiesMobileBlockerActions: Story = {
+  name: "IssueProperties - mobile blocker actions open",
+  render: () => <IssuePropertiesMobileBlockerActionsPane />,
+  parameters: { viewport: { defaultViewport: "mobile1" } },
 };
 
 function ModelProfileLedgerStandalone() {

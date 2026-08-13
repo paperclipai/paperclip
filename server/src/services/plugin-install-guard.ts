@@ -28,31 +28,7 @@ import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { BUNDLED_LOCAL_PLUGIN_ROOT } from "./plugin-loader.js";
 
-/**
- * Environment key carrying the harness-injected managed-instance document.
- *
- * The full document contract (`mode: "cloud"`, feature overlay, plugin
- * auto-install list) is parsed fail-closed elsewhere at startup; this module
- * only cares about the variable's presence.
- */
-export const MANAGED_CONFIG_ENV_KEY = "PAPERCLIP_MANAGED_CONFIG";
-
-/**
- * Whether this instance is managed by the Paperclip Cloud harness.
- *
- * Deliberately presence-based rather than content-based: the strict startup
- * parser refuses to boot a managed instance with a malformed document, and
- * absent env means self-hosted. Deciding the security floor on presence
- * alone means a corrupted, truncated, or attacker-influenced document can
- * never *disable* the floor — the failure mode is closed, not open.
- *
- * @param env - Raw environment map (injectable for tests; defaults to `process.env`)
- */
-export function isCloudManagedInstance(
-  env: Record<string, string | undefined> = process.env,
-): boolean {
-  return env[MANAGED_CONFIG_ENV_KEY] !== undefined;
-}
+export { isCloudManagedInstance } from "./cloud-instance.js";
 
 /** Result of canonicalizing a requested local plugin install path. */
 export type LocalPluginPathValidation =

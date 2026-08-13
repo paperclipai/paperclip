@@ -108,11 +108,11 @@ Paperclip should get better at turning completed work into reusable organization
 
 We want a lighter-weight way to talk to leadership agents, but those conversations should still resolve to real work objects like plans, issues, approvals, or decisions. This should improve interaction without changing the core task-and-comments model.
 
-### 🟡 Cloud deployments (multi-tenant isolation & local→cloud sync shipped)
+### 🟡 Cloud deployments (multi-tenant isolation & company Import/Export shipped)
 
 Local-first remains important, but Paperclip also needs a cleaner shared deployment story. Teams should be able to run the same product in hosted or semi-hosted environments without changing the mental model.
 
-Shipped so far: multi-tenant isolation with per-company JWT keys and company-scoped cloud tenants, local→cloud upstream sync, and cloud-managed instance bootstrap.
+Shipped so far: multi-tenant isolation with per-company JWT keys and company-scoped cloud tenants, portable company Import/Export (zip bundles that move a company between instances, local or cloud), and cloud-managed instance bootstrap. Next: a blob-store relay so large instances can move without a hand-carried bundle.
 
 ### ⚪ Desktop App
 

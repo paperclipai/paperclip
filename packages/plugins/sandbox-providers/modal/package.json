@@ -1,6 +1,6 @@
 {
   "name": "@paperclipai/plugin-modal",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Modal sandbox provider plugin for Paperclip environments",
   "license": "MIT",
   "homepage": "https://github.com/paperclipai/paperclip",

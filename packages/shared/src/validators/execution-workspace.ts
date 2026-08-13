@@ -12,6 +12,13 @@ export const executionWorkspaceStatusSchema = z.enum([
   "cleanup_failed",
 ]);
 
+export const executionWorkspaceDeliveryStateSchema = z.enum([
+  "merged_via_pr",
+  "merged_by_ancestry",
+  "unmerged",
+  "unknown",
+]);
+
 const workspaceOverviewStatusFilterSchema = z.preprocess((value) => {
   if (value === undefined || value === null) return undefined;
   const rawValues = Array.isArray(value) ? value : [value];
@@ -32,6 +39,7 @@ export const workspaceOverviewQuerySchema = z.object({
 export const executionWorkspaceConfigSchema = z.object({
   environmentId: z.string().uuid().optional().nullable(),
   provisionCommand: z.string().optional().nullable(),
+  runtimeProvisionCommand: z.string().optional().nullable(),
   teardownCommand: z.string().optional().nullable(),
   cleanupCommand: z.string().optional().nullable(),
   workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
@@ -101,7 +109,7 @@ export const workspaceRuntimeServiceSchema = z.object({
   scopeType: z.enum(["project_workspace", "execution_workspace", "run", "agent"]),
   scopeId: z.string().nullable(),
   serviceName: z.string(),
-  status: z.enum(["starting", "running", "stopped", "failed"]),
+  status: z.enum(["provisioning", "starting", "running", "stopped", "failed"]),
   lifecycle: z.enum(["shared", "ephemeral"]),
   reuseKey: z.string().nullable(),
   command: z.string().nullable(),
@@ -123,6 +131,7 @@ export const workspaceRuntimeServiceSchema = z.object({
 }).strict();
 export const executionWorkspaceCloseReadinessSchema = z.object({
   workspaceId: z.string().uuid(),
+  deliveryState: executionWorkspaceDeliveryStateSchema,
   state: executionWorkspaceCloseReadinessStateSchema,
   blockingReasons: z.array(z.string()),
   warnings: z.array(z.string()),

@@ -834,6 +834,33 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       state: "missing_disposition",
       reason: "missing_successful_run_disposition",
     });
+
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "system",
+      actorId: "system",
+      action: "issue.successful_run_handoff_escalated",
+      entityType: "issue",
+      entityId: handoffId,
+      agentId,
+      details: { sourceRunId: randomUUID() },
+    });
+    const escalatedRows = await svc.list(companyId, { attention: "blocked" });
+    expect(escalatedRows.find((row) => row.id === handoffId)?.blockedInboxAttention).toMatchObject({
+      state: "missing_disposition",
+      reason: "missing_successful_run_disposition",
+    });
+
+    const escalatedLiveRunId = await activeRun({ companyId, agentId, issueId: handoffId, current: false });
+    const escalatedLiveRows = await svc.list(companyId, { attention: "blocked" });
+    expect(escalatedLiveRows.some((row) => row.id === handoffId)).toBe(false);
+
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, escalatedLiveRunId));
+    const escalatedStoppedRows = await svc.list(companyId, { attention: "blocked" });
+    expect(escalatedStoppedRows.find((row) => row.id === handoffId)?.blockedInboxAttention).toMatchObject({
+      state: "missing_disposition",
+      reason: "missing_successful_run_disposition",
+    });
   });
 
   it("applies assigneeAgentId='null' as an IS NULL filter on the blocked-inbox path", async () => {

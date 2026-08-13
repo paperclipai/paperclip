@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { getActiveStepContext, measureStartupStep } from "./acpx-engine/startup-timing.js";
 import { prepareCommandManagedRuntime } from "./command-managed-runtime.js";
 import {
   authorizeSandboxCallbackBridgeRequestWithRoutes,
@@ -438,6 +439,7 @@ describe("sandbox callback bridge", () => {
       const worker = await startSandboxCallbackBridgeWorker({
         client: {
           makeDir: async () => {},
+          makeDirs: async () => {},
           listJsonFiles: async () => {
             throw new Error(
               "list /remote/.paperclip-runtime/gemini/paperclip-bridge/queue/requests failed with exit code 255: kex_exchange_identification: read: Connection reset by peer",
@@ -468,6 +470,242 @@ describe("sandbox callback bridge", () => {
     } finally {
       process.off("unhandledRejection", onUnhandledRejection);
     }
+  });
+
+  it("keeps the queue-directory setup on the startup step but resets the poll loop store", async () => {
+    // The worker starts inside the measured `bridge.paperclip` step. Its awaited
+    // queue-directory setup is startup work, so a `makeDir` `sandbox.exec` span
+    // must keep the active step and its `criticalPath` flag. The long-lived poll
+    // loop runs run-time execs for the whole run, so a loop `sandbox.exec` span
+    // must open unparented with no stale flag. This test reads the active step in
+    // both places and proves the boundary sits at the loop, not the whole worker.
+    let setupStep: ReturnType<typeof getActiveStepContext> | "unset" = "unset";
+    let loopStep: ReturnType<typeof getActiveStepContext> | "unset" = "unset";
+    let resolveFirstPoll: () => void = () => {};
+    const firstPoll = new Promise<void>((resolve) => {
+      resolveFirstPoll = resolve;
+    });
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-step-store-"));
+    cleanupDirs.push(rootDir);
+    const queueDir = path.posix.join(rootDir, "queue");
+
+    const worker = await measureStartupStep(
+      {},
+      () => 0,
+      "bridge.paperclip",
+      () =>
+        startSandboxCallbackBridgeWorker({
+          client: {
+            makeDir: async () => {
+              setupStep = getActiveStepContext();
+            },
+            makeDirs: async () => {
+              setupStep = getActiveStepContext();
+            },
+            listJsonFiles: async () => {
+              loopStep = getActiveStepContext();
+              resolveFirstPoll();
+              return [];
+            },
+            readTextFile: async () => {
+              throw new Error("unexpected readTextFile");
+            },
+            writeTextFile: async () => {
+              throw new Error("unexpected writeTextFile");
+            },
+            rename: async () => {
+              throw new Error("unexpected rename");
+            },
+            remove: async () => {},
+          },
+          queueDir,
+          authorizeRequest: async () => null,
+          handleRequest: async () => ({ status: 200, body: "ok" }),
+        }),
+      { criticalPath: false },
+    );
+
+    await firstPoll;
+    await worker.stop();
+
+    // The setup ran on the active step, so its exec span parents to the step.
+    expect(setupStep).not.toBe("unset");
+    expect(setupStep).not.toBeNull();
+    expect((setupStep as { criticalPath?: boolean }).criticalPath).toBe(false);
+
+    // The loop ran outside that store, so its exec span opens unparented with no
+    // stale `criticalPath` flag.
+    expect(loopStep).toBeNull();
+  });
+
+  it("test_paperclip_loop_exec_parents_to_run_context", async () => {
+    // The worker starts inside the measured `bridge.paperclip` step. Its awaited
+    // queue-directory setup is startup work and keeps the active step. The poll
+    // loop shell stays outside that store. But a per-request unit of work is
+    // run-time work, so the worker runs each request under the current-run
+    // parent context. A request `sandbox.exec` span then parents to the live run
+    // span, not to the ended startup step. This test drives the worker with a
+    // `getRuntimeParentContext` that returns a known token, queues one request,
+    // and proves the request work reads that token from the active step store.
+    const runParentToken = { marker: "run-parent-token" };
+    let setupStep: ReturnType<typeof getActiveStepContext> | "unset" = "unset";
+    let requestStep: ReturnType<typeof getActiveStepContext> | "unset" = "unset";
+    let served = false;
+    let resolveServed: () => void = () => {};
+    const requestServed = new Promise<void>((resolve) => {
+      resolveServed = resolve;
+    });
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-run-parent-"));
+    cleanupDirs.push(rootDir);
+    const queueDir = path.posix.join(rootDir, "queue");
+
+    const worker = await measureStartupStep(
+      {},
+      () => 0,
+      "bridge.paperclip",
+      () =>
+        startSandboxCallbackBridgeWorker({
+          client: {
+            makeDir: async () => {
+              setupStep = getActiveStepContext();
+            },
+            makeDirs: async () => {
+              setupStep = getActiveStepContext();
+            },
+            // Return one request on the first poll, then nothing.
+            listJsonFiles: async () => (served ? [] : ["000000000001.json"]),
+            readTextFile: async () =>
+              JSON.stringify({ id: "req-1", method: "GET", path: "/", query: "", headers: {}, body: "" }),
+            writeTextFile: async () => {},
+            rename: async () => {},
+            remove: async () => {},
+          },
+          queueDir,
+          authorizeRequest: async () => null,
+          handleRequest: async () => {
+            requestStep = getActiveStepContext();
+            served = true;
+            resolveServed();
+            return { status: 200, body: "ok" };
+          },
+          getRuntimeParentContext: () => runParentToken,
+        }),
+      { criticalPath: false },
+    );
+
+    await requestServed;
+    await worker.stop();
+
+    // The setup ran on the active step, so its exec span parents to the step.
+    expect(setupStep).not.toBe("unset");
+    expect(setupStep).not.toBeNull();
+
+    // The request work ran under the run parent context. Its exec span parents
+    // to the run token, not to the ended startup step, and it carries no
+    // startup `criticalPath` flag.
+    expect(requestStep).not.toBe("unset");
+    expect(requestStep).not.toBeNull();
+    expect((requestStep as { parentContext?: unknown }).parentContext).toBe(runParentToken);
+    expect((requestStep as { criticalPath?: boolean }).criticalPath).toBe(false);
+  });
+
+  it("wraps each request in a sandbox.callbackBridge.relayRequest span", async () => {
+    // With a span runner injected, the worker wraps each request in one
+    // `sandbox.callbackBridge.relayRequest` span, so the request's read, write,
+    // and remove execs group under one named span. This test drives the worker
+    // with a recording runner and proves it opens the wrapper span around the
+    // request work.
+    const wrapped: string[] = [];
+    let served = false;
+    let resolveServed: () => void = () => {};
+    const requestServed = new Promise<void>((resolve) => {
+      resolveServed = resolve;
+    });
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-relay-span-"));
+    cleanupDirs.push(rootDir);
+    const queueDir = path.posix.join(rootDir, "queue");
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client: {
+        makeDir: async () => {},
+        makeDirs: async () => {},
+        listJsonFiles: async () => (served ? [] : ["000000000001.json"]),
+        readTextFile: async () =>
+          JSON.stringify({ id: "req-1", method: "GET", path: "/", query: "", headers: {}, body: "" }),
+        writeTextFile: async () => {},
+        rename: async () => {},
+        remove: async () => {},
+      },
+      queueDir,
+      authorizeRequest: async () => null,
+      handleRequest: async () => {
+        served = true;
+        resolveServed();
+        return { status: 200, body: "ok" };
+      },
+      // Record each wrapper span name, then run the wrapped work.
+      runtimeSpan: async (name, work) => {
+        wrapped.push(name);
+        return work();
+      },
+    });
+
+    await requestServed;
+    await worker.stop();
+
+    expect(wrapped).toContain("sandbox.callbackBridge.relayRequest");
+  });
+
+  it("test_paperclip_loop_exec_stays_unparented_without_getter", async () => {
+    // With no `getRuntimeParentContext`, a request runs with an empty active
+    // step store, exactly like the earlier `runWithoutActiveStep` behavior. So a
+    // request `sandbox.exec` span opens unparented with no stale startup flag.
+    let requestStep: ReturnType<typeof getActiveStepContext> | "unset" = "unset";
+    let served = false;
+    let resolveServed: () => void = () => {};
+    const requestServed = new Promise<void>((resolve) => {
+      resolveServed = resolve;
+    });
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-no-getter-"));
+    cleanupDirs.push(rootDir);
+    const queueDir = path.posix.join(rootDir, "queue");
+
+    const worker = await measureStartupStep(
+      {},
+      () => 0,
+      "bridge.paperclip",
+      () =>
+        startSandboxCallbackBridgeWorker({
+          client: {
+            makeDir: async () => {},
+            makeDirs: async () => {},
+            listJsonFiles: async () => (served ? [] : ["000000000001.json"]),
+            readTextFile: async () =>
+              JSON.stringify({ id: "req-1", method: "GET", path: "/", query: "", headers: {}, body: "" }),
+            writeTextFile: async () => {},
+            rename: async () => {},
+            remove: async () => {},
+          },
+          queueDir,
+          authorizeRequest: async () => null,
+          handleRequest: async () => {
+            requestStep = getActiveStepContext();
+            served = true;
+            resolveServed();
+            return { status: 200, body: "ok" };
+          },
+        }),
+      { criticalPath: false },
+    );
+
+    await requestServed;
+    await worker.stop();
+
+    expect(requestStep).toBeNull();
   });
 
   it("serializes remote response writes so stop does not recreate a late orphaned response", async () => {
@@ -1035,6 +1273,8 @@ describe("sandbox callback bridge", () => {
       { method: "POST", path: "/api/issues/issue-1/interactions/inter-1/accept" },
       { method: "POST", path: "/api/issues/issue-1/interactions/inter-1/reject" },
       { method: "POST", path: "/api/issues/issue-1/interactions/inter-1/respond" },
+      { method: "POST", path: "/api/issues/issue-1/interactions/inter-1/verdicts" },
+      { method: "POST", path: "/api/issues/issue-1/interactions/inter-1/withdraw" },
       { method: "POST", path: "/api/companies/co-1/issues" },
       { method: "GET", path: "/api/approvals/ap-1" },
       { method: "GET", path: "/api/approvals/ap-1/issues" },
@@ -1113,5 +1353,111 @@ describe("sandbox callback bridge", () => {
         PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge",
       },
     }));
+  });
+
+  it("creates the bridge queue directories in one directory-creation exec", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-makedirs-"));
+    cleanupDirs.push(rootDir);
+
+    const queueDir = path.posix.join(rootDir, "queue");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const makeDir = vi.fn(async () => {});
+    const makeDirs = vi.fn(async () => {});
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client: {
+        makeDir,
+        makeDirs,
+        listJsonFiles: async () => [],
+        readTextFile: async () => {
+          throw new Error("unexpected readTextFile");
+        },
+        writeTextFile: async () => {},
+        rename: async () => {},
+        remove: async () => {},
+      },
+      queueDir,
+      authorizeRequest: async () => null,
+      handleRequest: async () => ({ status: 200, body: "ok" }),
+    });
+
+    await worker.stop();
+
+    expect(makeDir).not.toHaveBeenCalled();
+    expect(makeDirs).toHaveBeenCalledTimes(1);
+    expect(makeDirs).toHaveBeenCalledWith([
+      directories.rootDir,
+      directories.requestsDir,
+      directories.responsesDir,
+      directories.logsDir,
+    ]);
+  });
+
+  it("falls back to sequential makeDir when the queue client omits makeDirs", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-makedir-fallback-"));
+    cleanupDirs.push(rootDir);
+
+    const queueDir = path.posix.join(rootDir, "queue");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const makeDir = vi.fn(async (_remotePath: string) => {});
+
+    // A queue client that predates the batched makeDirs method. The worker
+    // must still create every queue directory through sequential makeDir.
+    const worker = await startSandboxCallbackBridgeWorker({
+      client: {
+        makeDir,
+        listJsonFiles: async () => [],
+        readTextFile: async () => {
+          throw new Error("unexpected readTextFile");
+        },
+        writeTextFile: async () => {},
+        rename: async () => {},
+        remove: async () => {},
+      },
+      queueDir,
+      authorizeRequest: async () => null,
+      handleRequest: async () => ({ status: 200, body: "ok" }),
+    });
+
+    await worker.stop();
+
+    expect(makeDir.mock.calls.map((call) => call[0])).toEqual([
+      directories.rootDir,
+      directories.requestsDir,
+      directories.responsesDir,
+      directories.logsDir,
+    ]);
+  });
+
+  it("runs one mkdir -p exec for makeDirs on the command-managed queue client", async () => {
+    const runner = {
+      execute: vi.fn(async (_input: { args?: string[] }) => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+        pid: null,
+        startedAt: new Date().toISOString(),
+      })),
+    };
+
+    const client = createCommandManagedSandboxCallbackBridgeQueueClient({
+      runner,
+      remoteCwd: "/workspace",
+      timeoutMs: 30_000,
+    });
+
+    // The command-managed client always provides the batched makeDirs method.
+    expect(client.makeDirs).toBeDefined();
+    await client.makeDirs?.(["/workspace/a", "/workspace/b", "/workspace/c"]);
+
+    expect(runner.execute).toHaveBeenCalledTimes(1);
+    const call = runner.execute.mock.calls[0][0];
+    const script = call.args?.[call.args.length - 1] ?? "";
+    expect(script).toContain("mkdir -p");
+    expect(script).toContain("/workspace/a");
+    expect(script).toContain("/workspace/b");
+    expect(script).toContain("/workspace/c");
   });
 });

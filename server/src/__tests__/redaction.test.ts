@@ -64,6 +64,18 @@ describe("redaction", () => {
     });
   });
 
+  it("preserves authorization decision reasons in audit payloads", () => {
+    expect(redactEventPayload({
+      authorizationReason: "allow_scoped_agent_write",
+      authorization: "Bearer secret",
+      surface: "issue.comment.create",
+    })).toEqual({
+      authorizationReason: "allow_scoped_agent_write",
+      authorization: REDACTED_EVENT_VALUE,
+      surface: "issue.comment.create",
+    });
+  });
+
   it("redacts common secret shapes from unstructured text", () => {
     const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
     const githubToken = "ghp_1234567890abcdefghijklmnopqrstuvwxyz";

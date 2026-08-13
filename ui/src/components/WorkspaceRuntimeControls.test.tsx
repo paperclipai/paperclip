@@ -569,6 +569,44 @@ describe("buildWorkspaceServiceControlEntries", () => {
     expect(entries.map((entry) => entry.state)).toEqual(["stopping", "stopping"]);
   });
 
+  it("maps a provisioning runtime service to the provisioning control state", () => {
+    const provisioning = createRuntimeService({
+      id: "service-web",
+      serviceName: "web",
+      status: "provisioning",
+    });
+    const built = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: { commands: [{ id: "web", name: "web", kind: "service", command: "pnpm dev" }] },
+      runtimeServices: [provisioning],
+      canStartServices: true,
+    });
+
+    expect(built.services[0]).toMatchObject({ statusLabel: "provisioning", runtimeServiceId: "service-web" });
+
+    const entries = buildWorkspaceServiceControlEntries({ sections: built, runtimeServices: [provisioning] });
+    expect(entries[0].state).toBe("provisioning");
+  });
+
+  it("surfaces a provisioning stale runtime service in otherServices", () => {
+    const provisioning = createRuntimeService({
+      id: "service-web",
+      serviceName: "web",
+      status: "provisioning",
+      command: "pnpm dev",
+    });
+    const built = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: {
+        commands: [{ id: "web", name: "web", kind: "service", command: "pnpm dev:once --tailscale-auth" }],
+      },
+      runtimeServices: [provisioning],
+      canStartServices: true,
+    });
+
+    expect(built.otherServices).toEqual([
+      expect.objectContaining({ title: "web", statusLabel: "provisioning", runtimeServiceId: "service-web" }),
+    ]);
+  });
+
   it("builds a failure detail line from the stopped runtime service", () => {
     const failed = createRuntimeService({
       id: "service-web",

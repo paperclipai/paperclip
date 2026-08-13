@@ -6,6 +6,7 @@ import {
   createTarballFromDirectory,
   prepareSandboxManagedRuntime,
   type PreparedSandboxManagedRuntime,
+  type SandboxAdditionalSource,
   type SandboxManagedRuntimeAsset,
   type SandboxManagedRuntimeClient,
   type SandboxRemoteExecutionSpec,
@@ -15,6 +16,7 @@ import {
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { RuntimeProgressSink, RuntimeStatusSink } from "./runtime-progress.js";
+import type { RuntimeSpanRunner } from "./acpx-engine/startup-timing.js";
 
 export interface CommandManagedRuntimeRunner {
   /**
@@ -24,25 +26,6 @@ export interface CommandManagedRuntimeRunner {
    * and let the caller choose a chunked upload path when progress is requested.
    */
   supportsSingleStreamStdinProgress?: boolean;
-  /**
-   * Cumulative count of host→sandbox `execute` round-trips this runner has
-   * performed (Open Q1). Present only on runners that instrument the single
-   * exec seam (the sandbox runner); the per-step delta is emitted as
-   * `run.startup.step` `payload.roundTrips`. A `() => number` reader, never the
-   * runner itself, is threaded into `measureStartupStep` so the timing helper
-   * stays runner-agnostic.
-   */
-  execCount?(): number;
-  /**
-   * Cumulative provider-reported wall-time (ms) for the `executeCommand` REST
-   * call ({@link providerExecMs}) vs the `client.get` sandbox re-fetch that
-   * precedes it ({@link providerGetMs}), accumulated across every `execute`
-   * round-trip (Open Q1, finer attribution). Present only when the provider
-   * surfaces these durations on its result metadata; the per-step deltas are
-   * emitted as `payload.providerExecMs` / `payload.providerGetMs`.
-   */
-  providerExecMs?(): number;
-  providerGetMs?(): number;
   execute(input: {
     command: string;
     args?: string[];
@@ -50,9 +33,29 @@ export interface CommandManagedRuntimeRunner {
     env?: Record<string, string>;
     stdin?: string;
     timeoutMs?: number;
-    noProfile?: boolean;
     onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
+    /**
+     * Run this command through the lease's persistent session even when no run
+     * step is active. A sandbox provider opens the session on the first
+     * non-bypassed command; the ACP process session bridge sets this so the
+     * long-lived agent command streams its output through the session log
+     * stream. The default keeps the context-based session selection.
+     */
+    useSession?: boolean;
+    /**
+     * Run this command outside the lease's persistent session even when a run
+     * step is active. The persistent session is a single serialized shell. In
+     * streamed mode the agent runs as one long-lived foreground command that
+     * holds the session for the whole run. The bridge control-plane execs
+     * (input delivery, output read, callback relay, and the queue/setup
+     * bookkeeping) must run concurrently with the agent, so they run as
+     * independent one-shot commands. On the session they queue behind the agent
+     * command that never returns — a permanent deadlock. An explicit bypass
+     * always wins over the context-based session selection and over
+     * `useSession`. The default keeps the context-based session selection.
+     */
+    bypassSession?: boolean;
   }): Promise<RunProcessResult>;
   /**
    * Optional native inbound file transfer. Present only when the sandbox
@@ -206,7 +209,6 @@ export function createCommandManagedRuntimeClient(input: {
     opts: {
       stdin?: string;
       timeoutMs?: number;
-      noProfile?: boolean;
       onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
     } = {},
   ) => {
@@ -216,7 +218,6 @@ export function createCommandManagedRuntimeClient(input: {
       cwd: input.commandCwd,
       stdin: opts.stdin,
       timeoutMs: opts.timeoutMs ?? input.timeoutMs,
-      noProfile: opts.noProfile === true,
       onLog: opts.onLog,
     });
     requireSuccessfulResult(result, script);
@@ -225,7 +226,7 @@ export function createCommandManagedRuntimeClient(input: {
 
   const client: SandboxManagedRuntimeClient = {
     makeDir: async (remotePath) => {
-      await runShell(`mkdir -p ${shellQuote(remotePath)}`, { noProfile: true });
+      await runShell(`mkdir -p ${shellQuote(remotePath)}`);
     },
     writeFile: async (remotePath, bytes, options) => {
       const buffer = toBuffer(bytes);
@@ -252,7 +253,7 @@ export function createCommandManagedRuntimeClient(input: {
               `mkdir -p ${shellQuote(remoteDir)} && ` +
               `base64 -d > ${shellQuote(remoteTempPath)} && ` +
               `mv -f ${shellQuote(remoteTempPath)} ${shellQuote(remotePath)}`,
-            { stdin: body, noProfile: true },
+            { stdin: body },
           );
           await options?.onProgress?.(total, total);
           return;
@@ -266,15 +267,14 @@ export function createCommandManagedRuntimeClient(input: {
         await runShell(
           `mkdir -p ${shellQuote(remoteDir)} && ` +
             `rm -f ${shellQuote(remoteTempPath)} && : > ${shellQuote(remoteTempPath)}`,
-          { noProfile: true },
         );
         for (let offset = 0; offset < total; offset += REMOTE_WRITE_FALLBACK_DECODED_CHUNK_SIZE) {
           const end = Math.min(total, offset + REMOTE_WRITE_FALLBACK_DECODED_CHUNK_SIZE);
           const chunk = buffer.subarray(offset, end).toString("base64");
-          await runShell(`base64 -d >> ${shellQuote(remoteTempPath)}`, { stdin: chunk, noProfile: true });
+          await runShell(`base64 -d >> ${shellQuote(remoteTempPath)}`, { stdin: chunk });
           await options?.onProgress?.(end, total);
         }
-        await runShell(`mv -f ${shellQuote(remoteTempPath)} ${shellQuote(remotePath)}`, { noProfile: true });
+        await runShell(`mv -f ${shellQuote(remoteTempPath)} ${shellQuote(remotePath)}`);
         await options?.onProgress?.(total, total);
       } finally {
         await bestEffortRemoveRemotePath(client, remoteTempPath);
@@ -284,7 +284,7 @@ export function createCommandManagedRuntimeClient(input: {
       // Chunked reads intentionally query the remote size first, even without
       // a progress sink, so each sandbox RPC stays bounded and truncation is
       // detected without materializing the whole file as one stdout string.
-      const sizeResult = await runShell(`wc -c < ${shellQuote(remotePath)}`, { noProfile: true });
+      const sizeResult = await runShell(`wc -c < ${shellQuote(remotePath)}`);
       const totalBytes = Number.parseInt(sizeResult.stdout.trim(), 10);
       if (!Number.isFinite(totalBytes) || totalBytes < 0) {
         throw new Error(`Could not determine remote file size for ${remotePath}`);
@@ -303,7 +303,6 @@ export function createCommandManagedRuntimeClient(input: {
       for (let chunkIndex = 0; decodedSoFar < totalBytes; chunkIndex++) {
         const result = await runShell(
           `dd if=${shellQuote(remotePath)} bs=${REMOTE_READ_CHUNK_BYTES} skip=${chunkIndex} count=1 2>/dev/null | base64`,
-          { noProfile: true },
         );
         const chunk = Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
         if (chunk.byteLength === 0) break;
@@ -326,7 +325,6 @@ export function createCommandManagedRuntimeClient(input: {
           `basename "$entry"; ` +
           `done; ` +
         `fi`,
-        { noProfile: true },
       );
       return result.stdout
         .split(/\r?\n/)
@@ -340,7 +338,6 @@ export function createCommandManagedRuntimeClient(input: {
         args: shellCommandArgs(`rm -rf ${shellQuote(remotePath)}`),
         cwd: input.commandCwd,
         timeoutMs: input.timeoutMs,
-        noProfile: true,
       });
       requireSuccessfulResult(result, `remove ${remotePath}`);
     },
@@ -350,7 +347,6 @@ export function createCommandManagedRuntimeClient(input: {
         args: shellCommandArgs(command),
         cwd: input.commandCwd,
         timeoutMs: options.timeoutMs,
-        noProfile: options.noProfile === true,
       });
       requireSuccessfulResult(result, command);
     },
@@ -361,8 +357,7 @@ export function createCommandManagedRuntimeClient(input: {
   // replace untar for directories, direct `writeFile` for single files), then run
   // the operation's ordered `postUploadCommands` fail-fast. Byte-for-byte
   // behavior-equivalent to the caller-inlined tar path it will replace. All exec
-  // rides the shared `execute` seam so `execCount`/`providerExecMs` still
-  // attribute (Open Q1).
+  // rides the shared `execute` seam.
   const fallbackSyncIn = async (operations: SandboxSyncOperation[]): Promise<SandboxSyncResult> => {
     const resultOperations: SandboxSyncResult["operations"] = [];
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-syncin-fallback-"));
@@ -390,7 +385,7 @@ export function createCommandManagedRuntimeClient(input: {
               await client.writeFile(remoteTarPath, bufferToArrayBuffer(tarBytes));
               await client.run(
                 buildSyncInExtractDirectoryCommand({ remoteTarPath, targetDir: mapping.targetPath }),
-                { timeoutMs: input.timeoutMs, noProfile: true },
+                { timeoutMs: input.timeoutMs },
               );
               bytesTransferred += tarBytes.byteLength;
             } else {
@@ -403,11 +398,11 @@ export function createCommandManagedRuntimeClient(input: {
               if (mapping.mode != null) {
                 await client.run(
                   buildSyncInChmodCommand({ mode: mapping.mode, targetPath: targetPathForWrite }),
-                  { timeoutMs: input.timeoutMs, noProfile: true },
+                  { timeoutMs: input.timeoutMs },
                 );
                 await client.run(
                   buildSyncInRenameCommand({ sourcePath: targetPathForWrite, targetPath: mapping.targetPath }),
-                  { timeoutMs: input.timeoutMs, noProfile: true },
+                  { timeoutMs: input.timeoutMs },
                 );
               }
               bytesTransferred += fileBytes.byteLength;
@@ -475,6 +470,8 @@ export async function prepareCommandManagedRuntime(input: {
   workspaceExclude?: string[];
   preserveAbsentOnRestore?: string[];
   assets?: CommandManagedRuntimeAsset[];
+  /** Referenced (additional) projects to stage into the sandbox as plain, read-only trees. */
+  additionalSources?: SandboxAdditionalSource[];
   installCommand?: string | null;
   /** When provided alongside `installCommand`, skip the install if `command -v <detectCommand>` succeeds. */
   detectCommand?: string | null;
@@ -482,6 +479,10 @@ export async function prepareCommandManagedRuntime(input: {
   // task wires it into the byte-counting writeFile/readFile transport.
   onProgress?: RuntimeProgressSink;
   onRuntimeProgress?: RuntimeStatusSink;
+  // Optional host span runner for the workspace tarball build. Forwarded to
+  // prepareSandboxManagedRuntime so the host pack time rides one `pack` span
+  // under the `stage.sync` step. The default is a no-op.
+  runtimeSpan?: RuntimeSpanRunner;
 }): Promise<PreparedSandboxManagedRuntime> {
   const timeoutMs = input.spec.timeoutMs && input.spec.timeoutMs > 0 ? input.spec.timeoutMs : 300_000;
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
@@ -530,8 +531,10 @@ export async function prepareCommandManagedRuntime(input: {
           workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
           preserveAbsentOnRestore: input.preserveAbsentOnRestore,
           assets: input.assets,
+          additionalSources: input.additionalSources,
           onProgress: input.onProgress,
           onRuntimeProgress: input.onRuntimeProgress,
+          runtimeSpan: input.runtimeSpan,
         });
       }
     }
@@ -567,7 +570,9 @@ export async function prepareCommandManagedRuntime(input: {
     workspaceExclude: mergeRuntimeExcludes(input.workspaceExclude),
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,
+    additionalSources: input.additionalSources,
     onProgress: input.onProgress,
     onRuntimeProgress: input.onRuntimeProgress,
+    runtimeSpan: input.runtimeSpan,
   });
 }

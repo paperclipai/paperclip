@@ -121,6 +121,25 @@ export function approvalService(db: Db) {
         .returning()
         .then((rows) => rows[0]),
 
+    // Cancel an open (pending/revision_requested) approval without a board
+    // decision — e.g. when its paired agent is terminated during duplicate
+    // cleanup. Idempotent: a no-op on already-resolved approvals.
+    cancel: async (id: string, reason?: string | null) => {
+      const now = new Date();
+      const updated = await db
+        .update(approvals)
+        .set({
+          status: "cancelled",
+          decisionNote: reason ?? null,
+          decidedAt: now,
+          updatedAt: now,
+        })
+        .where(and(eq(approvals.id, id), inArray(approvals.status, resolvableStatuses)))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return updated;
+    },
+
     approve: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {
       const { approval: updated, applied } = await resolveApproval(
         id,

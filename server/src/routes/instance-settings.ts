@@ -7,7 +7,7 @@ import {
   patchInstanceGeneralSettingsSchema,
 } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
-import { isCloudManagedInstance } from "../middleware/auth.js";
+import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { validate } from "../middleware/validate.js";
 import { heartbeatService, instanceSettingsService, logActivity } from "../services/index.js";
 import { environmentService } from "../services/environments.js";
@@ -47,7 +47,26 @@ export function instanceSettingsRoutes(db: Db) {
           typeof req.body.defaultEnvironmentId === "string" ? req.body.defaultEnvironmentId : null,
         );
       }
-      const updated = await svc.update(req.body);
+      // An explicit tenant write of the instance default reclassifies its
+      // attribution: whatever the default becomes — including a deliberate
+      // re-selection of the managed sandbox row — it is tenant-chosen, so
+      // the reconciliation stamp marker must not survive to let a later
+      // managed-sandbox-only mode-off pass mistake the tenant's choice for a
+      // stamp and revert it. The marker clear and the settings write commit
+      // in ONE transaction, so no partial failure can desync attribution
+      // from the default (neither a stale stamp on a tenant choice, nor a
+      // reconciliation default that lost its marker and can never revert).
+      const writesDefault = Object.prototype.hasOwnProperty.call(req.body, "defaultEnvironmentId");
+      const managedSandbox = writesDefault
+        ? await environments.findManagedSandboxEnvironment(undefined, { includeArchived: true })
+        : null;
+      const updated = await db.transaction(async (tx) => {
+        if (managedSandbox?.metadata?.managedDefaultStamped === true) {
+          const { managedDefaultStamped: _cleared, ...remainingMetadata } = managedSandbox.metadata;
+          await environments.update(managedSandbox.id, { metadata: remainingMetadata }, { db: tx });
+        }
+        return svc.update(req.body, { db: tx });
+      });
       const actor = getActorInfo(req);
       const companyIds = await svc.listCompanyIds();
       await Promise.all(

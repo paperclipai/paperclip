@@ -2,6 +2,8 @@ import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { issueWorkProducts } from "@paperclipai/db";
 import type { IssueWorkProduct } from "@paperclipai/shared";
+import { insertRowsInChunks } from "./batch-insert.js";
+import type { ImportIssueWorkProductRow } from "./import-write-types.js";
 
 type IssueWorkProductRow = typeof issueWorkProducts.$inferSelect;
 
@@ -108,6 +110,52 @@ export function workProductService(db: Db) {
           .then((rows) => rows[0] ?? null);
       });
       return row ? toIssueWorkProduct(row) : null;
+    },
+
+    /**
+     * Batched work-product insert for company import.
+     *
+     * {@link createForIssue} clears the prior primary of the same type on every
+     * call; imported issues are brand new, so the only primaries in play are the
+     * imported rows themselves. We reproduce "last primary wins" within each
+     * (issue, type) group and insert the whole batch in chunked statements.
+     */
+    createManyForImport: async (rows: ImportIssueWorkProductRow[]): Promise<void> => {
+      if (rows.length === 0) return;
+      const lastPrimaryIndexByGroup = new Map<string, number>();
+      rows.forEach((row, index) => {
+        if (row.isPrimary) lastPrimaryIndexByGroup.set(`${row.issueId}:${row.type}`, index);
+      });
+      const values = rows.map((row, index) => ({
+        companyId: row.companyId,
+        issueId: row.issueId,
+        projectId: row.projectId ?? null,
+        type: row.type,
+        provider: row.provider,
+        externalId: row.externalId ?? null,
+        title: row.title,
+        url: row.url ?? null,
+        status: row.status,
+        reviewState: row.reviewState,
+        isPrimary: row.isPrimary
+          ? lastPrimaryIndexByGroup.get(`${row.issueId}:${row.type}`) === index
+          : false,
+        healthStatus: row.healthStatus,
+        summary: row.summary ?? null,
+        metadata: row.metadata ?? null,
+        executionWorkspaceId: row.executionWorkspaceId ?? null,
+        runtimeServiceId: row.runtimeServiceId ?? null,
+        createdByRunId: row.createdByRunId ?? null,
+        sourceTrust: row.sourceTrust ?? null,
+      }));
+      // Chunked writes are wrapped in a single transaction so a large import
+      // that spans multiple insert statements is atomic: if a later chunk
+      // fails, the earlier chunks roll back rather than leaving a partial
+      // prefix behind (which a retry would then duplicate). Mirrors the
+      // per-writer transaction the batched issue/document writers use.
+      await db.transaction(async (tx) => {
+        await insertRowsInChunks(tx, issueWorkProducts, values);
+      });
     },
 
     remove: async (id: string) => {
