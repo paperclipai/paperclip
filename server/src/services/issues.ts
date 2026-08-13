@@ -785,6 +785,81 @@ export function clampIssueListLimit(limit: number): number {
   return Math.min(ISSUE_LIST_MAX_LIMIT, Math.max(1, Math.floor(limit)));
 }
 
+export type DelegatedIssueExecutionContractValidation = {
+  valid: boolean;
+  warnings: string[];
+};
+
+function readDelegatedContractField(record: Record<string, unknown> | null | undefined, ...keys: string[]) {
+  if (!record) return undefined;
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(record, key)) return record[key];
+  }
+  return undefined;
+}
+
+function readDelegatedContractString(record: Record<string, unknown> | null | undefined, ...keys: string[]) {
+  const value = readDelegatedContractField(record, ...keys);
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function hasDelegatedContractContent(value: unknown): boolean {
+  if (typeof value === "string") return value.trim().length > 0;
+  if (typeof value === "number" || typeof value === "boolean") return true;
+  if (Array.isArray(value)) return value.some(hasDelegatedContractContent);
+  if (isRecord(value)) return Object.values(value).some(hasDelegatedContractContent);
+  return false;
+}
+
+export function validateDelegatedIssueExecutionContract(
+  executionContract: Record<string, unknown> | null | undefined,
+): DelegatedIssueExecutionContractValidation {
+  const warnings: string[] = [];
+  if (!executionContract) {
+    return { valid: false, warnings: ["executionContract is required for agent-created child issues"] };
+  }
+  const schemaVersion = readDelegatedContractField(executionContract, "schemaVersion", "schema_version");
+  if (typeof schemaVersion !== "number" || !Number.isInteger(schemaVersion) || schemaVersion < 1) {
+    warnings.push("executionContract.schemaVersion must be a positive integer");
+  }
+  if (!readDelegatedContractString(executionContract, "contractType", "contract_type")) {
+    warnings.push("executionContract.contractType is required");
+  }
+  if (!readDelegatedContractString(executionContract, "taskType", "task_type")) {
+    warnings.push("executionContract.taskType is required");
+  }
+  const coreValue = readDelegatedContractField(executionContract, "core");
+  if (!isRecord(coreValue)) return { valid: false, warnings: [...warnings, "executionContract.core is required"] };
+  if (!readDelegatedContractString(coreValue, "objective")) warnings.push("executionContract.core.objective is required");
+  if (!readDelegatedContractString(coreValue, "why")) warnings.push("executionContract.core.why is required");
+  if (!hasDelegatedContractContent(readDelegatedContractField(coreValue, "sourceOfTruth", "source_of_truth"))) {
+    warnings.push("executionContract.core.sourceOfTruth must contain at least one source");
+  }
+  if (!hasDelegatedContractContent(readDelegatedContractField(coreValue, "acceptanceChecks", "acceptance_checks"))) {
+    warnings.push("executionContract.core.acceptanceChecks must contain at least one check");
+  }
+  const handoffNotes = readDelegatedContractField(coreValue, "handoffNotes", "handoff_notes");
+  if (!readDelegatedContractString(isRecord(handoffNotes) ? handoffNotes : null, "managerReasoning", "manager_reasoning")) {
+    warnings.push("executionContract.core.handoffNotes.managerReasoning is required");
+  }
+  return { valid: warnings.length === 0, warnings };
+}
+
+export function assertDelegatedIssueExecutionContract(
+  executionContract: Record<string, unknown> | null | undefined,
+  input: { parentId: string; mode?: "enforce" },
+) {
+  const validation = validateDelegatedIssueExecutionContract(executionContract);
+  if (validation.valid) return;
+  throw unprocessable("Agent-created child issues require a valid executionContract", {
+    code: "invalid_execution_contract",
+    mode: input.mode ?? "enforce",
+    parentId: input.parentId,
+    missingExecutionContract: executionContract == null,
+    warnings: validation.warnings,
+  });
+}
+
 function chunkList<T>(values: T[], size: number): T[][] {
   const chunks: T[][] = [];
   for (let index = 0; index < values.length; index += size) {
@@ -3814,6 +3889,7 @@ async function listIssueBlockedInboxAttentionMap(
     companyId,
     issueId: row.issueId,
     status: "pending",
+    createdAt: row.createdAt,
   }));
   const pendingApprovals = (approvalRows as BlockedInboxApprovalRow[]).map((row) => ({
     companyId,
@@ -4037,6 +4113,8 @@ async function listIssueBlockedInboxAttentionMap(
                 return "Repair review participant";
               case "in_review_without_action_path":
                 return "Choose review path";
+              default:
+                return "Review blocker";
             }
           })(),
           detail: finding.recommendedAction,
@@ -6572,6 +6650,16 @@ export function issueService(db: Db) {
         inheritStrategyOnly && !hasExplicitExecutionWorkspaceOverride
           ? buildPreRealizationExecutionWorkspaceSettings(parent.executionWorkspaceSettings)
           : null;
+      const description = appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria);
+      if (actorAgentId) {
+        const contractFields = resolveExecutionContractFields({
+          description,
+          executionContract: issueData.executionContract,
+        });
+        assertDelegatedIssueExecutionContract(contractFields.executionContract ?? null, {
+          parentId: parent.id,
+        });
+      }
       let child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
@@ -6583,7 +6671,7 @@ export function issueService(db: Db) {
         requestDepth: clampIssueRequestDepth(
           Math.max(clampIssueRequestDepth(parent.requestDepth) + 1, issueData.requestDepth ?? 0),
         ),
-        description: appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria),
+        description,
         ...(inheritedPreRealizationWorkspaceSettings
           ? { executionWorkspaceSettings: inheritedPreRealizationWorkspaceSettings }
           : {}),
@@ -6903,6 +6991,11 @@ export function issueService(db: Db) {
         onDeduplicated,
         ...issueData
       } = data;
+      if (issueData.parentId && issueData.createdByAgentId) {
+        assertDelegatedIssueExecutionContract(issueData.executionContract ?? null, {
+          parentId: issueData.parentId,
+        });
+      }
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
