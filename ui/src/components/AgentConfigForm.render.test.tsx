@@ -372,6 +372,24 @@ async function renderClaudeSandbox(agentOverrides: Partial<Agent> = {}) {
   );
 }
 
+async function renderCreateClaudeSandbox(
+  valueOverrides: Partial<typeof defaultCreateValues> = {},
+) {
+  return renderCreateForm(
+    [
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+      makeEnvironment({
+        id: "sandbox-1",
+        name: "E2B",
+        driver: "sandbox",
+        config: { provider: "e2b" },
+      }),
+    ],
+    { adapterType: "claude_local", defaultEnvironmentId: "sandbox-1", ...valueOverrides },
+    { showAdapterTestEnvironmentButton: true },
+  );
+}
+
 async function clickByText(container: HTMLElement, label: string) {
   const button = findButton(container, label);
   await act(async () => {
@@ -1416,5 +1434,207 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(result.container.textContent).toContain("Authenticated");
     expect(result.container.textContent).not.toContain("sk-ant-SECRET-TOKEN");
+  });
+});
+
+const FIXED_CLAUDE_OAUTH_BINDING = {
+  type: "user_secret_ref",
+  key: "CLAUDE_CODE_OAUTH_TOKEN",
+  version: "latest",
+  required: true,
+};
+
+// Read the merged create-mode values after one or more onChange patches. The
+// create form emits a partial patch, so later assertions merge every patch onto
+// the seed values, the same way the parent page keeps the controlled state.
+function mergedCreateValues(
+  seed: Record<string, unknown>,
+  onChange: ReturnType<typeof vi.fn>,
+): Record<string, unknown> {
+  return onChange.mock.calls.reduce(
+    (acc, [patch]) => ({ ...acc, ...(patch as Record<string, unknown>) }),
+    { ...seed },
+  );
+}
+
+describe("AgentConfigForm create-mode Claude OAuth binding", () => {
+  let roots: Root[] = [];
+
+  beforeEach(() => {
+    mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
+    mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockAgentsApi.detectModel.mockResolvedValue(null);
+    mockAgentsApi.list.mockResolvedValue([]);
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockSecretsApi.list.mockResolvedValue([]);
+    mockSecretsApi.listProposals.mockResolvedValue([]);
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockAgentsApi.startClaudeSetupTokenLogin.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "starting",
+      expiresAt: null,
+      failure: null,
+      panelMode: "submitted_browser_code",
+      prompt: null,
+    });
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+    });
+    mockAgentsApi.getClaudeSetupTokenLoginPrompt.mockResolvedValue({
+      authorizationUrl: "https://claude.example.test/authorize",
+    });
+    mockAgentsApi.completeClaudeSetupTokenLogin.mockResolvedValue({
+      storedSessionId: "stored-session-1",
+    });
+    mockAgentsApi.cancelClaudeSetupTokenLogin.mockResolvedValue(undefined);
+  });
+
+  afterEach(async () => {
+    for (const root of roots) {
+      await act(async () => {
+        root.unmount();
+      });
+    }
+    roots = [];
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  it("adds the fixed CLAUDE_CODE_OAUTH_TOKEN binding after the server stored state", async () => {
+    const result = await renderCreateClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      result.onChange.mock.calls.some(
+        ([patch]) => (patch as Record<string, unknown>).claudeStoredSessionId,
+      ),
+    );
+
+    const values = mergedCreateValues(
+      { adapterType: "claude_local", defaultEnvironmentId: "sandbox-1", envBindings: {} },
+      result.onChange,
+    );
+    expect(values.claudeStoredSessionId).toBe("stored-session-1");
+    const bindings = values.envBindings as Record<string, unknown>;
+    expect(bindings.CLAUDE_CODE_OAUTH_TOKEN).toEqual(FIXED_CLAUDE_OAUTH_BINDING);
+  });
+
+  it("preserves unrelated environment bindings when it adds the fixed binding", async () => {
+    const seedBindings = { EXISTING_VAR: { type: "plain", value: "keep-me" } };
+    const result = await renderCreateClaudeSandbox({ envBindings: seedBindings });
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      result.onChange.mock.calls.some(
+        ([patch]) => (patch as Record<string, unknown>).claudeStoredSessionId,
+      ),
+    );
+
+    const values = mergedCreateValues(
+      { adapterType: "claude_local", envBindings: seedBindings },
+      result.onChange,
+    );
+    const bindings = values.envBindings as Record<string, unknown>;
+    expect(bindings.EXISTING_VAR).toEqual({ type: "plain", value: "keep-me" });
+    expect(bindings.CLAUDE_CODE_OAUTH_TOKEN).toEqual(FIXED_CLAUDE_OAUTH_BINDING);
+  });
+
+  it("never puts a token value in the fixed binding", async () => {
+    const result = await renderCreateClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      result.onChange.mock.calls.some(
+        ([patch]) => (patch as Record<string, unknown>).claudeStoredSessionId,
+      ),
+    );
+
+    const values = mergedCreateValues(
+      { adapterType: "claude_local", envBindings: {} },
+      result.onChange,
+    );
+    const bindings = values.envBindings as Record<string, Record<string, unknown>>;
+    // The fixed binding is a reference. It carries no `value` field, so the
+    // adapter config never holds the token value.
+    expect(bindings.CLAUDE_CODE_OAUTH_TOKEN.type).toBe("user_secret_ref");
+    expect(bindings.CLAUDE_CODE_OAUTH_TOKEN).not.toHaveProperty("value");
+    expect(JSON.stringify(values.envBindings)).not.toContain("sk-ant");
+  });
+
+  it("returns to the login start state when the server claim write fails", async () => {
+    mockAgentsApi.completeClaudeSetupTokenLogin.mockRejectedValue(
+      new Error("the provider rejected the stored-session claim"),
+    );
+    const result = await renderCreateClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      (result.container.textContent ?? "").includes("The login did not finish"),
+    );
+
+    // The panel shows a fixed, non-secret message and returns to its start state.
+    expect(result.container.textContent).toContain("The login did not finish");
+    expect(findButton(result.container, "Log in")?.disabled).toBe(false);
+    expect(result.container.textContent).not.toContain(
+      "the provider rejected the stored-session claim",
+    );
+    // A failed claim adds no binding and holds no claim.
+    expect(
+      result.onChange.mock.calls.some(
+        ([patch]) => (patch as Record<string, unknown>).claudeStoredSessionId,
+      ),
+    ).toBe(false);
+  });
+
+  it("shows a generic precedence warning with no token value or source", async () => {
+    const result = await renderCreateClaudeSandbox({
+      claudeStoredSessionId: "stored-session-1",
+      envBindings: { CLAUDE_CODE_OAUTH_TOKEN: FIXED_CLAUDE_OAUTH_BINDING },
+    });
+    roots.push(result.root);
+
+    const text = result.container.textContent ?? "";
+    expect(text).toContain("Remove the higher-priority credential to use subscription login");
+    // The warning is generic. It names no token value, no specific credential
+    // source, and no other user's configuration.
+    expect(text).not.toContain("sk-ant");
+    expect(text).not.toContain("ANTHROPIC_API_KEY");
+    expect(text).not.toContain("stored-session-1");
+  });
+
+  it("keeps the fixed binding out of the editable environment-variables editor", async () => {
+    const result = await renderCreateClaudeSandbox({
+      claudeStoredSessionId: "stored-session-1",
+      envBindings: {
+        CLAUDE_CODE_OAUTH_TOKEN: FIXED_CLAUDE_OAUTH_BINDING,
+        OTHER_VAR: { type: "plain", value: "shown" },
+      },
+    });
+    roots.push(result.root);
+
+    // The fixed binding appears only in the read-only note, never as an editable
+    // name input.
+    const note = result.container.querySelector('[role="note"]');
+    expect(note?.textContent).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+    const editableNames = Array.from(
+      result.container.querySelectorAll<HTMLInputElement>("input"),
+    ).map((input) => input.value);
+    expect(editableNames).toContain("OTHER_VAR");
+    expect(editableNames).not.toContain("CLAUDE_CODE_OAUTH_TOKEN");
   });
 });

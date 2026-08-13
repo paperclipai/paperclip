@@ -579,6 +579,13 @@ export interface CreateConfigValues {
   envBindings: Record<string, unknown>;
   url: string;
   bootstrapPrompt: string;
+  /**
+   * The non-secret stored-session claim from a completed Claude subscription
+   * login. The create form holds it after the login reaches the server `stored`
+   * state and sends it in the agent create request. The server consumes the
+   * claim to bind the fixed `CLAUDE_CODE_OAUTH_TOKEN`. It never carries a token.
+   */
+  claudeStoredSessionId?: string | null;
   payloadTemplateJson?: string;
   workspaceStrategyType?: string;
   workspaceBaseRef?: string;

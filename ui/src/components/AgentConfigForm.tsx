@@ -58,6 +58,10 @@ import {
   EnvironmentVariablesEditor,
   type EnvironmentVariablesEditorHandle,
 } from "./environment-variables-editor";
+import {
+  buildFixedClaudeOAuthBinding,
+  CLAUDE_OAUTH_TOKEN_ENV_KEY,
+} from "./environment-variables-editor/model";
 import { AgentSecretAccessEditor } from "./AgentSecretAccessEditor";
 import { useProposalReview } from "../pages/secrets/proposal-review";
 import { AGENT_ACCESS_CONFIG_PATH_PREFIX } from "../lib/secret-delivery";
@@ -445,6 +449,43 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const set = isCreate
     ? (patch: Partial<CreateConfigValues>) => props.onChange(patch)
     : null;
+
+  // Create mode holds the non-secret stored-session claim after a Claude
+  // subscription login reaches the server `stored` state. The claim marks the
+  // fixed `CLAUDE_CODE_OAUTH_TOKEN` binding as present. The form sends the claim
+  // in the create request; the server binds and enforces the token
+  // independently. The claim never carries a token value.
+  const claudeStoredSessionId = isCreate ? val!.claudeStoredSessionId ?? null : null;
+  const hasFixedClaudeOAuthBinding = isCreate && Boolean(claudeStoredSessionId);
+
+  // Add the fixed binding to the create-mode form state after the login stores.
+  // Keep every unrelated binding. Hold the claim so the create request sends it.
+  const handleClaudeLoginStored = (storedSessionId: string) => {
+    if (!isCreate || !set) return;
+    const existingBindings = (val!.envBindings ?? {}) as Record<string, EnvBinding>;
+    set({
+      envBindings: { ...existingBindings, ...buildFixedClaudeOAuthBinding() },
+      claudeStoredSessionId: storedSessionId,
+    });
+  };
+
+  // The fixed binding is not editable in the environment-variables editor. Strip
+  // it from the editor value, and merge it back on every editor change, so a user
+  // edit to an unrelated variable never drops the fixed binding.
+  const stripFixedClaudeOAuthBinding = (
+    bindings: Record<string, EnvBinding>,
+  ): Record<string, EnvBinding> => {
+    if (!hasFixedClaudeOAuthBinding || !(CLAUDE_OAUTH_TOKEN_ENV_KEY in bindings)) {
+      return bindings;
+    }
+    const { [CLAUDE_OAUTH_TOKEN_ENV_KEY]: _fixed, ...rest } = bindings;
+    return rest;
+  };
+  const mergeFixedClaudeOAuthBinding = (
+    bindings: Record<string, EnvBinding>,
+  ): Record<string, EnvBinding> =>
+    hasFixedClaudeOAuthBinding ? { ...bindings, ...buildFixedClaudeOAuthBinding() } : bindings;
+
   const rawCurrentDefaultEnvironmentId = isCreate
     ? val!.defaultEnvironmentId ?? ""
     : eff("identity", "defaultEnvironmentId", props.agent.defaultEnvironmentId ?? "");
@@ -1349,6 +1390,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               companyId={selectedCompanyId!}
               adapterType={adapterType}
               environmentId={effectiveLoginEnvironmentId!}
+              onStored={isCreate ? handleClaudeLoginStored : undefined}
             />
           )}
 
@@ -1564,7 +1606,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   ref={environmentVariablesEditorRef}
                   value={
                     isCreate
-                      ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
+                      ? stripFixedClaudeOAuthBinding(
+                          (val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>,
+                        )
                       : ((eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>))
                       )
                   }
@@ -1576,11 +1620,31 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   }}
                   onChange={(env) =>
                     isCreate
-                      ? set!({ envBindings: env ?? {}, envVars: "" })
+                      ? set!({ envBindings: mergeFixedClaudeOAuthBinding(env ?? {}), envVars: "" })
                       : mark("adapterConfig", "env", env)
                   }
                 />
               </Field>
+
+              {hasFixedClaudeOAuthBinding && (
+                <div
+                  role="note"
+                  className="rounded-md border border-border bg-muted/40 px-3 py-2 space-y-1.5"
+                >
+                  <div className="flex items-center gap-2 text-xs font-medium text-foreground">
+                    <span className="font-mono break-all">{CLAUDE_OAUTH_TOKEN_ENV_KEY}</span>
+                    <Badge variant="secondary">Fixed</Badge>
+                  </div>
+                  <p className="text-(length:--text-micro) text-muted-foreground">
+                    Subscription login sets this environment variable for the agent. It is fixed
+                    and not editable here.
+                  </p>
+                  <p className="text-(length:--text-micro) text-muted-foreground">
+                    A higher-priority credential overrides subscription login. Remove the
+                    higher-priority credential to use subscription login.
+                  </p>
+                </div>
+              )}
 
               {/* Edit-only: timeout + grace period */}
               {!isCreate && (
