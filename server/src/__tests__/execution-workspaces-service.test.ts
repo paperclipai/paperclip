@@ -1286,46 +1286,64 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
   });
 
-  it("marks cleanup_failed only while the workspace is still closed", async () => {
-    // The archive route calls this after a cleanup throws. While the row is still
-    // closed, the guarded write records cleanup_failed. After a resume reopened
-    // the row to active, the guard skips the write so it does not overwrite the
-    // newer active lifecycle state.
+  it("does not overwrite a newer archive when a stale cleanup failure lands late", async () => {
+    // The archive route records a cleanup failure through the generation-fenced
+    // write after the destructive cleanup throws. Simulate a reopen and a fresh
+    // archive that raised the generation before the stale failure lands. The
+    // generation guard skips the stale write, so the newer archive keeps its own
+    // closedAt, cleanupReason, and status.
     const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    const staleClosedAt = new Date(Date.now() - 60_000);
+    // The first archive closed the row at generation 2.
     await db
       .update(executionWorkspaces)
-      .set({ status: "archived", closedAt: new Date() })
+      .set({
+        status: "archived",
+        closedAt: staleClosedAt,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 2,
+        },
+      })
       .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
 
-    const closedAt = new Date();
-    const marked = await svc.markClosedWorkspaceCleanupFailed({
-      id: seeded.executionWorkspaceId,
-      closedAt,
-      cleanupReason: "teardown boom",
-    });
-    expect(marked?.status).toBe("cleanup_failed");
-    expect(marked?.cleanupReason).toBe("teardown boom");
-
-    // Simulate a resume that reopened the row to active after the failure.
+    // A resume reopened the row and a fresh archive raised the generation to 3.
+    const newerClosedAt = new Date();
     await db
       .update(executionWorkspaces)
-      .set({ status: "active", closedAt: null, cleanupReason: null })
+      .set({
+        status: "archived",
+        closedAt: newerClosedAt,
+        cleanupReason: "newer archive",
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 3,
+        },
+      })
       .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
 
-    const skipped = await svc.markClosedWorkspaceCleanupFailed({
+    // The first archive's cleanup failure lands late at the captured generation 2.
+    const skipped = await svc.applyClosedWorkspaceCleanupOutcome({
       id: seeded.executionWorkspaceId,
-      closedAt: new Date(),
+      closedAt: staleClosedAt,
+      capturedGeneration: 2,
       cleanupReason: "stale teardown boom",
+      markCleanupFailed: true,
     });
     expect(skipped).toBeNull();
 
     const [row] = await db
-      .select({ status: executionWorkspaces.status, cleanupReason: executionWorkspaces.cleanupReason })
+      .select({
+        status: executionWorkspaces.status,
+        closedAt: executionWorkspaces.closedAt,
+        cleanupReason: executionWorkspaces.cleanupReason,
+      })
       .from(executionWorkspaces)
       .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
-    // The active row survives; the stale cleanup_failed write did not land.
-    expect(row?.status).toBe("active");
-    expect(row?.cleanupReason).toBeNull();
+    // The newer archive survives; the stale failure did not overwrite it.
+    expect(row?.status).toBe("archived");
+    expect(row?.cleanupReason).toBe("newer archive");
+    expect(row?.closedAt?.getTime()).toBe(newerClosedAt.getTime());
   });
 
   it("applies the cleanup outcome only while the row is still closed at the captured generation", async () => {

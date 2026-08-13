@@ -767,15 +767,19 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         }
       } catch (error) {
         const failureReason = error instanceof Error ? error.message : String(error);
-        // Mark cleanup_failed only while the row is still closed. If a resume
-        // reopened the workspace after the cleanup threw, the row is active again;
-        // the guarded write skips it, so a stale cleanup_failed write never
-        // overwrites the newer active lifecycle state or buries the rebuilt
-        // worktree.
-        const marked = await svc.markClosedWorkspaceCleanupFailed({
+        // Mark cleanup_failed only while the row is still closed at the captured
+        // generation. If a resume reopened the workspace after the cleanup threw,
+        // the row is active again and, after a fresh archive, carries a higher
+        // generation. The generation-fenced write skips the row in both cases, so
+        // a stale cleanup_failed write never overwrites the newer active lifecycle
+        // state, and never buries a newer archive under the first archive's
+        // failure.
+        const marked = await svc.applyClosedWorkspaceCleanupOutcome({
           id,
           closedAt,
+          capturedGeneration,
           cleanupReason: failureReason,
+          markCleanupFailed: true,
         });
         if (marked) workspace = marked;
         res.status(500).json({

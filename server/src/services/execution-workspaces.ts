@@ -3040,34 +3040,6 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       });
     },
 
-    // Mark a workspace cleanup_failed only while the row is still closed. The
-    // archive route calls this when the destructive cleanup throws. A reopen that
-    // raced after the failure restores the row to an open status; the
-    // closed-status guard stops this write from clobbering that active state, so
-    // a stale cleanup_failed write never buries a freshly rebuilt worktree. The
-    // method returns the updated row, or null when the guard skipped the write.
-    markClosedWorkspaceCleanupFailed: async (input: {
-      id: string;
-      closedAt: Date;
-      cleanupReason: string;
-    }): Promise<ExecutionWorkspace | null> => {
-      const row = await db
-        .update(executionWorkspaces)
-        .set({
-          status: "cleanup_failed",
-          closedAt: input.closedAt,
-          cleanupReason: input.cleanupReason,
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(executionWorkspaces.id, input.id),
-          inArray(executionWorkspaces.status, [...CLOSED_EXECUTION_WORKSPACE_STATUSES]),
-        ))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      return row ? toExecutionWorkspace(row) : null;
-    },
-
     // Apply the terminal cleanup outcome to a workspace row under the per-workspace
     // lifecycle lock. The archive route calls this after the destruction fence ran,
     // to record cleanup warnings and, when the destroy failed, the cleanup_failed
