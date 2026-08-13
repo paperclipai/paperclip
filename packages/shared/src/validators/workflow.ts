@@ -75,6 +75,11 @@ export const workflowPipelinePhaseSchema = z.object({
   depth: z.number().int().min(0).optional(),
   agentName: z.string().trim().min(1).max(255).nullable().optional(),
   description: z.string().trim().min(1).max(2_000).nullable().optional(),
+  systemPrompt: z.string().nullable().optional(),
+  configuredSkills: z.array(z.object({
+    name: z.string().trim().min(1).max(255),
+    content: z.string(),
+  })).optional(),
 });
 
 export const workflowPipelineDefinitionSchema = z.object({
@@ -132,6 +137,35 @@ export const workflowPhaseEventSchema = z.object({
   metadata: z.record(z.unknown()).nullable().optional(),
 });
 export type WorkflowPhaseEvent = z.infer<typeof workflowPhaseEventSchema>;
+
+export const workflowTelemetryEventSchema = z.object({
+  schema: z.literal("bizbox.telemetry/v1"),
+  event: z.enum(["operation.started", "operation.completed", "operation.failed"]),
+  eventId: z.string().trim().min(1).max(255),
+  spanId: z.string().trim().min(1).max(255),
+  parentSpanId: z.string().trim().min(1).max(255).nullable(),
+  sequence: z.number().int().min(0),
+  timestamp: z.string().datetime({ offset: true }),
+  actor: z.object({
+    kind: z.enum(["workflow", "agent", "model", "tool", "service", "system"]),
+    name: z.string().trim().min(1).max(255).nullable(),
+  }),
+  operation: z.object({
+    kind: z.enum(["invocation", "phase", "agent", "llm", "tool", "service"]),
+    name: z.string().trim().min(1).max(255),
+  }),
+  status: z.enum(["running", "succeeded", "failed"]).nullable(),
+  input: z.unknown().optional(),
+  output: z.unknown().optional(),
+  attributes: z.record(z.unknown()).optional(),
+  error: z.string().max(20_000).nullable().optional(),
+});
+export type WorkflowTelemetryEventInput = z.infer<typeof workflowTelemetryEventSchema>;
+
+export const workflowTelemetryBatchSchema = z.object({
+  events: z.array(workflowTelemetryEventSchema).min(1).max(100),
+});
+export type WorkflowTelemetryBatch = z.infer<typeof workflowTelemetryBatchSchema>;
 
 export const createWorkflowHandoffSchema = z.object({
   phaseKey: z.string().trim().min(1).max(255),

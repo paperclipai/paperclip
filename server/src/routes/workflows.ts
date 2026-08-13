@@ -4,6 +4,7 @@ import {
   type CreateWorkflowHandoff,
   type CreateWorkflowSchedule,
   type WorkflowPhaseEvent,
+  type WorkflowTelemetryBatch,
   createWorkflowHandoffSchema,
   createWorkflowSchema,
   createWorkflowScheduleSchema,
@@ -12,6 +13,7 @@ import {
   updateWorkflowSchema,
   updateWorkflowScheduleSchema,
   workflowPhaseEventSchema,
+  workflowTelemetryBatchSchema,
 } from "@paperclipai/shared";
 import { z } from "zod";
 import { validate } from "../middleware/validate.js";
@@ -36,6 +38,9 @@ export function workflowRoutes(db: Db) {
     token: z.string().trim().min(1),
   });
   const runtimeCreateHandoffRequestSchema = createWorkflowHandoffSchema.extend({
+    token: z.string().trim().min(1),
+  });
+  const runtimeTelemetryRequestSchema = workflowTelemetryBatchSchema.extend({
     token: z.string().trim().min(1),
   });
 
@@ -334,6 +339,27 @@ export function workflowRoutes(db: Db) {
         return;
       }
       res.json(updated);
+    },
+  );
+
+  router.post(
+    "/workflow-runs/:id/runtime/telemetry-events",
+    validate(runtimeTelemetryRequestSchema),
+    async (req, res) => {
+      const runId = req.params.id as string;
+      const token = readRuntimeToken(req);
+      const verified = await svc.verifyRuntimeToken(runId, token);
+      if (!verified) {
+        res.status(401).json({ error: "Invalid workflow runtime token" });
+        return;
+      }
+      const { events } = req.body as WorkflowTelemetryBatch & { token: string };
+      const result = await svc.applyTelemetryEvents(runId, events);
+      if (!result) {
+        res.status(404).json({ error: "Workflow run not found" });
+        return;
+      }
+      res.status(202).json(result);
     },
   );
 

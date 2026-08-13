@@ -114,6 +114,7 @@ const workflowDetail = {
         depth: 0,
         agentName: "Writer",
         description: "Draft the briefing.",
+        systemPrompt: "Write a concise, factual board briefing.",
       },
     ],
   },
@@ -297,12 +298,14 @@ const latestRunDetail = {
       ordinal: 0,
       status: "succeeded",
       metadata: {
+        runtimeAgent: true,
         filePath: "workflow.py",
         functionName: "draft_brief",
         parentKey: null,
         depth: 0,
         agentName: "Writer",
         description: "Draft the briefing.",
+        systemPrompt: "Write a concise, factual board briefing.",
       },
       startedAt: new Date("2026-06-10T10:01:00.000Z"),
       finishedAt: new Date("2026-06-10T10:02:00.000Z"),
@@ -455,6 +458,244 @@ describe("WorkflowDetail page", () => {
     expect(container.textContent).not.toContain("latest input");
     expect(container.textContent).not.toContain("latest stderr");
     expect(container.textContent).not.toContain("Latest brief");
+  });
+
+  it("shows agent calls, service prompts, system instructions, and expandable skills", async () => {
+    getRunMock.mockResolvedValueOnce({
+      ...latestRunDetail,
+      phases: [
+        ...latestRunDetail.phases.map((phase) => ({
+          ...phase,
+          metadata: {
+            ...phase.metadata,
+            systemPrompt: `Write a concise, factual board briefing.\n\n# SKILL.md\n\n---\nname: citro-social-write-facebook-post\ndescription: Write Facebook copy.\n---\n\n# Facebook writer\n\nUse supplied facts only.`,
+            output: { headline: "Retention improves", approved: true },
+          },
+        })),
+        {
+          ...latestRunDetail.phases[0],
+          id: "phase-image-run-latest",
+          phaseKey: "service-runtime:citro-studio-image:1",
+          label: "Citro Studio image generation",
+          ordinal: 1,
+          metadata: {
+            runtimeAgent: true,
+            agentName: "Citro Studio image generation",
+            service: "Citro Studio / Databricks",
+            description: "Direct image-generation service call",
+            prompt: "Create a realistic partnership image.",
+            configuredTools: ["generate_image"],
+            runtimeToolName: "generate_image",
+            runtimeToolId: "image-1",
+            runtimeToolInput: { prompt: "Create a realistic partnership image.", aspectRatio: "1:1" },
+            runtimeToolOutput: { jobId: "job-1", contentType: "image/png" },
+            output: { jobId: "job-1", contentType: "image/png" },
+          },
+        },
+      ],
+      consoleEntries: [{
+        ts: "2026-06-10T10:01:30.000Z",
+        stream: "stdout",
+        chunk: `${JSON.stringify({
+          author: "Writer",
+          content: {
+            role: "user",
+            parts: [{ text: "Use the complete ADK handoff prompt." }, { text: "Keep every instruction." }],
+          },
+        })}\n${JSON.stringify({
+          author: "Writer",
+          content: {
+            role: "model",
+            parts: [{
+              functionCall: {
+                id: "call-1",
+                name: "find_sources",
+                args: { topic: "retention" },
+              },
+            }],
+          },
+        })}\n`,
+      }],
+    });
+
+    await renderAt(container, "/workflows/workflow-1");
+    await flushReact();
+    await flushReact();
+
+    const behaviorTab = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent === "Agent behavior");
+    expect(behaviorTab).toBeTruthy();
+
+    await act(async () => {
+      behaviorTab!.focus();
+      behaviorTab!.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Called during this run");
+    expect(container.textContent).toContain("Prompt from ADK event");
+    expect(container.textContent).toContain("Use the complete ADK handoff prompt.");
+    expect(container.textContent).toContain("Keep every instruction.");
+    expect(container.textContent).toContain("Write a concise, factual board briefing.");
+    expect(container.textContent).toContain("Model gpt-4.1");
+    expect(container.textContent).toContain("Skills & tools used");
+    expect(container.textContent).toContain("Service Citro Studio / Databricks");
+    expect(container.textContent).toContain("Prompt sent to service");
+    expect(container.textContent).toContain("Create a realistic partnership image.");
+    expect(container.textContent).toContain("Agent / LLM output");
+    expect(container.textContent).toContain("Service output");
+    expect(container.textContent).toContain("Data sources & query outcomes");
+
+    const agentOutput = Array.from(
+      container.querySelectorAll('[data-testid="behavior-agent-output"]'),
+    ).find((detail) => detail.textContent?.includes("Agent / LLM output"));
+    expect(agentOutput).toBeTruthy();
+    expect(agentOutput?.hasAttribute("open")).toBe(false);
+    await act(async () => {
+      (agentOutput?.querySelector("summary") as HTMLElement).click();
+    });
+    expect(agentOutput?.hasAttribute("open")).toBe(true);
+    expect(agentOutput?.textContent).toContain("Retention improves");
+
+    const dataSources = container.querySelector('[data-testid="behavior-data-sources"]');
+    expect(dataSources).toBeTruthy();
+    expect(dataSources?.hasAttribute("open")).toBe(false);
+    await act(async () => {
+      (dataSources?.querySelector("summary") as HTMLElement).click();
+    });
+    expect(dataSources?.hasAttribute("open")).toBe(true);
+    expect(dataSources?.textContent).toContain("find_sources");
+    expect(dataSources?.textContent).toContain("Query / request");
+    expect(dataSources?.textContent).toContain("Outcome not captured");
+    expect(dataSources?.textContent).toContain("campaign");
+    expect(dataSources?.textContent).toContain("Workflow resource");
+
+    const systemInstruction = container.querySelector('[data-testid="behavior-system-instruction"]');
+    expect(systemInstruction).toBeTruthy();
+    expect(systemInstruction?.hasAttribute("open")).toBe(false);
+    const systemSummary = systemInstruction?.querySelector("summary") as HTMLElement | null;
+    await act(async () => {
+      systemSummary!.click();
+    });
+    expect(systemInstruction?.hasAttribute("open")).toBe(true);
+
+    const adkPrompt = container.querySelector('[data-testid="behavior-agent-prompt"]');
+    expect(adkPrompt).toBeTruthy();
+    expect(adkPrompt?.hasAttribute("open")).toBe(false);
+    expect(adkPrompt?.textContent).toContain("Click to expand");
+    await act(async () => {
+      (adkPrompt?.querySelector("summary") as HTMLElement).click();
+    });
+    expect(adkPrompt?.hasAttribute("open")).toBe(true);
+
+    const skillsSummary = Array.from(container.querySelectorAll("details summary"))
+      .find((summary) => summary.textContent?.includes("Skills & tools used")) as HTMLElement | undefined;
+    expect(skillsSummary).toBeTruthy();
+    await act(async () => {
+      skillsSummary!.click();
+    });
+    expect(container.textContent).toContain("find_sources");
+    expect(container.textContent).toContain("retention");
+    expect(container.textContent).toContain("Request sent");
+    expect(container.textContent).toContain("Response received");
+    expect(container.textContent).toContain("Response not captured");
+    expect(container.textContent).toContain("citro-social-write-facebook-post");
+
+    const skillDetail = Array.from(container.querySelectorAll("details summary"))
+      .find((summary) => summary.textContent?.includes("citro-social-write-facebook-post"));
+    expect(skillDetail).toBeTruthy();
+    await act(async () => {
+      (skillDetail as HTMLElement).click();
+    });
+    expect(container.textContent).toContain("Use supplied facts only.");
+  });
+
+  it("hides inferred agents that were not called during the selected run", async () => {
+    getWorkflowMock.mockResolvedValueOnce({
+      ...workflowDetail,
+      pipelineDefinition: {
+        ...workflowDetail.pipelineDefinition,
+        phases: [
+          ...workflowDetail.pipelineDefinition.phases,
+          {
+            key: "phase-2",
+            label: "Publish brief",
+            kind: "agent",
+            filePath: "workflow.py",
+            functionName: "publish_brief",
+            ordinal: 1,
+            parentKey: null,
+            depth: 0,
+            agentName: "Publisher",
+            description: "Publish the approved briefing.",
+            systemPrompt: "Publish only approved copy.",
+          },
+        ],
+      },
+    });
+
+    await renderAt(container, "/workflows/workflow-1");
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Publish brief");
+
+    const behaviorTab = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent === "Agent behavior");
+    await act(async () => {
+      behaviorTab!.focus();
+      behaviorTab!.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    });
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Publisher");
+    expect(container.textContent).not.toContain("Not called in this run");
+  });
+
+  it("renders grounding query tools as children of the calling agent", async () => {
+    getRunMock.mockResolvedValueOnce({
+      ...latestRunDetail,
+      consoleEntries: [{
+        ts: "2026-08-12T00:00:00.000Z",
+        stream: "stdout",
+        chunk: `${JSON.stringify({
+          event: "source_grounding.started",
+          node: "Writer:partnerpal",
+          operation_id: "partnerpal-span",
+          details: { source: "partnerpal", sources: ["partnerpal"], query: "campaign ideas" },
+        })}\n${JSON.stringify({
+          event: "source_grounding.finished",
+          node: "Writer:partnerpal",
+          operation_id: "partnerpal-span",
+          status: "ok",
+          details: {
+            source: "partnerpal",
+            sources: ["partnerpal"],
+            outcome: { status: "ok", matches: 1, items: [{ score: 79 }] },
+          },
+        })}\n`,
+      }],
+    });
+
+    await renderAt(container, "/workflows/workflow-1");
+    await flushReact();
+    await flushReact();
+
+    const behaviorTab = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent === "Agent behavior");
+    await act(async () => {
+      behaviorTab!.focus();
+      behaviorTab!.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    });
+    await flushReact();
+
+    const agentCard = container.querySelector('[data-behavior-actor-kind="agent"]');
+    const childTools = agentCard?.querySelector('[data-testid="behavior-child-tools"]');
+    expect(agentCard?.textContent).toContain("Writer");
+    expect(agentCard?.textContent).toContain("Called during this run");
+    expect(childTools?.textContent).toContain("Child tools called by this agent");
+    expect(childTools?.textContent).toContain("partnerpal");
+    expect(container.querySelector('[data-behavior-actor-kind="tool"]')).toBeNull();
   });
 
   it("marks Resource-backed runs and shows their mounted version", async () => {
@@ -711,7 +952,7 @@ describe("buildWorkflowGraph", () => {
     updatedAt: new Date("2026-06-10T09:00:00.000Z"),
   });
 
-  it("keeps structural siblings ahead of helper tools and compacts tool nodes", () => {
+  it("shows agent phases without rendering helper tools", () => {
     const graph = buildWorkflowGraph(
       [
         makePhase("root", {
@@ -745,12 +986,47 @@ describe("buildWorkflowGraph", () => {
     const helperNode = byId.get("phase:fetch_articles");
 
     expect(reviewNode).toBeTruthy();
-    expect(helperNode).toBeTruthy();
-    expect(reviewNode!.y).toBeLessThan(helperNode!.y);
-    expect(helperNode!.width).toBeLessThan(reviewNode!.width);
+    expect(helperNode).toBeUndefined();
   });
 
-  it("centers a handoff-heavy parent chain over a taller child subtree", () => {
+  it("reconnects agents through hidden tool parents", () => {
+    const graph = buildWorkflowGraph(
+      [
+        makePhase("root", {
+          label: "Content Strategist",
+          kind: "agent",
+          ordinal: 0,
+          parentKey: null,
+          depth: 0,
+        }),
+        makePhase("lookup", {
+          label: "PartnerPal lookup",
+          kind: "tool",
+          ordinal: 1,
+          parentKey: "root",
+          depth: 1,
+        }),
+        makePhase("writer", {
+          label: "Instagram Writer",
+          kind: "agent",
+          ordinal: 2,
+          parentKey: "lookup",
+          depth: 2,
+        }),
+      ],
+      new Map(),
+      null,
+    );
+
+    expect(graph.nodes.some((node) => node.id === "phase:lookup")).toBe(false);
+    expect(graph.edges).toEqual(expect.arrayContaining([{
+      id: "phase:root->phase:writer",
+      from: "phase:root",
+      to: "phase:writer",
+    }]));
+  });
+
+  it("keeps a parent handoff chain above its child subtree", () => {
     const graph = buildWorkflowGraph(
       [
         makePhase("root", {
@@ -849,7 +1125,7 @@ describe("buildWorkflowGraph", () => {
 
     expect(rootNode).toBeTruthy();
     expect(childNode).toBeTruthy();
-    expect(rootNode!.y - childNode!.y).toBe(198);
+    expect(rootNode!.y).toBeLessThan(childNode!.y);
   });
 
   it("keeps a start to terminal edge when there are no phases", () => {
@@ -891,8 +1167,9 @@ describe("buildWorkflowGraph", () => {
 
     expect(firstDeliverable).toBeTruthy();
     expect(secondDeliverable).toBeTruthy();
-    expect(firstDeliverable!.y).toBeGreaterThanOrEqual(24);
-    expect(secondDeliverable!.y).toBeGreaterThan(firstDeliverable!.y);
+    expect(firstDeliverable!.x).toBeGreaterThanOrEqual(24);
+    expect(secondDeliverable!.x).toBeGreaterThan(firstDeliverable!.x);
+    expect(secondDeliverable!.y).toBe(firstDeliverable!.y);
   });
 
   it("renders handoffs without a matching phase as a visible terminal approval", () => {
@@ -933,7 +1210,7 @@ describe("buildWorkflowGraph", () => {
     expect(terminalNode).toBeTruthy();
     expect(handoffNode).toBeTruthy();
     expect(handoffNode!.kind).toBe("human");
-    expect(handoffNode!.x).toBeGreaterThan(terminalNode!.x);
+    expect(handoffNode!.y).toBeGreaterThan(terminalNode!.y);
     expect(graph.edges).toEqual(
       expect.arrayContaining([
         {

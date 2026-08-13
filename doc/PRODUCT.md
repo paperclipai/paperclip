@@ -16,6 +16,8 @@ A company has:
 - **Revenue & expenses** — tracked at the company level
 - **Task hierarchy** — all work traces back to the company goal
 - **Workflows** — company-scoped multi-step runs that coordinate agents and surface run history and deliverables
+  - Workflow detail includes a live agent-behavior trace beside the pipeline. While a run is active it separates the submitted/runtime prompt from the resolved Google ADK system instruction, identifies each agent and model actually called, persists expandable agent/model outputs for later evaluation, and lets operators expand configured or observed skill/tool payloads plus a data-source provenance view containing configured integrations, exact observed queries and outcomes, workflow Resource mounts, and instrumented direct image-generation requests and results.
+  - Workflow runtimes report through the versioned `bizbox.telemetry/v1` contract. Bizbox stores an immutable, company-scoped event stream with correlated agent, model, tool, service, and phase spans; presentation layers consume normalized events while adapter-specific console parsing remains a compatibility fallback.
 
 ### Employees & Agents
 

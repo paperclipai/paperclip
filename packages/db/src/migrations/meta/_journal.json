@@ -582,6 +582,13 @@
       "when": 1784165026269,
       "tag": "0082_resource_catalog",
       "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1786498243503,
+      "tag": "0083_marvelous_scrambler",
+      "breakpoints": true
     }
   ]
 }

@@ -514,6 +514,26 @@ Default behavior:
 - `local_trusted`: enabled
 - `authenticated`: disabled
 
+## Workflow Runtime Telemetry
+
+Instrumented Google ADK workflows emit the versioned `bizbox.telemetry/v1` contract automatically for workflow phases, agents, ADK tools, and supported direct services. The runtime batches and retries events, while the server deduplicates them by `(workflow run, eventId)`.
+
+Custom Python operations that are not visible to ADK can use the injected runtime helpers:
+
+```python
+from bizbox_workflow_runtime import observed_operation, telemetry_operation
+
+@observed_operation("partner_lookup", kind="service")
+async def partner_lookup(query: str):
+    ...
+
+with telemetry_operation("campaign_export", kind="service", input={"campaign": campaign_id}) as operation:
+    result = export_campaign(campaign_id)
+    operation["output"] = result
+```
+
+Inputs and outputs are bounded and keys resembling credentials are redacted before transmission. Do not use telemetry as a secret transport.
+
 ## Observability (OpenTelemetry)
 
 Bizbox emits metrics via the OpenTelemetry SDK. The SDK is a no-op unless

@@ -53,4 +53,67 @@ describe("parseGoogleAdkJsonl", () => {
     expect(parsed.toolResults).toEqual([{ name: "calculator", output: { result: 2 } }]);
     expect(parsed.usage).toEqual({ inputTokens: 10, outputTokens: 4, cachedInputTokens: 2 });
   });
+
+  it("treats compact workflow failure events as run failures", () => {
+    const parsed = parseGoogleAdkJsonl([
+      JSON.stringify({ event: "intake.completed", node: "facebook_intake", status: "failed" }),
+      JSON.stringify({ event: "run.failed", node: "facebook_failure", message: "intake failed" }),
+    ].join("\n"));
+
+    expect(parsed.errorMessage).toBe("intake failed");
+  });
+
+  it("does not treat advisory messages on successful compact events as errors", () => {
+    const parsed = parseGoogleAdkJsonl([
+      JSON.stringify({
+        event: "ugc.resources.checked",
+        node: "facebook_ugc",
+        route: "OK",
+        status: "missing",
+        message: "No Markdown campaigns found; continuing without UGC grounding",
+      }),
+      JSON.stringify({ event: "run.completed", node: "facebook_complete", status: "success" }),
+    ].join("\n"));
+
+    expect(parsed.errorMessage).toBeNull();
+  });
+
+  it("captures compact grounding sources and their source-specific outcomes as tools", () => {
+    const parsed = parseGoogleAdkJsonl([
+      JSON.stringify({
+        event: "source_grounding.started",
+        node: "social_media_grounding_agent",
+        details: { platform: "instagram", sources: ["partnerpal"], mode: "campaign_planning" },
+      }),
+      JSON.stringify({
+        event: "source_grounding.completed",
+        node: "instagram_grounding",
+        status: "ok",
+        details: {
+          sources: ["partnerpal"],
+          outcomes: {
+            partnerpal: {
+              status: "ok",
+              query: "campaign activation ideas",
+              matches: 1,
+              items: [{ excerpt: "A practical campaign activation idea." }],
+            },
+          },
+        },
+      }),
+    ].join("\n"));
+
+    expect(parsed.toolCalls).toEqual([{
+      name: "partnerpal",
+      input: { platform: "instagram", mode: "campaign_planning" },
+    }]);
+    expect(parsed.toolResults).toEqual([{
+      name: "partnerpal",
+      output: expect.objectContaining({
+        query: "campaign activation ideas",
+        matches: 1,
+        items: [{ excerpt: "A practical campaign activation idea." }],
+      }),
+    }]);
+  });
 });

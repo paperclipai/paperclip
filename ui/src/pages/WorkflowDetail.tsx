@@ -12,12 +12,14 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Database,
   Download,
   GitBranch,
   LoaderCircle,
   Play,
   Repeat,
   Save,
+  ScrollText,
   ShieldCheck,
   PersonStanding,
   TerminalSquare,
@@ -68,12 +70,18 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   buildWorkflowRunnerConfig,
   hasIncompleteWorkflowPromptTemplates,
   readWorkflowPromptTemplates,
 } from "../config/workflow-run-prompts";
 import type { WorkflowScheduleMutationInput } from "../api/workflows";
+import {
+  buildWorkflowBehaviorAgents,
+  buildWorkflowTelemetryPhases,
+  type WorkflowBehaviorAgent,
+} from "../lib/workflow-behavior";
 
 type WorkflowEditDraft = {
   title: string;
@@ -162,9 +170,8 @@ const GRAPH_NODE_WIDTH = 260;
 const GRAPH_TOOL_WIDTH = 220;
 const GRAPH_HUMAN_WIDTH = 320;
 const GRAPH_DELIVERABLE_WIDTH = 220;
-const GRAPH_COLUMN_GAP = 120;
+const GRAPH_ROW_GAP = 72;
 const GRAPH_BRANCH_GAP = 44;
-const GRAPH_CHAIN_GAP = 18;
 const GRAPH_PADDING_X = 28;
 const GRAPH_PADDING_Y = 24;
 
@@ -208,18 +215,61 @@ function getGraphNodeWidth(
 type PhaseLayout = {
   handoffs: WorkflowHandoff[];
   children: WorkflowPhase[];
-  chainHeight: number;
-  subtreeHeight: number;
+  chainWidth: number;
+  subtreeWidth: number;
 };
+
+const PIPELINE_AGENT_KINDS = new Set<WorkflowPhase["kind"]>([
+  "agent",
+  "loop",
+  "validator",
+]);
+
+export function workflowPipelineAgentPhases(
+  phases: WorkflowPhase[],
+): WorkflowPhase[] {
+  const phasesByKey = new Map(phases.map((phase) => [phase.phaseKey, phase]));
+  const visibleKeys = new Set(
+    phases
+      .filter((phase) => PIPELINE_AGENT_KINDS.has(phase.kind))
+      .map((phase) => phase.phaseKey),
+  );
+
+  const visibleParent = (phase: WorkflowPhase): string | null => {
+    let parentKey = readPhaseMetaString(phase, "parentKey");
+    const visited = new Set<string>();
+    while (parentKey && !visibleKeys.has(parentKey)) {
+      if (visited.has(parentKey)) return null;
+      visited.add(parentKey);
+      const parent = phasesByKey.get(parentKey);
+      parentKey = parent ? readPhaseMetaString(parent, "parentKey") : null;
+    }
+    return parentKey;
+  };
+
+  return phases
+    .filter((phase) => visibleKeys.has(phase.phaseKey))
+    .map((phase) => {
+      const parentKey = visibleParent(phase);
+      return {
+        ...phase,
+        metadata: {
+          ...phase.metadata,
+          parentKey,
+        },
+      };
+    });
+}
 
 export function buildWorkflowGraph(
   phases: WorkflowPhase[],
   handoffsByPhase: Map<string, WorkflowHandoff[]>,
   runDetail: WorkflowRunDetail | null,
 ): WorkflowGraph {
-  const phaseKeys = new Set(phases.map((phase) => phase.phaseKey));
+  const pipelinePhases = workflowPipelineAgentPhases(phases);
+  const phaseKeys = new Set(pipelinePhases.map((phase) => phase.phaseKey));
   const childrenByParent = new Map<string | null, WorkflowPhase[]>();
-  for (const phase of phases) {
+  for (const phase of pipelinePhases) {
     const parentKey = readPhaseMetaString(phase, "parentKey");
     const list = childrenByParent.get(parentKey) ?? [];
     list.push(phase);
@@ -323,28 +373,24 @@ export function buildWorkflowGraph(
         new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
     );
     const children = childrenByParent.get(phase.phaseKey) ?? [];
-    const phaseHeight = estimateGraphNodeHeight("phase", undefined, phase.kind);
-    const handoffHeights = handoffs.map((handoff) =>
-      estimateGraphNodeHeight("human", handoff),
+    const chainWidth = Math.max(
+      getGraphNodeWidth("phase", phase.kind),
+      ...handoffs.map(() => getGraphNodeWidth("human")),
     );
-    const chainHeight =
-      phaseHeight +
-      handoffHeights.reduce((sum, height) => sum + height, 0) +
-      handoffs.length * GRAPH_CHAIN_GAP;
 
     const childLayouts = children.map((child) => measurePhase(child));
-    const childrenHeight =
+    const childrenWidth =
       childLayouts.length > 0
-        ? childLayouts.reduce((sum, child) => sum + child.subtreeHeight, 0) +
+        ? childLayouts.reduce((sum, child) => sum + child.subtreeWidth, 0) +
           Math.max(0, childLayouts.length - 1) * GRAPH_BRANCH_GAP
         : 0;
-    const subtreeHeight = Math.max(chainHeight, childrenHeight);
+    const subtreeWidth = Math.max(chainWidth, childrenWidth);
 
     const layout = {
       handoffs,
       children,
-      chainHeight,
-      subtreeHeight,
+      chainWidth,
+      subtreeWidth,
     };
     phaseLayoutCache.set(phase.phaseKey, layout);
     return layout;
@@ -353,7 +399,7 @@ export function buildWorkflowGraph(
   const positionPhase = (
     phase: WorkflowPhase,
     level: number,
-    startY: number,
+    startX: number,
   ): { leafIds: string[]; maxLevel: number } => {
     const layout = measurePhase(phase);
     const phaseId = `phase:${phase.phaseKey}`;
@@ -362,16 +408,10 @@ export function buildWorkflowGraph(
       throw new Error(`Missing graph node for phase ${phase.phaseKey}`);
     }
 
-    const phaseHeight = phaseNode.height;
-    const chainTop = startY + Math.max(0, (layout.subtreeHeight - layout.chainHeight) / 2);
-    let cursorY = chainTop;
+    const chainLeft = startX + Math.max(0, (layout.subtreeWidth - layout.chainWidth) / 2);
+    const chainCenter = chainLeft + layout.chainWidth / 2;
     phaseNode.level = level;
-    phaseNode.x = GRAPH_PADDING_X + level * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP);
-    if (phase.kind === "tool") {
-      phaseNode.x -= 20;
-    }
-    phaseNode.y = cursorY;
-    cursorY += phaseHeight + GRAPH_CHAIN_GAP;
+    phaseNode.x = chainCenter - phaseNode.width / 2;
 
     let currentLevel = level;
     let lastId = phaseId;
@@ -383,31 +423,28 @@ export function buildWorkflowGraph(
       }
       currentLevel += 1;
       handoffNode.level = currentLevel;
-      handoffNode.x =
-        GRAPH_PADDING_X + currentLevel * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP) - 16;
-      handoffNode.y = cursorY;
-      cursorY += handoffNode.height + GRAPH_CHAIN_GAP;
+      handoffNode.x = chainCenter - handoffNode.width / 2;
       lastId = handoffId;
     }
 
-    const childLayoutHeight = layout.children.reduce(
-      (sum, child) => sum + measurePhase(child).subtreeHeight,
+    const childLayoutWidth = layout.children.reduce(
+      (sum, child) => sum + measurePhase(child).subtreeWidth,
       0,
     );
-    const childGapHeight =
+    const childGapWidth =
       Math.max(0, layout.children.length - 1) * GRAPH_BRANCH_GAP;
-    const childBlockHeight = childLayoutHeight + childGapHeight;
-    let childCursorY =
-      startY + Math.max(0, (layout.subtreeHeight - childBlockHeight) / 2);
+    const childBlockWidth = childLayoutWidth + childGapWidth;
+    let childCursorX =
+      startX + Math.max(0, (layout.subtreeWidth - childBlockWidth) / 2);
     const childLevel = level + layout.handoffs.length + 1;
     const leafIdsFromChildren: string[] = [];
     let maxLevel = currentLevel;
 
     for (const child of layout.children) {
-      const childResult = positionPhase(child, childLevel, childCursorY);
+      const childResult = positionPhase(child, childLevel, childCursorX);
       leafIdsFromChildren.push(...childResult.leafIds);
       maxLevel = Math.max(maxLevel, childResult.maxLevel);
-      childCursorY += measurePhase(child).subtreeHeight + GRAPH_BRANCH_GAP;
+      childCursorX += measurePhase(child).subtreeWidth + GRAPH_BRANCH_GAP;
     }
 
     if (layout.children.length === 0) {
@@ -418,28 +455,26 @@ export function buildWorkflowGraph(
   };
 
   const rootLayouts = roots.map((phase) => measurePhase(phase));
-  const rootBlockHeight =
-    rootLayouts.reduce((sum, layout) => sum + layout.subtreeHeight, 0) +
+  const rootBlockWidth =
+    rootLayouts.reduce((sum, layout) => sum + layout.subtreeWidth, 0) +
     Math.max(0, rootLayouts.length - 1) * GRAPH_BRANCH_GAP;
-  const startHeight = nodes.get("graph:start")?.height ?? 0;
-  const graphBlockHeight = Math.max(startHeight, rootBlockHeight);
+  const startWidth = nodes.get("graph:start")?.width ?? 0;
+  const graphBlockWidth = Math.max(startWidth, rootBlockWidth);
   const startNode = nodes.get("graph:start");
   if (!startNode) {
     throw new Error("Missing start graph node");
   }
-  startNode.x = GRAPH_PADDING_X;
-  startNode.y =
-    GRAPH_PADDING_Y + Math.max(0, (graphBlockHeight - startHeight) / 2);
+  startNode.x = GRAPH_PADDING_X + Math.max(0, (graphBlockWidth - startWidth) / 2);
 
-  let rootCursorY =
-    GRAPH_PADDING_Y + Math.max(0, (graphBlockHeight - rootBlockHeight) / 2);
+  let rootCursorX =
+    GRAPH_PADDING_X + Math.max(0, (graphBlockWidth - rootBlockWidth) / 2);
   let maxLevel = 0;
   const allLeafIds: string[] = roots.length > 0 ? [] : ["graph:start"];
   for (const root of roots) {
-    const result = positionPhase(root, 1, rootCursorY);
+    const result = positionPhase(root, 1, rootCursorX);
     allLeafIds.push(...result.leafIds);
     maxLevel = Math.max(maxLevel, result.maxLevel);
-    rootCursorY += measurePhase(root).subtreeHeight + GRAPH_BRANCH_GAP;
+    rootCursorX += measurePhase(root).subtreeWidth + GRAPH_BRANCH_GAP;
   }
 
   const terminalLevel = maxLevel + 1;
@@ -456,19 +491,17 @@ export function buildWorkflowGraph(
   if (!terminalNode) {
     throw new Error("Missing terminal graph node");
   }
-  terminalNode.x =
-    GRAPH_PADDING_X + terminalLevel * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP);
   const leafCenters = allLeafIds
     .map((nodeId) => nodes.get(nodeId))
     .filter((node): node is GraphNode => Boolean(node))
-    .map((node) => node.y + node.height / 2);
-  const terminalCenterY =
+    .map((node) => node.x + node.width / 2);
+  const terminalCenterX =
     leafCenters.length > 0
       ? leafCenters.reduce((sum, value) => sum + value, 0) / leafCenters.length
-      : GRAPH_PADDING_Y + graphBlockHeight / 2;
-  terminalNode.y = Math.max(
-    GRAPH_PADDING_Y,
-    terminalCenterY - terminalNode.height / 2,
+      : GRAPH_PADDING_X + graphBlockWidth / 2;
+  terminalNode.x = Math.max(
+    GRAPH_PADDING_X,
+    terminalCenterX - terminalNode.width / 2,
   );
   for (const leafId of allLeafIds) addEdge(leafId, "graph:terminal");
 
@@ -481,19 +514,8 @@ export function buildWorkflowGraph(
       ),
     );
   let handoffTailLevel = terminalLevel;
-  let handoffTailY = terminalNode.y + terminalNode.height / 2;
+  const handoffTailCenterX = terminalNode.x + terminalNode.width / 2;
   if (orphanHandoffs.length > 0) {
-    const orphanGroupHeight =
-      orphanHandoffs.reduce(
-        (sum, handoff) =>
-          sum + estimateGraphNodeHeight("human", handoff),
-        0,
-      ) +
-      Math.max(0, orphanHandoffs.length - 1) * GRAPH_CHAIN_GAP;
-    handoffTailY = Math.max(
-      GRAPH_PADDING_Y,
-      terminalNode.y + terminalNode.height / 2 - orphanGroupHeight / 2,
-    );
     let previousId = "graph:terminal";
     for (const handoff of orphanHandoffs) {
       const handoffId = `handoff:${handoff.id}`;
@@ -513,27 +535,25 @@ export function buildWorkflowGraph(
       if (!handoffNode) {
         throw new Error(`Missing graph node for orphan handoff ${handoff.id}`);
       }
-      handoffNode.x =
-        GRAPH_PADDING_X +
-        handoffTailLevel * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP) -
-        16;
-      handoffNode.y = handoffTailY;
-      handoffTailY += handoffNode.height + GRAPH_CHAIN_GAP;
+      handoffNode.x = Math.max(
+        GRAPH_PADDING_X,
+        handoffTailCenterX - handoffNode.width / 2,
+      );
       previousId = handoffId;
     }
   }
 
   const deliverables = runDetail?.deliverables ?? [];
   const deliverableLevel = handoffTailLevel + 1;
-  const deliverableGroupHeight =
+  const deliverableGroupWidth =
     deliverables.length > 0
-      ? deliverables.length * estimateGraphNodeHeight("deliverable") +
+      ? deliverables.length * getGraphNodeWidth("deliverable") +
         Math.max(0, deliverables.length - 1) * GRAPH_BRANCH_GAP
       : 0;
-  let deliverableCursorY =
+  let deliverableCursorX =
     Math.max(
-      GRAPH_PADDING_Y,
-      terminalNode.y + terminalNode.height / 2 - deliverableGroupHeight / 2,
+      GRAPH_PADDING_X,
+      terminalNode.x + terminalNode.width / 2 - deliverableGroupWidth / 2,
     );
   const deliverableGap = GRAPH_BRANCH_GAP;
   for (const deliverable of deliverables) {
@@ -553,25 +573,35 @@ export function buildWorkflowGraph(
     if (!deliverableNode) {
       throw new Error(`Missing deliverable graph node for ${deliverable.id}`);
     }
-    deliverableNode.x =
-      GRAPH_PADDING_X + deliverableLevel * (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP);
-    deliverableNode.y = deliverableCursorY;
-    deliverableCursorY += deliverableNode.height + deliverableGap;
+    deliverableNode.x = deliverableCursorX;
+    deliverableCursorX += deliverableNode.width + deliverableGap;
   }
+
+  const nodesByLevel = new Map<number, GraphNode[]>();
+  for (const node of nodes.values()) {
+    const levelNodes = nodesByLevel.get(node.level) ?? [];
+    levelNodes.push(node);
+    nodesByLevel.set(node.level, levelNodes);
+  }
+  let levelTop = GRAPH_PADDING_Y;
+  const lastLevel = Math.max(...nodesByLevel.keys());
+  for (let level = 0; level <= lastLevel; level += 1) {
+    const levelNodes = nodesByLevel.get(level) ?? [];
+    const levelHeight = Math.max(0, ...levelNodes.map((node) => node.height));
+    for (const node of levelNodes) node.y = levelTop;
+    levelTop += levelHeight + GRAPH_ROW_GAP;
+  }
+
   const orderedNodes = [...nodes.values()].sort((a, b) => {
-    if (a.kind === "start") return -1;
-    if (b.kind === "start") return 1;
-    if (a.kind === "terminal") return 1;
-    if (b.kind === "terminal") return -1;
-    if (a.x !== b.x) return a.x - b.x;
     if (a.y !== b.y) return a.y - b.y;
+    if (a.x !== b.x) return a.x - b.x;
     return a.id.localeCompare(b.id);
   });
 
-  const graphWidth =
-    GRAPH_PADDING_X * 2 +
-    (Math.max(terminalLevel, handoffTailLevel, deliverableLevel) + 1) *
-      (GRAPH_NODE_WIDTH + GRAPH_COLUMN_GAP);
+  const graphWidth = Math.max(
+    420,
+    ...orderedNodes.map((node) => node.x + node.width + GRAPH_PADDING_X),
+  );
   const graphHeight = Math.max(
     420,
     ...orderedNodes.map((node) => node.y + node.height + GRAPH_PADDING_Y),
@@ -585,19 +615,19 @@ export function buildWorkflowGraph(
   };
 }
 
-function nodeCenterRight(node: GraphNode) {
-  return { x: node.x + node.width, y: node.y + node.height / 2 };
+function nodeCenterBottom(node: GraphNode) {
+  return { x: node.x + node.width / 2, y: node.y + node.height };
 }
 
-function nodeCenterLeft(node: GraphNode) {
-  return { x: node.x, y: node.y + node.height / 2 };
+function nodeCenterTop(node: GraphNode) {
+  return { x: node.x + node.width / 2, y: node.y };
 }
 
 function buildEdgePath(from: GraphNode, to: GraphNode) {
-  const start = nodeCenterRight(from);
-  const end = nodeCenterLeft(to);
-  const curve = Math.max(36, Math.abs(end.x - start.x) * 0.35);
-  return `M ${start.x} ${start.y} C ${start.x + curve} ${start.y}, ${end.x - curve} ${end.y}, ${end.x} ${end.y}`;
+  const start = nodeCenterBottom(from);
+  const end = nodeCenterTop(to);
+  const curve = Math.max(28, Math.abs(end.y - start.y) * 0.42);
+  return `M ${start.x} ${start.y} C ${start.x} ${start.y + curve}, ${end.x} ${end.y - curve}, ${end.x} ${end.y}`;
 }
 
 function WorkflowTopologyGraph({
@@ -623,9 +653,9 @@ function WorkflowTopologyGraph({
   );
 
   return (
-    <div className="overflow-x-auto rounded-3xl border border-border/70 bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.06),_transparent_42%),linear-gradient(180deg,rgba(255,255,255,0.03),transparent)] p-3">
+    <div className="overflow-auto rounded-3xl border border-border/70 bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.06),_transparent_42%),linear-gradient(180deg,rgba(255,255,255,0.03),transparent)] p-3">
       <div
-        className="relative"
+        className="relative mx-auto"
         style={{
           width: `${graph.width}px`,
           height: `${graph.height}px`,
@@ -1472,9 +1502,7 @@ export function WorkflowDetail() {
   const hasIncompletePromptTemplates = hasIncompleteWorkflowPromptTemplates(
     editDraft.promptTemplates,
   );
-  const pipelinePhases = runDetail?.phases.length
-    ? runDetail.phases
-    : workflow.pipelineDefinition.phases.map(
+  const definitionPhases = workflow.pipelineDefinition.phases.map(
         (phase) =>
           ({
             id: phase.key,
@@ -1492,6 +1520,8 @@ export function WorkflowDetail() {
               depth: phase.depth ?? 0,
               agentName: phase.agentName ?? null,
               description: phase.description ?? null,
+              systemPrompt: phase.systemPrompt ?? null,
+              configuredSkills: phase.configuredSkills ?? [],
             },
             startedAt: null,
             finishedAt: null,
@@ -1499,6 +1529,15 @@ export function WorkflowDetail() {
             updatedAt: workflow.updatedAt,
           }) satisfies WorkflowPhase,
       );
+  const telemetryPhases = buildWorkflowTelemetryPhases(runDetail?.telemetryEvents);
+  const pipelinePhases = runDetail
+    ? telemetryPhases.length > 0
+      ? telemetryPhases
+      : runDetail.phases.filter((phase) =>
+        phase.metadata?.runtimeCalled === true ||
+        phase.metadata?.runtimeAgent === true ||
+        phase.metadata?.runtimePhase === true)
+    : definitionPhases;
   const activeRunStatus = runDetail?.status ?? workflow.latestRun?.status ?? null;
 
   return (
@@ -1838,6 +1877,7 @@ function PipelineCard({
   onRespond: (handoffId: string) => void;
   pendingHandoffId: string | null;
 }) {
+  const [activeView, setActiveView] = useState("pipeline");
   const handoffsByPhase = useMemo(() => {
     const map = new Map<string, WorkflowHandoff[]>();
     for (const handoff of runDetail?.handoffs ?? []) {
@@ -1851,13 +1891,21 @@ function PipelineCard({
     () => buildWorkflowGraph(phases, handoffsByPhase, runDetail),
     [handoffsByPhase, phases, runDetail],
   );
+  const pipelineAgents = useMemo(
+    () => workflowPipelineAgentPhases(phases),
+    [phases],
+  );
   const canCancelRun = Boolean(
     runDetail && ["queued", "running", "awaiting_human"].includes(runDetail.status),
   );
   const cancelIsPending = cancellingRunId === runDetail?.id;
   const pipelineSummary = runDetail
-    ? `Active run ${runDetail.status.replaceAll("_", " ")}`
-    : `${workflow.pipelineDefinition.phases.length} inferred phases`;
+    ? `Run ${runDetail.status.replaceAll("_", " ")} · ${pipelineAgents.length} called agent${pipelineAgents.length === 1 ? "" : "s"}`
+    : `${pipelineAgents.length} inferred agent${pipelineAgents.length === 1 ? "" : "s"}`;
+  const behaviorAgents = useMemo(
+    () => buildWorkflowBehaviorAgents(runDetail, phases).filter((agent) => !runDetail || agent.called),
+    [phases, runDetail],
+  );
 
   return (
     <Card className={workflowPanelClassName}>
@@ -1899,23 +1947,360 @@ function PipelineCard({
         </div>
       </CardHeader>
       <CardContent>
-        {phases.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-border p-6 text-sm text-muted-foreground">
-            The workflow analyzer has not produced any phases yet.
-          </div>
-        ) : (
-          <WorkflowTopologyGraph
-            graph={graph}
-            handoffResponses={handoffResponses}
-            setHandoffResponses={setHandoffResponses}
-            onApprove={onApprove}
-            onReject={onReject}
-            onRespond={onRespond}
-            pendingHandoffId={pendingHandoffId}
-          />
-        )}
+        <Tabs value={activeView} onValueChange={setActiveView}>
+          <TabsList variant="line" className="mb-4 justify-start">
+            <TabsTrigger value="pipeline">Pipeline</TabsTrigger>
+            <TabsTrigger value="behavior">Agent behavior</TabsTrigger>
+          </TabsList>
+          <TabsContent value="pipeline">
+            {pipelineAgents.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-border p-6 text-sm text-muted-foreground">
+                No agent calls were captured for this workflow.
+              </div>
+            ) : (
+              <WorkflowTopologyGraph
+                graph={graph}
+                handoffResponses={handoffResponses}
+                setHandoffResponses={setHandoffResponses}
+                onApprove={onApprove}
+                onReject={onReject}
+                onRespond={onRespond}
+                pendingHandoffId={pendingHandoffId}
+              />
+            )}
+          </TabsContent>
+          <TabsContent value="behavior">
+            <WorkflowBehaviorChart agents={behaviorAgents} hasRun={Boolean(runDetail)} />
+          </TabsContent>
+        </Tabs>
       </CardContent>
     </Card>
+  );
+}
+
+function formatBehaviorValue(value: unknown) {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function BehaviorPromptBlock({
+  label,
+  value,
+  tone,
+  empty,
+  collapsible = false,
+  testId,
+}: {
+  label: string;
+  value: string | null;
+  tone: "operator" | "system";
+  empty: string;
+  collapsible?: boolean;
+  testId?: string;
+}) {
+  const panelClassName = cn(
+    "rounded-xl border",
+    tone === "system"
+      ? "border-violet-500/25 bg-violet-500/5"
+      : "border-cyan-500/25 bg-cyan-500/5",
+  );
+  const labelClassName = cn(
+    "text-[10px] font-semibold uppercase tracking-[0.16em]",
+    tone === "system" ? "text-violet-400" : "text-cyan-400",
+  );
+  if (collapsible && value) {
+    return (
+      <details className={panelClassName} data-testid={testId}>
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-3">
+          <span className={labelClassName}>{label}</span>
+          <span className="text-[10px] text-muted-foreground">Click to expand</span>
+        </summary>
+        <div className="max-h-96 overflow-auto whitespace-pre-wrap border-t border-violet-500/20 p-3 text-xs leading-relaxed">
+          {value}
+        </div>
+      </details>
+    );
+  }
+  return (
+    <div className={cn(panelClassName, "p-3")}>
+      <div className={cn(labelClassName, "mb-1.5")}>
+        {label}
+      </div>
+      <div className={cn("whitespace-pre-wrap text-xs leading-relaxed", !value && "text-muted-foreground")}>
+        {value || empty}
+      </div>
+    </div>
+  );
+}
+
+function WorkflowBehaviorAgentNode({ agent, index }: { agent: WorkflowBehaviorAgent; index: number }) {
+  const isTool = agent.actorKind === "tool";
+  const skillCount = new Set([
+    ...agent.skills.map((skill) => skill.name),
+    ...agent.configuredTools,
+    ...agent.tools.map((tool) => tool.name),
+  ]).size;
+  return (
+    <div
+      className="relative pl-10"
+      data-behavior-actor-kind={isTool ? "tool" : "agent"}
+    >
+      {index > 0 ? <div className="absolute -top-6 left-[15px] h-6 w-px bg-border" /> : null}
+      <div
+        className={cn(
+          "absolute left-0 top-4 flex h-8 w-8 items-center justify-center rounded-full border bg-background",
+          agent.called ? "border-emerald-500/50 text-emerald-400" : "border-border text-muted-foreground",
+        )}
+      >
+        {isTool ? <Wrench className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
+      </div>
+      <div className="rounded-2xl border border-border/70 bg-background/45 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-semibold">{agent.name}</h3>
+              <StatusBadge status={agent.status} />
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {isTool
+                ? agent.called
+                  ? "Queried during this run"
+                  : "Not queried in this run"
+                : agent.called
+                  ? "Called during this run"
+                  : "Not called in this run"}
+              {agent.description ? ` · ${agent.description}` : ""}
+            </div>
+          </div>
+          <span className={workflowPillClassName}>
+            {isTool
+              ? "Data query tool"
+              : `${skillCount} skill${skillCount === 1 ? "" : "s"} / tool${skillCount === 1 ? "" : "s"}`}
+          </span>
+          {agent.model ? (
+            <span className={workflowPillClassName}>Model {agent.model}</span>
+          ) : null}
+          {agent.service ? (
+            <span className={workflowPillClassName}>Service {agent.service}</span>
+          ) : null}
+        </div>
+
+        {!isTool && agent.tools.length > 0 ? (
+          <div
+            className="mt-3 ml-1 border-l-2 border-emerald-500/30 pl-4"
+            data-testid="behavior-child-tools"
+          >
+            <div className="mb-2 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-emerald-400">
+              <Wrench className="h-3.5 w-3.5" />
+              Child tools called by this agent
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {[...new Set(agent.tools.map((tool) => tool.name))].map((toolName) => (
+                <span key={toolName} className={workflowPillClassName}>
+                  {toolName}
+                </span>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {!isTool ? <div className="mt-4 grid gap-3 lg:grid-cols-2">
+          <BehaviorPromptBlock
+            label={
+              agent.promptSource === "runtime_service"
+                ? "Prompt sent to service"
+                : agent.promptSource === "workflow_handoff"
+                  ? "Workflow handoff"
+                  : agent.promptSource === "telemetry_handoff"
+                    ? "Prompt from telemetry handoff"
+                : agent.promptSource === "adk_event"
+                  ? "Prompt from ADK event"
+                  : "Operator / run prompt"
+            }
+            value={agent.prompt}
+            tone="operator"
+            collapsible={agent.promptSource === "adk_event"}
+            testId="behavior-agent-prompt"
+            empty={
+              agent.promptSource === "unavailable"
+                ? "ADK did not expose this downstream handoff prompt."
+                : "No prompt was stored for this run."
+            }
+          />
+          <BehaviorPromptBlock
+            label="System instruction"
+            value={agent.systemPrompt}
+            tone="system"
+            collapsible
+            testId="behavior-system-instruction"
+            empty={
+              agent.promptSource === "runtime_service"
+                ? "Direct service calls do not have an ADK system instruction."
+                : "No literal ADK instruction was available from static analysis."
+            }
+          />
+        </div> : null}
+
+        <details
+          className="mt-3 rounded-xl border border-emerald-500/25 bg-emerald-500/5"
+          data-testid="behavior-agent-output"
+        >
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-3">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-emerald-400">
+              {isTool ? "Tool output" : agent.service ? "Service output" : "Agent / LLM output"}
+            </span>
+            <span className="text-[10px] text-muted-foreground">
+              {agent.output === null ? "No output captured" : "Click to expand"}
+            </span>
+          </summary>
+          {agent.output !== null ? (
+            <pre className="max-h-96 overflow-auto whitespace-pre-wrap border-t border-emerald-500/20 bg-neutral-950 p-3 text-[11px] text-neutral-200">
+              {formatBehaviorValue(agent.output)}
+            </pre>
+          ) : null}
+        </details>
+
+        <details className="mt-3 rounded-xl border border-border/60 bg-card/60">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs font-medium hover:bg-accent/30">
+            <span className="flex items-center gap-2">
+              <Wrench className="h-3.5 w-3.5" />
+              Skills & tools used
+            </span>
+            <span className="text-muted-foreground">Click to expand</span>
+          </summary>
+          <div className="space-y-2 border-t border-border/60 p-3">
+            {agent.skills.map((skill) => (
+              <details key={skill.name} className="rounded-lg border border-violet-500/25 bg-violet-500/5">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs font-semibold">
+                  <span>{skill.name}</span>
+                  <span className="text-[10px] font-normal uppercase tracking-wide text-violet-400">Skill · expand</span>
+                </summary>
+                <pre className="max-h-96 overflow-auto whitespace-pre-wrap border-t border-violet-500/20 bg-neutral-950 p-3 text-[11px] text-neutral-200">
+                  {skill.content}
+                </pre>
+              </details>
+            ))}
+            {agent.tools.length > 0 ? (
+              agent.tools.map((tool, toolIndex) => (
+                <div key={`${tool.id}-${toolIndex}`} className="rounded-lg border border-border/60 bg-background/60 p-3">
+                  <div className="text-xs font-semibold">{tool.name}</div>
+                  <div className="mt-2 grid gap-2 md:grid-cols-2">
+                    <div>
+                      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-cyan-400">
+                        Request sent
+                      </div>
+                      <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-neutral-950 p-2 text-[11px] text-neutral-200">
+                        {formatBehaviorValue(tool.input)}
+                      </pre>
+                    </div>
+                    <div>
+                      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-400">
+                        Response received
+                      </div>
+                      <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-neutral-950 p-2 text-[11px] text-neutral-200">
+                        {tool.output === null ? "Response not captured" : formatBehaviorValue(tool.output)}
+                      </pre>
+                    </div>
+                  </div>
+                </div>
+              ))
+            ) : agent.configuredTools.length > 0 ? (
+              <div className="text-xs text-muted-foreground">
+                Configured but not observed in this run: {agent.configuredTools.join(", ")}.
+              </div>
+            ) : agent.skills.length === 0 ? (
+              <div className="text-xs text-muted-foreground">No skill or tool calls were observed.</div>
+            ) : null}
+          </div>
+        </details>
+
+        <details
+          className="mt-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5"
+          data-testid="behavior-data-sources"
+        >
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs font-medium hover:bg-accent/30">
+            <span className="flex items-center gap-2">
+              <Database className="h-3.5 w-3.5" />
+              Data sources & query outcomes
+            </span>
+            <span className="text-muted-foreground">
+              {agent.dataSources.length} source{agent.dataSources.length === 1 ? "" : "s"} · expand
+            </span>
+          </summary>
+          <div className="space-y-2 border-t border-cyan-500/20 p-3">
+            {agent.dataSources.length === 0 ? (
+              <div className="text-xs text-muted-foreground">
+                No configured data source or observed query was captured for this agent.
+              </div>
+            ) : agent.dataSources.map((source, sourceIndex) => (
+              <div key={`${source.id}-${sourceIndex}`} className="rounded-lg border border-border/60 bg-background/60 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-xs font-semibold">{source.name}</div>
+                  <span className={workflowPillClassName}>
+                    {source.kind === "resource" ? "Workflow resource" : source.status === "queried" ? "Queried" : "Configured"}
+                  </span>
+                </div>
+                {source.status === "configured" ? (
+                  <div className="mt-2 text-xs text-muted-foreground">
+                    Available to the agent, but no query was observed in this run.
+                  </div>
+                ) : (
+                  <div className="mt-2 grid gap-2 md:grid-cols-2">
+                    <div>
+                      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-cyan-400">
+                        {source.kind === "resource" ? "Mounted source" : "Query / request"}
+                      </div>
+                      <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md bg-neutral-950 p-2 text-[11px] text-neutral-200">
+                        {source.query === null ? "Query not captured" : formatBehaviorValue(source.query)}
+                      </pre>
+                    </div>
+                    <div>
+                      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-400">
+                        Query outcome
+                      </div>
+                      <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md bg-neutral-950 p-2 text-[11px] text-neutral-200">
+                        {source.outcome === null ? "Outcome not captured" : formatBehaviorValue(source.outcome)}
+                      </pre>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </details>
+      </div>
+    </div>
+  );
+}
+
+function WorkflowBehaviorChart({ agents, hasRun }: { agents: WorkflowBehaviorAgent[]; hasRun: boolean }) {
+  if (agents.length === 0) {
+    return (
+      <div className="rounded-xl border border-dashed border-border p-6 text-sm text-muted-foreground">
+        No ADK agents were found in this workflow definition.
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-3xl border border-border/70 bg-[radial-gradient(circle_at_top,_rgba(139,92,246,0.08),_transparent_40%)] p-4">
+      <div className="mb-4 flex items-start gap-3 rounded-xl border border-border/60 bg-background/50 p-3">
+        <ScrollText className="mt-0.5 h-4 w-4 shrink-0 text-violet-400" />
+        <div className="text-xs leading-relaxed text-muted-foreground">
+          {hasRun
+            ? "This trace separates stored run input, statically discovered ADK system instructions, and observed function calls. Expand any agent to inspect its skills and tool payloads."
+            : "Run the workflow to populate call status and tool usage. Static system instructions are shown when the analyzer can read a literal instruction value."}
+        </div>
+      </div>
+      <div className="space-y-6">
+        {agents.map((agent, index) => (
+          <WorkflowBehaviorAgentNode key={agent.phaseKey} agent={agent} index={index} />
+        ))}
+      </div>
+    </div>
   );
 }
 

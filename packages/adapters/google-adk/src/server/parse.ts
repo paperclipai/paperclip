@@ -26,6 +26,8 @@ export function parseGoogleAdkJsonl(stdout: string) {
   let lastAssistantText = "";
   const toolCalls: Array<{ name: string; input: unknown }> = [];
   const toolResults: Array<{ name: string; output: unknown }> = [];
+  const compactToolCalls = new Map<string, { name: string; input: unknown }>();
+  const compactToolResults = new Map<string, { name: string; output: unknown }>();
   let errorMessage: string | null = null;
   let usage = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
 
@@ -34,6 +36,46 @@ export function parseGoogleAdkJsonl(stdout: string) {
     if (!line) continue;
     const parsed = parseJson(line);
     if (!parsed) continue;
+
+    const compactEvent = asString(parsed.event, "");
+    const compactDetails = parseObject(parsed.details);
+    const compactSources = Array.isArray(compactDetails.sources)
+      ? compactDetails.sources.flatMap((source) => {
+          const name = asString(source, "").trim();
+          return name ? [name] : [];
+        })
+      : [];
+    if (compactEvent === "source_grounding.started") {
+      const input = Object.fromEntries(
+        Object.entries(compactDetails).filter(([key]) => !["sources", "outcome", "outcomes"].includes(key)),
+      );
+      for (const source of compactSources) {
+        compactToolCalls.set(source, { name: source, input });
+      }
+    }
+    if (compactEvent === "source_grounding.finished") {
+      const outcome = parseObject(compactDetails.outcome);
+      if (Object.keys(outcome).length > 0) {
+        for (const source of compactSources) {
+          compactToolResults.set(source, { name: source, output: outcome });
+        }
+      }
+    }
+    if (compactEvent === "source_grounding.completed") {
+      const outcomes = parseObject(compactDetails.outcomes);
+      for (const [source, output] of Object.entries(outcomes)) {
+        compactToolResults.set(source, { name: source, output });
+        if (!compactToolCalls.has(source)) {
+          const outcome = parseObject(output);
+          compactToolCalls.set(source, {
+            name: source,
+            input: Object.prototype.hasOwnProperty.call(outcome, "query")
+              ? { query: outcome.query }
+              : {},
+          });
+        }
+      }
+    }
 
     const content = parseObject(parsed.content);
     const role = asString(content.role, "");
@@ -68,8 +110,11 @@ export function parseGoogleAdkJsonl(stdout: string) {
       lastAssistantText = modelTexts.join("\n\n").trim();
     }
 
-    const explicitError = asErrorText(parsed.error ?? parsed.message ?? parsed.detail);
+    const explicitError = asErrorText(parsed.error);
     if (explicitError) errorMessage = explicitError;
+    if (asString(parsed.event, "") === "run.failed") {
+      errorMessage = asErrorText(parsed.message ?? parsed.detail ?? parsed.error) || "Workflow reported run.failed";
+    }
 
     const usageRaw = parseObject(parsed.usageMetadata ?? parsed.usage);
     usage = {
@@ -90,8 +135,8 @@ export function parseGoogleAdkJsonl(stdout: string) {
 
   return {
     summary: lastAssistantText,
-    toolCalls,
-    toolResults,
+    toolCalls: [...toolCalls, ...compactToolCalls.values()],
+    toolResults: [...toolResults, ...compactToolResults.values()],
     usage,
     errorMessage,
   };

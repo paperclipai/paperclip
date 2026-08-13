@@ -25,6 +25,8 @@ type ParsedAdkDefinition = {
   definitionKind: "agent" | "loop" | "workflow" | "join";
   name: string;
   description: string | null;
+  systemPrompt: string | null;
+  skillNames: string[];
   childRefs: string[];
   workflowEdges: Array<{ sourceRefs: string[]; targetRefs: string[] }>;
   inlineSubAgents: ParsedAdkInlineNode[];
@@ -43,6 +45,8 @@ type WorkflowPipelineNode = {
   depth: number;
   agentName: string | null;
   description: string | null;
+  systemPrompt: string | null;
+  configuredSkills: Array<{ name: string; content: string }>;
 };
 
 export interface AnalyzedWorkflowProject {
@@ -91,7 +95,7 @@ async function collectPythonFiles(rootDir: string): Promise<string[]> {
 }
 
 function parseFunctionNames(contents: string) {
-  const pattern = /^(\s*)(async\s+def|def)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/gm;
+  const pattern = /^([ \t]*)(async\s+def|def)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/gm;
   const functions: Array<{ indent: string; functionName: string }> = [];
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(contents)) !== null) {
@@ -166,12 +170,30 @@ function extractBalancedSection(source: string, startIndex: number, openChar: st
 
 function parsePythonStringArg(block: string, argName: string) {
   const pattern = new RegExp(
-    `${argName}\\s*=\\s*(?:"""([\\s\\S]*?)"""|'''([\\s\\S]*?)'''|"([^"]*)"|'([^']*)')`,
+    `${argName}\\s*=\\s*(?:[rubfRUBF]*"""([\\s\\S]*?)"""|[rubfRUBF]*'''([\\s\\S]*?)'''|[rubfRUBF]*"([^"]*)"|[rubfRUBF]*'([^']*)')`,
     "m",
   );
   const match = block.match(pattern);
   if (!match) return null;
   return (match[1] ?? match[2] ?? match[3] ?? match[4] ?? "").trim() || null;
+}
+
+function parsePythonStringAssignment(contents: string, variableName: string) {
+  const pattern = new RegExp(
+    `^\\s*${escapeRegExp(variableName)}\\s*=\\s*(?:[rubfRUBF]*"""([\\s\\S]*?)"""|[rubfRUBF]*'''([\\s\\S]*?)'''|[rubfRUBF]*"([^"\\n]*)"|[rubfRUBF]*'([^'\\n]*)')`,
+    "m",
+  );
+  const match = contents.match(pattern);
+  if (!match) return null;
+  return (match[1] ?? match[2] ?? match[3] ?? match[4] ?? "").trim() || null;
+}
+
+function parsePythonStringOrReferenceArg(contents: string, block: string, argName: string) {
+  const literal = parsePythonStringArg(block, argName);
+  if (literal) return literal;
+  const reference = new RegExp(`${argName}\\s*=\\s*([A-Za-z_][A-Za-z0-9_]*)`, "m")
+    .exec(block)?.[1];
+  return reference ? parsePythonStringAssignment(contents, reference) : null;
 }
 
 function parsePythonListArg(block: string, argName: string) {
@@ -299,7 +321,7 @@ function splitTopLevelListItems(listBody: string) {
 
 function parseAdkDefinitions(relativePath: string, contents: string): ParsedAdkDefinition[] {
   const definitions: ParsedAdkDefinition[] = [];
-  const pattern = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(Agent|LoopAgent|Workflow|JoinNode)\s*\(/gm;
+  const pattern = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(Agent|LlmAgent|LoopAgent|SequentialAgent|ParallelAgent|Workflow|JoinNode)\s*\(/gm;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(contents)) !== null) {
     const variableName = match[1] ?? "";
@@ -361,6 +383,10 @@ function parseAdkDefinitions(relativePath: string, contents: string): ParsedAdkD
               : "agent",
       name: parsePythonStringArg(callBody, "name") ?? variableName,
       description: parsePythonStringArg(callBody, "description"),
+      systemPrompt: parsePythonStringOrReferenceArg(contents, callBody, "instruction"),
+      skillNames: [...callBody.matchAll(/(?:_skill|load_skill(?:_bundle)?)\(\s*["']([^"']+)["']\s*\)/g)]
+        .map((skillMatch) => skillMatch[1] ?? "")
+        .filter((skillName, index, all) => Boolean(skillName) && all.indexOf(skillName) === index),
       childRefs: subAgentRefs,
       workflowEdges,
       inlineSubAgents,
@@ -368,6 +394,76 @@ function parseAdkDefinitions(relativePath: string, contents: string): ParsedAdkD
     });
   }
   return definitions;
+}
+
+async function resolveAnalysisRoot(resolvedPath: string, stat: Awaited<ReturnType<typeof fs.stat>>) {
+  const executionDir = stat.isDirectory() ? resolvedPath : path.dirname(resolvedPath);
+  const candidateFiles = stat.isDirectory()
+    ? [path.join(resolvedPath, "agent.py"), path.join(resolvedPath, "__init__.py")]
+    : [resolvedPath];
+  const entryContents = (await Promise.all(candidateFiles.map((candidate) => fs.readFile(candidate, "utf8").catch(() => ""))))
+    .join("\n");
+  const importedPackageDirs = [...entryContents.matchAll(/^\s*(?:from|import)\s+(agents|services|tools)(?:\.|\s|$)/gm)]
+    .map((match) => match[1] ?? "");
+  if (importedPackageDirs.length === 0) return executionDir;
+  const parentDir = path.dirname(executionDir);
+  const hasPackageImports = await Promise.all(
+    importedPackageDirs.map((dirName) => fs.stat(path.join(parentDir, dirName)).then((value) => value.isDirectory()).catch(() => false)),
+  );
+  return hasPackageImports.some(Boolean) ? parentDir : executionDir;
+}
+
+async function readConfiguredSkills(rootDir: string, skillNames: string[]) {
+  const skills: Array<{ name: string; content: string }> = [];
+  for (const name of skillNames) {
+    const skillDir = path.join(rootDir, "skills", name);
+    const candidates = [
+      path.join(skillDir, "SKILL.md"),
+      ...((await fs.readdir(skillDir, { withFileTypes: true }).catch(() => []))
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".md") && entry.name !== "SKILL.md")
+        .map((entry) => path.join(skillDir, entry.name))),
+      ...((await fs.readdir(path.join(skillDir, "references"), { withFileTypes: true }).catch(() => []))
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+        .map((entry) => path.join(skillDir, "references", entry.name))),
+    ];
+    const documents: string[] = [];
+    for (const candidate of candidates) {
+      const content = await fs.readFile(candidate, "utf8").catch(() => null);
+      if (content != null) documents.push(`# ${path.basename(candidate)}\n\n${content}`);
+    }
+    if (documents.length > 0) skills.push({ name, content: documents.join("\n\n---\n\n") });
+  }
+  return skills;
+}
+
+function resolveLocalPythonModule(rootDir: string, moduleName: string) {
+  const modulePath = moduleName.replaceAll(".", path.sep);
+  return [path.join(rootDir, `${modulePath}.py`), path.join(rootDir, modulePath, "__init__.py")];
+}
+
+function collectReachablePythonFiles(
+  rootDir: string,
+  entryPath: string,
+  contentsByPath: Map<string, string>,
+) {
+  const reachable = new Set<string>();
+  const pending = [entryPath];
+  while (pending.length > 0) {
+    const filePath = pending.shift();
+    if (!filePath || reachable.has(filePath)) continue;
+    reachable.add(filePath);
+    const contents = contentsByPath.get(filePath) ?? "";
+    const modules = [
+      ...contents.matchAll(/^\s*from\s+([A-Za-z_][A-Za-z0-9_.]*)\s+import\s+/gm),
+      ...contents.matchAll(/^\s*import\s+([A-Za-z_][A-Za-z0-9_.]*)/gm),
+    ].map((match) => match[1] ?? "");
+    for (const moduleName of modules) {
+      for (const candidate of resolveLocalPythonModule(rootDir, moduleName)) {
+        if (contentsByPath.has(candidate) && !reachable.has(candidate)) pending.push(candidate);
+      }
+    }
+  }
+  return reachable;
 }
 
 function chooseEntrypointFromContents(
@@ -453,8 +549,9 @@ export async function analyzeWorkflowProject(agentPath: string): Promise<Analyze
   if (!stat) {
     throw unprocessable(`Workflow agent path does not exist: ${resolvedPath}`);
   }
-  const rootDir = stat.isDirectory() ? resolvedPath : path.dirname(resolvedPath);
-  const pythonFiles = stat.isDirectory() ? await collectPythonFiles(rootDir) : [resolvedPath];
+  const executionDir = stat.isDirectory() ? resolvedPath : path.dirname(resolvedPath);
+  const rootDir = await resolveAnalysisRoot(resolvedPath, stat);
+  const pythonFiles = await collectPythonFiles(rootDir);
   if (pythonFiles.length === 0) {
     throw unprocessable("Workflow ADK path must contain at least one Python file");
   }
@@ -462,6 +559,7 @@ export async function analyzeWorkflowProject(agentPath: string): Promise<Analyze
   const contentsByPath = new Map<string, string>();
   const topLevelFunctionsByFile = new Map<string, string[]>();
   const adkDefinitions = new Map<string, ParsedAdkDefinition>();
+  const adkDefinitionsByPath = new Map<string, ParsedAdkDefinition[]>();
 
   for (const filePath of pythonFiles) {
     const relativePath = path.relative(rootDir, filePath) || path.basename(filePath);
@@ -475,18 +573,31 @@ export async function analyzeWorkflowProject(agentPath: string): Promise<Analyze
         .filter((fn) => fn.indent.length === 0)
         .map((fn) => fn.functionName),
     );
-    for (const definition of parseAdkDefinitions(relativePath, contents)) {
-      adkDefinitions.set(definition.variableName, definition);
-    }
+    adkDefinitionsByPath.set(filePath, parseAdkDefinitions(relativePath, contents));
   }
 
+  const executionPythonFiles = stat.isDirectory()
+    ? pythonFiles.filter((candidate) => candidate === executionDir || candidate.startsWith(`${executionDir}${path.sep}`))
+    : [resolvedPath];
   const entryPath = stat.isDirectory()
-    ? chooseEntrypointFromContents(rootDir, pythonFiles, contentsByPath)
+    ? chooseEntrypointFromContents(rootDir, executionPythonFiles, contentsByPath)
     : resolvedPath;
   const executionTargetPath = resolveExecutionTargetPath(rootDir, entryPath, resolvedPath);
   const entrypoint = path.relative(rootDir, entryPath) || path.basename(entryPath);
+  const reachablePythonFiles = collectReachablePythonFiles(rootDir, entryPath, contentsByPath);
+  for (const filePath of reachablePythonFiles) {
+    for (const definition of adkDefinitionsByPath.get(filePath) ?? []) {
+      adkDefinitions.set(definition.variableName, definition);
+    }
+  }
   const instrumentationTargets: InstrumentationTarget[] = [];
   const pipelineNodes: WorkflowPipelineNode[] = [];
+  const workflowFunctionRefs = new Set<string>();
+  let appendUnattachedDefinitions = () => {};
+  const configuredSkillsByVariable = new Map<string, Array<{ name: string; content: string }>>();
+  for (const definition of adkDefinitions.values()) {
+    configuredSkillsByVariable.set(definition.variableName, await readConfiguredSkills(rootDir, definition.skillNames));
+  }
 
   if (adkDefinitions.size > 0) {
     const rootVar = findRootAdkVariable(contentsByPath.get(entryPath) ?? "", adkDefinitions, entrypoint);
@@ -497,6 +608,7 @@ export async function analyzeWorkflowProject(agentPath: string): Promise<Analyze
     const outgoingWorkflowRefs = new Map<string, string[]>();
     const incomingWorkflowRefs = new Set<string>();
     for (const edge of workflowEdges) {
+      for (const ref of [...edge.sourceRefs, ...edge.targetRefs]) workflowFunctionRefs.add(ref);
       for (const sourceRef of edge.sourceRefs) {
         const list = outgoingWorkflowRefs.get(sourceRef) ?? [];
         for (const targetRef of edge.targetRefs) {
@@ -511,6 +623,39 @@ export async function analyzeWorkflowProject(agentPath: string): Promise<Analyze
       }
     }
     let ordinal = 0;
+    const workflowRefOrder = workflowEdges.flatMap((edge) => [
+      ...edge.sourceRefs,
+      ...edge.targetRefs,
+    ]).filter((ref, index, all) => all.indexOf(ref) === index);
+    for (const functionName of workflowRefOrder) {
+      if (adkDefinitions.has(functionName)) continue;
+      const relativePath = [...reachablePythonFiles]
+        .map((filePath) => path.relative(rootDir, filePath) || path.basename(filePath))
+        .find((candidate) => (topLevelFunctionsByFile.get(candidate) ?? []).includes(functionName));
+      if (!relativePath) continue;
+      const key = `${relativePath}:${functionName}`;
+      pipelineNodes.push({
+        key,
+        label: humanizeFunctionName(functionName),
+        kind: "phase",
+        filePath: relativePath,
+        functionName,
+        ordinal: ordinal++,
+        parentKey: null,
+        parentKeys: [],
+        depth: 0,
+        agentName: null,
+        description: null,
+        systemPrompt: null,
+        configuredSkills: [],
+      });
+      instrumentationTargets.push({
+        relativePath,
+        functionName,
+        key,
+        label: humanizeFunctionName(functionName),
+      });
+    }
     const addToolTarget = (definition: ParsedAdkDefinition, toolName: string, parentKey: string, depth: number) => {
       const key = `tool:${parentKey}:${toolName}`;
       pipelineNodes.push({
@@ -525,6 +670,8 @@ export async function analyzeWorkflowProject(agentPath: string): Promise<Analyze
         depth,
         agentName: null,
         description: null,
+        systemPrompt: null,
+        configuredSkills: [],
       });
       const topLevelFunctions = topLevelFunctionsByFile.get(definition.relativePath) ?? [];
       if (topLevelFunctions.includes(toolName)) {
@@ -580,6 +727,8 @@ export async function analyzeWorkflowProject(agentPath: string): Promise<Analyze
         depth,
         agentName: definition.name,
         description: definition.description,
+        systemPrompt: definition.systemPrompt,
+        configuredSkills: configuredSkillsByVariable.get(variableName) ?? [],
       };
       pipelineNodeByVariableName.set(variableName, node);
       pipelineNodes.push(node);
@@ -596,6 +745,8 @@ export async function analyzeWorkflowProject(agentPath: string): Promise<Analyze
           depth: depth + 1,
           agentName: inlineNode.name,
           description: null,
+          systemPrompt: null,
+          configuredSkills: [],
         });
       }
       for (const toolName of definition.toolRefs) {
@@ -612,17 +763,26 @@ export async function analyzeWorkflowProject(agentPath: string): Promise<Analyze
     if (rootVar) {
       visitDefinition(rootVar, null, 0);
     }
+    appendUnattachedDefinitions = () => {
+      ordinal = pipelineNodes.reduce((highest, node) => Math.max(highest, node.ordinal + 1), 0);
+      for (const definition of adkDefinitions.values()) {
+        if (definition.definitionKind === "workflow" || definition.definitionKind === "join") continue;
+        if (visited.has(definition.variableName)) continue;
+        visitDefinition(definition.variableName, null, 0);
+      }
+    };
   }
 
   if (pipelineNodes.length === 0) {
     let ordinal = 0;
     const prioritizedFiles = [
       entryPath,
-      ...pythonFiles.filter((candidate) => candidate !== entryPath),
+      ...executionPythonFiles.filter((candidate) => candidate !== entryPath),
     ];
     for (const filePath of prioritizedFiles) {
       const relativePath = path.relative(rootDir, filePath) || path.basename(filePath);
       for (const functionName of topLevelFunctionsByFile.get(relativePath) ?? []) {
+        if (workflowFunctionRefs.size > 0 && !workflowFunctionRefs.has(functionName)) continue;
         const key = `${relativePath}:${functionName}`;
         instrumentationTargets.push({
           relativePath,
@@ -642,10 +802,13 @@ export async function analyzeWorkflowProject(agentPath: string): Promise<Analyze
           depth: 0,
           agentName: null,
           description: null,
+          systemPrompt: null,
+          configuredSkills: [],
         });
       }
     }
   }
+  appendUnattachedDefinitions();
 
   const pipelineDefinition: WorkflowPipelineDefinition = pipelineNodes.length > 0
     ? {
@@ -663,6 +826,8 @@ export async function analyzeWorkflowProject(agentPath: string): Promise<Analyze
           depth: node.depth,
           agentName: node.agentName,
           description: node.description,
+          systemPrompt: node.systemPrompt,
+          configuredSkills: node.configuredSkills,
         })),
       }
     : buildFallbackPipeline(entrypoint);
@@ -687,21 +852,34 @@ function escapeRegExp(value: string) {
 }
 
 function buildRuntimeHelperModule() {
-  return `import asyncio
+  return `import atexit
+import asyncio
 import builtins
+import contextlib
 import contextvars
+import datetime
+import functools
 import inspect
 import json
 import os
 import re
+import sys
+import threading
 import time
 import urllib.request
 
 _CURRENT_PHASE = contextvars.ContextVar("bizbox_current_phase", default=None)
+_CURRENT_SPAN = contextvars.ContextVar("bizbox_current_span", default=None)
 _API_BASE = os.environ.get("BIZBOX_API_URL", "").rstrip("/")
 _RUN_ID = os.environ.get("BIZBOX_WORKFLOW_RUN_ID", "")
 _TOKEN = os.environ.get("BIZBOX_WORKFLOW_RUN_TOKEN", "")
 _AGENT_PHASES = json.loads(os.environ.get("BIZBOX_WORKFLOW_AGENT_PHASES", "{}") or "{}")
+_IMAGE_CALL_SEQUENCE = 0
+_TOOL_CALL_SEQUENCE = 0
+_TELEMETRY_SEQUENCE = 0
+_OPERATION_SEQUENCE = 0
+_TELEMETRY_PENDING = []
+_TELEMETRY_LOCK = threading.RLock()
 
 def _request(method, path, payload=None):
     data = None
@@ -730,6 +908,155 @@ def _safe_emit_phase(key, label, status, metadata=None):
     except Exception:
         pass
 
+def _redact_telemetry(value, depth=0):
+    if depth > 8:
+        return "[depth-limited]"
+    if value is None or isinstance(value, (int, float, bool)):
+        return value
+    if isinstance(value, str):
+        return value if len(value) <= 20000 else value[:20000] + "...[truncated]"
+    if isinstance(value, (list, tuple)):
+        return [_redact_telemetry(item, depth + 1) for item in list(value)[:100]]
+    if isinstance(value, dict):
+        result = {}
+        for key, item in list(value.items())[:100]:
+            key_text = str(key)
+            if re.search(r"(?:api[_-]?key|token|secret|password|authorization|cookie)", key_text, re.I):
+                result[key_text] = "[redacted]"
+            else:
+                result[key_text] = _redact_telemetry(item, depth + 1)
+        return result
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return _redact_telemetry(model_dump(mode="json"), depth + 1)
+        except Exception:
+            pass
+    return _redact_telemetry(str(value), depth + 1)
+
+def _new_span_id(prefix):
+    global _OPERATION_SEQUENCE
+    _OPERATION_SEQUENCE += 1
+    safe_prefix = re.sub(r"[^A-Za-z0-9_.:-]+", "-", str(prefix)).strip("-")[:160] or "operation"
+    return f"{safe_prefix}:{_OPERATION_SEQUENCE}"
+
+def _emit_telemetry(event_type, span_id, operation_kind, operation_name, actor_kind, actor_name=None, parent_span_id=None, status=None, input_value=None, output_value=None, attributes=None, error=None):
+    global _TELEMETRY_SEQUENCE
+    _TELEMETRY_SEQUENCE += 1
+    event = {
+        "schema": "bizbox.telemetry/v1",
+        "event": event_type,
+        "eventId": f"{span_id}:{event_type}:{_TELEMETRY_SEQUENCE}",
+        "spanId": span_id,
+        "parentSpanId": parent_span_id,
+        "sequence": _TELEMETRY_SEQUENCE,
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+        "actor": {"kind": actor_kind, "name": actor_name},
+        "operation": {"kind": operation_kind, "name": operation_name},
+        "status": status,
+        "attributes": _redact_telemetry(attributes or {}),
+    }
+    if input_value is not None:
+        event["input"] = _redact_telemetry(input_value)
+    if output_value is not None:
+        event["output"] = _redact_telemetry(output_value)
+    if error is not None:
+        event["error"] = _redact_telemetry(str(error))
+    with _TELEMETRY_LOCK:
+        _TELEMETRY_PENDING.append(event)
+    _flush_telemetry()
+    return event
+
+def _flush_telemetry():
+    while True:
+        with _TELEMETRY_LOCK:
+            batch = list(_TELEMETRY_PENDING[:100])
+        if not batch:
+            return
+        _request(
+            "POST",
+            f"/api/workflow-runs/{_RUN_ID}/runtime/telemetry-events",
+            {"token": _TOKEN, "events": batch},
+        )
+        with _TELEMETRY_LOCK:
+            acknowledged = {event.get("eventId") for event in batch}
+            _TELEMETRY_PENDING[:] = [
+                event for event in _TELEMETRY_PENDING
+                if event.get("eventId") not in acknowledged
+            ]
+
+def _flush_telemetry_at_exit():
+    for _attempt in range(3):
+        try:
+            _flush_telemetry()
+            return
+        except Exception:
+            continue
+
+atexit.register(_flush_telemetry_at_exit)
+
+def _safe_emit_telemetry(*args, **kwargs):
+    try:
+        return _emit_telemetry(*args, **kwargs)
+    except Exception:
+        return None
+
+def emit_operation_started(name, kind="service", input=None, actor_kind="service", actor_name=None, span_id=None, parent_span_id=None, attributes=None):
+    resolved_span_id = span_id or _new_span_id(f"{kind}:{name}")
+    _safe_emit_telemetry(
+        "operation.started", resolved_span_id, kind, str(name), actor_kind,
+        actor_name or str(name), parent_span_id if parent_span_id is not None else _CURRENT_SPAN.get(),
+        "running", input_value=input, attributes=attributes,
+    )
+    return resolved_span_id
+
+def emit_operation_completed(span_id, name, kind="service", output=None, actor_kind="service", actor_name=None, parent_span_id=None, attributes=None):
+    return _safe_emit_telemetry(
+        "operation.completed", span_id, kind, str(name), actor_kind,
+        actor_name or str(name), parent_span_id, "succeeded", output_value=output, attributes=attributes,
+    )
+
+def emit_operation_failed(span_id, name, error, kind="service", actor_kind="service", actor_name=None, parent_span_id=None, attributes=None):
+    return _safe_emit_telemetry(
+        "operation.failed", span_id, kind, str(name), actor_kind,
+        actor_name or str(name), parent_span_id, "failed", attributes=attributes, error=error,
+    )
+
+@contextlib.contextmanager
+def telemetry_operation(name, kind="service", input=None, actor_kind="service", actor_name=None, attributes=None):
+    parent_span_id = _CURRENT_SPAN.get()
+    span_id = emit_operation_started(name, kind, input, actor_kind, actor_name, parent_span_id=parent_span_id, attributes=attributes)
+    token = _CURRENT_SPAN.set(span_id)
+    state = {"span_id": span_id, "output": None}
+    try:
+        yield state
+        emit_operation_completed(span_id, name, kind, state.get("output"), actor_kind, actor_name, parent_span_id, attributes)
+    except Exception as exc:
+        emit_operation_failed(span_id, name, exc, kind, actor_kind, actor_name, parent_span_id, attributes)
+        raise
+    finally:
+        _CURRENT_SPAN.reset(token)
+
+def observed_operation(name=None, kind="service", actor_kind="service"):
+    def decorator(fn):
+        operation_name = name or getattr(fn, "__name__", "operation")
+        if asyncio.iscoroutinefunction(fn):
+            @functools.wraps(fn)
+            async def async_wrapper(*args, **kwargs):
+                with telemetry_operation(operation_name, kind, {"args": args, "kwargs": kwargs}, actor_kind) as operation:
+                    result = await fn(*args, **kwargs)
+                    operation["output"] = result
+                    return result
+            return async_wrapper
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            with telemetry_operation(operation_name, kind, {"args": args, "kwargs": kwargs}, actor_kind) as operation:
+                result = fn(*args, **kwargs)
+                operation["output"] = result
+                return result
+        return wrapper
+    return decorator
+
 def _phase_info_for_agent(agent):
     name = getattr(agent, "name", None)
     if not name:
@@ -743,6 +1070,280 @@ def _phase_info_for_agent(agent):
         return None
     return {"key": str(key), "label": str(label)}
 
+def _text_from_content(value):
+    parts = getattr(value, "parts", None)
+    if not isinstance(parts, (list, tuple)):
+        return None
+    texts = []
+    for part in parts:
+        text = getattr(part, "text", None)
+        if isinstance(text, str) and text.strip():
+            texts.append(text.strip())
+    return (chr(10) * 2).join(texts) or None
+
+def _json_safe_output(value):
+    if value is None or isinstance(value, (str, int, float, bool, dict, list)):
+        try:
+            json.dumps(value)
+            return value
+        except Exception:
+            pass
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            dumped = model_dump(mode="json")
+            json.dumps(dumped)
+            return dumped
+        except Exception:
+            pass
+    return str(value)
+
+def _output_from_value(value):
+    if value is None:
+        return None
+    output = getattr(value, "output", None)
+    if output is not None:
+        return _json_safe_output(output)
+    content = getattr(value, "content", None)
+    if getattr(content, "role", None) == "model":
+        text = _text_from_content(content)
+        if text:
+            return text
+    if isinstance(value, (str, int, float, bool, dict, list)):
+        return _json_safe_output(value)
+    return None
+
+def _prompt_from_call(args, kwargs):
+    for candidate in list(kwargs.values()) + list(args):
+        for attr in ("user_content", "content"):
+            text = _text_from_content(getattr(candidate, attr, None))
+            if text:
+                return text
+        text = _text_from_content(candidate)
+        if text:
+            return text
+    return None
+
+def _model_name(agent):
+    model = getattr(agent, "model", None)
+    if isinstance(model, str):
+        return model.strip() or None
+    for attr in ("model", "model_name"):
+        value = getattr(model, attr, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+def _tool_names(agent):
+    result = []
+    tools = getattr(agent, "tools", None)
+    if not isinstance(tools, (list, tuple)):
+        return result
+    for tool in tools:
+        name = getattr(tool, "name", None) or getattr(tool, "__name__", None)
+        if not name:
+            fn = getattr(tool, "func", None)
+            name = getattr(fn, "__name__", None)
+        if isinstance(name, str) and name.strip() and name.strip() not in result:
+            result.append(name.strip())
+    return result
+
+def _runtime_info_for_agent(agent, args, kwargs):
+    name = getattr(agent, "name", None)
+    if not isinstance(name, str) or not name.strip():
+        return None
+    name = name.strip()
+    mapped = _phase_info_for_agent(agent)
+    safe_name = re.sub(r"[^A-Za-z0-9_.:-]+", "-", name).strip("-")[:180] or "agent"
+    instruction = getattr(agent, "instruction", None)
+    metadata = {
+        "runtimeAgent": True,
+        "agentName": name,
+        "model": _model_name(agent),
+        "systemPrompt": instruction if isinstance(instruction, str) and instruction.strip() else None,
+        "prompt": _prompt_from_call(args, kwargs),
+        "configuredTools": _tool_names(agent),
+    }
+    return {
+        "key": mapped["key"] if mapped is not None else f"agent-runtime:{safe_name}",
+        "label": mapped["label"] if mapped is not None else name,
+        "metadata": metadata,
+    }
+
+def _start_agent_telemetry(info):
+    parent_span_id = _CURRENT_SPAN.get()
+    metadata = info["metadata"]
+    span_id = emit_operation_started(
+        info["label"], "agent", {"prompt": metadata.get("prompt")}, "agent",
+        metadata.get("agentName") or info["label"], parent_span_id=parent_span_id,
+        attributes={
+            "phaseKey": info["key"],
+            "model": metadata.get("model"),
+            "systemPrompt": metadata.get("systemPrompt"),
+            "configuredTools": metadata.get("configuredTools") or [],
+        },
+    )
+    return span_id, parent_span_id
+
+def _wrap_tool_class(cls):
+    original = getattr(cls, "run_async", None)
+    if original is None or getattr(original, "__bizbox_tool_wrapped__", False):
+        return
+    if not asyncio.iscoroutinefunction(original):
+        return
+
+    async def tool_wrapper(self, *args, **kwargs):
+        global _TOOL_CALL_SEQUENCE
+        _TOOL_CALL_SEQUENCE += 1
+        parent_key = _CURRENT_PHASE.get()
+        name = getattr(self, "name", None) or self.__class__.__name__
+        safe_name = re.sub(r"[^A-Za-z0-9_.:-]+", "-", str(name)).strip("-")[:120] or "tool"
+        call_id = f"tool-{_TOOL_CALL_SEQUENCE}"
+        phase_key = f"tool-runtime:{safe_name}:{_TOOL_CALL_SEQUENCE}"
+        call_args = kwargs.get("args")
+        if call_args is None and args:
+            call_args = args[0]
+        metadata = {
+            "runtimePhase": True,
+            "runtimeKind": "tool",
+            "parentKey": parent_key,
+            "runtimeToolName": str(name),
+            "runtimeToolId": call_id,
+            "runtimeToolInput": _json_safe_output(call_args if call_args is not None else {}),
+        }
+        parent_span_id = _CURRENT_SPAN.get()
+        telemetry_span_id = emit_operation_started(
+            str(name), "tool", call_args if call_args is not None else {}, "tool", str(name),
+            parent_span_id=parent_span_id,
+            attributes={"phaseKey": phase_key, "parentPhaseKey": parent_key, "toolCallId": call_id},
+        )
+        span_token = _CURRENT_SPAN.set(telemetry_span_id)
+        _safe_emit_phase(phase_key, str(name), "running", metadata)
+        try:
+            result = await original(self, *args, **kwargs)
+            output = _json_safe_output(result)
+            _safe_emit_phase(phase_key, str(name), "succeeded", {"runtimeToolOutput": output})
+            emit_operation_completed(telemetry_span_id, str(name), "tool", output, "tool", str(name), parent_span_id)
+            return result
+        except Exception as exc:
+            _safe_emit_phase(
+                phase_key,
+                str(name),
+                "failed",
+                {"error": str(exc), "runtimeToolOutput": {"error": str(exc)}},
+            )
+            emit_operation_failed(telemetry_span_id, str(name), exc, "tool", "tool", str(name), parent_span_id)
+            raise
+        finally:
+            _CURRENT_SPAN.reset(span_token)
+    setattr(tool_wrapper, "__bizbox_tool_wrapped__", True)
+    setattr(cls, "run_async", tool_wrapper)
+
+def _simple_value(value):
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    enum_value = getattr(value, "value", None)
+    if isinstance(enum_value, (str, int, float, bool)):
+        return enum_value
+    return str(value)
+
+def _image_call_input(args, kwargs):
+    prompt = kwargs.get("prompt")
+    if prompt is None and args:
+        prompt = args[0]
+    references = kwargs.get("reference_images") or []
+    if not isinstance(references, (list, tuple)):
+        references = [references]
+    return {
+        "prompt": str(prompt or ""),
+        "referenceImages": [os.path.basename(str(item)) for item in references if item],
+        "visualStyle": _simple_value(kwargs.get("visual_style")),
+        "aspectRatio": _simple_value(kwargs.get("aspect_ratio")),
+        "mode": _simple_value(kwargs.get("mode")),
+        "filename": _simple_value(kwargs.get("filename")),
+    }
+
+def _image_call_output(result):
+    return {
+        "savedPath": _simple_value(getattr(result, "saved_path", None)),
+        "contentType": _simple_value(getattr(result, "content_type", None)),
+        "byteLength": _simple_value(getattr(result, "byte_length", None)),
+        "jobId": _simple_value(getattr(result, "job_id", None)),
+    }
+
+def _wrap_image_generator(module):
+    global _IMAGE_CALL_SEQUENCE
+    original = getattr(module, "generate_image", None)
+    if original is None or getattr(original, "__bizbox_wrapped__", False):
+        return original is not None
+
+    def image_wrapper(*args, **kwargs):
+        global _IMAGE_CALL_SEQUENCE
+        _IMAGE_CALL_SEQUENCE += 1
+        call_id = f"image-{_IMAGE_CALL_SEQUENCE}"
+        phase_key = f"service-runtime:citro-studio-image:{_IMAGE_CALL_SEQUENCE}"
+        call_input = _image_call_input(args, kwargs)
+        metadata = {
+            "runtimeAgent": True,
+            "agentName": "Citro Studio image generation",
+            "service": "Citro Studio / Databricks",
+            "description": "Direct image-generation service call",
+            "prompt": call_input["prompt"],
+            "configuredTools": ["generate_image"],
+            "runtimeToolName": "generate_image",
+            "runtimeToolId": call_id,
+            "runtimeToolInput": call_input,
+        }
+        parent_span_id = _CURRENT_SPAN.get()
+        telemetry_span_id = emit_operation_started(
+            "Citro Studio image generation", "service", call_input, "service",
+            "Citro Studio image generation", parent_span_id=parent_span_id,
+            attributes={"phaseKey": phase_key, "service": "Citro Studio / Databricks", "toolCallId": call_id},
+        )
+        span_token = _CURRENT_SPAN.set(telemetry_span_id)
+        _safe_emit_phase(phase_key, "Citro Studio image generation", "running", metadata)
+        try:
+            result = original(*args, **kwargs)
+            _safe_emit_phase(
+                phase_key,
+                "Citro Studio image generation",
+                "succeeded",
+                {"runtimeToolOutput": _image_call_output(result), "output": _image_call_output(result)},
+            )
+            emit_operation_completed(
+                telemetry_span_id, "Citro Studio image generation", "service", _image_call_output(result),
+                "service", "Citro Studio image generation", parent_span_id,
+            )
+            return result
+        except Exception as exc:
+            _safe_emit_phase(
+                phase_key,
+                "Citro Studio image generation",
+                "failed",
+                {"error": str(exc), "runtimeToolOutput": {"error": str(exc)}},
+            )
+            emit_operation_failed(
+                telemetry_span_id, "Citro Studio image generation", exc, "service", "service",
+                "Citro Studio image generation", parent_span_id,
+            )
+            raise
+        finally:
+            _CURRENT_SPAN.reset(span_token)
+    setattr(image_wrapper, "__bizbox_wrapped__", True)
+    setattr(module, "generate_image", image_wrapper)
+    return True
+
+_ORIGINAL_IMPORT = builtins.__import__
+
+def _runtime_import(name, globals=None, locals=None, fromlist=(), level=0):
+    module = _ORIGINAL_IMPORT(name, globals, locals, fromlist, level)
+    target = sys.modules.get("shared.service.image_generator")
+    if target is not None and _wrap_image_generator(target):
+        builtins.__import__ = _ORIGINAL_IMPORT
+    return module
+
+builtins.__import__ = _runtime_import
+
 def _wrap_agent_method(cls, method_name):
     original = getattr(cls, method_name, None)
     if original is None or getattr(original, "__bizbox_wrapped__", False):
@@ -750,21 +1351,41 @@ def _wrap_agent_method(cls, method_name):
 
     if inspect.isasyncgenfunction(original):
         async def asyncgen_wrapper(self, *args, **kwargs):
-            info = _phase_info_for_agent(self)
+            info = _runtime_info_for_agent(self, args, kwargs)
             token = None
+            span_token = None
+            telemetry_span_id = None
+            parent_span_id = None
+            observed_output = None
             if info is not None:
-                _safe_emit_phase(info["key"], info["label"], "running")
+                _safe_emit_phase(info["key"], info["label"], "running", info["metadata"])
                 token = _CURRENT_PHASE.set(info["key"])
+                telemetry_span_id, parent_span_id = _start_agent_telemetry(info)
+                span_token = _CURRENT_SPAN.set(telemetry_span_id)
             try:
                 async for item in original(self, *args, **kwargs):
+                    candidate_output = _output_from_value(item)
+                    if candidate_output is not None:
+                        observed_output = candidate_output
                     yield item
                 if info is not None:
-                    _safe_emit_phase(info["key"], info["label"], "succeeded")
+                    metadata = {"output": observed_output} if observed_output is not None else None
+                    _safe_emit_phase(info["key"], info["label"], "succeeded", metadata)
+                    emit_operation_completed(
+                        telemetry_span_id, info["label"], "agent", observed_output, "agent",
+                        info["metadata"].get("agentName") or info["label"], parent_span_id,
+                    )
             except Exception as exc:
                 if info is not None:
                     _safe_emit_phase(info["key"], info["label"], "failed", {"error": str(exc)})
+                    emit_operation_failed(
+                        telemetry_span_id, info["label"], exc, "agent", "agent",
+                        info["metadata"].get("agentName") or info["label"], parent_span_id,
+                    )
                 raise
             finally:
+                if span_token is not None:
+                    _CURRENT_SPAN.reset(span_token)
                 if token is not None:
                     _CURRENT_PHASE.reset(token)
         setattr(asyncgen_wrapper, "__bizbox_wrapped__", True)
@@ -773,21 +1394,38 @@ def _wrap_agent_method(cls, method_name):
 
     if asyncio.iscoroutinefunction(original):
         async def async_wrapper(self, *args, **kwargs):
-            info = _phase_info_for_agent(self)
+            info = _runtime_info_for_agent(self, args, kwargs)
             token = None
+            span_token = None
+            telemetry_span_id = None
+            parent_span_id = None
             if info is not None:
-                _safe_emit_phase(info["key"], info["label"], "running")
+                _safe_emit_phase(info["key"], info["label"], "running", info["metadata"])
                 token = _CURRENT_PHASE.set(info["key"])
+                telemetry_span_id, parent_span_id = _start_agent_telemetry(info)
+                span_token = _CURRENT_SPAN.set(telemetry_span_id)
             try:
                 result = await original(self, *args, **kwargs)
                 if info is not None:
-                    _safe_emit_phase(info["key"], info["label"], "succeeded")
+                    output = _output_from_value(result)
+                    metadata = {"output": output} if output is not None else None
+                    _safe_emit_phase(info["key"], info["label"], "succeeded", metadata)
+                    emit_operation_completed(
+                        telemetry_span_id, info["label"], "agent", output, "agent",
+                        info["metadata"].get("agentName") or info["label"], parent_span_id,
+                    )
                 return result
             except Exception as exc:
                 if info is not None:
                     _safe_emit_phase(info["key"], info["label"], "failed", {"error": str(exc)})
+                    emit_operation_failed(
+                        telemetry_span_id, info["label"], exc, "agent", "agent",
+                        info["metadata"].get("agentName") or info["label"], parent_span_id,
+                    )
                 raise
             finally:
+                if span_token is not None:
+                    _CURRENT_SPAN.reset(span_token)
                 if token is not None:
                     _CURRENT_PHASE.reset(token)
         setattr(async_wrapper, "__bizbox_wrapped__", True)
@@ -795,21 +1433,38 @@ def _wrap_agent_method(cls, method_name):
         return
 
     def wrapper(self, *args, **kwargs):
-        info = _phase_info_for_agent(self)
+        info = _runtime_info_for_agent(self, args, kwargs)
         token = None
+        span_token = None
+        telemetry_span_id = None
+        parent_span_id = None
         if info is not None:
-            _safe_emit_phase(info["key"], info["label"], "running")
+            _safe_emit_phase(info["key"], info["label"], "running", info["metadata"])
             token = _CURRENT_PHASE.set(info["key"])
+            telemetry_span_id, parent_span_id = _start_agent_telemetry(info)
+            span_token = _CURRENT_SPAN.set(telemetry_span_id)
         try:
             result = original(self, *args, **kwargs)
             if info is not None:
-                _safe_emit_phase(info["key"], info["label"], "succeeded")
+                output = _output_from_value(result)
+                metadata = {"output": output} if output is not None else None
+                _safe_emit_phase(info["key"], info["label"], "succeeded", metadata)
+                emit_operation_completed(
+                    telemetry_span_id, info["label"], "agent", output, "agent",
+                    info["metadata"].get("agentName") or info["label"], parent_span_id,
+                )
             return result
         except Exception as exc:
             if info is not None:
                 _safe_emit_phase(info["key"], info["label"], "failed", {"error": str(exc)})
+                emit_operation_failed(
+                    telemetry_span_id, info["label"], exc, "agent", "agent",
+                    info["metadata"].get("agentName") or info["label"], parent_span_id,
+                )
             raise
         finally:
+            if span_token is not None:
+                _CURRENT_SPAN.reset(span_token)
             if token is not None:
                 _CURRENT_PHASE.reset(token)
     setattr(wrapper, "__bizbox_wrapped__", True)
@@ -818,31 +1473,55 @@ def _wrap_agent_method(cls, method_name):
 def workflow_phase(key, label):
     def decorator(fn):
         if asyncio.iscoroutinefunction(fn):
+            @functools.wraps(fn)
             async def async_wrapper(*args, **kwargs):
+                parent_span_id = _CURRENT_SPAN.get()
+                telemetry_span_id = emit_operation_started(
+                    label, "phase", None, "workflow", label, parent_span_id=parent_span_id,
+                    attributes={"phaseKey": key, "functionName": getattr(fn, "__name__", None)},
+                )
                 _safe_emit_phase(key, label, "running")
                 token = _CURRENT_PHASE.set(key)
+                span_token = _CURRENT_SPAN.set(telemetry_span_id)
                 try:
                     result = await fn(*args, **kwargs)
                     _safe_emit_phase(key, label, "succeeded")
+                    emit_operation_completed(
+                        telemetry_span_id, label, "phase", _output_from_value(result), "workflow", label, parent_span_id,
+                    )
                     return result
                 except Exception as exc:
                     _safe_emit_phase(key, label, "failed", {"error": str(exc)})
+                    emit_operation_failed(telemetry_span_id, label, exc, "phase", "workflow", label, parent_span_id)
                     raise
                 finally:
+                    _CURRENT_SPAN.reset(span_token)
                     _CURRENT_PHASE.reset(token)
             return async_wrapper
 
+        @functools.wraps(fn)
         def wrapper(*args, **kwargs):
+            parent_span_id = _CURRENT_SPAN.get()
+            telemetry_span_id = emit_operation_started(
+                label, "phase", None, "workflow", label, parent_span_id=parent_span_id,
+                attributes={"phaseKey": key, "functionName": getattr(fn, "__name__", None)},
+            )
             _safe_emit_phase(key, label, "running")
             token = _CURRENT_PHASE.set(key)
+            span_token = _CURRENT_SPAN.set(telemetry_span_id)
             try:
                 result = fn(*args, **kwargs)
                 _safe_emit_phase(key, label, "succeeded")
+                emit_operation_completed(
+                    telemetry_span_id, label, "phase", _output_from_value(result), "workflow", label, parent_span_id,
+                )
                 return result
             except Exception as exc:
                 _safe_emit_phase(key, label, "failed", {"error": str(exc)})
+                emit_operation_failed(telemetry_span_id, label, exc, "phase", "workflow", label, parent_span_id)
                 raise
             finally:
+                _CURRENT_SPAN.reset(span_token)
                 _CURRENT_PHASE.reset(token)
         return wrapper
     return decorator
@@ -896,9 +1575,29 @@ builtins.input = workflow_input
 try:
     from google.adk.agents import BaseAgent as _BizboxBaseAgent
 
-    for _method_name in ("run_async", "_run_async_impl"):
+    for _method_name in ("run_async",):
         if hasattr(_BizboxBaseAgent, _method_name):
             _wrap_agent_method(_BizboxBaseAgent, _method_name)
+except Exception:
+    pass
+
+try:
+    from google.adk.tools.base_tool import BaseTool as _BizboxBaseTool
+    from google.adk.tools.function_tool import FunctionTool as _BizboxFunctionTool
+
+    _wrap_tool_class(_BizboxBaseTool)
+    _wrap_tool_class(_BizboxFunctionTool)
+    _original_init_subclass = _BizboxBaseTool.__dict__.get("__init_subclass__")
+
+    @classmethod
+    def _bizbox_tool_init_subclass(cls, **kwargs):
+        if _original_init_subclass is not None:
+            _original_init_subclass.__get__(cls, _BizboxBaseTool)(**kwargs)
+        else:
+            super(_BizboxBaseTool, cls).__init_subclass__(**kwargs)
+        _wrap_tool_class(cls)
+
+    _BizboxBaseTool.__init_subclass__ = _bizbox_tool_init_subclass
 except Exception:
     pass
 `;
@@ -908,7 +1607,17 @@ async function instrumentPythonFile(filePath: string, functionEntries: Instrumen
   let contents = await fs.readFile(filePath, "utf8");
   if (functionEntries.length === 0) return;
   if (!contents.includes("from bizbox_workflow_runtime import workflow_phase as __bizbox_workflow_phase")) {
-    contents = `from bizbox_workflow_runtime import workflow_phase as __bizbox_workflow_phase\n${contents}`;
+    const runtimeImport = "from bizbox_workflow_runtime import workflow_phase as __bizbox_workflow_phase\n";
+    const futureImports = [...contents.matchAll(
+      /^from[ \t]+__future__[ \t]+import[ \t]+(?:\([^)]*\)|[^\r\n]*)(?:\r?\n|$)/gm,
+    )];
+    const lastFutureImport = futureImports.at(-1);
+    if (lastFutureImport?.index != null) {
+      const insertionIndex = lastFutureImport.index + lastFutureImport[0].length;
+      contents = `${contents.slice(0, insertionIndex)}${runtimeImport}${contents.slice(insertionIndex)}`;
+    } else {
+      contents = `${runtimeImport}${contents}`;
+    }
   }
   for (const entry of functionEntries) {
     const pattern = new RegExp(`^(\\s*)(async\\s+def|def)\\s+${escapeRegExp(entry.functionName)}\\s*[(]`, "m");
@@ -944,7 +1653,14 @@ export async function prepareInstrumentedWorkflowRuntime(input: {
 }) : Promise<PreparedWorkflowRuntime> {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), `bizbox-workflow-${input.runId}-`));
   const copiedRoot = path.join(tempRoot, "project");
-  await fs.cp(input.analysis.rootDir, copiedRoot, { recursive: true });
+  await fs.cp(input.analysis.rootDir, copiedRoot, {
+    recursive: true,
+    filter: (source) => {
+      const relative = path.relative(input.analysis.rootDir, source);
+      if (!relative) return true;
+      return !relative.split(path.sep).some((segment) => EXCLUDED_DIRS.has(segment));
+    },
+  });
 
   const fileEntriesByRelativePath = new Map<string, InstrumentationTarget[]>();
   for (const entry of input.analysis.files) {

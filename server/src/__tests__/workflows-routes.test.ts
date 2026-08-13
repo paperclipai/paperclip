@@ -21,6 +21,7 @@ const mockWorkflowService = vi.hoisted(() => ({
   resolveHandoff: vi.fn(),
   verifyRuntimeToken: vi.fn(),
   applyPhaseEvent: vi.fn(),
+  applyTelemetryEvents: vi.fn(),
   createRuntimeHandoff: vi.fn(),
 }));
 const mockWorkflowScheduleService = vi.hoisted(() => ({
@@ -82,6 +83,32 @@ describe("workflow routes", () => {
       phaseKey: "missing-phase",
       status: "running",
     });
+  });
+
+  it("authenticates and ingests versioned runtime telemetry batches", async () => {
+    mockWorkflowService.verifyRuntimeToken.mockResolvedValue(true);
+    mockWorkflowService.applyTelemetryEvents.mockResolvedValue({ accepted: 1, duplicates: 0 });
+    const event = {
+      schema: "bizbox.telemetry/v1",
+      event: "operation.completed",
+      eventId: "evt-1",
+      spanId: "tool-1",
+      parentSpanId: "agent-1",
+      sequence: 2,
+      timestamp: "2026-08-12T00:00:00.000Z",
+      actor: { kind: "tool", name: "partnerpal" },
+      operation: { kind: "tool", name: "partnerpal" },
+      status: "succeeded",
+      output: { matches: 1 },
+    };
+
+    const res = await request(createApp())
+      .post(`/api/workflow-runs/${runId}/runtime/telemetry-events`)
+      .send({ token: "runtime-token", events: [event] });
+
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({ accepted: 1, duplicates: 0 });
+    expect(mockWorkflowService.applyTelemetryEvents).toHaveBeenCalledWith(runId, [event]);
   });
 
   it("forwards includeArchived list query to workflow service", async () => {

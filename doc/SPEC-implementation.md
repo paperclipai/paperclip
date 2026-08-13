@@ -68,6 +68,7 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 - Board approvals for hires and CEO strategy proposal
 - Heartbeat invocation, status tracking, and cancellation
 - Workflow lifecycle, invocation contracts, and run history
+- Versioned, company-scoped workflow telemetry with idempotent event ingestion, parent/child span correlation, redacted structured inputs and outputs, and immutable raw normalized events
 - Cost event ingestion and rollups (agent/task/project/company)
 - Budget settings and hard-stop enforcement
 - Board web UI for dashboard, org chart, tasks, agents, approvals, costs
@@ -420,6 +421,7 @@ Workflows are company-scoped, soft-archivable execution definitions. Their statu
 - Existing `queued`, `running`, and `awaiting_human` runs continue to terminal completion.
 - Restore always changes `archived` to `active`; retained active schedules become eligible again.
 - Archive and restore are auditable as `workflow.archived` and `workflow.restored` activity actions.
+- Workflow detail provides progressive-disclosure execution inspection: the pipeline remains the default view, while an agent-behavior tab updates during active runs with the submitted/runtime prompt, resolved ADK `instruction` text, called agent and model, call status, persisted agent/model output, configured or observed function calls/results, and instrumented direct image-generation service prompts/results. Each agent also exposes a data-source provenance section immediately after its skills/tools: configured integrations are distinguished from observed queries, exact query inputs and captured outcomes are paired, and run-mounted Resources are identified as workflow-available rather than falsely claimed as queried. Runtime-discovered agents and instrumented service calls may be added to the run phase list when static analysis cannot see imported or dynamically composed behavior. Outputs remain expandable for future evaluation, and the UI must label unavailable downstream prompt, query, or output data instead of reconstructing or guessing it.
 
 ## 8. State Machines
 

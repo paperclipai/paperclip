@@ -36,7 +36,15 @@ export { issues } from "./issues.js";
 export { issueReferenceMentions } from "./issue_reference_mentions.js";
 export { issueRelations } from "./issue_relations.js";
 export { routines, routineTriggers, routineRuns } from "./routines.js";
-export { workflows, workflowRuns, workflowRunPhases, workflowHandoffs, workflowDeliverables, workflowSchedules } from "./workflows.js";
+export {
+  workflows,
+  workflowRuns,
+  workflowRunPhases,
+  workflowRunTelemetryEvents,
+  workflowHandoffs,
+  workflowDeliverables,
+  workflowSchedules,
+} from "./workflows.js";
 export { resources } from "./resources.js";
 export { workflowInvocations } from "./workflow_invocations.js";
 export { workflowHandoffBridges } from "./workflow_handoff_bridges.js";

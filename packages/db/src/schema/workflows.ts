@@ -82,6 +82,38 @@ export const workflowRunPhases = pgTable(
   }),
 );
 
+export const workflowRunTelemetryEvents = pgTable(
+  "workflow_run_telemetry_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    workflowRunId: uuid("workflow_run_id").notNull().references(() => workflowRuns.id, { onDelete: "cascade" }),
+    schemaVersion: text("schema_version").notNull(),
+    eventId: text("event_id").notNull(),
+    eventType: text("event_type").notNull(),
+    spanId: text("span_id").notNull(),
+    parentSpanId: text("parent_span_id"),
+    sequence: integer("sequence").notNull(),
+    timestamp: timestamp("timestamp", { withTimezone: true }).notNull(),
+    actorKind: text("actor_kind").notNull(),
+    actorName: text("actor_name"),
+    operationKind: text("operation_kind").notNull(),
+    operationName: text("operation_name").notNull(),
+    status: text("status"),
+    input: jsonb("input"),
+    output: jsonb("output"),
+    attributes: jsonb("attributes").notNull().default({}),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    runSequenceIdx: index("workflow_run_telemetry_events_run_sequence_idx").on(table.workflowRunId, table.sequence),
+    runSpanIdx: index("workflow_run_telemetry_events_run_span_idx").on(table.workflowRunId, table.spanId),
+    companyCreatedIdx: index("workflow_run_telemetry_events_company_created_idx").on(table.companyId, table.createdAt),
+    runEventIdUnique: unique("workflow_run_telemetry_events_run_event_id_unique").on(table.workflowRunId, table.eventId),
+  }),
+);
+
 export const workflowHandoffs = pgTable(
   "workflow_handoffs",
   {

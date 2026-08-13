@@ -7,6 +7,7 @@ import {
   workflowHandoffs,
   workflowInvocations,
   workflowRunPhases,
+  workflowRunTelemetryEvents,
   workflowRuns,
   workflows,
   routines,
@@ -26,6 +27,8 @@ import type {
   WorkflowListItem,
   WorkflowPhase,
   WorkflowPhaseEvent,
+  WorkflowTelemetryEvent,
+  WorkflowTelemetryEventInput,
   WorkflowRunInvocationSummary,
   WorkflowRun,
   WorkflowRunConsoleChunk,
@@ -224,6 +227,37 @@ function toWorkflowPhase(row: typeof workflowRunPhases.$inferSelect): WorkflowPh
     finishedAt: row.finishedAt ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+function toWorkflowTelemetryEvent(
+  row: typeof workflowRunTelemetryEvents.$inferSelect,
+): WorkflowTelemetryEvent {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    workflowRunId: row.workflowRunId,
+    schema: row.schemaVersion as "bizbox.telemetry/v1",
+    event: row.eventType as WorkflowTelemetryEvent["event"],
+    eventId: row.eventId,
+    spanId: row.spanId,
+    parentSpanId: row.parentSpanId ?? null,
+    sequence: row.sequence,
+    timestamp: row.timestamp.toISOString(),
+    actor: {
+      kind: row.actorKind as WorkflowTelemetryEvent["actor"]["kind"],
+      name: row.actorName ?? null,
+    },
+    operation: {
+      kind: row.operationKind as WorkflowTelemetryEvent["operation"]["kind"],
+      name: row.operationName,
+    },
+    status: (row.status as WorkflowTelemetryEvent["status"]) ?? null,
+    ...(row.input !== null ? { input: row.input } : {}),
+    ...(row.output !== null ? { output: row.output } : {}),
+    attributes: (row.attributes as Record<string, unknown> | null) ?? {},
+    error: row.error ?? null,
+    createdAt: row.createdAt.toISOString(),
   };
 }
 
@@ -722,6 +756,7 @@ export function workflowService(db: Db) {
       }
 
       for (const phase of phases) {
+        if (phase.status === "idle") continue;
         if (["succeeded", "failed", "cancelled"].includes(phase.status)) continue;
         const now = new Date();
         await db.update(workflowRunPhases).set({
@@ -888,6 +923,8 @@ export function workflowService(db: Db) {
               depth: phase.depth ?? 0,
               agentName: phase.agentName ?? null,
               description: phase.description ?? null,
+              systemPrompt: phase.systemPrompt ?? null,
+              configuredSkills: phase.configuredSkills ?? [],
             },
           })),
         );
@@ -1123,6 +1160,9 @@ export function workflowService(db: Db) {
       if (!workflowRow) return null;
       const invocation = (await selectRunInvocationMap(db, [runId])).get(runId) ?? null;
       const phases = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, runId)).orderBy(asc(workflowRunPhases.ordinal));
+      const telemetryEvents = await db.select().from(workflowRunTelemetryEvents)
+        .where(eq(workflowRunTelemetryEvents.workflowRunId, runId))
+        .orderBy(asc(workflowRunTelemetryEvents.sequence), asc(workflowRunTelemetryEvents.createdAt));
       const handoffs = await db.select().from(workflowHandoffs).where(eq(workflowHandoffs.workflowRunId, runId)).orderBy(asc(workflowHandoffs.createdAt));
       const handoffIds = handoffs.map((h) => h.id);
       const bridges = handoffIds.length > 0
@@ -1153,6 +1193,7 @@ export function workflowService(db: Db) {
           runnerType: workflowRow.runnerType as "google_adk",
         },
         phases: phases.map(toWorkflowPhase),
+        telemetryEvents: telemetryEvents.map(toWorkflowTelemetryEvent),
         handoffs: handoffs.map((h) => toWorkflowHandoff(h, bridgeStatusByHandoffId.get(h.id) ?? null)),
         deliverables: deliverables.map(toWorkflowDeliverableSummary),
       };
@@ -1175,6 +1216,37 @@ export function workflowService(db: Db) {
       if (!runRow) return null;
       if (runRow.companyId !== claims.company_id || runRow.workflowId !== claims.workflow_id) return null;
       return runRow;
+    },
+
+    applyTelemetryEvents: async (runId: string, events: WorkflowTelemetryEventInput[]) => {
+      const run = await db.select().from(workflowRuns).where(eq(workflowRuns.id, runId)).then((rows) => rows[0] ?? null);
+      if (!run) return null;
+      const inserted = await db.insert(workflowRunTelemetryEvents).values(events.map((event) => ({
+        companyId: run.companyId,
+        workflowRunId: run.id,
+        schemaVersion: event.schema,
+        eventId: event.eventId,
+        eventType: event.event,
+        spanId: event.spanId,
+        parentSpanId: event.parentSpanId,
+        sequence: event.sequence,
+        timestamp: new Date(event.timestamp),
+        actorKind: event.actor.kind,
+        actorName: event.actor.name,
+        operationKind: event.operation.kind,
+        operationName: event.operation.name,
+        status: event.status,
+        input: event.input ?? null,
+        output: event.output ?? null,
+        attributes: event.attributes ?? {},
+        error: event.error ?? null,
+      }))).onConflictDoNothing({
+        target: [workflowRunTelemetryEvents.workflowRunId, workflowRunTelemetryEvents.eventId],
+      }).returning({ eventId: workflowRunTelemetryEvents.eventId });
+      return {
+        accepted: inserted.length,
+        duplicates: events.length - inserted.length,
+      };
     },
 
     cancelRun: async (runId: string, actor: { userId: string | null }) => {
@@ -1253,15 +1325,52 @@ export function workflowService(db: Db) {
     },
 
     applyPhaseEvent: async (runId: string, event: WorkflowPhaseEvent) => {
-      const existing = await db.select().from(workflowRunPhases).where(
+      const eventMetadata = {
+        ...(event.metadata ?? {}),
+        runtimeCalled: true,
+      };
+      const run = await db.select().from(workflowRuns).where(eq(workflowRuns.id, runId)).then((rows) => rows[0] ?? null);
+      if (!run || ["succeeded", "failed", "cancelled"].includes(run.status)) return null;
+      let existing = await db.select().from(workflowRunPhases).where(
         and(eq(workflowRunPhases.workflowRunId, runId), eq(workflowRunPhases.phaseKey, event.phaseKey)),
       ).then((rows) => rows[0] ?? null);
       const now = new Date();
-      if (!existing) return null;
+      if (!existing) {
+        if (event.metadata?.runtimeAgent !== true && event.metadata?.runtimePhase !== true) return null;
+        const lastPhase = await db.select({ ordinal: workflowRunPhases.ordinal })
+          .from(workflowRunPhases)
+          .where(eq(workflowRunPhases.workflowRunId, runId))
+          .orderBy(desc(workflowRunPhases.ordinal))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        const requestedKind = event.metadata.runtimeKind;
+        const runtimeKind = requestedKind === "tool" || requestedKind === "validator" || requestedKind === "loop"
+          ? requestedKind
+          : "agent";
+        existing = await db.insert(workflowRunPhases).values({
+          companyId: run.companyId,
+          workflowRunId: runId,
+          phaseKey: event.phaseKey,
+          label: event.label ?? String(event.metadata.agentName ?? "Runtime agent"),
+          kind: runtimeKind,
+          ordinal: (lastPhase?.ordinal ?? -1) + 1,
+          status: "idle",
+          metadata: eventMetadata,
+        }).returning().then((rows) => rows[0] ?? null);
+        if (!existing) return null;
+      }
       const updated = await db.update(workflowRunPhases).set({
         status: event.status,
         label: event.label ?? existing.label,
-        metadata: event.metadata ?? existing.metadata,
+        metadata: event.metadata
+          ? {
+              ...((existing.metadata as Record<string, unknown> | null) ?? {}),
+              ...eventMetadata,
+            }
+          : {
+              ...((existing.metadata as Record<string, unknown> | null) ?? {}),
+              runtimeCalled: true,
+            },
         startedAt: event.status === "running" && !existing.startedAt ? now : existing.startedAt,
         finishedAt: ["succeeded", "failed", "cancelled"].includes(event.status) ? now : existing.finishedAt,
         updatedAt: now,

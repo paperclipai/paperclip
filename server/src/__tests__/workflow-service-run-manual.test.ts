@@ -1,7 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { companies, createDb, workflowHandoffs, workflowRunPhases, workflowRuns, workflows } from "@paperclipai/db";
+import {
+  companies,
+  createDb,
+  workflowHandoffs,
+  workflowRunPhases,
+  workflowRunTelemetryEvents,
+  workflowRuns,
+  workflows,
+} from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -173,6 +181,7 @@ describeEmbeddedPostgres("workflowService.runManual", () => {
     const phases = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, run.id));
     expect(phases).toHaveLength(1);
     expect(phases[0]?.phaseKey).toBe("phase-1");
+    expect(phases[0]?.status).toBe("idle");
   });
 
   it("rejects manual runs for archived workflows", async () => {
@@ -287,7 +296,121 @@ describeEmbeddedPostgres("workflowService.runManual", () => {
     const updated = await db.select().from(workflowRuns).where(eq(workflowRuns.id, run.id)).then((rows) => rows[0] ?? null);
     expect(updated?.status).toBe("succeeded");
     const phases = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, run.id));
-    expect(phases[0]?.status).toBe("succeeded");
+    expect(phases[0]?.status).toBe("idle");
+  });
+
+  it("creates a live phase when runtime instrumentation observes an unlisted ADK agent", async () => {
+    const companyId = randomUUID();
+    const workflowId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(workflows).values({
+      id: workflowId,
+      companyId,
+      title: "Live trace",
+      status: "active",
+      runnerType: "google_adk",
+      runnerConfig: { agentPath: "/tmp/agent.py" },
+      pipelineDefinition: { entrypoint: "agent.py", generatedAt: new Date(0).toISOString(), phases: [] },
+      pipelineSourceHash: null,
+    });
+    await db.insert(workflowRuns).values({
+      id: runId,
+      companyId,
+      workflowId,
+      status: "running",
+      inputMarkdown: "Create a Facebook post",
+      startedAt: new Date(),
+    });
+
+    const phase = await workflowService(db).applyPhaseEvent(runId, {
+      phaseKey: "agent-runtime:platform_intake_agent",
+      label: "platform_intake_agent",
+      status: "running",
+      metadata: {
+        runtimeAgent: true,
+        agentName: "platform_intake_agent",
+        model: "bedrock/global.anthropic.claude-sonnet-4-6",
+        prompt: "Create a Facebook post",
+        systemPrompt: "Return a validated platform brief.",
+        configuredTools: [],
+      },
+    });
+
+    expect(phase).toMatchObject({
+      phaseKey: "agent-runtime:platform_intake_agent",
+      kind: "agent",
+      status: "running",
+      metadata: expect.objectContaining({
+        model: "bedrock/global.anthropic.claude-sonnet-4-6",
+        systemPrompt: "Return a validated platform brief.",
+        runtimeCalled: true,
+      }),
+    });
+  });
+
+  it("ingests telemetry idempotently and returns normalized events with the run", async () => {
+    const companyId = randomUUID();
+    const workflowId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Telemetry company",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(workflows).values({
+      id: workflowId,
+      companyId,
+      title: "Telemetry workflow",
+      status: "active",
+      runnerType: "google_adk",
+      runnerConfig: { agentPath: "/tmp/agent.py" },
+      pipelineDefinition: { entrypoint: "agent.py", generatedAt: new Date(0).toISOString(), phases: [] },
+      pipelineSourceHash: null,
+    });
+    await db.insert(workflowRuns).values({
+      id: runId,
+      companyId,
+      workflowId,
+      status: "running",
+      inputMarkdown: "generate",
+    });
+    const event = {
+      schema: "bizbox.telemetry/v1" as const,
+      event: "operation.completed" as const,
+      eventId: "evt-partnerpal-1",
+      spanId: "tool-partnerpal-1",
+      parentSpanId: "agent-grounding-1",
+      sequence: 2,
+      timestamp: "2026-08-12T00:00:00.000Z",
+      actor: { kind: "tool" as const, name: "partnerpal" },
+      operation: { kind: "tool" as const, name: "partnerpal" },
+      status: "succeeded" as const,
+      output: { matches: 1 },
+      attributes: { provenance: "gcs" },
+    };
+    const svc = workflowService(db);
+
+    await expect(svc.applyTelemetryEvents(runId, [event])).resolves.toEqual({ accepted: 1, duplicates: 0 });
+    await expect(svc.applyTelemetryEvents(runId, [event])).resolves.toEqual({ accepted: 0, duplicates: 1 });
+
+    const rows = await db.select().from(workflowRunTelemetryEvents).where(eq(workflowRunTelemetryEvents.workflowRunId, runId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ companyId, eventId: event.eventId, operationName: "partnerpal" });
+    const detail = await svc.getRunDetail(runId);
+    expect(detail?.telemetryEvents).toEqual([
+      expect.objectContaining({
+        schema: "bizbox.telemetry/v1",
+        eventId: event.eventId,
+        output: { matches: 1 },
+      }),
+    ]);
   });
 
   it("marks active workflow runs interrupted on startup recovery", async () => {
