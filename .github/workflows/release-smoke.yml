@@ -10,8 +10,6 @@ on:
         type: choice
         options:
           - canary
-          - nightly
-          - beta
           - latest
       host_port:
         description: Host port for the Docker smoke container
@@ -71,7 +69,6 @@ jobs:
           HOST_PORT="${{ inputs.host_port }}" \
           DATA_DIR="$RUNNER_TEMP/release-smoke-data" \
           PAPERCLIPAI_VERSION="${{ inputs.paperclip_version }}" \
-          SMOKE_READY_TIMEOUT_SECONDS=420 \
           SMOKE_DETACH=true \
           SMOKE_METADATA_FILE="$metadata_file" \
           ./scripts/docker-onboard-smoke.sh
