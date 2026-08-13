@@ -61,6 +61,7 @@ export type TaskWatchdogClassifierIssue = Pick<
   | "identifier"
   | "title"
   | "status"
+  | "projectId"
   | "parentId"
   | "assigneeAgentId"
   | "assigneeUserId"
@@ -865,7 +866,7 @@ export async function upsertIssueWatchdogForIssue(
 export async function loadTaskWatchdogSubtreeIssues(db: Db, companyId: string, watchedIssueId: string) {
   const rows = await db.execute(sql`
     WITH RECURSIVE watched_issues AS (
-      SELECT id, company_id, identifier, title, status, parent_id, assignee_agent_id,
+      SELECT id, company_id, identifier, title, status, project_id, parent_id, assignee_agent_id,
         assignee_user_id, origin_kind, updated_at, created_at, 0 AS depth
       FROM issues
       WHERE company_id = ${companyId}
@@ -874,7 +875,7 @@ export async function loadTaskWatchdogSubtreeIssues(db: Db, companyId: string, w
         AND harness_kind IS NULL
       UNION ALL
       SELECT child.id, child.company_id, child.identifier, child.title, child.status,
-        child.parent_id, child.assignee_agent_id, child.assignee_user_id, child.origin_kind,
+        child.project_id, child.parent_id, child.assignee_agent_id, child.assignee_user_id, child.origin_kind,
         child.updated_at, child.created_at, watched_issues.depth + 1
       FROM issues child
       JOIN watched_issues ON child.parent_id = watched_issues.id
@@ -884,7 +885,7 @@ export async function loadTaskWatchdogSubtreeIssues(db: Db, companyId: string, w
         AND child.origin_kind IS DISTINCT FROM ${TASK_WATCHDOG_ORIGIN_KIND}
         AND watched_issues.depth < ${TASK_WATCHDOG_SUBTREE_MAX_DEPTH - 1}
     )
-    SELECT id, company_id AS "companyId", identifier, title, status,
+    SELECT id, company_id AS "companyId", identifier, title, status, project_id AS "projectId",
       parent_id AS "parentId", assignee_agent_id AS "assigneeAgentId",
       assignee_user_id AS "assigneeUserId", origin_kind AS "originKind",
       updated_at AS "updatedAt", created_at AS "createdAt"

@@ -13,6 +13,7 @@ function issue(overrides: Partial<TaskWatchdogClassifierIssue> = {}): TaskWatchd
     identifier: "PAP-1",
     title: "Source",
     status: "todo",
+    projectId: null,
     parentId: null,
     assigneeAgentId: "agent-1",
     assigneeUserId: null,

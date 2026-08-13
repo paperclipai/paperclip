@@ -5759,12 +5759,15 @@ export function issueRoutes(
     res.json(removed);
   });
 
-  const compactWatchdogSubtreeIssue = (issue: Awaited<ReturnType<typeof loadTaskWatchdogSubtreeIssues>>[number]) => ({
+  const compactWatchdogSubtreeIssue = (
+    issue: Awaited<ReturnType<typeof loadTaskWatchdogSubtreeIssues>>[number],
+    readableIssueIds: ReadonlySet<string>,
+  ) => ({
     id: issue.id,
     identifier: issue.identifier,
     title: issue.title,
     status: issue.status,
-    parentId: issue.parentId,
+    parentId: issue.parentId && readableIssueIds.has(issue.parentId) ? issue.parentId : null,
     assigneeAgentId: issue.assigneeAgentId,
     assigneeUserId: issue.assigneeUserId,
     originKind: issue.originKind,
@@ -5850,6 +5853,8 @@ export function issueRoutes(
       issueWorkMode: issue.workMode,
       includeForIssueComment: wakeCommentId !== null,
     });
+    const readableWatchdogSubtreeIssues = await filterIssuesForActor(req, watchdogSubtreeIssues);
+    const readableWatchdogSubtreeIssueIds = new Set(readableWatchdogSubtreeIssues.map((row) => row.id));
 
     const response = {
       issue: {
@@ -5876,12 +5881,12 @@ export function issueRoutes(
         originId: issue.originId,
         updatedAt: issue.updatedAt,
       },
-      children: watchdogSubtreeIssues
+      children: readableWatchdogSubtreeIssues
         .filter((descendant) => descendant.id !== issue.id && descendant.parentId === issue.id)
-        .map(compactWatchdogSubtreeIssue),
-      descendants: watchdogSubtreeIssues
+        .map((descendant) => compactWatchdogSubtreeIssue(descendant, readableWatchdogSubtreeIssueIds)),
+      descendants: readableWatchdogSubtreeIssues
         .filter((descendant) => descendant.id !== issue.id)
-        .map(compactWatchdogSubtreeIssue),
+        .map((descendant) => compactWatchdogSubtreeIssue(descendant, readableWatchdogSubtreeIssueIds)),
       ancestors: ancestors.map((ancestor) => ({
         id: ancestor.id,
         identifier: ancestor.identifier,

@@ -1315,6 +1315,30 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     expectNoCanary(bulkSummary.body, ...forbiddenMarkers);
   });
 
+  it("filters unauthorized heartbeat descendants for issue-scoped low-trust tokens", async () => {
+    const fixture = await seedLowTrustFixture(db);
+    const [hiddenChild] = await db.insert(issues).values({
+      companyId: fixture.company.id,
+      projectId: fixture.projects.allowed.id,
+      parentId: fixture.issues.assignedReview.id,
+      title: `Hidden heartbeat child ${fixture.canaries.issueSibling}`,
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: fixture.agents.standard.id,
+      responsibleUserId: "board-user",
+    }).returning();
+    const app = createApp(db, skillTestActor(fixture));
+
+    const root = await request(app)
+      .get(`/api/issues/${fixture.issues.assignedReview.id}/heartbeat-context`);
+
+    expect(root.status, JSON.stringify(root.body)).toBe(200);
+    expect(root.body.children).toEqual([]);
+    expect(root.body.descendants).toEqual([]);
+    expect(JSON.stringify(root.body)).not.toContain(hiddenChild!.id);
+    expectNoCanary(root.body, fixture.canaries.issueSibling);
+  });
+
   it("counts blocked inbox issues with the low-trust boundary applied in the database", async () => {
     const fixture = await seedLowTrustFixture(db);
     await db.insert(issues).values([
