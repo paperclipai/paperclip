@@ -4,11 +4,12 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { createUiDevWatchOptions } from "./src/lib/vite-watch";
 import { createApiProxy } from "./src/lib/vite-api-proxy";
+import { staticUiLocalization } from "./vite-static-i18n";
 
 const apiProxy = createApiProxy();
 
 export default defineConfig(({ mode }) => ({
-  plugins: [react(), tailwindcss()],
+  plugins: [staticUiLocalization(), react(), tailwindcss()],
   build: {
     minify: "esbuild",
   },

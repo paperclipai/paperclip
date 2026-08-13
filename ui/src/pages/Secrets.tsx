@@ -107,6 +107,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { cn } from "../lib/utils";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { PageTabBar } from "../components/PageTabBar";
+import { translateUiLiteral } from "@/i18n/LegacyLiteralLocalizer";
 import { AgentSelect } from "../components/AgentMultiSelect";
 import { ImportFromVaultDialog } from "./secrets/ImportFromVaultDialog";
 import { MyUserSecretsTab } from "./secrets/MyUserSecretsTab";
@@ -1806,9 +1807,9 @@ export function Secrets() {
       >
         <PageTabBar
           items={[
-            { value: "secrets", label: "Secrets" },
-            { value: "my-secrets", label: "My secrets" },
-            { value: "vaults", label: "Provider vaults" },
+            { value: "secrets", label: translateUiLiteral("Secrets") },
+            { value: "my-secrets", label: translateUiLiteral("My secrets") },
+            { value: "vaults", label: translateUiLiteral("Provider vaults") },
             {
               value: "proposals",
               label: (
@@ -1877,7 +1878,7 @@ export function Secrets() {
                       : "text-muted-foreground hover:text-foreground",
                   )}
                 >
-                  {mode}
+                  {translateUiLiteral(mode === "folders" ? "Folders" : "Flat")}
                 </button>
               ))}
             </div>
@@ -1959,7 +1960,7 @@ export function Secrets() {
               <EmptyState
                 icon={KeyRound}
                 message="No secrets yet. Create a shared company secret or one that each user supplies."
-                action="New secret"
+                action={translateUiLiteral("New secret")}
                 onAction={openCreateSecret}
               />
             ) : (
@@ -1992,7 +1993,7 @@ export function Secrets() {
                     <EmptyState
                       icon={FolderOpen}
                       message="No secrets in this folder yet."
-                      action="New secret here"
+                      action={translateUiLiteral("New secret here")}
                       onAction={openCreateSecret}
                     />
                   ) : (
@@ -3254,8 +3255,7 @@ function SecretsHowToUse() {
           <span className="font-medium text-foreground">Secret</span>, and select the stored secret version.
         </p>
         <p>
-          Paperclip resolves the value server-side when the run starts and injects it as that env var. Project env
-          applies to every task in the project and overrides agent env on matching keys.
+          {translateUiLiteral("Paperclip resolves the value server-side when the run starts and injects it as that env var. Project env applies to every task in the project and overrides agent env on matching keys.")}
         </p>
       </div>
     </div>

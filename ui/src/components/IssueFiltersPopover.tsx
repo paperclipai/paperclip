@@ -23,6 +23,7 @@ import {
 import { externalObjectIconForCategory } from "../lib/external-objects";
 import { externalObjectStatusIcon } from "../lib/status-colors";
 import { formatAssigneeUserLabel } from "../lib/assignees";
+import { useTranslation } from "@/i18n";
 
 type AgentOption = {
   id: string;
@@ -81,6 +82,7 @@ export function IssueFiltersPopover({
   workspaces?: WorkspaceOption[];
   creators?: CreatorOption[];
 }) {
+  const { t } = useTranslation();
   const [creatorSearch, setCreatorSearch] = useState("");
   const creatorOptions = creators ?? [];
   const creatorOptionById = useMemo(
@@ -153,10 +155,11 @@ export function IssueFiltersPopover({
             <span className="text-xs text-muted-foreground">Quick filters</span>
             <div className="flex flex-wrap gap-1.5">
               {issueQuickFilterPresets.map((preset) => {
+                const label = t(preset.labelKey, { defaultValue: preset.defaultLabel });
                 const isActive = issueFilterArraysEqual(state.statuses, preset.statuses);
                 return (
                   <button
-                    key={preset.label}
+                    key={preset.labelKey}
                     type="button"
                     className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${
                       isActive
@@ -165,7 +168,7 @@ export function IssueFiltersPopover({
                     }`}
                     onClick={() => onChange({ statuses: isActive ? [] : [...preset.statuses] })}
                   >
-                    {preset.label}
+                    {label}
                   </button>
                 );
               })}

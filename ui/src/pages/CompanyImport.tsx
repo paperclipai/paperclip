@@ -67,6 +67,7 @@ import {
   writeStoredImportJob,
 } from "../lib/import-job-watch";
 import { Badge } from "@/components/ui/badge";
+import { translateUiLiteral } from "@/i18n/LegacyLiteralLocalizer";
 
 // ── Import-specific helpers ───────────────────────────────────────────
 
@@ -1806,7 +1807,7 @@ export function CompanyImport() {
             >
               <div className="flex items-center gap-2">
                 <Icon className="h-4 w-4" />
-                {label}
+                {translateUiLiteral(label)}
               </div>
             </button>
           ))}
@@ -1828,7 +1829,7 @@ export function CompanyImport() {
                 onClick={() => packageInputRef.current?.click()}
                 disabled={importMutation.isPending}
               >
-                Choose zip
+                {translateUiLiteral("Choose zip")}
               </Button>
               {localPackage && (
                 <span className="text-xs text-muted-foreground">
@@ -1841,7 +1842,7 @@ export function CompanyImport() {
             </div>
             {!localPackage && (
               <p className="mt-2 text-xs text-muted-foreground">
-                {localZipHelpText}
+                {translateUiLiteral(localZipHelpText)}
               </p>
             )}
           </div>

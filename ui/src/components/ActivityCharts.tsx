@@ -1,4 +1,5 @@
 import type { DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
+import { translateUiLiteral } from "@/i18n/LegacyLiteralLocalizer";
 
 /* ---- Utilities ---- */
 
@@ -130,10 +131,10 @@ export function RunActivityChart(props: RunChartProps) {
   if (!hasData) return <p className="text-xs text-muted-foreground">No runs yet</p>;
 
   const legendItems = [
-    { color: runSegmentColors.succeeded, label: "Succeeded" },
-    ...(hasRecovered ? [{ color: runSegmentColors.recovered, label: "Recovered" }] : []),
-    { color: runSegmentColors.failed, label: "Failed" },
-    { color: runSegmentColors.other, label: "Other" },
+    { color: runSegmentColors.succeeded, label: translateUiLiteral("Succeeded") },
+    ...(hasRecovered ? [{ color: runSegmentColors.recovered, label: translateUiLiteral("Recovered") }] : []),
+    { color: runSegmentColors.failed, label: translateUiLiteral("Failed") },
+    { color: runSegmentColors.other, label: translateUiLiteral("Other") },
   ];
 
   return (
@@ -287,7 +288,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
         })}
       </div>
       <DateLabels days={days} />
-      <ChartLegend items={statusOrder.map(s => ({ color: statusColors[s] ?? "var(--hex-6b7280)", label: statusLabels[s] ?? s }))} />
+      <ChartLegend items={statusOrder.map(s => ({ color: statusColors[s] ?? "var(--hex-6b7280)", label: translateUiLiteral(statusLabels[s] ?? s) }))} />
     </div>
   );
 }

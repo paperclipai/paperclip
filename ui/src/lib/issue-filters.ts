@@ -1,4 +1,6 @@
 import type { ExternalObjectSummary, Issue } from "@paperclipai/shared";
+import { t } from "@/i18n";
+
 
 export type IssueFilterWorkspaceLookup = {
   mode?: string | null;
@@ -62,31 +64,40 @@ export const externalObjectFilterOrder = [
   "none",
 ];
 
-const EXTERNAL_OBJECT_FILTER_LABELS: Record<string, string> = {
-  failed: "Any failed",
-  waiting: "Any waiting",
-  running: "Any running",
-  auth_required: "Auth required",
-  unreachable: "Unreachable",
-  stale: "Stale",
-  none: "No external objects",
+const EXTERNAL_OBJECT_FILTER_LABELS: Record<string, [string, string]> = {
+  failed: ["filter.externalAnyFailed", "Any failed"],
+  waiting: ["filter.externalAnyWaiting", "Any waiting"],
+  running: ["filter.externalAnyRunning", "Any running"],
+  auth_required: ["filter.externalAuthRequired", "Auth required"],
+  unreachable: ["filter.externalUnreachable", "Unreachable"],
+  stale: ["filter.externalStale", "Stale"],
+  none: ["filter.externalNone", "No external objects"],
 };
 
 export function externalObjectFilterLabel(value: string): string {
-  return EXTERNAL_OBJECT_FILTER_LABELS[value] ?? issueFilterLabel(value);
+  const translation = EXTERNAL_OBJECT_FILTER_LABELS[value];
+  return translation ? t(translation[0], { defaultValue: translation[1] }) : issueFilterLabel(value);
 }
 
 export const issueStatusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
 export const issuePriorityOrder = ["critical", "high", "medium", "low"];
 
 export const issueQuickFilterPresets = [
-  { label: "All", statuses: [] as string[] },
-  { label: "Active", statuses: ["todo", "in_progress", "in_review", "blocked"] },
-  { label: "Backlog", statuses: ["backlog"] },
-  { label: "Done", statuses: ["done", "cancelled"] },
+  { labelKey: "filter.all", defaultLabel: "All", statuses: [] as string[] },
+  { labelKey: "filter.active", defaultLabel: "Active", statuses: ["todo", "in_progress", "in_review", "blocked"] },
+  { labelKey: "filter.backlog", defaultLabel: "Backlog", statuses: ["backlog"] },
+  { labelKey: "filter.done", defaultLabel: "Done", statuses: ["done", "cancelled"] },
 ];
 
 export function issueFilterLabel(value: string): string {
+  if (value === "__unassigned") return t("filter.unassigned", { defaultValue: "Unassigned" });
+  if (value === "__me") return t("filter.me", { defaultValue: "Me" });
+  const key = `status.${value}`;
+  const statusTranslated = t(key);
+  if (statusTranslated !== key) return statusTranslated;
+  const priorityKey = `priority.${value}`;
+  const priorityTranslated = t(priorityKey);
+  if (priorityTranslated !== priorityKey) return priorityTranslated;
   return value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
