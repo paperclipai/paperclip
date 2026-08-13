@@ -244,6 +244,91 @@ describe("setup-token production transport binding", () => {
     expect(service.activeSessionCount()).toBe(0);
   });
 
+  it("ignores a runtime-supplied command and always opens the fixed command", async () => {
+    const sandbox = createFakeSandbox();
+    const store = createRecordingStore();
+    // A caller forces an alternate command through the dependency object. The
+    // dependency type carries no command field, so this cast simulates a
+    // runtime-supplied value from a route, a body, or a configuration. The
+    // binding must ignore it and open only the fixed command (Control 4).
+    const deps = {
+      sandbox: sandbox.provider,
+      store: store.store,
+      command: "echo pwned",
+    } as unknown as Parameters<typeof buildSetupTokenLoginTransport>[0];
+    const transport = buildSetupTokenLoginTransport(deps);
+    const service = new SetupTokenSessionService({
+      factory: transport.factory,
+      leases: transport.leases,
+      store: transport.store,
+      completeCredential: async () => {
+        throw new Error("The credential write is not bound in this phase.");
+      },
+      rateLimiter: allowAllRateLimiter,
+      ttlMs: 5 * 60_000,
+    });
+
+    const started = await service.start(SCOPE);
+    await flush();
+
+    // The factory opened the pseudo-terminal with only the fixed command. The
+    // supplied alternate value never reached the command.
+    expect(sandbox.openedCommands).toEqual([CLAUDE_SETUP_TOKEN_COMMAND]);
+    expect(sandbox.openedCommands).not.toContain("echo pwned");
+
+    void started;
+    await service.shutdown();
+  });
+
+  it("keeps the durable cleanup record reapable when a restart release fails", async () => {
+    // The production provider drives a restart release by id. The provider driver
+    // release rejects, so the reaper must keep the durable cleanup record.
+    const releaseRunLease = vi.fn(async () => {
+      throw new Error("remote release failed");
+    });
+    const provider = createProductionSetupTokenSandboxProvider({
+      environments: {
+        getById: async () => ({ id: "env-1", driver: "sandbox", status: "active" }) as never,
+        getLeaseById: async () => ({ id: "lease-orphan", environmentId: "env-1" }) as never,
+        releaseLease: async () => ({}) as never,
+      },
+      environmentRuntime: {
+        acquireRunLease: vi.fn(),
+        getDriver: () => ({ releaseRunLease }) as never,
+      },
+      openLivePtySession: async () => {
+        throw new Error("must not open a pty for a restart release");
+      },
+    });
+    const store = createRecordingStore();
+    const { service } = buildService({ sandbox: provider, store: store.store });
+
+    // A crash left a durable record whose lease the reaper must free. The
+    // in-memory lease map is empty, as after a restart.
+    const orphan: SetupTokenCleanupRecord = {
+      sessionId: "orphan-session",
+      companyId: SCOPE.companyId,
+      ownerUserId: SCOPE.ownerUserId,
+      adapterType: SCOPE.adapterType,
+      environmentId: SCOPE.environmentId,
+      leaseId: "lease-orphan",
+      deadline: 0,
+      state: "failed",
+      boundAt: null,
+    };
+    store.rows.set(orphan.sessionId, { ...orphan });
+    store.setReapable([orphan]);
+
+    const result = await service.reap(Date.now());
+
+    // The remote release ran and failed, so the reaper counts a failure and keeps
+    // the durable cleanup record for a later retry.
+    expect(releaseRunLease).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ released: 0, failed: 1 });
+    expect(store.removed).not.toContain("orphan-session");
+    expect(store.rows.has("orphan-session")).toBe(true);
+  });
+
   it("releases a leftover lease by id on a restart reap", async () => {
     const sandbox = createFakeSandbox();
     const store = createRecordingStore();
@@ -278,6 +363,7 @@ describe("production sandbox provider", () => {
     const provider = createProductionSetupTokenSandboxProvider({
       environments: {
         getById: async () => ({ id: "env-1", driver: "sandbox", status: "active" }) as never,
+        getLeaseById: async () => null,
         releaseLease: async () => ({}) as never,
       },
       environmentRuntime: {
@@ -299,6 +385,7 @@ describe("production sandbox provider", () => {
     const provider = createProductionSetupTokenSandboxProvider({
       environments: {
         getById: async () => ({ id: "env-1", driver: "local", status: "active" }) as never,
+        getLeaseById: async () => null,
         releaseLease: async () => ({}) as never,
       },
       environmentRuntime: {
@@ -327,6 +414,7 @@ describe("production sandbox provider", () => {
     const provider = createProductionSetupTokenSandboxProvider({
       environments: {
         getById: async () => ({ id: "env-1", name: "Sandbox", driver: "sandbox", status: "active" }) as never,
+        getLeaseById: async () => null,
         releaseLease: async () => ({}) as never,
       },
       environmentRuntime: {
@@ -346,6 +434,35 @@ describe("production sandbox provider", () => {
 
     await provider.release(acquired.leaseId);
     expect(releaseRunLease).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs the provider driver release by id for a fresh instance with an empty lease map", async () => {
+    // A fresh provider instance holds no in-memory lease record, as after a
+    // restart. The release must resolve the stored lease and its environment and
+    // run the provider driver release, not only the database row write.
+    const releaseRunLease = vi.fn(async () => null);
+    const releaseLease = vi.fn(async () => ({}) as never);
+    const getLeaseById = vi.fn(async () => ({ id: "lease-restart", environmentId: "env-1" }) as never);
+    const getById = vi.fn(async () => ({ id: "env-1", driver: "sandbox", status: "active" }) as never);
+    const provider = createProductionSetupTokenSandboxProvider({
+      environments: { getById, getLeaseById, releaseLease },
+      environmentRuntime: {
+        acquireRunLease: vi.fn(),
+        getDriver: () => ({ releaseRunLease }) as never,
+      },
+      openLivePtySession: async () => {
+        throw new Error("must not open a pty for a restart release");
+      },
+    });
+
+    await provider.release("lease-restart");
+
+    // The provider resolved the lease by id and released through the driver.
+    expect(getLeaseById).toHaveBeenCalledWith("lease-restart");
+    expect(releaseRunLease).toHaveBeenCalledTimes(1);
+    // The provider tore down the remote sandbox through the driver, not only the
+    // database lease row.
+    expect(releaseLease).not.toHaveBeenCalled();
   });
 });
 

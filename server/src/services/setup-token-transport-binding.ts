@@ -69,8 +69,6 @@ export interface SetupTokenLoginTransportDeps {
   sandbox: SetupTokenSandboxProvider;
   /** The durable cleanup store. Defaults to the database-backed store over `db`. */
   store: SetupTokenCleanupStore;
-  /** The login command. Defaults to the fixed `CLAUDE_SETUP_TOKEN_COMMAND`. */
-  command?: string;
   /** A non-leaking status sink. It receives only fixed status lines. */
   log?: (line: string) => void;
 }
@@ -102,7 +100,10 @@ function scopeKey(scope: SetupTokenSessionScope): string {
 export function buildSetupTokenLoginTransport(
   deps: SetupTokenLoginTransportDeps,
 ): SetupTokenLoginTransportBinding {
-  const command = deps.command ?? CLAUDE_SETUP_TOKEN_COMMAND;
+  // The binding fixes the login command. It never reads a command from a route, a
+  // request body, an adapter configuration, or the dependency object, so a
+  // runtime-supplied value cannot change the pseudo-terminal command (Control 4).
+  const command = CLAUDE_SETUP_TOKEN_COMMAND;
   const log = deps.log ?? (() => {});
 
   // The pseudo-terminal opener that one acquire hands to the next factory call.
@@ -208,7 +209,7 @@ export function buildSetupTokenLoginTransport(
 
 /** The dependencies the production sandbox provider needs. */
 export interface ProductionSetupTokenSandboxProviderDeps {
-  environments: Pick<ReturnType<typeof environmentService>, "getById" | "releaseLease">;
+  environments: Pick<ReturnType<typeof environmentService>, "getById" | "getLeaseById" | "releaseLease">;
   environmentRuntime: Pick<ReturnType<typeof environmentRuntimeService>, "acquireRunLease" | "getDriver">;
   /**
    * Opens the live pseudo-terminal for the acquired lease. The Daytona provider
@@ -320,11 +321,45 @@ export function createProductionSetupTokenSandboxProvider(
           return;
         }
       }
-      // A restart cleared the in-memory record. Release the lease row directly, so
-      // the startup reaper still frees a lease that a crash left behind.
-      await deps.environments.releaseLease(leaseId, "released").catch(() => {});
+      // A restart cleared the in-memory record. Release the lease through the
+      // provider driver, not only the database row, so the release tears down the
+      // remote sandbox that holds the login state.
+      await releaseLeaseById(leaseId);
     },
   };
+
+  /**
+   * Releases a lease by id after a restart, when the in-memory record is gone. It
+   * resolves the stored lease and its environment, then releases the lease through
+   * the provider driver, so the release tears down the remote sandbox and not only
+   * the database row. It fails loud when it resolves a live lease that it cannot
+   * release, so the reaper keeps the durable cleanup record and retries it. It
+   * returns without an error only when the lease row is already gone, because then
+   * no sandbox remains to release.
+   */
+  async function releaseLeaseById(leaseId: string): Promise<void> {
+    const lease = await deps.environments.getLeaseById(leaseId);
+    if (!lease) {
+      // The lease row is already gone. No remote sandbox remains to release, so
+      // the release is idempotent and the reaper may drop the cleanup record.
+      return;
+    }
+    const environment = await deps.environments.getById(lease.environmentId);
+    if (!environment) {
+      // The lease resolves but its environment is gone, so no driver can tear down
+      // the remote sandbox. Fail loud, so the reaper keeps the cleanup record.
+      log("[paperclip] Setup-token login: the lease environment is not found for a restart release.");
+      return failClosed();
+    }
+    const driver = deps.environmentRuntime.getDriver(environment.driver);
+    if (!driver) {
+      // No driver resolves the remote sandbox. Fail loud, so the reaper keeps the
+      // cleanup record and retries the release.
+      log("[paperclip] Setup-token login: no driver resolves the lease for a restart release.");
+      return failClosed();
+    }
+    await driver.releaseRunLease({ environment, lease, status: "released" });
+  }
 }
 
 /** Builds the durable, database-backed cleanup store for the production binding. */
