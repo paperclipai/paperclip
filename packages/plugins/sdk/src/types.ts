@@ -23,7 +23,9 @@ import type {
   IssueDocumentSummary,
   IssueRelationIssueSummary,
   IssueAssigneeAdapterOverrides,
+  IssueAttachment,
   IssueThreadInteraction,
+  Approval,
   SuggestTasksInteraction,
   AskUserQuestionsInteraction,
   RequestConfirmationInteraction,
@@ -1020,6 +1022,58 @@ export interface PluginLogger {
 }
 
 // ---------------------------------------------------------------------------
+// Plugin tracer
+// ---------------------------------------------------------------------------
+
+/**
+ * `ctx.tracer` — a minimal, OpenTelemetry-free span contract. The plugin worker
+ * builds a real span through this surface; the host records it through the real
+ * tracer. The shape is a subset of the `@opentelemetry/api` `Span` shape, so the
+ * plugin SDK never imports `@opentelemetry/api`.
+ *
+ * A span with no active host trace context is a no-op: it accepts the calls and
+ * ends without an effect. So a lifecycle hook can always open a span, and the
+ * span records nothing until tracing is on.
+ */
+export interface PluginSpan {
+  /** Set one bounded attribute. The host re-clamps every attribute at its trust
+   * boundary, so an out-of-allowlist attribute never reaches a recorded span. */
+  setAttribute(key: string, value: string | number | boolean): void;
+  /** Set the span status. The host maps it onto the recorded span. */
+  setStatus(status: { code: number; message?: string }): void;
+  /** End the span. The worker sends the span data to the host once, here. */
+  end(): void;
+}
+
+/**
+ * `ctx.tracer` — a minimal, OpenTelemetry-free tracer contract. The plugin uses
+ * it the same way as `ctx.logger`. The default is a no-op that never throws, so
+ * a plugin span changes nothing until the host injects a live tracer and an
+ * active host trace context.
+ */
+export interface PluginTracer {
+  /** Start one span. `options.attributes` seeds the span attributes. */
+  startSpan(
+    name: string,
+    options?: { attributes?: Record<string, string | number | boolean> },
+  ): PluginSpan;
+}
+
+/** A shared no-op span. It satisfies the span contract and does nothing, so a
+ * plugin with no injected tracer changes no behavior. */
+export const NOOP_PLUGIN_SPAN: PluginSpan = {
+  setAttribute() {},
+  setStatus() {},
+  end() {},
+};
+
+/** The default tracer. It opens no real span, so a lifecycle hook that wraps
+ * work in a span behaves exactly as before when no live tracer is injected. */
+export const NOOP_PLUGIN_TRACER: PluginTracer = {
+  startSpan: () => NOOP_PLUGIN_SPAN,
+};
+
+// ---------------------------------------------------------------------------
 // Plugin metrics
 // ---------------------------------------------------------------------------
 
@@ -1320,6 +1374,20 @@ export interface PluginIssueSummariesClient {
 }
 
 /**
+ * Attachment content bytes returned by `ctx.issues.getAttachmentContent`.
+ * Bytes are base64-encoded; there is no URL surface.
+ */
+export interface PluginIssueAttachmentContent {
+  attachmentId: string;
+  contentType: string;
+  byteSize: number;
+  sha256: string;
+  originalFilename: string | null;
+  /** The attachment's raw bytes, base64-encoded. */
+  contentBase64: string;
+}
+
+/**
  * `ctx.issues` — read and mutate issues plus comments.
  *
  * Requires:
@@ -1331,7 +1399,11 @@ export interface PluginIssueSummariesClient {
  * - `issues.orchestration.read` for orchestration summaries
  * - `issue.comments.read` for `listComments`
  * - `issue.comments.create` for `createComment`
+ * - `issue.comments.create_human_attributed` for `createComment` calls that pass `actorUserId`
  * - `issue.interactions.create` for `createInteraction`, `suggestTasks`, `askUserQuestions`, `requestConfirmation`, and `requestCheckboxConfirmation`
+ * - `issue.interactions.read` for `listInteractions`
+ * - `issue.interactions.respond` for `respondInteraction`
+ * - `issue.attachments.read` for `listAttachments` and `getAttachmentContent`
  * - `issue.documents.read` for `documents.list` and `documents.get`
  * - `issue.documents.write` for `documents.upsert` and `documents.delete`
  */
@@ -1434,11 +1506,29 @@ export interface PluginIssuesClient {
     } & PluginIssueMutationActor,
   ): Promise<PluginIssueWakeupBatchResult[]>;
   listComments(issueId: string, companyId: string): Promise<IssueComment[]>;
+  /**
+   * Post a comment on an issue.
+   *
+   * Pass `authorAgentId` to attribute the comment to the plugin's own agent
+   * identity (requires `issue.comments.create`, the default).
+   *
+   * Pass `actorUserId` to attribute the comment to a real human instead —
+   * for example, relaying a paired chat user's reply back into the issue
+   * thread. Requires the additional `issue.comments.create_human_attributed`
+   * capability. The host independently verifies that `actorUserId` is an
+   * active human member of the issue's company before applying the
+   * attribution — a plugin can only ever attribute comments to identities
+   * that could have posted them in the web app. A human-attributed comment
+   * also participates in the normal wake-the-assignee behavior a board
+   * user's comment gets in the web app (subject to the same closed-issue /
+   * no-assignee exclusions) — unlike a plugin's own agent-attributed
+   * comments, which never wake anyone.
+   */
   createComment(
     issueId: string,
     body: string,
     companyId: string,
-    options?: { authorAgentId?: string },
+    options?: { authorAgentId?: string; actorUserId?: string },
   ): Promise<IssueComment>;
   createInteraction(
     issueId: string,
@@ -1470,12 +1560,83 @@ export interface PluginIssuesClient {
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<RequestCheckboxConfirmationInteraction>;
+  /**
+   * List the issue-thread interactions (decision cards) on an issue.
+   * Requires `issue.interactions.read`.
+   */
+  listInteractions(issueId: string, companyId: string): Promise<IssueThreadInteraction[]>;
+  /**
+   * Resolve (accept/reject) a pending issue-thread interaction on behalf of a
+   * paired board user. Requires `issue.interactions.respond`.
+   *
+   * `actorUserId` is the human company member the decision is attributed to.
+   * The host independently re-verifies that this user is an active human
+   * member of the issue's company before applying the decision — a plugin can
+   * only ever resolve interactions as an identity that could have resolved
+   * them in the web app (whose interaction-resolve routes are board-only).
+   *
+   * Returns the (possibly already-resolved) interaction and `applied`, which is
+   * `true` when this call performed the resolution and `false` when the
+   * interaction had already converged to a resolved state (idempotent replays).
+   */
+  respondInteraction(
+    issueId: string,
+    interactionId: string,
+    input: { action: "accept" | "reject"; actorUserId?: string; reason?: string | null },
+    companyId: string,
+  ): Promise<{ interaction: IssueThreadInteraction; applied: boolean }>;
+  /** List attachment metadata for an issue. Requires `issue.attachments.read`. */
+  listAttachments(issueId: string, companyId: string): Promise<IssueAttachment[]>;
+  /**
+   * Read an attachment's content bytes (base64) through the capability-scoped
+   * host bridge. Requires `issue.attachments.read`.
+   *
+   * Company-scoped and audit-logged host-side; there is no URL surface. Returns
+   * `null` for an unknown or cross-company attachment id (indistinguishable by
+   * design). Pass `maxBytes` to refuse over-cap assets — the host throws rather
+   * than partially reading when the stored size exceeds the cap.
+   */
+  getAttachmentContent(
+    attachmentId: string,
+    companyId: string,
+    options?: { maxBytes?: number | null },
+  ): Promise<PluginIssueAttachmentContent | null>;
   /** Read and write issue documents. Requires `issue.documents.read` / `issue.documents.write`. */
   documents: PluginIssueDocumentsClient;
   /** Read and write blocker relationships. */
   relations: PluginIssueRelationsClient;
   /** Read compact orchestration summaries. */
   summaries: PluginIssueSummariesClient;
+}
+
+/**
+ * `ctx.approvals` — read and decide company approvals.
+ *
+ * Requires `approvals.read` for `list` / `get`; `approvals.respond` for
+ * `decide`. Approval payloads returned by `list` / `get` are redacted host-side
+ * to match the web app's own approval read surface (no secret leakage through
+ * the bridge).
+ */
+export interface PluginApprovalsClient {
+  list(input: { companyId: string; status?: string | null }): Promise<Approval[]>;
+  get(approvalId: string, companyId: string): Promise<Approval | null>;
+  /**
+   * Approve or reject an approval on behalf of a paired board user.
+   *
+   * `actorUserId` is the human company member the decision is attributed to.
+   * The host independently re-verifies that this user is an active human member
+   * of the approval's company before applying the decision — a plugin can only
+   * ever decide approvals as an identity that could have decided them in the
+   * web app (whose approval-decision routes are board-only).
+   *
+   * `applied` is `true` when this call performed the decision and `false` when
+   * the approval had already converged to a decided state (idempotent replays).
+   */
+  decide(
+    approvalId: string,
+    input: { action: "approve" | "reject"; actorUserId?: string; decisionNote?: string | null },
+    companyId: string,
+  ): Promise<{ approval: Approval; applied: boolean }>;
 }
 
 /**
@@ -1530,6 +1691,10 @@ export interface AgentSessionEvent {
   /** The kind of event: "chunk" for output data, "status" for run state changes, "done" for end-of-stream, "error" for failures. */
   eventType: "chunk" | "status" | "done" | "error";
   stream: "stdout" | "stderr" | "system" | null;
+  /**
+   * Event text. On a successful `done` event this is the canonical final
+   * user-facing assistant reply, or null when the run produced no reply text.
+   */
   message: string | null;
   payload: Record<string, unknown> | null;
 }
@@ -1819,6 +1984,30 @@ export interface PluginStreamsClient {
   close(channel: string): void;
 }
 
+/**
+ * `ctx.execution` — deliver incremental command output from an environment
+ * driver's active `execute` call to the host runner log sink.
+ *
+ * A sandbox provider that streams a long-lived command's output calls
+ * `ctx.execution.log(stream, chunk)` for each new chunk while the execute call
+ * runs. The host correlates the chunk to the active execute invocation by the
+ * host-issued invocation id on the message envelope, and delivers it to that
+ * call's log callback before the final result. The default is a no-op that
+ * never throws, so a provider that does not stream keeps its current behavior.
+ *
+ * The `chunk` is a text string, not raw bytes. The host drops a chunk with an
+ * unknown stream name or a chunk that is empty or too large.
+ */
+export interface PluginExecutionClient {
+  /**
+   * Deliver one incremental output chunk of the active execute call.
+   *
+   * @param stream - Either `"stdout"` or `"stderr"`.
+   * @param chunk - The new output text for that stream.
+   */
+  log(stream: "stdout" | "stderr", chunk: string): void;
+}
+
 // ---------------------------------------------------------------------------
 // Full plugin context
 // ---------------------------------------------------------------------------
@@ -1905,6 +2094,9 @@ export interface PluginContext {
   /** Read and write issues, comments, and documents. Requires issue capabilities. */
   issues: PluginIssuesClient;
 
+  /** Read and decide company approvals. Requires `approvals.read` / `approvals.respond`. */
+  approvals: PluginApprovalsClient;
+
   /** Read and manage agents. Requires `agents.read` for reads; `agents.pause` / `agents.resume` / `agents.invoke` for write ops. */
   agents: PluginAgentsClient;
 
@@ -1926,6 +2118,11 @@ export interface PluginContext {
   /** Push real-time events from the worker to the plugin UI via SSE. */
   streams: PluginStreamsClient;
 
+  /** Deliver incremental command output from the active execute call to the
+   * host runner log sink. The default is a no-op for a provider that does not
+   * stream. */
+  execution: PluginExecutionClient;
+
   /** Register agent tool handlers. Requires `agent.tools.register`. */
   tools: PluginToolsClient;
 
@@ -1937,4 +2134,8 @@ export interface PluginContext {
 
   /** Structured logger. Output is captured and surfaced in the plugin health dashboard. */
   logger: PluginLogger;
+
+  /** Tracer for provider spans. The default is a no-op; the host records a span
+   * only when tracing is on and an active host trace context is present. */
+  tracer: PluginTracer;
 }

@@ -67,6 +67,7 @@ vi.mock("../adapters/index.ts", async () => {
 });
 
 import { heartbeatService } from "../services/heartbeat.ts";
+import { attentionService } from "../services/attention.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import { issueService } from "../services/issues.ts";
 import { runningProcesses } from "../adapters/index.ts";
@@ -93,21 +94,15 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
   afterEach(async () => {
     vi.clearAllMocks();
     runningProcesses.clear();
-    let idlePolls = 0;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const runs = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns);
-      const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
-      if (!hasActiveRun) {
-        idlePolls += 1;
-        if (idlePolls >= 3) break;
-      } else {
-        idlePolls = 0;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // reconcileIssueGraphLiveness heals dependency wakes by enqueuing an
+    // on-demand wake, which dispatches a heartbeat run fire-and-forget (see
+    // startNextQueuedRunForAgent → executeRun in the heartbeat service). That
+    // background run keeps writing rows (workspace_operations, heartbeat_run_events)
+    // after the awaited call resolves. Deterministically await those in-flight
+    // executions before clearing tables — otherwise an escaping heartbeat_run_events
+    // insert can land between the events delete and the heartbeat_runs delete and
+    // trip the run_events → runs foreign key.
+    await heartbeatService(db).drainActiveRunExecutions();
     await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
     await db.delete(costEvents);
@@ -373,6 +368,97 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
     expect(escalations).toHaveLength(0);
+  });
+
+  it("runs exactly one bounded review-path recovery before surfacing a stalled decision", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Review Recovery Co",
+      issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Review Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "PAP-14994 fingerprint",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const followUpRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId,
+        interactionId: "superseded-confirmation",
+        reviewPathLost: true,
+        reviewPathConsumedRef: "superseded-confirmation",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "responsible-user",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_commented",
+        interactionId: "superseded-confirmation",
+        reviewPathLost: true,
+        reviewPathConsumedRef: "superseded-confirmation",
+      },
+    });
+    expect(followUpRun).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+
+    const recoveryWakes = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.reason, "issue_review_path_lost"),
+      ));
+    expect(recoveryWakes).toHaveLength(1);
+    expect(recoveryWakes[0]).toMatchObject({
+      status: "completed",
+      payload: expect.objectContaining({
+        issueId,
+        reviewPathConsumedRef: "superseded-confirmation",
+        reviewPathRecoveryAttempt: 1,
+        maxReviewPathRecoveryAttempts: 1,
+      }),
+    });
+
+    const attention = await issueService(db)
+      .listReviewAttention(companyId, [{ id: issueId, companyId, status: "in_review" }]);
+    expect(attention.get(issueId)).toMatchObject({ state: "stalled", paths: [] });
+
+    const feed = await attentionService(db).list(companyId, { userId: "responsible-user" });
+    expect(feed.items.find((item) => item.subject.id === issueId)).toMatchObject({
+      sourceKind: "review",
+      decisionVerbs: expect.arrayContaining([
+        expect.objectContaining({ id: "choose_review_path", label: "Choose review path" }),
+      ]),
+    });
   });
 
   it("keeps resolved dependency wake reconciliation active when liveness auto recovery is disabled", async () => {

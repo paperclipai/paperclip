@@ -1,18 +1,28 @@
-import { ChangeEvent, useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ChangeEvent, Fragment, useEffect, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,
+  ISSUE_THREAD_INTERACTION_KINDS,
+  type InteractionResolverGovernance,
+  type IssueThreadInteractionKind,
+  type IssueThreadInteractionResolverPolicy,
 } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { companiesApi } from "../api/companies";
 import { assetsApi } from "../api/assets";
-import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
-import { Settings, CloudUpload, Download, Upload } from "lucide-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Settings, Download, Upload } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -22,6 +32,101 @@ import {
 const BYTES_PER_MIB = 1024 * 1024;
 const DEFAULT_COMPANY_ATTACHMENT_MAX_MIB = DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES / BYTES_PER_MIB;
 const MAX_COMPANY_ATTACHMENT_MAX_MIB = MAX_COMPANY_ATTACHMENT_MAX_BYTES / BYTES_PER_MIB;
+
+const INTERACTION_KIND_LABELS: Record<IssueThreadInteractionKind, string> = {
+  suggest_tasks: "Suggested tasks",
+  ask_user_questions: "Ask user questions",
+  request_confirmation: "Confirmations",
+  request_checkbox_confirmation: "Checkbox confirmations",
+  request_item_verdicts: "Item verdicts",
+};
+
+// Sentinel for "no override" — Radix Select disallows empty-string item values.
+const GOVERNANCE_UNSET = "default";
+type GovernanceSelectValue = typeof GOVERNANCE_UNSET | IssueThreadInteractionResolverPolicy;
+
+const GOVERNANCE_POLICY_OPTIONS: { value: GovernanceSelectValue; label: string }[] = [
+  { value: GOVERNANCE_UNSET, label: "Company default" },
+  { value: "board_only", label: "Board only" },
+  { value: "board_or_agents", label: "Board or agents" },
+];
+
+function toSelectValue(policy: IssueThreadInteractionResolverPolicy | undefined): GovernanceSelectValue {
+  return policy ?? GOVERNANCE_UNSET;
+}
+
+/**
+ * Apply a single (kind, field) change to a governance map immutably, pruning
+ * empty entries so the persisted object stays sparse (only real overrides).
+ */
+function applyGovernanceChange(
+  current: InteractionResolverGovernance,
+  kind: IssueThreadInteractionKind,
+  field: "defaultPolicy" | "cap",
+  value: GovernanceSelectValue,
+): InteractionResolverGovernance {
+  const next: InteractionResolverGovernance = { ...current };
+  const entry = { ...(next[kind] ?? {}) };
+  if (value === GOVERNANCE_UNSET) {
+    delete entry[field];
+  } else {
+    entry[field] = value;
+  }
+  if (entry.defaultPolicy === undefined && entry.cap === undefined) {
+    delete next[kind];
+  } else {
+    next[kind] = entry;
+  }
+  return next;
+}
+function GovernanceSelect({
+  value,
+  onChange,
+  disabled,
+  testId,
+  ariaLabel,
+  mobileLabel,
+}: {
+  value: GovernanceSelectValue;
+  onChange: (value: GovernanceSelectValue) => void;
+  disabled?: boolean;
+  testId?: string;
+  ariaLabel: string;
+  mobileLabel: string;
+}) {
+  return (
+    <div className="min-w-0">
+      {/*
+       * Below `sm` the governance grid collapses to a single column (see the
+       * grid classes on the panel), detaching each select from its column
+       * header. Surface a mobile-only inline label so the control stays
+       * self-describing for sighted users, and always carry `aria-label` for
+       * screen-reader pairing. WCAG 2.1 SC 1.4.10 (Reflow) — design review R2.
+       */}
+      <span className="mb-1 block text-xs font-medium text-muted-foreground uppercase tracking-wide sm:hidden">
+        {mobileLabel}
+      </span>
+      <Select value={value} onValueChange={(v) => onChange(v as GovernanceSelectValue)} disabled={disabled}>
+        <SelectTrigger
+          size="sm"
+          aria-label={ariaLabel}
+          className="w-full min-w-0 text-xs sm:w-(--sz-170px)"
+          data-testid={testId}
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {GOVERNANCE_POLICY_OPTIONS.map((option) => (
+            <SelectItem key={option.value} value={option.value} className="text-xs">
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
 export function CompanySettings() {
   const {
     companies,
@@ -31,10 +136,6 @@ export function CompanySettings() {
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
   // General settings local state
   const [companyName, setCompanyName] = useState("");
   const [description, setDescription] = useState("");
@@ -42,6 +143,7 @@ export function CompanySettings() {
   const [attachmentMaxMiB, setAttachmentMaxMiB] = useState(String(DEFAULT_COMPANY_ATTACHMENT_MAX_MIB));
   const [logoUrl, setLogoUrl] = useState("");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
+  const [governance, setGovernance] = useState<InteractionResolverGovernance>({});
 
   // Sync local state from selected company
   useEffect(() => {
@@ -51,6 +153,7 @@ export function CompanySettings() {
     setBrandColor(selectedCompany.brandColor ?? "");
     setAttachmentMaxMiB(String(Math.round((selectedCompany.attachmentMaxBytes ?? DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES) / BYTES_PER_MIB)));
     setLogoUrl(selectedCompany.logoUrl ?? "");
+    setGovernance(selectedCompany.interactionResolverGovernance ?? {});
   }, [selectedCompany]);
 
   const attachmentMaxBytes = Number.parseInt(attachmentMaxMiB, 10) * BYTES_PER_MIB;
@@ -58,7 +161,6 @@ export function CompanySettings() {
     Number.isInteger(attachmentMaxBytes)
     && attachmentMaxBytes >= BYTES_PER_MIB
     && attachmentMaxBytes <= MAX_COMPANY_ATTACHMENT_MAX_BYTES;
-  const cloudSyncEnabled = experimentalSettings?.enableCloudSync === true;
 
   const generalDirty =
     !!selectedCompany &&
@@ -88,6 +190,25 @@ export function CompanySettings() {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     }
   });
+
+  const governanceMutation = useMutation({
+    mutationFn: (next: InteractionResolverGovernance) =>
+      companiesApi.update(selectedCompanyId!, { interactionResolverGovernance: next }),
+    onSuccess: (company) => {
+      setGovernance(company.interactionResolverGovernance ?? {});
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    }
+  });
+
+  function handleGovernanceChange(
+    kind: IssueThreadInteractionKind,
+    field: "defaultPolicy" | "cap",
+    value: GovernanceSelectValue,
+  ) {
+    const next = applyGovernanceChange(governance, kind, field, value);
+    setGovernance(next);
+    governanceMutation.mutate(next);
+  }
 
   const syncLogoState = (nextLogoUrl: string | null) => {
     setLogoUrl(nextLogoUrl ?? "");
@@ -367,25 +488,82 @@ export function CompanySettings() {
         </div>
       </div>
 
+      {/* Interaction governance */}
+      <div className="space-y-4" data-testid="company-settings-interaction-governance-section">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Interaction governance
+        </div>
+        <div className="space-y-4 rounded-md border border-border px-4 py-4">
+          <p className="text-sm text-muted-foreground">
+            Control who may resolve each kind of thread interaction.{" "}
+            <span className="font-medium text-foreground">Default policy</span> is the
+            resolver policy new interactions request;{" "}
+            <span className="font-medium text-foreground">Cap</span> is the maximum a
+            request may reach — set it to{" "}
+            <span className="font-medium text-foreground">Board only</span> to always
+            require the board. Tool-approval confirmations always stay board-only
+            regardless of these settings.
+          </p>
+          {/*
+           * Responsive: below `sm` the row collapses to a single column so the
+           * two 170px selects never force horizontal overflow on a ~390px
+           * viewport (WCAG 2.1 SC 1.4.10 Reflow — design review R2). Each kind
+           * then stacks as: label → Default policy → Cap, each full-width with
+           * its own inline label. At `sm`+ it restores the aligned 3-col grid.
+           */}
+          <div className="grid grid-cols-1 gap-y-4 sm:grid-cols-[1fr_auto_auto] sm:items-center sm:gap-x-4 sm:gap-y-2.5">
+            <div className="hidden text-xs font-medium text-muted-foreground uppercase tracking-wide sm:block">
+              Kind
+            </div>
+            <div className="hidden text-xs font-medium text-muted-foreground uppercase tracking-wide sm:block">
+              Default policy
+            </div>
+            <div className="hidden text-xs font-medium text-muted-foreground uppercase tracking-wide sm:block">
+              Cap
+            </div>
+            {ISSUE_THREAD_INTERACTION_KINDS.map((kind) => {
+              const entry = governance[kind] ?? {};
+              const kindLabel = INTERACTION_KIND_LABELS[kind];
+              return (
+                <Fragment key={kind}>
+                  <div className="text-sm font-medium sm:font-normal">{kindLabel}</div>
+                  <GovernanceSelect
+                    testId={`governance-${kind}-default`}
+                    ariaLabel={`Default resolver policy for ${kindLabel}`}
+                    mobileLabel="Default policy"
+                    value={toSelectValue(entry.defaultPolicy)}
+                    disabled={governanceMutation.isPending}
+                    onChange={(v) => handleGovernanceChange(kind, "defaultPolicy", v)}
+                  />
+                  <GovernanceSelect
+                    testId={`governance-${kind}-cap`}
+                    ariaLabel={`Resolver cap for ${kindLabel}`}
+                    mobileLabel="Cap"
+                    value={toSelectValue(entry.cap)}
+                    disabled={governanceMutation.isPending}
+                    onChange={(v) => handleGovernanceChange(kind, "cap", v)}
+                  />
+                </Fragment>
+              );
+            })}
+          </div>
+          {governanceMutation.isError && (
+            <span className="text-xs text-destructive">
+              {governanceMutation.error instanceof Error
+                ? governanceMutation.error.message
+                : "Failed to save interaction governance"}
+            </span>
+          )}
+        </div>
+      </div>
+
       {/* Import / Export */}
       <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Company Packages
         </div>
         <div className="rounded-md border border-border px-4 py-4">
-          <p className="text-sm text-muted-foreground">
-            Import and export have moved to dedicated pages accessible from the{" "}
-            <Link to="/org" className="underline hover:text-foreground">Org Chart</Link> header.
-          </p>
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            {cloudSyncEnabled ? (
-              <Button size="sm" asChild>
-                <Link to="/company/settings/cloud-upstream">
-                  <CloudUpload className="mr-1.5 h-3.5 w-3.5" />
-                  Send to Paperclip Cloud
-                </Link>
-              </Button>
-            ) : null}
+          <div className="flex flex-wrap items-center gap-2">
             <Button size="sm" variant="outline" asChild>
               <Link to="/company/export">
                 <Download className="mr-1.5 h-3.5 w-3.5" />

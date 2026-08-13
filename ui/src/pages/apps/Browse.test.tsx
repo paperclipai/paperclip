@@ -7,11 +7,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Browse } from "./Browse";
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
+const listApplicationsMock = vi.hoisted(() => vi.fn());
+const listConnectionsMock = vi.hoisted(() => vi.fn());
 const navigateMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
     listGallery: (companyId: string) => listGalleryMock(companyId),
+    listApplications: (companyId: string) => listApplicationsMock(companyId),
+    listConnections: (companyId: string) => listConnectionsMock(companyId),
   },
 }));
 
@@ -58,7 +62,7 @@ function galleryEntry(overrides: Record<string, unknown>) {
     logoUrl: "https://example.com/github.png",
     tagline: "Let agents open PRs and issues.",
     authKind: "oauth",
-    transportTemplate: { transport: "remote_http", url: "https://api.github.com/mcp" },
+    transportTemplate: { transport: "mcp_remote", url: "https://api.github.com/mcp" },
     credentialFields: [],
     recommendedDefaults: {},
     urlPatterns: [],
@@ -76,9 +80,12 @@ describe("Browse store door (PAP-13254 door 1)", () => {
         galleryEntry({ key: "zapier", name: "Zapier", tagline: "Connect automations." }),
         galleryEntry({ key: "github", name: "GitHub", tagline: "Open PRs and issues." }),
         galleryEntry({ key: "slack", name: "Slack", tagline: "Post messages to channels." }),
+        galleryEntry({ key: "notion", name: "Notion", tagline: "Read and update workspace content." }),
         galleryEntry({ key: "acme", name: "Acme CRM", tagline: "Sync deals and contacts." }),
       ],
     });
+    listApplicationsMock.mockResolvedValue({ applications: [] });
+    listConnectionsMock.mockResolvedValue({ connections: [] });
     container = document.createElement("div");
     document.body.appendChild(container);
   });
@@ -107,7 +114,9 @@ describe("Browse store door (PAP-13254 door 1)", () => {
 
     const text = container.textContent ?? "";
     expect(text).toContain("Browse");
-    expect(text).toContain("Connect Zapier or your own MCP server.");
+    expect(text).toContain("Choose an app or connect your own MCP server.");
+    expect(text).not.toContain("More integrations are coming soon.");
+    expect(text).not.toContain("Other integrations are previews.");
     expect(text).toContain("Popular");
     expect(text).toContain("All apps");
     expect(text).toContain("GitHub");
@@ -117,7 +126,7 @@ describe("Browse store door (PAP-13254 door 1)", () => {
     expect(text).toContain("Connect your own tool");
   });
 
-  it("enables Zapier and custom URLs while fading unfinished integrations", async () => {
+  it("enables Notion, Zapier, and custom URLs while fading unfinished integrations", async () => {
     await renderBrowse();
 
     const zapierTiles = Array.from(container.querySelectorAll("button")).filter((button) =>
@@ -125,6 +134,9 @@ describe("Browse store door (PAP-13254 door 1)", () => {
     );
     const githubTiles = Array.from(container.querySelectorAll("button")).filter((button) =>
       button.textContent?.includes("GitHub"),
+    );
+    const notionTiles = Array.from(container.querySelectorAll("button")).filter((button) =>
+      button.textContent?.includes("Notion"),
     );
     const tile = Array.from(container.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("Acme CRM"),
@@ -135,6 +147,8 @@ describe("Browse store door (PAP-13254 door 1)", () => {
 
     expect(zapierTiles).toHaveLength(2);
     expect(zapierTiles.every((button) => !button.disabled)).toBe(true);
+    expect(notionTiles).toHaveLength(2);
+    expect(notionTiles.every((button) => !button.disabled)).toBe(true);
     expect(githubTiles.every((button) => button.disabled)).toBe(true);
     expect(tile?.disabled).toBe(true);
     expect(byoCard?.disabled).toBe(false);
@@ -145,6 +159,11 @@ describe("Browse store door (PAP-13254 door 1)", () => {
       zapierTiles[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(navigateMock).toHaveBeenCalledWith("/apps/connect?byo=1&source=zapier");
+
+    await act(async () => {
+      notionTiles[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(navigateMock).toHaveBeenCalledWith("/apps/connect?source=notion");
 
     await act(async () => {
       byoCard?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -173,6 +192,34 @@ describe("Browse store door (PAP-13254 door 1)", () => {
     expect(text).not.toContain("Acme CRM");
     // Popular grid is hidden while searching.
     expect(text).not.toContain("Popular");
+  });
+
+  it("shows existing connection counts and opens the provider landing page", async () => {
+    listApplicationsMock.mockResolvedValue({
+      applications: [
+        { id: "app-notion", status: "active", applicationKey: "app-gallery:notion:one", metadata: {} },
+      ],
+    });
+    listConnectionsMock.mockResolvedValue({
+      connections: [
+        { id: "conn-one", applicationId: "app-notion", status: "active" },
+        { id: "conn-two", applicationId: "app-notion", status: "disabled" },
+        { id: "conn-draft", applicationId: "app-notion", status: "draft" },
+      ],
+    });
+
+    await renderBrowse();
+
+    const notionTiles = Array.from(container.querySelectorAll("button")).filter((button) =>
+      button.textContent?.includes("Notion"),
+    );
+    expect(notionTiles).toHaveLength(2);
+    expect(notionTiles.every((button) => button.textContent?.includes("2 connected already"))).toBe(true);
+
+    await act(async () => {
+      notionTiles[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(navigateMock).toHaveBeenCalledWith("/apps/app/app-notion/setup");
   });
 
   it("keeps the custom URL option available when gallery search has no matches", async () => {

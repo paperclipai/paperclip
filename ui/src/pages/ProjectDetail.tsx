@@ -24,6 +24,7 @@ import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
+import { SummarySlotCard } from "../components/SummarySlotCard";
 import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
@@ -241,7 +242,7 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
     enabled: !!companyId,
-    // Event-sourced via LiveUpdatesProvider (#9627); no interval poll needed.
+    // Event-sourced via LiveUpdatesProvider (issue 9627); no interval poll needed.
     refetchInterval: false,
     leaderOnly: true,
   });
@@ -258,13 +259,12 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
     enabled: !!companyId,
   });
 
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
-
   const { data: issues, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.listByProject(companyId, projectId),
     queryFn: () => issuesApi.list(companyId, { projectId }),
     enabled: !!companyId,
   });
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
@@ -318,7 +318,7 @@ function ProjectPluginOperationsList({
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
     enabled: !!companyId,
-    // Event-sourced via LiveUpdatesProvider (#9627); no interval poll needed.
+    // Event-sourced via LiveUpdatesProvider (issue 9627); no interval poll needed.
     refetchInterval: false,
     leaderOnly: true,
   });
@@ -329,13 +329,12 @@ function ProjectPluginOperationsList({
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
-
   const { data: issues, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.listPluginOperationsByProject(companyId, projectId, originKindPrefix),
     queryFn: () => issuesApi.list(companyId, { projectId, originKindPrefix }),
     enabled: !!companyId && !!projectId,
   });
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
@@ -474,7 +473,7 @@ export function ProjectDetail() {
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(routeProjectRef) });
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectLookupRef) });
     if (resolvedCompanyId) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(resolvedCompanyId) });
     }
   };
 
@@ -669,7 +668,7 @@ export function ProjectDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(resolvedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(routeProjectRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectLookupRef) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(resolvedCompanyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(resolvedCompanyId) });
     },
   });
@@ -829,6 +828,14 @@ export function ProjectDetail() {
           />
         </div>
       </div>
+
+      <SummarySlotCard
+        companyId={resolvedCompanyId}
+        scopeKind="project"
+        scopeId={project.id}
+        title="Project summary"
+        description="Summarizer keeps the latest project status, next step, and operator-needed items here."
+      />
 
       <PluginSlotOutlet
         slotTypes={["toolbarButton", "contextMenuItem"]}

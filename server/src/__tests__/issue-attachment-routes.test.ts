@@ -350,6 +350,93 @@ describe("issue attachment routes", () => {
     expect(res.body.contentType).toBe("application/x-msdownload");
   });
 
+  it("accepts Office uploads with official MIME types for issue attachments", async () => {
+    const contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    const storage = createStorageService();
+    mockIssueService.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+    });
+    mockIssueService.createAttachment.mockResolvedValue(makeAttachment(contentType, "raw-data.xlsx"));
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
+      .attach("file", Buffer.from("xlsx"), { filename: "raw-data.xlsx", contentType });
+
+    expect(res.status).toBe(201);
+    expect(storage.__calls.putFile).toMatchObject({
+      contentType,
+      originalFilename: "raw-data.xlsx",
+    });
+    expect(mockIssueService.createAttachment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contentType,
+        originalFilename: "raw-data.xlsx",
+      }),
+    );
+  });
+
+  it("infers Office MIME types for generic binary issue attachment uploads", async () => {
+    const contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    const storage = createStorageService();
+    mockIssueService.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+    });
+    mockIssueService.createAttachment.mockResolvedValue(makeAttachment(contentType, "raw-data.xlsx"));
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
+      .attach("file", Buffer.from("xlsx"), {
+        filename: "raw-data.xlsx",
+        contentType: "application/octet-stream",
+      });
+
+    expect(res.status).toBe(201);
+    expect(storage.__calls.putFile).toMatchObject({
+      contentType,
+      originalFilename: "raw-data.xlsx",
+    });
+    expect(mockIssueService.createAttachment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contentType,
+        originalFilename: "raw-data.xlsx",
+      }),
+    );
+  });
+
+  it("preserves generic binary uploads when the filename is not a known Office document", async () => {
+    const storage = createStorageService();
+    mockIssueService.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+    });
+    mockIssueService.createAttachment.mockResolvedValue(makeAttachment("application/octet-stream", "payload.bin"));
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
+      .attach("file", Buffer.from("bin"), { filename: "payload.bin", contentType: "application/octet-stream" });
+
+    expect(res.status).toBe(201);
+    expect(storage.__calls.putFile).toMatchObject({
+      contentType: "application/octet-stream",
+      originalFilename: "payload.bin",
+    });
+    expect(mockIssueService.createAttachment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contentType: "application/octet-stream",
+        originalFilename: "payload.bin",
+      }),
+    );
+    expect(res.body.contentType).toBe("application/octet-stream");
+  });
+
   it("enforces the process-level issue attachment limit even when the company limit allows more", async () => {
     const storage = createStorageService();
     mockIssueService.getById.mockResolvedValue({

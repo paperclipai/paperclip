@@ -3,7 +3,7 @@
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AgentMultiSelect } from "./AgentMultiSelect";
+import { AgentMultiSelect, AgentSelect } from "./AgentMultiSelect";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -90,6 +90,42 @@ describe("AgentMultiSelect", () => {
 
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange.mock.calls[0]?.[0]).toEqual(new Set(["agent-17"]));
+  });
+
+  it("filters and selects a single agent", async () => {
+    const onChange = vi.fn();
+    const agents = [
+      { id: "agent-1", name: "Alpha", title: "Engineer" },
+      { id: "agent-2", name: "Bravo", title: "Researcher" },
+    ];
+
+    root = createRoot(container);
+    act(() => {
+      root?.render(<AgentSelect agents={agents} value="" onChange={onChange} />);
+    });
+
+    act(() => {
+      container.querySelector("button")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const filter = document.body.querySelector<HTMLInputElement>('input[placeholder="Filter agents"]');
+    expect(filter).not.toBeNull();
+    setInputValue(filter!, "research");
+    await flush();
+
+    expect(document.body.textContent).toContain("Bravo");
+    expect(document.body.textContent).not.toContain("Alpha");
+
+    act(() => {
+      document.body
+        .querySelector('[aria-label="Select Bravo"]')
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(onChange).toHaveBeenCalledWith("agent-2");
+    expect(document.body.querySelector('input[placeholder="Filter agents"]')).toBeNull();
   });
 
   it("previews selected agents and stages changes until save", async () => {

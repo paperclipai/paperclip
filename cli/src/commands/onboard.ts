@@ -17,8 +17,17 @@ import {
   type SecretProvider,
   type StorageProvider,
 } from "@paperclipai/shared";
-import { configExists, readConfig, resolveConfigPath, writeConfig } from "../config/store.js";
-import type { PaperclipConfig } from "../config/schema.js";
+import {
+  backupInvalidConfig,
+  configExists,
+  readConfig,
+  resolveConfigPath,
+  writeConfig,
+} from "../config/store.js";
+import {
+  findPaperclipConfigKeyWarnings,
+  type PaperclipConfig,
+} from "../config/schema.js";
 import { ensureAgentJwtSecret, resolveAgentJwtEnvFile } from "../config/env.js";
 import { ensureLocalSecretsKeyFile } from "../config/secrets-key.js";
 import { promptDatabase } from "../prompts/database.js";
@@ -43,6 +52,8 @@ import {
   trackInstallStarted,
   trackInstallCompleted,
 } from "../telemetry.js";
+import { handleOnboardService } from "../onboard-service.js";
+import { readInstallManifest, isManagedExecutable } from "../install-store.js";
 
 type SetupMode = "quickstart" | "advanced";
 
@@ -52,6 +63,7 @@ type OnboardOptions = {
   yes?: boolean;
   invokedByRun?: boolean;
   bind?: BindMode;
+  installService?: boolean;
 };
 
 type OnboardDefaults = Pick<PaperclipConfig, "database" | "logging" | "server" | "auth" | "storage" | "secrets">;
@@ -322,6 +334,21 @@ function canCreateBootstrapInviteImmediately(config: Pick<PaperclipConfig, "data
   return config.server.deploymentMode === "authenticated" && config.database.mode !== "embedded-postgres";
 }
 
+export function isEphemeralNpxExecution(entrypoint = process.argv[1]): boolean {
+  if (!entrypoint) return false;
+  const normalized = entrypoint.replaceAll("\\", "/");
+  return normalized.includes("/_npx/") || normalized.includes("/npm/_npx/");
+}
+
+function printManagedInstallHint(): void {
+  const manifest = readInstallManifest();
+  if (manifest && isManagedExecutable(process.argv[1], manifest)) return;
+  if (!isEphemeralNpxExecution()) return;
+  p.log.info(
+    `This npx run is temporary. Use ${pc.cyan("paperclipai install")} for atomic updates, rollback, and service support.`,
+  );
+}
+
 export async function onboard(opts: OnboardOptions): Promise<void> {
   if (opts.bind && !["loopback", "lan", "tailnet"].includes(opts.bind)) {
     throw new Error(`Unsupported bind preset for onboard: ${opts.bind}. Use loopback, lan, or tailnet.`);
@@ -338,17 +365,45 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
   );
 
   let existingConfig: PaperclipConfig | null = null;
+  let invalidBackupPath: string | undefined;
   if (configExists(opts.config)) {
     p.log.message(pc.dim(`${configPath} exists`));
 
     try {
       existingConfig = readConfig(opts.config);
+      for (const warning of findPaperclipConfigKeyWarnings(existingConfig)) {
+        p.log.warn(`Unknown config key ${warning.path}; did you mean ${warning.suggestion}? It will be preserved.`);
+      }
     } catch (err) {
-      p.log.message(
-        pc.yellow(
-          `Existing config appears invalid and will be updated.\n${err instanceof Error ? err.message : String(err)}`,
-        ),
+      const backupPath = backupInvalidConfig(opts.config);
+      p.log.warn(
+        `Existing config is invalid. Preserved the original bytes at ${backupPath}.\n${err instanceof Error ? err.message : String(err)}`,
       );
+
+      const canConfirmRepair =
+        opts.yes !== true &&
+        opts.invokedByRun !== true &&
+        process.stdin.isTTY === true &&
+        process.stdout.isTTY === true;
+      if (!canConfirmRepair) {
+        p.log.error(
+          `Refusing to replace ${configPath} without confirmation. Rerun interactively to repair from defaults; the original and ${backupPath} are unchanged.`,
+        );
+        p.outro("");
+        process.exitCode = 1;
+        return;
+      }
+
+      const repair = await p.confirm({
+        message: `Repair from defaults? The invalid original is backed up at ${backupPath}.`,
+        initialValue: false,
+      });
+      if (p.isCancel(repair) || !repair) {
+        p.cancel(`Configuration left unchanged. Invalid backup: ${backupPath}`);
+        process.exitCode = 1;
+        return;
+      }
+      invalidBackupPath = backupPath;
     }
   }
 
@@ -400,7 +455,10 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
       "Next commands",
     );
 
-    let shouldRunNow = opts.run === true || opts.yes === true;
+    printManagedInstallHint();
+    const serviceInstalled = await handleOnboardService(opts);
+
+    let shouldRunNow = !serviceInstalled && (opts.run === true || opts.yes === true);
     if (!shouldRunNow && !opts.invokedByRun && process.stdin.isTTY && process.stdout.isTTY) {
       const answer = await p.confirm({
         message: "Start Paperclip now?",
@@ -625,7 +683,9 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     p.log.message(pc.dim(`Using existing local secrets key file at ${keyResult.path}`));
   }
 
-  writeConfig(config, opts.config);
+  writeConfig(config, opts.config, {
+    invalidBackupPath,
+  });
 
   if (tc) trackInstallCompleted(tc, {
     adapterType: server.deploymentMode,
@@ -655,12 +715,16 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     "Next commands",
   );
 
+  printManagedInstallHint();
+
   if (canCreateBootstrapInviteImmediately({ database, server })) {
     p.log.step("Generating bootstrap CEO invite");
     await bootstrapCeoInvite({ config: configPath });
   }
 
-  let shouldRunNow = opts.run === true || opts.yes === true;
+  const serviceInstalled = await handleOnboardService(opts);
+
+  let shouldRunNow = !serviceInstalled && (opts.run === true || opts.yes === true);
   if (!shouldRunNow && !opts.invokedByRun && process.stdin.isTTY && process.stdout.isTTY) {
     const answer = await p.confirm({
       message: "Start Paperclip now?",

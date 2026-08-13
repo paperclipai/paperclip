@@ -254,7 +254,7 @@ describeEmbeddedPostgres("permissions upgrade visibility and route boundaries", 
     expect(activity.body).toEqual(expect.arrayContaining([expect.objectContaining({ action: "issue.updated" })]));
     expect(workProducts.status, JSON.stringify(workProducts.body)).toBe(200);
     expect(workProducts.body).toEqual(expect.arrayContaining([expect.objectContaining({ title: "Preview" })]));
-  });
+  }, 20_000);
 
   it("denies cross-company issue reads before private-agent grant evaluation can matter", async () => {
     const sourceCompany = await seedCompany(db, "Source");

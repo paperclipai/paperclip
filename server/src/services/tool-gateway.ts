@@ -123,7 +123,7 @@ export interface ConnectedMcpGatewayMetadata {
   applicationDisplayName: string;
   connectionId: string;
   catalogEntryId: string;
-  transport: "remote_http" | "local_stdio";
+  transport: "mcp_remote" | "local_stdio";
   gatewayToolName: string;
   upstreamToolName: string;
   catalogName: string;
@@ -234,7 +234,7 @@ type RemoteHttpExecutionResult = {
 };
 
 type RemoteHttpExecutionAudit = {
-  transport: "remote_http";
+  transport: "mcp_remote";
   request: {
     protocol: "MCP JSON-RPC 2.0";
     httpMethod: "POST";
@@ -859,7 +859,7 @@ export function createToolGatewayService(
         eq(toolCatalogEntries.status, "active"),
         isNull(toolCatalogEntries.quarantinedAt),
         eq(toolConnections.companyId, companyId),
-        inArray(toolConnections.transport, ["remote_http", "local_stdio"]),
+        inArray(toolConnections.transport, ["mcp_remote", "local_stdio"]),
         eq(toolConnections.status, "active"),
         eq(toolConnections.enabled, true),
         inArray(toolConnections.healthStatus, ["ok", "healthy"]),
@@ -870,7 +870,7 @@ export function createToolGatewayService(
       .orderBy(toolConnections.name, toolCatalogEntries.name);
 
     const eligibleRows = rows.filter(({ connection, application }) =>
-      (connection.transport === "remote_http" && application.type === "mcp_http")
+      (connection.transport === "mcp_remote" && application.type === "mcp_http")
       || (connection.transport === "local_stdio" && application.type === "mcp_stdio")
     );
     const baseNames = eligibleRows.map(({ catalogEntry, connection, application }) => {
@@ -885,6 +885,9 @@ export function createToolGatewayService(
     }, new Map());
 
     return eligibleRows.map(({ catalogEntry, connection, application }, index) => {
+      if (connection.transport === "rest_api") {
+        throw new Error(`REST API connection ${connection.id} cannot be exposed through the MCP gateway`);
+      }
       const baseName = baseNames[index]!;
       const gatewayToolName = baseNameCounts.get(baseName)! > 1
         ? `${baseName}-${shortStableId(catalogEntry.id)}`
@@ -2355,7 +2358,7 @@ export function createToolGatewayService(
         throw new ToolGatewayHttpError(
           422,
           "A configured credential secret could not be resolved.",
-          "remote_http_missing_secret",
+          "mcp_remote_missing_secret",
           { connectionId: connection.id, credential: ref.name },
         );
       }
@@ -2396,7 +2399,7 @@ export function createToolGatewayService(
         throw new ToolGatewayHttpError(
           422,
           "A configured credential secret could not be resolved.",
-          "remote_http_missing_secret",
+          "mcp_remote_missing_secret",
           { connectionId: connection.id, credential: input.configPath },
         );
       }
@@ -2482,11 +2485,11 @@ export function createToolGatewayService(
         eq(toolConnections.companyId, session.companyId),
       ))
       .limit(1);
-    if (!connection || connection.transport !== "remote_http") {
+    if (!connection || connection.transport !== "mcp_remote") {
       throw new ToolGatewayHttpError(404, `Tool "${tool.name}" not found`, "tool_not_found");
     }
     if (!connection.enabled || connection.status !== "active") {
-      throw new ToolGatewayHttpError(403, "Connection is disabled.", "remote_http_connection_disabled", {
+      throw new ToolGatewayHttpError(403, "Connection is disabled.", "mcp_remote_connection_disabled", {
         connectionId: connection.id,
       });
     }
@@ -2784,7 +2787,7 @@ export function createToolGatewayService(
     return new ToolGatewayHttpError(
       502,
       "Remote MCP response exceeded the gateway size limit",
-      "remote_http_response_too_large",
+      "mcp_remote_response_too_large",
       { maxBytes: MAX_REMOTE_MCP_RESPONSE_BYTES },
     );
   }
@@ -3017,7 +3020,7 @@ export function createToolGatewayService(
     });
     const requestId = `paperclip-tool-${randomUUID()}`;
     const execution: RemoteHttpExecutionAudit = {
-      transport: "remote_http",
+      transport: "mcp_remote",
       request: {
         protocol: "MCP JSON-RPC 2.0",
         httpMethod: "POST",
@@ -3061,7 +3064,7 @@ export function createToolGatewayService(
       };
       if (!response.ok) {
         await markRemoteConnectionHealth(connection, "error", "Remote MCP server returned an HTTP error.");
-        throw new ToolGatewayHttpError(502, "Remote MCP server returned an HTTP error", "remote_http_status", {
+        throw new ToolGatewayHttpError(502, "Remote MCP server returned an HTTP error", "mcp_remote_status", {
           status: response.status,
           connectionId: connection.id,
           catalogEntryId: entry.id,
@@ -3073,7 +3076,7 @@ export function createToolGatewayService(
         payload = parseMcpHttpResponseBody(body, response.headers.get("content-type"));
       } catch {
         await markRemoteConnectionHealth(connection, "error", "Remote MCP server returned invalid JSON.");
-        throw new ToolGatewayHttpError(502, "Remote MCP server returned invalid JSON", "remote_http_invalid_json", {
+        throw new ToolGatewayHttpError(502, "Remote MCP server returned invalid JSON", "mcp_remote_invalid_json", {
           connectionId: connection.id,
           catalogEntryId: entry.id,
           execution,
@@ -3121,7 +3124,7 @@ export function createToolGatewayService(
         });
       }
       await markRemoteConnectionHealth(connection, "error", "Remote MCP tool call failed.");
-      throw new ToolGatewayHttpError(502, "Remote MCP tool call failed", "remote_http_fetch_failed", {
+      throw new ToolGatewayHttpError(502, "Remote MCP tool call failed", "mcp_remote_fetch_failed", {
         connectionId: connection.id,
         catalogEntryId: entry.id,
         execution,
@@ -4067,6 +4070,39 @@ export function createToolGatewayService(
     return { reasonCode, message };
   }
 
+  // Guard for approved-action execution: the issue must still be open. Expires
+  // the claimed request and reflects the interaction lifecycle when it is not.
+  // Called twice — after winning the executing claim, and again immediately
+  // before provider dispatch, because tool/snapshot resolution between the two
+  // involves network calls and leaves a seconds-wide window for the issue to
+  // close.
+  async function assertIssueOpenForApprovedAction(input: {
+    claimed: typeof toolActionRequests.$inferSelect;
+    invocation: typeof toolInvocations.$inferSelect;
+  }): Promise<{ projectId: string | null }> {
+    const { claimed, invocation } = input;
+    const [issue] = await db
+      .select({ status: issues.status, projectId: issues.projectId })
+      .from(issues)
+      .where(and(eq(issues.id, invocation.issueId!), eq(issues.companyId, invocation.companyId)))
+      .limit(1);
+    if (issue && issue.status !== "done" && issue.status !== "cancelled") {
+      return { projectId: issue.projectId };
+    }
+    const expiredAt = new Date();
+    await db
+      .update(toolActionRequests)
+      .set({ status: "expired", resolvedAt: expiredAt, updatedAt: expiredAt })
+      .where(eq(toolActionRequests.id, claimed.id));
+    await reflectToolActionInteractionLifecycle({ actionRequestId: claimed.id, status: "expired" });
+    throw new ToolGatewayHttpError(
+      409,
+      "The issue for this tool action is closed; the approval has expired",
+      "action_issue_closed",
+      { actionRequestId: claimed.id, invocationId: invocation.id },
+    );
+  }
+
   async function executeApprovedAgentInvocation(input: {
     actionRequest: typeof toolActionRequests.$inferSelect;
     invocation: typeof toolInvocations.$inferSelect;
@@ -4102,6 +4138,12 @@ export function createToolGatewayService(
       throw new ToolGatewayHttpError(409, "Tool action request was already consumed", "action_already_consumed");
     }
 
+    // Terminal-issue expiry revokes pending/approved requests, but a claim that
+    // committed just before the issue closed slips past that revocation. Recheck
+    // the issue after winning the claim so a governed action never runs external
+    // side effects for an issue that is already done or cancelled.
+    const issue = await assertIssueOpenForApprovedAction({ claimed, invocation });
+
     const signedPayload = readSignedToolArgumentsPayload({
       signedArguments: claimed.signedArguments,
       invocationId: invocation.id,
@@ -4121,11 +4163,6 @@ export function createToolGatewayService(
       );
     }
 
-    const [issue] = await db
-      .select({ projectId: issues.projectId })
-      .from(issues)
-      .where(and(eq(issues.id, invocation.issueId), eq(issues.companyId, invocation.companyId)))
-      .limit(1);
     const session: ToolGatewaySession = {
       id: `approved-action:${claimed.id}`,
       token: "",
@@ -4181,6 +4218,17 @@ export function createToolGatewayService(
       sensitiveMode: "redact",
       promptInjectionMode: "ignore",
     }).summary;
+    // Final recheck at the last DB write before dispatch: tool and snapshot
+    // resolution above involve network calls, so re-verify the issue is still
+    // open now that only the provider call remains. A close that commits after
+    // this read has raced an execution that was approved, claimed, and verified
+    // while the issue was open; that instant is irreducible for an external
+    // side effect gated by DB state (holding a DB lock across a remote provider
+    // call is not an option), and the accepted linearization is that the
+    // execution wins — its result still lands on the expired card via
+    // reflectToolActionInteractionLifecycle.
+    await assertIssueOpenForApprovedAction({ claimed, invocation });
+
     const startedAt = Date.now();
     await db
       .update(toolInvocations)

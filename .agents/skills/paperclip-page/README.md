@@ -73,8 +73,8 @@ Required for live publishes:
 export AWS_REGION=us-east-1
 export PAPERCLIP_PAGE_BUCKET=paperclip-pages-prod
 export PAPERCLIP_PAGE_BASE_URL=https://pages.paperclip.ing
-export AWS_ACCESS_KEY_ID=...
-export AWS_SECRET_ACCESS_KEY=...
+export PAPERCLIP_PAGE_AWS_ACCESS_KEY_ID=...
+export PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY=...
 ```
 
 Optional:
@@ -82,15 +82,35 @@ Optional:
 ```bash
 export PAPERCLIP_PAGE_DEFAULT_PREFIX=""
 export PAPERCLIP_PAGE_AWS_PROFILE=paperclip-page-uploader
+export PAPERCLIP_PAGE_AWS_SESSION_TOKEN=...  # only with the namespaced key pair
 ```
+
+Credential resolution order inside `publish.sh`:
+
+1. `PAPERCLIP_PAGE_AWS_ACCESS_KEY_ID` + `PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY`
+   (scoped to the helper's `aws` calls; the surrounding process identity is
+   untouched)
+2. `PAPERCLIP_PAGE_AWS_PROFILE`, passed to `aws` as `--profile` (ambient
+   `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` /
+   `AWS_PROFILE` are stripped from the helper's `aws` calls so the named
+   profile always wins)
+3. The ambient AWS credential chain
+
+Setting both the namespaced key pair and `PAPERCLIP_PAGE_AWS_PROFILE` is an
+error.
 
 Recommended Paperclip secret names:
 
 - `paperclip-page-aws-access-key-id`
 - `paperclip-page-aws-secret-access-key`
 
-Bind those secrets into publisher agents as `AWS_ACCESS_KEY_ID` and
-`AWS_SECRET_ACCESS_KEY`. Do not reuse Paperclip's internal S3 attachment/object
+Bind those secrets into publisher agents as `PAPERCLIP_PAGE_AWS_ACCESS_KEY_ID`
+and `PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY`. Never bind them as the global
+`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` names: static env keys override
+`AWS_PROFILE` in the AWS CLI and every SDK, so global names silently switch the
+whole agent run — and every subprocess — to the page-uploader identity and
+break access to anything the uploader cannot reach (Secrets Manager, STS role
+use, other buckets). Do not reuse Paperclip's internal S3 attachment/object
 storage credentials.
 
 ## AWS Setup
@@ -484,16 +504,18 @@ pnpm paperclipai secrets create \
   --value-env PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY
 ```
 
-Bind runtime env to publishing agents:
+Bind runtime env to publishing agents. Use the namespaced names — never the
+global `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, which would shadow the
+host `AWS_PROFILE` identity for the entire agent run:
 
 ```json
 {
-  "AWS_ACCESS_KEY_ID": {
+  "PAPERCLIP_PAGE_AWS_ACCESS_KEY_ID": {
     "type": "secret_ref",
     "secretId": "<access-key-secret-id>",
     "version": "latest"
   },
-  "AWS_SECRET_ACCESS_KEY": {
+  "PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY": {
     "type": "secret_ref",
     "secretId": "<secret-key-secret-id>",
     "version": "latest"

@@ -401,6 +401,7 @@ describe.sequential("workspace runtime service route authorization", () => {
           workspaceStrategy: {
             type: "git_worktree",
             provisionCommand: "touch /tmp/paperclip-rce",
+            runtimeProvisionCommand: "touch /tmp/paperclip-runtime-rce",
           },
         },
       });

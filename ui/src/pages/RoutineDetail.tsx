@@ -19,6 +19,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { buildMarkdownMentionOptions } from "../lib/company-members";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { EmptyState } from "../components/EmptyState";
@@ -68,6 +69,18 @@ import type {
 } from "@paperclipai/shared";
 
 const LAST_SECTION_STORAGE_KEY = "paperclip.routineLastSection";
+
+export function buildRoutineProjectOptions(
+  projects: ReadonlyArray<{ id: string; name: string; description?: string | null; archivedAt?: Date | string | null }>,
+): InlineEntityOption[] {
+  return projects
+    .filter((project) => !project.archivedAt)
+    .map((project) => ({
+      id: project.id,
+      label: project.name,
+      searchText: project.description ?? "",
+    }));
+}
 
 const SECTION_TITLES: Record<RoutineSectionKey, string> = {
   overview: "Overview",
@@ -164,6 +177,8 @@ export function RoutineDetail() {
     priority: "medium",
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
+    activityGatePolicy: "always",
+    activityGateScope: "company",
     variables: [],
     env: null,
   });
@@ -220,8 +235,8 @@ export function RoutineDetail() {
     enabled: !!selectedCompanyId,
   });
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: true }),
+    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
   const { data: companyMembers } = useQuery({
@@ -256,6 +271,8 @@ export function RoutineDetail() {
             priority: routine.priority,
             concurrencyPolicy: routine.concurrencyPolicy,
             catchUpPolicy: routine.catchUpPolicy,
+            activityGatePolicy: routine.activityGatePolicy,
+            activityGateScope: routine.activityGateScope,
             variables: routine.variables,
             env: routine.env ?? null,
           }
@@ -283,6 +300,12 @@ export function RoutineDetail() {
     }
     if (editDraft.catchUpPolicy !== routineDefaults.catchUpPolicy) {
       result.push({ key: "catchUpPolicy", label: "the catch-up policy" });
+    }
+    if (editDraft.activityGatePolicy !== routineDefaults.activityGatePolicy) {
+      result.push({ key: "activityGatePolicy", label: "the advanced run policy" });
+    }
+    if (editDraft.activityGateScope !== routineDefaults.activityGateScope) {
+      result.push({ key: "activityGateScope", label: "the activity gate scope" });
     }
     if (JSON.stringify(editDraft.variables) !== JSON.stringify(routineDefaults.variables)) {
       result.push({ key: "variables", label: "the variables" });
@@ -347,7 +370,7 @@ export function RoutineDetail() {
   const copySecretValue = useCallback(
     async (label: string, value: string) => {
       try {
-        await navigator.clipboard.writeText(value);
+        await copyTextToClipboard(value);
         pushToast({ title: `${label} copied`, tone: "success" });
       } catch (copyError) {
         pushToast({
@@ -567,16 +590,15 @@ export function RoutineDetail() {
     [agents, recentAssigneeIds],
   );
   const projectOptions = useMemo<InlineEntityOption[]>(
-    () =>
-      (projects ?? []).map((project) => ({
-        id: project.id,
-        label: project.name,
-        searchText: project.description ?? "",
-      })),
+    () => buildRoutineProjectOptions(projects ?? []),
     [projects],
   );
   const mentionOptions = useMemo<MentionOption[]>(
-    () => buildMarkdownMentionOptions({ agents, projects, members: companyMembers?.users }),
+    () => buildMarkdownMentionOptions({
+      agents,
+      projects: (projects ?? []).filter((project) => !project.archivedAt),
+      members: companyMembers?.users,
+    }),
     [agents, companyMembers?.users, projects],
   );
 
@@ -641,6 +663,8 @@ export function RoutineDetail() {
         priority: response.routine.priority,
         concurrencyPolicy: response.routine.concurrencyPolicy,
         catchUpPolicy: response.routine.catchUpPolicy,
+        activityGatePolicy: response.routine.activityGatePolicy,
+        activityGateScope: response.routine.activityGateScope,
         variables: response.routine.variables as RoutineVariable[],
         env: (response.routine.env ?? null) as RoutineEnvConfig | null,
       });

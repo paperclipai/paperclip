@@ -35,7 +35,9 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/index.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
@@ -170,21 +172,6 @@ async function waitForRunToFinish(heartbeat: Heartbeat, runId: string, timeoutMs
   return heartbeat.getRun(runId);
 }
 
-async function waitForHeartbeatIdle(db: Db, timeoutMs = 5_000) {
-  const deadline = Date.now() + timeoutMs;
-  let idleSince: number | null = null;
-  while (Date.now() < deadline) {
-    const runs = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
-    if (!runs.some((run) => run.status === "queued" || run.status === "running")) {
-      idleSince ??= Date.now();
-      if (Date.now() - idleSince >= 250) return;
-    } else {
-      idleSince = null;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
-
 async function deleteHeartbeatRunsForCleanup(db: Db) {
   let lastError: unknown = null;
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -235,7 +222,7 @@ async function waitForContainmentSideEffects(input: {
     const hasRecoveryActionComment = recoveryActionId
       ? comments.some((comment) =>
           comment.issueId === input.sourceIssueId &&
-          comment.body.includes(`Recovery action: \`${recoveryActionId}\``))
+          noticeMetadataReferencesRecoveryAction(comment.metadata, recoveryActionId))
       : false;
     if (
       source?.status === "blocked" &&
@@ -699,7 +686,10 @@ async function expectContainedWorkspaceBranchFailure(input: {
     }),
   });
 
-  expect(comments.filter((comment) => comment.issueId === input.sourceIssueId && comment.body.includes(`Recovery action: \`${action.id}\``))).toHaveLength(1);
+  expect(comments.filter((comment) =>
+    comment.issueId === input.sourceIssueId &&
+    noticeMetadataReferencesRecoveryAction(comment.metadata, action.id),
+  )).toHaveLength(1);
   expect(comments.filter((comment) => comment.issueId === input.sameWorkspaceSiblingId)).toHaveLength(0);
   expect(comments.filter((comment) => comment.issueId === input.otherWorkspaceSiblingId)).toHaveLength(0);
 }
@@ -826,14 +816,10 @@ async function expectForwardBranchReconciled(input: {
       ]),
     );
     if (resolvedRecoveryActionId) {
-      expect(comments).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            authorType: "system",
-            body: expect.stringContaining(`Recovery action: \`${resolvedRecoveryActionId}\``),
-          }),
-        ]),
-      );
+      expect(comments.some((comment) =>
+        comment.authorType === "system" &&
+        noticeMetadataReferencesRecoveryAction(comment.metadata, resolvedRecoveryActionId),
+      )).toBe(true);
     }
 
     const activities = await input.db
@@ -875,7 +861,14 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
   }, 20_000);
 
   afterEach(async () => {
-    await waitForHeartbeatIdle(db);
+    // Await every in-flight background heartbeat run to quiescence before the
+    // deletes below. resumeQueuedRuns claims a run and dispatches its execution
+    // fire-and-forget, and the containment path can dispatch a follow-up
+    // recovery wakeup, so a run or wakeup can still write heartbeat_runs and
+    // issues rows when teardown starts. The shared drain also awaits an
+    // in-flight wakeup that is still before run registration, which a plain run
+    // table status poll cannot see.
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
     adapterExecute.mockReset();
     adapterExecute.mockImplementation(async () => ({
       exitCode: 0,

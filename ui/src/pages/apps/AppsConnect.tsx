@@ -15,11 +15,13 @@ import {
 import type { LucideIcon } from "lucide-react";
 import type {
   Agent,
-  AppGalleryEntry,
+  AppDefinition,
   ConnectToolAppResult,
+  ToolApplication,
+  ToolConnection,
   ToolAppConnectionActionSummary,
 } from "@paperclipai/shared";
-import { getToolAppGalleryEntryForUrl } from "@paperclipai/shared";
+import { credentialConfigPath, getAppDefinitionForUrl, getAvailableConnectionMethod } from "@paperclipai/shared";
 import { useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -39,11 +41,15 @@ import { Textarea } from "@/components/ui/textarea";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { copyTextToClipboard } from "@/lib/clipboard";
+import { navigateTopLevel } from "@/lib/browserNavigation";
 import { AppLogo } from "./AppLogo";
+import { appSourceConnectHref, isMcpDirectOAuthConnectSlug } from "./app-connect-policy";
 import { parseGoogleSheetIds } from "./google-sheets";
 import { autoExtendNotice, INSTALL_ALL_WARNING, installInfoNotice, installPayload } from "@/lib/tool-installs";
 
 type Step = "gallery" | "key" | "actions" | "who" | "install" | "success";
+export type OAuthConnectPhase = "entry" | "starting" | "redirecting" | "error";
 
 const ROUTE_STAGE_BY_STEP: Partial<Record<Step, string>> = {
   key: "setup",
@@ -83,8 +89,47 @@ function askFirstLevelsFrom(result: ConnectToolAppResult): string[] {
   return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string") : ["write", "destructive"];
 }
 
-function isGoogleSheetsEntry(entry: AppGalleryEntry | null): boolean {
-  return entry?.key === "google-sheets";
+function isGoogleSheetsEntry(entry: AppDefinition | null): boolean {
+  return entry?.slug === "google-sheets";
+}
+
+function appSourceSlug(application: ToolApplication): string | null {
+  const metadata = application.metadata;
+  if (!metadata) return null;
+  const source = metadata.sourceTemplateKey ?? metadata.galleryKey;
+  return typeof source === "string" ? source : null;
+}
+
+function connectionSourceSlug(connection: ToolConnection): string | null {
+  const source = connection.config?.sourceTemplateKey ?? connection.transportConfig.sourceTemplateKey;
+  return typeof source === "string" ? source : null;
+}
+
+function reusableOAuthConnection(
+  sourceSlug: string | null,
+  applications: ToolApplication[],
+  connections: ToolConnection[],
+  options: { applicationId?: string; draftOnly?: boolean } = {},
+): ToolConnection | null {
+  if (!sourceSlug) return null;
+  const matchingApplicationIds = new Set(
+    applications
+      .filter((application) =>
+        application.status !== "archived" &&
+        appSourceSlug(application) === sourceSlug &&
+        (!options.applicationId || application.id === options.applicationId)
+      )
+      .map((application) => application.id),
+  );
+  return connections.find((connection) => {
+    const matchesApplication = options.applicationId
+      ? connection.applicationId === options.applicationId
+      : matchingApplicationIds.has(connection.applicationId) || connectionSourceSlug(connection) === sourceSlug;
+    return connection.status !== "archived" &&
+      (!options.draftOnly || connection.status === "draft") &&
+      connection.authKind === "oauth" &&
+      matchesApplication;
+  }) ?? null;
 }
 
 export function AppsConnect() {
@@ -95,7 +140,11 @@ export function AppsConnect() {
   const { pushToast } = useToast();
   const [searchParams] = useSearchParams();
   const appKey = routeParams.appKey ?? searchParams.get("appKey") ?? undefined;
-  const zapierSource = searchParams.get("source") === "zapier";
+  const sourceSlug = searchParams.get("source")?.trim() || null;
+  const createNewConnection = searchParams.get("new") === "1";
+  const directOAuthSource = isMcpDirectOAuthConnectSlug(sourceSlug) ? sourceSlug : null;
+  const requestedAppKey = appKey ?? directOAuthSource ?? undefined;
+  const zapierSource = sourceSlug === "zapier";
 
   // Prefill arrives from the app page for reconnects; read once so later
   // wizard navigation doesn't fight the URL.
@@ -108,8 +157,8 @@ export function AppsConnect() {
     };
   });
 
-  const [step, setStep] = useState<Step>(appKey || prefill.link || zapierSource ? "key" : "gallery");
-  const [entry, setEntry] = useState<AppGalleryEntry | null>(null);
+  const [step, setStep] = useState<Step>(requestedAppKey || prefill.link || zapierSource ? "key" : "gallery");
+  const [entry, setEntry] = useState<AppDefinition | null>(null);
   const [galleryName, setGalleryName] = useState("");
   const [linkUrl, setLinkUrl] = useState(prefill.link);
   const [linkName, setLinkName] = useState(prefill.name || (zapierSource ? "Zapier" : ""));
@@ -124,6 +173,10 @@ export function AppsConnect() {
   const [agentIds, setAgentIds] = useState<Set<string>>(new Set());
   const [installMode, setInstallMode] = useState<InstallMode>("none");
   const [installAgentIds, setInstallAgentIds] = useState<Set<string>>(new Set());
+  const [oauthPhase, setOAuthPhase] = useState<OAuthConnectPhase>("entry");
+  const [oauthError, setOAuthError] = useState<string | null>(null);
+  const directOAuthStartedRef = useRef(false);
+  const directOAuthRetryingRef = useRef(false);
 
   const openGallery = () => {
     setEntry(null);
@@ -156,19 +209,152 @@ export function AppsConnect() {
     queryFn: () => toolsApi.listGallery(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const applicationsQuery = useQuery({
+    queryKey: queryKeys.tools.applications(selectedCompanyId ?? "__none__"),
+    queryFn: () => toolsApi.listApplications(selectedCompanyId!),
+    enabled: !!selectedCompanyId && !!directOAuthSource,
+    refetchOnMount: "always",
+  });
+  const connectionsQuery = useQuery({
+    queryKey: queryKeys.tools.connections(selectedCompanyId ?? "__none__"),
+    queryFn: () => toolsApi.listConnections(selectedCompanyId!),
+    enabled: !!selectedCompanyId && !!directOAuthSource,
+    refetchOnMount: "always",
+  });
+  const existingOAuthConnection = useMemo(
+    () => reusableOAuthConnection(
+      directOAuthSource,
+      applicationsQuery.data?.applications ?? [],
+      connectionsQuery.data?.connections ?? [],
+      createNewConnection
+        ? { applicationId: prefill.applicationId, draftOnly: true }
+        : {},
+    ),
+    [applicationsQuery.data, connectionsQuery.data, createNewConnection, directOAuthSource, prefill.applicationId],
+  );
+
+  const directOAuthEntry = entry &&
+    getAvailableConnectionMethod(entry)?.auth === "oauth" &&
+    isMcpDirectOAuthConnectSlug(entry.slug)
+    ? entry
+    : null;
+
+  const setAppStep = (nextStep: Step) => {
+    setStep(nextStep);
+    if (entry) navigate(appConnectHref(entry.slug, nextStep));
+  };
+
+  const oauthStartMutation = useMutation({
+    mutationFn: (connectionId: string) => toolsApi.startOAuth(connectionId),
+    onSuccess: ({ authorizationUrl }) => {
+      setOAuthPhase("redirecting");
+      navigateTopLevel(authorizationUrl);
+    },
+    onError: (error) => {
+      const details = error instanceof ApiError && error.body && typeof error.body === "object"
+        ? (error.body as { details?: { code?: unknown } }).details
+        : null;
+      setOAuthPhase("error");
+      setOAuthError(
+        details?.code === "invalid_grant"
+          ? "Your authorization expired or was revoked. Reconnect to continue."
+          : error instanceof Error
+            ? error.message
+            : "Paperclip couldn’t start secure sign-in. Try again.",
+      );
+    },
+  });
+  const startOAuth = oauthStartMutation.mutate;
+
+  const connectMutation = useMutation({
+    mutationFn: (entryOverride?: AppDefinition) => {
+      const connectEntry = entryOverride ?? entry;
+      if (connectEntry) {
+        const sheetIds = isGoogleSheetsEntry(connectEntry) ? parseGoogleSheetIds(googleSheetsLinks).ids : [];
+        const trimmedGalleryName = galleryName.trim();
+        return toolsApi.connectApp(selectedCompanyId!, {
+          galleryKey: connectEntry.slug,
+          name: trimmedGalleryName || connectEntry.name,
+          credentialValues: credentials,
+          configValues: isGoogleSheetsEntry(connectEntry) ? { allowedSpreadsheetIds: sheetIds } : undefined,
+          applicationId: prefill.applicationId,
+        });
+      }
+      const trimmedKey = linkNeedsKey ? linkKey.trim() : "";
+      const trimmedName = linkName.trim();
+      return toolsApi.connectApp(selectedCompanyId!, {
+        link: linkUrl,
+        name: trimmedName || undefined,
+        credentialValues: trimmedKey ? { [LINK_CREDENTIAL_CONFIG_PATH]: trimmedKey } : undefined,
+        applicationId: prefill.applicationId,
+      });
+    },
+    onSuccess: (result) => {
+      if (result.auth?.kind === "oauth") {
+        setConnectResult(result);
+        const startUrl = result.auth.startUrl?.trim();
+        if (!startUrl) {
+          setOAuthPhase("starting");
+          startOAuth(result.connectionId);
+          return;
+        }
+        setOAuthPhase("redirecting");
+        navigateTopLevel(startUrl);
+        return;
+      }
+      setConnectResult(result);
+      const defaults: Record<string, boolean> = {};
+      for (const a of result.actions.readOnly) defaults[a.catalogEntryId] = true;
+      for (const a of result.actions.canMakeChanges) defaults[a.catalogEntryId] = false;
+      setEnabled(defaults);
+      setInstallMode("none");
+      setInstallAgentIds(new Set());
+      setAppStep("actions");
+    },
+    onError: (error) => {
+      const details = error instanceof ApiError && error.body && typeof error.body === "object"
+        ? (error.body as { details?: { code?: unknown } }).details
+        : null;
+      if (isMcpDirectOAuthConnectSlug(requestedAppKey)) {
+        setOAuthPhase("error");
+        setOAuthError(
+          details?.code === "invalid_grant"
+            ? "Your authorization expired or was revoked. Reconnect to continue."
+            : error instanceof Error
+              ? error.message
+              : "Paperclip couldn’t start secure sign-in. Try again.",
+        );
+        return;
+      }
+      const oauthRequired = details?.code === "oauth_challenge";
+      pushToast({
+        title: oauthRequired ? "Sign-in required" : "Couldn’t connect",
+        body: oauthRequired
+          ? "This app needs you to sign in - coming soon."
+          : error instanceof Error
+            ? error.message
+            : "Please check your key and try again.",
+        tone: "error",
+      });
+    },
+  });
+  const connectApp = connectMutation.mutate;
 
   useEffect(() => {
-    if (!appKey || galleryQuery.isLoading || !galleryQuery.data) return;
+    if (!requestedAppKey || galleryQuery.isLoading || !galleryQuery.data) return;
 
-    const requestedEntry = galleryQuery.data.apps.find((candidate) => candidate.key === appKey);
-    if (!requestedEntry || requestedEntry.authKind === "oauth" || requestedEntry.availability?.available === false) {
+    const requestedEntry = galleryQuery.data.apps.find((candidate) => candidate.slug === requestedAppKey);
+    const method = requestedEntry ? getAvailableConnectionMethod(requestedEntry) : null;
+    const directOAuth = method?.auth === "oauth" && isMcpDirectOAuthConnectSlug(requestedEntry?.slug);
+    const unsupportedOAuth = method?.auth === "oauth" && !directOAuth;
+    if (!requestedEntry || unsupportedOAuth || requestedEntry.availability?.available === false) {
       setEntry(null);
       setStep("gallery");
       navigate("/apps/connect", { replace: true });
       return;
     }
 
-    if (entry?.key !== requestedEntry.key) {
+    if (entry?.slug !== requestedEntry.slug) {
       setEntry(requestedEntry);
       setGalleryName(requestedEntry.name);
       setLinkUrl("");
@@ -183,61 +369,42 @@ export function AppsConnect() {
     setInstallMode("none");
     setInstallAgentIds(new Set());
     setStep("key");
-  }, [appKey, entry?.key, galleryQuery.data, galleryQuery.isLoading, navigate]);
 
-  const setAppStep = (nextStep: Step) => {
-    setStep(nextStep);
-    if (entry) navigate(appConnectHref(entry.key, nextStep));
-  };
+    if (directOAuth && (
+      !applicationsQuery.isFetchedAfterMount ||
+      !connectionsQuery.isFetchedAfterMount
+    )) return;
+    if (directOAuth && directOAuthRetryingRef.current) return;
+    if (directOAuth && (applicationsQuery.isError || connectionsQuery.isError)) {
+      setOAuthPhase("error");
+      setOAuthError("Paperclip couldn’t check for an existing connection. Try again.");
+      return;
+    }
 
-  const connectMutation = useMutation({
-    mutationFn: () => {
-      if (entry) {
-        const sheetIds = isGoogleSheetsEntry(entry) ? parseGoogleSheetIds(googleSheetsLinks).ids : [];
-        const trimmedGalleryName = galleryName.trim();
-        return toolsApi.connectApp(selectedCompanyId!, {
-          galleryKey: entry.key,
-          name: trimmedGalleryName || undefined,
-          credentialValues: credentials,
-          configValues: isGoogleSheetsEntry(entry) ? { allowedSpreadsheetIds: sheetIds } : undefined,
-          applicationId: prefill.applicationId,
-        });
+    if (directOAuth && !directOAuthStartedRef.current) {
+      directOAuthStartedRef.current = true;
+      setOAuthError(null);
+      setOAuthPhase("starting");
+      if (existingOAuthConnection) {
+        startOAuth(existingOAuthConnection.id);
+      } else {
+        connectApp(requestedEntry);
       }
-      const trimmedKey = linkNeedsKey ? linkKey.trim() : "";
-      const trimmedName = linkName.trim();
-      return toolsApi.connectApp(selectedCompanyId!, {
-        link: linkUrl,
-        name: trimmedName || undefined,
-        credentialValues: trimmedKey ? { [LINK_CREDENTIAL_CONFIG_PATH]: trimmedKey } : undefined,
-        applicationId: prefill.applicationId,
-      });
-    },
-    onSuccess: (result) => {
-      setConnectResult(result);
-      const defaults: Record<string, boolean> = {};
-      for (const a of result.actions.readOnly) defaults[a.catalogEntryId] = true;
-      for (const a of result.actions.canMakeChanges) defaults[a.catalogEntryId] = false;
-      setEnabled(defaults);
-      setInstallMode("none");
-      setInstallAgentIds(new Set());
-      setAppStep("actions");
-    },
-    onError: (error) => {
-      const details = error instanceof ApiError && error.body && typeof error.body === "object"
-        ? (error.body as { details?: { code?: unknown } }).details
-        : null;
-      const oauthRequired = details?.code === "oauth_challenge";
-      pushToast({
-        title: oauthRequired ? "Sign-in required" : "Couldn’t connect",
-        body: oauthRequired
-          ? "This app needs you to sign in - coming soon."
-          : error instanceof Error
-            ? error.message
-            : "Please check your key and try again.",
-        tone: "error",
-      });
-    },
-  });
+    }
+  }, [
+    applicationsQuery.isError,
+    applicationsQuery.isFetchedAfterMount,
+    connectApp,
+    connectionsQuery.isError,
+    connectionsQuery.isFetchedAfterMount,
+    entry?.slug,
+    existingOAuthConnection,
+    galleryQuery.data,
+    galleryQuery.isLoading,
+    navigate,
+    requestedAppKey,
+    startOAuth,
+  ]);
 
   const finishMutation = useMutation({
     mutationFn: async () => {
@@ -279,12 +446,64 @@ export function AppsConnect() {
     return <div className="p-6 text-sm text-muted-foreground">Select a company to connect apps.</div>;
   }
 
+  if (directOAuthEntry && step === "key") {
+    return (
+      <OAuthConnectStateScreen
+        entry={directOAuthEntry}
+        phase={oauthPhase}
+        error={oauthError}
+        onRetry={async () => {
+          setOAuthError(null);
+          setOAuthPhase("starting");
+          const connectionId = connectResult?.connectionId ?? existingOAuthConnection?.id;
+          if (connectionId) {
+            startOAuth(connectionId);
+            return;
+          }
+
+          // The create request may have reached the server even when its
+          // response did not reach the browser. Re-read both resources before
+          // creating again so Retry resumes that durable draft instead of
+          // duplicating it.
+          directOAuthRetryingRef.current = true;
+          try {
+            const [applicationsResult, connectionsResult] = await Promise.all([
+              applicationsQuery.refetch(),
+              connectionsQuery.refetch(),
+            ]);
+            if (applicationsResult.isError || connectionsResult.isError) {
+              setOAuthPhase("error");
+              setOAuthError("Paperclip couldn’t check for an existing connection. Try again.");
+              return;
+            }
+            const refreshedConnection = reusableOAuthConnection(
+              directOAuthSource,
+              applicationsResult.data?.applications ?? [],
+              connectionsResult.data?.connections ?? [],
+              createNewConnection
+                ? { applicationId: prefill.applicationId, draftOnly: true }
+                : {},
+            );
+            if (refreshedConnection) {
+              startOAuth(refreshedConnection.id);
+            } else {
+              connectMutation.mutate(directOAuthEntry);
+            }
+          } finally {
+            directOAuthRetryingRef.current = false;
+          }
+        }}
+        onCancel={() => navigate("/apps/browse")}
+      />
+    );
+  }
+
   const appName =
     connectResult?.application.name ??
     entry?.name ??
     (linkName.trim() || defaultLinkName(linkUrl) || "this app");
   const zapierEntry = zapierSource
-    ? galleryQuery.data?.apps.find((app) => app.key === "zapier") ?? null
+    ? galleryQuery.data?.apps.find((app) => app.slug === "zapier") ?? null
     : null;
   const stepLabels = zapierSource
     ? ZAPIER_STEP_LABELS
@@ -311,10 +530,10 @@ export function AppsConnect() {
           labels={stepLabels}
           appIdentity={
             zapierSource
-              ? { name: "Zapier", logoUrl: zapierEntry?.logoUrl ?? null }
+              ? { name: "Zapier", logoUrl: zapierEntry?.branding.logoUrl ?? null }
               : undefined
           }
-          onCancel={() => navigate(zapierSource ? "/apps/browse" : "/apps")}
+          onCancel={() => navigate("/apps")}
         />
       )}
 
@@ -325,6 +544,13 @@ export function AppsConnect() {
           byo={searchParams.get("byo") === "1"}
           source={searchParams.get("source")}
           onPick={(picked) => {
+            if (
+              getAvailableConnectionMethod(picked)?.auth === "oauth" &&
+              isMcpDirectOAuthConnectSlug(picked.slug)
+            ) {
+              navigate(appSourceConnectHref(picked.slug));
+              return;
+            }
             setEntry(picked);
             setGalleryName(picked.name);
             setLinkUrl("");
@@ -338,10 +564,10 @@ export function AppsConnect() {
             setInstallMode("none");
             setInstallAgentIds(new Set());
             setStep("key");
-            navigate(appConnectHref(picked.key, "key"));
+            navigate(appConnectHref(picked.slug, "key"));
           }}
           onUseLink={(url) => {
-            const matchedEntry = getToolAppGalleryEntryForUrl(url, galleryQuery.data?.apps ?? []);
+            const matchedEntry = getAppDefinitionForUrl(url, galleryQuery.data?.apps ?? []);
             setEntry(null);
             setGalleryName("");
             setLinkUrl(url);
@@ -387,7 +613,7 @@ export function AppsConnect() {
                 return;
               }
             }
-            connectMutation.mutate();
+            connectMutation.mutate(undefined);
           }}
         />
       )}
@@ -406,7 +632,7 @@ export function AppsConnect() {
           onKeyChange={setLinkKey}
           submitting={connectMutation.isPending}
           onBack={() => setStep("gallery")}
-          onConnect={() => connectMutation.mutate()}
+          onConnect={() => connectMutation.mutate(undefined)}
         />
       )}
 
@@ -415,8 +641,8 @@ export function AppsConnect() {
           link={linkUrl}
           onLinkChange={setLinkUrl}
           submitting={connectMutation.isPending}
-          onBack={() => navigate("/apps/browse")}
-          onConnect={() => connectMutation.mutate()}
+          onBack={() => navigate("/apps")}
+          onConnect={() => connectMutation.mutate(undefined)}
         />
       )}
 
@@ -470,12 +696,12 @@ export function AppsConnect() {
       {step === "success" && (
         <SuccessStep
           appName={appName}
-          logoUrl={entry?.logoUrl}
+          logoUrl={entry?.branding.logoUrl}
           enabledCount={Object.values(enabled).filter(Boolean).length}
           access={access}
           installMode={installMode}
           installCount={installAgentIds.size}
-          onDone={() => navigate("/apps")}
+          onDone={() => navigate("/apps/connections")}
         />
       )}
     </div>
@@ -528,6 +754,85 @@ function StepHeader({
           <div className="mt-2 text-xs text-muted-foreground">{labels.join("   ·   ")}</div>
         </div>
       )}
+    </div>
+  );
+}
+
+export function OAuthConnectStateScreen({
+  entry,
+  phase,
+  error,
+  onRetry,
+  onCancel,
+}: {
+  entry: AppDefinition;
+  phase: OAuthConnectPhase;
+  error?: string | null;
+  onRetry: () => void;
+  onCancel: () => void;
+}) {
+  const status = phase === "entry"
+    ? {
+        title: `Connect ${entry.name} to Paperclip`,
+        body: `Paperclip will open ${entry.name} so you can choose a workspace and approve access.`,
+      }
+    : phase === "starting"
+      ? {
+          title: "Preparing secure sign-in",
+          body: `Paperclip is creating a secure ${entry.name} connection.`,
+        }
+      : phase === "redirecting"
+        ? {
+            title: `Opening ${entry.name}`,
+            body: `Continue in ${entry.name} to choose a workspace and approve access.`,
+          }
+        : {
+            title: `${entry.name} couldn’t connect`,
+            body: error ?? "Paperclip couldn’t start secure sign-in. Try again.",
+          };
+
+  return (
+    <div className="max-w-5xl">
+      <StepHeader
+        subtitle="Secure MCP sign-in"
+        step="key"
+        activeIndex={0}
+        labels={["Connect", "Review actions", "Choose access", "Install tools"]}
+        appIdentity={{ name: entry.name, logoUrl: entry.branding.logoUrl }}
+        onCancel={onCancel}
+      />
+      <div className="mx-auto max-w-xl rounded-2xl border border-border bg-card p-8">
+        <div className="flex items-start gap-3">
+          <span className="mt-1 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border bg-background">
+            {phase === "error" ? (
+              <Link2 className="h-5 w-5 text-destructive" />
+            ) : phase === "entry" ? (
+              <Lock className="h-5 w-5 text-muted-foreground" />
+            ) : (
+              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+            )}
+          </span>
+          <div className="min-w-0">
+            <h2 className="text-xl font-bold tracking-tight">{status.title}</h2>
+            <p className="mt-1 text-sm text-muted-foreground">{status.body}</p>
+          </div>
+        </div>
+
+        <div className="mt-6 flex items-center gap-2">
+          {phase === "error" ? (
+            <Button type="button" onClick={onRetry}>Try again</Button>
+          ) : (
+            <Button type="button" disabled>
+              {phase === "redirecting" ? `Opening ${entry.name}…` : "Preparing…"}
+            </Button>
+          )}
+          <Button type="button" variant="ghost" onClick={onCancel}>Back to apps</Button>
+        </div>
+        <p className="mt-5 flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Lock className="h-3.5 w-3.5" />
+          Your authorization stays in Paperclip’s encrypted secret store.
+        </p>
+      </div>
     </div>
   );
 }
@@ -607,11 +912,11 @@ function GalleryStep({
   onPasteConfig,
 }: {
   loading: boolean;
-  apps: AppGalleryEntry[];
+  apps: AppDefinition[];
   /** Entered via the "Connect your own MCP server" card (PAP-12371, Finding C): focus the link path. */
   byo?: boolean;
   source?: string | null;
-  onPick: (entry: AppGalleryEntry) => void;
+  onPick: (entry: AppDefinition) => void;
   onUseLink: (link: string) => void;
   onRunYourOwn: () => void;
   onPasteConfig: () => void;
@@ -635,7 +940,7 @@ function GalleryStep({
     return apps.filter((a) => a.name.toLowerCase().includes(q));
   }, [apps, search]);
   const normalizedLink = normalizeAppLink(linkInput);
-  const matchedEntry = normalizedLink ? getToolAppGalleryEntryForUrl(normalizedLink, apps) : null;
+  const matchedEntry = normalizedLink ? getAppDefinitionForUrl(normalizedLink, apps) : null;
   const zapierSource = source === "zapier";
 
   const continueWithLink = () => {
@@ -672,14 +977,15 @@ function GalleryStep({
 
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
         {filtered.map((app) => {
-          const copy = appCopyFor(app.key, app.tagline);
-          const oauth = app.authKind === "oauth";
+          const copy = appCopyFor(app.slug, app.description);
+          const oauth = getAvailableConnectionMethod(app)?.auth === "oauth";
+          const oauthBlocked = oauth && !isMcpDirectOAuthConnectSlug(app.slug);
           const unavailable = app.availability?.available === false;
           return (
             <button
-              key={app.key}
+              key={app.slug}
               type="button"
-              disabled={oauth || unavailable}
+              disabled={oauthBlocked || unavailable}
               title={
                 unavailable
                   ? `${app.name} isn't configured on this instance yet. Ask your Paperclip admin.`
@@ -688,16 +994,16 @@ function GalleryStep({
               onClick={() => onPick(app)}
               className={cn(
                 "flex flex-col rounded-xl border border-border bg-card p-4 text-left transition-colors",
-                oauth || unavailable ? "cursor-not-allowed opacity-60" : "hover:border-foreground/30 hover:bg-accent/40",
+                oauthBlocked || unavailable ? "cursor-not-allowed opacity-60" : "hover:border-foreground/30 hover:bg-accent/40",
               )}
             >
-              <AppLogo name={app.name} logoUrl={app.logoUrl} size={36} />
+              <AppLogo name={app.name} logoUrl={app.branding.logoUrl} size={36} />
               <div className="mt-3 text-sm font-bold text-foreground">{app.name}</div>
               <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">{copy.tagline}</div>
               <div className="mt-3 text-xs font-semibold text-foreground">
                 {unavailable ? (
                   <span className="text-muted-foreground">Not available on this instance - ask your admin.</span>
-                ) : oauth ? (
+                ) : oauthBlocked ? (
                   <span className="text-muted-foreground">Sign-in coming soon</span>
                 ) : (
                   <span>Connect →</span>
@@ -740,7 +1046,7 @@ function GalleryStep({
           {matchedEntry && (
             <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2">
               <div className="flex min-w-0 items-center gap-2 text-sm">
-                <AppLogo name={matchedEntry.name} logoUrl={matchedEntry.logoUrl} size={24} />
+                <AppLogo name={matchedEntry.name} logoUrl={matchedEntry.branding.logoUrl} size={24} />
                 <span className="truncate">This looks like {matchedEntry.name}.</span>
               </div>
               <Button
@@ -750,7 +1056,7 @@ function GalleryStep({
                 disabled={matchedEntry.availability?.available === false}
                 onClick={() => {
                   setLinkError(null);
-                  if (matchedEntry.key === "zapier") {
+                  if (matchedEntry.slug === "zapier") {
                     continueWithLink();
                     return;
                   }
@@ -759,7 +1065,7 @@ function GalleryStep({
               >
                 {matchedEntry.availability?.available === false
                   ? "Not available"
-                  : matchedEntry.key === "zapier"
+                  : matchedEntry.slug === "zapier"
                     ? "Continue"
                     : `Use ${matchedEntry.name}`}
               </Button>
@@ -1037,7 +1343,7 @@ function KeyStep({
   onBack,
   onConnect,
 }: {
-  entry: AppGalleryEntry;
+  entry: AppDefinition;
   name: string;
   onNameChange: (next: string) => void;
   values: Record<string, string>;
@@ -1049,8 +1355,13 @@ function KeyStep({
   onBack: () => void;
   onConnect: () => void;
 }) {
-  const copy = appCopyFor(entry.key, entry.tagline);
-  const fields = entry.credentialFields ?? [];
+  const copy = appCopyFor(entry.slug, entry.description);
+  const method = getAvailableConnectionMethod(entry);
+  const fields = (method?.credentialFields ?? []).map((field) => ({
+    ...field,
+    configPath: credentialConfigPath(field),
+    helpUrl: method?.consoleLinks?.keys ?? method?.consoleLinks?.docs ?? "",
+  }));
   const allFilled = fields.every(
     (f) => f.required === false || (values[f.configPath]?.trim().length ?? 0) > 0,
   );
@@ -1063,7 +1374,7 @@ function KeyStep({
     return (
       <div className="mx-auto max-w-xl rounded-2xl border border-border bg-card p-8">
         <div className="flex items-center gap-3">
-          <AppLogo name={entry.name} logoUrl={entry.logoUrl} size={48} />
+          <AppLogo name={entry.name} logoUrl={entry.branding.logoUrl} size={48} />
           <div>
             <h2 className="text-lg font-bold tracking-tight sm:text-xl">Connect Google Sheets</h2>
             <p className="text-sm text-muted-foreground">{copy.short}</p>
@@ -1087,7 +1398,7 @@ function KeyStep({
                   type="button"
                   variant="outline"
                   className="shrink-0"
-                  onClick={() => void navigator.clipboard?.writeText(robotEmail)}
+                  onClick={() => void copyTextToClipboard(robotEmail).catch(() => {})}
                 >
                   <Copy className="mr-2 h-4 w-4" />
                   Copy
@@ -1136,7 +1447,7 @@ function KeyStep({
   return (
     <div className="mx-auto max-w-xl rounded-2xl border border-border bg-card p-8">
       <div className="flex items-center gap-3">
-        <AppLogo name={entry.name} logoUrl={entry.logoUrl} size={48} />
+        <AppLogo name={entry.name} logoUrl={entry.branding.logoUrl} size={48} />
         <div>
           <h2 className="text-xl font-bold tracking-tight">Connect {entry.name}</h2>
           <p className="text-sm text-muted-foreground">{copy.short}</p>

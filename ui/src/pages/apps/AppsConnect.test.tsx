@@ -3,22 +3,35 @@
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { CONNECTABLE_APP_DEFINITIONS } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "@/lib/queryKeys";
 import { AppsConnect } from "./AppsConnect";
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
+const listApplicationsMock = vi.hoisted(() => vi.fn());
+const listConnectionsMock = vi.hoisted(() => vi.fn());
 const connectAppMock = vi.hoisted(() => vi.fn());
+const startOAuthMock = vi.hoisted(() => vi.fn());
 const finishAppMock = vi.hoisted(() => vi.fn());
 const putConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const listAgentsMock = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
+const navigateTopLevelMock = vi.hoisted(() => vi.fn());
 const mockSearch = vi.hoisted(() => ({ value: "" }));
 const mockParams = vi.hoisted(() => ({ appKey: undefined as string | undefined }));
+
+const ZAPIER = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "zapier")!;
+const NOTION = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "notion")!;
+const GOOGLE_SHEETS = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-sheets")!;
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
     listGallery: (companyId: string) => listGalleryMock(companyId),
+    listApplications: (companyId: string) => listApplicationsMock(companyId),
+    listConnections: (companyId: string) => listConnectionsMock(companyId),
     connectApp: (companyId: string, input: unknown) => connectAppMock(companyId, input),
+    startOAuth: (connectionId: string) => startOAuthMock(connectionId),
     finishApp: (companyId: string, connectionId: string, input: unknown) =>
       finishAppMock(companyId, connectionId, input),
     putConnectionInstalls: (connectionId: string, installs: unknown) =>
@@ -28,6 +41,10 @@ vi.mock("@/api/tools", () => ({
 
 vi.mock("@/api/agents", () => ({
   agentsApi: { list: (companyId: string) => listAgentsMock(companyId) },
+}));
+
+vi.mock("@/lib/browserNavigation", () => ({
+  navigateTopLevel: (target: string) => navigateTopLevelMock(target),
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -122,16 +139,16 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     document.body.appendChild(container);
     listGalleryMock.mockResolvedValue({
       apps: [
-        {
-          key: "zapier",
-          name: "Zapier",
-          tagline: "Automate things",
-          authKind: "api_key",
-          urlPatterns: ["https://zapier.com/*", "https://*.zapier.com/*"],
-          logoUrl: null,
-          credentialFields: [{ configPath: "credentials.authorization", label: "API key", required: true }],
-        },
+        ZAPIER,
       ],
+    });
+    listApplicationsMock.mockResolvedValue({ applications: [] });
+    listConnectionsMock.mockResolvedValue({ connections: [] });
+    startOAuthMock.mockResolvedValue({
+      connectionId: "conn-notion",
+      provider: "notion",
+      authorizationUrl: "https://mcp.notion.com/authorize?state=resumed",
+      expiresAt: "2099-01-01T00:00:00.000Z",
     });
     finishAppMock.mockResolvedValue({});
     putConnectionInstallsMock.mockResolvedValue({ connectionId: "conn-1", installs: [] });
@@ -154,12 +171,12 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     vi.clearAllMocks();
   });
 
-  async function render() {
+  async function render(queryClient?: QueryClient) {
     const root = createRoot(container);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const client = queryClient ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => {
       root.render(
-        <QueryClientProvider client={queryClient}>
+        <QueryClientProvider client={client}>
           <AppsConnect />
         </QueryClientProvider>,
       );
@@ -192,6 +209,350 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     expect(container.textContent).toContain("Connect Zapier");
     expect(container.textContent).not.toContain("Pick the app you want your agents to use.");
+  });
+
+  it("auto-starts the allowlisted Notion source deep link and opens provider sign-in", async () => {
+    mockSearch.value = "source=notion";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    connectAppMock.mockResolvedValueOnce({
+      connectionId: "conn-notion",
+      application: { id: "app-notion", name: "Notion" },
+      connection: { id: "conn-notion" },
+      actions: { readOnly: [], canMakeChanges: [] },
+      catalog: [],
+      suggestedDefaults: {},
+      auth: { kind: "oauth", startUrl: "https://mcp.notion.com/authorize?state=opaque" },
+    });
+
+    await render();
+
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", {
+      galleryKey: "notion",
+      name: "Notion",
+      credentialValues: {},
+      configValues: undefined,
+      applicationId: undefined,
+    });
+    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      "https://mcp.notion.com/authorize?state=opaque",
+    );
+  });
+
+  it("shows an in-flight state while Paperclip prepares Notion sign-in", async () => {
+    mockSearch.value = "source=notion";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    connectAppMock.mockReturnValueOnce(new Promise(() => {}));
+
+    await render();
+
+    expect(container.textContent).toContain("Connect Notion");
+    expect(container.textContent).toContain("Preparing secure sign-in");
+    expect(container.textContent).toContain("Preparing…");
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("resumes an existing Notion OAuth connection instead of creating another draft", async () => {
+    mockSearch.value = "source=notion";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock.mockResolvedValueOnce({
+      applications: [{
+        id: "app-notion",
+        status: "draft",
+        metadata: { sourceTemplateKey: "notion" },
+      }],
+    });
+    listConnectionsMock.mockResolvedValueOnce({
+      connections: [{
+        id: "conn-existing",
+        applicationId: "app-notion",
+        authKind: "oauth",
+        status: "draft",
+        config: { sourceTemplateKey: "notion" },
+        transportConfig: {},
+      }],
+    });
+    startOAuthMock.mockResolvedValueOnce({
+      connectionId: "conn-existing",
+      provider: "notion",
+      authorizationUrl: "https://mcp.notion.com/authorize?state=existing",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+
+    await render();
+
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).toHaveBeenCalledWith("conn-existing");
+    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      "https://mcp.notion.com/authorize?state=existing",
+    );
+  });
+
+  it("creates a fresh Notion OAuth connection when the provider landing requests another", async () => {
+    mockSearch.value = "source=notion&applicationId=app-notion&new=1";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock.mockResolvedValueOnce({
+      applications: [{
+        id: "app-notion",
+        status: "active",
+        metadata: { sourceTemplateKey: "notion" },
+      }],
+    });
+    listConnectionsMock.mockResolvedValueOnce({
+      connections: [{
+        id: "conn-existing",
+        applicationId: "app-notion",
+        authKind: "oauth",
+        status: "active",
+        config: { sourceTemplateKey: "notion" },
+        transportConfig: {},
+      }, {
+        id: "conn-other-draft",
+        applicationId: "app-other",
+        authKind: "oauth",
+        status: "draft",
+        config: { sourceTemplateKey: "notion" },
+        transportConfig: {},
+      }],
+    });
+    connectAppMock.mockResolvedValueOnce({
+      connectionId: "conn-new",
+      application: { id: "app-notion", name: "Notion" },
+      connection: { id: "conn-new" },
+      actions: { readOnly: [], canMakeChanges: [] },
+      catalog: [],
+      suggestedDefaults: {},
+      auth: { kind: "oauth", startUrl: "https://mcp.notion.com/authorize?state=new" },
+    });
+
+    await render();
+
+    expect(startOAuthMock).not.toHaveBeenCalledWith("conn-existing");
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", {
+      galleryKey: "notion",
+      name: "Notion",
+      credentialValues: {},
+      configValues: undefined,
+      applicationId: "app-notion",
+    });
+    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      "https://mcp.notion.com/authorize?state=new",
+    );
+  });
+
+  it("waits for fresh connection data before creating a Notion OAuth draft", async () => {
+    mockSearch.value = "source=notion";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.tools.applications("company-1"), { applications: [] });
+    queryClient.setQueryData(queryKeys.tools.connections("company-1"), { connections: [] });
+
+    let resolveApplications!: (value: unknown) => void;
+    let resolveConnections!: (value: unknown) => void;
+    listApplicationsMock.mockReturnValueOnce(new Promise((resolve) => {
+      resolveApplications = resolve;
+    }));
+    listConnectionsMock.mockReturnValueOnce(new Promise((resolve) => {
+      resolveConnections = resolve;
+    }));
+
+    await render(queryClient);
+
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+
+    resolveApplications({
+      applications: [{
+        id: "app-notion",
+        status: "draft",
+        metadata: { sourceTemplateKey: "notion" },
+      }],
+    });
+    resolveConnections({
+      connections: [{
+        id: "conn-refreshed",
+        applicationId: "app-notion",
+        authKind: "oauth",
+        status: "draft",
+        config: { sourceTemplateKey: "notion" },
+        transportConfig: {},
+      }],
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).toHaveBeenCalledWith("conn-refreshed");
+  });
+
+  it("resumes Notion OAuth after a failed connection lookup is retried", async () => {
+    mockSearch.value = "source=notion";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock
+      .mockRejectedValueOnce(new Error("Lookup unavailable"))
+      .mockResolvedValueOnce({
+        applications: [{
+          id: "app-notion",
+          status: "draft",
+          metadata: { sourceTemplateKey: "notion" },
+        }],
+      });
+    listConnectionsMock
+      .mockResolvedValueOnce({ connections: [] })
+      .mockResolvedValueOnce({
+        connections: [{
+          id: "conn-after-retry",
+          applicationId: "app-notion",
+          authKind: "oauth",
+          status: "draft",
+          config: { sourceTemplateKey: "notion" },
+          transportConfig: {},
+        }],
+      });
+
+    await render();
+
+    expect(container.textContent).toContain("couldn’t check for an existing connection");
+    await act(async () => {
+      buttonByText("Try again")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).toHaveBeenCalledWith("conn-after-retry");
+    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      "https://mcp.notion.com/authorize?state=resumed",
+    );
+  });
+
+  it("restores the Notion lookup error when retrying still fails", async () => {
+    mockSearch.value = "source=notion";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock.mockRejectedValue(new Error("Lookup unavailable"));
+
+    await render();
+
+    await act(async () => {
+      buttonByText("Try again")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("couldn’t check for an existing connection");
+    expect(buttonByText("Try again")).toBeTruthy();
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
+  it("retries OAuth on the prepared connection without creating another draft", async () => {
+    mockSearch.value = "source=notion";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    connectAppMock.mockResolvedValueOnce({
+      connectionId: "conn-prepared",
+      application: { id: "app-notion", name: "Notion" },
+      connection: { id: "conn-prepared" },
+      actions: { readOnly: [], canMakeChanges: [] },
+      catalog: [],
+      suggestedDefaults: {},
+      auth: { kind: "oauth", startUrl: null },
+    });
+    startOAuthMock
+      .mockRejectedValueOnce(new Error("Provider unavailable"))
+      .mockResolvedValueOnce({
+        connectionId: "conn-prepared",
+        provider: "notion",
+        authorizationUrl: "https://mcp.notion.com/authorize?state=retry",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      });
+
+    await render();
+
+    expect(container.textContent).toContain("Provider unavailable");
+    await act(async () => {
+      buttonByText("Try again")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    expect(startOAuthMock).toHaveBeenCalledTimes(2);
+    expect(startOAuthMock).toHaveBeenLastCalledWith("conn-prepared");
+    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      "https://mcp.notion.com/authorize?state=retry",
+    );
+  });
+
+  it("recovers a response-lost Notion draft before retrying creation", async () => {
+    mockSearch.value = "source=notion";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock
+      .mockResolvedValueOnce({ applications: [] })
+      .mockResolvedValueOnce({
+        applications: [{
+          id: "app-response-lost",
+          status: "draft",
+          metadata: { sourceTemplateKey: "notion" },
+        }],
+      });
+    listConnectionsMock
+      .mockResolvedValueOnce({ connections: [] })
+      .mockResolvedValueOnce({
+        connections: [{
+          id: "conn-response-lost",
+          applicationId: "app-response-lost",
+          authKind: "oauth",
+          status: "draft",
+          config: { sourceTemplateKey: "notion" },
+          transportConfig: {},
+        }],
+      });
+    connectAppMock.mockRejectedValueOnce(new Error("Response lost"));
+    startOAuthMock.mockResolvedValueOnce({
+      connectionId: "conn-response-lost",
+      provider: "notion",
+      authorizationUrl: "https://mcp.notion.com/authorize?state=recovered",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+
+    await render();
+
+    expect(container.textContent).toContain("Response lost");
+    await act(async () => {
+      buttonByText("Try again")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    expect(startOAuthMock).toHaveBeenCalledWith("conn-response-lost");
+    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      "https://mcp.notion.com/authorize?state=recovered",
+    );
+  });
+
+  it("keeps non-allowlisted OAuth apps blocked", async () => {
+    const slack = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "slack")!;
+    mockParams.appKey = "slack";
+    listGalleryMock.mockResolvedValueOnce({ apps: [slack] });
+
+    await render();
+
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/connect", { replace: true });
+  });
+
+  it("routes the enabled Notion gallery tile through the generic source deep link", async () => {
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    await render();
+
+    const notionTile = buttonContaining("Notion");
+    expect(notionTile?.disabled).toBe(false);
+    expect(notionTile?.textContent).toContain("Connect");
+
+    await act(async () => {
+      notionTile?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/connect?source=notion");
   });
 
   it("choosing No and clicking Check link connects with no credentials", async () => {
@@ -280,15 +641,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     mockSearch.value = "byo=1&source=zapier";
     listGalleryMock.mockResolvedValueOnce({
       apps: [
-        {
-          key: "zapier",
-          name: "Zapier",
-          tagline: "Automate things",
-          authKind: "api_key",
-          urlPatterns: ["https://zapier.com/*", "https://*.zapier.com/*"],
-          logoUrl: "https://example.com/zapier.png",
-          credentialFields: [],
-        },
+        { ...ZAPIER, branding: { ...ZAPIER.branding, logoUrl: "https://example.com/zapier.png" } },
       ],
     });
     connectAppMock.mockResolvedValueOnce({
@@ -475,16 +828,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   it("shows the Google Sheets robot email and keeps empty sheet links from continuing", async () => {
     listGalleryMock.mockResolvedValueOnce({
       apps: [
-        {
-          key: "google-sheets",
-          name: "Google Sheets",
-          tagline: "Read and update selected spreadsheets.",
-          authKind: "none",
-          urlPatterns: ["https://docs.google.com/spreadsheets/*"],
-          logoUrl: "https://example.com/sheets.png",
-          credentialFields: [],
-          availability: { available: true, robotEmail: "robot@paperclip.iam.gserviceaccount.com" },
-        },
+        { ...GOOGLE_SHEETS, availability: { available: true, robotEmail: "robot@paperclip.iam.gserviceaccount.com" } },
       ],
     });
     await render();
@@ -505,16 +849,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   it("shows inline validation for invalid Google Sheets links", async () => {
     listGalleryMock.mockResolvedValueOnce({
       apps: [
-        {
-          key: "google-sheets",
-          name: "Google Sheets",
-          tagline: "Read and update selected spreadsheets.",
-          authKind: "none",
-          urlPatterns: ["https://docs.google.com/spreadsheets/*"],
-          logoUrl: "https://example.com/sheets.png",
-          credentialFields: [],
-          availability: { available: true, robotEmail: "robot@paperclip.iam.gserviceaccount.com" },
-        },
+        { ...GOOGLE_SHEETS, availability: { available: true, robotEmail: "robot@paperclip.iam.gserviceaccount.com" } },
       ],
     });
     await render();
@@ -615,16 +950,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   it("a custom name on the Google Sheets step is sent to the connect mutation", async () => {
     listGalleryMock.mockResolvedValueOnce({
       apps: [
-        {
-          key: "google-sheets",
-          name: "Google Sheets",
-          tagline: "Read and update selected spreadsheets.",
-          authKind: "none",
-          urlPatterns: ["https://docs.google.com/spreadsheets/*"],
-          logoUrl: "https://example.com/sheets.png",
-          credentialFields: [],
-          availability: { available: true, robotEmail: "robot@paperclip.iam.gserviceaccount.com" },
-        },
+        { ...GOOGLE_SHEETS, availability: { available: true, robotEmail: "robot@paperclip.iam.gserviceaccount.com" } },
       ],
     });
     await render();
@@ -659,16 +985,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   it("passes parsed Google Sheets IDs as connection config values", async () => {
     listGalleryMock.mockResolvedValueOnce({
       apps: [
-        {
-          key: "google-sheets",
-          name: "Google Sheets",
-          tagline: "Read and update selected spreadsheets.",
-          authKind: "none",
-          urlPatterns: ["https://docs.google.com/spreadsheets/*"],
-          logoUrl: "https://example.com/sheets.png",
-          credentialFields: [],
-          availability: { available: true, robotEmail: "robot@paperclip.iam.gserviceaccount.com" },
-        },
+        { ...GOOGLE_SHEETS, availability: { available: true, robotEmail: "robot@paperclip.iam.gserviceaccount.com" } },
       ],
     });
     await render();

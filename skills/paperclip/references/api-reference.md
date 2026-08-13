@@ -191,6 +191,48 @@ The response also includes `blockedBy` and `blocks` arrays showing first-class d
 
 Blocker wake semantics are strict: `issue_blockers_resolved` only fires when every blocker reaches `done`. A blocker moved to `cancelled` still requires manual re-triage or relation cleanup.
 
+### Issue Update Response (`PATCH /api/issues/:issueId`)
+
+The default successful response is the full, authoritative updated issue row plus:
+
+- `changes`: only values that actually changed in the committed write, keyed by field
+- `comment`: the comment created by the optional `comment` input, or `null`
+
+Each `changes` entry contains `from` and `to`. Requested no-ops are omitted, so an update with no receipt-visible changes returns `changes: {}`. Server-applied side effects can appear when they are part of the same committed update; `updatedAt` is not emitted as a change.
+
+```json
+{
+  "id": "issue-99",
+  "identifier": "PAP-99",
+  "priority": "high",
+  "updatedAt": "2026-07-30T12:01:00.000Z",
+  "changes": {
+    "priority": { "from": "medium", "to": "high" }
+  },
+  "comment": null
+}
+```
+
+Receipt values for `description` are limited to the first 200 characters and include `updated: true`. A `title` receipt uses the same truncation and marker when either its `from` or `to` value exceeds 200 characters. The default full response still contains the authoritative, untruncated current row values.
+
+If the request includes `blockedByIssueIds`, the response also echoes the normalized committed ID array as top-level `blockedByIssueIds` and returns the current `blockedBy` and `blocks` summary arrays. Empty arrays are confirmed-empty state, not missing data: `blockedByIssueIds: []`, `blockedBy: []`, or `blocks: []` may be used directly without a follow-up read.
+
+Clients that need only a compact receipt can send `Prefer: return=minimal`. The response includes `Preference-Applied: return=minimal` and exactly this shape:
+
+```json
+{
+  "id": "issue-99",
+  "identifier": "PAP-99",
+  "updatedAt": "2026-07-30T12:01:00.000Z",
+  "changes": {
+    "priority": { "from": "medium", "to": "high" }
+  },
+  "comment": null
+}
+```
+
+**The PATCH response is the authoritative post-write state. A confirming GET after a 2xx PATCH is unnecessary.**
+
 ### Blocker Diagnostics (`GET /api/issues/:issueId/diagnostics/blockers`)
 
 Use this read-only diagnostic when an issue appears stuck on dependencies, especially after an `issue_blockers_resolved` wake or when an issue looks blocked against a blocker that is already `done`.
@@ -498,7 +540,7 @@ DELETE /api/issues/issue-310/inbox-archive
 
 Both mutations require `X-Paperclip-Run-Id` and write activity-log entries. Archive state is per user, reversible, and may be invalidated by later activity that resurfaces the issue. Agent policy is default-open for the responsible user, unless that user disables agent inbox management or restricts it to an allowlist.
 
-Pass `{ "userId": "user-9" }` only for an intentional cross-user operation. The agent must have `inbox:manage`, optionally scoped to that user. A missing responsible user, disabled policy, allowlist denial, low-trust boundary, or missing cross-user grant returns `403`; do not work around those denials.
+Pass `{ "userId": "user-9" }` only for an intentional cross-user operation. The target user must have saved an `open` policy or an allowlist containing the agent, or the agent must have `inbox:manage` optionally scoped to that user. An unsaved implicit-open policy is responsible-user-only. A missing responsible user, disabled policy, allowlist denial, low-trust boundary, or missing cross-user authorization returns `403`; do not work around those denials.
 
 ### Worked Example: Reviewer / Approver Heartbeat
 
@@ -863,6 +905,12 @@ POST /api/issues/{issueId}/interactions
 }
 ```
 
+Resolver governance:
+
+- Create accepts optional `resolverPolicy: "board_only" | "board_or_agents"`. If omitted, the company per-kind default applies (`ask_user_questions` defaults to `board_or_agents`; every other kind defaults to `board_only`). The response snapshots immutable `requestedResolverPolicy` and `effectiveResolverPolicy`; later governance edits never widen an existing pending card. `PATCH /api/companies/{companyId}` accepts `interactionResolverGovernance` keyed by kind, with optional `defaultPolicy` and `cap`; a `board_only` cap always wins.
+- Create also accepts optional `addresseeAgentId` (an invokable same-company agent other than the creator) for structured agent-to-agent asks: Paperclip wakes the addressee with reason `interaction_pending`, only the addressee or a board user may resolve, and the pending card is omitted from the company attention feed. Not allowed with `request_confirmation.payload.toolAction` (`400`).
+- When `effectiveResolverPolicy` is `board_or_agents`, an eligible agent resolves through the same `accept`/`reject`/`respond`/`verdicts` routes with run-authenticated identity; resolution records `resolvedByAgentId`/`resolvedByRunId`. The resolver cannot be the creator agent or source run, low-trust and watchdog-scoped actors are denied, and `payload.toolAction` confirmations stay board-only regardless of policy.
+
 Rules:
 
 - `continuationPolicy: "wake_assignee"` wakes the assignee only after a `request_confirmation` is accepted.
@@ -973,6 +1021,9 @@ Resolved result (`RequestCheckboxConfirmationResult`):
 ```
 
 Other outcomes match `request_confirmation`:
+
+- `withdrawn` — `{ outcome: "withdrawn", reason }`. Any pending kind may be withdrawn by its creator agent, the current issue assignee agent, or a board user. A non-assignee withdrawal follows the interaction continuation policy; an assignee withdrawing its own waiting card does not wake itself.
+- `issue_closed` — `{ outcome: "issue_closed" }`. Transitioning the issue to `done` or `cancelled` expires all pending interactions without continuation wakes; listing a terminal issue also performs a catch-up sweep for historical residue.
 
 - `rejected` — `{ outcome: "rejected", reason, commentId }`. `selectedOptionIds` is absent.
 - `superseded_by_comment` — `{ outcome: "superseded_by_comment", commentId }`. The next board/user comment after a pending interaction with `supersedeOnUserComment: true` triggers this.
@@ -1196,13 +1247,13 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/issues/:issueId/diagnostics/wakes` | Read-only wake-history diagnostic with `diagnosis`, bounded events, and Case-B inference |
 | GET    | `/api/issues/:issueId/diagnostics/subtree` | Read-only subtree diagnostic combining visible child, blocker, and wake edges with `diagnosis` |
 | POST   | `/api/companies/:companyId/issues` | Create issue (supports `blockedByIssueIds: string[]` for dependencies)                   |
-| PATCH  | `/api/issues/:issueId`             | Update issue (optional `comment` field; `blockedByIssueIds` replaces blocker set)        |
+| PATCH  | `/api/issues/:issueId`             | Update issue; response is authoritative and includes `changes` + `comment` (`Prefer: return=minimal` supported); `blockedByIssueIds` replaces blocker set |
 | POST   | `/api/issues/:issueId/checkout`    | Atomic checkout (claim + start). Idempotent if you already own it.                       |
 | POST   | `/api/issues/:issueId/release`     | Release task ownership                                                                   |
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
 | GET    | `/api/issues/:issueId/comments/:commentId` | Get a specific comment by ID                                                     |
 | POST   | `/api/issues/:issueId/comments`    | Add comment (@-mentions trigger wakeups)                                                 |
-| POST   | `/api/issues/:issueId/inbox-archive` | Archive issue from responsible user's inbox; optional `userId` requires cross-user grant |
+| POST   | `/api/issues/:issueId/inbox-archive` | Archive issue from responsible user's inbox; optional `userId` requires saved target-user opt-in or cross-user grant |
 | DELETE | `/api/issues/:issueId/inbox-archive` | Reverse inbox archive; same target and policy rules                                    |
 | GET    | `/api/issues/:issueId/interactions` | List issue-thread interactions                                                          |
 | POST   | `/api/issues/:issueId/interactions` | Create issue-thread interaction (`suggest_tasks`, `ask_user_questions`, `request_confirmation`, `request_checkbox_confirmation`, `request_item_verdicts`) |
@@ -1210,6 +1261,7 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/issues/:issueId/interactions/:interactionId/reject` | Reject suggested tasks or confirmation                                       |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/respond` | Respond to structured questions                                             |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/verdicts` | Submit partial item verdicts for `request_item_verdicts`                 |
+| POST   | `/api/issues/:issueId/interactions/:interactionId/withdraw` | Withdraw any pending interaction; optional `{ "reason": string }`; creator agent, current assignee agent, or board user |
 | GET    | `/api/issues/:issueId/documents`   | List issue documents                                                                     |
 | GET    | `/api/issues/:issueId/documents/:key` | Get issue document by key                                                            |
 | PUT    | `/api/issues/:issueId/documents/:key` | Create or update issue document (send `baseRevisionId` when updating)                |
@@ -1293,6 +1345,107 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/companies/:companyId/secrets` | List secrets (metadata only)        |
 | POST   | `/api/companies/:companyId/secrets` | Create secret                       |
 | PATCH  | `/api/secrets/:secretId`            | Update secret value (creates new version) |
+| POST   | `/api/agents/me/secret-proposals`   | Propose a secret or agent binding for board approval |
+| GET    | `/api/agents/me/secret-proposals`   | List proposals created by the agent and incoming bindings targeting it |
+| DELETE | `/api/agents/me/secret-proposals/:id` | Withdraw one pending proposal created by the agent |
+| GET    | `/api/agents/me/secrets`             | List secrets accessible to the current run (metadata only) |
+| POST   | `/api/agents/me/secrets/:key/value`  | Fetch one granted secret value; request body is empty |
+
+#### Agent secret proposals
+
+**Never paste a credential into a comment, document, file, or transcript.** When a credential is supplied to an agent or returned by a secure flow — pasted by a user, returned by an OAuth flow, delivered by email, or obtained from another secure source — send it directly to `POST /api/agents/me/secret-proposals` using the current run-bound agent JWT. Proposal responses never return the value, fingerprint, or value length to the agent.
+
+Keep the credential in memory or pass it directly from the secure source; do not place the literal value in the command text or echo it. The example assumes `PROPOSED_SECRET_VALUE` is already populated without printing it:
+
+```bash
+PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"
+PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
+jq -n \
+  --arg name "integrations/vendor/api-token" \
+  --arg value "$PROPOSED_SECRET_VALUE" \
+  --arg justification "Credential supplied for the current task" \
+  '{kind:"secret", name:$name, value:$value, justification:$justification}' |
+curl -s -X POST \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data-binary @- \
+  "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
+unset PROPOSED_SECRET_VALUE
+```
+
+Full request body fields for a secret proposal:
+
+```json
+{
+  "kind": "secret",
+  "name": "integrations/vendor/api-token",
+  "description": "Optional operator-facing description",
+  "value": "<pass directly from the secure source; do not paste into a transcript>",
+  "justification": "Credential supplied for the current task"
+}
+```
+
+`name` is a slash-separated path without whitespace or empty segments. The value is limited to 64 KiB. The proposal is linked automatically to the authenticated heartbeat run and its origin issue.
+
+The response omits the credential. Use the returned proposal `id` to propose a binding; a binding to the proposing agent omits `targetAgentId`:
+
+```bash
+jq -n \
+  --arg secretProposalId "$SECRET_PROPOSAL_ID" \
+  --arg configPath "env.VENDOR_API_TOKEN" \
+  --arg justification "Inject the approved credential into my adapter environment" \
+  '{kind:"binding", secretProposalId:$secretProposalId, configPath:$configPath, justification:$justification}' |
+curl -s -X POST \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data-binary @- \
+  "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
+```
+
+A binding must specify exactly one of `secretProposalId` or `secretId`. `configPath` accepts `env.<KEY>` for environment injection or `access.<ALIAS>` for API-only access. Under the default `self_and_reports` policy, `targetAgentId` may identify a downward report of the proposer; omitting it targets the proposer. Other targets are denied, and approval rechecks the current chain of command.
+
+`GET /api/agents/me/secret-proposals` returns `{ "proposals": [...] }` containing proposals created by the authenticated agent plus binding proposals whose target is that agent. Secret values, value fingerprints, and value lengths are omitted. `DELETE /api/agents/me/secret-proposals/:id` changes a proposal created by that agent from `pending` to `withdrawn`; other agents' proposals and terminal proposals cannot be withdrawn.
+
+Agents may have at most 20 pending proposals and may create at most 20 proposals per minute; resolve or withdraw existing proposals before creating more. Low-trust review tokens, task-bridge keys, skill-test tokens, long-lived agent keys, and principals denied `secrets:propose` cannot use these routes. Do not work around a denial by exposing the credential elsewhere; escalate through the issue without including the value.
+
+Board approval creates a secret through the normal secret service. Binding approval synchronizes the resulting `secret_ref` into the target agent's adapter config; when the binding depends on a pending secret proposal, the board may approve both atomically with `cascade: true`. Approval posts a structured resolution comment to the origin issue and wakes its assignee. Rejection records the supplied reason, posts and wakes the origin issue, scrubs ciphertext, and rejects dependent pending bindings. Withdrawal and expiry also scrub ciphertext; expiry/rejection of a secret proposal resolves dependent pending bindings safely.
+
+#### Agent secret access
+
+Agent secret access requires the current run-bound agent JWT. An `env.*` binding implies API read access; an `access.*` binding provides API access without injecting the value into the process environment.
+
+List response:
+
+```json
+{
+  "secrets": [
+    {
+      "key": "github_token",
+      "name": "GitHub token",
+      "description": null,
+      "delivery": "env",
+      "projectionClass": "unclassified",
+      "latestVersion": 2,
+      "versionSelector": "latest",
+      "resolvedVersion": 2
+    }
+  ]
+}
+```
+
+`delivery` is `env`, `api`, or `both`. List responses never include values, secret IDs, binding IDs, or config paths. Successful lists write `activity_log.action = secret.access.listed` but do not create `secret_access_events` rows.
+
+Value response (`Cache-Control: no-store`):
+
+```json
+{
+  "key": "github_token",
+  "value": "decrypted-secret-value",
+  "version": 2
+}
+```
+
+Every successful or failed value fetch writes both `secret_access_events` and `activity_log.action = secret.value.read`. Prefer on-demand fetch for occasional, large, structured, or non-env-inheriting consumers; keep env injection for values required on every run. Never log or paste fetched values into issues, comments, or documents.
 
 ---
 

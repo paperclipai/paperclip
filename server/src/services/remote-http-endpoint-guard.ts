@@ -20,16 +20,16 @@ export function parseRemoteHttpEndpoint(
   error: RemoteHttpEndpointErrorFactory,
 ): URL {
   if (typeof value !== "string" || value.trim().length === 0) {
-    throw error("Remote MCP connection requires config.url", "remote_http_url_missing");
+    throw error("Remote MCP connection requires config.url", "mcp_remote_url_missing");
   }
   let parsed: URL;
   try {
     parsed = new URL(value);
   } catch {
-    throw error("Remote MCP connection URL is invalid", "remote_http_url_invalid");
+    throw error("Remote MCP connection URL is invalid", "mcp_remote_url_invalid");
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw error("Remote MCP connection URL must use http or https", "remote_http_url_invalid");
+    throw error("Remote MCP connection URL must use http or https", "mcp_remote_url_invalid");
   }
   return parsed;
 }
