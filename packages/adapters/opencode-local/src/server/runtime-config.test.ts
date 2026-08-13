@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
+import { applyRuntimeGatewayMcp, prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 
 const cleanupPaths = new Set<string>();
 
@@ -319,6 +319,84 @@ describe("prepareOpenCodeRuntimeConfig", () => {
 
     expect(prepared.env).toEqual({ XDG_CONFIG_HOME: configHome });
     expect(prepared.notes).toEqual([]);
+    await prepared.cleanup();
+  });
+
+  // C1 — per-agent gateway identity.
+  const PER_RUN = [
+    {
+      name: "Vercel Deploy",
+      url: "http://127.0.0.1:3100/api/tool-gateway/gateways/abc123/mcp",
+      token: "pcgw_perrun_scoped",
+      connectionId: "conn-vercel",
+    },
+  ];
+  const inheritedMcp = {
+    agentdeals: { type: "remote", url: "https://agentdeals.example/mcp", enabled: true },
+    paperclipgw: {
+      type: "remote",
+      url: "http://127.0.0.1:3100/mcp/gateways/gw_shared_static",
+      headers: { Authorization: "Bearer pcgw_shared_rhen" },
+      enabled: true,
+    },
+  };
+
+  it("applyRuntimeGatewayMcp strips the shared gateway, keeps external MCPs, injects per-agent gateways", () => {
+    const out = applyRuntimeGatewayMcp(inheritedMcp, PER_RUN);
+    expect(out.agentdeals).toEqual(inheritedMcp.agentdeals); // external MCP preserved
+    expect(out.paperclipgw).toBeUndefined(); // shared /mcp/gateways/ entry stripped
+    expect(out["Vercel Deploy"]).toEqual({
+      type: "remote",
+      url: "http://127.0.0.1:3100/api/tool-gateway/gateways/abc123/mcp",
+      headers: { Authorization: "Bearer pcgw_perrun_scoped" },
+      enabled: true,
+    });
+  });
+
+  it("applyRuntimeGatewayMcp also strips an inherited per-run gateway url shape (idempotent re-inject)", () => {
+    const out = applyRuntimeGatewayMcp(
+      { stale: { type: "remote", url: "http://127.0.0.1:3100/api/tool-gateway/gateways/OLD/mcp" } },
+      PER_RUN,
+    );
+    expect(out.stale).toBeUndefined();
+    expect(out["Vercel Deploy"]).toBeDefined();
+  });
+
+  it("writes per-agent gateway into the runtime config and removes the shared static gateway", async () => {
+    const configHome = await makeConfigHome({ permission: { read: "allow" }, mcp: inheritedMcp });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      runtimeMcpServers: PER_RUN,
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const configPath = path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json");
+    const runtimeConfig = JSON.parse(await fs.readFile(configPath, "utf8")) as {
+      mcp: Record<string, { url?: string; headers?: Record<string, string> }>;
+    };
+    expect(runtimeConfig.mcp.paperclipgw).toBeUndefined();
+    expect(runtimeConfig.mcp.agentdeals).toBeDefined();
+    expect(runtimeConfig.mcp["Vercel Deploy"].headers?.Authorization).toBe("Bearer pcgw_perrun_scoped");
+    // the run token is a secret — the file must be 0600
+    const mode = (await fs.stat(configPath)).mode & 0o777;
+    expect(mode).toBe(0o600);
+    expect(prepared.notes.some((n) => n.includes("per-agent runtime MCP gateway"))).toBe(true);
+    await prepared.cleanup();
+  });
+
+  it("fail-open: with no runtime servers the inherited gateway config is left untouched", async () => {
+    const configHome = await makeConfigHome({ permission: { read: "allow" }, mcp: inheritedMcp });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      runtimeMcpServers: [],
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { mcp: Record<string, unknown> };
+    expect(runtimeConfig.mcp.paperclipgw).toBeDefined(); // static net preserved until C4
+    expect(prepared.notes.some((n) => n.includes("per-agent runtime MCP gateway"))).toBe(false);
     await prepared.cleanup();
   });
 });

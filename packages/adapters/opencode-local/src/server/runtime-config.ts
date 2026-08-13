@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
+import type { AdapterRuntimeMcpServer } from "@paperclipai/adapter-utils";
 
 type PreparedOpenCodeRuntimeConfig = {
   env: Record<string, string>;
@@ -19,6 +20,38 @@ function resolveXdgConfigHome(env: Record<string, string>): string {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// Matches a Paperclip tool-gateway MCP URL in either shape: the shared static gateway
+// (`/mcp/gateways/<slug>`) or a per-run runtime gateway (`/api/tool-gateway/gateways/<id>/mcp`).
+const PAPERCLIP_GATEWAY_URL = /\/(mcp\/gateways|tool-gateway\/gateways)\//;
+
+// C1 (per-agent gateway identity): produce the OpenCode `mcp` block for a run that carries its
+// own runtime gateway server(s). The shared opencode.json ships ONE static gateway entry that all
+// agents authenticate through as Rhen; here we DROP any inherited Paperclip-gateway entry and
+// inject one per-run entry per runtime server (each scoped to THIS agent by a short-lived
+// heartbeat_run token), so the agent acts as itself. Non-Paperclip MCP entries (e.g. agentdeals)
+// are preserved untouched. Pure so it is unit-testable without touching the filesystem. The caller
+// only invokes this when there IS at least one runtime server — with none, it leaves the inherited
+// config alone (fail-open: the static gateway stays the net until C4 retires it).
+export function applyRuntimeGatewayMcp(
+  existingMcp: Record<string, unknown>,
+  runtimeMcpServers: AdapterRuntimeMcpServer[],
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(existingMcp)) {
+    const url = isPlainObject(value) && typeof value.url === "string" ? value.url : "";
+    if (!PAPERCLIP_GATEWAY_URL.test(url)) out[key] = value;
+  }
+  for (const server of runtimeMcpServers) {
+    out[server.name] = {
+      type: "remote",
+      url: server.url,
+      headers: { Authorization: `Bearer ${server.token}` },
+      enabled: true,
+    };
+  }
+  return out;
 }
 
 // Recursively replace {env:VAR} placeholders with the resolved value. Used to bake
@@ -106,6 +139,7 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
   targetIsRemote?: boolean;
+  runtimeMcpServers?: AdapterRuntimeMcpServer[];
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
   if (!skipPermissions) {
@@ -227,7 +261,24 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     nextConfig.small_model = smallModel;
     notes.push(`Pinned OpenCode small_model to ${smallModel}.`);
   }
-  await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
+
+  // C1 — per-agent gateway identity. When this run carries its own runtime gateway server(s),
+  // replace the inherited shared static gateway with the per-run, per-agent one(s). Fail-open: with
+  // no runtime servers, leave the inherited mcp block untouched so the run is never worse off than
+  // today (the static gateway remains until C4 retires it).
+  const runtimeMcpServers = input.runtimeMcpServers ?? [];
+  if (runtimeMcpServers.length > 0) {
+    const existingMcp = isPlainObject(existingConfig.mcp) ? existingConfig.mcp : {};
+    nextConfig.mcp = applyRuntimeGatewayMcp(existingMcp, runtimeMcpServers);
+    notes.push(
+      `Injected ${runtimeMcpServers.length} per-agent runtime MCP gateway(s) and stripped the inherited shared gateway (connections: ${runtimeMcpServers.map((s) => s.name).join(", ")}).`,
+    );
+  }
+
+  // 0600 — the runtime config now carries a short-lived per-run gateway bearer token. mkdtemp gives
+  // a 0700 dir, but pin the file too (fs.cp may have copied the source file's broader mode).
+  await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await fs.chmod(runtimeConfigPath, 0o600);
 
   return {
     env: {

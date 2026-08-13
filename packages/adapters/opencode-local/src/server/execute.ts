@@ -308,7 +308,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
-  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
+  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({
+    env,
+    config,
+    // C1: per-agent gateway identity — consume the per-run runtime MCP gateways the server mints
+    // for this run (empty when the agent has no permitted connections → inherited config untouched).
+    runtimeMcpServers: ctx.runtimeMcp?.getServers() ?? [],
+  });
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
   try {
