@@ -9,7 +9,7 @@ import {
 } from "./validators/issue.js";
 
 describe("issue thread interaction schemas", () => {
-  it("parses request_confirmation payloads with default assignee wake continuation", () => {
+  it("parses request_confirmation payloads without an implicit continuation", () => {
     const parsed = createIssueThreadInteractionSchema.parse({
       kind: "request_confirmation",
       payload: {
@@ -27,7 +27,7 @@ describe("issue thread interaction schemas", () => {
 
     expect(parsed).toMatchObject({
       kind: "request_confirmation",
-      continuationPolicy: "wake_assignee",
+      continuationPolicy: "none",
       payload: {
         prompt: "Apply this plan?",
         acceptLabel: "Apply",

@@ -127,6 +127,19 @@ describe("stdin file race (parent PAP-4037)", () => {
 
   // ---- Poller tests -----------------------------------------------------
 
+  it("closes the child when teardown removes the session directory", async () => {
+    const poller = await startPollerWrapper();
+
+    await rm(poller.sessionDir, { recursive: true, force: true });
+
+    await expect(Promise.race([
+      poller.exited,
+      delay(2_000).then(() => {
+        throw new Error("Poller did not exit after its session directory was removed.");
+      }),
+    ])).resolves.toBeUndefined();
+  });
+
   it("delivers a stdin file that appears empty first and then gets content", async () => {
     const poller = await startPollerWrapper();
 

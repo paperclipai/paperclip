@@ -412,10 +412,74 @@ export async function readLocalServicePortOwner(port: number) {
       .split("\n")
       .map((line) => Number.parseInt(line.trim(), 10))
       .find((value) => Number.isInteger(value) && value > 0);
-    return firstPid ?? null;
+    if (firstPid) return firstPid;
+  } catch {
+    // Minimal Linux images commonly omit lsof. Fall through to /proc so
+    // runtime-service adoption and auto-port conflict detection still work.
+  }
+
+  if (process.platform !== "linux") return null;
+  return await readLinuxPortOwnerFromProc(port);
+}
+
+async function readLinuxPortOwnerFromProc(port: number) {
+  const portHex = port.toString(16).toUpperCase().padStart(4, "0");
+  const listeningSocketInodes = new Set<string>();
+
+  for (const socketTable of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+    let contents: string;
+    try {
+      contents = await fs.readFile(socketTable, "utf8");
+    } catch {
+      continue;
+    }
+
+    for (const line of contents.split("\n").slice(1)) {
+      const columns = line.trim().split(/\s+/);
+      if (columns.length < 10) continue;
+      const localAddress = columns[1] ?? "";
+      const state = columns[3] ?? "";
+      const inode = columns[9] ?? "";
+      if (state === "0A" && localAddress.endsWith(`:${portHex}`) && /^\d+$/.test(inode)) {
+        listeningSocketInodes.add(inode);
+      }
+    }
+  }
+
+  if (listeningSocketInodes.size === 0) return null;
+
+  let processEntries: string[];
+  try {
+    processEntries = await fs.readdir("/proc");
   } catch {
     return null;
   }
+
+  for (const processEntry of processEntries) {
+    if (!/^\d+$/.test(processEntry)) continue;
+    const fdDir = path.join("/proc", processEntry, "fd");
+    let descriptors: string[];
+    try {
+      descriptors = await fs.readdir(fdDir);
+    } catch {
+      continue;
+    }
+
+    for (const descriptor of descriptors) {
+      let target: string;
+      try {
+        target = await fs.readlink(path.join(fdDir, descriptor));
+      } catch {
+        continue;
+      }
+      const match = /^socket:\[(\d+)\]$/.exec(target);
+      if (match?.[1] && listeningSocketInodes.has(match[1])) {
+        return Number.parseInt(processEntry, 10);
+      }
+    }
+  }
+
+  return null;
 }
 
 export async function readLocalServiceProcessCwd(pid: number) {

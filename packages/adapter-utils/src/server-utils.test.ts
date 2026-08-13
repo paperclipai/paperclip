@@ -101,10 +101,24 @@ function isPidAlive(pid: number) {
 async function waitForPidExit(pid: number, timeoutMs = 2_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (!isPidAlive(pid)) return true;
+    if (await isPidExited(pid)) return true;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  return !isPidAlive(pid);
+  return await isPidExited(pid);
+}
+
+async function isPidExited(pid: number) {
+  if (!isPidAlive(pid)) return true;
+  if (process.platform !== "linux") return false;
+  try {
+    const stat = await fs.readFile(`/proc/${pid}/stat`, "utf8");
+    // A killed descendant can remain as a zombie when the container's PID 1
+    // does not reap adopted children. It has exited even though kill(pid, 0)
+    // continues to resolve until the zombie entry is reaped.
+    return stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z ");
+  } catch {
+    return true;
+  }
 }
 
 async function waitForTextMatch(read: () => string, pattern: RegExp, timeoutMs = 1_000) {

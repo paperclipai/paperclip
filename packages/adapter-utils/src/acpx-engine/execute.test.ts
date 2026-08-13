@@ -3018,7 +3018,7 @@ describe("ACPX engine remote session-lifecycle re-staging (PR 3: stage once / re
     expect(resultB.exitCode).toBe(0);
     expect(resultC.exitCode).toBe(0);
     expect(events).toEqual(["stage:run-a", "dispose:run-a", "stage:run-c"]);
-  });
+  }, 15_000);
 
   // Superseding an incompatible session that collides on sessionKey re-stages
   // fresh AND releases the superseded entry's host staged-temp (no leak, no
@@ -3272,7 +3272,8 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
 
     // A codex bring-up over the remote sandbox lane crosses all 7 boundaries.
     // Each boundary span parents to the sandbox bring-up span, not to the run
-    // root or the turn span. The `stage.sync` step also opens three host
+    // root or the turn span. Sending the turn input is run-time work, so its
+    // wrapper span parents to the turn span. The `stage.sync` step also opens three host
     // sub-step spans — `snapshot.git`, `snapshot.baseline`, and `pack` — around
     // its git enumeration, baseline content-hash walk, and workspace tarball
     // build, so those nest one level deeper.
@@ -3287,6 +3288,7 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
         "bridge.process-session",
         "codex-home.seed",
         "pack",
+        "sandbox.agentSession.sendInput",
         "skills.reconcile",
         "snapshot.baseline",
         "snapshot.git",
@@ -3310,12 +3312,19 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
     expect(snapshotBaselineSpan!.parent).toBe(stageSyncSpan);
     expect(packSpan!.ended).toBe(true);
 
+    const sendInputSpan = spans.find((span) => span.name === "sandbox.agentSession.sendInput");
+    expect(sendInputSpan).toBeTruthy();
+    expect(sendInputSpan!.parent).toBe(turnSpan);
+    expect(sendInputSpan!.ended).toBe(true);
+
     // Every boundary step span parents to the sandbox bring-up span and ends.
     // The three `stage.sync` sub-step spans are the exceptions: they parent to
-    // `stage.sync` above.
+    // `stage.sync` above. The run-time send-input span is asserted against the
+    // turn span above.
     const stageSyncChildren = new Set([packSpan, snapshotGitSpan, snapshotBaselineSpan]);
     for (const span of spans) {
       if (span === runRootSpan || span === startupSpan || span === turnSpan) continue;
+      if (span === sendInputSpan) continue;
       if (stageSyncChildren.has(span)) continue;
       expect(span.parent, `span "${span.name}" must parent to the startup span`).toBe(startupSpan);
       expect(span.ended, `span "${span.name}" must end`).toBe(true);

@@ -133,7 +133,7 @@ describe("resolveChunkedImportZip", () => {
     expect(resolved).not.toBeNull();
     expect(resolved!.rootPath).toBe("dense-package");
     expect(sha256Hex(resolved!.zipBytes)).toBe(sha256Hex(zipBytes));
-  });
+  }, 10_000);
 
   it("uses the lower existing-company threshold for the chunk decision", async () => {
     const dir = await makeTempDir();

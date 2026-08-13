@@ -1935,7 +1935,20 @@ const stdinParseRetries = new Map();
 
 async function pollStdin() {
   while (!stdinClosed) {
-    const entries = (await fs.readdir(stdinDir).catch(() => [])).filter((name) => name.endsWith(".json")).sort();
+    let entries;
+    try {
+      entries = (await fs.readdir(stdinDir)).filter((name) => name.endsWith(".json")).sort();
+    } catch (error) {
+      // Teardown removes the run-owned session directory after queueing the
+      // final stdinEnd marker. If removal wins that race, treat the missing
+      // directory as the same terminal signal instead of polling forever.
+      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+        stdinClosed = true;
+        child.stdin.end();
+        break;
+      }
+      entries = [];
+    }
     for (const name of entries) {
       if (stdinClosed) break;
       const file = path.posix.join(stdinDir, name);

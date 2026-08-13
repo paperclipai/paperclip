@@ -42,7 +42,10 @@ console.log(JSON.stringify({
 }
 
 async function writeFakeSandboxCursorAgent(commandPath: string, capturePath: string): Promise<void> {
-  const script = `#!/usr/bin/env node
+  // The local sandbox runner deliberately supplies a remote-style PATH that
+  // need not contain the host Node installation. Use this test process's
+  // absolute executable instead of making the fixture depend on PATH lookup.
+  const script = `#!${process.execPath}
 const fs = require("node:fs");
 
 const payload = {
