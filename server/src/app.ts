@@ -29,6 +29,7 @@ import { summarySlotRoutes } from "./routes/summary-slots.js";
 import { statusCardRoutes } from "./routes/status-cards.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
+import type { SetupTokenSessionService } from "./services/setup-token-session.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
@@ -39,6 +40,7 @@ import { pipelineRoutes } from "./routes/pipelines.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
+import { onboardingSeedRoutes } from "./routes/onboarding-seed.js";
 import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
@@ -259,6 +261,7 @@ export async function createApp(
     deploymentExposure: DeploymentExposure;
     allowedHostnames: string[];
     bindHost: string;
+    authPublicBaseUrl?: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
     instanceId?: string;
@@ -384,7 +387,41 @@ export async function createApp(
   api.use(summarySlotRoutes(db));
   api.use(statusCardRoutes(db));
   api.use(teamsCatalogRoutes(db));
-  api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
+  // The setup-token login session service. The router builds it and hands it
+  // back through the callback below, so the shutdown hook can cancel every live
+  // session (SR-4).
+  let setupTokenLoginService: SetupTokenSessionService | null = null;
+  // The dedicated proxy IP or CIDR allowlist for the confidential setup-token
+  // login responses (SR-7). The global `TRUST_PROXY` setting does not satisfy
+  // the guard; an operator sets this allowlist to the real TLS-terminating
+  // proxy addresses. An empty value keeps the confidential responses on direct
+  // TLS (or a `local_trusted` loopback peer) only.
+  const setupTokenLoginProxyAllowlist = (process.env.CLAUDE_LOGIN_TRUSTED_PROXIES ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  // The production server does not bind `setupTokenLogin` yet, so the start route
+  // fails closed with a fixed no-secret 503 and the login never spawns a process
+  // or holds a lease. This is a deliberate staged rollout: the live transport
+  // needs a real sandbox-lease manager, a live pseudo-terminal factory over the
+  // sandbox provider, and a durable cleanup store (the in-router default store is
+  // in-memory only). Each of those is a separate follow-up that goes through its
+  // own security review before the production server binds `setupTokenLogin`.
+  api.use(
+    agentRoutes(db, {
+      pluginWorkerManager: workerManager,
+      deploymentMode: opts.deploymentMode,
+      confidentialProxyAllowlist: setupTokenLoginProxyAllowlist,
+      onSetupTokenLoginService: (service) => {
+        setupTokenLoginService = service;
+        // Startup reaper (SR-4): release any lease whose login session is
+        // terminal or past its deadline after a restart. The DB is ready here.
+        void service.reap().catch((err) => {
+          logger.error({ err }, "Setup-token login startup reaper failed");
+        });
+      },
+    }),
+  );
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
   api.use(caseRoutes(db, opts.storageService));
@@ -403,6 +440,7 @@ export async function createApp(
   }));
   api.use(executionWorkspaceRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(goalRoutes(db));
+  api.use(onboardingSeedRoutes(db));
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(secretRoutes(db));
@@ -533,6 +571,7 @@ export async function createApp(
       deploymentExposure: opts.deploymentExposure,
       bindHost: opts.bindHost,
       allowedHostnames: opts.allowedHostnames,
+      authPublicBaseUrl: opts.authPublicBaseUrl,
     }),
   );
   app.use("/api", api);
@@ -792,6 +831,9 @@ export async function createApp(
     viteHtmlRenderer?.dispose();
     hostServiceCleanup.disposeAll();
     hostServiceCleanup.teardown();
+    // Cancel every live setup-token login session, so each direct child stops
+    // before the server releases each lease (SR-4).
+    void setupTokenLoginService?.shutdown();
   };
   app.locals.paperclipShutdown = shutdownAppServices;
 

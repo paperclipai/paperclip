@@ -277,6 +277,17 @@ export type {
   AdapterEnvironmentTestStatus,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
+  AdapterAuthSessionStatus,
+  AdapterAuthSessionInternalStatus,
+  AdapterAuthSessionFailure,
+  AdapterAuthSessionResponse,
+  AdapterAuthSessionPrompt,
+  AdapterAuthSessionOwnerResponse,
+  StartAdapterAuthSessionRequest,
+} from "./agent.js";
+export {
+  ADAPTER_AUTH_SESSION_STATUSES,
+  ADAPTER_AUTH_SESSION_INTERNAL_STATUSES,
 } from "./agent.js";
 export type {
   AgentEligibilityAgent,
@@ -300,6 +311,8 @@ export type {
   DocumentAnnotationThread,
   DocumentAnnotationThreadWithComments,
   PlanReviewContext,
+  DocumentReviewContext,
+  DocumentReviewContextDocument,
   PlanReviewContextAuthor,
   PlanReviewContextComment,
   PlanReviewContextThread,

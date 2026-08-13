@@ -552,6 +552,81 @@ describe("environment routes", () => {
       expect(res.body.envVars).toEqual({ MY_AGENT_TOOL_SETTING: "updated-value", EXTRA: "added" });
     });
 
+    it("scopes the envVars patch to an explicit companyId query for a multi-company actor", async () => {
+      const row = createPlatformSandboxEnvironment();
+      mockEnvironmentService.getById.mockResolvedValue(row);
+      mockEnvironmentService.update.mockResolvedValue({ ...row, envVars: { A: "1" } });
+      // No prior bindings and two memberships: neither inference path can
+      // pin a company, so the explicit query context must carry the save.
+      mockSecretService.listBindingCompanyIdsForTarget.mockResolvedValue([]);
+      const app = createApp({
+        ...ownerAdminActor,
+        companyIds: ["company-1", "company-2"],
+        memberships: [
+          { companyId: "company-1", status: "active", membershipRole: "owner" },
+          { companyId: "company-2", status: "active", membershipRole: "member" },
+        ],
+      });
+
+      const res = await request(app)
+        .patch("/api/environments/env-managed-1?companyId=company-1")
+        .send({ envVars: { A: "1" } });
+
+      expect(res.status).toBe(200);
+      expect(mockSecretService.normalizeEnvBindingsForPersistence).toHaveBeenCalledWith(
+        "company-1",
+        { A: "1" },
+        expect.anything(),
+      );
+    });
+
+    it("falls back to the instance's only company when the actor's memberships cannot pin one", async () => {
+      const row = createPlatformSandboxEnvironment();
+      mockEnvironmentService.getById.mockResolvedValue(row);
+      mockEnvironmentService.update.mockResolvedValue({ ...row, envVars: { A: "1" } });
+      mockSecretService.listBindingCompanyIdsForTarget.mockResolvedValue([]);
+      // An instance admin provisioned without membership rows — the
+      // owner-as-admin shape on managed stacks.
+      const app = createApp({
+        ...ownerAdminActor,
+        companyIds: [],
+        memberships: [],
+      });
+
+      const res = await request(app)
+        .patch("/api/environments/env-managed-1")
+        .send({ envVars: { A: "1" } });
+
+      expect(res.status).toBe(200);
+      expect(mockSecretService.normalizeEnvBindingsForPersistence).toHaveBeenCalledWith(
+        "company-1",
+        { A: "1" },
+        expect.anything(),
+      );
+    });
+
+    it("still fails closed when no companyId context is resolvable on a multi-company instance", async () => {
+      mockEnvironmentService.getById.mockResolvedValue(createPlatformSandboxEnvironment());
+      mockSecretService.listBindingCompanyIdsForTarget.mockResolvedValue([]);
+      mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1", "company-2"]);
+      const app = createApp({
+        ...ownerAdminActor,
+        companyIds: ["company-1", "company-2"],
+        memberships: [
+          { companyId: "company-1", status: "active", membershipRole: "owner" },
+          { companyId: "company-2", status: "active", membershipRole: "member" },
+        ],
+      });
+
+      const res = await request(app)
+        .patch("/api/environments/env-managed-1")
+        .send({ envVars: { A: "1" } });
+
+      expect(res.status).toBe(422);
+      expect(res.body.error).toContain("requires a companyId context");
+      expect(mockEnvironmentService.update).not.toHaveBeenCalled();
+    });
+
     it("rejects a patch that mixes envVars with any other field on the managed sandbox row", async () => {
       mockEnvironmentService.getById.mockResolvedValue(createPlatformSandboxEnvironment());
       const app = createApp(ownerAdminActor);
@@ -2497,7 +2572,9 @@ describe("environment routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(mockProbeEnvironment).toHaveBeenCalledWith(expect.anything(), environment, {
-      companyId: null,
+      // The instance has exactly one company, so the secret-context fallback
+      // resolves it even though the actor carries no memberships.
+      companyId: "company-1",
       pluginWorkerManager: undefined,
       applyCustomImageTemplate: false,
       acquireSandboxRuntimeLease: false,
@@ -2538,6 +2615,9 @@ describe("environment routes", () => {
     };
     mockEnvironmentService.getById.mockResolvedValue(environment);
     mockSecretService.listBindingCompanyIdsForTarget.mockResolvedValue([]);
+    // A multi-company instance keeps the context genuinely ambiguous — a
+    // single-company instance would resolve via the instance fallback.
+    mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1", "company-2"]);
     const app = createApp({
       type: "board",
       userId: "user-1",

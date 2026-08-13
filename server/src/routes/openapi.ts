@@ -587,6 +587,13 @@ const refreshExternalObjectsBodySchema = z.object({
   objectIds: z.array(z.string().uuid()).max(50).optional(),
 }).strict();
 
+// The start route reads the body directly, so document the accepted fields
+// here. A sandbox environment is required. The time-to-live is optional.
+const startAdapterLoginSessionSchema = z.object({
+  environmentId: z.string().min(1),
+  ttlSeconds: z.number().optional(),
+});
+
 const environmentCustomImageCompanyQuerySchema = z.object({
   companyId: z.string().optional(),
 }).strict();
@@ -919,6 +926,7 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/approvals/{id}/comments",
   "POST /api/companies/{companyId}/assets/images",
   "POST /api/companies/{companyId}/logo",
+  "POST /api/companies/{companyId}/onboarding-seed",
   "POST /api/cli-auth/challenges",
   "POST /api/board-api-keys",
   "POST /api/companies",
@@ -2101,6 +2109,46 @@ registry.registerPath({
     body: jsonBody(testAdapterEnvironmentSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/adapters/{type}/login-sessions",
+  tags: ["adapters"],
+  summary: "Start a company-scoped adapter device login",
+  request: {
+    params: z.object({ companyId: z.string(), type: z.string() }),
+    body: jsonBody(startAdapterLoginSessionSchema),
+  },
+  responses: {
+    201: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/adapters/{type}/login-sessions/{sessionId}",
+  tags: ["adapters"],
+  summary: "Read an adapter device login session",
+  request: {
+    params: z.object({ companyId: z.string(), type: z.string(), sessionId: z.string() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/adapters/{type}/login-sessions/{sessionId}/cancel",
+  tags: ["adapters"],
+  summary: "Cancel an adapter device login session",
+  request: {
+    params: z.object({ companyId: z.string(), type: z.string(), sessionId: z.string() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 // ─── Issues ──────────────────────────────────────────────────────────────────
@@ -4441,6 +4489,99 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
+// Setup-token login session routes. The owner user starts one session, reads the
+// login prompt, submits the browser code, and receives the token. The prompt,
+// code, and token responses require a confidential transport; the guard returns
+// 403 when the transport is not confidential.
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/setup-token-login-sessions",
+  tags: ["agents"],
+  summary: "Start a setup-token login session for an agent",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    201: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    503: r.serverError,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/agents/{id}/setup-token-login-sessions/{sessionId}/prompt",
+  tags: ["agents"],
+  summary: "Read the login prompt for a setup-token login session",
+  request: { params: z.object({ id: z.string(), sessionId: z.string() }) },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/setup-token-login-sessions/{sessionId}/code",
+  tags: ["agents"],
+  summary: "Submit the browser code for a setup-token login session",
+  request: { params: z.object({ id: z.string(), sessionId: z.string() }) },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/setup-token-login-sessions/{sessionId}/cancel",
+  tags: ["agents"],
+  summary: "Cancel a setup-token login session",
+  request: { params: z.object({ id: z.string(), sessionId: z.string() }) },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/setup-token-login-sessions/{sessionId}/expire",
+  tags: ["agents"],
+  summary: "Expire a setup-token login session",
+  request: { params: z.object({ id: z.string(), sessionId: z.string() }) },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/setup-token-login-sessions/{sessionId}/token",
+  tags: ["agents"],
+  summary: "Receive the token from a completed setup-token login session",
+  request: { params: z.object({ id: z.string(), sessionId: z.string() }) },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
 // ─── Issue interactions & tree ───────────────────────────────────────────────
 
 registry.registerPath({
@@ -4652,6 +4793,15 @@ registry.registerPath({
   summary: "Upload company logo",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/onboarding-seed",
+  tags: ["companies"],
+  summary: "Apply the onboarding seed Paperclip Cloud collected at signup",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 422: r.unprocessable },
 });
 
 registry.registerPath({

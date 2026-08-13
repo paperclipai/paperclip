@@ -42,6 +42,25 @@ import type {
 } from "@paperclipai/plugin-sdk";
 import { performSyncIn, performSyncOut, withProviderSpan } from "./file-sync.js";
 
+// The Claude `setup-token` login pseudo-terminal (PTY) session for this provider.
+// The session runs the login command on a real pseudo-terminal, streams the
+// terminal output, and delivers the delayed browser code plus the Enter byte. A
+// later phase binds the opener to `sandbox.process` and wraps it with the
+// `createSetupTokenPtyTransport` factory from `@paperclipai/adapter-utils` to
+// build the transport the login runner drives.
+export {
+  createDaytonaSetupTokenPtySessionOpener,
+  openDaytonaSetupTokenPtySession,
+} from "./setup-token-pty.js";
+export type {
+  SetupTokenPtySession,
+  SetupTokenPtySessionOpener,
+  DaytonaPtyHandle,
+  DaytonaPtyProcess,
+  DaytonaPtyCreateOptions,
+  DaytonaSetupTokenPtyOptions,
+} from "./setup-token-pty.js";
+
 // Injectable monotonic clock for provider-boundary timing (Open Q1). Defaults
 // to the real wall clock; `plugin.test.ts` overrides it via
 // `setDaytonaTimingClockForTest` so the measured `durationMs`/`getDurationMs`

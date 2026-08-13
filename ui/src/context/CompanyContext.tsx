@@ -46,7 +46,15 @@ export function resolveBootstrapCompanySelection(input: {
   const selectableCompanies = input.sidebarCompanies.length > 0
     ? input.sidebarCompanies
     : input.companies;
-  if (input.selectedCompanyId && selectableCompanies.some((company) => company.id === input.selectedCompanyId)) {
+  // An already-selected company only needs to EXIST — not to be featured in
+  // the sidebar. The Layout route-sync selects whatever company the URL names
+  // (archived included, since archived pages are still routable); if this
+  // resolver vetoed that selection against the sidebar-filtered list, the two
+  // effects would re-select against each other forever and blow React's
+  // nested-update limit (the archived-company blank-screen crash). The
+  // sidebar filter keeps shaping fresh boots below, where no explicit
+  // selection exists yet.
+  if (input.selectedCompanyId && input.companies.some((company) => company.id === input.selectedCompanyId)) {
     return input.selectedCompanyId;
   }
   if (input.storedCompanyId && selectableCompanies.some((company) => company.id === input.storedCompanyId)) {

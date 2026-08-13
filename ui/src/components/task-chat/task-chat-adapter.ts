@@ -21,12 +21,6 @@ export interface TaskChatAdapterContext {
    * writes and get a "for {user}" attribution chip (the open cross-task write design (attribution)).
    */
   issueAssigneeAgentId?: string | null;
-  /**
-   * Capitalized mode chip for agent-authored bubbles ("Agent mode" / "Plan
-   * mode" / "Ask mode") — resolved per comment, so each reply is tagged with
-   * the mode its request actually ran under (not the issue's current mode).
-   */
-  agentModeLabelFor?: (comment: IssueChatComment) => string | undefined;
 }
 
 function effectiveAgentId(comment: IssueChatComment): string | null {
@@ -98,7 +92,6 @@ export function commentsToTaskChatItems(
       optimistic,
       agentIcon,
       onBehalfOfUserName,
-      modeLabel: kind === "agent" ? ctx.agentModeLabelFor?.(comment) : undefined,
       // System notices carry their structured hints through to the render
       // layer (PAP-443); other authors keep the item lean.
       presentation: kind === "system" ? comment.presentation ?? null : undefined,

@@ -28,7 +28,7 @@ import {
 import { fileKindForName, formatFileSize } from "./task-chat-attachments";
 import { MarkdownEditor, type MarkdownEditorRef } from "@/components/MarkdownEditor";
 import { nextWorkMode, workModeMetaFor, workModeMetaList } from "@/lib/work-mode-meta";
-import type { InlineEntityOption } from "@/components/InlineEntitySelector";
+import { InlineEntitySelector, type InlineEntityOption } from "@/components/InlineEntitySelector";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import type { IssueAttachment, IssueWorkMode } from "@paperclipai/shared";
 
@@ -371,7 +371,7 @@ export function TaskChatComposer({
   return (
     <div
       className={cn(
-        "rounded-xl border border-input bg-card p-2 shadow-(--shadow-extract-7) transition-[border-color,box-shadow] focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/15",
+        "rounded-xl border border-input bg-card p-(--sz-18px) shadow-(--shadow-extract-7) transition-[border-color,box-shadow] focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/15",
       )}
       onKeyDownCapture={(e) => {
         // Shift+Tab cycles the pending mode; captured on the wrapper so it
@@ -523,27 +523,24 @@ export function TaskChatComposer({
         <div className="flex-1" />
 
         {showAssignee ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                disabled={disabled}
-                className="flex h-8 min-w-0 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50"
-                data-testid="task-chat-composer-assignee"
-              >
+          <InlineEntitySelector
+            value={assigneeValue}
+            options={reassignOptions ?? []}
+            placeholder="Assignee"
+            noneLabel="No assignee"
+            searchPlaceholder="Search assignees…"
+            emptyMessage="No matches."
+            onChange={setPendingAssignee}
+            disabled={disabled}
+            triggerTestId="task-chat-composer-assignee"
+            className="h-8 gap-1.5 bg-transparent px-2.5 text-xs hover:bg-accent"
+            renderTriggerValue={() => (
+              <>
                 <span className="max-w-40 truncate">{assigneeLabel}</span>
                 <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56">
-              {(reassignOptions ?? []).map((option) => (
-                <DropdownMenuItem key={option.id} onSelect={() => setPendingAssignee(option.id)}>
-                  <span className="min-w-0 flex-1 truncate">{option.label}</span>
-                  {option.id === assigneeValue ? <Check className="h-4 w-4 shrink-0" aria-hidden /> : null}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
+              </>
+            )}
+          />
         ) : null}
 
         <button

@@ -49,9 +49,12 @@ describe("TaskChatLiveTail", () => {
     ]);
     render(items);
 
-    expect(container.querySelector('[data-testid="task-chat-live-text"]')?.textContent).toContain(
+    expect(container.querySelector('[data-testid="task-chat-phase-interstitial"]')?.textContent).toContain(
       "Looking into the failing test.",
     );
+    const phaseSummary = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-phase-summary"]');
+    expect(phaseSummary?.getAttribute("aria-expanded")).toBe("false");
+    flushSync(() => phaseSummary!.click());
     // Tool row renders with its name + mono target.
     expect(container.textContent).toContain("Read");
     expect(container.textContent).toContain("src/app.ts");
@@ -65,6 +68,9 @@ describe("TaskChatLiveTail", () => {
     ]);
     render(items);
 
+    const phaseSummary = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-phase-summary"]');
+    expect(phaseSummary?.getAttribute("aria-expanded")).toBe("false");
+    flushSync(() => phaseSummary!.click());
     expect(container.textContent).toContain("const x = 1;");
     expect(container.textContent).toContain("+1 −1");
   });
@@ -95,6 +101,12 @@ describe("TaskChatLiveTail", () => {
     ]);
     render(items);
 
+    expect(container.querySelector('[data-testid="task-chat-phase-interstitial"]')?.textContent).toContain(
+      "Here is the real reply.",
+    );
+    const phaseSummary = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-phase-summary"]');
+    expect(phaseSummary?.getAttribute("aria-expanded")).toBe("false");
+    flushSync(() => phaseSummary!.click());
     const text = container.textContent ?? "";
     expect(text).toContain("Here is the real reply.");
     expect(text).toContain("pnpm test");

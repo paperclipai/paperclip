@@ -195,6 +195,14 @@
   --sz-folder-sheet-max: 80dvh;
   --sz-tweak-panel-max: 70vh; /* Task Chat Redesign dev tweak panel scroll cap. */
 
+  /* New-task dialog geometry inputs and gap tokens. The derived top/height
+     calculations live on the dialog element so runtime Visual Viewport
+     overrides participate in computed-value resolution. */
+  --new-issue-visual-viewport-height: 100dvh;
+  --new-issue-visual-viewport-offset-top: 0px;
+  --new-issue-dialog-top-gap: max(1rem, env(safe-area-inset-top));
+  --new-issue-dialog-bottom-gap: max(1rem, env(safe-area-inset-bottom));
+
   /* ────────────────────────────────────────────────────────────────────────
      Motion tokens — chat-style task thread (default; classic legacy view sits
      behind enableClassicTaskInterface).
@@ -252,8 +260,11 @@
   --tc-mode-plan: var(--status-task-todo);
   --tc-mode-ask: #3b82f6;
 
-  /* Agent-comment bubble fill (v7 grammar): quiet gray card, no border. */
-  --bubble-agent: oklch(0.955 0 0);
+  /* Agent-comment comparison fill used by TaskChatLab. The chosen production
+     treatment sits directly on the page surface; this token keeps the darker
+     card available as an explicit lab alternative. */
+  --bubble-agent: oklch(0.97 0 0);
+  --bubble-agent-card-padding-inline: 0.875rem;
 
   /* Redesigned thread viewport bound: lets the thread own its scroll (auto-
      follow + pinned composer) inside the page flow. The issue header lives
@@ -265,6 +276,13 @@
   /* Redesigned chat-shell column cap (phase 2c): one token caps the page
      wrapper, thread body, and pinned composer so they widen in lockstep. */
   --tc-shell-max-w: 60rem;
+
+  /* Mobile pinned-composer bottom offset (PAP-495). Default clears just the
+     safe-area inset (+20px); Layout raises it to the bottom-nav height
+     (--sz-calc-14) while the auto-hiding mobile nav is on screen, so the
+     composer's action row never hides behind the nav. Desktop and the classic
+     thread never override it and fall through to the safe-area default. */
+  --tc-composer-bottom: var(--sz-calc-8);
 }
 
 .dark {
@@ -276,7 +294,7 @@
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.922 0 0);
   --primary-foreground: oklch(0.205 0 0);
-  --bubble-agent: oklch(0.24 0 0);
+  --bubble-agent: oklch(0.185 0 0);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
@@ -456,6 +474,13 @@
 .scrollbar-auto-hide::-webkit-scrollbar-thumb {
   background: transparent !important;
 }
+
+/* The task-chat shell owns its desktop scroll viewport. Release Layout's
+   otherwise-useful reserved main scrollbar gutter so that viewport can meet
+   the properties-pane border instead of stopping one scrollbar-width early. */
+#main-content:has([data-task-chat-shell]) {
+  scrollbar-gutter: auto;
+}
 /* Light mode scrollbar on hover */
 .scrollbar-auto-hide:hover {
   scrollbar-color: oklch(0.7 0 0) transparent;
@@ -588,6 +613,43 @@
 .tc-approval { animation: tc-approval-pulse var(--motion-approval-pulse) var(--motion-ease-standard) infinite; }
 .tc-cursor { animation: tc-cursor-blink var(--motion-streaming-cursor-blink) step-end infinite; }
 .tc-enter-plan-entry { animation: tc-fade-rise var(--motion-plan-check) var(--motion-ease-out-expo) both; }
+
+/* ────────────────────────────────────────────────────────────────────────
+   Agent-bubble treatment explorations (PAP-501). Scoped to the TaskChatLab
+   stage via [data-bubble-variant]; the live thread never sets that attribute,
+   so these overrides remain lab-only comparisons. Feedback: the former
+   dark-mode agent card (oklch 0.24) read too light against the near-black page
+   for the bulk of the text. The production treatment now sits directly on
+   the page background; the card alternatives remain available for comparison.
+   ──────────────────────────────────────────────────────────────────────── */
+
+/* Former production treatment, retained as a direct before/after comparison
+   for the darker default. */
+[data-bubble-variant="former"] { --bubble-agent: oklch(0.955 0 0); }
+.dark [data-bubble-variant="former"] { --bubble-agent: oklch(0.24 0 0); }
+
+/* B · Hairline flush — near-page fill + a 1px hairline for gentle definition
+   without any brightness lift. */
+[data-bubble-variant="hairline"] { --bubble-agent: var(--background); }
+[data-bubble-variant="hairline"] [data-testid="task-chat-agent-bubble"] {
+  border: 1px solid var(--border);
+}
+.dark [data-bubble-variant="hairline"] { --bubble-agent: oklch(0.17 0 0); }
+.dark [data-bubble-variant="hairline"] [data-testid="task-chat-agent-bubble"] {
+  border-color: oklch(1 0 0 / 8%);
+}
+
+/* Card variants restore the shared card geometry that production no longer
+   applies to agent prose. */
+[data-bubble-variant="former"] [data-testid="task-chat-agent-bubble"],
+[data-bubble-variant="darker"] [data-testid="task-chat-agent-bubble"],
+[data-bubble-variant="hairline"] [data-testid="task-chat-agent-bubble"] {
+  background: var(--bubble-agent);
+  border-radius: var(--radius-2xl);
+  padding-left: var(--bubble-agent-card-padding-inline);
+  padding-right: var(--bubble-agent-card-padding-inline);
+  max-width: var(--pct-85);
+}
 /* Live-line viewport (PAP-361): exactly one line-height tall, clipping the
    wrapped interstitial block. On wrap, the inner block translates up whole
    line-heights (set inline as translateY(-(n−1)·1lh)) so the completed line
@@ -2148,6 +2210,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --rad-24: 24px; /* Extracted from ui/src/pages/InviteUxLab.tsx (rounded-[24px]). */
   --rad-32: 32px; /* Extracted from ui/src/pages/InviteUxLab.tsx (rounded-[32px]). */
   --pct-90: 90%; /* Extracted from ui/src/components/DocumentDiffModal.tsx (max-w-[90%]). */
+  --pct-80: 80%; /* TaskChatThread composer width (PAP-498 follow-up). */
   --pct-50: 50%; /* Extracted from ui/src/components/ImageGalleryModal.tsx (max-w-[50%]). */
   --pct-85: 85%; /* Extracted from ui/src/components/IssueChatThread.test.tsx (max-w-[85%]). */
   --pct-70: 70%; /* Extracted from ui/src/components/CaseFieldsPanel.tsx (max-w-[70%]). */
@@ -2293,6 +2356,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --tp-box-shadow: box-shadow; /* Extracted from ui/src/pages/ProjectDetail.tsx (transition-[box-shadow]). */
   --tp-transform-box-shadow: transform,box-shadow; /* Extracted from ui/src/pages/ProjectDetail.tsx (transition-[transform,box-shadow]). */
   --z-2: 2; /* Extracted from ui/src/components/DocumentAnnotationLayer.tsx (z-[2]). */
+  --z-20: 20; /* Anchored document annotation popover. */
   --z-60: 60; /* Extracted from ui/src/components/DocumentAnnotationPanel.tsx (z-[60]). */
   --z-1: 1; /* Extracted from ui/src/components/IssueDocumentAnnotations.tsx (z-[1]). */
   --z-200: 200; /* Extracted from ui/src/components/Layout.tsx (z-[200]). */

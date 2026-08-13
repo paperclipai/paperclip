@@ -244,6 +244,17 @@ function autocompleteOption(matchText: string) {
 }
 
 describe("TaskChatComposer", () => {
+  it("adds 10px to the composer's original 8px interior padding", () => {
+    render(<TaskChatComposer onAdd={async () => {}} workMode="standard" />);
+
+    const composer = container
+      .querySelector('[data-testid="task-chat-composer-input"]')
+      ?.parentElement;
+
+    expect(composer?.className).toContain("p-(--sz-18px)");
+    expect(composer?.className).not.toContain("p-2");
+  });
+
   it("submits the trimmed body on Cmd+Enter and clears the draft", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     render(<TaskChatComposer onAdd={onAdd} workMode="standard" />);

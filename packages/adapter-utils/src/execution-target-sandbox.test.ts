@@ -23,12 +23,54 @@ import {
   startAdapterExecutionTargetPaperclipBridge,
   type AdapterSandboxExecutionTarget,
 } from "./execution-target.js";
-import { getActiveStepContext } from "./acpx-engine/startup-timing.js";
+import {
+  createRuntimeSpanRunner,
+  getActiveStepContext,
+  type StartupSpan,
+  type StartupTraceContext,
+  type StartupTracer,
+} from "./acpx-engine/startup-timing.js";
 import { createSandboxRunLogTailFactory } from "./sandbox-run-log-stream.js";
 import { runChildProcess } from "./server-utils.js";
 import { shellQuote } from "./ssh.js";
 
 const execFileAsync = promisify(execFile);
+
+type RecordedSpan = { name: string; parentName: string | null; ended: boolean };
+
+/**
+ * A structural tracer that records each opened span's name, parent, and end
+ * state, so a test can assert the trace shape a runtime span runner produces.
+ * Mirrors the recorder used for the `pack`/`stage.sync` nesting tests.
+ */
+function createRecordingTraceContext(): {
+  traceContext: StartupTraceContext;
+  spans: RecordedSpan[];
+} {
+  const spans: RecordedSpan[] = [];
+  const byHandle = new WeakMap<StartupSpan, RecordedSpan>();
+  const tracer: StartupTracer = {
+    startSpan(name, _options, context) {
+      const parent = context as RecordedSpan | undefined;
+      const record: RecordedSpan = { name, parentName: parent?.name ?? null, ended: false };
+      spans.push(record);
+      const handle: StartupSpan = {
+        setAttribute() {},
+        setStatus() {},
+        end() {
+          record.ended = true;
+        },
+      };
+      byHandle.set(handle, record);
+      return handle;
+    },
+  };
+  const traceContext: StartupTraceContext = {
+    tracer,
+    contextWithSpan: (span) => byHandle.get(span),
+  };
+  return { traceContext, spans };
+}
 
 describe("sandbox adapter execution targets", () => {
   const cleanupDirs: string[] = [];
@@ -948,6 +990,187 @@ describe("sandbox adapter execution targets", () => {
       } finally {
         await bridge?.stop();
       }
+    });
+
+    it("wraps the long-lived streamed launch in a sandbox.agentProcess span", async () => {
+      // The streamed launch is fire-and-forget and lives for the whole run, so
+      // its span must open under the live run root (not the ephemeral bring-up
+      // step) and stay open around the launch. Record the opened span names and
+      // prove `sandbox.agentProcess` is among them, and that a normal exchange
+      // still works through the wrap.
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stream-span-"));
+      cleanupDirs.push(rootDir);
+      const childPath = path.join(rootDir, "echo-acp-child.mjs");
+      await writeFile(
+        childPath,
+        [
+          "process.stdin.on('data', (chunk) => {",
+          "  process.stdout.write('out:' + chunk.toString());",
+          "});",
+        ].join("\n"),
+        "utf8",
+      );
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-test",
+        remoteCwd: rootDir,
+        timeoutMs: 30_000,
+        runner: createLocalSandboxRunner(),
+      };
+
+      const spanNames: string[] = [];
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-stream-span",
+        target,
+        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+        adapterKey: "acpx",
+        command: process.execPath,
+        args: [childPath],
+        cwd: rootDir,
+        env: {},
+        timeoutSec: 5,
+        onLog: async () => {},
+        streamOutputViaSession: true,
+        // Record each wrapper span name, then run the wrapped work.
+        runtimeSpan: async (name, work) => {
+          spanNames.push(name);
+          return work();
+        },
+      });
+      expect(bridge).not.toBeNull();
+
+      try {
+        // The launch span opens synchronously as the bridge starts, before any
+        // frame flows, so it is observable as soon as the handle resolves.
+        expect(spanNames).toContain("sandbox.agentProcess");
+        const result = await runProxyWithInput(bridge!.agentCommand, "hello\n");
+        expect(result.code).toBe(0);
+        expect(result.stdout).toBe("out:hello\n");
+      } finally {
+        await bridge?.stop();
+      }
+    });
+
+    it("parents the sandbox.agentProcess span to the live run root, not the bring-up step", async () => {
+      // The launch runs for the whole run, so its span must parent to the live
+      // run root (here a stand-in `task.run`) rather than the ephemeral
+      // `bridge.process-session` bring-up step — otherwise it dangles past its
+      // parent and overlaps `agent.turn`. Build the real run-rooted runner from a
+      // recording trace context and assert the recorded parent.
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stream-parent-"));
+      cleanupDirs.push(rootDir);
+      const childPath = path.join(rootDir, "noop-acp-child.mjs");
+      await writeFile(childPath, "process.stdin.on('data', () => {});\n", "utf8");
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-test",
+        remoteCwd: rootDir,
+        timeoutMs: 30_000,
+        runner: createLocalSandboxRunner(),
+      };
+
+      const { traceContext, spans } = createRecordingTraceContext();
+      // The run root stands in for `task.run` — the parent the run-rooted runner
+      // resolves at launch time, since no turn has started yet.
+      const runRoot = traceContext.tracer.startSpan("task.run", undefined, undefined);
+      const runRootContext = traceContext.contextWithSpan(runRoot);
+      const runtimeSpan = createRuntimeSpanRunner(traceContext, () => runRootContext);
+
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-stream-parent",
+        target,
+        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+        adapterKey: "acpx",
+        command: process.execPath,
+        args: [childPath],
+        cwd: rootDir,
+        env: {},
+        timeoutSec: 5,
+        onLog: async () => {},
+        streamOutputViaSession: true,
+        runtimeSpan,
+      });
+      expect(bridge).not.toBeNull();
+
+      try {
+        const agentProcess = spans.find((span) => span.name === "sandbox.agentProcess");
+        expect(agentProcess).toBeDefined();
+        expect(agentProcess!.parentName).toBe("task.run");
+      } finally {
+        await bridge?.stop();
+      }
+    });
+
+    it("ends the sandbox.agentProcess span at stop() even when the process lingers", async () => {
+      // The span must not outlive the run root. When the remote process lingers
+      // past bridge teardown (`execute` has no cancel), the span still has to end
+      // at `stop()`, which the caller awaits before it ends `task.run`. Use a
+      // child that ignores stdin and never exits on its own, so the launch
+      // command stays pending across `stop()`, and prove the span ends anyway.
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stream-linger-"));
+      cleanupDirs.push(rootDir);
+      const childPath = path.join(rootDir, "linger-acp-child.mjs");
+      await writeFile(
+        childPath,
+        [
+          "process.stdin.on('data', () => {});",
+          // Stay alive well past the assertions, then self-exit so the test
+          // leaves no lingering process.
+          "setTimeout(() => process.exit(0), 3000);",
+        ].join("\n"),
+        "utf8",
+      );
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-test",
+        remoteCwd: rootDir,
+        timeoutMs: 30_000,
+        runner: createLocalSandboxRunner(),
+      };
+
+      // Track when each wrapper span's work settles (i.e. when its span ends).
+      const spanRecords: Array<{ name: string; ended: boolean }> = [];
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-stream-linger",
+        target,
+        runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+        adapterKey: "acpx",
+        command: process.execPath,
+        args: [childPath],
+        cwd: rootDir,
+        env: {},
+        timeoutSec: 10,
+        onLog: async () => {},
+        streamOutputViaSession: true,
+        runtimeSpan: (name, work) => {
+          const record = { name, ended: false };
+          spanRecords.push(record);
+          const promise = work();
+          void promise.then(
+            () => {
+              record.ended = true;
+            },
+            () => {
+              record.ended = true;
+            },
+          );
+          return promise;
+        },
+      });
+      expect(bridge).not.toBeNull();
+
+      const record = spanRecords.find((span) => span.name === "sandbox.agentProcess");
+      expect(record).toBeDefined();
+      // The launch command is still running, so the span is still open.
+      expect(record!.ended).toBe(false);
+
+      // Teardown ends the span promptly, without waiting for the lingering command.
+      await bridge!.stop();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(record!.ended).toBe(true);
     });
 
     it("buffers streamed output until the local proxy connects", async () => {
@@ -2173,6 +2396,149 @@ describe("sandbox adapter execution targets", () => {
         auth: "Bearer real-run-jwt",
         runId: "run-bridge-limit",
       }]);
+    } finally {
+      await bridge?.stop();
+      await new Promise<void>((resolve) => apiServer.close(() => resolve()));
+    }
+  });
+
+  it("forwards bridge traffic to the local listen origin even when public API URLs are configured", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-local-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    const runtimeRootDir = path.join(remoteCwd, ".paperclip-runtime", "claude");
+    await mkdir(runtimeRootDir, { recursive: true });
+
+    const requests: Array<{ method: string; url: string; auth: string | null; runId: string | null }> = [];
+    const apiServer = createServer((req, res) => {
+      requests.push({
+        method: req.method ?? "GET",
+        url: req.url ?? "/",
+        auth: req.headers.authorization ?? null,
+        runId: typeof req.headers["x-paperclip-run-id"] === "string" ? req.headers["x-paperclip-run-id"] : null,
+      });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise<void>((resolve, reject) => {
+      apiServer.once("error", reject);
+      apiServer.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = apiServer.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected the bridge local-origin test API server to listen on a TCP port.");
+    }
+
+    // Simulate a deployment where a public base URL is configured: server boot
+    // exports the public origin via PAPERCLIP_RUNTIME_API_URL / PAPERCLIP_API_URL
+    // and the local listen host/port via PAPERCLIP_LISTEN_HOST / PAPERCLIP_LISTEN_PORT.
+    // The wildcard listen host must map to the loopback address of the same
+    // family (0.0.0.0 -> 127.0.0.1), where the test API server is bound.
+    vi.stubEnv("PAPERCLIP_RUNTIME_API_URL", "https://public.example.invalid");
+    vi.stubEnv("PAPERCLIP_API_URL", "https://public.example.invalid");
+    vi.stubEnv("PAPERCLIP_LISTEN_HOST", "0.0.0.0");
+    vi.stubEnv("PAPERCLIP_LISTEN_PORT", String(address.port));
+
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "e2b",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+      timeoutMs: 30_000,
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-bridge-local",
+      target,
+      runtimeRootDir,
+      adapterKey: "claude",
+      hostApiToken: "real-run-jwt",
+    });
+    try {
+      expect(bridge).not.toBeNull();
+      const response = await fetch(`${bridge!.env.PAPERCLIP_API_URL}/api/agents/me`, {
+        headers: {
+          authorization: `Bearer ${bridge!.env.PAPERCLIP_API_KEY}`,
+          accept: "application/json",
+        },
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ ok: true });
+      expect(requests).toEqual([{
+        method: "GET",
+        url: "/api/agents/me",
+        auth: "Bearer real-run-jwt",
+        runId: "run-bridge-local",
+      }]);
+    } finally {
+      await bridge?.stop();
+      await new Promise<void>((resolve) => apiServer.close(() => resolve()));
+    }
+  });
+
+  it("lets an explicit hostApiUrl input override the bridge forward target", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-override-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    const runtimeRootDir = path.join(remoteCwd, ".paperclip-runtime", "claude");
+    await mkdir(runtimeRootDir, { recursive: true });
+
+    const requests: string[] = [];
+    const apiServer = createServer((req, res) => {
+      requests.push(req.url ?? "/");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise<void>((resolve, reject) => {
+      apiServer.once("error", reject);
+      apiServer.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = apiServer.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected the bridge override test API server to listen on a TCP port.");
+    }
+
+    // Neither the public URL envs nor the listen host/port should matter when
+    // the caller passes an explicit hostApiUrl.
+    vi.stubEnv("PAPERCLIP_RUNTIME_API_URL", "https://public.example.invalid");
+    vi.stubEnv("PAPERCLIP_API_URL", "https://public.example.invalid");
+    vi.stubEnv("PAPERCLIP_LISTEN_HOST", "203.0.113.1");
+    vi.stubEnv("PAPERCLIP_LISTEN_PORT", "9");
+
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "e2b",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+      timeoutMs: 30_000,
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-bridge-override",
+      target,
+      runtimeRootDir,
+      adapterKey: "claude",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: `http://127.0.0.1:${address.port}`,
+    });
+    try {
+      expect(bridge).not.toBeNull();
+      const response = await fetch(`${bridge!.env.PAPERCLIP_API_URL}/api/agents/me`, {
+        headers: {
+          authorization: `Bearer ${bridge!.env.PAPERCLIP_API_KEY}`,
+          accept: "application/json",
+        },
+      });
+
+      expect(response.status).toBe(200);
+      expect(requests).toEqual(["/api/agents/me"]);
     } finally {
       await bridge?.stop();
       await new Promise<void>((resolve) => apiServer.close(() => resolve()));

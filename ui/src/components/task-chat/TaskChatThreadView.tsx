@@ -11,6 +11,7 @@ import { TaskChatMarker } from "./TaskChatMarker";
 import { TaskChatStatusPill } from "./TaskChatStatusPill";
 import { TaskChatToolCard } from "./TaskChatToolCard";
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
+import { TaskChatActivityPhase } from "./TaskChatActivityPhase";
 import { TaskMessageScroller } from "./TaskMessageScroller";
 
 interface TaskChatThreadViewProps {
@@ -100,6 +101,8 @@ function renderItem(
       );
     case "usage":
       return <TaskChatUsageReadout item={item} />;
+    case "activity_phase":
+      return <TaskChatActivityPhase item={item} renderChild={(child) => renderItem(child, onApprovalDecision)} />;
     case "interaction":
       return renderInteraction ? renderInteraction(item) : null;
     case "brief":
@@ -138,7 +141,7 @@ export function TaskChatThreadView({
   scroll = true,
 }: TaskChatThreadViewProps) {
   const body = (
-    <div className={cn("mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-3 px-4 py-4", className)}>
+    <div className={cn("mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-5 px-4 py-4", className)}>
       {header ? (
         <div className="flex flex-col gap-6 pb-2" data-testid="task-chat-thread-header">
           {header}
@@ -180,6 +183,9 @@ function signatureOf(it: TaskChatItem): number {
         (it.liveStatus.selfTalk?.length ?? 0)
       : 0;
     return it.items.reduce((n, child) => n + signatureOf(child), it.items.length + headerSig);
+  }
+  if (it.kind === "activity_phase") {
+    return it.items.reduce((n, child) => n + signatureOf(child), it.summary.length + (it.interstitial?.text.length ?? 0));
   }
   return 1;
 }

@@ -29,6 +29,7 @@ import {
   CircleDot,
   DollarSign,
   Calendar,
+  ArchiveRestore,
 } from "lucide-react";
 
 export function Companies() {
@@ -71,6 +72,19 @@ export function Companies() {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.stats });
       setConfirmDeleteId(null);
+    },
+  });
+
+  // Unarchiving previously had no UI at all: archiving happens in company
+  // settings, but an archived company disappears from the sidebar switcher,
+  // so its settings page — and with it any way back — was only reachable by
+  // hand-typed URL. This list is the one place that still shows archived
+  // companies, so restoration lives here.
+  const unarchiveMutation = useMutation({
+    mutationFn: (id: string) => companiesApi.update(id, { status: "active" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.stats });
     },
   });
 
@@ -224,6 +238,15 @@ export function Companies() {
                         <Pencil className="h-3.5 w-3.5" />
                         Rename
                       </DropdownMenuItem>
+                      {company.status === "archived" && (
+                        <DropdownMenuItem
+                          disabled={unarchiveMutation.isPending}
+                          onClick={() => unarchiveMutation.mutate(company.id)}
+                        >
+                          <ArchiveRestore className="h-3.5 w-3.5" />
+                          Unarchive
+                        </DropdownMenuItem>
+                      )}
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
                         variant="destructive"

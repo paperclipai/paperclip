@@ -188,12 +188,18 @@ vi.mock("../context/CompanyContext", () => ({
   }),
 }));
 
+const mockOpenNewIssue = vi.hoisted(() => vi.fn());
+const mockOpenNewProject = vi.hoisted(() => vi.fn());
+const mockOpenNewGoal = vi.hoisted(() => vi.fn());
+
 vi.mock("../context/DialogContext", () => ({
   useDialog: () => ({
-    openNewIssue: vi.fn(),
+    openNewIssue: mockOpenNewIssue,
   }),
   useDialogActions: () => ({
-    openNewIssue: vi.fn(),
+    openNewIssue: mockOpenNewIssue,
+    openNewProject: mockOpenNewProject,
+    openNewGoal: mockOpenNewGoal,
   }),
 }));
 
@@ -1077,6 +1083,9 @@ describe("IssueDetail", () => {
     mockImageGalleryRender.mockClear();
     mockIssueWorkspaceCardRender.mockClear();
     mockNavigate.mockClear();
+    mockOpenNewIssue.mockClear();
+    mockOpenNewProject.mockClear();
+    mockOpenNewGoal.mockClear();
     mockLocation.pathname = "/issues/PAP-1";
     mockLocation.search = "";
     mockLocation.hash = "";
@@ -1116,6 +1125,133 @@ describe("IssueDetail", () => {
         String(call[0]).includes("React has detected a change in the order of Hooks"),
       ),
     ).toBe(false);
+  });
+
+  it("renders the full sub-task tree below the title in the chat center pane", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.list.mockResolvedValue([
+      createIssue({
+        id: "child-1",
+        parentId: "issue-1",
+        identifier: "PAP-2",
+        issueNumber: 2,
+        title: "Child task",
+      }),
+    ]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const title = Array.from(container.querySelectorAll("div")).find(
+      (element) => element.textContent === "Issue detail smoke",
+    );
+    const subTasks = Array.from(container.querySelectorAll("div")).find(
+      (element) => element.textContent === "Sub-issues",
+    );
+    expect(title).toBeDefined();
+    expect(subTasks).toBeDefined();
+    expect(title!.compareDocumentPosition(subTasks!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(mockIssuesListRender).toHaveBeenCalledWith(
+      expect.objectContaining({
+        createIssueLabel: "Sub-task",
+        showProgressSummary: true,
+      }),
+    );
+  });
+
+  it("hides the full sub-task tree when the task has no subtasks", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.list.mockResolvedValue([]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Sub-issues");
+    expect(mockIssuesListRender.mock.calls).not.toContainEqual([
+      expect.objectContaining({ isLoading: false }),
+    ]);
+  });
+
+  it("keeps the properties panel stable across unrelated chat-detail renders", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    const detail = (
+      <QueryClientProvider client={queryClient}>
+        <IssueDetail />
+      </QueryClientProvider>
+    );
+
+    await act(async () => {
+      root.render(detail);
+    });
+    await flushReact();
+    await flushReact();
+
+    const panelOpenCount = mockOpenPanel.mock.calls.length;
+    expect(panelOpenCount).toBeGreaterThan(0);
+
+    // React Query returns a new mutation result object on render. The panel
+    // effect must depend on the stable mutate function rather than that wrapper
+    // object, or openPanel's state update recursively renders
+    // IssueDetail until React throws "Maximum update depth exceeded".
+    await act(async () => {
+      root.render(detail);
+    });
+    await flushReact();
+
+    expect(mockOpenPanel).toHaveBeenCalledTimes(panelOpenCount);
+  });
+
+  it("does not loop openPanel when the sub-task list query is still loading (PAP-508)", async () => {
+    // While the descendant-issues query is still in flight, `data` is undefined.
+    // A literal `= []` default for that `data` mints a new array reference on
+    // every render, which destabilizes the child-derived panel key, re-firing
+    // openPanel each render until
+    // React throws "Maximum update depth exceeded". Keep the list query pending
+    // so `data` stays undefined and the stabilization of the empty default is
+    // the only thing preventing the loop. A fresh root element is rendered each
+    // pass so React actually re-renders IssueDetail (a reused element reference
+    // lets the reconciler bail out, masking the loop).
+    const pendingListRequest = createDeferred<Issue[]>();
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockIssuesApi.list.mockReturnValue(pendingListRequest.promise);
+    const renderDetail = () => (
+      <QueryClientProvider client={queryClient}>
+        <IssueDetail />
+      </QueryClientProvider>
+    );
+
+    await act(async () => {
+      root.render(renderDetail());
+    });
+    await flushReact();
+    await flushReact();
+
+    const panelOpenCount = mockOpenPanel.mock.calls.length;
+    expect(panelOpenCount).toBeGreaterThan(0);
+
+    await act(async () => {
+      root.render(renderDetail());
+    });
+    await flushReact();
+
+    expect(mockOpenPanel).toHaveBeenCalledTimes(panelOpenCount);
+
+    pendingListRequest.resolve([]);
+    await flushReact();
   });
 
   it("does not load or render decision sections in the issue header", async () => {

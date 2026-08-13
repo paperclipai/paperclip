@@ -172,7 +172,7 @@ import {
   getIssueContinuationSummaryDocument,
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
-import { buildPlanReviewContext } from "./plan-review-context.js";
+import { buildDocumentReviewContext, buildPlanReviewContext } from "./plan-review-context.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService, type WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
@@ -619,6 +619,27 @@ function isSpawnLikeFailureMessage(value: unknown) {
   return /failed to start command|spawn\b|\bENOENT\b/i.test(value);
 }
 
+// A sandbox provider plugin's worker can be briefly down during its own
+// restart window (e.g. a rolling deploy of the plugin worker process). Lease
+// acquisition fails immediately in that window, but the condition is
+// transient and self-healing, so it must be treated as retryable
+// infrastructure rather than a terminal setup failure. See
+// resolveSandboxProviderPlugin's "worker_unavailable" message in
+// environment-runtime.ts (":808"), e.g. 'Sandbox provider "kubernetes" is
+// installed via plugin "acme.kubernetes-sandbox-provider", but its worker is
+// not running.'
+//
+// This is anchored on both "is installed via plugin" and "but its worker is
+// not running" so it does not also match plugin-environment-driver.ts's
+// unrelated, permanent "provider not installed" message ('Sandbox provider
+// "X" is not installed or its plugin worker is not running.'), which
+// coincidentally contains the same "worker is not running" substring but
+// describes a terminal condition that must not be retried.
+function isSandboxProviderWorkerUnavailableFailureMessage(value: unknown) {
+  if (typeof value !== "string") return false;
+  return /sandbox provider .* is installed via plugin .* but its worker is not running/i.test(value);
+}
+
 function isRetryableInteractionContinuationInfrastructureFailure(
   run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode" | "resultJson">,
 ) {
@@ -632,7 +653,10 @@ function isRetryableInteractionContinuationInfrastructureFailure(
   return (
     isSpawnLikeFailureMessage(run.error) ||
     isSpawnLikeFailureMessage(resultJson.errorMessage) ||
-    isSpawnLikeFailureMessage(resultJson.message)
+    isSpawnLikeFailureMessage(resultJson.message) ||
+    isSandboxProviderWorkerUnavailableFailureMessage(run.error) ||
+    isSandboxProviderWorkerUnavailableFailureMessage(resultJson.errorMessage) ||
+    isSandboxProviderWorkerUnavailableFailureMessage(resultJson.message)
   );
 }
 
@@ -5663,7 +5687,16 @@ export async function buildPaperclipWakePayload(input: {
       interactionId,
     })
     : null;
-  const payloadTruncated = truncated || issueDescriptionTruncated || planReviewContext?.truncated === true;
+  const documentReviewContext = issueId
+    ? await buildDocumentReviewContext({
+      db: input.db,
+      companyId: input.companyId,
+      issueId,
+      includeForIssueComment: commentIds.length > 0,
+      includeForAnnotationDelta: annotationDeltas.length > 0,
+    })
+    : null;
+  const payloadTruncated = truncated || issueDescriptionTruncated || planReviewContext?.truncated === true || documentReviewContext?.truncated === true;
   const recoveryActionId = readNonEmptyString(input.contextSnapshot.recoveryActionId);
   const recoveryCause = readNonEmptyString(input.contextSnapshot.recoveryCause);
   const recoveryAction = recoveryActionId
@@ -5775,6 +5808,7 @@ export async function buildPaperclipWakePayload(input: {
     comments,
     annotationDeltas,
     planReviewContext,
+    documentReviewContext,
     commentWindow: {
       requestedCount: commentIds.length,
       includedCount: comments.length,
@@ -13395,7 +13429,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         sessionId: session.legacySessionId,
         lastRunId: run.id,
         lastRunStatus: run.status,
-        lastError: result.errorMessage ?? null,
+        lastError: run.error ?? null,
         totalInputTokens: sql`${agentRuntimeState.totalInputTokens} + ${inputTokens}`,
         totalOutputTokens: sql`${agentRuntimeState.totalOutputTokens} + ${outputTokens}`,
         totalCachedInputTokens: sql`${agentRuntimeState.totalCachedInputTokens} + ${cachedInputTokens}`,
@@ -16037,7 +16071,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ),
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
-              lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
+              lastError: runErrorMessage,
             });
           }
         }
@@ -16045,7 +16079,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await finalizeAgentStatus(
         agent.id,
         outcome,
-        outcome === "succeeded" ? null : (adapterResult.errorMessage ?? null),
+        runErrorMessage,
         {
           keepIdleOnFailure:
             outcome === "failed" &&
