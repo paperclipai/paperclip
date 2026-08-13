@@ -423,20 +423,24 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     it("classifies a terminal holder run as a stale lock pending reap", async () => {
       const { agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
 
-      expect(
-        await describeRunLockConflict(db, {
-          checkoutRunId: failedRunId,
-          executionRunId: failedRunId,
-          actorAgentId: agentId,
-          actorRunId: currentRunId,
-        }),
-      ).toMatchObject({
+      const details = await describeRunLockConflict(db, {
+        checkoutRunId: failedRunId,
+        executionRunId: failedRunId,
+        actorAgentId: agentId,
+        actorRunId: currentRunId,
+      });
+
+      expect(details).toMatchObject({
         holderRunId: failedRunId,
         holderRunStatus: "failed",
         holderRunAgentId: agentId,
         holderRunIsLive: false,
         conflictReason: "stale_lock_pending_reap",
       });
+      // The docs gate the one retryable reason on being the assignee; the hint
+      // has to carry that condition too, or a non-assignee reading only the
+      // hint retries into the assignee guard.
+      expect(details.hint).toMatch(/if you are the assignee/i);
     });
 
     it("treats a missing holder run row as not live", async () => {
@@ -534,7 +538,11 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
         conflictReason: "actor_run_holds_lock",
       });
       expect(details.hint).toContain("no longer live");
-      expect(details.hint).not.toContain("Retry");
+      // Not a bare `not.toMatch(/retry/i)`: this hint says "Do not retry" on
+      // purpose. Assert the advice itself — a retry is forbidden, and the
+      // stale-lock "repeat that call once" line never reaches a dead caller.
+      expect(details.hint).toMatch(/do not retry/i);
+      expect(details.hint).not.toMatch(/retry that same call/i);
     });
   });
 
