@@ -4325,11 +4325,21 @@ export function createToolGatewayService(
       .orderBy(desc(toolActionRequests.createdAt))
       .limit(1);
     if (!match) return null;
-    if (
-      match.actionRequest.status === "pending"
-      && match.actionRequest.expiresAt
-      && match.actionRequest.expiresAt.getTime() <= Date.now()
-    ) {
+    // The gateway builds an ask-first request in two steps inside one call: it
+    // inserts the row with a null signature and a null expiry, then signs the
+    // row and sets the expiry. A separate retry only observes a null signature
+    // when the original create stopped before it signed the row. Such a row
+    // stays pending forever and the review queue hides it, so it can never be
+    // approved. Do not replay it as a live approval. Expire the row and let the
+    // retry create a fresh, signable request. A null expiry alone (without this
+    // guard) also makes the getTime() check below unsafe.
+    const pendingRequest = match.actionRequest;
+    const pendingUnsigned = pendingRequest.status === "pending" && pendingRequest.signedArguments === null;
+    const pendingExpired =
+      pendingRequest.status === "pending"
+      && pendingRequest.expiresAt !== null
+      && pendingRequest.expiresAt.getTime() <= Date.now();
+    if (pendingUnsigned || pendingExpired) {
       const now = new Date();
       await db.update(toolActionRequests).set({ status: "expired", resolvedAt: now, updatedAt: now }).where(and(
         eq(toolActionRequests.id, match.actionRequest.id),

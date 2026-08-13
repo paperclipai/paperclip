@@ -2495,6 +2495,105 @@ rl.on("line", (line) => {
     }
   });
 
+  it("expires an abandoned unsigned ask-first request so a later retry can proceed", async () => {
+    // The gateway builds an ask-first request in two steps inside one call: it
+    // inserts the row with a null signature and a null expiry, then signs the
+    // row. If the gateway stops between the two steps, the row stays pending
+    // and unsigned forever, and the review queue hides it. A later retry of the
+    // same tool call must not replay that dead row. It must expire the row and
+    // create a fresh, signable request.
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => ({
+      body: {
+        jsonrpc: "2.0",
+        id: fakeRequest.body?.id,
+        result: { content: [{ type: "text", text: "should not run while pending approval" }] },
+      },
+    }));
+
+    try {
+      const remoteTool = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "abandoned-unsigned-app",
+        toolName: "kv_set",
+        url: fake.url,
+      });
+      const remoteToolName = expectedConnectedToolName({
+        applicationKey: remoteTool.application.applicationKey,
+        connectionId: remoteTool.connection.id,
+        toolName: remoteTool.catalogEntry.toolName,
+      });
+      await allowToolsForAgent(db, company.id, agent.id, [remoteToolName]);
+      await db.insert(toolPolicies).values({
+        companyId: company.id,
+        name: "Review abandoned connected writes",
+        policyType: "require_approval",
+        selectors: { connectionId: remoteTool.connection.id },
+        priority: 10,
+      });
+
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: remoteToolName,
+        parameters: { key: "abandoned", value: "original" },
+      }).then(
+        () => {
+          throw new Error("Expected connected MCP call to require approval");
+        },
+        (error) => expectGatewayError(error, 409, "approval_required"),
+      );
+
+      const [firstRequest] = await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.companyId, company.id));
+
+      // Rewind the row to the abandoned state: created, pending, never signed.
+      await db
+        .update(toolActionRequests)
+        .set({ signedArguments: null, expiresAt: null, interactionId: null, updatedAt: new Date() })
+        .where(eq(toolActionRequests.id, firstRequest.id));
+
+      // Retry the same tool call. The gateway must not replay the dead row.
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: remoteToolName,
+        parameters: { key: "abandoned", value: "original" },
+      }).then(
+        () => {
+          throw new Error("Expected retry to require a fresh approval");
+        },
+        (error) => expectGatewayError(error, 409, "approval_required"),
+      );
+
+      // The abandoned row is expired, not replayed as a live approval.
+      const [afterRetry] = await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.id, firstRequest.id));
+      expect(afterRetry.status).toBe("expired");
+
+      // The retry created a fresh, signed request that the queue can show.
+      const allRequests = await db
+        .select()
+        .from(toolActionRequests)
+        .where(eq(toolActionRequests.companyId, company.id));
+      const freshRequest = allRequests.find((request) => request.id !== firstRequest.id);
+      expect(freshRequest).toBeTruthy();
+      expect(freshRequest!.status).toBe("pending");
+      expect(freshRequest!.signedArguments).not.toBeNull();
+      expect(freshRequest!.expiresAt).not.toBeNull();
+
+      // The tool never executed while the approval stayed pending.
+      expect(fake.requests).toHaveLength(0);
+    } finally {
+      await fake.close();
+    }
+  });
+
   it("requires re-review when an approved connected MCP replay credential latest version changed", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
