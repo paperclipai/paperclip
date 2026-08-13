@@ -31,6 +31,13 @@ import { statusCardRoutes } from "./routes/status-cards.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
 import type { SetupTokenSessionService } from "./services/setup-token-session.js";
+import {
+  buildSetupTokenLoginTransport,
+  createProductionSetupTokenSandboxProvider,
+  createProductionSetupTokenCleanupStore,
+} from "./services/setup-token-transport-binding.js";
+import { environmentService } from "./services/environments.js";
+import { environmentRuntimeService } from "./services/environment-runtime.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
@@ -426,18 +433,33 @@ export async function createApp(
     .split(",")
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
-  // The production server does not bind `setupTokenLogin` yet, so the start route
-  // fails closed with a fixed no-secret 503 and the login never spawns a process
-  // or holds a lease. This is a deliberate staged rollout: the live transport
-  // needs a real sandbox-lease manager, a live pseudo-terminal factory over the
-  // sandbox provider, and a durable cleanup store (the in-router default store is
-  // in-memory only). Each of those is a separate follow-up that goes through its
-  // own security review before the production server binds `setupTokenLogin`.
+  // Bind the production setup-token login transport. It carries the live lease
+  // manager, the login-process factory over the sandbox pseudo-terminal, and the
+  // durable cleanup store. The factory passes only the fixed command
+  // `CLAUDE_SETUP_TOKEN_COMMAND` (Control 4); it never reads a command from a
+  // route, a request body, or an adapter configuration. The durable store and the
+  // startup reaper are live now, so a restart reaps a leftover lease (SR-4).
+  //
+  // The live sandbox pseudo-terminal opener binds inside the sandbox provider
+  // worker, so the server process does not hold the raw sandbox process. The
+  // provider omits `openLivePtySession` here, so it fails closed before it
+  // acquires a lease, and the start route returns the fixed 503 without holding a
+  // lease. The live opener lands with the Phase 11 characterization test against a
+  // real sandbox.
+  const setupTokenLoginTransport = buildSetupTokenLoginTransport({
+    sandbox: createProductionSetupTokenSandboxProvider({
+      environments: environmentService(db),
+      environmentRuntime: environmentRuntimeService(db, { pluginWorkerManager: workerManager }),
+      log: (line) => logger.info(line),
+    }),
+    store: createProductionSetupTokenCleanupStore(db),
+  });
   api.use(
     agentRoutes(db, {
       pluginWorkerManager: workerManager,
       deploymentMode: opts.deploymentMode,
       confidentialProxyAllowlist: setupTokenLoginProxyAllowlist,
+      setupTokenLogin: setupTokenLoginTransport,
       onSetupTokenLoginService: (service) => {
         setupTokenLoginService = service;
         // Startup reaper (SR-4): release any lease whose login session is
