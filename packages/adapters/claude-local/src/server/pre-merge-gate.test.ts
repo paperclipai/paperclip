@@ -41,6 +41,7 @@ describe("parseGhPrMergeCommand", () => {
 
   it("returns null when no gh pr merge is present", () => {
     expect(parseGhPrMergeCommand("gh pr view 460")).toBeNull();
+    // paperclip:allow-git-push: negative fixture string — verifies the parser ignores unrelated remote-mutating commands.
     expect(parseGhPrMergeCommand("git push origin main")).toBeNull();
     expect(parseGhPrMergeCommand("")).toBeNull();
   });
