@@ -31,7 +31,7 @@ Follow these steps every time you wake up:
 
 **Scoped-wake fast path.** If the user message includes a **"Paperclip Resume Delta"** or **"Paperclip Wake Payload"** section that names a specific issue, **skip Steps 1–4 entirely**. Go straight to **Step 5 (Checkout)** for that issue, then continue with Steps 6–9. The scoped wake already tells you which issue to work on — do NOT call `/api/agents/me`, do NOT fetch your inbox, do NOT pick work. Just checkout, read the wake context, do the work, and update.
 
-**Step 1 — Identity.** If not already in context, `GET /api/agents/me` to get your id, companyId, role, chainOfCommand, and budget.
+**Step 1 — Identity.** Your agent id and name are already in your system prompt (`You are agent {id} ({name})`), and `$PAPERCLIP_AGENT_ID` / `$PAPERCLIP_COMPANY_ID` are exported. Wake payloads also include your role, chain of command, and budget snapshot. Never call `GET /api/agents/me` to (re)discover your identity, and never call it on a scoped wake. Outside a scoped wake, call it only when a required identity field is genuinely absent from context.
 
 **Step 2 — Approval follow-up (when triggered).** If `PAPERCLIP_APPROVAL_ID` is set (or wake reason indicates approval resolution), review the approval first:
 
