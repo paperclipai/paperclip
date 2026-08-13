@@ -69,10 +69,6 @@ const WORKSPACE_BRANCH_INCOHERENCE_REASON = "git_worktree_branch_incoherence";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 export const ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON = "issue_terminal";
 
-// The closed statuses a workspace holds after an archive or a failed cleanup.
-// A reopen restores one of these rows back to "active".
-const CLOSED_EXECUTION_WORKSPACE_STATUSES = ["archived", "cleanup_failed"] as const;
-
 // The reopen-failure reason kept on the row when a rebuild does not finish. The
 // value is sanitized: it never contains a repository URL, a host path, or git
 // output.
@@ -1645,6 +1641,62 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     }
   }
 
+  // Write the cleanup-failed status under the per-workspace lifecycle lock, but
+  // only while the row is still closed at the generation the reaper captured. The
+  // reaper calls this from its catch handler after a cleanup threw. The cleanup
+  // transaction already rolled back and released the lock, so a reopen can run in
+  // the window before this write. A reopen raises the generation and restores the
+  // row to active. A later archive lowers the row back to closed but keeps the
+  // higher generation. The generation compare then skips this write, so stale
+  // cleanup-failure state never lands on a newer archive lifecycle. The function
+  // returns true when it wrote the status, or false when the fence skipped it.
+  async function markTerminalCleanupFailedFenced(input: {
+    workspaceId: string;
+    capturedGeneration: number;
+    cleanupReason: string;
+  }): Promise<boolean> {
+    return db.transaction(async (tx) => {
+      await acquireExecutionWorkspaceLifecycleLock(tx, input.workspaceId);
+      const fresh = await tx
+        .select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, input.workspaceId))
+        .then((rows) => rows[0] ?? null);
+      const currentGeneration = fresh
+        ? readExecutionWorkspaceLifecycleGeneration(fresh.metadata as Record<string, unknown> | null)
+        : null;
+      if (
+        !fresh
+        || !isClosedExecutionWorkspaceStatus(fresh.status)
+        || currentGeneration !== input.capturedGeneration
+      ) {
+        // A reopen restored the row after the cleanup threw. Do not overwrite the
+        // newer lifecycle state with the stale cleanup-failure status.
+        logger.info(
+          {
+            event: "execution_workspace.cleanup_failed_write_skipped",
+            reason: "reopened",
+            executionWorkspaceId: input.workspaceId,
+            capturedGeneration: input.capturedGeneration,
+            currentGeneration,
+            currentStatus: fresh?.status ?? null,
+          },
+          "execution workspace cleanup-failure write skipped because it was reopened",
+        );
+        return false;
+      }
+      await tx
+        .update(executionWorkspaces)
+        .set({
+          status: "cleanup_failed",
+          cleanupReason: input.cleanupReason,
+          updatedAt: now(),
+        })
+        .where(eq(executionWorkspaces.id, input.workspaceId));
+      return true;
+    });
+  }
+
   function buildListConditions(
     companyId: string,
     filters?: {
@@ -2608,19 +2660,16 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         } catch (error) {
           result.cleanupFailed += 1;
           const failure = error instanceof Error ? error.message : String(error);
-          // Mark cleanup_failed only while the row is still closed. A reopen that
-          // raced after the failure leaves the row active; do not clobber it.
-          await db
-            .update(executionWorkspaces)
-            .set({
-              status: "cleanup_failed",
-              cleanupReason: `${ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON} | ${failure}`,
-              updatedAt: now(),
-            })
-            .where(and(
-              eq(executionWorkspaces.id, archived.id),
-              inArray(executionWorkspaces.status, [...CLOSED_EXECUTION_WORKSPACE_STATUSES]),
-            ));
+          // Mark cleanup_failed only while the row is still closed at the
+          // generation this sweep captured. A reopen that raced after the failure
+          // raises the generation and restores the row; a later archive keeps the
+          // higher generation. The fenced write then skips, so stale
+          // cleanup-failure state never lands on a newer archive lifecycle.
+          await markTerminalCleanupFailedFenced({
+            workspaceId: archived.id,
+            capturedGeneration,
+            cleanupReason: `${ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON} | ${failure}`,
+          });
           await logActivity(db, {
             companyId: archived.companyId,
             actorType: "system",

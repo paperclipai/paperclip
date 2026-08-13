@@ -934,6 +934,54 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       .resolves.toBe("not delivered\n");
   });
 
+  it("does not write stale cleanup-failure state onto a newer archive lifecycle", async () => {
+    // Reproduce the cleanup-failure race. The reaper archives the workspace at one
+    // generation and captures it. The cleanup then throws. Before the catch handler
+    // writes the cleanup-failed status, a reopen and a fresh archive raise the
+    // generation. The catch handler must skip its write, so the stale failure never
+    // overwrites the newer archive lifecycle.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    const newerReason = "newer_archive_lifecycle_marker";
+    const racingService = executionWorkspaceService(db, {
+      resolvePullRequestDetails: async (_companyId, reference) =>
+        pullRequestDetailsByKey.get(`${seeded.companyId}:${reference.number}`) ?? { state: "unknown" },
+      beforeTerminalWorkspaceCleanup: async (workspace) => {
+        // Stand in for a reopen and a fresh archive that ran after this sweep
+        // captured the generation. Raise the generation past the captured value,
+        // keep the row closed, then force the cleanup to throw.
+        await db
+          .update(executionWorkspaces)
+          .set({
+            status: "archived",
+            cleanupReason: newerReason,
+            metadata: { [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 2 },
+            updatedAt: new Date(),
+          })
+          .where(eq(executionWorkspaces.id, workspace.id));
+        throw new Error("forced cleanup failure");
+      },
+    });
+
+    const sweep = await racingService.sweepTerminalWorkspaces();
+    const [workspace] = await db
+      .select({
+        status: executionWorkspaces.status,
+        cleanupReason: executionWorkspaces.cleanupReason,
+        metadata: executionWorkspaces.metadata,
+      })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    expect(sweep).toMatchObject({ cleanupFailed: 1 });
+    // The fenced write saw the raised generation and skipped, so the newer
+    // lifecycle state survives untouched.
+    expect(workspace?.status).toBe("archived");
+    expect(workspace?.cleanupReason).toBe(newerReason);
+    expect(
+      (workspace?.metadata as Record<string, unknown> | null)?.[EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY],
+    ).toBe(2);
+  });
+
   it("archives terminal workspaces without running configured cleanup hooks", async () => {
     const seeded = await seedTerminalWorkspace({ mergedPr: true });
     const cleanupMarker = path.join(path.dirname(seeded.worktreePath), `cleanup-marker-${randomUUID()}`);
