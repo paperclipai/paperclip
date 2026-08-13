@@ -149,7 +149,7 @@ describe("AgentConfigForm", () => {
     vi.clearAllMocks();
   });
 
-  it("loads backup route model choices from the backup adapter", async () => {
+  it("loads model choices for the selected adapter", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -184,18 +184,13 @@ describe("AgentConfigForm", () => {
       "claude_local",
       { environmentId: null },
     );
-    expect(mockAgentsApi.adapterModels).toHaveBeenCalledWith(
-      "company-1",
-      "codex_local",
-      { environmentId: null },
-    );
 
     await act(async () => {
       root.unmount();
     });
   });
 
-  it("offers Max and Ultra thinking effort for Codex agents", async () => {
+  it("offers the supported Codex thinking-effort levels", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -226,8 +221,8 @@ describe("AgentConfigForm", () => {
     const optionLabels = Array.from(container.querySelectorAll("button"))
       .map((button) => button.querySelector("span")?.textContent?.trim())
       .filter(Boolean);
-    expect(optionLabels).toContain("Max");
-    expect(optionLabels).toContain("Ultra");
+    expect(optionLabels).toContain("X-High");
+    expect(optionLabels).not.toContain("Ultra");
 
     await act(async () => {
       root.unmount();

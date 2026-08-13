@@ -69,6 +69,7 @@ const generalWorkspacesAGroupName = "general-workspaces-a";
 const generalWorkspacesBGroupName = "general-workspaces-b";
 const generalWorkspacesAProjects = ["@paperclipai/ui", "paperclipai"];
 const generalWorkspacesBProjects = nonServerProjects.filter((project) => !generalWorkspacesAProjects.includes(project));
+const uiBrowserCryptoSuite = "ui/src/pages/CompanyImport.test.tsx";
 const generalGroupNames = [generalServerGroupName, generalWorkspacesAGroupName, generalWorkspacesBGroupName];
 const serializedServerVitestArgs = [
   "--no-file-parallelism",
@@ -360,7 +361,19 @@ function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = 
     // 31371439296, 2026-08-10, where workspaces-a was the slowest PR check).
     // Its 439 test files shard cleanly with Vitest's native --shard, so the
     // lane splits across runners without a duration manifest.
-    runProjectGroup(generalWorkspacesAProjects, groupName, shardIndex, shardCount);
+    // CompanyImport replaces Web Crypto for its large-file transfer fixture.
+    // Keep that browser-global mock out of the rest of the UI test process.
+    const shardArgs =
+      shardCount !== null && shardCount > 1 ? [`--shard=${shardIndex + 1}/${shardCount}`] : [];
+    runVitest(
+      ["--project", "@paperclipai/ui", "--exclude", uiBrowserCryptoSuite, ...shardArgs],
+      `${groupName} project @paperclipai/ui${shardArgs.length ? ` shard ${shardIndex + 1}/${shardCount}` : ""} excluding browser crypto suite`,
+    );
+    runVitest(
+      ["--project", "@paperclipai/ui", uiBrowserCryptoSuite, ...shardArgs],
+      `${groupName} browser crypto suite${shardArgs.length ? ` shard ${shardIndex + 1}/${shardCount}` : ""}`,
+    );
+    runProjectGroup(["paperclipai"], groupName, shardIndex, shardCount);
     return;
   }
 

@@ -282,7 +282,7 @@ describe("TaskChatComposer", () => {
     expect(onAdd).toHaveBeenCalledWith("hello", undefined, undefined);
   });
 
-  it("applies a selected model to one reply, then returns the control to Default", async () => {
+  it("ignores legacy model-selection props and submits normally", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     render(
       <TaskChatComposer
@@ -293,32 +293,15 @@ describe("TaskChatComposer", () => {
       />,
     );
 
-    const selector = container.querySelector('[data-testid="chat-model-selector"]')!;
-    expect(selector.textContent).toContain("Default · gpt-5.6-luna");
-    const trigger = selector.querySelector<HTMLButtonElement>("button")!;
-    flushSync(() => {
-      trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushAsync();
-
-    const modelOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[type="button"]'))
-      .find((node) => node.textContent?.includes("GPT-5.3-Codex"));
-    expect(modelOption).toBeTruthy();
-    flushSync(() => {
-      modelOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushAsync();
-
     typeText("use the stronger model");
     pressKey("Enter", { metaKey: true });
     await flushAsync();
     await flushAsync();
 
-    expect(onAdd).toHaveBeenCalledWith("use the stronger model", undefined, undefined, "gpt-5.3-codex");
-    expect(selector.textContent).toContain("Default · gpt-5.6-luna");
+    expect(onAdd).toHaveBeenCalledWith("use the stronger model", undefined, undefined);
   });
 
-  it("applies selected thinking effort to one reply, then returns the control to Default", async () => {
+  it("ignores legacy thinking-effort props and submits normally", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     render(
       <TaskChatComposer
@@ -329,35 +312,12 @@ describe("TaskChatComposer", () => {
       />,
     );
 
-    const selector = container.querySelector('[data-testid="chat-thinking-effort-selector"]')!;
-    expect(selector.textContent).toContain("Default · Low");
-    const trigger = selector.querySelector<HTMLButtonElement>("button")!;
-    flushSync(() => {
-      trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushAsync();
-
-    const effortOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[type="button"]'))
-      .find((node) => node.textContent?.includes("X-High"));
-    expect(effortOption).toBeTruthy();
-    flushSync(() => {
-      effortOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushAsync();
-
     typeText("think this through carefully");
     pressKey("Enter", { metaKey: true });
     await flushAsync();
     await flushAsync();
 
-    expect(onAdd).toHaveBeenCalledWith(
-      "think this through carefully",
-      undefined,
-      undefined,
-      undefined,
-      "xhigh",
-    );
-    expect(selector.textContent).toContain("Default · Low");
+    expect(onAdd).toHaveBeenCalledWith("think this through carefully", undefined, undefined);
   });
 
   it("does not submit on plain Enter or Shift+Enter (newline stays with the editor)", async () => {

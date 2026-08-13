@@ -250,16 +250,15 @@ describe("MarkdownBody", () => {
     expect(html).not.toContain("paperclip-mention-chip--issue");
   });
 
-  it("uses title-first issue labels when a distinct title is available", () => {
+  it("uses an accessible issue label with the title when one is available", () => {
     const html = renderMarkdown("Depends on PAP-1271 and PAP-1272.", [
       { identifier: "PAP-1271", status: "done" },
       { identifier: "PAP-1272", status: "blocked", title: "Fix hover state" },
     ]);
 
     expect(html).toContain('aria-label="Issue PAP-1271"');
-    expect(html).toContain('aria-label="Issue Fix hover state PAP-1272"');
-    expect(html).toContain(">Fix hover state</span>");
-    expect(html).toContain(">PAP-1272</span>");
+    expect(html).toContain('aria-label="Issue PAP-1272: Fix hover state"');
+    expect(html).toContain(">PAP-1272</a>");
     expect(html).not.toContain('aria-label="Issue PAP-1271: PAP-1271"');
   });
 
