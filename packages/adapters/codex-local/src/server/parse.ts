@@ -382,6 +382,10 @@ export function isCodexProviderQuotaError(input: {
   errorMessage?: string | null;
 }): boolean {
   const haystack = buildCodexErrorHaystack(input);
-  if (CODEX_MODEL_SPECIFIC_USAGE_LIMIT_RE.test(haystack)) return false;
-  return CODEX_PROVIDER_QUOTA_RE.test(haystack) || extractCodexRetryNotBefore(input) != null;
+  const retryNotBefore = extractCodexRetryNotBefore(input);
+  // A model-specific message can still carry the account's explicit reset
+  // time. Preserve that durable quota signal instead of treating it as a
+  // generic transient failure.
+  if (CODEX_MODEL_SPECIFIC_USAGE_LIMIT_RE.test(haystack) && retryNotBefore == null) return false;
+  return CODEX_PROVIDER_QUOTA_RE.test(haystack) || retryNotBefore != null;
 }
