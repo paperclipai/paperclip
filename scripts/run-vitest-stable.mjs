@@ -55,6 +55,10 @@ const additionalSerializedServerTests = new Set([
   "server/src/__tests__/project-routes-env.test.ts",
   "server/src/__tests__/redaction.test.ts",
   "server/src/__tests__/routines-e2e.test.ts",
+  // This suite owns an embedded Postgres lifecycle and mutates runtime
+  // environment state while exercising scheduler recovery. Run it in its own
+  // process so a preceding general suite cannot leak process state into it.
+  "server/src/__tests__/routines-service.test.ts",
 ]);
 let invocationIndex = 0;
 const serializedModeName = "serialized";
