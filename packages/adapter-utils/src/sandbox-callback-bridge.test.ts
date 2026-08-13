@@ -1528,6 +1528,111 @@ describe("sandbox callback bridge", () => {
     await worker.stop({ drainTimeoutMs: 10 });
   });
 
+  it("fences a late handler completion so it cannot commit after the timeout 503", async () => {
+    // Prove the completion fence. The per-iteration timeout rejects the wrapper
+    // but does not stop the handler, so the handler finishes late. The test lets
+    // the handler finish after the 503 write and proves the late completion
+    // writes no second response and removes no request file.
+    const waitFor = async (predicate: () => boolean, timeoutMs: number) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (predicate()) {
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      throw new Error("waitFor timed out");
+    };
+
+    const queueDir = "/virtual-bridge/queue";
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const requestFile = "req-late.json";
+    const requestPath = path.posix.join(directories.requestsDir, requestFile);
+    const responsePath = path.posix.join(directories.responsesDir, requestFile);
+
+    // An in-memory queue client with no file-existence guards. A response write
+    // always lands here, so only the completion fence can stop a second write.
+    // The real filesystem and command clients add their own existence guards;
+    // this client removes them, so the test isolates the fence.
+    const requestBodies = new Map<string, string>();
+    requestBodies.set(requestPath, bridgeRequestJson("req-late"));
+    const responseWrites: Array<{ path: string; status: number }> = [];
+    const requestRemovals: string[] = [];
+
+    const handlerControl: { release: (() => void) | null } = { release: null };
+    let handlerCompleted = false;
+
+    const client: SandboxCallbackBridgeQueueClient = {
+      makeDir: async () => {},
+      makeDirs: async () => {},
+      listJsonFiles: async (dir) =>
+        dir === directories.requestsDir
+          ? [...requestBodies.keys()].map((entry) => path.posix.basename(entry)).sort()
+          : [],
+      readTextFile: async (remotePath) => {
+        const body = requestBodies.get(remotePath);
+        if (body === undefined) {
+          throw new Error(`missing request ${remotePath}`);
+        }
+        return body;
+      },
+      writeTextFile: async () => {},
+      writeResponseFile: async (remotePath, body) => {
+        responseWrites.push({ path: remotePath, status: JSON.parse(body.trim()).status });
+        return { wrote: true };
+      },
+      rename: async () => {},
+      remove: async (remotePath) => {
+        requestRemovals.push(remotePath);
+        requestBodies.delete(remotePath);
+      },
+    };
+
+    const { runtimeSpan, workerErrors } = createWorkerErrorCapture();
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      iterationTimeoutMs: 50,
+      watchdogTimeoutMs: 10_000,
+      runtimeSpan,
+      authorizeRequest: async () => null,
+      // The handler stays pending until the test releases it, well after the
+      // per-iteration timeout fires. It records that it finished, so the test
+      // proves the late completion truly ran.
+      handleRequest: () =>
+        new Promise<{ status: number; body?: string }>((resolve) => {
+          handlerControl.release = () => {
+            handlerCompleted = true;
+            resolve({ status: 200, body: "req-late" });
+          };
+        }),
+    });
+
+    // Wait until the timeout recovery wrote the 503 and the handler is pending.
+    await waitFor(() => responseWrites.some((write) => write.status === 503) && handlerControl.release !== null, 3_000);
+    expect(responseWrites.map((write) => write.status)).toEqual([503]);
+    const removalsBeforeRelease = requestRemovals.length;
+
+    // Release the handler after the 503. The late completion must not commit.
+    handlerControl.release?.();
+    await waitFor(() => handlerCompleted, 3_000);
+    // Give any errant late write or remove time to land.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(handlerCompleted).toBe(true);
+    // Only the 503 ever committed for the request. The late 200 wrote nothing.
+    expect(responseWrites.filter((write) => write.path === responsePath)).toEqual([
+      { path: responsePath, status: 503 },
+    ]);
+    expect(responseWrites.some((write) => write.status === 200)).toBe(false);
+    // The late completion removed no request file after the 503.
+    expect(requestRemovals.length).toBe(removalsBeforeRelease);
+    expect(workerErrors.some((message) => message.includes("timed out"))).toBe(true);
+
+    await worker.stop({ drainTimeoutMs: 10 });
+  });
+
   it("trips the watchdog on a stalled poll, writes a 503, and surfaces a run-level error", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-watchdog-"));
     cleanupDirs.push(rootDir);

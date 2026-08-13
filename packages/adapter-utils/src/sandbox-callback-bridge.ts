@@ -745,71 +745,116 @@ export async function startSandboxCallbackBridgeWorker(input: {
   const buildWorkerFailureMessage = (error: unknown) =>
     `Sandbox callback bridge worker failed: ${error instanceof Error ? error.message : String(error)}`;
 
+  // Per-attempt finalization guard. Each `processRequestFile` call registers one,
+  // keyed by the request file name. The guard is the completion fence between the
+  // request handler and the per-iteration timeout recovery. The per-iteration
+  // timeout rejects only the wrapper promise; it does not stop the handler, so
+  // the handler can finish late. Node runs one event loop, so a synchronous
+  // check-and-set of `settled` is atomic. The first path to set `settled` wins;
+  // the loser skips its response write and its request-file remove. So after the
+  // timeout recovery writes a 503, the late handler completion cannot write a
+  // second response over that 503, and cannot remove a request file that a retry
+  // re-queued under the same name.
+  type RequestFinalizeGuard = { settled: boolean };
+  const inFlightRequestGuards = new Map<string, RequestFinalizeGuard>();
+
   const processRequestFile = async (fileName: string) => {
     const requestPath = path.posix.join(directories.requestsDir, fileName);
     const responsePath = path.posix.join(directories.responsesDir, fileName);
-    const raw = await input.client.readTextFile(requestPath);
-    let request: SandboxCallbackBridgeRequest;
-    try {
-      request = JSON.parse(raw) as SandboxCallbackBridgeRequest;
-    } catch {
-      const requestId = fileName.replace(/\.json$/i, "") || randomUUID();
-      await writeBridgeResponse(input.client, requestPath, responsePath, {
-        id: requestId,
-        status: 400,
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ error: "Invalid bridge request payload." }),
-        completedAt: new Date().toISOString(),
-      });
-      await input.client.remove(requestPath);
-      return;
-    }
-
-    const denialReason = await authorizeRequest(request);
-    if (denialReason) {
-      await writeBridgeResponse(input.client, requestPath, responsePath, {
-        id: request.id,
-        status: 403,
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ error: denialReason }),
-        completedAt: new Date().toISOString(),
-      });
-      await input.client.remove(requestPath);
-      return;
-    }
-
-    try {
-      const result = await input.handleRequest(request);
-      const responseBody = result.body ?? "";
-      if (Buffer.byteLength(responseBody, "utf8") > maxBodyBytes) {
-        throw new Error(`Bridge response body exceeded the configured size limit of ${maxBodyBytes} bytes.`);
+    const guard: RequestFinalizeGuard = { settled: false };
+    inFlightRequestGuards.set(fileName, guard);
+    // Finalize the request exactly once. Claim the guard first. When the timeout
+    // recovery already won the claim, skip both the write and the remove.
+    const finalize = async (response: SandboxCallbackBridgeResponse) => {
+      if (guard.settled) {
+        return;
       }
-      await writeBridgeResponse(input.client, requestPath, responsePath, {
-        id: request.id,
-        status: result.status,
-        headers: result.headers ?? {},
-        body: responseBody,
-        completedAt: new Date().toISOString(),
-      });
-    } catch (error) {
-      console.warn(
-        `[paperclip] sandbox callback bridge handler failed for ${request.id}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      await writeBridgeResponse(input.client, requestPath, responsePath, {
-        id: request.id,
-        status: 502,
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          error: error instanceof Error ? error.message : String(error),
-        }),
-        completedAt: new Date().toISOString(),
-      });
-    } finally {
+      guard.settled = true;
+      await writeBridgeResponse(input.client, requestPath, responsePath, response);
       await input.client.remove(requestPath);
+    };
+    try {
+      const raw = await input.client.readTextFile(requestPath);
+      let request: SandboxCallbackBridgeRequest;
+      try {
+        request = JSON.parse(raw) as SandboxCallbackBridgeRequest;
+      } catch {
+        const requestId = fileName.replace(/\.json$/i, "") || randomUUID();
+        await finalize({
+          id: requestId,
+          status: 400,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ error: "Invalid bridge request payload." }),
+          completedAt: new Date().toISOString(),
+        });
+        return;
+      }
+
+      const denialReason = await authorizeRequest(request);
+      if (denialReason) {
+        await finalize({
+          id: request.id,
+          status: 403,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ error: denialReason }),
+          completedAt: new Date().toISOString(),
+        });
+        return;
+      }
+
+      // Build the response first, then finalize once. The handler runs before the
+      // guard claim, so the per-iteration timeout can win the claim while the
+      // handler still runs. When the timeout wins, `finalize` here is a no-op.
+      let response: SandboxCallbackBridgeResponse;
+      try {
+        const result = await input.handleRequest(request);
+        const responseBody = result.body ?? "";
+        if (Buffer.byteLength(responseBody, "utf8") > maxBodyBytes) {
+          throw new Error(`Bridge response body exceeded the configured size limit of ${maxBodyBytes} bytes.`);
+        }
+        response = {
+          id: request.id,
+          status: result.status,
+          headers: result.headers ?? {},
+          body: responseBody,
+          completedAt: new Date().toISOString(),
+        };
+      } catch (error) {
+        console.warn(
+          `[paperclip] sandbox callback bridge handler failed for ${request.id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        response = {
+          id: request.id,
+          status: 502,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            error: error instanceof Error ? error.message : String(error),
+          }),
+          completedAt: new Date().toISOString(),
+        };
+      }
+      await finalize(response);
+    } finally {
+      // Drop the guard only when it still points to this attempt. A retry can
+      // register a new attempt under the same file name; that new guard must
+      // stay in the map.
+      if (inFlightRequestGuards.get(fileName) === guard) {
+        inFlightRequestGuards.delete(fileName);
+      }
     }
   };
 
-  const failPendingRequests = async (message: string) => {
+  // Abort every queued request with a 503. The `abandonInFlight` option controls
+  // the completion fence for a request a `processRequestFile` attempt still owns.
+  // The timeout and watchdog recovery pass `true`: the loop already gave up on
+  // the request, so claim its guard and make its late completion a no-op before
+  // the 503 write. The stop drain passes `false` (the default): a request the
+  // loop already picked up keeps its normal completion, so a late handler result
+  // still wins over the drain 503, exactly like the earlier stop behavior.
+  const failPendingRequests = async (
+    message: string,
+    options: { abandonInFlight?: boolean } = {},
+  ) => {
     // Wrap each client call in the per-iteration timeout. When the sandbox
     // channel is unresponsive, a client call hangs with no reject. The timeout
     // keeps this recovery path fail-fast, so it never re-hangs on the same dead
@@ -820,6 +865,18 @@ export async function startSandboxCallbackBridgeWorker(input: {
       "Sandbox callback bridge list pending requests",
     ).catch(() => [] as string[]);
     for (const fileName of fileNames) {
+      if (options.abandonInFlight) {
+        const guard = inFlightRequestGuards.get(fileName);
+        if (guard) {
+          if (guard.settled) {
+            // The request handler already finalized this request. Do not write a
+            // competing 503.
+            continue;
+          }
+          // Claim the request, so its late handler completion becomes a no-op.
+          guard.settled = true;
+        }
+      }
       const requestPath = path.posix.join(directories.requestsDir, fileName);
       const responsePath = path.posix.join(directories.responsesDir, fileName);
       const requestId = fileName.replace(/\.json$/i, "") || randomUUID();
@@ -887,7 +944,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
     const message = `Sandbox callback bridge made no successful poll iteration for ${idleMs}ms; the sandbox connection is unresponsive.`;
     await surfaceRunError(new Error(message));
     try {
-      await failPendingRequests(message);
+      await failPendingRequests(message, { abandonInFlight: true });
     } catch (error) {
       console.warn(
         `[paperclip] sandbox callback bridge watchdog failed to abort queued requests: ${error instanceof Error ? error.message : String(error)}`,
@@ -977,7 +1034,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
       const message = buildWorkerFailureMessage(error);
       await surfaceRunError(new Error(message));
       try {
-        await failPendingRequests(message);
+        await failPendingRequests(message, { abandonInFlight: true });
       } catch (failPendingError) {
         console.warn(
           `[paperclip] sandbox callback bridge failed to abort queued requests after worker failure: ${failPendingError instanceof Error ? failPendingError.message : String(failPendingError)}`,
