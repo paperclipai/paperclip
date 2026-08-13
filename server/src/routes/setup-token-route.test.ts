@@ -163,8 +163,8 @@ function buildTransport(opts: { onSubmit?: "complete" | "throw" | "pending" } = 
     async record(record) {
       rows.set(record.sessionId, { ...record });
     },
-    async markState(sessionId, state) {
-      const row = rows.get(sessionId);
+    async markState(identity, state) {
+      const row = rows.get(identity.sessionId);
       if (row) row.state = state;
     },
     async remove(sessionId) {
@@ -172,6 +172,14 @@ function buildTransport(opts: { onSubmit?: "complete" | "throw" | "pending" } = 
     },
     async listReapable() {
       return [];
+    },
+    async consumeStoredClaim(identity) {
+      const row = rows.get(identity.sessionId);
+      if (!row || row.state !== "stored" || row.boundAt !== null || row.deadline <= Date.now()) {
+        return null;
+      }
+      row.boundAt = Date.now();
+      return { ...row };
     },
   };
   const leases: SetupTokenLeaseManager = {
@@ -317,6 +325,7 @@ beforeEach(() => {
     companyId: COMPANY_ID,
     name: "Claude agent",
     adapterType: "claude_local",
+    defaultEnvironmentId: null,
   });
 });
 

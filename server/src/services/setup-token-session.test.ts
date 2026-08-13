@@ -1,5 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { eq, sql } from "drizzle-orm";
 import {
+  claudeSetupTokenSessions,
+  companies,
+  createDb,
+  environments,
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "@paperclipai/db";
+import {
+  createDbSetupTokenCleanupStore,
   SetupTokenSessionService,
   SetupTokenSessionError,
   assessConfidentialStartup,
@@ -11,6 +22,7 @@ import {
   SETUP_TOKEN_RATE_LIMITED,
   SETUP_TOKEN_CAP_EXCEEDED,
   SETUP_TOKEN_TOKEN_UNAVAILABLE,
+  type SetupTokenCleanupIdentity,
   type SetupTokenCleanupRecord,
   type SetupTokenCleanupStore,
   type SetupTokenCredentialSink,
@@ -37,6 +49,8 @@ const OWNER_SCOPE: SetupTokenSessionScope = {
   companyId: "company-1",
   ownerUserId: "user-1",
   targetAgentId: "agent-1",
+  adapterType: "claude_local",
+  environmentId: "env-1",
 };
 
 /** A controllable fake login process. It records the call order into `events`. */
@@ -103,22 +117,47 @@ class FakeLeaseManager implements SetupTokenLeaseManager {
   }
 }
 
+function identityMatchesRow(row: SetupTokenCleanupRecord, identity: SetupTokenCleanupIdentity): boolean {
+  return (
+    row.companyId === identity.companyId &&
+    row.ownerUserId === identity.ownerUserId &&
+    row.adapterType === identity.adapterType &&
+    row.environmentId === identity.environmentId
+  );
+}
+
 class FakeStore implements SetupTokenCleanupStore {
   rows = new Map<string, SetupTokenCleanupRecord>();
   async record(record: SetupTokenCleanupRecord): Promise<void> {
     this.rows.set(record.sessionId, { ...record });
   }
-  async markState(sessionId: string, state: SetupTokenCleanupRecord["state"]): Promise<void> {
-    const row = this.rows.get(sessionId);
-    if (row) row.state = state;
+  async markState(identity: SetupTokenCleanupIdentity, state: SetupTokenCleanupRecord["state"]): Promise<void> {
+    const row = this.rows.get(identity.sessionId);
+    // The write matches the full owner scope, so it never updates a row by the
+    // session id alone.
+    if (row && identityMatchesRow(row, identity)) row.state = state;
   }
   async remove(sessionId: string): Promise<void> {
     this.rows.delete(sessionId);
   }
   async listReapable(now: number): Promise<SetupTokenCleanupRecord[]> {
     return [...this.rows.values()].filter(
-      (row) => isTerminalSessionState(row.state) || row.deadline <= now,
+      (row) => isTerminalSessionState(row.state) || row.deadline <= now || row.boundAt !== null,
     );
+  }
+  async consumeStoredClaim(identity: SetupTokenCleanupIdentity): Promise<SetupTokenCleanupRecord | null> {
+    const row = this.rows.get(identity.sessionId);
+    if (
+      !row ||
+      !identityMatchesRow(row, identity) ||
+      row.state !== "stored" ||
+      row.boundAt !== null ||
+      row.deadline <= Date.now()
+    ) {
+      return null;
+    }
+    row.boundAt = Date.now();
+    return { ...row };
   }
 }
 
@@ -313,10 +352,12 @@ describe("SetupTokenSessionService durable reaper", () => {
       sessionId: "orphan-1",
       companyId: "company-1",
       ownerUserId: "user-1",
-      targetAgentId: "agent-1",
+      adapterType: "claude_local",
+      environmentId: "env-1",
       leaseId: "lease-orphan",
       deadline: 1_000,
       state: "awaiting_code",
+      boundAt: null,
     });
     const { service } = buildService({ store, leases, now: () => 5_000 });
     const summary = await service.reap(5_000);
@@ -331,10 +372,12 @@ describe("SetupTokenSessionService durable reaper", () => {
       sessionId: "orphan-2",
       companyId: "company-1",
       ownerUserId: "user-1",
-      targetAgentId: "agent-1",
+      adapterType: "claude_local",
+      environmentId: "env-1",
       leaseId: "lease-orphan-2",
       deadline: 1_000,
       state: "failed",
+      boundAt: null,
     });
     const leases = new FakeLeaseManager();
     leases.releaseById = async () => {
@@ -543,5 +586,257 @@ describe("confidential transport guard (SR-6, SR-7)", () => {
       forwardedProto: "https",
     });
     expect(decision.allowed).toBe(false);
+  });
+});
+
+describe("SetupTokenSessionService durable state scope", () => {
+  it("marks the durable record state by the full owner scope", async () => {
+    const store = new FakeStore();
+    const { service, processes } = buildService({ store });
+    const { sessionId } = await service.start(OWNER_SCOPE);
+    processes[0].surfacePrompt(FULL_LOGIN_URL);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(store.rows.get(sessionId)?.state).toBe("awaiting_code");
+
+    // A foreign-scope mark leaves the row unchanged, so a write never updates a
+    // row by the session id alone.
+    await store.markState(
+      {
+        sessionId,
+        companyId: OWNER_SCOPE.companyId,
+        ownerUserId: "intruder",
+        adapterType: OWNER_SCOPE.adapterType,
+        environmentId: OWNER_SCOPE.environmentId,
+      },
+      "submitting",
+    );
+    expect(store.rows.get(sessionId)?.state).toBe("awaiting_code");
+  });
+});
+
+// --- The durable, database-backed cleanup store ------------------------------
+
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping durable setup-token cleanup store tests on this host: ${
+      embeddedPostgresSupport.reason ?? "unsupported environment"
+    }`,
+  );
+}
+
+describeEmbeddedPostgres("durable setup-token cleanup store (embedded postgres)", () => {
+  let stopDb: (() => Promise<void>) | undefined;
+  let connectionString!: string;
+  let db!: ReturnType<typeof createDb>;
+
+  beforeAll(async () => {
+    const started = await startEmbeddedPostgresTestDatabase("claude-setup-token-store");
+    stopDb = started.cleanup;
+    connectionString = started.connectionString;
+    db = createDb(connectionString);
+  });
+
+  afterEach(async () => {
+    await db.delete(claudeSetupTokenSessions);
+    await db.delete(environments);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await stopDb?.();
+  });
+
+  // Seed a company and an environment, then return one fresh record identity.
+  async function seedScope(): Promise<SetupTokenCleanupIdentity> {
+    const companyId = randomUUID();
+    const environmentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      // A unique issue prefix per company; the column has a unique index.
+      issuePrefix: companyId.slice(0, 8),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(environments).values({
+      id: environmentId,
+      name: `sandbox-${environmentId.slice(0, 8)}`,
+      driver: "sandbox",
+      status: "active",
+      config: { provider: "fake" },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    return {
+      sessionId: randomUUID(),
+      companyId,
+      ownerUserId: `user-${randomUUID().slice(0, 8)}`,
+      adapterType: "claude_local",
+      environmentId,
+    };
+  }
+
+  async function insertRecord(
+    identity: SetupTokenCleanupIdentity,
+    state: SetupTokenCleanupRecord["state"],
+    deadlineMs: number,
+  ): Promise<void> {
+    const store = createDbSetupTokenCleanupStore(db);
+    await store.record({
+      ...identity,
+      leaseId: "lease-1",
+      deadline: deadlineMs,
+      state,
+      boundAt: null,
+    });
+  }
+
+  async function readRow(sessionId: string) {
+    const rows = await db
+      .select()
+      .from(claudeSetupTokenSessions)
+      .where(eq(claudeSetupTokenSessions.sessionId, sessionId));
+    return rows[0];
+  }
+
+  it("records the non-secret cleanup record and reads it back", async () => {
+    const identity = await seedScope();
+    await insertRecord(identity, "starting", Date.now() + 60_000);
+    const row = await readRow(identity.sessionId);
+    expect(row?.companyId).toBe(identity.companyId);
+    expect(row?.ownerUserId).toBe(identity.ownerUserId);
+    expect(row?.adapterType).toBe(identity.adapterType);
+    expect(row?.environmentId).toBe(identity.environmentId);
+    expect(row?.state).toBe("starting");
+    expect(row?.boundAt).toBeNull();
+  });
+
+  it("consumes a stored claim once with one conditional write", async () => {
+    const identity = await seedScope();
+    await insertRecord(identity, "stored", Date.now() + 60_000);
+    const store = createDbSetupTokenCleanupStore(db);
+
+    const first = await store.consumeStoredClaim(identity);
+    expect(first).not.toBeNull();
+    expect(first?.sessionId).toBe(identity.sessionId);
+    expect(first?.boundAt).not.toBeNull();
+    expect((await readRow(identity.sessionId))?.boundAt).not.toBeNull();
+
+    // A second consume finds the claim already consumed and returns no row.
+    const second = await store.consumeStoredClaim(identity);
+    expect(second).toBeNull();
+  });
+
+  it("returns no row for a foreign-scope consume and leaves the claim unconsumed", async () => {
+    const identity = await seedScope();
+    await insertRecord(identity, "stored", Date.now() + 60_000);
+    const store = createDbSetupTokenCleanupStore(db);
+
+    const foreign = await store.consumeStoredClaim({ ...identity, ownerUserId: "intruder" });
+    expect(foreign).toBeNull();
+    expect((await readRow(identity.sessionId))?.boundAt).toBeNull();
+  });
+
+  it("returns no row for an expired claim", async () => {
+    const identity = await seedScope();
+    await insertRecord(identity, "stored", Date.now() - 1_000);
+    const store = createDbSetupTokenCleanupStore(db);
+
+    const consumed = await store.consumeStoredClaim(identity);
+    expect(consumed).toBeNull();
+    expect((await readRow(identity.sessionId))?.boundAt).toBeNull();
+  });
+
+  it("returns no row for a non-stored claim", async () => {
+    const identity = await seedScope();
+    await insertRecord(identity, "submitting", Date.now() + 60_000);
+    const store = createDbSetupTokenCleanupStore(db);
+
+    const consumed = await store.consumeStoredClaim(identity);
+    expect(consumed).toBeNull();
+    expect((await readRow(identity.sessionId))?.boundAt).toBeNull();
+  });
+
+  it("lists terminal, expired, and consumed records but not a live stored claim", async () => {
+    const store = createDbSetupTokenCleanupStore(db);
+    const now = Date.now();
+
+    const terminal = await seedScope();
+    await insertRecord(terminal, "failed", now + 60_000);
+
+    const expired = await seedScope();
+    await insertRecord(expired, "awaiting_code", now - 1_000);
+
+    const consumed = await seedScope();
+    await insertRecord(consumed, "stored", now + 60_000);
+    await store.consumeStoredClaim(consumed);
+
+    const liveStored = await seedScope();
+    await insertRecord(liveStored, "stored", now + 60_000);
+
+    const reapable = await store.listReapable(now);
+    const ids = new Set(reapable.map((record) => record.sessionId));
+    expect(ids.has(terminal.sessionId)).toBe(true);
+    expect(ids.has(expired.sessionId)).toBe(true);
+    expect(ids.has(consumed.sessionId)).toBe(true);
+    // A live, unexpired, unconsumed stored claim is not reapable.
+    expect(ids.has(liveStored.sessionId)).toBe(false);
+  });
+
+  it("returns no row when the claim row lock holds until after the deadline", async () => {
+    // This test proves the consume uses `clock_timestamp()`, not
+    // `transaction_timestamp()`. The row starts with a far-future deadline, so
+    // the consume treats it as a valid candidate and waits for the row lock. A
+    // second connection holds the lock, sets a near deadline inside the locked
+    // transaction, and commits after that deadline passes. The consume then
+    // re-checks the predicate against the committed row with the current
+    // database time, so the expired claim returns no row. A
+    // `transaction_timestamp()` predicate would use the stale start time and
+    // wrongly consume the claim.
+    const identity = await seedScope();
+    await insertRecord(identity, "stored", Date.now() + 3_600_000);
+    const store = createDbSetupTokenCleanupStore(db);
+
+    const lockDb = createDb(connectionString);
+    let signalLocked!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      signalLocked = resolve;
+    });
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const lockHeld = lockDb.transaction(async (tx) => {
+      await tx.execute(
+        sql`SELECT bound_at FROM claude_setup_token_sessions WHERE session_id = ${identity.sessionId} FOR UPDATE`,
+      );
+      // Set a near deadline inside the locked transaction. The consume cannot see
+      // this value until the transaction commits.
+      await tx.execute(
+        sql`UPDATE claude_setup_token_sessions SET deadline_at = clock_timestamp() + interval '300 milliseconds' WHERE session_id = ${identity.sessionId}`,
+      );
+      signalLocked();
+      await gate;
+    });
+
+    // Wait until the lock is truly held, then fire the consume. The consume
+    // blocks on the row lock; its initial scan sees the far-future deadline.
+    await locked;
+    const consumePromise = store.consumeStoredClaim(identity);
+    // Hold the lock until the near deadline passes, then commit.
+    await delay(600);
+    releaseGate();
+    await lockHeld;
+
+    const consumed = await consumePromise;
+    expect(consumed).toBeNull();
+    expect((await readRow(identity.sessionId))?.boundAt).toBeNull();
+    await lockDb.$client.end();
   });
 });

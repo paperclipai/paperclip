@@ -33,12 +33,23 @@
 //     testable.
 
 import { randomBytes } from "node:crypto";
+import { and, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
+import type { Db } from "@paperclipai/db";
+import { claudeSetupTokenSessions } from "@paperclipai/db";
+import type { AgentAdapterType } from "@paperclipai/shared";
 
-/** The session states. The four terminal states end the login. */
+/**
+ * The session states. The four terminal states end the login. The `stored`
+ * state is not terminal: a session enters `stored` after a successful
+ * owner-bound secret write, and the durable row then persists as a one-time
+ * claim. The create path consumes the claim, or the reaper removes the row after
+ * the deadline.
+ */
 export type SetupTokenSessionState =
   | "starting"
   | "awaiting_code"
   | "submitting"
+  | "stored"
   | "completed"
   | "failed"
   | "timed_out"
@@ -65,6 +76,11 @@ export interface SetupTokenSessionScope {
   companyId: string;
   ownerUserId: string;
   targetAgentId: string;
+  // The adapter and the environment of the login. The durable cleanup record
+  // keys on the company, the owner, the adapter, and the environment, so a hire
+  // flow with no agent id still resolves one record.
+  adapterType: string;
+  environmentId: string;
 }
 
 /** The terminal outcome of the live login process. */
@@ -132,31 +148,67 @@ export interface SetupTokenLeaseManager {
 }
 
 /**
- * The non-secret cleanup record. It holds only ids, the deadline, and the
- * terminal state. It never holds a URL, a code, a token, or a raw process chunk
- * (SR-4). The service persists it at start so a restart can reap the lease.
+ * The non-secret cleanup record. It holds only ids, the deadline, the claim
+ * marker, and the state. It never holds a URL, a code, a token, or a raw process
+ * chunk (SR-4). The service persists it at start so a restart can reap the
+ * lease. The record keys on the company, the owner, the adapter, and the
+ * environment, not the agent id, so a hire flow with no agent still resolves it.
  */
 export interface SetupTokenCleanupRecord {
   sessionId: string;
   companyId: string;
   ownerUserId: string;
-  targetAgentId: string;
+  adapterType: string;
+  environmentId: string;
   leaseId: string;
   deadline: number;
   state: SetupTokenSessionState;
+  // The claim-consumption marker. It is null while a `stored` claim is live. The
+  // create path sets it one time when it consumes the claim.
+  boundAt: number | null;
+}
+
+/**
+ * The immutable identity of a cleanup record. It is the full owner scope plus
+ * the session id. Every durable write matches on all five fields, so a write
+ * never updates a row by session id alone.
+ */
+export interface SetupTokenCleanupIdentity {
+  sessionId: string;
+  companyId: string;
+  ownerUserId: string;
+  adapterType: string;
+  environmentId: string;
 }
 
 /**
  * The durable store for the non-secret cleanup record. A restart reads the
- * store and reaps a lease whose session is terminal or past its deadline. The
- * store persists no secret.
+ * store and reaps a lease whose session is terminal, past its deadline, or
+ * already consumed. The store persists no secret.
  */
 export interface SetupTokenCleanupStore {
   record(record: SetupTokenCleanupRecord): Promise<void>;
-  markState(sessionId: string, state: SetupTokenSessionState): Promise<void>;
+  /**
+   * Marks the state only when the full owner scope and the session id match. The
+   * write never updates a row by the session id alone (SR-3).
+   */
+  markState(identity: SetupTokenCleanupIdentity, state: SetupTokenSessionState): Promise<void>;
   remove(sessionId: string): Promise<void>;
-  /** Returns each record whose session is terminal or whose deadline is past. */
+  /**
+   * Returns each record whose session is terminal, whose deadline is past, or
+   * whose claim is already consumed.
+   */
   listReapable(now: number): Promise<SetupTokenCleanupRecord[]>;
+  /**
+   * Consumes a `stored` claim with one conditional write. The predicate carries
+   * the full owner scope, the session id, `state = stored`, an unexpired
+   * deadline that it checks with `clock_timestamp()`, and an unconsumed marker.
+   * The write sets `bound_at` one time and returns the row on a valid consume.
+   * It returns null for a missing, foreign-scope, expired, non-`stored`, or
+   * already-consumed claim. It never reads the state or the expiry in a separate
+   * step. The agent-service transaction calls this method.
+   */
+  consumeStoredClaim(identity: SetupTokenCleanupIdentity): Promise<SetupTokenCleanupRecord | null>;
 }
 
 /** A per-key start rate limiter. It matches the invite-rate-limit shape. */
@@ -471,6 +523,21 @@ export class SetupTokenSessionService {
     this.log = options.log ?? (() => {});
   }
 
+  /**
+   * Builds the durable-record identity for a session. The store matches every
+   * write on the full owner scope and the session id, so no write updates a row
+   * by the session id alone (SR-3).
+   */
+  private identityOf(session: StoredSession): SetupTokenCleanupIdentity {
+    return {
+      sessionId: session.id,
+      companyId: session.scope.companyId,
+      ownerUserId: session.scope.ownerUserId,
+      adapterType: session.scope.adapterType,
+      environmentId: session.scope.environmentId,
+    };
+  }
+
   private countActive(predicate: (session: StoredSession) => boolean): number {
     let count = 0;
     for (const session of this.sessions.values()) {
@@ -508,10 +575,12 @@ export class SetupTokenSessionService {
       sessionId,
       companyId: scope.companyId,
       ownerUserId: scope.ownerUserId,
-      targetAgentId: scope.targetAgentId,
+      adapterType: scope.adapterType,
+      environmentId: scope.environmentId,
       leaseId: lease.id,
       deadline,
       state: "starting",
+      boundAt: null,
     });
 
     const abort = new AbortController();
@@ -571,7 +640,7 @@ export class SetupTokenSessionService {
     session.loginUrl = prompt.url;
     if (session.state === "starting") {
       session.state = "awaiting_code";
-      void this.store.markState(session.id, "awaiting_code").catch(() => {});
+      void this.store.markState(this.identityOf(session), "awaiting_code").catch(() => {});
     }
   }
 
@@ -627,7 +696,7 @@ export class SetupTokenSessionService {
       throw new SetupTokenSessionError(409, SETUP_TOKEN_SUBMIT_CONFLICT);
     }
     session.state = "submitting";
-    void this.store.markState(session.id, "submitting").catch(() => {});
+    void this.store.markState(this.identityOf(session), "submitting").catch(() => {});
     session.process.submitCode(code);
     return { state: session.state };
   }
@@ -745,7 +814,7 @@ export class SetupTokenSessionService {
     // Clear the secret-bearing reference promptly. Best-effort only (SR-5).
     session.loginUrl = null;
     try {
-      await this.store.markState(session.id, state);
+      await this.store.markState(this.identityOf(session), state);
     } catch {
       this.log("[paperclip] Setup-token session: the cleanup record update failed; it stays retryable.");
     }
@@ -829,4 +898,112 @@ export class SetupTokenSessionService {
   activeSessionCount(): number {
     return this.countActive(() => true);
   }
+}
+
+// --- The durable, database-backed cleanup store ------------------------------
+
+type ClaudeSetupTokenSessionRow = typeof claudeSetupTokenSessions.$inferSelect;
+
+/** Maps a database row to the non-secret cleanup record. */
+function toCleanupRecord(row: ClaudeSetupTokenSessionRow): SetupTokenCleanupRecord {
+  return {
+    sessionId: row.sessionId,
+    companyId: row.companyId,
+    ownerUserId: row.ownerUserId,
+    adapterType: row.adapterType,
+    environmentId: row.environmentId,
+    leaseId: row.leaseId ?? "",
+    deadline: row.deadlineAt.getTime(),
+    state: row.state as SetupTokenSessionState,
+    boundAt: row.boundAt ? row.boundAt.getTime() : null,
+  };
+}
+
+/**
+ * Builds the durable, database-backed cleanup store. It persists only the
+ * non-secret record. Every write matches the full owner scope and the session
+ * id, so no write updates a row by the session id alone (SR-3, SR-4). The
+ * claim-consumption write folds the state check, the deadline check, and the
+ * consumption into one conditional write.
+ */
+export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
+  // The store keys every scoped write on these four columns plus the session id.
+  const scopeMatch = (identity: SetupTokenCleanupIdentity) =>
+    and(
+      eq(claudeSetupTokenSessions.sessionId, identity.sessionId),
+      eq(claudeSetupTokenSessions.companyId, identity.companyId),
+      eq(claudeSetupTokenSessions.ownerUserId, identity.ownerUserId),
+      eq(claudeSetupTokenSessions.adapterType, identity.adapterType as AgentAdapterType),
+      eq(claudeSetupTokenSessions.environmentId, identity.environmentId),
+    );
+
+  return {
+    async record(record): Promise<void> {
+      await db.insert(claudeSetupTokenSessions).values({
+        sessionId: record.sessionId,
+        companyId: record.companyId,
+        ownerUserId: record.ownerUserId,
+        adapterType: record.adapterType as AgentAdapterType,
+        environmentId: record.environmentId,
+        leaseId: record.leaseId,
+        state: record.state,
+        deadlineAt: new Date(record.deadline),
+        boundAt: record.boundAt === null ? null : new Date(record.boundAt),
+      });
+    },
+
+    async markState(identity, state): Promise<void> {
+      // The compare-and-set predicate matches the full owner scope, so a write
+      // never updates a row by the session id alone.
+      await db
+        .update(claudeSetupTokenSessions)
+        .set({ state, updatedAt: sql`clock_timestamp()` })
+        .where(scopeMatch(identity));
+    },
+
+    async remove(sessionId): Promise<void> {
+      await db
+        .delete(claudeSetupTokenSessions)
+        .where(eq(claudeSetupTokenSessions.sessionId, sessionId));
+    },
+
+    async listReapable(now): Promise<SetupTokenCleanupRecord[]> {
+      // A record is reapable when its session is terminal, its deadline is past,
+      // or its claim is already consumed. The deadline index supports the scan.
+      const rows = await db
+        .select()
+        .from(claudeSetupTokenSessions)
+        .where(
+          or(
+            inArray(claudeSetupTokenSessions.state, [...SETUP_TOKEN_TERMINAL_STATES]),
+            lte(claudeSetupTokenSessions.deadlineAt, new Date(now)),
+            isNotNull(claudeSetupTokenSessions.boundAt),
+          ),
+        );
+      return rows.map(toCleanupRecord);
+    },
+
+    async consumeStoredClaim(identity): Promise<SetupTokenCleanupRecord | null> {
+      // One conditional write. The predicate carries the full owner scope, the
+      // session id, `state = stored`, an unexpired deadline, and an unconsumed
+      // marker. It checks the deadline with `clock_timestamp()`, so the database
+      // evaluates the current time after any row-lock wait. An expired claim
+      // cannot pass the deadline condition. The write sets `bound_at` one time
+      // and returns the row only on a valid consume.
+      const changed = await db
+        .update(claudeSetupTokenSessions)
+        .set({ boundAt: sql`clock_timestamp()`, updatedAt: sql`clock_timestamp()` })
+        .where(
+          and(
+            scopeMatch(identity),
+            eq(claudeSetupTokenSessions.state, "stored"),
+            gt(claudeSetupTokenSessions.deadlineAt, sql`clock_timestamp()`),
+            isNull(claudeSetupTokenSessions.boundAt),
+          ),
+        )
+        .returning();
+      const row = changed[0];
+      return row ? toCleanupRecord(row) : null;
+    },
+  };
 }

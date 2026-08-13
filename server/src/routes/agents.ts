@@ -325,19 +325,43 @@ export function agentRoutes(
   // The in-memory non-secret cleanup record store. It is the default store when a
   // caller does not inject a durable database-backed store.
   const setupTokenCleanupRows = new Map<string, SetupTokenCleanupRecord>();
+  const scopeMatchesRow = (row: SetupTokenCleanupRecord, identity: {
+    companyId: string;
+    ownerUserId: string;
+    adapterType: string;
+    environmentId: string;
+  }): boolean =>
+    row.companyId === identity.companyId &&
+    row.ownerUserId === identity.ownerUserId &&
+    row.adapterType === identity.adapterType &&
+    row.environmentId === identity.environmentId;
   const inMemorySetupTokenCleanupStore: SetupTokenCleanupStore = {
     async record(record): Promise<void> {
       setupTokenCleanupRows.set(record.sessionId, { ...record });
     },
-    async markState(sessionId, state): Promise<void> {
-      const row = setupTokenCleanupRows.get(sessionId);
-      if (row) row.state = state;
+    async markState(identity, state): Promise<void> {
+      const row = setupTokenCleanupRows.get(identity.sessionId);
+      if (row && scopeMatchesRow(row, identity)) row.state = state;
     },
     async remove(sessionId): Promise<void> {
       setupTokenCleanupRows.delete(sessionId);
     },
     async listReapable(): Promise<SetupTokenCleanupRecord[]> {
       return [];
+    },
+    async consumeStoredClaim(identity): Promise<SetupTokenCleanupRecord | null> {
+      const row = setupTokenCleanupRows.get(identity.sessionId);
+      if (
+        !row ||
+        !scopeMatchesRow(row, identity) ||
+        row.state !== "stored" ||
+        row.boundAt !== null ||
+        row.deadline <= Date.now()
+      ) {
+        return null;
+      }
+      row.boundAt = Date.now();
+      return { ...row };
     },
   };
 
@@ -4257,13 +4281,22 @@ export function agentRoutes(
    */
   const buildSetupTokenScope = (
     req: Request,
-    agent: { id: string; companyId: string },
+    agent: { id: string; companyId: string; adapterType: string; defaultEnvironmentId: string | null },
   ): SetupTokenSessionScope => {
     const actor = getActorInfo(req);
     if (actor.actorType !== "user") {
       throw forbidden("A user must own a setup-token login session.");
     }
-    return { companyId: agent.companyId, ownerUserId: actor.actorId, targetAgentId: agent.id };
+    return {
+      companyId: agent.companyId,
+      ownerUserId: actor.actorId,
+      targetAgentId: agent.id,
+      adapterType: agent.adapterType,
+      // The durable cleanup record keys on the environment. The route uses the
+      // agent default environment. An empty value stays in the in-memory store
+      // only; the durable store binds a resolved environment.
+      environmentId: agent.defaultEnvironmentId ?? "",
+    };
   };
 
   /**
