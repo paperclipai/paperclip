@@ -78,6 +78,15 @@ const CLOSED_EXECUTION_WORKSPACE_STATUSES = ["archived", "cleanup_failed"] as co
 // output.
 export const EXECUTION_WORKSPACE_REOPEN_FAILED_REASON = "reopen_failed";
 
+// How long the terminal reaper waits before it reclaims a stranded reopen-pending
+// flag. A reopen sets the flag while the source issue is still terminal. The
+// consuming request clears the flag within seconds when the request ends. If the
+// server exits first, or every clear retry fails, the flag stays set and both the
+// reaper and the archive route skip the workspace forever. After this grace the
+// reaper treats the flag as stranded and clears it, so the workspace becomes
+// reclaimable again.
+const STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS = 5 * 60 * 1000;
+
 // The metadata key that holds the workspace lifecycle generation. The generation
 // is a monotonic integer. Every archive and every reopen increases it by one. A
 // destructive cleanup captures the generation it archived at, then re-reads the
@@ -121,30 +130,53 @@ function isClosedExecutionWorkspaceStatus(status: string | null | undefined): bo
 // state, so a normal terminal cycle can reap the workspace again.
 export const EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY = "reopenPendingConsumption";
 
+// The metadata key that holds the time a reopen set the reopen-pending flag. The
+// terminal reaper reads this timestamp to tell a fresh, in-flight reopen from a
+// stranded flag whose consumer never cleared it. A reopen writes this key in the
+// same write that sets the flag, and every clear removes both keys together.
+export const EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY = "reopenPendingConsumptionSince";
+
 export function metadataHasReopenPendingConsumption(
   metadata: Record<string, unknown> | null | undefined,
 ): boolean {
   return metadata?.[EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY] === true;
 }
 
+// Read the time a reopen set the reopen-pending flag. Return null when the flag
+// carries no valid timestamp. The terminal reaper uses this to tell a fresh,
+// in-flight reopen from a stranded flag whose consumer never cleared it.
+export function readMetadataReopenPendingConsumptionSince(
+  metadata: Record<string, unknown> | null | undefined,
+): Date | null {
+  const raw = metadata?.[EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY];
+  if (typeof raw !== "string") return null;
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 // Return a metadata object with the reopen-pending flag set. The caller keeps
-// every other metadata key.
+// every other metadata key. The `at` timestamp records when the reopen set the
+// flag, so the terminal reaper can reclaim a stranded flag after a grace period.
 export function setMetadataReopenPendingConsumption(
   metadata: Record<string, unknown> | null | undefined,
+  at: Date,
 ): Record<string, unknown> {
   return {
     ...(metadata ?? {}),
     [EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY]: true,
+    [EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY]: at.toISOString(),
   };
 }
 
 // Return a metadata object with the reopen-pending flag removed. The caller
-// keeps every other metadata key.
+// keeps every other metadata key. The function removes the flag and its
+// timestamp together, so no orphan timestamp survives a clear.
 export function clearMetadataReopenPendingConsumption(
   metadata: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> {
   const next = { ...(metadata ?? {}) };
   delete next[EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY];
+  delete next[EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY];
   return next;
 }
 
@@ -2242,6 +2274,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           skippedUndelivered: 0,
           skippedRace: 0,
           skippedReopened: 0,
+          clearedStaleReopenPending: 0,
         };
       }
       terminalSweepInProgress = true;
@@ -2304,6 +2337,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         skippedUndelivered: 0,
         skippedRace: 0,
         skippedReopened: 0,
+        clearedStaleReopenPending: 0,
       };
 
       for (const workspace of candidates) {
@@ -2335,12 +2369,41 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           continue;
         }
         if (reopenPending) {
-          // A reopen published this workspace as active while the source issue is
-          // still terminal. A caller will consume the rebuilt worktree. Do not
-          // archive it now. The authoritative check is the NOT reopenPending
-          // predicate in the archive statement below; this early skip avoids the
-          // work when the snapshot already shows the flag.
-          result.skippedReopened += 1;
+          const pendingSince = readMetadataReopenPendingConsumptionSince(
+            workspace.metadata as Record<string, unknown> | null,
+          );
+          const stranded =
+            pendingSince === null
+            || now().getTime() - pendingSince.getTime() >= STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS;
+          if (!stranded) {
+            // A reopen published this workspace as active while the source issue
+            // is still terminal, and the consuming request is still in flight. Do
+            // not archive it now. The authoritative check is the NOT reopenPending
+            // predicate in the archive statement below; this early skip avoids the
+            // work when the snapshot already shows the flag.
+            result.skippedReopened += 1;
+            continue;
+          }
+          // The reopen-pending flag outlived its consumption window. The consuming
+          // request ended without moving the issue out of the terminal state, or
+          // the server exited before it cleared the flag. Clear the stranded flag
+          // under the lifecycle lock so a later sweep can reclaim the workspace.
+          // Keep the row active, so a retried resume can still reuse the rebuilt
+          // worktree.
+          const cleared = await clearReopenPendingConsumptionUnderLock(workspace.id);
+          if (cleared) {
+            result.clearedStaleReopenPending += 1;
+            logger.info(
+              {
+                event: "execution_workspace.reopen",
+                outcome: "stale_reopen_pending_cleared",
+                executionWorkspaceId: workspace.id,
+                sourceIssueId: workspace.sourceIssueId,
+                pendingSince: pendingSince?.toISOString() ?? null,
+              },
+              "cleared a stranded reopen-pending flag on a terminal workspace",
+            );
+          }
           continue;
         }
         if (await workspaceHasActiveRun(workspace)) {
@@ -2676,7 +2739,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         // the issue out of the terminal state only after this reopen returns. The
         // flag stops the terminal reaper and the archive route from archiving and
         // destroying the rebuilt worktree in that window.
-        const activeMetadata = setMetadataReopenPendingConsumption(nextMetadata);
+        const activeMetadata = setMetadataReopenPendingConsumption(nextMetadata, now());
         const activeRow = await tx
           .update(executionWorkspaces)
           .set({
@@ -2848,6 +2911,34 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           capturedGeneration: readExecutionWorkspaceLifecycleGeneration(archiveMetadata),
         };
       });
+    },
+
+    // Mark a workspace cleanup_failed only while the row is still closed. The
+    // archive route calls this when the destructive cleanup throws. A reopen that
+    // raced after the failure restores the row to an open status; the
+    // closed-status guard stops this write from clobbering that active state, so
+    // a stale cleanup_failed write never buries a freshly rebuilt worktree. The
+    // method returns the updated row, or null when the guard skipped the write.
+    markClosedWorkspaceCleanupFailed: async (input: {
+      id: string;
+      closedAt: Date;
+      cleanupReason: string;
+    }): Promise<ExecutionWorkspace | null> => {
+      const row = await db
+        .update(executionWorkspaces)
+        .set({
+          status: "cleanup_failed",
+          closedAt: input.closedAt,
+          cleanupReason: input.cleanupReason,
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(executionWorkspaces.id, input.id),
+          inArray(executionWorkspaces.status, [...CLOSED_EXECUTION_WORKSPACE_STATUSES]),
+        ))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return row ? toExecutionWorkspace(row) : null;
     },
 
     // Read the lifecycle generation of a workspace row. The archive route captures

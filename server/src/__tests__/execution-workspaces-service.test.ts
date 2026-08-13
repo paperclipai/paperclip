@@ -30,6 +30,7 @@ import {
 import {
   EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY,
   EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY,
+  EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY,
   executionWorkspaceService,
   deriveExecutionWorkspaceDeliveryState,
   mergeExecutionWorkspaceConfig,
@@ -972,6 +973,8 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
           createdByRuntime: true,
           [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 4,
           [EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY]: true,
+          // A fresh timestamp marks the reopen as in flight, so the sweep skips it.
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY]: new Date().toISOString(),
         },
       })
       .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
@@ -988,6 +991,53 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(metadataHasReopenPendingConsumption(workspace?.metadata as Record<string, unknown> | null)).toBe(true);
     // The rebuilt worktree is intact.
     await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+  });
+
+  it("clears a stranded reopen flag whose consumer never ran, then reaps on a later sweep", async () => {
+    // A reopen published the workspace active and set the flag, but the consuming
+    // request never moved the source issue out of the terminal state, and the
+    // response-end clear never landed. The flag is older than the grace period.
+    // The first sweep clears the stranded flag; a later sweep archives the row.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    const strandedSince = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "active",
+        closedAt: null,
+        cleanupReason: null,
+        cleanupEligibleAt: null,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 4,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY]: true,
+          [EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY]: strandedSince,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const firstSweep = await svc.sweepTerminalWorkspaces();
+    const [afterClear] = await db
+      .select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    // The first sweep clears the stranded flag but keeps the row active, so a
+    // retried resume can still reuse the rebuilt worktree.
+    expect(firstSweep).toMatchObject({ archived: 0, clearedStaleReopenPending: 1 });
+    expect(afterClear?.status).toBe("active");
+    expect(metadataHasReopenPendingConsumption(afterClear?.metadata as Record<string, unknown> | null)).toBe(false);
+    await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+
+    // A later sweep archives the reclaimed workspace through the normal path.
+    const secondSweep = await svc.sweepTerminalWorkspaces();
+    const [afterArchive] = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    expect(secondSweep).toMatchObject({ archived: 1 });
+    expect(afterArchive?.status).toBe("archived");
   });
 
   it("clears the reopen flag once the source issue leaves the terminal state", async () => {
@@ -1070,6 +1120,48 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     ).toBe(4);
     // The rebuilt worktree is intact.
     await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+  });
+
+  it("marks cleanup_failed only while the workspace is still closed", async () => {
+    // The archive route calls this after a cleanup throws. While the row is still
+    // closed, the guarded write records cleanup_failed. After a resume reopened
+    // the row to active, the guard skips the write so it does not overwrite the
+    // newer active lifecycle state.
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    await db
+      .update(executionWorkspaces)
+      .set({ status: "archived", closedAt: new Date() })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const closedAt = new Date();
+    const marked = await svc.markClosedWorkspaceCleanupFailed({
+      id: seeded.executionWorkspaceId,
+      closedAt,
+      cleanupReason: "teardown boom",
+    });
+    expect(marked?.status).toBe("cleanup_failed");
+    expect(marked?.cleanupReason).toBe("teardown boom");
+
+    // Simulate a resume that reopened the row to active after the failure.
+    await db
+      .update(executionWorkspaces)
+      .set({ status: "active", closedAt: null, cleanupReason: null })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const skipped = await svc.markClosedWorkspaceCleanupFailed({
+      id: seeded.executionWorkspaceId,
+      closedAt: new Date(),
+      cleanupReason: "stale teardown boom",
+    });
+    expect(skipped).toBeNull();
+
+    const [row] = await db
+      .select({ status: executionWorkspaces.status, cleanupReason: executionWorkspaces.cleanupReason })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    // The active row survives; the stale cleanup_failed write did not land.
+    expect(row?.status).toBe("active");
+    expect(row?.cleanupReason).toBeNull();
   });
 
   it("holds Git index and ref locks across terminal cleanup", async () => {

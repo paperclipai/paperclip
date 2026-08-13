@@ -20,9 +20,11 @@ import {
 import {
   EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY,
   EXECUTION_WORKSPACE_REOPEN_FAILED_REASON,
+  EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY,
   executionWorkspaceService,
   metadataHasReopenPendingConsumption,
   readExecutionWorkspaceLifecycleGeneration,
+  readMetadataReopenPendingConsumptionSince,
 } from "../services/execution-workspaces.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -355,6 +357,10 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
     expect(reopenResult.ok).toBe(true);
     const reopenedRow = await readWorkspace(workspaceId);
     expect(metadataHasReopenPendingConsumption(reopenedRow?.metadata as Record<string, unknown> | null)).toBe(true);
+    // The reopen stamps the time it set the flag, so the reaper can age a
+    // stranded flag out of the way after the grace period.
+    expect(readMetadataReopenPendingConsumptionSince(reopenedRow?.metadata as Record<string, unknown> | null))
+      .toBeInstanceOf(Date);
 
     // The caller never consumed the reopen, so clear the flag.
     const cleared = await svc.clearReopenPendingConsumptionForUnconsumedReopen({
@@ -367,6 +373,9 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
     const clearedRow = await readWorkspace(workspaceId);
     // The flag is gone, so the terminal reaper can archive and reclaim the row.
     expect(metadataHasReopenPendingConsumption(clearedRow?.metadata as Record<string, unknown> | null)).toBe(false);
+    // The clear removes the timestamp too, so no orphan key survives.
+    expect((clearedRow?.metadata as Record<string, unknown> | null)?.[EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY])
+      .toBeUndefined();
     // The row stays active, so a retried resume can still reuse the rebuilt worktree.
     expect(clearedRow?.status).toBe("active");
 

@@ -753,12 +753,17 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         }
       } catch (error) {
         const failureReason = error instanceof Error ? error.message : String(error);
-        workspace =
-          (await svc.update(id, {
-            status: "cleanup_failed",
-            closedAt,
-            cleanupReason: failureReason,
-          })) ?? workspace;
+        // Mark cleanup_failed only while the row is still closed. If a resume
+        // reopened the workspace after the cleanup threw, the row is active again;
+        // the guarded write skips it, so a stale cleanup_failed write never
+        // overwrites the newer active lifecycle state or buries the rebuilt
+        // worktree.
+        const marked = await svc.markClosedWorkspaceCleanupFailed({
+          id,
+          closedAt,
+          cleanupReason: failureReason,
+        });
+        if (marked) workspace = marked;
         res.status(500).json({
           error: `Failed to archive execution workspace: ${failureReason}`,
         });
