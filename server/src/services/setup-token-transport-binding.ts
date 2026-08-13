@@ -35,6 +35,7 @@ import type { environmentRuntimeService } from "./environment-runtime.js";
 import type { Db } from "@paperclipai/db";
 import {
   createSetupTokenPtyTransport,
+  type SetupTokenPtySession,
   type SetupTokenPtySessionOpener,
 } from "@paperclipai/adapter-utils/setup-token-transport";
 import {
@@ -383,4 +384,87 @@ export function createProductionSetupTokenSandboxProvider(
 /** Builds the durable, database-backed cleanup store for the production binding. */
 export function createProductionSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
   return createDbSetupTokenCleanupStore(db);
+}
+
+/**
+ * The narrow plugin worker manager surface the live opener needs. The manager
+ * owns the host route gate (Control 7): it mints the host route identifier,
+ * reserves one route per worker, drives the open, binds the worker session
+ * identifier one time, routes output, and terminalizes the route.
+ */
+export interface SetupTokenPtyWorkerManagerLike {
+  openSetupTokenPtySession(
+    pluginId: string,
+    input: {
+      driverKey: string;
+      companyId: string;
+      environmentId: string;
+      providerLeaseId: string;
+      command: string;
+    },
+  ): Promise<SetupTokenPtySession>;
+}
+
+/** The narrow lease-lookup surface the live opener needs. */
+export interface SetupTokenPtyLeaseLookup {
+  getLeaseById(leaseId: string): Promise<
+    | {
+        providerLeaseId: string | null;
+        metadata: Record<string, unknown> | null | undefined;
+      }
+    | null
+  >;
+}
+
+/** The dependencies the worker-bound live pseudo-terminal opener needs. */
+export interface WorkerBoundSetupTokenPtyOpenerDeps {
+  /** The plugin worker manager that owns the host route gate. */
+  workerManager: SetupTokenPtyWorkerManagerLike;
+  /** The environment lease lookup that resolves the worker target for a lease. */
+  environments: SetupTokenPtyLeaseLookup;
+  /** A non-leaking status sink. It receives only fixed status lines. */
+  log?: (line: string) => void;
+}
+
+function readLeaseMetaString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+/**
+ * Builds the production `openLivePtySession`. It resolves the server lease to its
+ * `providerLeaseId` and the sandbox worker plugin id, then returns an opener that
+ * drives the worker through the manager route gate. The manager mints the host
+ * route identifier and owns the route lifecycle. The opener fails closed when the
+ * lease carries no sandbox worker binding.
+ */
+export function createWorkerBoundSetupTokenPtyOpener(
+  deps: WorkerBoundSetupTokenPtyOpenerDeps,
+): NonNullable<ProductionSetupTokenSandboxProviderDeps["openLivePtySession"]> {
+  const log = deps.log ?? (() => {});
+  return async ({ scope, environmentId, leaseId }) => {
+    const lease = await deps.environments.getLeaseById(leaseId);
+    const providerLeaseId =
+      typeof lease?.providerLeaseId === "string" && lease.providerLeaseId.length > 0
+        ? lease.providerLeaseId
+        : null;
+    const metadata =
+      lease && typeof lease.metadata === "object" && lease.metadata !== null
+        ? (lease.metadata as Record<string, unknown>)
+        : {};
+    const pluginId = readLeaseMetaString(metadata.pluginId);
+    const driverKey =
+      readLeaseMetaString(metadata.provider) ?? readLeaseMetaString(metadata.driver);
+    if (!providerLeaseId || !pluginId || !driverKey) {
+      log("[paperclip] Setup-token login: the lease carries no sandbox worker binding.");
+      throw new SetupTokenSessionError(503, SETUP_TOKEN_START_FAILED);
+    }
+    return (command: string) =>
+      deps.workerManager.openSetupTokenPtySession(pluginId, {
+        driverKey,
+        companyId: scope.companyId,
+        environmentId,
+        providerLeaseId,
+        command,
+      });
+  };
 }

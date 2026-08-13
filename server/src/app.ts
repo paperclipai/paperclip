@@ -35,6 +35,7 @@ import {
   buildSetupTokenLoginTransport,
   createProductionSetupTokenSandboxProvider,
   createProductionSetupTokenCleanupStore,
+  createWorkerBoundSetupTokenPtyOpener,
 } from "./services/setup-token-transport-binding.js";
 import { environmentService } from "./services/environments.js";
 import { environmentRuntimeService } from "./services/environment-runtime.js";
@@ -442,14 +443,21 @@ export async function createApp(
   //
   // The live sandbox pseudo-terminal opener binds inside the sandbox provider
   // worker, so the server process does not hold the raw sandbox process. The
-  // provider omits `openLivePtySession` here, so it fails closed before it
-  // acquires a lease, and the start route returns the fixed 503 without holding a
-  // lease. The live opener lands with the Phase 11 characterization test against a
-  // real sandbox.
+  // opener drives the worker through the plugin worker manager route gate
+  // (Control 7). The manager mints a host-owned route identifier, permits one
+  // active credential pseudo-terminal per worker, binds the worker session
+  // identifier one time for output only, and terminalizes the route on every open
+  // failure path. With the opener supplied, the provider acquires a lease and the
+  // start route drives a live login instead of the fixed 503.
   const setupTokenLoginTransport = buildSetupTokenLoginTransport({
     sandbox: createProductionSetupTokenSandboxProvider({
       environments: environmentService(db),
       environmentRuntime: environmentRuntimeService(db, { pluginWorkerManager: workerManager }),
+      openLivePtySession: createWorkerBoundSetupTokenPtyOpener({
+        workerManager,
+        environments: environmentService(db),
+        log: (line) => logger.info(line),
+      }),
       log: (line) => logger.info(line),
     }),
     store: createProductionSetupTokenCleanupStore(db),

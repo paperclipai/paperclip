@@ -60,6 +60,11 @@ export type {
   DaytonaPtyCreateOptions,
   DaytonaSetupTokenPtyOptions,
 } from "./setup-token-pty.js";
+import { openDaytonaSetupTokenPtySession as openSetupTokenPtySession } from "./setup-token-pty.js";
+import type {
+  SetupTokenPtySession as SetupTokenPtyWorkerSession,
+  DaytonaPtyProcess,
+} from "./setup-token-pty.js";
 
 // Injectable monotonic clock for provider-boundary timing (Open Q1). Defaults
 // to the real wall clock; `plugin.test.ts` overrides it via
@@ -1264,7 +1269,27 @@ const sandboxHandleCache = (() => {
     entries.clear();
   }
 
-  return { get, seed, clear, reset, markFresh };
+  // Resolve a cached sandbox by its provider lease id alone (Control 7). The
+  // login pseudo-terminal open carries only the provider lease id, not the full
+  // scope, so this scans the cached handles for the one whose `sandbox.id`
+  // matches. The lease was cached on acquire in the same worker, so the scan is
+  // a hit for a live login lease. It returns null when no cached handle matches,
+  // so the caller fails closed.
+  async function findByProviderLeaseId(providerLeaseId: string): Promise<Sandbox | null> {
+    if (!providerLeaseId) return null;
+    for (const entry of entries.values()) {
+      let sandbox: Sandbox;
+      try {
+        sandbox = await entry.sandbox;
+      } catch {
+        continue;
+      }
+      if (sandbox.id === providerLeaseId) return sandbox;
+    }
+    return null;
+  }
+
+  return { get, seed, clear, reset, markFresh, findByProviderLeaseId };
 })();
 
 // Advisory writable-set store. It holds, per lease scope, the sandbox
@@ -1868,6 +1893,24 @@ async function executeInSession(
       await sandbox.fs.deleteFile(stdinPath).catch(() => undefined);
     }
   }
+}
+
+// The worker-side registry of live login pseudo-terminal sessions (Control 7).
+// The worker registers each terminal under the host-owned route identifier at
+// create time, so the host closes the exact terminal by that identifier even
+// when the open reply was lost. It also indexes by the worker session identifier
+// for input and stop. The `onShutdown` hook closes every open session here.
+interface DaytonaSetupTokenPtyEntry {
+  hostRouteId: string;
+  workerSessionId: string;
+  session: SetupTokenPtyWorkerSession;
+}
+const daytonaSetupTokenPtyByRoute = new Map<string, DaytonaSetupTokenPtyEntry>();
+const daytonaSetupTokenPtyBySession = new Map<string, DaytonaSetupTokenPtyEntry>();
+
+function forgetDaytonaSetupTokenPty(entry: DaytonaSetupTokenPtyEntry): void {
+  daytonaSetupTokenPtyByRoute.delete(entry.hostRouteId);
+  daytonaSetupTokenPtyBySession.delete(entry.workerSessionId);
 }
 
 const plugin = definePlugin({
@@ -2638,6 +2681,84 @@ const plugin = definePlugin({
       sandboxHandleCache.markFresh(scope);
       return result;
     });
+  },
+
+  // Open one live Claude `setup-token` login pseudo-terminal (Control 7). Resolve
+  // the cached sandbox by the provider lease id, run the fixed login command on a
+  // real pseudo-terminal, and register the session under the host route id. Stream
+  // the raw output and the exit through `ctx.setupTokenPty`, bound to the returned
+  // worker session id. Fail closed when no cached sandbox matches the lease.
+  async onSetupTokenPtyOpen(params) {
+    const sandbox = await sandboxHandleCache.findByProviderLeaseId(params.providerLeaseId);
+    if (!sandbox) {
+      throw new Error(
+        "Daytona setup-token login: no cached sandbox resolves the provider lease.",
+      );
+    }
+    const session = await openSetupTokenPtySession(
+      sandbox.process as unknown as DaytonaPtyProcess,
+      params.command,
+    );
+    const workerSessionId = `pty-${randomUUID()}`;
+    const entry: DaytonaSetupTokenPtyEntry = {
+      hostRouteId: params.hostRouteId,
+      workerSessionId,
+      session,
+    };
+    daytonaSetupTokenPtyByRoute.set(params.hostRouteId, entry);
+    daytonaSetupTokenPtyBySession.set(workerSessionId, entry);
+    // Register the output listener before the first input, so no early output
+    // chunk is lost. The client stamps the worker session id, so the host binds
+    // the output to the open route.
+    session.onData((chunk) => {
+      pluginContext?.setupTokenPty.output(workerSessionId, chunk);
+    });
+    // Forward the child exit one time. The host resolves the login run on it.
+    void session.wait().then(
+      (result) => pluginContext?.setupTokenPty.exit(workerSessionId, result.exitCode),
+      () => pluginContext?.setupTokenPty.exit(workerSessionId, null),
+    );
+    return { workerSessionId };
+  },
+
+  // Write delayed input to an open login pseudo-terminal, keyed by the worker
+  // session id. Drop the input for an unknown session.
+  async onSetupTokenPtyInput(params) {
+    const entry = daytonaSetupTokenPtyBySession.get(params.workerSessionId);
+    if (!entry) return;
+    entry.session.write(params.data);
+  },
+
+  // Stop an open login pseudo-terminal child, keyed by the worker session id.
+  async onSetupTokenPtyStop(params) {
+    const entry = daytonaSetupTokenPtyBySession.get(params.workerSessionId);
+    if (!entry) return;
+    entry.session.kill();
+  },
+
+  // Close an open login pseudo-terminal by the host route id and acknowledge the
+  // close with the same identifier. The close is idempotent: it returns the
+  // acknowledgement even when the entry is already gone, so the host confirms the
+  // terminal is closed. The worker never keys the close on the worker session id.
+  async onSetupTokenPtyClose(params) {
+    const entry = daytonaSetupTokenPtyByRoute.get(params.hostRouteId);
+    if (entry) {
+      forgetDaytonaSetupTokenPty(entry);
+      await entry.session.close().catch(() => undefined);
+    }
+    return { hostRouteId: params.hostRouteId };
+  },
+
+  // Close every open login pseudo-terminal on an orderly shutdown, then drain the
+  // sandbox handle cache, so a graceful shutdown holds no live login terminal.
+  async onShutdown() {
+    const openSessions = [...daytonaSetupTokenPtyByRoute.values()];
+    daytonaSetupTokenPtyByRoute.clear();
+    daytonaSetupTokenPtyBySession.clear();
+    for (const entry of openSessions) {
+      await entry.session.close().catch(() => undefined);
+    }
+    sandboxHandleCache.reset();
   },
 });
 
