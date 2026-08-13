@@ -13,9 +13,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { copyTextToClipboard } from "@/lib/clipboard";
 
 export type WorkspaceServiceControlState =
   | "stopped"
+  | "provisioning"
   | "starting"
   | "running"
   | "stopping"
@@ -48,7 +50,7 @@ export type WorkspaceServiceControlBarProps = {
   className?: string;
 };
 
-const TRANSITIONAL_STATES: WorkspaceServiceControlState[] = ["starting", "stopping", "restarting"];
+const TRANSITIONAL_STATES: WorkspaceServiceControlState[] = ["provisioning", "starting", "stopping", "restarting"];
 
 function isTransitional(state: WorkspaceServiceControlState) {
   return TRANSITIONAL_STATES.includes(state);
@@ -61,6 +63,8 @@ function formatServiceUrl(url: string | null | undefined) {
 
 function statusMeta(entry: WorkspaceServiceControlEntry): { label: string; unhealthy: boolean } {
   switch (entry.state) {
+    case "provisioning":
+      return { label: "Provisioning…", unhealthy: false };
     case "starting":
       return { label: "Starting…", unhealthy: false };
     case "stopping":
@@ -118,8 +122,7 @@ function CopyUrlButton({ url, disabled }: { url: string; disabled?: boolean }) {
       className="text-muted-foreground hover:text-foreground"
       onClick={async () => {
         try {
-          if (!navigator.clipboard) throw new Error("Clipboard API unavailable");
-          await navigator.clipboard.writeText(url);
+          await copyTextToClipboard(url);
           setCopyState("copied");
         } catch {
           setCopyState("failed");

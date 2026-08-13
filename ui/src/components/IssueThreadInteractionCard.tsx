@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Agent } from "@paperclipai/shared";
-import { AlertTriangle, ArrowUpRight, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, Clock, ExternalLink, FileText, GitBranch, ImagePlus, Loader2, MessageSquareQuote, MinusCircle, ShieldAlert, ThumbsUp, TriangleAlert, Wrench, X, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, Bot, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, Clock, ExternalLink, FileText, GitBranch, ImagePlus, Loader2, MessageSquareQuote, MinusCircle, ShieldAlert, ThumbsUp, TriangleAlert, Wrench, X, XCircle } from "lucide-react";
 import { Link } from "@/lib/router";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import {
@@ -10,6 +10,7 @@ import {
   getCheckboxConfirmationSelectedLabels,
   getItemVerdictProgress,
   getQuestionAnswerLabels,
+  shouldHideInteractionCard,
   normalizeRequestConfirmationTargetHref,
   type AskUserQuestionsAnswer,
   type AskUserQuestionsInteraction,
@@ -32,6 +33,7 @@ import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
 import { PriorityIcon } from "./PriorityIcon";
+import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { Textarea } from "./ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { Badge } from "@/components/ui/badge";
@@ -65,6 +67,8 @@ interface IssueThreadInteractionCardProps {
   onCancelInteraction?: (
     interaction: AskUserQuestionsInteraction,
   ) => Promise<void> | void;
+  /** Render confirmation CTAs with the primary action rightmost (task-chat grammar). */
+  primaryActionOnRight?: boolean;
   onSubmitInteractionVerdicts?: (
     interaction: RequestItemVerdictsInteraction,
     verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[],
@@ -88,6 +92,32 @@ function resolveActorLabel(args: {
     return formatAssigneeUserLabel(userId, currentUserId, userLabelMap) ?? "Board";
   }
   return "Unknown";
+}
+
+/**
+ * Administrative terminal outcomes (P1): an interaction that was withdrawn by
+ * its board/agent, or auto-expired when its issue reached a terminal state.
+ * Both are stored as `status="cancelled"|"expired"` with the distinguishing
+ * fact carried on `result.outcome` (there is no dedicated `withdrawn` status).
+ */
+function getAdministrativeOutcome(
+  interaction: IssueThreadInteraction,
+): "withdrawn" | "issue_closed" | null {
+  const result = interaction.result;
+  if (result && typeof result === "object" && "outcome" in result) {
+    const outcome = (result as { outcome?: string | null }).outcome;
+    if (outcome === "withdrawn" || outcome === "issue_closed") return outcome;
+  }
+  return null;
+}
+
+function getAdministrativeReason(interaction: IssueThreadInteraction): string | null {
+  const result = interaction.result;
+  if (result && typeof result === "object" && "reason" in result) {
+    const reason = (result as { reason?: string | null }).reason;
+    if (typeof reason === "string" && reason.trim().length > 0) return reason.trim();
+  }
+  return null;
 }
 
 function statusLabel(status: IssueThreadInteraction["status"]) {
@@ -192,6 +222,7 @@ function requestConfirmationResumeFailure(interaction: IssueThreadInteraction) {
 function planStatusClasses(
   status: IssueThreadInteraction["status"],
   resumeFailure?: ReturnType<typeof requestConfirmationResumeFailure>,
+  outcome?: string | null,
 ) {
   switch (status) {
     case "accepted":
@@ -215,7 +246,7 @@ function planStatusClasses(
       return {
         shell: "border-2 border-red-500/80 bg-transparent",
         badge: "border-red-500/60 bg-red-500/10 text-red-900 dark:bg-red-500/15 dark:text-red-100",
-        label: "Changes requested",
+        label: outcome === "withdrawn" ? "Withdrawn" : "Changes requested",
         Icon: XCircle,
       };
     case "failed":
@@ -483,7 +514,8 @@ function TaskTreeNode({
               ) : null}
               <div className="min-w-0 flex-1">
                 <div className="flex min-w-0 items-center gap-1.5">
-                  {node.task.priority ? (
+                  {/* PAP-411: priority UI hidden behind SHOW_TASK_PRIORITY_UI. */}
+                  {SHOW_TASK_PRIORITY_UI && node.task.priority ? (
                     <PriorityIcon
                       priority={node.task.priority}
                       className="mt-px"
@@ -958,8 +990,16 @@ function AskUserQuestionsCard({
       ),
   );
 
-  function toggleOption(questionId: string, optionId: string, selectionMode: "single" | "multi") {
-    if (optionId === OTHER_ANSWER_ID) {
+  function toggleOption(
+    questionId: string,
+    optionId: string,
+    selectionMode: "single" | "multi",
+    isFreeText = false,
+  ) {
+    // A free-text option is a first-class version of the built-in "Other"
+    // affordance: selecting it reveals the inline text field and its typed
+    // value is submitted as the question's `otherText`.
+    if (optionId === OTHER_ANSWER_ID || isFreeText) {
       setOtherActiveQuestions((current) => ({
         ...current,
         [questionId]: !current[questionId],
@@ -1033,7 +1073,11 @@ function AskUserQuestionsCard({
 
       {interaction.status === "pending" ? (
         <div className="space-y-4">
-          {questions.map((question, index) => (
+          {questions.map((question, index) => {
+            const hasFreeTextOption = question.options.some(
+              (option) => option.freeText === true,
+            );
+            return (
             <div
               key={question.id}
               className="rounded-2xl border border-border/70 bg-background/82 p-4 shadow-(--shadow-extract-9)"
@@ -1068,50 +1112,82 @@ function AskUserQuestionsCard({
                   role={question.selectionMode === "single" ? "radiogroup" : "group"}
                   aria-labelledby={`${interaction.id}-${question.id}-prompt`}
                 >
-                  {question.options.map((option) => (
-                    <QuestionOptionButton
-                      key={option.id}
-                      id={`${interaction.id}-${question.id}-${option.id}`}
-                      label={option.label}
-                      description={option.description}
-                      selected={(draftAnswers[question.id] ?? []).includes(option.id)}
-                      selectionMode={question.selectionMode}
-                      onClick={() =>
-                        toggleOption(question.id, option.id, question.selectionMode)}
-                    />
-                  ))}
+                  {question.options.map((option) => {
+                    const isFreeText = option.freeText === true;
+                    const optionSelected = isFreeText
+                      ? otherActiveQuestions[question.id] === true
+                      : (draftAnswers[question.id] ?? []).includes(option.id);
+                    return (
+                      <div key={option.id} className="space-y-2">
+                        <QuestionOptionButton
+                          id={`${interaction.id}-${question.id}-${option.id}`}
+                          label={option.label}
+                          description={option.description}
+                          selected={optionSelected}
+                          selectionMode={question.selectionMode}
+                          onClick={() =>
+                            toggleOption(question.id, option.id, question.selectionMode, isFreeText)}
+                        />
+                        {isFreeText && optionSelected ? (
+                          <Textarea
+                            aria-label={`Describe your answer for ${question.prompt}`}
+                            value={draftOtherAnswers[question.id] ?? ""}
+                            onChange={(event) =>
+                              setDraftOtherAnswers((current) => ({
+                                ...current,
+                                [question.id]: event.target.value,
+                              }))}
+                            placeholder="Type your answer"
+                            className="min-h-24 bg-background text-sm"
+                            autoFocus
+                          />
+                        ) : null}
+                      </div>
+                    );
+                  })}
                 </div>
-                <button
-                  type="button"
-                  id={`${interaction.id}-${question.id}-other`}
-                  aria-expanded={otherActiveQuestions[question.id] === true}
-                  className={cn(
-                    "text-sm font-medium underline underline-offset-4 transition-colors outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring/50",
-                    otherActiveQuestions[question.id]
-                      ? "text-sky-700 hover:text-sky-800 dark:text-sky-300 dark:hover:text-sky-200"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                  onClick={() =>
-                    toggleOption(question.id, OTHER_ANSWER_ID, question.selectionMode)}
-                >
-                  Other
-                </button>
-                {otherActiveQuestions[question.id] ? (
-                  <Textarea
-                    aria-label={`Other answer for ${question.prompt}`}
-                    value={draftOtherAnswers[question.id] ?? ""}
-                    onChange={(event) =>
-                      setDraftOtherAnswers((current) => ({
-                        ...current,
-                        [question.id]: event.target.value,
-                      }))}
-                    placeholder="Type your answer"
-                    className="min-h-24 bg-background text-sm"
-                  />
-                ) : null}
+                {/*
+                 * The built-in "Other" link is the fallback free-text affordance.
+                 * Suppress it when the agent already authored a first-class
+                 * free-text option so the card never shows two ways to type an
+                 * answer (PAP-419).
+                 */}
+                {hasFreeTextOption ? null : (
+                  <>
+                    <button
+                      type="button"
+                      id={`${interaction.id}-${question.id}-other`}
+                      aria-expanded={otherActiveQuestions[question.id] === true}
+                      className={cn(
+                        "text-sm font-medium underline underline-offset-4 transition-colors outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring/50",
+                        otherActiveQuestions[question.id]
+                          ? "text-sky-700 hover:text-sky-800 dark:text-sky-300 dark:hover:text-sky-200"
+                          : "text-muted-foreground hover:text-foreground",
+                      )}
+                      onClick={() =>
+                        toggleOption(question.id, OTHER_ANSWER_ID, question.selectionMode)}
+                    >
+                      Other
+                    </button>
+                    {otherActiveQuestions[question.id] ? (
+                      <Textarea
+                        aria-label={`Other answer for ${question.prompt}`}
+                        value={draftOtherAnswers[question.id] ?? ""}
+                        onChange={(event) =>
+                          setDraftOtherAnswers((current) => ({
+                            ...current,
+                            [question.id]: event.target.value,
+                          }))}
+                        placeholder="Type your answer"
+                        className="min-h-24 bg-background text-sm"
+                      />
+                    ) : null}
+                  </>
+                )}
               </div>
             </div>
-          ))}
+            );
+          })}
 
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border/70 bg-background/75 p-4">
             <div className="text-sm text-muted-foreground">
@@ -1154,9 +1230,15 @@ function AskUserQuestionsCard({
         </div>
       ) : interaction.status === "cancelled" ? (
         <div className="rounded-2xl border border-rose-300/60 bg-rose-50/85 p-4 text-sm leading-6 text-rose-950 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-100">
-          <div className="font-semibold">Question cancelled</div>
+          <div className="font-semibold">
+            {interaction.result?.outcome === "withdrawn"
+              ? questions.length === 1 ? "Question withdrawn" : "Questions withdrawn"
+              : "Question cancelled"}
+          </div>
           {interaction.result?.cancellationReason ? (
             <p className="mt-1">{interaction.result.cancellationReason}</p>
+          ) : interaction.result?.reason ? (
+            <p className="mt-1">{interaction.result.reason}</p>
           ) : (
             <p className="mt-1">No answer was recorded.</p>
           )}
@@ -1165,10 +1247,18 @@ function AskUserQuestionsCard({
         <div className="rounded-2xl border border-amber-300/70 bg-amber-50/85 p-4 text-sm leading-6 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
           <div className="flex items-center gap-2 font-semibold">
             <AlertTriangle className="h-4 w-4" />
-            {questions.length === 1 ? "Question expired by comment" : "Questions expired by comment"}
+            {interaction.result?.outcome === "issue_closed"
+              ? questions.length === 1
+                ? "Question expired when the issue closed"
+                : "Questions expired when the issue closed"
+              : questions.length === 1
+                ? "Question expired by comment"
+                : "Questions expired by comment"}
           </div>
           <p className="mt-1">
-            A later board/user comment superseded this question request. Create a fresh request if answers are still needed.
+            {interaction.result?.outcome === "issue_closed"
+              ? "This question request expired automatically when the issue reached a terminal state."
+              : "A later board/user comment superseded this question request. Create a fresh request if answers are still needed."}
           </p>
           {interaction.result?.commentId ? (
             <a
@@ -1346,18 +1436,42 @@ function RequestConfirmationResolution({
     );
   }
 
+  if (interaction.status === "cancelled" && outcome === "withdrawn") {
+    // Withdrawn is a neutral administrative retraction (P4 design review): the
+    // card-level withdrawn footer carries the "Withdrawn by …" attribution and
+    // reason, so this body only anchors the target chip — no rose/red styling
+    // and no duplicated reason text.
+    return (
+      <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
+        <span className="font-medium">Withdrawn</span>
+        <RequestConfirmationTargetChip interaction={interaction} target={target} />
+      </div>
+    );
+  }
+
   if (interaction.status === "expired") {
     const expiredByComment = outcome === "superseded_by_comment";
+    const expiredByIssueClosed = outcome === "issue_closed";
     const expiredByTargetChange = outcome === "stale_target";
     return (
       <div className="space-y-3 rounded-sm border border-amber-500/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
-        <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-700">
-          {expiredByComment ? "Expired by comment" : "Expired by target change"}
-        </div>
+        {/*
+         * issue_closed already carries its label in the header status badge
+         * ("Expired · issue closed"), so this eyebrow would duplicate it
+         * verbatim — only render the eyebrow for the states the header shows
+         * generically as "Expired".
+         */}
+        {expiredByIssueClosed ? null : (
+          <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-700">
+            {expiredByComment ? "Expired by comment" : "Expired by target change"}
+          </div>
+        )}
         <p className="leading-6">
           {expiredByComment
             ? "A board comment superseded this confirmation before it was resolved."
-            : "The requested target changed before this confirmation was resolved."}
+            : expiredByIssueClosed
+              ? "This confirmation expired automatically when the issue reached a terminal state."
+              : "The requested target changed before this confirmation was resolved."}
         </p>
         {expiredByComment && interaction.result?.commentId ? (
           <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-amber-950 hover:bg-amber-500/15 dark:text-amber-50">
@@ -1809,9 +1923,208 @@ function RequestToolActionCard({
   );
 }
 
+/**
+ * The single approval grammar shared by every plan / task-approval card
+ * (PAP-418): **Approve · Revise… · Reject**. "Revise…" reveals an attached text
+ * field for the changes you want (the former "decline with a reason" path);
+ * bare "Reject" sends the work back with no note. These are the default words —
+ * producers may still override the accept/reject labels for domain-specific
+ * confirmations (e.g. "Delete selected"), but the shape stays consistent.
+ */
+const CONFIRMATION_APPROVE_LABEL = "Approve";
+const CONFIRMATION_REVISE_LABEL = "Revise…";
+const CONFIRMATION_REJECT_LABEL = "Reject";
+
+/**
+ * The one action control every confirmation card renders (PAP-418), collapsing
+ * what used to be a two-button card plus a separate sticky Plan-pane bar into a
+ * single consistent surface. Producer flags tune which affordances appear:
+ * `allowDeclineReason: false` drops the Revise… path so only Approve/Reject
+ * remain; `rejectRequiresReason: true` drops the bare Reject so every rejection
+ * carries a note. The revise text stays attached to the card.
+ */
+function ConfirmationActionRow({
+  resetKey,
+  approveLabel,
+  reviseLabel = CONFIRMATION_REVISE_LABEL,
+  rejectLabel,
+  approveVariant = "default",
+  primaryActionOnRight = false,
+  allowRevise,
+  rejectRequiresReason,
+  reasonPlaceholder,
+  working,
+  actionError,
+  approveDisabled = false,
+  canApprove,
+  canReject,
+  onApprove,
+  onReject,
+  composeReason,
+  extraReasonSatisfied = false,
+  revisePanelChildren,
+}: {
+  /** Changing this (interaction id + status) collapses the revise panel and
+   * clears its draft text — the row is reused across interaction updates. */
+  resetKey: string;
+  approveLabel: string;
+  reviseLabel?: string;
+  rejectLabel: string;
+  approveVariant?: React.ComponentProps<typeof Button>["variant"];
+  primaryActionOnRight?: boolean;
+  allowRevise: boolean;
+  rejectRequiresReason: boolean;
+  reasonPlaceholder: string;
+  working: "accept" | "reject" | null;
+  actionError: string | null;
+  approveDisabled?: boolean;
+  canApprove: boolean;
+  canReject: boolean;
+  onApprove: () => void;
+  onReject: (reason: string | undefined) => void;
+  /** Compose the final reject reason from the typed text (plan cards append
+   * screenshot markdown here). */
+  composeReason?: (text: string) => string | undefined;
+  /** A required reason is already satisfied by an attachment (e.g. screenshots),
+   * so an empty text box should not block sending the revision. */
+  extraReasonSatisfied?: boolean;
+  /** Extra affordances rendered inside the revise panel (e.g. screenshot attach). */
+  revisePanelChildren?: ReactNode;
+}) {
+  const [revising, setRevising] = useState(false);
+  const [reason, setReason] = useState("");
+  const [attempted, setAttempted] = useState(false);
+
+  useEffect(() => {
+    setRevising(false);
+    setReason("");
+    setAttempted(false);
+  }, [resetKey]);
+
+  const trimmed = reason.trim();
+  const reasonMissing = rejectRequiresReason && trimmed.length === 0 && !extraReasonSatisfied;
+
+  function submitRevision() {
+    setAttempted(true);
+    if (!canReject || reasonMissing) return;
+    onReject(composeReason ? composeReason(reason) : trimmed || undefined);
+  }
+
+  return (
+    <div className="space-y-3">
+      <div
+        className={cn(
+          "flex flex-wrap items-center justify-end gap-2",
+          primaryActionOnRight && "flex-row-reverse justify-start",
+        )}
+      >
+        <Button
+          size="sm"
+          variant={revising ? "outline" : approveVariant}
+          disabled={!canApprove || working !== null || approveDisabled}
+          onClick={onApprove}
+        >
+          {working === "accept" ? (
+            <>
+              <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+              Approving…
+            </>
+          ) : (
+            approveLabel
+          )}
+        </Button>
+        {allowRevise ? (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!canReject || working !== null}
+            onClick={() => {
+              setAttempted(false);
+              setRevising((current) => !current);
+            }}
+          >
+            {reviseLabel}
+          </Button>
+        ) : null}
+        {!rejectRequiresReason ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={!canReject || working !== null}
+            onClick={() => onReject(undefined)}
+          >
+            {working === "reject" && !revising ? (
+              <>
+                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                Rejecting…
+              </>
+            ) : (
+              rejectLabel
+            )}
+          </Button>
+        ) : null}
+      </div>
+
+      {revising ? (
+        <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-3">
+          <Textarea
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            placeholder={reasonPlaceholder}
+            aria-invalid={attempted && reasonMissing}
+            className={cn(
+              "min-h-24 bg-background text-sm",
+              attempted && reasonMissing && "border-rose-500 focus-visible:ring-rose-500/25",
+            )}
+          />
+          {attempted && reasonMissing ? (
+            <p className="text-xs text-destructive">Add a note describing the changes you want.</p>
+          ) : null}
+          {revisePanelChildren}
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={working !== null}
+              onClick={() => {
+                setRevising(false);
+                setAttempted(false);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!canReject || working !== null}
+              onClick={submitRevision}
+            >
+              {working === "reject" ? (
+                <>
+                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                  Sending…
+                </>
+              ) : (
+                "Send revision"
+              )}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {actionError ? (
+        <div className="rounded-sm border border-destructive/60 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {actionError}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function RequestConfirmationCard({
   interaction,
   isPlan = false,
+  primaryActionOnRight = false,
   onAcceptInteraction,
   onRejectInteraction,
   onUploadImage,
@@ -1819,6 +2132,7 @@ function RequestConfirmationCard({
 }: {
   interaction: RequestConfirmationInteraction;
   isPlan?: boolean;
+  primaryActionOnRight?: boolean;
   onAcceptInteraction?: (
     interaction: RequestConfirmationInteraction,
   ) => Promise<void> | void;
@@ -1829,37 +2143,28 @@ function RequestConfirmationCard({
   onUploadImage?: (file: File) => Promise<string>;
   externalReferences?: MarkdownExternalReferenceMap;
 }) {
-  const [rejecting, setRejecting] = useState(false);
   const [working, setWorking] = useState<"accept" | "reject" | null>(null);
-  const [rejectReason, setRejectReason] = useState(interaction.result?.reason ?? "");
-  const [rejectAttempted, setRejectAttempted] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [shots, setShots] = useState<{ name: string; url: string }[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  // Screenshots ride along in the decline reason as markdown image refs so the
+  // Screenshots ride along in the revise note as markdown image refs so the
   // board can attach images when sending a plan back — no schema change needed.
   const allowScreenshots = isPlan && Boolean(onUploadImage);
   const rejectRequiresReason = interaction.payload.rejectRequiresReason === true;
-  const allowDeclineReason = interaction.payload.allowDeclineReason !== false;
-  const trimmedRejectReason = rejectReason.trim();
-  const canReject = !rejectRequiresReason || trimmedRejectReason.length > 0 || shots.length > 0;
-  const declineReasonInvalid = rejectRequiresReason && !canReject;
-  const declineReasonPlaceholder =
+  const allowRevise = interaction.payload.allowDeclineReason !== false;
+  const reasonPlaceholder =
     interaction.payload.declineReasonPlaceholder
     ?? (interaction.payload.acceptLabel === "Approve plan"
       ? "Optional: what would you like revised?"
       : "Optional: tell the agent what you'd change.");
 
   useEffect(() => {
-    setRejectReason(interaction.result?.reason ?? "");
-    setRejectAttempted(false);
     setActionError(null);
     setShots([]);
     setUploadError(null);
     if (interaction.status !== "pending") {
-      setRejecting(false);
       setWorking(null);
     }
   }, [interaction.id, interaction.result?.reason, interaction.status]);
@@ -1883,11 +2188,11 @@ function RequestConfirmationCard({
     }
   }
 
-  function composeReason() {
-    const text = trimmedRejectReason;
-    if (shots.length === 0) return text || undefined;
+  function composeReason(text: string) {
+    const trimmed = text.trim();
+    if (shots.length === 0) return trimmed || undefined;
     const images = shots.map((s) => `![${s.name}](${s.url})`).join("\n");
-    return [text, images].filter(Boolean).join("\n\n");
+    return [trimmed, images].filter(Boolean).join("\n\n");
   }
 
   async function handleAccept() {
@@ -1903,14 +2208,12 @@ function RequestConfirmationCard({
     }
   }
 
-  async function handleReject() {
-    setRejectAttempted(true);
-    if (!onRejectInteraction || !canReject) return;
+  async function handleReject(reason: string | undefined) {
+    if (!onRejectInteraction) return;
     setWorking("reject");
     setActionError(null);
     try {
-      await onRejectInteraction(interaction, composeReason());
-      setRejecting(false);
+      await onRejectInteraction(interaction, reason);
     } catch {
       setActionError("Try again");
     } finally {
@@ -1938,156 +2241,89 @@ function RequestConfirmationCard({
       ) : null}
 
       {interaction.status === "pending" ? (
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            <Button
-              size="sm"
-              variant={rejecting ? "outline" : isPlan ? "cta" : "default"}
-              disabled={!onAcceptInteraction || working !== null}
-              onClick={() => void handleAccept()}
-            >
-              {working === "accept" ? (
-                <>
-                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                  Confirming...
-                </>
-              ) : (
-                interaction.payload.acceptLabel ?? "Confirm"
-              )}
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={!onRejectInteraction || working !== null}
-              onClick={() => {
-                if (!allowDeclineReason) {
-                  void handleReject();
-                  return;
-                }
-                setRejectAttempted(false);
-                setRejecting((current) => !current);
-              }}
-            >
-              {interaction.payload.rejectLabel ?? "Decline"}
-            </Button>
-          </div>
-
-          {rejecting ? (
-            <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-3">
-              <Textarea
-                value={rejectReason}
-                onChange={(event) => setRejectReason(event.target.value)}
-                placeholder={declineReasonPlaceholder}
-                aria-invalid={rejectAttempted && declineReasonInvalid}
-                className={cn(
-                  "min-h-24 bg-background text-sm",
-                  rejectAttempted && declineReasonInvalid
-                    && "border-rose-500 focus-visible:ring-rose-500/25",
-                )}
-              />
-              {rejectAttempted && declineReasonInvalid ? (
-                <p className="text-xs text-destructive">A decline reason is required.</p>
-              ) : null}
-              {allowScreenshots ? (
-                <div className="space-y-2">
-                  {shots.length > 0 ? (
-                    <div className="flex flex-wrap gap-2">
-                      {shots.map((shot, index) => (
-                        <div
-                          key={`${shot.url}-${index}`}
-                          className="group relative h-16 w-16 overflow-hidden rounded-sm border border-border/70"
+        <ConfirmationActionRow
+          resetKey={`${interaction.id}:${interaction.status}`}
+          approveLabel={interaction.payload.acceptLabel ?? CONFIRMATION_APPROVE_LABEL}
+          rejectLabel={CONFIRMATION_REJECT_LABEL}
+          approveVariant={isPlan ? "cta" : "default"}
+          primaryActionOnRight={primaryActionOnRight}
+          allowRevise={allowRevise}
+          rejectRequiresReason={rejectRequiresReason}
+          reasonPlaceholder={reasonPlaceholder}
+          working={working}
+          actionError={actionError}
+          canApprove={Boolean(onAcceptInteraction)}
+          canReject={Boolean(onRejectInteraction)}
+          onApprove={() => void handleAccept()}
+          onReject={(reason) => void handleReject(reason)}
+          composeReason={composeReason}
+          extraReasonSatisfied={shots.length > 0}
+          revisePanelChildren={
+            allowScreenshots ? (
+              <div className="space-y-2">
+                {shots.length > 0 ? (
+                  <div className="flex flex-wrap gap-2">
+                    {shots.map((shot, index) => (
+                      <div
+                        key={`${shot.url}-${index}`}
+                        className="group relative h-16 w-16 overflow-hidden rounded-sm border border-border/70"
+                      >
+                        <img
+                          src={shot.url}
+                          alt={shot.name}
+                          className="h-full w-full object-cover"
+                        />
+                        <button
+                          type="button"
+                          aria-label={`Remove ${shot.name}`}
+                          className="absolute right-0.5 top-0.5 rounded-full bg-background/90 p-0.5 text-foreground opacity-0 transition-opacity group-hover:opacity-100"
+                          onClick={() =>
+                            setShots((current) => current.filter((_, i) => i !== index))
+                          }
                         >
-                          <img
-                            src={shot.url}
-                            alt={shot.name}
-                            className="h-full w-full object-cover"
-                          />
-                          <button
-                            type="button"
-                            aria-label={`Remove ${shot.name}`}
-                            className="absolute right-0.5 top-0.5 rounded-full bg-background/90 p-0.5 text-foreground opacity-0 transition-opacity group-hover:opacity-100"
-                            onClick={() =>
-                              setShots((current) => current.filter((_, i) => i !== index))
-                            }
-                          >
-                            <X className="h-3 w-3" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    className="hidden"
-                    onChange={(event) => {
-                      void handleAddScreenshots(event.target.value ? event.target.files : null);
-                      event.target.value = "";
-                    }}
-                  />
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={working !== null || uploading}
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    {uploading ? (
-                      <>
-                        <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                        Uploading...
-                      </>
-                    ) : (
-                      <>
-                        <ImagePlus className="mr-2 h-3.5 w-3.5" />
-                        Attach screenshots
-                      </>
-                    )}
-                  </Button>
-                  {uploadError ? (
-                    <p className="text-xs text-destructive">{uploadError}</p>
-                  ) : null}
-                </div>
-              ) : null}
-              <div className="flex flex-wrap justify-end gap-2">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={working !== null}
-                  onClick={() => {
-                    setRejecting(false);
-                    setRejectAttempted(false);
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(event) => {
+                    void handleAddScreenshots(event.target.value ? event.target.files : null);
+                    event.target.value = "";
                   }}
-                >
-                  Cancel decline
-                </Button>
+                />
                 <Button
+                  type="button"
                   size="sm"
                   variant="outline"
-                  disabled={!onRejectInteraction || working !== null}
-                  onClick={() => void handleReject()}
+                  disabled={working !== null || uploading}
+                  onClick={() => fileInputRef.current?.click()}
                 >
-                  {working === "reject" ? (
+                  {uploading ? (
                     <>
                       <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                      Saving...
+                      Uploading...
                     </>
                   ) : (
-                    interaction.payload.rejectLabel ?? "Decline"
+                    <>
+                      <ImagePlus className="mr-2 h-3.5 w-3.5" />
+                      Attach screenshots
+                    </>
                   )}
                 </Button>
+                {uploadError ? (
+                  <p className="text-xs text-destructive">{uploadError}</p>
+                ) : null}
               </div>
-            </div>
-          ) : null}
-
-          {actionError ? (
-            <div className="rounded-sm border border-destructive/60 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {actionError}
-            </div>
-          ) : null}
-        </div>
+            ) : null
+          }
+        />
       ) : (
         <RequestConfirmationResolution interaction={interaction} />
       )}
@@ -2217,11 +2453,13 @@ function CheckboxOptionRow({
 
 function RequestCheckboxConfirmationCard({
   interaction,
+  primaryActionOnRight = false,
   onAcceptInteraction,
   onRejectInteraction,
   externalReferences,
 }: {
   interaction: RequestCheckboxConfirmationInteraction;
+  primaryActionOnRight?: boolean;
   onAcceptInteraction?: (
     interaction: RequestCheckboxConfirmationInteraction,
     selectedClientKeys: undefined,
@@ -2248,10 +2486,7 @@ function RequestCheckboxConfirmationCard({
   );
 
   const [selectedOptionIds, setSelectedOptionIds] = useState<Set<string>>(() => new Set(defaultSelected));
-  const [rejecting, setRejecting] = useState(false);
   const [working, setWorking] = useState<"accept" | "reject" | null>(null);
-  const [rejectReason, setRejectReason] = useState(interaction.result?.reason ?? "");
-  const [rejectAttempted, setRejectAttempted] = useState(false);
   const [acceptAttempted, setAcceptAttempted] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -2259,22 +2494,16 @@ function RequestCheckboxConfirmationCard({
 
   useEffect(() => {
     setSelectedOptionIds(new Set(defaultSelected));
-    setRejectReason(interaction.result?.reason ?? "");
-    setRejectAttempted(false);
     setAcceptAttempted(false);
     setActionError(null);
     if (interaction.status !== "pending") {
-      setRejecting(false);
       setWorking(null);
     }
   }, [interaction.id, interaction.status, interaction.result?.reason, defaultSelected, optionSeed]);
 
   const rejectRequiresReason = interaction.payload.rejectRequiresReason === true;
-  const allowDeclineReason = interaction.payload.allowDeclineReason !== false;
-  const trimmedRejectReason = rejectReason.trim();
-  const canReject = !rejectRequiresReason || trimmedRejectReason.length > 0;
-  const declineReasonInvalid = rejectRequiresReason && !canReject;
-  const declineReasonPlaceholder =
+  const allowRevise = interaction.payload.allowDeclineReason !== false;
+  const reasonPlaceholder =
     interaction.payload.declineReasonPlaceholder ?? "Optional: tell the agent what you'd change.";
 
   const selectedCount = selectedOptionIds.size;
@@ -2329,14 +2558,12 @@ function RequestCheckboxConfirmationCard({
     }
   }
 
-  async function handleReject() {
-    setRejectAttempted(true);
-    if (!onRejectInteraction || !canReject) return;
+  async function handleReject(reason: string | undefined) {
+    if (!onRejectInteraction) return;
     setWorking("reject");
     setActionError(null);
     try {
-      await onRejectInteraction(interaction, trimmedRejectReason || undefined);
-      setRejecting(false);
+      await onRejectInteraction(interaction, reason);
     } catch {
       setActionError("Try again");
     } finally {
@@ -2427,91 +2654,21 @@ function RequestCheckboxConfirmationCard({
           <p className="text-xs text-destructive">{validationMessage}</p>
         ) : null}
 
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <Button
-            size="sm"
-            variant={rejecting ? "outline" : "default"}
-            disabled={!onAcceptInteraction || working !== null}
-            onClick={() => void handleAccept()}
-          >
-            {working === "accept" ? (
-              <>
-                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                Confirming...
-              </>
-            ) : (
-              interaction.payload.acceptLabel ?? "Confirm selected"
-            )}
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={!onRejectInteraction || working !== null}
-            onClick={() => {
-              if (!allowDeclineReason) {
-                void handleReject();
-                return;
-              }
-              setRejectAttempted(false);
-              setRejecting((current) => !current);
-            }}
-          >
-            {interaction.payload.rejectLabel ?? "Request changes"}
-          </Button>
-        </div>
-
-        {rejecting ? (
-          <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-3">
-            <Textarea
-              value={rejectReason}
-              onChange={(event) => setRejectReason(event.target.value)}
-              placeholder={declineReasonPlaceholder}
-              aria-invalid={rejectAttempted && declineReasonInvalid}
-              className={cn(
-                "min-h-24 bg-background text-sm",
-                rejectAttempted && declineReasonInvalid
-                  && "border-rose-500 focus-visible:ring-rose-500/25",
-              )}
-            />
-            {rejectAttempted && declineReasonInvalid ? (
-              <p className="text-xs text-destructive">A reason is required.</p>
-            ) : null}
-            <div className="flex flex-wrap justify-end gap-2">
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={working !== null}
-                onClick={() => {
-                  setRejecting(false);
-                  setRejectAttempted(false);
-                }}
-              >
-                Cancel
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={!onRejectInteraction || working !== null}
-                onClick={() => void handleReject()}
-              >
-                {working === "reject" ? (
-                  <>
-                    <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                    Saving...
-                  </>
-                ) : (
-                  interaction.payload.rejectLabel ?? "Request changes"
-                )}
-              </Button>
-            </div>
-          </div>
-        ) : null}
-
-        {actionError ? (
-          <div className="rounded-sm border border-destructive/60 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {actionError}
-          </div>
-        ) : null}
+        <ConfirmationActionRow
+          resetKey={`${interaction.id}:${interaction.status}`}
+          approveLabel={interaction.payload.acceptLabel ?? CONFIRMATION_APPROVE_LABEL}
+          rejectLabel={CONFIRMATION_REJECT_LABEL}
+          primaryActionOnRight={primaryActionOnRight}
+          allowRevise={allowRevise}
+          rejectRequiresReason={rejectRequiresReason}
+          reasonPlaceholder={reasonPlaceholder}
+          working={working}
+          actionError={actionError}
+          canApprove={Boolean(onAcceptInteraction)}
+          canReject={Boolean(onRejectInteraction)}
+          onApprove={() => void handleAccept()}
+          onReject={(reason) => void handleReject(reason)}
+        />
       </div>
     </div>
   );
@@ -3015,10 +3172,21 @@ export function IssueThreadInteractionCard({
   onRejectInteraction,
   onSubmitInteractionAnswers,
   onCancelInteraction,
+  primaryActionOnRight,
   onSubmitInteractionVerdicts,
   onUploadImage,
   externalReferences,
 }: IssueThreadInteractionCardProps) {
+  // Single enforcement point (PAP-424, plan from PAP-420; extended by PAP-437):
+  // a card that should never be drawn — a degenerate `ask_user_questions`
+  // (placeholder junk like the onboarding `Test / A` card, no genuine question)
+  // or a stale sibling the server auto-expired when its creator posted a newer
+  // question (`superseded_by_newer_interaction`). Every render site (both thread
+  // backbones + the attention resolver) routes through this component, so
+  // suppressing here suppresses it everywhere at once. The interaction is still
+  // created and stored server-side; only the render is suppressed. Composition
+  // sites additionally filter it so no empty slot lingers.
+  if (shouldHideInteractionCard(interaction)) return null;
   const isPlan = isPlanConfirmation(interaction);
   const isToolAction =
     interaction.kind === "request_confirmation" && isToolActionConfirmation(interaction);
@@ -3028,11 +3196,34 @@ export function IssueThreadInteractionCard({
       : null;
   const toolActionStyles = toolActionState ? toolActionStatusClasses(toolActionState) : null;
   const resumeFailure = requestConfirmationResumeFailure(interaction);
-  const planStyles = isPlan ? planStatusClasses(interaction.status, resumeFailure) : null;
+  const planStyles = isPlan
+    ? planStatusClasses(
+        interaction.status,
+        resumeFailure,
+        interaction.result && "outcome" in interaction.result ? interaction.result.outcome : null,
+      )
+    : null;
   const activeStyles = toolActionStyles ?? planStyles;
-  const StatusIcon = activeStyles ? activeStyles.Icon : statusIcon(interaction.status);
+  const adminOutcome = getAdministrativeOutcome(interaction);
+  const adminReason = adminOutcome ? getAdministrativeReason(interaction) : null;
+  // P4 (design review R2): a withdrawal is a neutral administrative retraction by
+  // the requester — NOT a board "no". It must not inherit the `cancelled` card's
+  // rose/red border + XCircle, which is pixel-identical to a rejected plan and
+  // mis-signals a denial to anyone scanning the thread. Give withdrawn its own
+  // inert lane (sibling to the calm `expired` state): muted border/badge +
+  // MinusCircle ("retracted"). This overrides the plan/tool-action/status styling
+  // so a withdrawn plan or confirmation reads "closed", not "changes requested".
+  const withdrawnStyles =
+    adminOutcome === "withdrawn"
+      ? { shell: "border-border bg-transparent", badge: "border-border bg-muted/60 text-muted-foreground" }
+      : null;
+  const StatusIcon = withdrawnStyles
+    ? MinusCircle
+    : activeStyles
+      ? activeStyles.Icon
+      : statusIcon(interaction.status);
   const iconSpin = toolActionStyles?.spin ?? false;
-  const styles = activeStyles ?? statusClasses(interaction.status);
+  const styles = withdrawnStyles ?? activeStyles ?? statusClasses(interaction.status);
   const createdByLabel = resolveActorLabel({
     agentId: interaction.createdByAgentId,
     userId: interaction.createdByUserId,
@@ -3050,6 +3241,25 @@ export function IssueThreadInteractionCard({
           userLabelMap,
         })
       : null;
+  // P4: audit-visible distinction between agent and human resolution.
+  const resolvedByAgent = Boolean(interaction.resolvedByAgentId);
+  // P3: interactions directed at a specific agent addressee.
+  const addresseeLabel = interaction.addresseeAgentId
+    ? resolveActorLabel({
+        agentId: interaction.addresseeAgentId,
+        agentMap,
+        currentUserId,
+        userLabelMap,
+      })
+    : null;
+  const statusText =
+    adminOutcome === "withdrawn"
+      ? "Withdrawn"
+      : adminOutcome === "issue_closed"
+        ? "Expired · issue closed"
+        : activeStyles
+          ? activeStyles.label
+          : statusLabel(interaction.status);
 
   return (
     <div className={cn("rounded-lg border p-5 shadow-none", styles.shell)}>
@@ -3060,8 +3270,25 @@ export function IssueThreadInteractionCard({
               <StatusIcon className={cn("h-3.5 w-3.5", iconSpin && "animate-spin")} />
               {isPlan ? "Plan" : interactionKindLabel(interaction.kind)}
               <span className="text-current/60">/</span>
-              {activeStyles ? activeStyles.label : statusLabel(interaction.status)}
+              {statusText}
             </span>
+            {addresseeLabel ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge
+                    variant="secondary"
+                    className="gap-1"
+                    data-testid="interaction-addressee-badge"
+                  >
+                    <Bot className="h-3 w-3" />
+                    For {addresseeLabel}
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="max-w-xs text-xs">
+                  Directed to {addresseeLabel}. Agent-addressed interactions are handled by that agent and are kept out of the board attention feed.
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
           </div>
 
           <div className="mt-3 text-lg font-bold text-foreground">
@@ -3120,6 +3347,7 @@ export function IssueThreadInteractionCard({
         ) : interaction.kind === "request_checkbox_confirmation" ? (
           <RequestCheckboxConfirmationCard
             interaction={interaction}
+            primaryActionOnRight={primaryActionOnRight}
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
             externalReferences={externalReferences}
@@ -3144,6 +3372,7 @@ export function IssueThreadInteractionCard({
           <RequestConfirmationCard
             interaction={interaction}
             isPlan={isPlan}
+            primaryActionOnRight={primaryActionOnRight}
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
             onUploadImage={onUploadImage}
@@ -3152,12 +3381,64 @@ export function IssueThreadInteractionCard({
         )}
       </div>
 
-      {resolvedByLabel && !isToolAction ? (
-        <div className="mt-4 border-t border-border/60 pt-3 text-xs text-muted-foreground">
+      {adminOutcome === "withdrawn" ? (
+        <div
+          className="mt-4 border-t border-border/60 pt-3 text-xs text-muted-foreground"
+          data-testid="interaction-withdrawn-footer"
+        >
+          <div>
+            Withdrawn by{" "}
+            <span className="font-medium text-foreground">{resolvedByLabel ?? "an agent"}</span>
+            {resolvedByAgent ? <ResolvedByAgentChip /> : null}
+            {interaction.resolvedAt ? ` on ${formatShortDate(interaction.resolvedAt)}` : ""}
+          </div>
+          {adminReason ? (
+            <div className="mt-1 italic text-muted-foreground/90">"{adminReason}"</div>
+          ) : null}
+        </div>
+      ) : adminOutcome === "issue_closed" && interaction.resolvedAt ? (
+        // The header badge + body already explain the issue-closed expiry;
+        // the footer is just the audit timestamp.
+        <div
+          className="mt-4 border-t border-border/60 pt-3 text-xs text-muted-foreground"
+          data-testid="interaction-issue-closed-footer"
+        >
+          {formatShortDate(interaction.resolvedAt)}
+        </div>
+      ) : resolvedByLabel && !isToolAction ? (
+        <div
+          className="mt-4 flex flex-wrap items-center gap-x-1 gap-y-0.5 border-t border-border/60 pt-3 text-xs text-muted-foreground"
+          data-testid="interaction-resolved-footer"
+        >
           Resolved by <span className="font-medium text-foreground">{resolvedByLabel}</span>
+          {resolvedByAgent ? <ResolvedByAgentChip /> : null}
           {interaction.resolvedAt ? ` on ${formatShortDate(interaction.resolvedAt)}` : ""}
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Small audit chip marking that an interaction was resolved by an agent (rather
+ * than a human board member) — governed agent resolution introduced in P2.
+ */
+function ResolvedByAgentChip() {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge
+          variant="outline"
+          className="ml-1 gap-1 border-indigo-500/50 py-0 text-[length:--text-micro] text-indigo-700 dark:text-indigo-200"
+          data-testid="interaction-resolved-by-agent-chip"
+        >
+          <Bot className="h-3 w-3" />
+          Agent
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="max-w-xs text-xs">
+        Resolved by an agent under the company's interaction governance policy — audit-distinct from a human board resolution.
+      </TooltipContent>
+    </Tooltip>
   );
 }

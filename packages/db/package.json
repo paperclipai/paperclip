@@ -34,12 +34,15 @@
   "files": [
     "dist"
   ],
+  "bundleDependencies": [
+    "embedded-postgres"
+  ],
   "scripts": {
     "check:migrations": "tsx src/check-migration-numbering.ts && tsx src/check-migration-safety.ts",
     "build": "pnpm run check:migrations && tsc && cp -r src/migrations dist/migrations",
     "clean": "rm -rf dist",
     "typecheck": "pnpm run check:migrations && tsc --noEmit",
-    "generate": "pnpm run check:migrations && tsc -p tsconfig.json && drizzle-kit generate",
+    "generate": "pnpm run check:migrations && pnpm run clean && tsc -p tsconfig.json && drizzle-kit generate",
     "migrate": "pnpm run check:migrations && tsx src/migrate.ts",
     "seed": "tsx src/seed.ts"
   },
@@ -50,7 +53,7 @@
     "postgres": "^3.4.9"
   },
   "devDependencies": {
-    "@types/node": "^22.19.21",
+    "@types/node": "^22.20.1",
     "drizzle-kit": "^0.31.10",
     "tsx": "^4.23.1",
     "typescript": "^5.7.3",

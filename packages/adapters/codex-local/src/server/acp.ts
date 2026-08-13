@@ -35,13 +35,16 @@ import {
   asString,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
+import { normalizeCodexModel } from "../index.js";
 import { classifyCodexAuthRefreshFailure } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import {
+  evaluateCodexCredentialReadiness,
   resolveSharedCodexHomeDir,
   stageCodexHomeForSync,
 } from "./codex-home.js";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
@@ -81,6 +84,22 @@ export async function resolveCodexExecutionEngineForRun(
   input: CodexEngineResolutionInput,
 ): Promise<CodexEngineSelection> {
   const selection = normalizeEngine(input.config.engine);
+  const target = readAdapterExecutionTarget({
+    executionTarget: input.executionTarget,
+    legacyRemoteExecution: input.executionTransport?.remoteExecution,
+  });
+  if (target?.workspaceRealization?.mode === "in_place") {
+    if (selection.explicit && selection.engine === "acp") {
+      throw new Error("In-place workspace realization requires the Codex CLI engine; ACP archive staging is not supported.");
+    }
+    return {
+      engine: "cli",
+      explicit: selection.explicit,
+      ...(!selection.explicit
+        ? { fallbackReason: "In-place workspace realization must run without ACP archive staging." }
+        : {}),
+    };
+  }
   const filesystemScope = parseLocalProcessFilesystemScope(input.config.filesystemScope);
   const networkScope = parseLocalProcessNetworkScope(input.config.networkScope);
   if (filesystemScope || networkScope) {
@@ -129,6 +148,11 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
     config.warmHandleIdleMs ??
     config.acpWarmHandleIdleMs ??
     DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS;
+  // Rewrite legacy model aliases (e.g. bare gpt-5.6) to the concrete slug Codex has metadata for,
+  // so the ACP session config matches the CLI lane and avoids the fallback-metadata warning.
+  const normalizedModel = normalizeCodexModel(
+    typeof config.model === "string" ? config.model : "",
+  );
 
   return {
     ...config,
@@ -137,6 +161,7 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
     permissionMode,
     nonInteractivePermissions,
     warmHandleIdleMs,
+    ...(normalizedModel ? { model: normalizedModel } : {}),
     ...(agentCommand ? { agentCommand } : {}),
     ...(stateDir ? { stateDir } : {}),
   };
@@ -468,19 +493,6 @@ function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-async function hasCodexNativeCredentials(codexHome: string): Promise<boolean> {
-  const raw = await fs.readFile(path.join(codexHome, "auth.json"), "utf8").catch(() => null);
-  if (!raw) return false;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
-    const record = parsed as Record<string, unknown>;
-    return isNonEmpty(record.OPENAI_API_KEY) || isNonEmpty(record.refresh_token);
-  } catch {
-    return false;
-  }
-}
-
 export async function testCodexAcpEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
@@ -488,6 +500,7 @@ export async function testCodexAcpEnvironment(
   const config = parseObject(ctx.config);
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
+  const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
 
   checks.push({
     code: "codex_engine_selected",
@@ -550,34 +563,73 @@ export async function testCodexAcpEnvironment(
   });
 
   const envConfig = parseObject(config.env);
-  const considerHostEnv = !targetIsRemote;
-  const configApiKey = envConfig.OPENAI_API_KEY;
-  const hostApiKey = considerHostEnv ? process.env.OPENAI_API_KEY : undefined;
-  if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
-    const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";
-    checks.push({
-      code: "codex_acp_openai_api_key_detected",
-      level: "info",
-      message: "OPENAI_API_KEY is set for Codex ACP authentication.",
-      detail: `Detected in ${source}.`,
+  if (!targetIsRemote) {
+    const configApiKey = isNonEmpty(envConfig.OPENAI_API_KEY) ? envConfig.OPENAI_API_KEY : null;
+    const hostApiKey =
+      Object.prototype.hasOwnProperty.call(envConfig, "OPENAI_API_KEY")
+        ? null
+        : isNonEmpty(process.env.OPENAI_API_KEY)
+        ? process.env.OPENAI_API_KEY
+        : null;
+    const configuredApiKey = configApiKey ?? hostApiKey;
+    const configuredCodexHome = isNonEmpty(envConfig.CODEX_HOME) ? envConfig.CODEX_HOME : null;
+    const credentialReadiness = await evaluateCodexCredentialReadiness({
+      env: process.env,
+      companyId: ctx.companyId,
+      configuredCodexHome,
+      configuredApiKey,
     });
-  } else if (!targetIsRemote) {
-    const codexHome = isNonEmpty(envConfig.CODEX_HOME)
-      ? envConfig.CODEX_HOME
-      : path.join(process.env.HOME ?? "", ".codex");
-    if (codexHome && await hasCodexNativeCredentials(codexHome)) {
+
+    if (credentialReadiness.ready && credentialReadiness.authMode === "api") {
+      checks.push({
+        code: "codex_acp_openai_api_key_detected",
+        level: "info",
+        message: "OPENAI_API_KEY is set for Codex ACP authentication.",
+        detail: `Detected in ${configApiKey ? "adapter config env" : "server environment"}.`,
+      });
+    } else if (credentialReadiness.ready && !credentialReadiness.managed) {
+      checks.push({
+        code: "codex_acp_external_home_configured",
+        level: "info",
+        message: "Codex ACP will use an externally managed CODEX_HOME.",
+        detail: credentialReadiness.effectiveHome,
+      });
+    } else if (credentialReadiness.ready) {
       checks.push({
         code: "codex_acp_native_auth_detected",
         level: "info",
         message: "Codex ACP can use Codex native authentication.",
-        detail: `Credentials found in ${path.join(codexHome, "auth.json")}.`,
+        detail: `Credentials are available through ${credentialReadiness.effectiveHome} or shared source ${credentialReadiness.sharedSourceHome}.`,
       });
     } else {
       checks.push({
         code: "codex_acp_credentials_missing",
         level: "warn",
-        message: "No Codex ACP credentials were detected.",
-        hint: "Set OPENAI_API_KEY or run `codex login` before starting a Codex ACP agent.",
+        message: "No Codex ACP credentials visible to the Paperclip server were detected.",
+        hint: "Set OPENAI_API_KEY in the agent adapter env, set it in the Paperclip server environment, or run `codex login` for the same OS user that runs the Paperclip server before starting a Codex ACP agent. A `/login` in a separate Codex/chat session does not authenticate the server.",
+      });
+    }
+  } else if (targetIsSandbox) {
+    // The ACP Test does not probe the sandbox, so it predicts readiness from the
+    // credentials the Paperclip server can seed into the sandbox. The host
+    // environment is not seeded, so only the adapter config key counts here.
+    const configApiKey = isNonEmpty(envConfig.OPENAI_API_KEY) ? envConfig.OPENAI_API_KEY : null;
+    const configuredCodexHome = isNonEmpty(envConfig.CODEX_HOME) ? envConfig.CODEX_HOME : null;
+    const credentialReadiness = await evaluateCodexCredentialReadiness({
+      env: process.env,
+      companyId: ctx.companyId,
+      configuredCodexHome,
+      configuredApiKey: configApiKey,
+    });
+    if (!credentialReadiness.ready) {
+      // Emit the neutral canonical check so the user interface can decide login
+      // eligibility from a stable code. The user interface does not read the
+      // message text or the top-level status.
+      checks.push({
+        code: ADAPTER_AUTH_MISSING_CHECK_CODE,
+        level: "warn",
+        message: "The sandbox has no ready authentication for this adapter.",
+        hint: "Provide credentials for this adapter, or start login in the sandbox.",
       });
     }
   }

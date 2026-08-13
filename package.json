@@ -12,6 +12,8 @@
     "dev:stop": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-service.ts stop",
     "dev:server": "pnpm --filter @paperclipai/server dev",
     "dev:ui": "pnpm --filter @paperclipai/ui dev",
+    "dev:mobile": "pnpm --filter @paperclipai/ui build && pnpm --filter @paperclipai/ui preview",
+    "dev:both": "node scripts/dev-both.mjs",
     "storybook": "pnpm --filter @paperclipai/ui storybook",
     "build-storybook": "pnpm --filter @paperclipai/ui build-storybook",
     "build": "pnpm run preflight:workspace-links && pnpm -r build",
@@ -40,6 +42,7 @@
     "check:token-gates": "node scripts/check-token-gates.mjs",
     "check:no-git-push": "node scripts/check-no-git-push.mjs",
     "test:check-no-git-push": "node --test scripts/check-no-git-push.test.mjs",
+    "test:install-sh-docker": "./scripts/test-install-sh-docker.sh",
     "test:hermes-gateway-smoke": "node --test scripts/smoke/hermes-gateway-smoke.test.mjs",
     "docs:dev": "cd docs && npx mintlify dev",
     "smoke:hermes-gateway-join": "./scripts/smoke/hermes-gateway-join.sh",
@@ -85,16 +88,16 @@
       "rollup": ">=4.59.0",
       "react": "^19.2.7",
       "react-dom": "^19.2.7",
-      "lexical": "0.46.0",
-      "@lexical/clipboard": "0.46.0",
-      "@lexical/link": "0.46.0",
-      "@lexical/list": "0.46.0",
-      "@lexical/markdown": "0.46.0",
-      "@lexical/plain-text": "0.46.0",
-      "@lexical/react": "0.46.0",
-      "@lexical/rich-text": "0.46.0",
-      "@lexical/selection": "0.46.0",
-      "@lexical/utils": "0.46.0"
+      "lexical": "0.49.0",
+      "@lexical/clipboard": "0.49.0",
+      "@lexical/link": "0.49.0",
+      "@lexical/list": "0.49.0",
+      "@lexical/markdown": "0.49.0",
+      "@lexical/plain-text": "0.49.0",
+      "@lexical/react": "0.49.0",
+      "@lexical/rich-text": "0.49.0",
+      "@lexical/selection": "0.49.0",
+      "@lexical/utils": "0.49.0"
     }
   }
 }

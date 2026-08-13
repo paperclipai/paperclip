@@ -243,7 +243,6 @@ function makeInstanceSettings({
       enableTaskWatchdogs: true,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: false,
-      enableCloudSync: false,
       enableExternalObjects: false,
       enableBuiltInAgents,
       autoRestartDevServerWhenIdle: false,

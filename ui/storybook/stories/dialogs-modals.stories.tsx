@@ -137,6 +137,7 @@ const documentRevisions: DocumentRevision[] = [
 
 const closeReadinessReady: ExecutionWorkspaceCloseReadiness = {
   workspaceId: "execution-workspace-storybook",
+  deliveryState: "unmerged",
   state: "ready_with_warnings",
   blockingReasons: [],
   warnings: [

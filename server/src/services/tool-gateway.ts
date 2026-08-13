@@ -4070,6 +4070,39 @@ export function createToolGatewayService(
     return { reasonCode, message };
   }
 
+  // Guard for approved-action execution: the issue must still be open. Expires
+  // the claimed request and reflects the interaction lifecycle when it is not.
+  // Called twice — after winning the executing claim, and again immediately
+  // before provider dispatch, because tool/snapshot resolution between the two
+  // involves network calls and leaves a seconds-wide window for the issue to
+  // close.
+  async function assertIssueOpenForApprovedAction(input: {
+    claimed: typeof toolActionRequests.$inferSelect;
+    invocation: typeof toolInvocations.$inferSelect;
+  }): Promise<{ projectId: string | null }> {
+    const { claimed, invocation } = input;
+    const [issue] = await db
+      .select({ status: issues.status, projectId: issues.projectId })
+      .from(issues)
+      .where(and(eq(issues.id, invocation.issueId!), eq(issues.companyId, invocation.companyId)))
+      .limit(1);
+    if (issue && issue.status !== "done" && issue.status !== "cancelled") {
+      return { projectId: issue.projectId };
+    }
+    const expiredAt = new Date();
+    await db
+      .update(toolActionRequests)
+      .set({ status: "expired", resolvedAt: expiredAt, updatedAt: expiredAt })
+      .where(eq(toolActionRequests.id, claimed.id));
+    await reflectToolActionInteractionLifecycle({ actionRequestId: claimed.id, status: "expired" });
+    throw new ToolGatewayHttpError(
+      409,
+      "The issue for this tool action is closed; the approval has expired",
+      "action_issue_closed",
+      { actionRequestId: claimed.id, invocationId: invocation.id },
+    );
+  }
+
   async function executeApprovedAgentInvocation(input: {
     actionRequest: typeof toolActionRequests.$inferSelect;
     invocation: typeof toolInvocations.$inferSelect;
@@ -4105,6 +4138,12 @@ export function createToolGatewayService(
       throw new ToolGatewayHttpError(409, "Tool action request was already consumed", "action_already_consumed");
     }
 
+    // Terminal-issue expiry revokes pending/approved requests, but a claim that
+    // committed just before the issue closed slips past that revocation. Recheck
+    // the issue after winning the claim so a governed action never runs external
+    // side effects for an issue that is already done or cancelled.
+    const issue = await assertIssueOpenForApprovedAction({ claimed, invocation });
+
     const signedPayload = readSignedToolArgumentsPayload({
       signedArguments: claimed.signedArguments,
       invocationId: invocation.id,
@@ -4124,11 +4163,6 @@ export function createToolGatewayService(
       );
     }
 
-    const [issue] = await db
-      .select({ projectId: issues.projectId })
-      .from(issues)
-      .where(and(eq(issues.id, invocation.issueId), eq(issues.companyId, invocation.companyId)))
-      .limit(1);
     const session: ToolGatewaySession = {
       id: `approved-action:${claimed.id}`,
       token: "",
@@ -4184,6 +4218,17 @@ export function createToolGatewayService(
       sensitiveMode: "redact",
       promptInjectionMode: "ignore",
     }).summary;
+    // Final recheck at the last DB write before dispatch: tool and snapshot
+    // resolution above involve network calls, so re-verify the issue is still
+    // open now that only the provider call remains. A close that commits after
+    // this read has raced an execution that was approved, claimed, and verified
+    // while the issue was open; that instant is irreducible for an external
+    // side effect gated by DB state (holding a DB lock across a remote provider
+    // call is not an option), and the accepted linearization is that the
+    // execution wins — its result still lands on the expired card via
+    // reflectToolActionInteractionLifecycle.
+    await assertIssueOpenForApprovedAction({ claimed, invocation });
+
     const startedAt = Date.now();
     await db
       .update(toolInvocations)

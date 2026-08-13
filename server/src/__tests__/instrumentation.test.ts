@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createRequire } from "node:module";
 
 /**
  * Tests for the opt-in OpenTelemetry bootstrap. The @opentelemetry/* packages
@@ -87,6 +88,44 @@ describe("instrumentationReady", () => {
   });
 });
 
+describe("getStartupTracer", () => {
+  it("returns a usable tracer-shaped object when OTEL_EXPORTER_OTLP_ENDPOINT is unset", async () => {
+    const { getStartupTracer } = await importFreshInstrumentation();
+
+    const tracer = getStartupTracer();
+
+    // The accessor never returns null. The result exposes the span surface the
+    // startup seam calls, so the caller needs no null check.
+    expect(tracer).not.toBeNull();
+    expect(typeof tracer.startSpan).toBe("function");
+    // A no-op tracer must open and end a span without throwing.
+    expect(() => tracer.startSpan("workspace.resolve").end()).not.toThrow();
+  });
+
+  it("loads no OTel SDK package when the endpoint is unset", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const { getStartupTracer, instrumentationReady } = await importFreshInstrumentation();
+
+    // The endpoint is unset, so the bootstrap never runs and no SDK package
+    // import is attempted; readiness resolves at once.
+    await expect(instrumentationReady).resolves.toBeUndefined();
+
+    // The accessor still returns a usable tracer even though no @opentelemetry
+    // SDK package is installed. That proves it never imported the SDK: a hard
+    // dependency on the SDK would throw here instead.
+    const tracer = getStartupTracer();
+    expect(typeof tracer.startSpan).toBe("function");
+    expect(() => tracer.startSpan("stage.sync").end()).not.toThrow();
+
+    // The bootstrap "packages are not installed" diagnostic must not fire on
+    // this path. That message comes only from the endpoint-set bootstrap.
+    for (const call of warn.mock.calls) {
+      expect(String(call[0])).not.toContain("@opentelemetry/* packages are not installed");
+    }
+  });
+});
+
 describe("shutdownInstrumentation", () => {
   it("is a no-op when tracing is off and idempotent across calls", async () => {
     const { shutdownInstrumentation } = await importFreshInstrumentation();
@@ -106,5 +145,86 @@ describe("shutdownInstrumentation", () => {
     const { shutdownInstrumentation } = await importFreshInstrumentation();
 
     await expect(shutdownInstrumentation()).resolves.toBeUndefined();
+  });
+});
+
+// The `@opentelemetry/*` packages are optional. When they are absent,
+// `recordProviderPluginSpan` is a no-op by contract, so a native-duration test
+// cannot run. Resolve the SDK first and skip the test when it is not installed.
+const otelSdk = (() => {
+  try {
+    const require = createRequire(import.meta.url);
+    return {
+      api: require("@opentelemetry/api") as typeof import("@opentelemetry/api"),
+      sdk: require("@opentelemetry/sdk-trace-base") as typeof import("@opentelemetry/sdk-trace-base"),
+    };
+  } catch {
+    return null;
+  }
+})();
+
+const hrTimeToMs = (time: [number, number]): number => time[0] * 1000 + time[1] / 1e6;
+
+describe.skipIf(!otelSdk)("recordProviderPluginSpan native duration", () => {
+  it("opens the span at the true start time and ends it at the true end time", async () => {
+    const { api, sdk } = otelSdk!;
+    const exporter = new sdk.InMemorySpanExporter();
+    const provider = new sdk.BasicTracerProvider({
+      spanProcessors: [new sdk.SimpleSpanProcessor(exporter)],
+    });
+    api.trace.setGlobalTracerProvider(provider);
+    try {
+      const { recordProviderPluginSpan } = await import("../instrumentation.js");
+      const startTimeMs = Date.now() - 4500;
+      const endTimeMs = startTimeMs + 4500;
+      recordProviderPluginSpan({
+        name: "sandbox.daytona.ensureDirectory",
+        parent: {
+          traceId: "0af7651916cd43dd8448eb211c80319c",
+          spanId: "b7ad6b7169203331",
+          traceFlags: 1,
+        },
+        attributes: { provider: "daytona" },
+        startTimeMs,
+        endTimeMs,
+      });
+      const finished = exporter.getFinishedSpans();
+      expect(finished).toHaveLength(1);
+      const span = finished[0]!;
+      expect(span.name).toBe("sandbox.daytona.ensureDirectory");
+      expect(Math.round(hrTimeToMs(span.startTime as [number, number]))).toBe(startTimeMs);
+      expect(Math.round(hrTimeToMs(span.endTime as [number, number]))).toBe(endTimeMs);
+      // The native width equals the true wall-clock difference, not near zero.
+      expect(Math.round(hrTimeToMs(span.duration as [number, number]))).toBe(4500);
+    } finally {
+      api.trace.disable();
+    }
+  });
+
+  it("opens and ends the span now when the timestamp pair is absent", async () => {
+    const { api, sdk } = otelSdk!;
+    const exporter = new sdk.InMemorySpanExporter();
+    const provider = new sdk.BasicTracerProvider({
+      spanProcessors: [new sdk.SimpleSpanProcessor(exporter)],
+    });
+    api.trace.setGlobalTracerProvider(provider);
+    try {
+      const { recordProviderPluginSpan } = await import("../instrumentation.js");
+      recordProviderPluginSpan({
+        name: "sandbox.daytona.pack",
+        parent: {
+          traceId: "0af7651916cd43dd8448eb211c80319c",
+          spanId: "b7ad6b7169203331",
+          traceFlags: 1,
+        },
+        attributes: { provider: "daytona" },
+      });
+      const finished = exporter.getFinishedSpans();
+      expect(finished).toHaveLength(1);
+      // The synchronous open-and-end path yields a near-zero native width.
+      expect(hrTimeToMs(finished[0]!.duration as [number, number])).toBeLessThan(1000);
+    } finally {
+      api.trace.disable();
+    }
   });
 });

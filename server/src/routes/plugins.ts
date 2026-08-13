@@ -86,9 +86,9 @@ import {
 } from "../services/plugin-secrets-handler.js";
 import {
   canonicalizeLocalPluginPath,
-  isCloudManagedInstance,
   isWithinBundledPluginRoot,
 } from "../services/plugin-install-guard.js";
+import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { secretService } from "../services/secrets.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 

@@ -17,8 +17,7 @@ import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { projectWorkspaces } from "./project_workspaces.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
-import type { SourceTrustMetadata } from "@paperclipai/shared";
-import type { IssueUnblockDescriptor } from "@paperclipai/shared";
+import type { IssueReviewPolicy, IssueUnblockDescriptor, SourceTrustMetadata } from "@paperclipai/shared";
 
 export const issues = pgTable(
   "issues",
@@ -35,6 +34,7 @@ export const issues = pgTable(
     workMode: text("work_mode").notNull().default("standard"),
     harnessKind: text("harness_kind"),
     priority: text("priority").notNull().default("medium"),
+    reviewPolicy: text("review_policy").$type<IssueReviewPolicy>(),
     assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id),
     assigneeUserId: text("assignee_user_id"),
     checkoutRunId: uuid("checkout_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
@@ -168,5 +168,12 @@ export const issues = pgTable(
           and ${table.hiddenAt} is null
           and ${table.status} not in ('done', 'cancelled')`,
       ),
+    // The onboarding first-task origin grants privileged behavior (agent-attributed
+    // greeting, description suppression), so at most one issue per company may ever
+    // carry it — concurrent creates race on the pre-insert count check and this
+    // index is what atomically rejects the loser.
+    onboardingFirstTaskIdx: uniqueIndex("issues_onboarding_first_task_uq")
+      .on(table.companyId)
+      .where(sql`${table.originKind} = 'onboarding_first_task'`),
   }),
 );

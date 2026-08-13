@@ -82,12 +82,34 @@ function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: s
 }
 
 const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
-const DEFAULT_TASK_TITLE = "Hire your first engineer and create a hiring plan";
-const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the company.
+const DEFAULT_TASK_TITLE = "Paperclip onboarding";
+const DEFAULT_TASK_DESCRIPTION = `You are the Paperclip agent. This is your first task. Your job here is to
+understand what the user wants and turn it into a concrete plan — not to
+start building yet.
 
-- hire a founding engineer
-- write a hiring plan
-- break the roadmap into concrete tasks and start delegating work`;
+A greeting has already been posted to the user on your behalf, so don't
+re-introduce yourself — go straight to the questions.
+
+This is a user-facing chat. Everything you post here is read by the user, so
+keep your messages terse and written for them. Only surface things meant for
+the user: the questions, the plan, the team, next-step options, and short
+status ("Got your answers — here's the plan."). Never narrate how you work.
+Don't post your internal steps or thinking into the chat — no "let me probe
+the schema", "schema learned", "building the questions payload", "orienting
+myself with the API", or similar play-by-play of your API/tool calls. Do that
+work silently and post only the result.
+
+Work in this order:
+
+1. Ask a few focused, clarifying questions. Use an ask_user_questions interaction to settle on one concrete goal to tackle first— scope, priorities, constraints, and what "done" looks like. Don't guess; ask.
+
+2. Propose one plan. Once you understand the goal, write a short approach plan to the \`plan\` document. At the bottom, list the agents you'd hire (with their roles) and any follow-up tasks you'd create. Then present the whole thing as a SINGLE request_checkbox_confirmation that targets the \`plan\` document, with each proposed hire and follow-up task as its own checkable option, checked by default. Give each option a stable id you can act on later. Do NOT use suggest_tasks or a separate request_confirmation — one checkbox card is the plan and its approval. In the card's message keep the summary to a line or two and point the user to the full write-up in the plan on the right sidebar (it opens to the Plan there automatically) — don't paste the whole plan into the card, and never say the write-up is "above" or "in the plan doc above"; it lives in the right sidebar.
+
+3. Wait for approval. Don't hire anyone or create work until the user approves the plan. They can uncheck anything they don't want before approving, and unchecking simply drops it. If they ask for changes, revise the plan document and re-confirm.
+
+4. On approval, execute only what they kept. Create exactly the checked options — hire the checked agents and create + delegate the checked follow-up tasks, each in its own task. Skip anything the user unchecked.
+
+Propose, don't decide. Keep it conversational.`;
 const INCOMPLETE_ONBOARDING_STATE_MESSAGE =
   "Onboarding state is incomplete. Please restart onboarding and try again.";
 
@@ -440,7 +462,8 @@ export function OnboardingWizard() {
         setCreatedProjectId(projectId);
       }
 
-      if (!createdIssueRef) {
+      let issueRef = createdIssueRef;
+      if (!issueRef) {
         const issue = await issuesApi.create(
           createdCompanyId,
           buildOnboardingIssuePayload({
@@ -451,17 +474,24 @@ export function OnboardingWizard() {
             goalId
           })
         );
-        setCreatedIssueRef(issue.identifier ?? issue.id);
+        issueRef = issue.identifier ?? issue.id;
+        setCreatedIssueRef(issueRef);
         queryClient.invalidateQueries({
           queryKey: queryKeys.issues.list(createdCompanyId)
         });
       }
 
       const prefix = createdCompanyPrefix;
-      setSelectedCompanyId(createdCompanyId);
+      // Select the new company as a route sync, not a manual switch: the
+      // explicit navigate below is the intended destination, so page-memory's
+      // "restore last page" (which falls back to /dashboard) must not fire and
+      // clobber the first-task URL. See PAP-404.
+      setSelectedCompanyId(createdCompanyId, { source: "route_sync" });
       reset();
       closeOnboarding();
-      navigate(prefix ? `/${prefix}/dashboard` : "/dashboard");
+      // Drop the user straight into the first task's detail page (not the
+      // dashboard) so they land on the conversation the agent will start in.
+      navigate(prefix ? `/${prefix}/issues/${issueRef}` : `/issues/${issueRef}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to launch first task");
     } finally {
@@ -820,7 +850,7 @@ export function OnboardingWizard() {
                   morph reads as one capsule coming to life — dashed slot →
                   solid (configured) → liquid fill + blue glow (online). */}
               {step >= 3 && step <= 5 && (
-                <div className="space-y-4 mb-6">
+                <div className="mb-6 space-y-4">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
                       {step === 5 ? (
@@ -832,7 +862,7 @@ export function OnboardingWizard() {
                     <div>
                       <h3 className="font-medium">
                         {step === 3
-                          ? "Create your team lead"
+                          ? "Create your first agent"
                           : step === 4
                             ? "Connect a model"
                             : "Review"}
@@ -840,40 +870,47 @@ export function OnboardingWizard() {
                       <p className="text-xs text-muted-foreground">
                         {step === 3 ? (
                           <>
-                            Name your lead. They'll help drive{" "}
+                            They'll help drive{" "}
                             <span className="font-medium text-foreground">{companyName}</span>{" "}
                             toward its mission. We default to{" "}
-                            <span className="font-medium text-foreground">Chief of staff</span> —
-                            rename it to anything you like.
+                            <span className="font-medium text-foreground">Chief of staff</span>.
+                            Rename it to anything you like.
                           </>
                         ) : step === 4 ? (
                           <>Pick the adapter and model your lead will run on, then check the environment.</>
                         ) : (
-                          <>Everything's set up — your team lead is online and ready to work.</>
+                          <>Your first agent is online and ready to work.</>
                         )}
                       </p>
                     </div>
                   </div>
 
-                  <div className="flex flex-col items-center gap-1.5 py-1 text-center">
+                  <div
+                    className={cn(
+                      "flex flex-col items-center py-1 text-center",
+                      step === 5 ? "mt-8 gap-2.5" : "gap-1.5"
+                    )}
+                  >
                     <AgentCapsule
                       state={step === 3 ? "slot" : step === 4 ? "configured" : "online"}
                       gradient={5}
                       glow="blue"
                       size="md"
                     />
-                    <p className="text-(length:--text-micro) text-muted-foreground">
-                      {step === 3 ? (
-                        "an empty slot for an agent"
-                      ) : step === 4 ? (
-                        "your team lead, taking shape"
-                      ) : (
-                        <>
-                          <span className="font-medium text-foreground">{agentName}</span>{" "}
-                          is online and ready to work!
-                        </>
-                      )}
-                    </p>
+                    {step !== 3 && (
+                      <p
+                        className={cn(
+                          "text-muted-foreground",
+                          step === 5 ? "text-sm" : "text-(length:--text-micro)"
+                        )}
+                      >
+                        {step === 4 ? (
+                          "your team lead, taking shape"
+                        ) : (
+                          <span className="font-medium text-foreground">{agentName}</span>
+                        )}
+                      </p>
+                    )}
                   </div>
                 </div>
               )}
@@ -973,9 +1010,9 @@ export function OnboardingWizard() {
                       <Building2 className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">Name your company</h3>
+                      <h3 className="font-medium">Name your organization</h3>
                       <p className="text-xs text-muted-foreground">
-                        What should we call your company?
+                        What should we call your team or company?
                       </p>
                     </div>
                   </div>
@@ -988,7 +1025,7 @@ export function OnboardingWizard() {
                           : "text-muted-foreground group-focus-within:text-foreground"
                       )}
                     >
-                      Company name
+                      Name
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
@@ -1030,7 +1067,7 @@ export function OnboardingWizard() {
                   </div>
 
                   {/* Mission path selector */}
-                  <div className="space-y-3">
+                  <div className="space-y-3 pt-3">
                     <label className="text-xs text-foreground block">
                       How would you like to define your mission?
                     </label>
@@ -1202,13 +1239,6 @@ export function OnboardingWizard() {
                       You can always change your mission later in settings.
                     </p>
                   )}
-
-                  <button
-                    className="text-(length:--text-micro) text-muted-foreground hover:text-foreground transition-colors"
-                    onClick={() => setStep(1)}
-                  >
-                    ← Change company name
-                  </button>
                 </div>
               )}
 
@@ -1590,7 +1620,7 @@ export function OnboardingWizard() {
                   {/* Review checklist — everything that's now set up */}
                   <div className="space-y-1.5">
                     {[
-                      { label: "Company name", done: Boolean(companyName.trim()) },
+                      { label: "Organization name", done: Boolean(companyName.trim()) },
                       { label: "Mission", done: Boolean(companyGoal.trim()) },
                       { label: "Agent created", done: Boolean(createdAgentId) },
                       { label: "Model connected", done: Boolean(createdAgentId) },
@@ -1612,15 +1642,6 @@ export function OnboardingWizard() {
                       </div>
                     ))}
                   </div>
-
-                  {companyGoal.trim() && (
-                    <p className="text-sm text-muted-foreground italic text-center">
-                      "{companyGoal}"
-                    </p>
-                  )}
-                  <p className="text-xs text-muted-foreground text-center">
-                    We'll create the first task for {agentName} and take you to the dashboard.
-                  </p>
                 </div>
               )}
 
@@ -1695,7 +1716,7 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Bringing to life..." : "Give it a heartbeat"}
+                      {loading ? "Connecting..." : "Connect"}
                     </Button>
                   )}
                   {step === 5 && (

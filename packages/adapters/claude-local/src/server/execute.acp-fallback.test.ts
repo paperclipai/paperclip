@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
   ensureAdapterExecutionTargetCommandResolvable,
@@ -89,6 +89,10 @@ describe("claude_local ACP startup fallback", () => {
     vi.clearAllMocks();
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("falls back to Claude CLI when auto-selected ACP fails before execution starts", async () => {
     const ctx = buildContext();
 
@@ -104,6 +108,28 @@ describe("claude_local ACP startup fallback", () => {
     expect(ctx.onLog).toHaveBeenCalledWith(
       "stderr",
       expect.stringContaining('Unexpected "<<"'),
+    );
+  });
+
+  it("trusts the Paperclip API URL when network access is allowlisted", async () => {
+    const paperclipApiUrl = "http://127.0.0.1:4310";
+    vi.stubEnv("PAPERCLIP_RUNTIME_API_URL", paperclipApiUrl);
+    const ctx = buildContext({ networkScope: "allowlist" });
+
+    await execute(ctx as never);
+
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledWith(
+      expect.any(String),
+      null,
+      expect.any(String),
+      expect.any(Array),
+      expect.objectContaining({
+        localProcessSandbox: expect.objectContaining({
+          networkScope: "allowlist",
+          networkTrustedUrls: [paperclipApiUrl],
+        }),
+      }),
     );
   });
 

@@ -1,5 +1,6 @@
 import type {
   ResolvedWorkspaceResource,
+  WorkspaceFileAvailabilityResponse,
   WorkspaceFileContent,
   WorkspaceFileListMode,
   WorkspaceFileListResponse,
@@ -54,6 +55,25 @@ export const fileResourcesApi = {
     const suffix = search ? `?${search}` : "";
     return api.get<WorkspaceFileListResponse>(
       `/issues/${encodeURIComponent(issueId)}/file-resources/list${suffix}`,
+    );
+  },
+
+  /**
+   * Batch preflight for auto-detected workspace file references. Callers must
+   * deduplicate and chunk to the server's 100-query cap before calling.
+   */
+  availability(issueId: string, queries: FileResourceQuery[]): Promise<WorkspaceFileAvailabilityResponse> {
+    return api.post<WorkspaceFileAvailabilityResponse>(
+      `/issues/${encodeURIComponent(issueId)}/file-resources/availability`,
+      {
+        queries: queries.map((query) => ({
+          path: query.path,
+          ...(query.workspace && query.workspace !== "auto" ? { workspace: query.workspace } : {}),
+          ...(query.projectId && query.workspaceId
+            ? { projectId: query.projectId, workspaceId: query.workspaceId }
+            : {}),
+        })),
+      },
     );
   },
 

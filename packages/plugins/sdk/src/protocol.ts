@@ -291,6 +291,14 @@ export interface PluginInvocationScope {
 export interface PluginInvocationContext {
   id: string;
   scope: PluginInvocationScope;
+  /**
+   * An optional W3C `traceparent` for the active host span. The host mints it
+   * per call from the active startup span. The worker treats it as opaque: it
+   * tags its provider span with it and never derives parentage from it. The host
+   * mints the parentage from its own invocation record, so a worker can never
+   * forge a parent.
+   */
+  traceparent?: string;
 }
 
 /**
@@ -300,6 +308,12 @@ export interface PluginInvocationContext {
 export interface WorkerHostCallContext {
   invocationScope?: PluginInvocationScope | null;
   invalidInvocationScope?: boolean;
+  /**
+   * The W3C `traceparent` the host minted for the echoed invocation. The host
+   * recovers it from its own invocation record, not from the worker, so a worker
+   * can never forge a span parent. The span host handler validates and uses it.
+   */
+  traceparent?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -638,6 +652,12 @@ export interface PluginEnvironmentRealizeWorkspaceParams extends PluginEnvironme
   };
 }
 
+/**
+ * A plugin `environmentRealizeWorkspace` handler returns only the realized cwd and provider
+ * metadata. The server, not the plugin, builds the full workspace-realization record from the run
+ * request and merges this cwd and metadata into it. Do not return a `workspaceRealization` record
+ * here; the server owns that record, so the referenced (mentioned) project sources reach the adapter.
+ */
 export interface PluginEnvironmentRealizeWorkspaceResult {
   cwd: string;
   metadata?: Record<string, unknown>;
@@ -651,6 +671,20 @@ export interface PluginEnvironmentExecuteParams extends PluginEnvironmentDriverB
   env?: Record<string, string>;
   stdin?: string;
   timeoutMs?: number;
+  /**
+   * Run this command outside the lease's persistent session.
+   *
+   * The host sets this flag on a command that runs before the run's agent work,
+   * for example the workspace provision command. A provider that opens a
+   * persistent session on the first command must NOT open the session for such a
+   * command; it runs the command one-shot and leaves the session closed. The
+   * session then opens on the first in-run command instead. A provider that does
+   * not use a persistent session ignores this flag.
+   *
+   * The default (absent or `false`) keeps the session path, so a normal in-run
+   * command opens and reuses the session as before.
+   */
+  bypassSession?: boolean;
 }
 
 export interface PluginEnvironmentExecuteResult {
@@ -691,6 +725,65 @@ export interface PluginSyncFileMapping {
    * as links; `true` dereferences them to their target bytes. Mirrors tar's `-h`.
    */
   followSymlinks?: boolean;
+  /**
+   * Advisory read-write intent for the sandbox target. `"rw"` means the author
+   * expects the agent to change the bytes at the target and keep the change.
+   * `"ro"` means the target is a read-only tree. An absent value defaults to
+   * `"ro"` (read-only is the safe default for an advisory signal).
+   *
+   * This field is advisory metadata for an optional sandbox feedback wrapper. It
+   * does not change the transfer and adds no security. A provider may read it to
+   * bind the read-write targets read-write under the wrapper, but the ephemeral
+   * sandbox stays the only security boundary.
+   */
+  access?: "rw" | "ro";
+  /**
+   * The sandbox directory that becomes read-write when `access` is `"rw"` and a
+   * post-upload command extracts `targetPath` into a different directory. A
+   * workspace, git-history, or asset mapping uploads a tar archive, so its
+   * `targetPath` is the staging archive under the runtime root, not the directory
+   * that the extract command fills. This field names that final destination
+   * directory, so a consumer records the real read-write destination, not the
+   * staging parent. When absent, the read-write destination is the parent
+   * directory of `targetPath`. This field is advisory and ignored when `access`
+   * is not `"rw"`.
+   */
+  writablePath?: string;
+}
+
+/**
+ * A single control command run against the sandbox after a sync operation's
+ * files have landed. Ordered within {@link PluginSyncOperation.postUploadCommands}
+ * and executed in array order, fail-fast (the first non-zero exit or timeout
+ * aborts the operation).
+ *
+ * SECURITY — command origin (Stage-1 design review, condition C1). `command` is
+ * a **Paperclip/adapter-authored control operation**: it may be supplied ONLY by
+ * core/adapter code. No server route, issue/comment content, project/workspace
+ * file content, provider-plugin callback, or arbitrary adapter config may supply
+ * a raw `command` string, and any path embedded in it MUST be built by
+ * adapter/core helpers from already-confined paths and shell-quoted (C3). A
+ * provider MUST treat the command as **opaque**: it may execute or reject it, but
+ * MUST NOT rewrite, concatenate, or append provider-decided shell fragments to
+ * it.
+ */
+export interface PluginPostUploadCommand {
+  /**
+   * The opaque, adapter-authored shell command to run after upload. Executed
+   * verbatim by the provider (never rewritten/concatenated). See the security
+   * note above.
+   */
+  command: string;
+  /**
+   * Working directory for the command. When present, MUST be an absolute POSIX
+   * path confined under the operation's allowed sandbox target root (condition
+   * C2); providers re-validate it before exec. When absent, the provider
+   * defaults to the resolved sync remote/runtime root — never a process default
+   * cwd.
+   */
+  cwd?: string;
+  /** Optional per-command timeout in milliseconds. */
+  timeoutMs?: number;
 }
 
 /**
@@ -701,6 +794,13 @@ export interface PluginSyncFileMapping {
 export interface PluginSyncOperation {
   operationId: string;
   files: PluginSyncFileMapping[];
+  /**
+   * Optional ordered control commands run after this operation's files land, in
+   * array order, fail-fast. Absent means "no commands" — byte-identical to a
+   * pre-contract operation. See {@link PluginPostUploadCommand} for the command
+   * origin/confinement security contract (C1–C4).
+   */
+  postUploadCommands?: PluginPostUploadCommand[];
 }
 
 export interface PluginEnvironmentSyncInParams extends PluginEnvironmentDriverBaseParams {
@@ -1198,6 +1298,34 @@ export interface WorkerToHostMethods {
       meta?: Record<string, unknown>;
       /** Owning tenant for `plugin_logs.company_id` (cascade-delete scope). `null`/omitted = instance-scope. */
       companyId?: string | null;
+    },
+    result: void,
+  ];
+
+  // Provider span sink. The worker sends a finished provider span; the host
+  // re-clamps the label and the attributes at its trust boundary, mints the
+  // parentage from its own invocation record, and records the span through the
+  // real tracer. The worker never sends the parent `traceparent`; the host
+  // recovers it from the echoed invocation id. The RPC is capability-gated.
+  "span.record": [
+    params: {
+      /** The bounded span name (for example `pack` or `transfer`). The host
+       * clamps it to a closed set, so a name never carries free-form data. */
+      name: string;
+      /** The span attributes. The host drops every key that is not on the closed
+       * plugin-span allowlist and re-clamps each remaining value. */
+      attributes?: Record<string, string | number | boolean>;
+      /** The optional span status. */
+      status?: { code: number; message?: string };
+      /** The optional span start time as epoch milliseconds (`Date.now()`).
+       * The worker captures it when it opens the span. The host validates the
+       * pair and records the span with its true native width. An omitted value
+       * makes the host fall back to a synchronous open-and-end. */
+      startTimeMs?: number;
+      /** The optional span end time as epoch milliseconds (`Date.now()`). The
+       * worker captures it when it ends the span. The host uses it as the span
+       * end time when the pair passes the clock-safety check. */
+      endTimeMs?: number;
     },
     result: void,
   ];
@@ -1798,6 +1926,29 @@ export interface WorkerToHostNotifications {
   "streams.close": {
     channel: string;
     companyId: string;
+  };
+
+  /**
+   * Deliver one incremental output chunk of the active `environmentExecute`
+   * call to the host runner log sink.
+   *
+   * The worker emits this notification for each new `stdout` or `stderr` chunk
+   * while one execute call runs. The host reads the active invocation id from
+   * the envelope field `paperclipInvocationId`, which the worker RPC host stamps
+   * from the active invocation context. The host correlates the chunk to the
+   * host-owned execute route for that id and delivers it to that route's
+   * `onLog` callback.
+   *
+   * Security: the notification carries no company id on purpose. The
+   * invocation-to-company binding on the host execute route is authoritative.
+   * The host never reads a company id from this payload to select the route or
+   * to grant access. The `chunk` is a text string, because JSON-RPC cannot
+   * carry raw bytes; the host drops a chunk that is not a bounded non-empty
+   * string or whose stream name is not exactly `stdout` or `stderr`.
+   */
+  "execute.log": {
+    stream: "stdout" | "stderr";
+    chunk: string;
   };
 }
 
