@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@/lib/router";
 import { ChevronRight, Lock, Maximize2, Minus, Plus, RotateCcw, Target } from "lucide-react";
@@ -26,6 +26,42 @@ import { InlineEditor } from "../components/InlineEditor";
 // grouping preview: slim leaves, two-row parents with subtree progress).
 const GOAL_W = 240;
 const GOAL_H = 66;
+
+// Hardcoded module marker so we can tell from a screenshot which UI build a
+// browser is actually executing (vs. what the server serves).
+const MAP_BUILD = "m4fab";
+
+// Fully inline so no stylesheet state can hide the create affordances.
+const PLUS_BTN_STYLE: CSSProperties = {
+  position: "absolute",
+  right: 4,
+  top: 4,
+  width: 20,
+  height: 20,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  borderRadius: 4,
+  border: "none",
+  padding: 0,
+  fontSize: 14,
+  fontWeight: 700,
+  lineHeight: 1,
+  background: "#0e7490",
+  color: "#ffffff",
+  cursor: "pointer",
+  zIndex: 5,
+};
+
+const PLUS_BTN_SMALL_STYLE: CSSProperties = {
+  ...PLUS_BTN_STYLE,
+  right: 2,
+  top: 2,
+  width: 16,
+  height: 16,
+  fontSize: 12,
+  opacity: 0.85,
+};
 const TASK_W = 260;
 const LEAF_H = 30;
 const PARENT_H = 46;
@@ -891,7 +927,13 @@ export function GoalMap() {
             )}
           </>
         )}
-        <div className="ml-auto flex items-center gap-4 text-xs text-muted-foreground">
+        <span
+          title="UI build marker"
+          style={{ marginLeft: "auto", fontSize: 10, opacity: 0.45, fontFamily: "monospace", alignSelf: "center" }}
+        >
+          {MAP_BUILD}
+        </span>
+        <div className="flex items-center gap-4 text-xs text-muted-foreground">
           <span className="flex items-center gap-1.5">
             <svg width="24" height="8" aria-hidden><line x1="0" y1="4" x2="24" y2="4" stroke="var(--border)" strokeWidth="1.5" /></svg>
             breakdown
@@ -1153,8 +1195,7 @@ export function GoalMap() {
                     data-map-plus
                     aria-label={node.goal.level === "initiative" ? "New epic in this initiative" : "New task in this epic"}
                     title={node.goal.level === "initiative" ? "New epic in this initiative" : "New task in this epic"}
-                    className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded text-sm font-bold shadow-sm"
-                    style={{ background: "#0e7490", color: "#ffffff" }}
+                    style={PLUS_BTN_STYLE}
                     onClick={(e) => {
                       e.stopPropagation();
                       setSelection({ kind: "goal", id: node.goal.id });
@@ -1261,8 +1302,7 @@ export function GoalMap() {
                     data-map-plus
                     aria-label="New sub-task"
                     title="New sub-task"
-                    className="absolute right-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded text-xs font-bold opacity-80 shadow-sm hover:opacity-100"
-                    style={{ background: "#0e7490", color: "#ffffff" }}
+                    style={PLUS_BTN_SMALL_STYLE}
                     onClick={(e) => {
                       e.stopPropagation();
                       setSelection({ kind: "issue", id: issue.id });

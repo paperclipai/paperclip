@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Maximize2, Minus, Plus, Trash2 } from "lucide-react";
 import type { Goal, RoadmapBlock } from "@paperclipai/shared";
@@ -13,6 +13,28 @@ import { InlineEditor } from "./InlineEditor";
 
 const BLOCK_W = 190;
 const BLOCK_H = 52;
+
+// Fully inline so no stylesheet state can hide the create affordance.
+const PLUS_BTN_STYLE: CSSProperties = {
+  position: "absolute",
+  right: 4,
+  top: 4,
+  width: 20,
+  height: 20,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  borderRadius: 4,
+  border: "none",
+  padding: 0,
+  fontSize: 14,
+  fontWeight: 700,
+  lineHeight: 1,
+  background: "#0e7490",
+  color: "#ffffff",
+  cursor: "pointer",
+  zIndex: 5,
+};
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 2;
 const DRAG_THRESHOLD = 5;
@@ -308,8 +330,7 @@ export function RoadmapView({ companyId, goals }: { companyId: string; goals: Go
                       data-roadmap-action
                       aria-label="Make initiative / epic, or link existing"
                       title="Make initiative / epic, or link existing"
-                      className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded text-sm font-bold shadow-sm"
-                      style={{ background: "#0e7490", color: "#ffffff" }}
+                      style={PLUS_BTN_STYLE}
                     >
                       +
                     </button>
