@@ -26,6 +26,8 @@ import {
   pipelineStages,
   pipelines,
   projectWorkspaces,
+  routineRevisions,
+  routineTriggers,
 } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
@@ -170,6 +172,7 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { routineRecoveryTriggerDispositionMarker } from "../services/routines.js";
 import {
   buildOnboardingGreeting,
   ONBOARDING_GREETING_AUTHORIZATION_REASON,
@@ -236,6 +239,12 @@ import {
 } from "../services/cross-issue-influence-limit.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+
+function recoveryRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -2725,6 +2734,10 @@ export function issueRoutes(
       recoveryActionId: string;
       attemptCount: number;
       mutation: "accept" | "resolve";
+    }) => Promise<void> | void;
+    afterRecoveryResolveLocksBeforeMutation?: (input: {
+      issueId: string;
+      recoveryActionId: string;
     }) => Promise<void> | void;
   } = {},
 ) {
@@ -6318,21 +6331,23 @@ export function issueRoutes(
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id);
-    if (
-      !(await assertRecoveryActionAuthority(
+    const isAuthorizedRecoveryOwner = await assertRecoveryActionAuthority(
         req,
         res,
         existing,
         activeRecoveryAction,
         { source: "recovery_action_resolution" },
-      ))
-    ) {
-      return;
-    }
+      );
+    if (!isAuthorizedRecoveryOwner && !(await assertAgentIssueMutationAllowed(req, res, existing))) return;
 
     const { actionId, outcome, sourceIssueStatus, resolutionNote } = req.body;
+    await opts.afterRecoveryAuthorizationBeforeMutation?.({
+      issueId: existing.id,
+      recoveryActionId: activeRecoveryAction?.id ?? actionId ?? "",
+      attemptCount: activeRecoveryAction?.attemptCount ?? 0,
+      mutation: "resolve",
+    });
     if (outcome === "false_positive" || outcome === "cancelled") {
       assertBoard(req);
     }
@@ -6358,6 +6373,81 @@ export function issueRoutes(
     const actionStatus = outcome === "cancelled" ? "cancelled" : "resolved";
     const postCommitActivityPublications: ActivityPublication[] = [];
     const result = await db.transaction(async (tx) => {
+      const agentIdsToLock = [
+        activeRecoveryAction?.ownerAgentId,
+        activeRecoveryAction?.previousOwnerAgentId,
+        activeRecoveryAction?.returnOwnerAgentId,
+        sourceIssueStatus === "in_review" ? existing.assigneeAgentId : null,
+      ].filter((agentId): agentId is string => Boolean(agentId));
+      if (agentIdsToLock.length > 0) {
+        await tx
+          .select({ id: agents.id })
+          .from(agents)
+          .where(and(eq(agents.companyId, existing.companyId), inArray(agents.id, [...new Set(agentIdsToLock)])))
+          .orderBy(asc(agents.id))
+          .for("update");
+      }
+      // Lock a retained reviewer before the source issue so termination cannot
+      // race a recovery that is putting work back into review.
+      if (activeRecoveryAction?.cause === "terminated_owner" && sourceIssueStatus === "in_review") {
+        const reviewerId = existing.assigneeAgentId;
+        const reviewer = reviewerId
+          ? await tx
+            .select({ id: agents.id, status: agents.status })
+            .from(agents)
+            .where(and(eq(agents.id, reviewerId), eq(agents.companyId, existing.companyId)))
+            .for("update")
+            .then((rows) => rows[0] ?? null)
+          : null;
+        if (!reviewer || ["paused", "terminated", "pending_approval"].includes(reviewer.status)) {
+          throw unprocessable("Restoring an issue to in_review requires a live reviewer");
+        }
+      }
+
+      if (activeRecoveryAction?.cause === "terminated_routine_owner") {
+        const contract = recoveryRecord(existing.executionContract);
+        const recovery = recoveryRecord(contract.routineRecovery);
+        const routineIds = Array.isArray(recovery.routines)
+          ? recovery.routines.map((entry) => recoveryRecord(entry).id).filter((id): id is string => typeof id === "string")
+          : [];
+        const triggerIds = Array.isArray(recovery.triggers)
+          ? recovery.triggers.map((entry) => recoveryRecord(entry).id).filter((id): id is string => typeof id === "string")
+          : [];
+        if (routineIds.length === 0 || triggerIds.length === 0) {
+          throw unprocessable("Routine recovery needs an explicit restore-or-disable disposition for every typed routine and trigger before resolving");
+        }
+        const triggers = triggerIds.length === 0 ? [] : await tx
+          .select({ id: routineTriggers.id, routineId: routineTriggers.routineId, enabled: routineTriggers.enabled })
+          .from(routineTriggers)
+          .where(and(eq(routineTriggers.companyId, existing.companyId), inArray(routineTriggers.id, triggerIds)))
+          .for("update");
+        const revisions = routineIds.length === 0 ? [] : await tx
+          .select({ routineId: routineRevisions.routineId, changeSummary: routineRevisions.changeSummary, createdAt: routineRevisions.createdAt })
+          .from(routineRevisions)
+          .where(and(eq(routineRevisions.companyId, existing.companyId), inArray(routineRevisions.routineId, routineIds)));
+        if (triggers.length !== triggerIds.length) {
+          throw unprocessable("Routine recovery needs an explicit restore-or-disable disposition for every typed routine and trigger before resolving");
+        }
+        for (const trigger of triggers) {
+          const marker = routineRecoveryTriggerDispositionMarker(
+            { actionId: activeRecoveryAction.id, attemptCount: activeRecoveryAction.attemptCount },
+            trigger.id,
+            trigger.enabled,
+          );
+          const explicitlyDispositioned = revisions.some((revision) =>
+            revision.routineId === trigger.routineId &&
+            revision.createdAt > activeRecoveryAction.createdAt &&
+            revision.changeSummary?.includes(marker),
+          );
+          if (!explicitlyDispositioned) {
+            throw unprocessable(`Routine trigger ${trigger.id} needs an explicit restore-or-disable disposition`);
+          }
+        }
+      }
+      await opts.afterRecoveryResolveLocksBeforeMutation?.({
+        issueId: existing.id,
+        recoveryActionId: activeRecoveryAction?.id ?? actionId ?? "",
+      });
       let issue = existing;
       if (outcome === "blocked") {
         const unresolvedBlockers = await tx
