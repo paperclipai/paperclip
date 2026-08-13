@@ -4,6 +4,7 @@
 
 ### Patch Changes
 
+- Harden the pre-merge gate against indirect `gh` invocations. A command that reaches the binary through shell expansion (`g=gh; $g pr merge 460`, `${GH} pr merge 460`, `$(which gh) pr merge 460`) carries no literal `gh pr merge` substring, so the hook previously found no PR and fell through to allow — while bash expanded it and merged unchecked. Both the TypeScript parser and the generated bash extractor now treat a `pr merge` whose command word is an expansion as unresolvable and deny the whole command. Prose that merely contains the words (`git commit -m "pr merge fix"`) stays allowed.
 - Fix the pre-merge gate (Control 3, MGC-2350) so the parser and bash hook extractor accept `gh pr merge <NUMBER>` regardless of flag position (`--squash`, `--delete-branch`, `--merge`, `--rebase`, `--admin`, `--auto` may precede or follow the number), and so Gate #2's race-condition check hits the documented `/api/companies/:companyId/heartbeat-runs?agentId=…` endpoint instead of the non-existent `/api/agents/:id/runs`. Resolve two Greptile review findings (1/5 confidence blocked merge) and one server-side sandbox probe assertion that previously failed because it could not see the `__paperclipManaged: true` hook injected after sanitization.
 - Updated dependencies
   - @paperclipai/adapter-utils@0.3.3

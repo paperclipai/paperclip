@@ -45,6 +45,16 @@ export type GateResult =
 const ASSIGNEE_CTO = "cto";
 
 /**
+ * A `pr merge` token pair whose command word is a shell expansion rather than
+ * the literal `gh`: `$g pr merge 460`, `${GH} pr merge 460`,
+ * `$(which gh) pr merge 460`, `` `which gh` pr merge 460 ``. The hook only ever
+ * sees the pre-expansion string, so these are unresolvable and must deny.
+ * Requiring the expansion marker keeps prose that merely contains the words
+ * (`git commit -m "pr merge fix"`) out of scope.
+ */
+const INDIRECT_PR_MERGE = /(?:\$\{[^}]*\}|\$\([^)]*\)|`[^`]*`|\$[A-Za-z_][A-Za-z0-9_]*)[^\s]*\s+pr\s+merge(?:\s|$)/;
+
+/**
  * Match the subset of `gh pr merge <PR>` invocations the agent is expected to
  * issue. The agent may prefix the command with `npx`, `cd ... &&`, redirections
  * or other shell constructs, and may place flags (`--squash`, `--delete-branch`,
@@ -72,7 +82,17 @@ export function parseGhPrMergeCommand(command: string): number[] {
   for (const segment of segments) {
     const cleaned = segment.replace(/\s+>\s*.*$/g, "").trim();
     const head = cleaned.match(/^gh\s+pr\s+merge\b/);
-    if (!head) continue;
+    if (!head) {
+      // No literal `gh` heading this segment. A `pr merge` token pair that is
+      // preceded by a shell expansion (`$g pr merge 460`, `${GH} pr merge 460`,
+      // `$(which gh) pr merge 460`) means the `gh` binary is being reached
+      // INDIRECTLY: we only ever see the pre-expansion string, so we cannot
+      // resolve the binary or the PR — but bash will expand it and merge.
+      // Bail out entirely rather than reporting "no merge here". The expansion
+      // marker keeps innocuous text (`git commit -m "pr merge fix"`) allowed.
+      if (INDIRECT_PR_MERGE.test(cleaned)) return [];
+      continue;
+    }
     const tail = cleaned.slice(head[0].length);
     // Walk every token in the tail; the first all-digit token is the PR number.
     // Flags are tokens that begin with `-` and never match `\d+`. Strings like

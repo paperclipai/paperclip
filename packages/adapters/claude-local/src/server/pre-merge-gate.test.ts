@@ -106,6 +106,27 @@ describe("parseGhPrMergeCommand", () => {
     expect(parseGhPrMergeCommand("gh pr\tmerge 460 --squash")).toEqual([460]);
     expect(parseGhPrMergeCommand("gh\tpr\tmerge 460 --squash")).toEqual([460]);
   });
+
+  it("refuses indirect `gh` invocations built by shell expansion (Greptile P1 round 6)", () => {
+    // Reproduces the finding: the hook sees the PRE-expansion string, so
+    // `$g pr merge 460` carries no literal `gh` and used to fall through to the
+    // empty-result allow — while bash expanded it and merged unchecked. An
+    // empty array is the deny-by-default signal for an unresolvable target.
+    expect(parseGhPrMergeCommand("g=gh; $g pr merge 460")).toEqual([]);
+    expect(parseGhPrMergeCommand("${GH} pr merge 460 --squash")).toEqual([]);
+    expect(parseGhPrMergeCommand("$(which gh) pr merge 460")).toEqual([]);
+    expect(parseGhPrMergeCommand("`which gh` pr merge 460")).toEqual([]);
+    // Also poisons an otherwise-resolvable compound: one unauditable segment
+    // must sink the whole command, not just its own.
+    expect(parseGhPrMergeCommand("gh pr merge 459 && $g pr merge 460")).toEqual([]);
+  });
+
+  it("still allows commands that merely mention `pr merge` as text", () => {
+    // Guards the fix above against over-blocking: without a shell-expansion
+    // command word there is no indirect `gh` invocation to worry about.
+    expect(parseGhPrMergeCommand('git commit -m "pr merge fix"')).toEqual([]);
+    expect(parseGhPrMergeCommand("echo pr merge")).toEqual([]);
+  });
 });
 
 describe("evaluatePreMergeGates — gate #1 (ticket state)", () => {
@@ -418,7 +439,12 @@ describe("buildPreMergeHookScript", () => {
     // BOTH PRs to pass — partial approval is never sufficient.
     expect(script).toContain("for PR_NUMBER in $PR_NUMBERS; do");
     expect(script).toContain("done");
-    expect(script).toMatch(/extract_pr_numbers\(\) \{[\s\S]*?grep -qE 'gh\[\[:space:\]\]\+pr\[\[:space:\]\]\+merge\[\[:space:\]\]'[\s\S]*?continue/);
+    expect(script).toMatch(
+      /extract_pr_numbers\(\) \{[\s\S]*?grep -qE 'gh\[\[:space:\]\]\+pr\[\[:space:\]\]\+merge\(\[\[:space:\]\]\|\$\)'/,
+    );
+    // The no-literal-`gh` branch must deny indirect expansions rather than
+    // `continue` past them (Greptile P1 round 6).
+    expect(script).toMatch(/__unresolvable_merge__[\s\S]*?continue/);
   });
 });
 
@@ -601,6 +627,43 @@ describe("buildPreMergeHookScript — end-to-end race condition (integration)", 
     });
     expect(r.stdout).toMatch(/"permissionDecision":"deny"/);
     expect(r.stdout).toMatch(/numeric PR/);
+  });
+
+  it("denies an indirect `gh` invocation built by shell expansion (Greptile P1 round 6)", () => {
+    // Drives the REAL generated bash: `$g pr merge 460` reaches the gh binary
+    // through expansion, so the hook's literal-string match found nothing and
+    // fell through to allow — while bash expanded it and merged unchecked.
+    for (const command of [
+      "g=gh; $g pr merge 460 --squash",
+      "${GH} pr merge 460 --squash",
+      "$(which gh) pr merge 460",
+    ]) {
+      const r = runHook({
+        command,
+        runId: "run-self",
+        agentId: "cto",
+        companyId: "co-1",
+        routes: {
+          "/api/issues?search=PR%23460": ctoTicket,
+          "/heartbeat-runs": emptyRuns,
+          "/comments": commentOk,
+        },
+      });
+      expect(r.stdout, command).toMatch(/"permissionDecision":"deny"/);
+      expect(r.stdout, command).toMatch(/Gate #1/);
+    }
+  });
+
+  it("still allows an unrelated command that merely mentions `pr merge`", () => {
+    // Guards the fix above from over-blocking ordinary Bash tool calls.
+    const r = runHook({
+      command: 'git commit -m "pr merge fix"',
+      runId: "run-self",
+      agentId: "cto",
+      companyId: "co-1",
+      routes: { "/heartbeat-runs": emptyRuns, "/comments": commentOk },
+    });
+    expect(r.stdout).not.toMatch(/"permissionDecision":"deny"/);
   });
 
   it("denies when a DIFFERENT concurrent run holds the PR (race condition simulated)", () => {
