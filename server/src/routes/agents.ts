@@ -1140,6 +1140,14 @@ export function agentRoutes(
   // only in an active sandbox environment. This reuses the shared environment
   // selection guard, so it rejects a missing, archived (inactive), local, SSH, or
   // plugin environment the same way the agent configuration routes do.
+  //
+  // Execution environments are instance-scoped, not company-owned. PR #8375 moved
+  // the catalog to one shared instance catalog, so the environment row carries no
+  // owning company and any company member selects from the same catalog. The
+  // selection guard therefore does not compare the environment against the caller
+  // company. The route caller is already bound to the path company by
+  // `assertCompanyAccess`, and the acquired lease records that same company, so the
+  // login stays attributed to the caller.
   async function assertSandboxLoginEnvironment(
     companyId: string,
     environmentId: string,
@@ -4655,11 +4663,12 @@ export function agentRoutes(
       return;
     }
 
-    // Resolve the environment server-side to a valid, active company sandbox. It
-    // fails closed on a missing, archived, non-sandbox, or fake-provider
-    // environment, so the route never persists an empty or invalid environment
-    // scope. It runs before the session starts, so no store holds a rejected
-    // environment.
+    // Resolve the environment server-side to a live instance sandbox. It fails
+    // closed on a missing, archived, non-sandbox, or fake-provider environment, so
+    // the route never persists an empty or invalid environment scope. It runs
+    // before the session starts, so no store holds a rejected environment. The
+    // catalog is instance-scoped (see `assertSandboxLoginEnvironment`), so the
+    // guard does not bind the environment to the caller company.
     await assertSandboxLoginEnvironment(companyId, environmentId);
 
     const scope: SetupTokenSessionScope = {
