@@ -252,6 +252,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
     }, {
       kind: "request_confirmation",
       resolverPolicy: "board_or_agents",
+      continuationPolicy: "wake_assignee",
       payload: {
         version: 1,
         prompt: "Approve this?",
@@ -434,6 +435,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
       companyId,
     }, {
       kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
       payload: {
         version: 1,
         prompt: "Approve the plan?",
