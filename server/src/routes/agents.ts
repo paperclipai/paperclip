@@ -2,7 +2,7 @@ import { Router, type NextFunction, type Request, type Response } from "express"
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
+import { agents as agentsTable, companies, heartbeatRuns, issueRecoveryActions, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -2761,14 +2761,36 @@ export function agentRoutes(
       includeRoutineExecutions: true,
       limit: ISSUE_LIST_DEFAULT_LIMIT,
     });
+    // A terminated owner's source issue remains assigned to that owner until
+    // the recovery owner explicitly accepts it. Surface it in the recovery
+    // owner's inbox without mutating ownership merely to make it visible.
+    const recoverySourceIds = await db
+      .select({ sourceIssueId: issueRecoveryActions.sourceIssueId })
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.companyId, req.actor.companyId),
+        eq(issueRecoveryActions.status, "active"),
+        eq(issueRecoveryActions.ownerType, "agent"),
+        eq(issueRecoveryActions.ownerAgentId, req.actor.agentId),
+      ));
+    const recoveryRows = await Promise.all(
+      recoverySourceIds.map(({ sourceIssueId }) => issuesSvc.getById(sourceIssueId)),
+    );
+    const rowsById = new Map(rows.map((issue) => [issue.id, issue]));
+    for (const issue of recoveryRows) {
+      if (issue && issue.companyId === req.actor.companyId && !["done", "cancelled"].includes(issue.status)) {
+        rowsById.set(issue.id, { ...issue, activeRun: null });
+      }
+    }
+    const inboxRows = [...rowsById.values()];
     const worktreeActivation = await resolveWorktreeRunExecutionActivationState({
       getExperimental: () => instanceSettingsService(db).getExperimental(),
     });
     const isWorktreeRuntime = isTruthyRuntimeEnvValue(process.env.PAPERCLIP_IN_WORKTREE);
     const eligibleRows = !isWorktreeRuntime
-      ? rows
+      ? inboxRows
       : worktreeActivation.armed
-      ? rows.filter((issue) => new Date(issue.createdAt) >= new Date(worktreeActivation.cutoff))
+      ? inboxRows.filter((issue) => new Date(issue.createdAt) >= new Date(worktreeActivation.cutoff))
       : [];
     const issueIds = eligibleRows.map((issue) => issue.id);
     const [dependencyReadiness, recoveryActionByIssue] = await Promise.all([
