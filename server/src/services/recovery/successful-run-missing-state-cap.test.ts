@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS,
   SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS_CEILING,
   SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS_DEFAULT,
   parseSuccessfulRunMissingStateMaxAttempts,
+  resolveSuccessfulRunMissingStateMaxAttempts,
 } from "./service.js";
 
 describe("parseSuccessfulRunMissingStateMaxAttempts", () => {
@@ -48,6 +50,27 @@ describe("parseSuccessfulRunMissingStateMaxAttempts", () => {
     expect(parseSuccessfulRunMissingStateMaxAttempts(" 12 ")).toBe(12);
     expect(parseSuccessfulRunMissingStateMaxAttempts(String(SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS_CEILING))).toBe(
       SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS_CEILING,
+    );
+  });
+});
+
+describe("resolveSuccessfulRunMissingStateMaxAttempts", () => {
+  it("uses the persisted integer cap when it is in the persistable range", () => {
+    expect(resolveSuccessfulRunMissingStateMaxAttempts(1)).toBe(1);
+    expect(resolveSuccessfulRunMissingStateMaxAttempts(5)).toBe(5);
+    expect(resolveSuccessfulRunMissingStateMaxAttempts(SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS_CEILING)).toBe(
+      SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS_CEILING,
+    );
+  });
+
+  it("falls back to the process cap for null, missing, or unpersistable values", () => {
+    expect(resolveSuccessfulRunMissingStateMaxAttempts(null)).toBe(SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS);
+    expect(resolveSuccessfulRunMissingStateMaxAttempts(undefined)).toBe(SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS);
+    expect(resolveSuccessfulRunMissingStateMaxAttempts(0)).toBe(SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS);
+    expect(resolveSuccessfulRunMissingStateMaxAttempts(-1)).toBe(SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS);
+    expect(resolveSuccessfulRunMissingStateMaxAttempts(3.5)).toBe(SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS);
+    expect(resolveSuccessfulRunMissingStateMaxAttempts(Number.POSITIVE_INFINITY)).toBe(
+      SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS,
     );
   });
 });
