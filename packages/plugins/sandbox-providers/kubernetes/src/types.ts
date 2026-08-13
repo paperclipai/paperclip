@@ -90,6 +90,11 @@ export interface KubernetesLeaseMetadata {
   phase: "Pending" | "Running" | "Succeeded" | "Failed";
   /** Which backend provisioned this lease. */
   backend: "sandbox-cr" | "job";
+  scopedNetworkPolicyName: string | null;
+  scopedNetworkEgress: {
+    allowFqdns: string[];
+    allowCidrs: string[];
+  };
   /**
    * True when this lease's backend has NO data channel for the native file-sync
    * transport. Native sync streams over a pod exec, which only the `sandbox-cr`

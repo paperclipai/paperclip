@@ -1,6 +1,7 @@
 import { ServerCog, Wrench } from "lucide-react";
 import { Link } from "@/lib/router";
 import { advancedTabHref } from "@/pages/tools/tool-tabs";
+import { appSourceConnectHref } from "./app-connect-policy";
 
 /** Popular gallery keys surfaced first in the Browse store (PAP-13254, door 1). */
 export const POPULAR_KEYS = ["zapier", "github", "slack", "notion", "linear"];
@@ -10,6 +11,9 @@ export const BYO_CONNECT_HREF = "/apps/connect?byo=1";
 
 /** Zapier connects with the complete MCP URL issued by Zapier. */
 export const ZAPIER_CONNECT_HREF = "/apps/connect?byo=1&source=zapier";
+
+/** MCP-direct OAuth apps enter through the generic source deep link. */
+export const NOTION_CONNECT_HREF = appSourceConnectHref("notion");
 
 /**
  * First-class "Connect your own tool" card (PAP-12371, Finding C; PAP-13254).

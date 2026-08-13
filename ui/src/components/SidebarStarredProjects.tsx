@@ -63,7 +63,7 @@ export function SidebarStarredProjects() {
     const byId = new Map((projects ?? []).map((project: Project) => [project.id, project]));
     return Array.from(starredIds)
       .map((id) => byId.get(id))
-      .filter((project): project is Project => !!project && !project.archivedAt)
+      .filter((project): project is Project => !!project)
       .sort((left, right) =>
         left.name.localeCompare(right.name, undefined, { sensitivity: "base" }),
       );

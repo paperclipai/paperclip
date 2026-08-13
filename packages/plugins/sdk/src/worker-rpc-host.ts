@@ -1353,6 +1353,19 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         };
       })(),
 
+      execution: {
+        log(stream: "stdout" | "stderr", chunk: string): void {
+          // Emit one incremental output chunk of the active execute call.
+          // `notifyHost` stamps the active invocation id from the invocation
+          // context, so the host correlates the chunk to the host-owned execute
+          // route for that call. The notification carries no company id; the
+          // host binds the company from its own execute route. A chunk sent with
+          // no active invocation carries no id and the host drops it.
+          if (typeof chunk !== "string" || chunk.length === 0) return;
+          notifyHost("execute.log", { stream, chunk });
+        },
+      },
+
       tools: {
         register(
           name: string,
@@ -1390,6 +1403,54 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
         debug(message: string, meta?: Record<string, unknown>): void {
           notifyHost("log", { level: "debug", message, meta });
+        },
+      },
+
+      tracer: {
+        startSpan(
+          name: string,
+          options?: { attributes?: Record<string, string | number | boolean> },
+        ) {
+          // Read the active host trace context from the per-call invocation
+          // channel. A `traceparent` means a host span is active, so this span
+          // may record. No `traceparent` means tracing is off: the span is a
+          // no-op, so a lifecycle hook can always wrap work in a span.
+          const hasTraceContext = Boolean(invocationContextStorage.getStore()?.traceparent);
+          const attributes: Record<string, string | number | boolean> = {
+            ...(options?.attributes ?? {}),
+          };
+          // Capture the real start time once when the span opens. The host uses
+          // it as the span start time, so the span shows its true native width.
+          const startTimeMs = Date.now();
+          let status: { code: number; message?: string } | undefined;
+          let ended = false;
+          return {
+            setAttribute(key: string, value: string | number | boolean): void {
+              attributes[key] = value;
+            },
+            setStatus(next: { code: number; message?: string }): void {
+              status = next;
+            },
+            end(): void {
+              if (ended) return;
+              ended = true;
+              if (!hasTraceContext) return;
+              // Capture the real end time once at the first end call. The host
+              // uses the pair to record the span with its true wall-clock width.
+              const endTimeMs = Date.now();
+              // Send the finished span to the host once. The host re-clamps the
+              // name and the attributes, mints the parentage from its own
+              // invocation record, and records the span through the real tracer.
+              // Fire-and-forget: a span must never block or fail plugin work.
+              void callHost("span.record", {
+                name,
+                attributes,
+                ...(status ? { status } : {}),
+                startTimeMs,
+                endTimeMs,
+              }).catch(() => undefined);
+            },
+          };
         },
       },
     };

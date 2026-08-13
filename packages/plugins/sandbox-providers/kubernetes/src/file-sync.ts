@@ -54,6 +54,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type {
   PluginEnvironmentSyncResult,
+  PluginPostUploadCommand,
   PluginSyncFileMapping,
   PluginSyncOperation,
 } from "@paperclipai/plugin-sdk";
@@ -323,6 +324,44 @@ async function createHostTarball(input: {
 }
 
 /**
+ * Parse one `tar -tvf` verbose listing line into its leading type flag and the
+ * trailing name-and-link-target field. The listing dialect depends on which tar
+ * the host ships: GNU/busybox emit
+ * `<perms> <owner>/<group> <size> <date> <time> <rest>`, while bsdtar
+ * (libarchive — the system tar on macOS) emits the ls-style
+ * `<perms> <links> <user> <group> <size> <Mon> <day> <time|year> <rest>`.
+ * The second field disambiguates: GNU always slash-joins owner/group, bsdtar
+ * puts a pure-digit link count there, so no line satisfies both shapes — the
+ * slash requirement is load-bearing, since a bsdtar line with numeric uid/gid
+ * would otherwise match the GNU shape shifted, hiding traversal in `<rest>`.
+ * Entries whose size column is not a plain byte count (e.g. a device node's
+ * `major,minor`) match neither shape. Returns null when nothing matches so
+ * callers can fail closed.
+ */
+export function parseTarVerboseListingLine(line: string): { typeFlag: string; rest: string } | null {
+  const gnu = line.match(/^(\S+)\s+\S+\/\S+\s+\d+\s+\S+\s+\S+\s+(.*)$/);
+  if (gnu) return { typeFlag: gnu[1][0], rest: gnu[2] };
+  const bsd = line.match(/^(\S+)\s+\d+\s+\S+\s+\S+\s+\d+\s+\S+\s+\d{1,2}\s+(?:\d{4}|\d{1,2}:\d{2}(?::\d{2})?)\s+(.*)$/);
+  if (bsd) return { typeFlag: bsd[1][0], rest: bsd[2] };
+  return null;
+}
+
+/**
+ * Split a verbose-listing link field (`<name><delimiter><target>`) exactly
+ * once. The sandbox controls both halves, so a field with zero or multiple
+ * delimiter occurrences is unresolvable: a link name that itself contains the
+ * delimiter shifts the split point, and taking the first (or last) occurrence
+ * would let a crafted name or target hide an escaping link target from the
+ * confinement check. Returns null so callers fail closed.
+ */
+export function splitLinkEntryOnce(field: string, delimiter: string): { name: string; target: string } | null {
+  const first = field.indexOf(delimiter);
+  if (first === -1) return null;
+  if (field.indexOf(delimiter, first + delimiter.length) !== -1) return null;
+  return { name: field.slice(0, first), target: field.slice(first + delimiter.length) };
+}
+
+/**
  * Reject a sandbox-authored tarball before extraction if any member would land
  * outside the extraction dir. The archive is produced by the (untrusted) sandbox,
  * so host-side `tar -xf` must never be handed an archive whose entries carry
@@ -337,24 +376,23 @@ async function assertTarballEntriesConfined(archivePath: string): Promise<void> 
   });
   const lines = stdout.split("\n").filter((line) => line.trim().length > 0);
   for (const line of lines) {
-    // GNU tar -tvf: "<perms> <owner>/<group> <size> <date> <time> <name>[ -> target]".
-    const match = line.match(/^(\S+)\s+\S+\s+\d+\s+\S+\s+\S+\s+(.*)$/);
-    if (!match) {
+    const parsed = parseTarVerboseListingLine(line);
+    if (!parsed) {
       throw new Error(`Kubernetes syncOut refusing tarball with an unparseable entry listing: ${line}`);
     }
-    const typeFlag = match[1][0];
-    let name = match[2];
+    const typeFlag = parsed.typeFlag;
+    let name = parsed.rest;
     let linkTarget: string | null = null;
     if (typeFlag === "l") {
-      const idx = name.indexOf(" -> ");
-      if (idx === -1) throw new Error(`Kubernetes syncOut refusing unparseable symlink entry: ${line}`);
-      linkTarget = name.slice(idx + " -> ".length);
-      name = name.slice(0, idx);
+      const split = splitLinkEntryOnce(name, " -> ");
+      if (!split) throw new Error(`Kubernetes syncOut refusing unparseable or ambiguous symlink entry: ${line}`);
+      name = split.name;
+      linkTarget = split.target;
     } else if (typeFlag === "h") {
-      const idx = name.indexOf(" link to ");
-      if (idx === -1) throw new Error(`Kubernetes syncOut refusing unparseable hardlink entry: ${line}`);
-      linkTarget = name.slice(idx + " link to ".length);
-      name = name.slice(0, idx);
+      const split = splitLinkEntryOnce(name, " link to ");
+      if (!split) throw new Error(`Kubernetes syncOut refusing unparseable or ambiguous hardlink entry: ${line}`);
+      name = split.name;
+      linkTarget = split.target;
     }
     const cleanName = name.replace(/\/+$/, "");
     if (cleanName.length > 0 && posixPathEscapes(cleanName)) {
@@ -574,6 +612,70 @@ async function syncInDirectoryMapping(input: {
   });
 }
 
+/**
+ * Execute an operation's ordered `postUploadCommands` in the pod AFTER its files
+ * have landed (Phase 3 / Security Conditions C1–C4 + C7). Kubernetes is a native
+ * provider, and once the inbound-staging router stops diverting command-bearing
+ * (custom-provision) assets away from the native seam, a K8s deployment receives
+ * these operations — so it EXECUTES them symmetrically with Daytona rather than
+ * silently dropping them (C7 fail-open).
+ *
+ * Commands run in array order, fail-fast: the first non-zero exit or timeout throws
+ * and stops the rest (C4). Each `command` is executed VERBATIM: it rides as a
+ * positional argument (`$1`) to a fixed wrapper, run by `sh -c "$1"`, and is never
+ * string-concatenated into the wrapper — so the provider adds no shell fragment of
+ * its own (C1/C3), exactly as the generic fallback runs `sh -c <command>`. Before
+ * the command runs, the wrapper re-confines the command `cwd` under the workspace
+ * remote dir with the same realpath + `/proc/self/fd`-pinned open used for file
+ * placement (C2): a `..`, absolute-escape, or symlink-escape `cwd` is rejected
+ * fail-closed (exit 42) before the command runs, and the pin makes the confinement
+ * race-free against a post-resolve ancestor swap. `cwd` is validated lexically on
+ * the host first; when absent it defaults to the remote dir — never a process
+ * default cwd.
+ *
+ * Shared by the file- and directory-mapping paths: it runs once per operation,
+ * after every mapping of that operation has been placed.
+ */
+async function runPostUploadCommands(input: {
+  exec: PodStreamExec;
+  commands: PluginPostUploadCommand[];
+  remoteDir: string;
+  timeoutMs: number;
+}): Promise<void> {
+  const { exec, commands, remoteDir, timeoutMs } = input;
+  for (const command of commands) {
+    const cwd = command.cwd ?? remoteDir;
+    // C2 lexical guard on the host before the pod ever sees the cwd.
+    assertConfinedSandboxPath(remoteDir, cwd, "post-upload command cwd");
+    // The wrapper confines `cwd` ($1) through a realpath + /proc/self/fd pin, cd's
+    // into the pinned inode, then execs the VERBATIM command ($2). Both `cwd` and
+    // the command ride as positional parameters — the wrapper interpolates NEITHER
+    // into its own script text, so the command runs byte-for-byte as authored.
+    const wrapper = [
+      ...canonicalizerPreamble(shQuote(remoteDir)),
+      `_pc_real=$(_pc_resolve "$1") || { echo "ESCAPE" >&2; exit 42; };`,
+      `case "$_pc_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE" >&2; exit 42 ;; esac;`,
+      `exec 9<"$_pc_real" || { echo "open failed" >&2; exit 46; };`,
+      `_pc_fd_real=$(_pc_resolve /proc/self/fd/9) || { echo "ESCAPE" >&2; exit 42; };`,
+      `case "$_pc_fd_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE" >&2; exit 42 ;; esac;`,
+      `cd /proc/self/fd/9 || { echo "cd failed" >&2; exit 46; };`,
+      `exec /bin/sh -c "$2" pc-post-upload;`,
+    ].join("\n");
+    const commandTimeoutMs = command.timeoutMs ?? timeoutMs;
+    // Positional args: $0=pc-post-upload, $1=cwd, $2=the verbatim command string.
+    const result = await exec(["/bin/sh", "-c", wrapper, "pc-post-upload", cwd, command.command], {
+      timeoutMs: commandTimeoutMs,
+      maxStderrBytes: SYNC_STDERR_CAP_BYTES,
+    });
+    if (result.exitCode !== 0) {
+      const detail = (result.stderr || "").trim();
+      throw new Error(
+        `Kubernetes post-upload command failed (exit ${result.exitCode})${detail ? `: ${detail}` : ""}`,
+      );
+    }
+  }
+}
+
 export async function performSyncIn(input: {
   exec: PodStreamExec;
   operations: PluginSyncOperation[];
@@ -607,6 +709,16 @@ export async function performSyncIn(input: {
       filesTransferred += dirResult.filesTransferred;
       bytesTransferred += dirResult.bytesTransferred;
     }
+
+    // Run the operation's ordered post-upload commands AFTER every file/directory
+    // mapping of this operation has landed (Phase 3 / C1–C4 + C7). Absent/empty →
+    // no extra exec, byte-identical to a pre-contract operation.
+    await runPostUploadCommands({
+      exec: input.exec,
+      commands: operation.postUploadCommands ?? [],
+      remoteDir: input.remoteDir,
+      timeoutMs: input.timeoutMs,
+    });
 
     operations.push({ operationId: operation.operationId, filesTransferred, bytesTransferred });
   }

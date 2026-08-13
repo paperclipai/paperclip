@@ -1,12 +1,15 @@
 import type {
   Agent,
   AgentDesiredSkillEntry,
+  AgentSkillAssignmentMode,
   AgentPermissions,
   AgentDetail,
   AgentInstructionsBundle,
   AgentInstructionsFileDetail,
   AgentSkillSnapshot,
   AdapterEnvironmentTestResult,
+  AdapterAuthSessionResponse,
+  AdapterAuthSessionOwnerResponse,
   AgentKeyCreated,
   AgentRuntimeState,
   AgentTaskSession,
@@ -178,8 +181,12 @@ export const agentsApi = {
   listKeys: (id: string, companyId?: string) => api.get<AgentKey[]>(agentPath(id, companyId, "/keys")),
   skills: (id: string, companyId?: string) =>
     api.get<AgentSkillSnapshot>(agentPath(id, companyId, "/skills")),
-  syncSkills: (id: string, desiredSkills: Array<string | AgentDesiredSkillEntry>, companyId?: string) =>
-    api.post<AgentSkillSnapshot>(agentPath(id, companyId, "/skills/sync"), { desiredSkills }),
+  syncSkills: (
+    id: string,
+    desiredSkills: Array<string | AgentDesiredSkillEntry>,
+    mode: AgentSkillAssignmentMode,
+    companyId?: string,
+  ) => api.post<AgentSkillSnapshot>(agentPath(id, companyId, "/skills/sync"), { desiredSkills, mode }),
   createKey: (id: string, name: string, companyId?: string, scope?: AgentApiKeyScope) =>
     api.post<AgentKeyCreated>(agentPath(id, companyId, "/keys"), { name, ...(scope ? { scope } : {}) }),
   revokeKey: (agentId: string, keyId: string, companyId?: string) =>
@@ -232,6 +239,24 @@ export const agentsApi = {
   ) => api.post<AgentWakeupResponse>(agentPath(id, companyId, "/wakeup"), data),
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
+  startAdapterAuthLogin: (
+    companyId: string,
+    type: string,
+    data: { environmentId: string; ttlSeconds?: number },
+  ) =>
+    api.post<AdapterAuthSessionResponse>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions`,
+      data,
+    ),
+  getAdapterAuthLoginStatus: (companyId: string, type: string, sessionId: string) =>
+    api.get<AdapterAuthSessionOwnerResponse>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions/${encodeURIComponent(sessionId)}`,
+    ),
+  cancelAdapterAuthLogin: (companyId: string, type: string, sessionId: string) =>
+    api.post<AdapterAuthSessionOwnerResponse>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions/${encodeURIComponent(sessionId)}/cancel`,
+      {},
+    ),
   availableSkills: () =>
     api.get<{ skills: AvailableSkill[] }>("/skills/available"),
 };

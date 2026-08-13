@@ -113,11 +113,11 @@ async function startMockMcp(options: { expectedHeader?: string } = {}): Promise<
 // ---- Helpers ----------------------------------------------------------------
 
 async function gotoApps(page: Page, prefix: string) {
-  await page.goto(`/${prefix}/apps`);
+  await page.goto(`/${prefix}/apps/connections`);
 }
 
 async function gotoConnect(page: Page, prefix: string) {
-  await page.goto(`/${prefix}/apps/browse`);
+  await page.goto(`/${prefix}/apps`);
   await expect(page.getByRole("heading", { name: "Browse" })).toBeVisible({ timeout: 30_000 });
   await page.getByRole("button", { name: /Connect your own tool/i }).click();
 }
@@ -127,7 +127,7 @@ async function gotoAdvanced(page: Page, prefix: string) {
 }
 
 async function gotoNeedsAttention(page: Page, prefix: string) {
-  await page.goto(`/${prefix}/apps`);
+  await page.goto(`/${prefix}/apps/connections`);
 }
 
 // ---- Tests ------------------------------------------------------------------
@@ -212,7 +212,7 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     // Verify the mock saw a tools/list call from the catalog refresh.
     expect(mock.captures.some((c) => c.method === "tools/list")).toBe(true);
 
-    // The new connection should show up on /apps.
+    // The new connection should show up on /apps/connections.
     await gotoApps(page, seed.prefix);
     await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 15_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-06-apps-list.png`, fullPage: true });

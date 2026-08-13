@@ -58,6 +58,7 @@ import {
   trackRecentAssigneeUser,
 } from "@/lib/recent-assignees";
 import { getRecentProjectIds, trackRecentProject } from "@/lib/recent-projects";
+import { copyTextToClipboard } from "@/lib/clipboard";
 
 // ---------------------------------------------------------------------------
 // Global bridge registry
@@ -267,8 +268,8 @@ function PluginSdkIssuesList({
     enabled: !!companyId,
   });
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(companyId ?? "__no-company__"),
-    queryFn: () => projectsApi.list(companyId!),
+    queryKey: queryKeys.projects.list(companyId ?? "__no-company__", { includeArchived: true }),
+    queryFn: () => projectsApi.list(companyId!, { includeArchived: true }),
     enabled: !!companyId,
   });
   const liveRunsQueryKey = queryKeys.liveRuns(companyId ?? "__no-company__");
@@ -288,13 +289,12 @@ function PluginSdkIssuesList({
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
-
   const { data: issues, isLoading, error } = useQuery({
     queryKey: issuesQueryKey,
     queryFn: () => issuesApi.list(companyId!, issueFilters),
     enabled: !!companyId,
   });
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
@@ -464,8 +464,8 @@ function PluginSdkProjectPicker({
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(resolvedCompanyId ?? "__no-company__"),
-    queryFn: () => projectsApi.list(resolvedCompanyId!),
+    queryKey: queryKeys.projects.list(resolvedCompanyId ?? "__no-company__", { includeArchived }),
+    queryFn: () => projectsApi.list(resolvedCompanyId!, { includeArchived }),
     enabled: !!resolvedCompanyId,
   });
   const visibleProjects = useMemo(
@@ -682,6 +682,7 @@ export function initPluginBridge(
       useHostNavigation,
       usePluginStream,
       usePluginToast,
+      copyTextToClipboard,
       MarkdownBlock: ({
         content,
         className,

@@ -8,6 +8,7 @@ import {
   documentRevisions,
   documents,
   goals,
+  heartbeatRuns,
   issueComments,
   issueDocuments,
   issueThreadInteractions,
@@ -58,6 +59,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
     await db.delete(documents);
     await db.delete(issues);
     await db.delete(goals);
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -237,12 +239,20 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
   it("emits rejected confirmation telemetry and omits creator_agent_role for user-created interactions", async () => {
     const { companyId, issueId } = await seedIssue("Reject confirmation telemetry");
     const resolverAgentId = await seedAgent(companyId, "SecurityEngineer");
+    const resolverRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: resolverRunId,
+      companyId,
+      agentId: resolverAgentId,
+      status: "running",
+    });
 
     const created = await interactionsSvc.create({
       id: issueId,
       companyId,
     }, {
       kind: "request_confirmation",
+      resolverPolicy: "board_or_agents",
       payload: {
         version: 1,
         prompt: "Approve this?",
@@ -258,6 +268,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
       reason: "Needs edits before approval.",
     }, {
       agentId: resolverAgentId,
+      runId: resolverRunId,
     });
 
     const dimensions = lastInteractionResolvedDimensions();

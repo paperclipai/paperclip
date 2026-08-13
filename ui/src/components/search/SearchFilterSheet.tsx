@@ -11,6 +11,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
+import { SHOW_TASK_PRIORITY_UI } from "@/lib/ui-flags";
 import {
   applyAssigneeToken,
   assigneeToken,
@@ -154,12 +155,15 @@ export function SearchFilterSheet({
             selected={draft.status ?? []}
             onToggle={(value) => toggleMulti("status", value)}
           />
+          {/* PAP-411: Priority filter group hidden behind SHOW_TASK_PRIORITY_UI (search DSL stays intact). */}
+          {SHOW_TASK_PRIORITY_UI && (
           <ChipToggleGroup
             title="Priority"
             options={options.priority}
             selected={draft.priority ?? []}
             onToggle={(value) => toggleMulti("priority", value)}
           />
+          )}
           <ChipToggleGroup
             title="Assignee"
             options={options.assignee}
