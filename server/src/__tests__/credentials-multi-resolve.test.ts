@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agentCredentials,
@@ -540,6 +540,46 @@ describeEmbeddedPostgres("credentials multi-resolve", () => {
       "codex_oauth",
       first.id,
     )).resolves.toBe(false);
+  });
+
+  it("does not fail over to another Codex OAuth token for the same quota-depleted account", async () => {
+    const { company, agent } = await setupCompanyAndAgent("codex_local");
+    const svc = credentialService(db);
+    const sharedAccountId = "acct-monthly-quota";
+    const first = await svc.create(company.id, {
+      name: "codex-account-primary",
+      type: "codex_oauth",
+      credential: { accessToken: "codex-account-primary-token", accountId: sharedAccountId },
+    });
+    const duplicate = await svc.create(company.id, {
+      name: "codex-account-duplicate",
+      type: "codex_oauth",
+      credential: { accessToken: "codex-account-duplicate-token", accountId: sharedAccountId },
+    });
+    const distinct = await svc.create(company.id, {
+      name: "codex-account-distinct",
+      type: "codex_oauth",
+      credential: { accessToken: "codex-account-distinct-token", accountId: "acct-healthy" },
+    });
+    expect((await svc.setForAgent(agent.id, [first.id, duplicate.id, distinct.id])).ok).toBe(true);
+    const resetAt = new Date(Date.now() + 60 * 60 * 1000);
+
+    await recordCredentialFailure(db, first.id, {
+      kind: "quota",
+      reason: "provider_quota",
+      providerRetryAfter: resetAt,
+    });
+
+    const rows = await db
+      .select({ id: providerCredentials.id, quotaCooldownUntil: providerCredentials.quotaCooldownUntil })
+      .from(providerCredentials)
+      .where(inArray(providerCredentials.id, [first.id, duplicate.id, distinct.id]));
+    expect(rows.find((row) => row.id === duplicate.id)?.quotaCooldownUntil).toEqual(resetAt);
+    expect(rows.find((row) => row.id === distinct.id)?.quotaCooldownUntil).toBeNull();
+    expect(await hasAlternateCredentialOfType(db, agent.id, "codex_oauth", first.id)).toBe(true);
+
+    const resolved = await resolveAllCredentialEnv(db, agent.id);
+    expect(resolved.chosen).toEqual([{ credentialId: distinct.id, type: "codex_oauth" }]);
   });
 
   it("honors an exact provider quota reset beyond the normal cooldown cap", async () => {

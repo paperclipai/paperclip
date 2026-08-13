@@ -1740,16 +1740,13 @@ export async function recordCredentialFailure(
       for update
     `);
     const [current] = await tx
-      .select({
-        count: providerCredentials.consecutiveFailureCount,
-        lastFailureKind: providerCredentials.lastFailureKind,
-        quotaCooldownUntil: providerCredentials.quotaCooldownUntil,
-        quotaSampledAt: providerCredentials.quotaSampledAt,
-      })
+      .select()
       .from(providerCredentials)
       .where(eq(providerCredentials.id, credentialId))
       .limit(1);
-    const nextCount = current?.lastFailureKind === opts.kind ? (current.count ?? 0) + 1 : 1;
+    const nextCount = current?.lastFailureKind === opts.kind
+      ? (current.consecutiveFailureCount ?? 0) + 1
+      : 1;
     const now = new Date();
 
     let proposedCooldownUntil: Date | null;
@@ -1816,6 +1813,48 @@ export async function recordCredentialFailure(
         cooldownUntil: providerCredentials.cooldownUntil,
         quotaCooldownUntil: providerCredentials.quotaCooldownUntil,
       });
+
+    // A Codex OAuth monthly/usage limit belongs to the ChatGPT account, not to
+    // a particular refresh token. The same account can be imported more than
+    // once (or be assigned to several agents), so rotating to another token for
+    // that account only creates another failed run and misleading recovery UI.
+    // Mark sibling credentials for the same account unavailable too; genuinely
+    // distinct accounts remain eligible for immediate failover.
+    if (opts.kind === "quota" && current?.type === "codex_oauth") {
+      const currentPayload = decryptPayload(current);
+      const accountId = resolveCodexAccountId({
+        accountId: typeof currentPayload.accountId === "string" ? currentPayload.accountId : null,
+        idToken: typeof currentPayload.idToken === "string" ? currentPayload.idToken : null,
+        accessToken: typeof currentPayload.accessToken === "string" ? currentPayload.accessToken : null,
+      });
+      if (accountId) {
+        const siblings = await tx
+          .select()
+          .from(providerCredentials)
+          .where(and(
+            eq(providerCredentials.companyId, current.companyId),
+            eq(providerCredentials.type, "codex_oauth"),
+          ));
+        for (const sibling of siblings) {
+          if (sibling.id === current.id) continue;
+          const siblingPayload = decryptPayload(sibling);
+          const siblingAccountId = resolveCodexAccountId({
+            accountId: typeof siblingPayload.accountId === "string" ? siblingPayload.accountId : null,
+            idToken: typeof siblingPayload.idToken === "string" ? siblingPayload.idToken : null,
+            accessToken: typeof siblingPayload.accessToken === "string" ? siblingPayload.accessToken : null,
+          });
+          if (siblingAccountId !== accountId) continue;
+          await tx
+            .update(providerCredentials)
+            .set({
+              quotaCooldownUntil: nextQuotaUntil,
+              quotaSampledAt: nextQuotaSampledAt,
+              quotaReason: opts.reason ?? "provider_quota",
+            })
+            .where(eq(providerCredentials.id, sibling.id));
+        }
+      }
+    }
     return {
       disabled: shouldDisable,
       failureCount: nextCount,
