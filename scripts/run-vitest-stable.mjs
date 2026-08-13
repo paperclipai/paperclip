@@ -69,7 +69,8 @@ const generalWorkspacesAGroupName = "general-workspaces-a";
 const generalWorkspacesBGroupName = "general-workspaces-b";
 const generalWorkspacesAProjects = ["@paperclipai/ui", "paperclipai"];
 const generalWorkspacesBProjects = nonServerProjects.filter((project) => !generalWorkspacesAProjects.includes(project));
-const uiBrowserCryptoSuite = "ui/src/pages/CompanyImport.test.tsx";
+// Paths passed to Vitest's UI project are relative to ui/.
+const uiBrowserCryptoSuite = "src/pages/CompanyImport.test.tsx";
 const generalGroupNames = [generalServerGroupName, generalWorkspacesAGroupName, generalWorkspacesBGroupName];
 const serializedServerVitestArgs = [
   "--no-file-parallelism",
