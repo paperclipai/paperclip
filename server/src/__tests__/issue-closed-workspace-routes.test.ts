@@ -140,7 +140,7 @@ function registerServiceMocks() {
   }));
 }
 
-async function createApp() {
+async function createApp(actor?: Record<string, unknown>) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/issues.js"),
     import("../middleware/index.js"),
@@ -148,7 +148,7 @@ async function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
+    (req as any).actor = actor ?? {
       type: "board",
       userId: "local-board",
       companyIds: ["company-1"],
@@ -283,6 +283,32 @@ describe.sequential("closed isolated workspace issue routes", () => {
       });
 
     expect(res.status).toBe(503);
+    expect(mockIssueService.checkout).not.toHaveBeenCalled();
+  });
+
+  it("does not reopen the workspace when a checkout fails the run-id gate", async () => {
+    // An agent checkout without a run id is rejected before the reopen runs. The
+    // reopen must not rebuild and republish the workspace, or the still-terminal
+    // issue keeps a leaked active workspace that the reaper skips.
+    const agentActorWithoutRunId = {
+      type: "agent",
+      agentId,
+      companyId: "company-1",
+      runId: null,
+      source: "agent_key",
+    };
+
+    const res = await request(await createApp(agentActorWithoutRunId))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        expectedStatuses: ["todo", "backlog", "blocked"],
+      });
+
+    expect(res.status).toBe(401);
+    expect(
+      mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue,
+    ).not.toHaveBeenCalled();
     expect(mockIssueService.checkout).not.toHaveBeenCalled();
   });
 

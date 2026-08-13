@@ -8752,11 +8752,6 @@ export function issueRoutes(
       req.actor.type === "agent" &&
       (Object.keys(updateFields).length > 0 || reviewRequest !== undefined || hiddenAtRaw !== undefined);
 
-    if (closedExecutionWorkspace && (commentBody || isAgentWorkUpdate)) {
-      if (!(await reopenClosedIssueExecutionWorkspaceOrRespond(req, res, existing, closedExecutionWorkspace))) {
-        return;
-      }
-    }
     if (
       isAgentWorkUpdate &&
       !(await assertCrossIssueInfluenceWithinRunCap(req, res, existing, "update"))
@@ -9082,6 +9077,15 @@ export function issueRoutes(
         },
       }, postCommitActivityPublications);
     };
+    // Reopen the closed isolated workspace only after every access, validation,
+    // and policy gate passes, and just before the update persists. A rejected
+    // update must not rebuild and republish the workspace as active, because the
+    // issue stays terminal and the reaper then skips the leaked workspace.
+    if (closedExecutionWorkspace && (commentBody || isAgentWorkUpdate)) {
+      if (!(await reopenClosedIssueExecutionWorkspaceOrRespond(req, res, existing, closedExecutionWorkspace))) {
+        return;
+      }
+    }
     let issue: Awaited<ReturnType<typeof svc.update>>;
     try {
       if (transition.decision && decisionId) {
@@ -10135,14 +10139,17 @@ export function issueRoutes(
     }
 
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
+
+    const checkoutRunId = requireAgentRunId(req, res);
+    if (req.actor.type === "agent" && !checkoutRunId) return;
+
+    // Reopen the closed isolated workspace only after the run-id gate passes. A
+    // rejected checkout must not rebuild and republish the workspace as active.
     if (closedExecutionWorkspace) {
       if (!(await reopenClosedIssueExecutionWorkspaceOrRespond(req, res, issue, closedExecutionWorkspace))) {
         return;
       }
     }
-
-    const checkoutRunId = requireAgentRunId(req, res);
-    if (req.actor.type === "agent" && !checkoutRunId) return;
     let updated;
     try {
       updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
@@ -11126,11 +11133,6 @@ export function issueRoutes(
       metadata: req.body.metadata,
     })) return;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
-    if (closedExecutionWorkspace) {
-      if (!(await reopenClosedIssueExecutionWorkspaceOrRespond(req, res, issue, closedExecutionWorkspace))) {
-        return;
-      }
-    }
 
     const actor = getActorInfo(req);
     const commentPresentation = req.body.presentation ??
@@ -11211,6 +11213,15 @@ export function issueRoutes(
       return;
     }
     if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, issue, "comment"))) return;
+    // Reopen the closed isolated workspace only after every access, resume-intent,
+    // blocker, and run-cap gate passes. A rejected comment must not rebuild and
+    // republish the workspace as active, because the issue stays terminal and the
+    // reaper then skips the leaked workspace.
+    if (closedExecutionWorkspace) {
+      if (!(await reopenClosedIssueExecutionWorkspaceOrRespond(req, res, issue, closedExecutionWorkspace))) {
+        return;
+      }
+    }
     let reopened = false;
     let reopenFromStatus: string | null = null;
     let interruptedRunId: string | null = null;
