@@ -17,6 +17,7 @@ import {
   issueDocuments,
   issueExecutionDecisions,
   issueRelations,
+  issueRecoveryActions,
   issueThreadInteractions,
   issues as issueRows,
   issueWorkProducts,
@@ -6226,6 +6227,79 @@ export function issueRoutes(
       active,
       actions: active ? [active] : [],
     });
+  });
+
+  router.post("/issues/:id/recovery-actions/accept", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.runId) {
+      throw forbidden("Only the active recovery owner may accept this handoff from its recovery run");
+    }
+    const actionId = typeof req.body?.actionId === "string" ? req.body.actionId : null;
+    const action = await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id);
+    if (!action || !actionId || action.id !== actionId || action.ownerType !== "agent" || action.ownerAgentId !== req.actor.agentId ||
+      (action.timeoutAt !== null && action.timeoutAt <= new Date())) {
+      throw forbidden("Only the active recovery owner may accept this handoff from its recovery run");
+    }
+    const run = await db
+      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.id, req.actor.runId),
+        eq(heartbeatRuns.companyId, existing.companyId),
+        eq(heartbeatRuns.agentId, req.actor.agentId),
+        eq(heartbeatRuns.status, "running"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    const context = run?.contextSnapshot;
+    if (!run || !context || context.recoveryActionId !== action.id || context.recoveryAttempt !== action.attemptCount ||
+      context.source !== "issue_recovery_action" || context.wakeReason !== "source_scoped_recovery_action") {
+      throw forbidden("Only the active recovery owner may accept this handoff from its recovery run");
+    }
+    const result = await db.transaction(async (tx) => {
+      const [lockedAction] = await tx
+        .select()
+        .from(issueRecoveryActions)
+        .where(and(eq(issueRecoveryActions.id, action.id), eq(issueRecoveryActions.status, "active")))
+        .for("update");
+      if (!lockedAction || lockedAction.attemptCount !== action.attemptCount || lockedAction.ownerAgentId !== req.actor.agentId) {
+        throw conflict("Recovery action ownership changed; reload the source issue");
+      }
+      if (lockedAction.cause === "terminated_routine_owner") {
+        throw conflict("Routine-owner recovery must disposition its typed routine and trigger inventory before resolving");
+      }
+      const issue = await svc.update(id, {
+        assigneeAgentId: req.actor.agentId,
+        assigneeUserId: null,
+        actorAgentId: req.actor.agentId,
+      }, tx);
+      if (!issue) throw notFound("Issue not found");
+      const recoveryAction = await recoveryActionsSvc.resolveActiveForIssue({
+        companyId: existing.companyId,
+        sourceIssueId: id,
+        actionId: lockedAction.id,
+        status: "resolved",
+        outcome: "restored",
+        resolutionNote: `Recovery owner ${req.actor.agentId} explicitly accepted the terminated-owner handoff.`,
+      }, tx);
+      if (!recoveryAction) throw conflict("Recovery action changed during acceptance");
+      return { issue, recoveryAction };
+    });
+    void queueIssueAssignmentWakeup({
+      heartbeat,
+      issue: result.issue,
+      reason: "issue_assigned",
+      mutation: "recovery_action_acceptance",
+      contextSource: "issue.recovery_action_acceptance",
+      requestedByActorType: "agent",
+      requestedByActorId: req.actor.agentId,
+    });
+    res.json({ issue: { ...result.issue, activeRecoveryAction: null }, recoveryAction: result.recoveryAction });
   });
 
   router.post("/issues/:id/recovery-actions/resolve", validate(resolveIssueRecoveryActionSchema), async (req, res) => {
