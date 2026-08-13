@@ -3386,7 +3386,6 @@ function ThinkingEffortDropdown({
         <PopoverContent
           className="w-(--radix-popover-trigger-width) max-h-(--sz-240px) overflow-y-auto p-1"
           align="start"
-          collisionPadding={8}
         >
           {options.map((option) => (
             <button
