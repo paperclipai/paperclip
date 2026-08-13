@@ -1,5 +1,13 @@
 # @paperclipai/adapter-claude-local
 
+## 0.3.3
+
+### Patch Changes
+
+- Fix the pre-merge gate (Control 3, MGC-2350) so the parser and bash hook extractor accept `gh pr merge <NUMBER>` regardless of flag position (`--squash`, `--delete-branch`, `--merge`, `--rebase`, `--admin`, `--auto` may precede or follow the number), and so Gate #2's race-condition check hits the documented `/api/companies/:companyId/heartbeat-runs?agentId=…` endpoint instead of the non-existent `/api/agents/:id/runs`. Resolve two Greptile review findings (1/5 confidence blocked merge) and one server-side sandbox probe assertion that previously failed because it could not see the `__paperclipManaged: true` hook injected after sanitization.
+- Updated dependencies
+  - @paperclipai/adapter-utils@0.3.3
+
 ## 0.3.2
 
 ### Patch Changes

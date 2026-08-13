@@ -393,8 +393,19 @@ if (!configDir.includes(".paperclip-runtime/claude/config")) {
 }
 const settings = JSON.parse(fs.readFileSync(path.join(configDir, "settings.json"), "utf8"));
 if (settings.permissions?.defaultMode !== "default") fail("permissions were not sanitized");
-if (settings.hooks || settings.mcpServers || settings.permissionMode || settings.skipDangerousModePermissionPrompt) {
+// Operator-supplied local-only settings (mcpServers, permissionMode,
+// skipDangerousModePermissionPrompt, raw hook entries) must still be stripped.
+// The Paperclip-managed pre-merge hook is allowed through (it is required by
+// Control 3 / MGC-2350 to gate \`gh pr merge\` calls in remote Claude runs).
+if (settings.mcpServers || settings.permissionMode || settings.skipDangerousModePermissionPrompt) {
   fail("local-only settings leaked into sandbox config");
+}
+if (settings.hooks) {
+  const entries = Array.isArray(settings.hooks.PreToolUse) ? settings.hooks.PreToolUse : [];
+  const unmanaged = entries.filter((entry) => !entry || entry.__paperclipManaged !== true);
+  if (unmanaged.length > 0) {
+    fail("operator-supplied hooks leaked into sandbox config");
+  }
 }
 if (fs.existsSync(path.join(configDir, "credentials.json"))) fail("host credentials leaked into sandbox config");
 const remoteCredentials = JSON.parse(fs.readFileSync(path.join(configDir, ".credentials.json"), "utf8"));

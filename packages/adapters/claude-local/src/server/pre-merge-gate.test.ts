@@ -53,6 +53,29 @@ describe("parseGhPrMergeCommand", () => {
   it("ignores wrappers like gh-pr-merge (hyphenated non-subcommand)", () => {
     expect(parseGhPrMergeCommand("gh-pr-merge --help")).toBeNull();
   });
+
+  it("parses flags placed AFTER the PR number (--squash 460 --delete-branch)", () => {
+    expect(parseGhPrMergeCommand("gh pr merge 460 --squash --delete-branch")).toBe(460);
+  });
+
+  it("parses flags placed BEFORE the PR number (--squash --delete-branch 460)", () => {
+    expect(parseGhPrMergeCommand("gh pr merge --squash --delete-branch 460")).toBe(460);
+  });
+
+  it("parses --merge / --rebase / --admin variants with PR number after the flag", () => {
+    expect(parseGhPrMergeCommand("gh pr merge --merge 461")).toBe(461);
+    expect(parseGhPrMergeCommand("gh pr merge --rebase 462")).toBe(462);
+    expect(parseGhPrMergeCommand("gh pr merge --admin 463")).toBe(463);
+  });
+
+  it("returns null when gh pr merge has no numeric PR number (current-branch form)", () => {
+    expect(parseGhPrMergeCommand("gh pr merge --merge")).toBeNull();
+    expect(parseGhPrMergeCommand("gh pr merge main")).toBeNull();
+  });
+
+  it("returns null for URL forms (no all-digit token after gh pr merge)", () => {
+    expect(parseGhPrMergeCommand("gh pr merge https://github.com/foo/bar/pull/460")).toBeNull();
+  });
 });
 
 describe("evaluatePreMergeGates — gate #1 (ticket state)", () => {
@@ -237,19 +260,33 @@ describe("fetchTicketForPr / fetchLastCommentBody / fetchActiveAgentRuns", () =>
     expect(body).toBeNull();
   });
 
-  it("fetchActiveAgentRuns maps the response into PaperclipRunSnapshot shape", async () => {
-    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+  it("fetchActiveAgentRuns maps the heartbeat-runs response into PaperclipRunSnapshot shape", async () => {
+    const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValueOnce({
       ok: true,
       json: async () => [
-        { id: "run-1", livenessState: "running", nextAction: "Review PR #460" },
-        { id: "run-2", livenessState: "completed", nextAction: null },
+        { id: "run-1", status: "running", nextAction: "Review PR #460" },
+        { id: "run-2", status: "completed", nextAction: null },
       ],
     });
-    const runs = await fetchActiveAgentRuns("http://x/api/", "k", "cto");
+    const runs = await fetchActiveAgentRuns("http://x/api/", "k", "cto", "company-1");
     expect(runs).toEqual([
       { id: "run-1", livenessState: "running", nextAction: "Review PR #460" },
       { id: "run-2", livenessState: "completed", nextAction: null },
     ]);
+    // Hit the documented endpoint, not the non-existent /api/agents/:id/runs.
+    const calledUrl = String(fetchMock.mock.calls[0]?.[0] ?? "");
+    expect(calledUrl).toContain("/api/companies/company-1/heartbeat-runs");
+    expect(calledUrl).toContain("agentId=cto");
+  });
+
+  it("fetchActiveAgentRuns returns [] when the API responds with a non-array payload", async () => {
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ error: "not an array" }),
+    });
+    const runs = await fetchActiveAgentRuns("http://x/api/", "k", "cto", "company-1");
+    expect(runs).toEqual([]);
   });
 });
 

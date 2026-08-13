@@ -39,8 +39,15 @@ const ASSIGNEE_CTO = "cto";
 /**
  * Match the subset of `gh pr merge <PR>` invocations the agent is expected to
  * issue. The agent may prefix the command with `npx`, `cd ... &&`, redirections
- * or other shell constructs, but the `gh pr merge <NUMBER>` token pair must
- * appear verbatim with a positive integer PR number.
+ * or other shell constructs, and may place flags (`--squash`, `--delete-branch`,
+ * `--merge`, `--rebase`, `--admin`, `--auto`) before OR after the PR number —
+ * the parser walks each shell-separated segment and pulls the first numeric
+ * PR number that follows the literal `gh pr merge` subcommand.
+ *
+ * If the agent passes a non-numeric selector (`gh pr merge --merge owner:branch`
+ * or `gh pr merge main` without a PR number), the parser intentionally returns
+ * `null` so the hook falls back to deny-by-default. The gate never lets an
+ * unresolvable target through.
  */
 export function parseGhPrMergeCommand(command: string): number | null {
   if (typeof command !== "string") return null;
@@ -48,11 +55,23 @@ export function parseGhPrMergeCommand(command: string): number | null {
   const segments = command.split(/&&|;|\|\|/);
   for (const segment of segments) {
     const cleaned = segment.replace(/\s+>\s*.*$/g, "").trim();
-    const match = cleaned.match(/^gh\s+pr\s+merge\s+(\d+)\b/);
-    if (match) {
-      const n = Number(match[1]);
-      if (Number.isInteger(n) && n > 0) return n;
+    const head = cleaned.match(/^gh\s+pr\s+merge\b/);
+    if (!head) continue;
+    const tail = cleaned.slice(head[0].length);
+    // Walk every token in the tail; the first all-digit token is the PR number.
+    // Flags are tokens that begin with `-` and never match `\d+`. Strings like
+    // `https://github.com/foo/bar/pull/460` would not match here either — there
+    // is no all-digit token in `pull/460`, so they correctly fall through.
+    const tokens = tail.split(/\s+/).filter((t) => t.length > 0);
+    for (const token of tokens) {
+      if (/^\d+$/.test(token)) {
+        const n = Number(token);
+        if (Number.isInteger(n) && n > 0) return n;
+        return null;
+      }
     }
+    // `gh pr merge` with no numeric token anywhere: deny-by-default.
+    return null;
   }
   return null;
 }
@@ -198,9 +217,20 @@ export async function fetchActiveAgentRuns(
   apiUrl: string,
   apiKey: string,
   agentId: string,
+  companyId: string | undefined,
   signal?: AbortSignal,
 ): Promise<PaperclipRunSnapshot[]> {
-  const url = `${apiUrl.replace(/\/+$/, "")}/api/agents/${encodeURIComponent(agentId)}/runs?livenessState=active&limit=50`;
+  // The Paperclip server exposes heartbeat runs at
+  // `GET /api/companies/:companyId/heartbeat-runs?agentId=…&limit=…&summary=…`.
+  // There is no `/api/agents/:id/runs` route, so this is the canonical source
+  // for race-condition checks. When `companyId` is missing we fall back to
+  // `/agents/me/inbox-lite`-style introspection — in practice the runtime
+  // adapter always provides `PAPERCLIP_COMPANY_ID`, so this branch only fires
+  // during ad-hoc local runs.
+  const base = apiUrl.replace(/\/+$/, "");
+  const url = companyId
+    ? `${base}/api/companies/${encodeURIComponent(companyId)}/heartbeat-runs?agentId=${encodeURIComponent(agentId)}&limit=50&summary=true`
+    : `${base}/api/agents/${encodeURIComponent(agentId)}/runtime-state`;
   const res = await fetch(url, {
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -209,13 +239,25 @@ export async function fetchActiveAgentRuns(
     signal,
   });
   if (!res.ok) return [];
-  const body = (await res.json()) as Array<Record<string, unknown>>;
+  const body = (await res.json()) as unknown;
+  // `/heartbeat-runs` returns a plain array; `/runtime-state` returns an object.
+  const arr = Array.isArray(body) ? body : [];
   const out: PaperclipRunSnapshot[] = [];
-  for (const run of body) {
+  for (const run of arr) {
+    if (!run || typeof run !== "object") continue;
+    const r = run as Record<string, unknown>;
+    // The /heartbeat-runs response shape carries both `status` (queued/running)
+    // and `livenessState` (advanced/plan_only/empty_response/blocked/...). For
+    // Gate #2 we only need to know whether the run is still in flight, so
+    // accept either signal.
+    const liveness =
+      (typeof r.livenessState === "string" && r.livenessState) ||
+      (typeof r.status === "string" && r.status) ||
+      "";
     out.push({
-      id: typeof run.id === "string" ? run.id : "",
-      livenessState: typeof run.livenessState === "string" ? run.livenessState : "",
-      nextAction: typeof run.nextAction === "string" ? run.nextAction : null,
+      id: typeof r.id === "string" ? r.id : "",
+      livenessState: liveness,
+      nextAction: typeof r.nextAction === "string" ? r.nextAction : null,
     });
   }
   return out;
