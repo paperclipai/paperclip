@@ -306,6 +306,7 @@ export const ONBOARDING_FIRST_TASK_ORIGIN_KIND = "onboarding_first_task";
 
 export const ISSUE_ORIGIN_KINDS = [
   "manual",
+  "board_chat",
   "routine_execution",
   "stale_active_run_evaluation",
   "harness_liveness_escalation",
@@ -320,6 +321,7 @@ export type PluginIssueOriginKind = `plugin:${string}`;
 export type IssueOriginKind = BuiltInIssueOriginKind | PluginIssueOriginKind;
 export const ISSUE_WATCHDOG_DISCOVERY_KINDS = ["product_bug", "platform_bug"] as const;
 export type IssueWatchdogDiscoveryKind = (typeof ISSUE_WATCHDOG_DISCOVERY_KINDS)[number];
+export const DEFAULT_HIDDEN_ISSUE_ORIGIN_KINDS = ["board_chat"] as const satisfies readonly BuiltInIssueOriginKind[];
 export const ISSUE_SURFACE_VISIBILITIES = ["default", "plugin_operation"] as const;
 export type IssueSurfaceVisibility = (typeof ISSUE_SURFACE_VISIBILITIES)[number];
 
@@ -367,6 +369,12 @@ export function pluginOperationIssueOriginKind(pluginKey: string): PluginIssueOr
 
 export function isPluginOperationIssueOriginKind(originKind: string | null | undefined): boolean {
   return typeof originKind === "string" && /^plugin:[^:]+:operation(?::|$)/.test(originKind);
+}
+
+export function isDefaultHiddenIssueOriginKind(originKind: string | null | undefined): boolean {
+  return (DEFAULT_HIDDEN_ISSUE_ORIGIN_KINDS as readonly BuiltInIssueOriginKind[]).includes(
+    originKind as BuiltInIssueOriginKind,
+  );
 }
 
 export const ISSUE_RELATION_TYPES = ["blocks"] as const;

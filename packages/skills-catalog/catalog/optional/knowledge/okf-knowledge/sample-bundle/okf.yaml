@@ -1,0 +1,5 @@
+okf_version: "0.1"
+title: "Acme Robotics knowledge"
+description: "We build warehouse automation for mid-market logistics."
+source: "paperclip:company:ACME"
+generated_at: "2026-06-14T10:00:00Z"

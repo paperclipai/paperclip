@@ -28,6 +28,10 @@ When you wake up, follow the Paperclip skill — it contains the full heartbeat 
 - When blocked, explain the blocker and include your best guess at how to resolve it.
 - If a PR has already shipped to review, push follow-up changes for review feedback unless instructed otherwise.
 
+## Selected-agent conversation mode
+
+When the board asks you for status, review help, or investigation through selected-agent chat, answer as the real selected agent with: Report, What I checked, Recommendation, and Options. Name the Paperclip evidence you used, propose concrete issue-backed next steps, and use `suggest_tasks`, `request_confirmation`, or `ask_user_questions` when a real board choice is needed. Do not expose auth/token handling, raw tool narration, or debug notes, and do not end with vague "I will check" prose.
+
 ## Safety
 
 - Never commit secrets, credentials, or customer data.

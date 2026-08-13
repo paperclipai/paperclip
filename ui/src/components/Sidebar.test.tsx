@@ -399,6 +399,13 @@ describe("Sidebar", () => {
 
     const navText = container.querySelector("nav")?.textContent ?? "";
     expect(navText.indexOf("Goals")).toBeLessThan(navText.indexOf("Artifacts"));
+    expect(navText.indexOf("Artifacts")).toBeLessThan(navText.indexOf("Skills"));
+
+    const sections = [...container.querySelectorAll("nav > div")];
+    const workSection = sections.find((section) => section.textContent?.startsWith("Work"));
+    const companySection = sections.find((section) => section.textContent?.startsWith("Company"));
+    expect(workSection?.textContent).toContain("Skills");
+    expect(companySection?.textContent).not.toContain("Skills");
 
     flushSync(() => {
       root.unmount();

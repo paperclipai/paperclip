@@ -1040,7 +1040,6 @@
     transparent
   );
 }
-
 @media (prefers-reduced-motion: reduce) {
   .shimmer-text {
     animation: none;
@@ -2109,6 +2108,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-70vh: 70vh; /* Extracted from ui/src/components/IssueChatThread.test.tsx (max-h-[70vh]). */
   --sz-calc-7: calc(100% - 0.5rem); /* Extracted from ui/src/components/IssueChatThread.test.tsx (max-w-[calc(100%-0.5rem)]). */
   --sz-28dvh: 28dvh; /* Extracted from ui/src/components/IssueChatThread.test.tsx (max-h-[28dvh]). */
+  --sz-2rem: 2rem; /* Extracted from ui/src/components/IssueChatThread.tsx (min-h-[2rem]). */
+  --sz-7_5rem: 7.5rem; /* Extracted from ui/src/components/IssueChatThread.tsx (max-h-[7.5rem]). */
   --sz-72px: 72px; /* Extracted from ui/src/components/IssueChatThread.test.tsx (min-h-[72px]). */
   --sz-15px: 15px; /* Extracted from ui/src/components/IssueChatThread.test.tsx (p-[15px]). */
   --sz-calc-8: calc(env(safe-area-inset-bottom) + 20px); /* Extracted from ui/src/components/IssueChatThread.test.tsx (bottom-[calc(env(safe-area-inset-bottom)+20px)]). */
@@ -2169,6 +2170,9 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-38rem: 38rem; /* Extracted from ui/src/pages/AgentDetail.tsx (max-h-[38rem]). */
   --sz-7rem: 7rem; /* Extracted from ui/src/pages/Agents.test.tsx (min-w-[7rem]). */
   --sz-calc-29: calc(100% + 3rem); /* Extracted from ui/src/pages/BoardChat.tsx (h-[calc(100%+3rem)]). */
+  --sz-calc-43: calc(100dvh - 3rem - 4rem - env(safe-area-inset-top) - env(safe-area-inset-bottom)); /* Extracted from ui/src/pages/BoardChat.tsx mobile shell height. */
+  --sz-calc-45: calc(5rem + env(safe-area-inset-bottom)); /* Extracted from ui/src/pages/BoardChat.tsx mobile feed toggle bottom offset. */
+  --sz-calc-46: min(24rem,100vw); /* Extracted from ui/src/pages/BoardChat.tsx history sheet width. */
   --sz-22rem: 22rem; /* Extracted from ui/src/pages/CompanyEnvironments.tsx (h-[22rem]). */
   --sz-560px: 560px; /* Extracted from ui/src/pages/CompanyExport.tsx (min-h-[560px]). */
   --sz-520px: 520px; /* Extracted from ui/src/pages/CompanyExport.tsx (min-h-[520px]). */

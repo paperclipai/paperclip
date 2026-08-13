@@ -14,6 +14,7 @@ import {
   User,
 } from "lucide-react";
 import { toolTaxonomy } from "../task-chat/tool-taxonomy";
+import { AnimatedPaperclipIcon } from "../AnimatedPaperclipIcon";
 
 /** Family glyph for a tool block/row; the taxonomy falls back to Wrench. */
 function ToolFamilyIcon({ name, className }: { name: string; className?: string }) {
@@ -1002,7 +1003,7 @@ function TranscriptToolCard({
         ) : block.status === "completed" ? (
           <Check className={iconClass} />
         ) : (
-          <ToolFamilyIcon name={block.name} className={iconClass} />
+          <AnimatedPaperclipIcon className={iconClass} />
         )}
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -1126,10 +1127,13 @@ function TranscriptCommandGroup({
                 isRunning
                   ? "border-blue-500/25 bg-blue-500/[0.08] text-blue-600 dark:text-blue-300"
                   : "border-border/70 bg-background text-foreground/55",
-                isRunning && "animate-pulse",
               )}
             >
-              <TerminalSquare className="h-3.5 w-3.5" />
+              {isRunning ? (
+                <AnimatedPaperclipIcon className="h-3.5 w-3.5" />
+              ) : (
+                <TerminalSquare className="h-3.5 w-3.5" />
+              )}
             </span>
           ))}
         </div>
@@ -1266,10 +1270,13 @@ function TranscriptToolGroup({
                     : isItemError
                       ? "border-red-500/25 bg-red-500/[0.08] text-red-600 dark:text-red-300"
                       : "border-border/70 bg-background text-foreground/55",
-                  isItemRunning && "animate-pulse",
                 )}
               >
-                <ToolFamilyIcon name={item.name} className="h-3.5 w-3.5" />
+                {isItemRunning ? (
+                  <AnimatedPaperclipIcon className="h-3.5 w-3.5" />
+                ) : (
+                  <ToolFamilyIcon name={item.name} className="h-3.5 w-3.5" />
+                )}
               </span>
             );
           })}
@@ -1312,7 +1319,11 @@ function TranscriptToolGroup({
                       ? "border-blue-500/25 bg-blue-500/[0.08] text-blue-600 dark:text-blue-300"
                       : "border-border/70 bg-background text-foreground/55",
                 )}>
-                  <ToolFamilyIcon name={item.name} className="h-3 w-3" />
+                  {item.status === "running" ? (
+                    <AnimatedPaperclipIcon className="h-3 w-3" />
+                  ) : (
+                    <ToolFamilyIcon name={item.name} className="h-3 w-3" />
+                  )}
                 </span>
                 <span className={cn("text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground")}>
                   {humanizeLabel(item.name)}

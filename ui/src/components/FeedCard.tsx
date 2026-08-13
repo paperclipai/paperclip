@@ -287,6 +287,7 @@ function resolveContent(
   agentMap: Map<string, Agent>,
   entityNameMap: Map<string, string>,
   entityTitleMap: Map<string, string> | undefined,
+  boardChatIssueRefs: ReadonlyMap<string, string> | undefined,
 ): CardContent {
   const details = event.details as Record<string, unknown> | null;
   const actor = event.actorType === "agent" ? agentMap.get(event.actorId) ?? null : null;
@@ -319,9 +320,18 @@ function resolveContent(
   const approvalAgentName = approvalAgentId ? agentMap.get(approvalAgentId)?.name ?? null : null;
   const approvalType = details?.type as string | undefined;
 
+  // Conference Room conversations are backed by board_chat issues that are
+  // hidden from the regular issues surface — deep-link them to the room, not
+  // to /issues/<uuid> (PAP-13345).
+  const boardChatRef = event.entityType === "issue"
+    ? boardChatIssueRefs?.get(event.entityId) ?? null
+    : null;
+
   const link = isHeartbeatEvent && heartbeatAgentId
     ? `/agents/${heartbeatAgentId}/runs/${event.entityId}`
-    : event.entityType === "issue"
+    : boardChatRef
+      ? `/board-chat/${boardChatRef}`
+      : event.entityType === "issue"
       ? isDocEvent && docKey
         ? `/issues/${issueSlug}#document-${encodeURIComponent(docKey)}`
         : `/issues/${issueSlug}`
@@ -401,6 +411,9 @@ interface FeedCardProps {
   agentMap: Map<string, Agent>;
   entityNameMap: Map<string, string>;
   entityTitleMap?: Map<string, string>;
+  /** Conference Room issue id → conversation ref; events on these issues
+   *  deep-link to /board-chat/{ref} instead of the hidden issue page. */
+  boardChatIssueRefs?: ReadonlyMap<string, string>;
   /** Retained for call-site compatibility; no longer read — the collapsed
    *  card always shows the event-derived status. Lifecycle aggregation (a
    *  later pass) will pass the live status through its own wrapper. */
@@ -420,13 +433,14 @@ export function FeedCard({
   agentMap,
   entityNameMap,
   entityTitleMap,
+  boardChatIssueRefs,
   isActive = false,
   isMuted = false,
   isPinned = false,
   className,
 }: FeedCardProps) {
   const details = event.details as Record<string, unknown> | null;
-  const content = resolveContent(event, agentMap, entityNameMap, entityTitleMap);
+  const content = resolveContent(event, agentMap, entityNameMap, entityTitleMap, boardChatIssueRefs);
   const verb = formatVerb(event.action, details, isPinned ? "pinned" : "chronological");
   const iconSpec = getIconSpec(event, details, isActive);
 

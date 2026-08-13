@@ -22,6 +22,7 @@ const EXPECTED_OPTIONAL_KEYS = [
   "paperclipai/optional/content/release-announcement",
   "paperclipai/optional/content/simplified-english",
   "paperclipai/optional/finance/ramp",
+  "paperclipai/optional/knowledge/okf-knowledge",
   "paperclipai/optional/product/design-critique",
   "paperclipai/optional/research/last30days",
   "paperclipai/optional/software-development/prepare-mcp-integration",
@@ -127,7 +128,8 @@ describe("shipped skills catalog", () => {
     // hard-stop findings. Static assets (svg/html templates, e.g. the wireframe skill)
     // carry the "assets" trust level and are installable.
     const scriptBearing = catalogSkills.filter((skill) => skill.trustLevel === "scripts_executables");
-    expect(scriptBearing.map((skill) => skill.key)).toEqual([
+    expect(scriptBearing.map((skill) => skill.key).sort()).toEqual([
+      "paperclipai/optional/knowledge/okf-knowledge",
       "paperclipai/optional/research/last30days",
     ]);
   });

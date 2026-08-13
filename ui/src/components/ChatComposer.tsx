@@ -52,7 +52,7 @@ export interface ChatComposerProps {
   submitting?: boolean;
   /**
    * Send-key behavior.
-   * - `"enter"`: Enter submits, Shift+Enter inserts a newline (conference room default today).
+   * - `"enter"`: Enter submits, Shift+Enter inserts a newline.
    * - `"mod-enter"`: Cmd/Ctrl+Enter submits, Enter inserts a newline (recommended unified default).
    */
   submitKey?: "enter" | "mod-enter";
@@ -150,7 +150,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
   }), []);
 
   // Auto-grow the textarea up to a cap (multiline only). Single-line stays at
-  // one row and scrolls horizontally, matching the conference room today.
+  // one row and scrolls horizontally for callers that explicitly opt in.
   useLayoutEffect(() => {
     const el = textareaRef.current;
     if (!el || singleLine) return;

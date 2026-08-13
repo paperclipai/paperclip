@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-08-07T20:30:29.973Z",
+  "generatedAt": "2026-08-09T19:30:17.702Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -557,6 +557,127 @@
         }
       ],
       "contentHash": "sha256:276d85e98a4732f278204e26438aa95fde158dd2d15c1e427c4c7c7d492e769d"
+    },
+    {
+      "id": "paperclipai:optional:knowledge:okf-knowledge",
+      "key": "paperclipai/optional/knowledge/okf-knowledge",
+      "kind": "optional",
+      "category": "knowledge",
+      "slug": "okf-knowledge",
+      "name": "okf-knowledge",
+      "description": "Export company knowledge—agent memory, skills, decisions, documents, and sources—into portable Open Knowledge Format (OKF) bundles, or consume external bundles as agent-readable, linked knowledge. Use for tool-neutral markdown backups, sharing, handoffs, and imports.",
+      "path": "catalog/optional/knowledge/okf-knowledge",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "scripts_executables",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "manager",
+        "researcher",
+        "knowledge"
+      ],
+      "requires": [],
+      "tags": [
+        "knowledge",
+        "okf",
+        "export",
+        "import",
+        "memory",
+        "portability"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 5288,
+          "sha256": "e2644c8310c3d798aa9d504575db24eb0a5da6e8f119dee4568606499dedb1a8"
+        },
+        {
+          "path": "references/importing-okf.md",
+          "kind": "reference",
+          "sizeBytes": 2176,
+          "sha256": "03791123d747e4e255f643de62ff203e481c8f198c5a0a86dafca1c7f0efabf1"
+        },
+        {
+          "path": "references/okf-spec.md",
+          "kind": "reference",
+          "sizeBytes": 3237,
+          "sha256": "225282349db5102d2f6933bb09d8d86c4f55cfb933d2ff093fb5b393e8a6124d"
+        },
+        {
+          "path": "references/paperclip-export-mapping.md",
+          "kind": "reference",
+          "sizeBytes": 4154,
+          "sha256": "8fd79997cb35fbfb90d9e1f4a0bd5470fcb717691b6765df23908a78b3d00dbc"
+        },
+        {
+          "path": "sample-bundle/decisions/acme-318.md",
+          "kind": "markdown",
+          "sizeBytes": 787,
+          "sha256": "34b7cdde02692afdd8b4740b61753a47c1bcec6e477399ecac5c2e6ff8817d0a"
+        },
+        {
+          "path": "sample-bundle/docs/acme-318-plan.md",
+          "kind": "markdown",
+          "sizeBytes": 362,
+          "sha256": "073c8e18721436c7ec5160f1ba7a9e819dd305ce03102407338d7d5ef26c62f1"
+        },
+        {
+          "path": "sample-bundle/index.md",
+          "kind": "markdown",
+          "sizeBytes": 984,
+          "sha256": "c635d4f0f969a3f4a32d14842eb218a577a639a73c8a6122247273a359320d23"
+        },
+        {
+          "path": "sample-bundle/log.md",
+          "kind": "markdown",
+          "sizeBytes": 177,
+          "sha256": "4525b79eb72932ddbcedc43dd6204936ab93e291b12de4e9beb85b3c12e60c9f"
+        },
+        {
+          "path": "sample-bundle/memory/deploy-window-policy.md",
+          "kind": "markdown",
+          "sizeBytes": 632,
+          "sha256": "20ce190e14be276a7b5af14235392020f9320456b835c78745618b7955542f6c"
+        },
+        {
+          "path": "sample-bundle/memory/release-checklist.md",
+          "kind": "markdown",
+          "sizeBytes": 460,
+          "sha256": "94d42f93b47ffd1d3cd9312ee708d77a7b2b565e38acdba54c9869fd5c764f3f"
+        },
+        {
+          "path": "sample-bundle/okf.yaml",
+          "kind": "other",
+          "sizeBytes": 193,
+          "sha256": "03fc3207f3c5375d003604c2f4edef49052cfb4bc67294af695d246054732b77"
+        },
+        {
+          "path": "sample-bundle/skills/incident-postmortem.md",
+          "kind": "markdown",
+          "sizeBytes": 445,
+          "sha256": "605a4e6958336cab7313119dd7b255f82af621b408680d91afde7d3ccfb02407"
+        },
+        {
+          "path": "sample-bundle/sources/warehouse-automation-trends-2026.md",
+          "kind": "markdown",
+          "sizeBytes": 405,
+          "sha256": "6114f7dbcad031c2222d0c711596eb5d900efe670dd0676c9f5371acb1913b13"
+        },
+        {
+          "path": "scripts/okf-export.mjs",
+          "kind": "script",
+          "sizeBytes": 10151,
+          "sha256": "36d1b1cfd2e5d113b980489282f4a2955af14163a42a89c9378e80189f9e6219"
+        },
+        {
+          "path": "scripts/okf-validate.mjs",
+          "kind": "script",
+          "sizeBytes": 7688,
+          "sha256": "1bb899ac725d925bde49b54c479d12bfea047a98a09edbe16e619c346f0442f4"
+        }
+      ],
+      "contentHash": "sha256:545f4640f21285f495b7ccc764f60d104c2c21a119f3d761c84f5a3cdbb3e67e"
     },
     {
       "id": "paperclipai:optional:product:design-critique",
