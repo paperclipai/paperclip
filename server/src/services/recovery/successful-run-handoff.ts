@@ -510,3 +510,111 @@ export function decideSuccessfulRunHandoff(input: {
     }, "normal_model"),
   };
 }
+
+// Base backoff before the NEXT corrective handoff attempt; doubles per prior attempt (10m → 20m → …)
+// so retries never fire back-to-back and burn budget.
+export const HANDOFF_ATTEMPT_BASE_BACKOFF_MS = 10 * 60_000;
+
+export type NextSuccessfulRunHandoffAttempt =
+  | { kind: "wait"; reason: string; readyAtMs: number }
+  | { kind: "exhausted" }
+  | {
+      kind: "enqueue";
+      attempt: number;
+      targetAgentId: string;
+      idempotencyKey: string;
+      payload: Record<string, unknown>;
+      contextSnapshot: Record<string, unknown>;
+      instruction: string;
+    };
+
+// Builds the wake for corrective handoff attempt N+1 when attempt N's corrective run ALSO ended without a
+// disposition. This is the code that was never written: the recovery sweep's `!exhausted` branch used to
+// `skipped++; continue` forever, so attempts 2–3 never ran and the exhausted→escalate branch was
+// unreachable — a first miss became an infinite skip (Round-2 B1). Pure + unit-testable; the caller in
+// recovery/service.ts applies the budget/pause guards and performs the enqueue.
+//
+// The ORIGINAL source run threads through every attempt so the idempotency key is stable per
+// (issue, sourceRun, attempt) — exactly one wake per attempt, no re-enqueue storm across sweeps. We do
+// NOT attach a structured issueThreadInteraction: that would trip hasPendingInteractionOrApproval and let
+// the handoff self-resolve without a real disposition.
+export function buildNextSuccessfulRunHandoffAttempt(input: {
+  evidence: {
+    sourceRunId: string | null;
+    correctiveRunId: string;
+    handoffAttempt: number;
+    maxHandoffAttempts: number;
+    missingDisposition: string;
+    livenessState?: RunLivenessState | string | null;
+  };
+  issue: Pick<IssueRow, "id" | "identifier" | "title" | "description">;
+  agentId: string;
+  correctiveRunStartedAtMs: number;
+  nowMs: number;
+  baseBackoffMs?: number;
+}): NextSuccessfulRunHandoffAttempt {
+  const { evidence, issue, agentId } = input;
+  const nextAttempt = evidence.handoffAttempt + 1;
+  if (nextAttempt > evidence.maxHandoffAttempts) return { kind: "exhausted" };
+
+  const base = input.baseBackoffMs ?? HANDOFF_ATTEMPT_BASE_BACKOFF_MS;
+  // Exponent keys on the attempt that just failed: 10m after attempt 1, 20m after attempt 2, …
+  const backoffMs = base * Math.pow(2, Math.max(0, evidence.handoffAttempt - 1));
+  const readyAtMs = input.correctiveRunStartedAtMs + backoffMs;
+  if (input.nowMs < readyAtMs) {
+    return { kind: "wait", reason: `corrective attempt ${nextAttempt} backoff not elapsed`, readyAtMs };
+  }
+
+  const sourceRunId = evidence.sourceRunId ?? evidence.correctiveRunId;
+  const banner = [
+    `## Corrective attempt ${nextAttempt} of ${evidence.maxHandoffAttempts}`,
+    "Your previous corrective run also ended without recording a disposition. Recording exactly one valid disposition is the ENTIRE task of this wake — do that before anything else.",
+    "",
+    "",
+  ].join("\n");
+  const instruction = banner + buildSuccessfulRunHandoffInstruction({
+    issueIdentifier: issue.identifier,
+    issueTitle: issue.title,
+    issueDescription: issue.description,
+    sourceRunId,
+    finalReport: null,
+    nextAction: null,
+    detectedProgressSummary: null,
+  });
+
+  const payload = withRecoveryModelProfileHint({
+    issueId: issue.id,
+    taskId: issue.id,
+    sourceIssueId: issue.id,
+    sourceRunId,
+    handoffRequired: true,
+    handoffReason: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+    missingDisposition: evidence.missingDisposition,
+    validDispositionOptions: [...SUCCESSFUL_RUN_HANDOFF_OPTIONS],
+    detectedProgressSummary: null,
+    handoffAttempt: nextAttempt,
+    maxHandoffAttempts: evidence.maxHandoffAttempts,
+    resumeIntent: true,
+    followUpRequested: true,
+    resumeFromRunId: sourceRunId,
+    instruction,
+  }, "normal_model");
+
+  return {
+    kind: "enqueue",
+    attempt: nextAttempt,
+    targetAgentId: agentId,
+    idempotencyKey: buildFinishSuccessfulRunHandoffIdempotencyKey({
+      issueId: issue.id,
+      sourceRunId,
+      attempt: nextAttempt,
+    }),
+    payload,
+    instruction,
+    contextSnapshot: withRecoveryModelProfileHint({
+      ...payload,
+      wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+      livenessState: evidence.livenessState ?? null,
+    }, "normal_model"),
+  };
+}

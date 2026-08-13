@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyRunLiveness } from "../services/run-liveness.ts";
+import { classifyRunLiveness, isDegenerateOutput } from "../services/run-liveness.ts";
 
 const baseInput = {
   runStatus: "succeeded",
@@ -508,5 +508,39 @@ describe("run liveness classifier", () => {
         expect(classifyRunLiveness(tc.input).livenessState).toBe(tc.expectedLiveness);
       });
     }
+  });
+});
+
+describe("degeneracy screen (Round-2 B2)", () => {
+  const repeatedLine = Array.from({ length: 25 }, () => "Processing the data now.").join("\n"); // 25 lines, 1 distinct
+  const cjkLoop = "数据分析报告".repeat(150); // ~900 chars, no newlines, tight token loop (period 6)
+  const legitPlan = [
+    "## Rollout plan",
+    "1. Audit the current auth middleware and list every caller.",
+    "2. Introduce a feature flag `new_auth` defaulting off.",
+    "3. Migrate the login route first, behind the flag, with a rollback note.",
+    "4. Add integration tests for the flagged and unflagged paths.",
+    "5. Enable for 5 percent of traffic and watch error rates for a day.",
+    "6. Ramp to full once the dashboards are clean, then remove the flag.",
+  ].join("\n");
+  const planIssue = { status: "in_progress", title: "Plan the auth rollout", description: "Write a rollout plan." };
+
+  it("flags a line-repetition loop as degenerate", () => {
+    expect(isDegenerateOutput(repeatedLine)).toBe(true);
+  });
+  it("flags a newline-free CJK token loop as degenerate", () => {
+    expect(isDegenerateOutput(cjkLoop)).toBe(true);
+  });
+  it("skips short output (a bounded continuation handles that)", () => {
+    expect(isDegenerateOutput("done.")).toBe(false);
+  });
+  it("does not flag a diverse, substantive plan", () => {
+    expect(isDegenerateOutput(`${legitPlan}\n${legitPlan}`)).toBe(false);
+  });
+  it("routes a degenerate plan-task run to empty_response instead of laundering to advanced", () => {
+    expect(classifyRunLiveness({ ...baseInput, issue: planIssue, resultJson: { summary: repeatedLine } }).livenessState).toBe("empty_response");
+  });
+  it("still grades a legit plan-task run advanced (no false positive)", () => {
+    expect(classifyRunLiveness({ ...baseInput, issue: planIssue, resultJson: { summary: legitPlan } }).livenessState).toBe("advanced");
   });
 });

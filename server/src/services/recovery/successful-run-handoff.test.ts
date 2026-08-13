@@ -1,14 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   buildFinishSuccessfulRunHandoffIdempotencyKey,
+  buildNextSuccessfulRunHandoffAttempt,
   buildSuccessfulRunHandoffInstruction,
   buildSuccessfulRunHandoffExhaustedNotice,
   buildSuccessfulRunHandoffRequiredNotice,
   decideSuccessfulRunHandoff,
+  HANDOFF_ATTEMPT_BASE_BACKOFF_MS,
   isIdempotentFinishSuccessfulRunHandoffWakeStatus,
   isSuccessfulRunHandoffValidPathSkip,
   isSuccessfulRunHandoffRequiredNoticeBody,
@@ -81,7 +84,7 @@ describe("successful run handoff decision", () => {
       handoffReason: SUCCESSFUL_RUN_MISSING_STATE_REASON,
       missingDisposition: "clear_next_step",
       handoffAttempt: 1,
-      maxHandoffAttempts: 1,
+      maxHandoffAttempts: DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
       resumeIntent: true,
       resumeFromRunId: "run-1",
     });
@@ -504,5 +507,88 @@ describe("successful run handoff decision", () => {
     expect(isSuccessfulRunHandoffRequiredNoticeBody("## Successful run missing issue disposition\n\nold body")).toBe(true);
     expect(isSuccessfulRunHandoffRequiredNoticeBody("## This issue still needs a next step\n\nold body")).toBe(true);
     expect(isSuccessfulRunHandoffRequiredNoticeBody("Unrelated comment")).toBe(false);
+  });
+});
+
+describe("buildNextSuccessfulRunHandoffAttempt (Round-2 B1)", () => {
+  const nextIssue = {
+    id: "issue-1",
+    identifier: "PAP-1",
+    title: "Finish backend handoff",
+    description: "Implement and verify the backend handoff behavior.",
+  };
+  const evidence = {
+    sourceRunId: "source-run-1",
+    correctiveRunId: "corrective-run-2",
+    handoffAttempt: 1,
+    maxHandoffAttempts: 3,
+    missingDisposition: "clear_next_step",
+    livenessState: "advanced" as const,
+  };
+  const startedAt = 1_000_000_000_000;
+  const afterBackoff = startedAt + HANDOFF_ATTEMPT_BASE_BACKOFF_MS + 1;
+
+  it("enqueues attempt N+1 once the backoff has elapsed, incrementing the attempt", () => {
+    const next = buildNextSuccessfulRunHandoffAttempt({
+      evidence, issue: nextIssue, agentId: "agent-1",
+      correctiveRunStartedAtMs: startedAt, nowMs: afterBackoff,
+    });
+    expect(next.kind).toBe("enqueue");
+    if (next.kind !== "enqueue") return;
+    expect(next.attempt).toBe(2);
+    expect(next.targetAgentId).toBe("agent-1");
+    expect(next.payload.handoffAttempt).toBe(2);
+    // the ORIGINAL source run threads through so the key is stable per (issue, sourceRun, attempt)
+    expect(next.idempotencyKey).toBe(
+      buildFinishSuccessfulRunHandoffIdempotencyKey({ issueId: "issue-1", sourceRunId: "source-run-1", attempt: 2 }),
+    );
+    expect(next.idempotencyKey).toContain(":2");
+    expect(next.instruction).toContain("Corrective attempt 2 of 3");
+  });
+
+  it("holds (kind=wait) while the exponential backoff has not elapsed", () => {
+    const next = buildNextSuccessfulRunHandoffAttempt({
+      evidence, issue: nextIssue, agentId: "agent-1",
+      correctiveRunStartedAtMs: startedAt, nowMs: startedAt + 60_000,
+    });
+    expect(next.kind).toBe("wait");
+  });
+
+  it("doubles the backoff for a later attempt (10m after attempt 1, 20m after attempt 2)", () => {
+    const at2 = { ...evidence, handoffAttempt: 2 };
+    const justBefore = buildNextSuccessfulRunHandoffAttempt({
+      evidence: at2, issue: nextIssue, agentId: "agent-1",
+      correctiveRunStartedAtMs: startedAt, nowMs: startedAt + 2 * HANDOFF_ATTEMPT_BASE_BACKOFF_MS - 1,
+    });
+    expect(justBefore.kind).toBe("wait");
+    const justAfter = buildNextSuccessfulRunHandoffAttempt({
+      evidence: at2, issue: nextIssue, agentId: "agent-1",
+      correctiveRunStartedAtMs: startedAt, nowMs: startedAt + 2 * HANDOFF_ATTEMPT_BASE_BACKOFF_MS + 1,
+    });
+    expect(justAfter.kind).toBe("enqueue");
+    if (justAfter.kind === "enqueue") expect(justAfter.attempt).toBe(3);
+  });
+
+  it("reports exhausted when the next attempt would exceed the max (escalation is the caller's job)", () => {
+    const at3 = { ...evidence, handoffAttempt: 3 };
+    const next = buildNextSuccessfulRunHandoffAttempt({
+      evidence: at3, issue: nextIssue, agentId: "agent-1",
+      correctiveRunStartedAtMs: startedAt, nowMs: afterBackoff,
+    });
+    expect(next.kind).toBe("exhausted");
+  });
+
+  it("falls back to the corrective run id when the source run id is missing (key still stable)", () => {
+    const noSource = { ...evidence, sourceRunId: null };
+    const next = buildNextSuccessfulRunHandoffAttempt({
+      evidence: noSource, issue: nextIssue, agentId: "agent-1",
+      correctiveRunStartedAtMs: startedAt, nowMs: afterBackoff,
+    });
+    expect(next.kind).toBe("enqueue");
+    if (next.kind === "enqueue") {
+      expect(next.idempotencyKey).toBe(
+        buildFinishSuccessfulRunHandoffIdempotencyKey({ issueId: "issue-1", sourceRunId: "corrective-run-2", attempt: 2 }),
+      );
+    }
   });
 });

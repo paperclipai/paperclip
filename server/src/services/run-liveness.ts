@@ -164,6 +164,28 @@ export function hasUsefulOutput(input: RunLivenessClassificationInput) {
   return combinedOutput(input).length > 0;
 }
 
+// A chunk of 12–200 chars immediately repeated ≥5 times total (1 + ≥4 more). `[\s\S]` so the chunk may
+// span newlines; the scan is length-capped so the backreference can't pathologically backtrack on huge
+// output. Language-neutral by construction (no dictionary) — catches CJK/token loops with no whitespace.
+function hasConsecutiveChunkRepetition(text: string) {
+  const scan = text.length > 20_000 ? text.slice(0, 20_000) : text;
+  return /([\s\S]{12,200}?)\1{4,}/.test(scan);
+}
+
+// Structural degeneracy screen (Round-2 B2): output that is a repetition loop or near-zero line
+// diversity, with no dictionary/language assumption (the CJK-token + unbroken-repetition failure that
+// corrupted Maven's first deliverable was graded `advanced`). Two language-neutral signals; short output
+// is skipped (a bounded continuation handles that case) so this only fires on substantive garbage.
+export function isDegenerateOutput(text: string | null | undefined) {
+  const trimmed = (text ?? "").trim();
+  if (trimmed.length < 500) return false;
+  // Signal 1: many lines, few distinct — a line-level repetition loop.
+  const lines = trimmed.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+  if (lines.length >= 12 && new Set(lines).size / lines.length < 0.25) return true;
+  // Signal 2: a short chunk repeated consecutively (a token/phrase loop, incl. newline-free CJK).
+  return hasConsecutiveChunkRepetition(trimmed);
+}
+
 export function declaredBlocker(input: RunLivenessClassificationInput) {
   if (input.issue?.status === "blocked") return true;
   const actionability = classifyRunActionability(input);
@@ -362,6 +384,14 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
 
   if (concreteEvidence) {
     return output("advanced", `Run produced concrete action evidence: ${evidenceReason(evidence)}`);
+  }
+
+  // Degeneracy screen (Round-2 B2): a run with NO concrete DB evidence whose only output is a repetition
+  // loop / near-zero line diversity must not launder to `advanced` via the plan-exempt bypass below.
+  // Real evidence already won above (`concreteEvidence`), so this only screens evidence-free garbage;
+  // `empty_response` routes it into the existing bounded continuation.
+  if (!concreteEvidence && isDegenerateOutput(combinedOutput(input))) {
+    return output("empty_response", "Run output failed the degeneracy screen (repetition loop or near-zero line diversity)");
   }
 
   if (planExempt && usefulOutput) {

@@ -57,6 +57,7 @@ import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
+  buildNextSuccessfulRunHandoffAttempt,
   buildSuccessfulRunHandoffExhaustedNotice,
   noticeMetadataReferencesRecoveryAction,
   type SuccessfulRunHandoffNotice,
@@ -3668,6 +3669,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       successfulContinuationObserved: 0,
       orphanBlockersAssigned: 0,
       successfulRunHandoffEscalated: 0,
+      successfulRunHandoffRetried: 0,
       reviewParticipantRequeued: 0,
       escalated: 0,
       waitingOnReviewResolved: 0,
@@ -4121,9 +4123,48 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
       const handoffEvidence = isExhaustedSuccessfulRunHandoff(latestRun);
-      if (handoffEvidence) {
+      if (handoffEvidence && latestRun) {
         if (!handoffEvidence.exhausted) {
-          result.skipped += 1;
+          // The corrective handoff run (attempt N) ALSO ended without a disposition, but attempts
+          // remain. Enqueue attempt N+1 — the code to do this was never written, so this branch used to
+          // `skipped++; continue` forever: attempts 2–3 never ran and the exhausted→escalate branch below
+          // was unreachable, turning a first miss into an infinite skip (Round-2 B1). Pause is already
+          // gated upstream (isAutomaticRecoverySuppressedByPauseHold); mirror the attempt-1 budget guard.
+          if (await isInvocationBudgetBlocked(issue, agentId)) {
+            result.skipped += 1;
+            continue;
+          }
+          const correctiveRunStartedAtMs = new Date(
+            latestRun.startedAt ?? latestRun.createdAt ?? recoveryNow,
+          ).getTime();
+          const next = buildNextSuccessfulRunHandoffAttempt({
+            evidence: { ...handoffEvidence, livenessState: latestRun.livenessState ?? null },
+            issue,
+            agentId,
+            correctiveRunStartedAtMs,
+            nowMs: recoveryNow.getTime(),
+          });
+          if (next.kind === "enqueue") {
+            const queued = await deps.enqueueWakeup(next.targetAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+              idempotencyKey: next.idempotencyKey,
+              payload: next.payload,
+              requestedByActorType: "system",
+              requestedByActorId: null,
+              contextSnapshot: next.contextSnapshot,
+            });
+            if (queued) {
+              result.successfulRunHandoffRetried += 1;
+              result.issueIds.push(issue.id);
+            } else {
+              result.skipped += 1;
+            }
+          } else {
+            // "wait" (backoff not elapsed) or "exhausted" (defensive) — leave for a later sweep.
+            result.skipped += 1;
+          }
           continue;
         }
 
