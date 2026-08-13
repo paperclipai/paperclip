@@ -608,16 +608,27 @@ function buildHumanizedActionPreview(input: {
       ? "It can permanently change or remove something, so we’re checking with you first."
       : "It can change something, so we’re checking with you first.";
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(input.argumentsSummary.summary);
-  } catch {
-    return trustLine;
+  // Prefer the structured keyArguments (never truncated, files-first sort can't bury a scalar) — this is
+  // what lets the approver actually SEE `target: production` (Round-2 C2). Fall back to parsing the
+  // summary only for older records written before keyArguments existed.
+  let parsed: Record<string, unknown> | null =
+    input.argumentsSummary.keyArguments && typeof input.argumentsSummary.keyArguments === "object"
+      ? input.argumentsSummary.keyArguments
+      : null;
+  if (!parsed) {
+    try {
+      const fromSummary = JSON.parse(input.argumentsSummary.summary);
+      if (fromSummary && typeof fromSummary === "object" && !Array.isArray(fromSummary)) {
+        parsed = fromSummary as Record<string, unknown>;
+      }
+    } catch {
+      return trustLine;
+    }
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return trustLine;
+  if (!parsed) return trustLine;
 
   const fieldLines: string[] = [];
-  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+  for (const [key, value] of Object.entries(parsed)) {
     if (fieldLines.length >= 6) break;
     if (isIdentifierArgumentKey(key)) continue;
     const rendered = humanizeArgumentValue(value);
@@ -1651,10 +1662,18 @@ export function createToolGatewayService(
       }
       throw error;
     }
-    // Board-only technical detail for the formal-approval interaction (target=custom).
+    // Board-only technical detail for the formal-approval interaction (target=custom). Lead with the
+    // compacted Key-arguments block (Round-2 C2) so the approver sees the load-bearing scalars — e.g.
+    // `target: production` — up front, not buried past a 4000-char, files-first-sorted JSON truncation.
+    const keyArgs = input.argumentsSummary.keyArguments;
+    const keyArgLines =
+      keyArgs && typeof keyArgs === "object" && !Array.isArray(keyArgs)
+        ? Object.entries(keyArgs).map(([k, v]) => `- **${k}:** ${typeof v === "string" ? v : JSON.stringify(v)}`)
+        : [];
     const detailsMarkdown = [
       `Tool: \`${input.tool.name}\``,
       `Risk: \`${input.tool.risk}\``,
+      ...(keyArgLines.length ? ["", "Key arguments:", "", ...keyArgLines] : []),
       "",
       "Arguments reviewed for execution:",
       "",

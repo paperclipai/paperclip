@@ -103,6 +103,11 @@ export interface ToolRedactedValueSummary {
   sha256?: string | null;
   redactedFields?: string[];
   artifactId?: string | null;
+  // Compacted, approval-safe view of the TOP-LEVEL arguments: scalars and ≤200-char strings kept as-is,
+  // large arrays/objects elided to "[N items · X KB]". Lets a human approver actually SEE the key args
+  // (e.g. `target: production` on a deploy) instead of a 4000-char truncation that sorts `files` first.
+  // The hash/sizeBytes still cover the full value; this is display-only. (Round-2 C2)
+  keyArguments?: Record<string, unknown> | null;
 }
 
 export interface ToolApplication {

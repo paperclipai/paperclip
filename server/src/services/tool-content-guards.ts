@@ -195,6 +195,33 @@ export function readSignedToolArguments(input: {
   return readSignedToolArgumentsPayload(input)?.arguments ?? null;
 }
 
+// Approval-safe compaction of top-level arguments (Round-2 C2): scalars + ≤200-char strings kept, larger
+// arrays/objects elided to "[N items · X KB]". This is what un-blinds the human approver — the plain
+// `summary` truncates at 4000 chars and a files-first-sorted payload buries `target: production` past the
+// cut. Runs on the ALREADY-redacted object; short strings are still run through redactSensitiveText so a
+// secret-pattern value can't ride through in a kept scalar. Display-only; hash/sizeBytes cover the full value.
+const KEY_ARGUMENT_MAX_STRING = 200;
+function elidedSize(value: unknown) {
+  const bytes = Buffer.byteLength(stableSerialize(value), "utf8");
+  return bytes >= 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${bytes} B`;
+}
+function compactArgumentValue(value: unknown): unknown {
+  if (value === null || typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const redacted = redactSensitiveText(value);
+    return redacted.length <= KEY_ARGUMENT_MAX_STRING ? redacted : `[string · ${redacted.length} chars]`;
+  }
+  if (Array.isArray(value)) return `[${value.length} items · ${elidedSize(value)}]`;
+  if (isPlainObject(value)) return `[object · ${Object.keys(value).length} keys · ${elidedSize(value)}]`;
+  return `[${typeof value}]`;
+}
+export function compactToolArguments(value: unknown): Record<string, unknown> | null {
+  if (!isPlainObject(value)) return null;
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) out[key] = compactArgumentValue(entry);
+  return out;
+}
+
 export function summarizeToolValue(value: unknown) {
   const redacted = isPlainObject(value) ? redactEventPayload(value) : value;
   const serialized = stableSerialize(redacted);
@@ -204,6 +231,7 @@ export function summarizeToolValue(value: unknown) {
     sizeBytes: Buffer.byteLength(serialized, "utf8"),
     sha256: createHash("sha256").update(serialized).digest("hex"),
     redactedFields: redactedText.includes(REDACTED_EVENT_VALUE) ? ["sensitive_value"] : [],
+    keyArguments: compactToolArguments(redacted),
   };
 }
 

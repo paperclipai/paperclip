@@ -44,6 +44,7 @@ import { toolPolicyConditionsSchema } from "@paperclipai/shared";
 import { badRequest, conflict, notFound, unprocessable } from "../errors.js";
 import { narrowestScopeBindings, profileIdsInBindingOrder } from "./tool-profile-binding-precedence.js";
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
+import { compactToolArguments } from "./tool-content-guards.js";
 
 type ToolAccessContext = {
   companyId: string;
@@ -277,6 +278,9 @@ function summarizeAndRedact(value: unknown): RedactionResult {
       sizeBytes: Buffer.byteLength(text),
       sha256: sha256(redacted),
       redactedFields,
+      // Approval-safe compaction (Round-2 C2): `redacted` is already deep-redacted here, so this only
+      // keeps top-level scalars/short strings and elides big nested arrays/objects for the approver view.
+      keyArguments: compactToolArguments(redacted),
     },
     redactionPlan: {
       redactedFieldCount: redactedFields.length,
