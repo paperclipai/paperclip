@@ -112,11 +112,10 @@ function renderAppAt(container: HTMLElement, path: string) {
 }
 
 async function waitForRoute(container: HTMLElement, text: string) {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    if (container.textContent?.includes(text)) return;
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-  }
-  expect(container.textContent).toContain(text);
+  await vi.waitFor(
+    () => expect(container.textContent).toContain(text),
+    { timeout: 5_000, interval: 10 },
+  );
 }
 
 describe("App Activity routing (PAP-16302)", () => {

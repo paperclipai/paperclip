@@ -99,7 +99,7 @@ function MobilePropertiesSheet() {
         <button
           type="button"
           aria-label="Close properties panel"
-          className="fixed inset-0 z-40 bg-black/30 lg:hidden"
+          className="fixed inset-0 z-40 bg-black/30 md:hidden"
           onClick={() => setPanelVisible(false)}
         />
       )}
@@ -109,7 +109,7 @@ function MobilePropertiesSheet() {
         ref={sheetRef}
         className={cn(
           // Position: sticks to bottom, fills width
-          "fixed bottom-0 left-0 right-0 z-50 lg:hidden",
+          "fixed bottom-0 left-0 right-0 z-50 md:hidden",
           // Glass surface
           "glass-surface border-t border-border/60",
           // Rounded top corners
@@ -565,9 +565,11 @@ function ResizablePropertiesPanel({
 
 // ------------------------------------------------------------------
 // Public export — renders both variants.
-// CSS (lg:hidden / hidden lg:flex) gates which is actually visible.
-// MobilePropertiesSheet: shown on phone+tablet (<lg)
-// DesktopPropertiesPane: shown on desktop (≥lg)
+// CSS (md:hidden / hidden md:flex) gates which is actually visible. This must
+// stay aligned with SidebarContext's 768px mobile breakpoint so the sheet and
+// desktop pane can never render at the same viewport width.
+// MobilePropertiesSheet: shown below md
+// DesktopPropertiesPane: shown at md and above
 // ------------------------------------------------------------------
 export function PropertiesPanel() {
   return (

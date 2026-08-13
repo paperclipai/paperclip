@@ -254,6 +254,10 @@ describe("Apps routes", () => {
 });
 
 describe("Decisions routes", () => {
+  it("registers the decisions Inbox tab reached by saved-tab and dashboard links", () => {
+    expect(appSource).toContain('<Route path="inbox/decisions" element={<Inbox />} />');
+  });
+
   it("does not register decision-training views", () => {
     expect(appSource).not.toContain('path="decisions/training"');
     expect(appSource).not.toContain('path="decisions/training/:id"');

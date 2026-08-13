@@ -72,6 +72,23 @@ describe("PropertiesPanel", () => {
     vi.clearAllMocks();
   });
 
+  it("uses complementary breakpoints for the mobile sheet and desktop pane", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableClassicTaskInterface: false,
+    });
+    await renderPanel();
+
+    const mobileSheet = container.querySelector('[aria-label="Close properties panel"]')
+      ?.nextElementSibling;
+    const desktopPane = container.querySelector("aside");
+
+    expect(mobileSheet).not.toBeNull();
+    expect(mobileSheet!.classList.contains("md:hidden")).toBe(true);
+    expect(mobileSheet!.classList.contains("lg:hidden")).toBe(false);
+    expect(desktopPane!.classList.contains("hidden")).toBe(true);
+    expect(desktopPane!.classList.contains("md:flex")).toBe(true);
+  });
+
   describe("classic task interface on (legacy panel)", () => {
     beforeEach(() => {
       mockInstanceSettingsApi.getExperimental.mockResolvedValue({

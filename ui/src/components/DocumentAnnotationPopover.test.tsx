@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { createRef } from "react";
+import { act, createRef } from "react";
 import { createRoot } from "react-dom/client";
 import type { DocumentAnnotationThreadWithComments } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,6 +22,8 @@ vi.mock("@/hooks/useDocumentAnnotationMutations", () => ({
 }));
 
 vi.mock("./MarkdownBody", () => ({ MarkdownBody: ({ children }: { children: string }) => <p>{children}</p> }));
+
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const pendingAnchor = {
   selector: {
@@ -66,7 +68,9 @@ describe("DocumentAnnotationPopover", () => {
   });
 
   afterEach(async () => {
-    await vi.waitFor(() => root.unmount());
+    await act(async () => {
+      root.unmount();
+    });
     host.remove();
   });
 
@@ -88,7 +92,9 @@ describe("DocumentAnnotationPopover", () => {
       ...overrides,
     };
     props.containerRef.current = container;
-    root.render(<DocumentAnnotationPopover {...props} />);
+    await act(async () => {
+      root.render(<DocumentAnnotationPopover {...props} />);
+    });
     await vi.waitFor(() => expect(container.querySelector('[data-testid="document-annotation-popover"]')).not.toBeNull());
     return { onClose };
   };
@@ -100,17 +106,23 @@ describe("DocumentAnnotationPopover", () => {
     expect(card.style.left).toBe("60px");
     const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
-    setter?.call(textarea, "Looks good");
-    textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }));
+    await act(async () => {
+      setter?.call(textarea, "Looks good");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }));
+    });
     await vi.waitFor(() => expect(mutations.create).toHaveBeenCalledWith("Looks good"));
   });
 
   it("dismisses on Escape and outside pointer down", async () => {
     const first = await render();
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
     expect(first.onClose).toHaveBeenCalledTimes(1);
-    document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    await act(async () => {
+      document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    });
     expect(first.onClose).toHaveBeenCalledTimes(2);
   });
 
@@ -118,12 +130,16 @@ describe("DocumentAnnotationPopover", () => {
     await render({ pendingAnchor: null, thread: thread() });
     const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
-    setter?.call(textarea, "A reply");
-    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await act(async () => {
+      setter?.call(textarea, "A reply");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
     await vi.waitFor(() => expect(textarea.value).toBe("A reply"));
     const buttons = Array.from(container.querySelectorAll("button"));
-    buttons.find((button) => button.textContent?.includes("Reply"))?.click();
-    buttons.find((button) => button.textContent?.includes("Resolve"))?.click();
+    await act(async () => {
+      buttons.find((button) => button.textContent?.includes("Reply"))?.click();
+      buttons.find((button) => button.textContent?.includes("Resolve"))?.click();
+    });
     await vi.waitFor(() => {
       expect(mutations.reply).toHaveBeenCalledWith({ threadId: "thread-1", body: "A reply" });
       expect(mutations.status).toHaveBeenCalledWith({ threadId: "thread-1", status: "resolved" });
