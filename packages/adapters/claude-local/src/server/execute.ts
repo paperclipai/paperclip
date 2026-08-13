@@ -422,12 +422,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     config.promptTemplate,
     DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
-  const model = asString(config.model, "");
+  const configuredModel = asString(config.model, "");
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
   const configEnv = parseObject(config.env);
+  const configuredAnthropicBaseUrl = asString(configEnv.ANTHROPIC_BASE_URL, "").toLowerCase();
+  const configuredProvider = configuredAnthropicBaseUrl.includes("deepseek")
+    ? "deepseek"
+    : configuredAnthropicBaseUrl.includes("xiaomimimo") || configuredAnthropicBaseUrl.includes("mimo")
+      ? "mimo"
+      : "anthropic";
+  const model = configuredProvider === "deepseek"
+    ? asString(configEnv.ANTHROPIC_DEFAULT_SONNET_MODEL, configuredModel)
+    : configuredProvider === "mimo"
+      ? asString(configEnv.ANTHROPIC_DEFAULT_SONNET_MODEL, asString(configEnv.ANTHROPIC_MODEL, configuredModel))
+      : configuredModel;
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
   const workspaceSource = asString(workspaceContext.source, "");
@@ -481,7 +492,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
-  const billingType = resolveClaudeBillingType(effectiveEnv);
+  const billingType = configuredProvider === "deepseek"
+    ? "api"
+    : configuredProvider === "mimo"
+      ? "credits"
+      : resolveClaudeBillingType(effectiveEnv);
   const claudeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = new Set(resolveClaudeDesiredSkillNames(config, claudeSkillEntries));
   // When instructionsFilePath is configured, build a stable content-addressed
@@ -1206,11 +1221,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
       sessionDisplayId: resolvedSessionId,
-      provider: "anthropic",
-      biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
-      model: parsedStream.model || asString(parsed.model, model),
+      provider: configuredProvider,
+      biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : configuredProvider,
+      model: configuredProvider === "anthropic"
+        ? parsedStream.model || asString(parsed.model, model)
+        : model,
       billingType,
-      costUsd: parsedStream.costUsd,
+      // Compatible providers do not consistently emit Claude's
+      // total_cost_usd field. Preserve a non-null execution cost signal when
+      // usage was reported so downstream accounting can classify the run.
+      costUsd: parsedStream.costUsd ?? (configuredProvider !== "anthropic" && usage ? 0.000001 : null),
       resultJson: mergedResultJson,
       summary: parsedStream.summary || asString(parsed.result, ""),
       clearSession:
