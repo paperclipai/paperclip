@@ -13,6 +13,8 @@ import {
   isAppendOnlyResumeWake,
   isEphemeralStatusOnlyRecoverySession,
   isConfigurationIncompleteFailedRun,
+  shouldSupersedeQueuedContinuationWakeForIssueAssignment,
+  shouldSupersedeQueuedRunForFreshIssueAssignment,
 } from "../services/heartbeat.ts";
 
 const cheapProfile: AdapterModelProfileDefinition = {
@@ -189,6 +191,43 @@ describe("heartbeat model profile application", () => {
       retryReason: "issue_continuation_needed",
     })).toBe(true);
     expect(isAppendOnlyResumeWake({ wakeReason: "issue_assigned" })).toBe(false);
+  });
+
+  it("supersedes queued status-only recovery when a board unblock emits a normal wake", () => {
+    const recoveryContext = {
+      wakeReason: "source_scoped_recovery_action",
+      modelProfile: "cheap",
+      recoveryIntent: "status_only",
+      allowDeliverableWork: false,
+      allowDocumentUpdates: false,
+      resumeRequiresNormalModel: true,
+    };
+
+    expect(shouldSupersedeQueuedContinuationWakeForIssueAssignment({
+      activeExecutionRun: { status: "queued", contextSnapshot: recoveryContext },
+      incomingContextSnapshot: { wakeReason: "issue_status_changed" },
+      issueStatus: "todo",
+    })).toBe(true);
+    expect(shouldSupersedeQueuedRunForFreshIssueAssignment({
+      incomingWakeReason: "issue_status_changed",
+      issueStatus: "todo",
+      queuedRun: { status: "queued", contextSnapshot: recoveryContext },
+    })).toBe(true);
+  });
+
+  it("does not supersede a normal queued wake on an unrelated status update", () => {
+    const queuedWake = { status: "queued", contextSnapshot: { wakeReason: "issue_commented" } };
+
+    expect(shouldSupersedeQueuedContinuationWakeForIssueAssignment({
+      activeExecutionRun: queuedWake,
+      incomingContextSnapshot: { wakeReason: "issue_status_changed" },
+      issueStatus: "todo",
+    })).toBe(false);
+    expect(shouldSupersedeQueuedRunForFreshIssueAssignment({
+      incomingWakeReason: "issue_status_changed",
+      issueStatus: "todo",
+      queuedRun: queuedWake,
+    })).toBe(false);
   });
 
   it("treats model resolution failures as non-retryable configuration failures", () => {
