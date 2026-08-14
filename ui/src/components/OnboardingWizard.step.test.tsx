@@ -526,6 +526,37 @@ describe("OnboardingWizard — which step it lands on", () => {
       );
     });
 
+    it("does not carry a mission through a route that withdraws the company", async () => {
+      // Withdrawing a company and replacing one are the same event: this
+      // company is no longer the wizard's. Clearing only on replacement leaves
+      // a goal id behind, and the company created next would read it as
+      // "mission already written" and never be asked for one.
+      mockGoalsApi.create.mockResolvedValue({ id: "goal-company-1" });
+      routerState.pathname = "/PC1/onboarding";
+      await render();
+      await settle();
+
+      const direct = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("I know my mission"),
+      )!;
+      await click(direct);
+      setControlledValue(missionTextarea()!, "Acme's mission");
+      await settle();
+      await click(confirmMissionButton()!);
+      await settle();
+      expect(currentStep()).toBe("agent");
+
+      // Navigate to the unprefixed route, which names no company.
+      routerState.pathname = "/onboarding";
+      await rerender();
+      await settle();
+
+      // The wizard is back at company creation with nothing carried over.
+      const nameInput = document.body.querySelector("input") as HTMLInputElement | null;
+      expect(nameInput?.value).toBe("");
+      expect(document.body.textContent).not.toContain("Acme's mission");
+    });
+
     it("does not write a second mission when the step is confirmed twice", async () => {
       mockGoalsApi.create.mockResolvedValue({ id: "goal-new" });
       await openOnMissionStepForExistingCompany();

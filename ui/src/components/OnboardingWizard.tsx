@@ -271,6 +271,31 @@ export function OnboardingWizard() {
     setRouteDismissed(false);
   }, [location.pathname]);
 
+  /**
+   * Forget everything that describes one particular company.
+   *
+   * Called when the wizard stops holding a company - the route replaced it, or
+   * withdrew it. Both are the same event, and clearing only part of it is what
+   * lets the next company skip work it has not done: a kept goal id reads as
+   * "this company's mission is already written", and the launch path would
+   * link the next company's project to the previous company's goal.
+   *
+   * The name and the prefix are cleared here too and backfilled again from the
+   * company list by the effects below, so they always describe the company in
+   * hand rather than the one before it.
+   */
+  function clearCompanyScopedState() {
+    setCreatedCompanyPrefix(null);
+    setCompanyName("");
+    setCompanyGoal("");
+    setMissionPath(null);
+    setMissionConfirmed(false);
+    setCreatedCompanyGoalId(null);
+    setCreatedProjectId(null);
+    setCreatedIssueRef(null);
+    setCreatedAgentId(null);
+  }
+
   // Sync step and company when onboarding opens with explicit options.
   // Only override saved state when explicit options provide values.
   //
@@ -295,23 +320,8 @@ export function OnboardingWizard() {
       // navigating on to `/onboarding` would clear work the wizard did.
       if (routeCompanyId !== createdCompanyIdRef.current) {
         setCreatedCompanyId(routeCompanyId);
-        setCreatedCompanyPrefix(null);
         routeCompanyIdRef.current = routeCompanyId;
-        // Everything else in hand describes the company being left, so it has
-        // to go with it. A goal id kept across the switch is the sharpest
-        // edge: `handleConfirmMission` reads it as "this company's mission is
-        // already written" and skips saving, and the launch path then links
-        // the new company's project to the old company's goal. The name and
-        // the mission text are backfilled again for the new company by the
-        // effects below.
-        setCompanyName("");
-        setCompanyGoal("");
-        setMissionPath(null);
-        setMissionConfirmed(false);
-        setCreatedCompanyGoalId(null);
-        setCreatedProjectId(null);
-        setCreatedIssueRef(null);
-        setCreatedAgentId(null);
+        clearCompanyScopedState();
       }
       return;
     }
@@ -325,9 +335,14 @@ export function OnboardingWizard() {
       // Only a company this route supplied is cleared. One the wizard created
       // itself, or restored from saved state, is left alone: the ref is null
       // in those cases, and clearing them would discard real progress.
+      //
+      // Withdrawing a company clears the same state that replacing one does.
+      // The two are the same event - this company is no longer the wizard's -
+      // and clearing only half of it leaves ids that make the *next* company
+      // skip work it has not done.
       setCreatedCompanyId(null);
-      setCreatedCompanyPrefix(null);
       routeCompanyIdRef.current = null;
+      clearCompanyScopedState();
     }
   }, [effectiveOnboardingOpen, effectiveOnboardingOptions.companyId]);
 
@@ -600,6 +615,14 @@ export function OnboardingWizard() {
         });
       }
 
+      // Everything above is server work and stands on its own: the company has
+      // its goal, its onboarding project and its first task. What follows is
+      // this wizard finishing — selecting a company, discarding its own state
+      // and navigating. None of that is right for a customer who has moved to
+      // another company in the meantime: it would take them back, and `reset()`
+      // would discard the progress they had started there.
+      if (!stillTheSameCompany(createdCompanyId)) return;
+
       const prefix = createdCompanyPrefix;
       // Select the new company as a route sync, not a manual switch: the
       // explicit navigate below is the intended destination, so page-memory's
@@ -863,12 +886,14 @@ export function OnboardingWizard() {
       queryClient.invalidateQueries({
         queryKey: queryKeys.agents.list(createdCompanyId)
       });
-      if (!stillTheSameCompany(createdCompanyId)) return;
-      setCreatedAgentId(agent.id);
-
       // Seed the CEO's agent instructions file so the agent always has
       // company context + a hiring-plan output format rule. Non-fatal on
       // failure — the agent can still function with adapter defaults.
+      //
+      // Before the ownership check below on purpose. This agent exists now,
+      // and it needs its instructions whatever this wizard goes on to show.
+      // Guarding server work rather than attribution would leave a hired agent
+      // with adapter defaults because the customer changed pages.
       try {
         const bundle = await agentsApi.instructionsBundle(agent.id, createdCompanyId);
         await agentsApi.saveInstructionsFile(
@@ -891,6 +916,8 @@ export function OnboardingWizard() {
         console.warn("Failed to seed CEO instructions:", err);
       }
 
+      if (!stillTheSameCompany(createdCompanyId)) return;
+      setCreatedAgentId(agent.id);
       // Advance to the Review step — the lead is now online. The user drives
       // strategy + hiring from the planning chat after "Get started".
       setStep(5);
