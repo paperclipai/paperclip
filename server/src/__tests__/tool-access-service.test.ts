@@ -31,6 +31,7 @@ import {
   toolPolicies,
   toolProfileBindings,
   toolProfileEntries,
+  toolMcpGateways,
   toolProfiles,
   toolRuntimeMetricCounters,
   toolRuntimeSlots,
@@ -2143,6 +2144,45 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(service.deleteProfile(defaultProfile.id, { force: true })).resolves.toMatchObject({
       profile: expect.objectContaining({ id: defaultProfile.id }),
       summary: expect.objectContaining({ isCompanyDefault: true }),
+    });
+  });
+
+  it("rejects deleting a profile still referenced by an archived gateway with a 409 instead of a 500", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const gatewayService = createToolGatewayService(db, { toolActionSigningSecret: "test-secret" });
+
+    const profile = await service.createProfile(company.id, {
+      profileKey: `gateway-guard-${randomUUID()}`,
+      name: "Gateway guard",
+      defaultAction: "deny",
+    });
+
+    const gateway = await gatewayService.createNamedGateway({
+      companyId: company.id,
+      body: { name: "Guarded gateway", profileId: profile.id },
+    });
+
+    await gatewayService.updateNamedGateway({
+      companyId: company.id,
+      gatewayId: gateway.id,
+      body: { status: "archived" },
+    });
+
+    await expect(service.deleteProfile(profile.id, { force: true })).rejects.toMatchObject({
+      status: 409,
+    });
+
+    // The profile and the archived gateway both survive the rejected delete.
+    await expect(service.getProfile(profile.id)).resolves.toMatchObject({ id: profile.id });
+    await expect(
+      db.select().from(toolMcpGateways).where(eq(toolMcpGateways.id, gateway.id)),
+    ).resolves.toHaveLength(1);
+
+    // Clearing the reference is the documented recovery path, and it unblocks the delete.
+    await db.delete(toolMcpGateways).where(eq(toolMcpGateways.id, gateway.id));
+    await expect(service.deleteProfile(profile.id, { force: true })).resolves.toMatchObject({
+      profile: expect.objectContaining({ id: profile.id }),
     });
   });
 
