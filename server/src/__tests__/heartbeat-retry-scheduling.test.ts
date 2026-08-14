@@ -397,6 +397,12 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
       permissions: {},
     });
+    const circuitProjectId = randomUUID();
+    await db.insert(projects).values({
+      id: circuitProjectId,
+      companyId,
+      name: "Equivalent failure project",
+    });
     await db.insert(issues).values({
       id: issueId,
       companyId,
@@ -405,6 +411,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       priority: "medium",
       responsibleUserId: "responsible-user",
       assigneeAgentId: agentId,
+      projectId: circuitProjectId,
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
     });
@@ -458,10 +465,13 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         .then((rows) => rows.length),
       { timeout: 5_000, interval: 50 },
     ).toBe(1);
-    const incidents = await db.select({ id: issues.id, responsibleUserId: issues.responsibleUserId }).from(issues)
+    const incidents = await db.select({ id: issues.id, responsibleUserId: issues.responsibleUserId, projectId: issues.projectId }).from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "equivalent_failure_circuit")));
     expect(incidents).toHaveLength(1);
     expect(incidents[0]?.responsibleUserId).toBe("responsible-user");
+    // TSMC-20821: circuit cards must be project-bound (inherit the source
+    // issue's project) or triage lanes refuse to launch them.
+    expect(incidents[0]?.projectId).toBe(circuitProjectId);
 
     // The circuit's idempotency key keeps a repeated terminal callback from
     // minting a second owner incident for the same scoped failure.

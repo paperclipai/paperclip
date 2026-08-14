@@ -7846,6 +7846,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return firstUser?.userId ?? null;
   }
 
+  // System-created issues must be project-bound or codex/claude/hermes lanes
+  // refuse to launch them (workspace_validation_failed, TSMC-20801/20821
+  // family). Default home for parentless system creators: the company's
+  // most-populated project (TSMC-20847/20849/TSR-5447 were minted unbound by
+  // the equivalent-failure circuit on 2026-08-14 and errored their lanes).
+  async function resolveCompanyPrimaryProjectId(companyId: string, reader: ReadExecutor = db) {
+    const primary = await reader
+      .select({ projectId: projects.id, issueCount: sql<number>`count(${issues.id})` })
+      .from(projects)
+      .leftJoin(issues, eq(issues.projectId, projects.id))
+      .where(eq(projects.companyId, companyId))
+      .groupBy(projects.id)
+      .orderBy(sql`count(${issues.id}) desc`)
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return primary?.projectId ?? null;
+  }
+
   async function resolveParentIssueResponsibleUserId(
     companyId: string,
     parentId: string | null | undefined,
@@ -22610,7 +22628,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .filter((value): value is string => Boolean(value)))];
     const issueRows = issueIds.length > 0
       ? await db
-        .select({ id: issues.id, originKind: issues.originKind, originId: issues.originId, responsibleUserId: issues.responsibleUserId })
+        .select({ id: issues.id, originKind: issues.originKind, originId: issues.originId, responsibleUserId: issues.responsibleUserId, projectId: issues.projectId })
         .from(issues)
         .where(and(eq(issues.companyId, run.companyId), inArray(issues.id, issueIds)))
       : [];
@@ -22743,6 +22761,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const sourceIssue = scope.issueId ? issueById.get(scope.issueId) : null;
     const responsibleUserId = sourceIssue?.responsibleUserId ?? await resolveCompanyDefaultResponsibleUserId(run.companyId);
+    // Bind the card or triage lanes cannot launch it (TSMC-20821 family):
+    // inherit the source issue's project, else the company primary.
+    const circuitProjectId = sourceIssue?.projectId
+      ?? await resolveCompanyPrimaryProjectId(run.companyId);
     const incidentKey = `equivalent_failure_circuit:${run.companyId}:${scope.type}:${scope.id}`;
     await issuesSvc.create(run.companyId, {
       title: `BOARD ACTION REQUIRED: Equivalent failure circuit open — ${scope.type}`,
@@ -22757,6 +22779,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       status: "in_review",
       priority: "critical",
       responsibleUserId,
+      ...(circuitProjectId ? { projectId: circuitProjectId } : {}),
       originKind: "equivalent_failure_circuit",
       originId: incidentKey,
       originFingerprint: incidentKey,
