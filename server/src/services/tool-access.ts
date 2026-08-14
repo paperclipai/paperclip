@@ -7061,11 +7061,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         // tool_mcp_gateways.profile_id references tool_profiles.id with
         // onDelete: "restrict", including for archived gateways whose config
         // is otherwise inert. Map the raw FK violation to a clear 409 that
-        // tells the caller to delete or reassign the referencing gateway
-        // first, instead of a bare 500.
+        // tells the caller to reassign the referencing gateway to a
+        // different profile first (the only supported recovery path;
+        // gateways cannot be deleted through the API), instead of a bare 500.
         if (isForeignKeyViolation(err)) {
           throw conflict(
-            "Tool profile cannot be deleted because a gateway (including archived gateways) still references it. Delete or reassign that gateway first.",
+            "Tool profile cannot be deleted because a gateway (including archived gateways) still references it. Reassign that gateway to a different tool profile first.",
             { summary: details.summary },
           );
         }

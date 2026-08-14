@@ -2157,6 +2157,11 @@ describeEmbeddedPostgres("tool access service", () => {
       name: "Gateway guard",
       defaultAction: "deny",
     });
+    const otherProfile = await service.createProfile(company.id, {
+      profileKey: `gateway-guard-reassign-${randomUUID()}`,
+      name: "Gateway guard reassignment target",
+      defaultAction: "deny",
+    });
 
     const gateway = await gatewayService.createNamedGateway({
       companyId: company.id,
@@ -2179,11 +2184,19 @@ describeEmbeddedPostgres("tool access service", () => {
       db.select().from(toolMcpGateways).where(eq(toolMcpGateways.id, gateway.id)),
     ).resolves.toHaveLength(1);
 
-    // Clearing the reference is the documented recovery path, and it unblocks the delete.
-    await db.delete(toolMcpGateways).where(eq(toolMcpGateways.id, gateway.id));
+    // Reassigning the gateway to a different profile is the only recovery path the
+    // API actually supports (gateways cannot be deleted), and it unblocks the delete.
+    await gatewayService.updateNamedGateway({
+      companyId: company.id,
+      gatewayId: gateway.id,
+      body: { profileId: otherProfile.id },
+    });
     await expect(service.deleteProfile(profile.id, { force: true })).resolves.toMatchObject({
       profile: expect.objectContaining({ id: profile.id }),
     });
+
+    await db.delete(toolMcpGateways).where(eq(toolMcpGateways.id, gateway.id));
+    await service.deleteProfile(otherProfile.id, { force: true });
   });
 
   it("keeps duplicate, delete, and new-tools profile routes board-only and viewer-safe", async () => {
