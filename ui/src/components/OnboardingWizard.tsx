@@ -72,11 +72,13 @@ type Step = 0 | 1 | 2 | 3 | 4 | 5;
 // wizard's registry-driven approach rather than a fixed union.
 type AdapterType = string;
 
-const MISSION_PROMPT_CHIPS = [
-  t("onboardingWizard.templateSaaS"),
-  t("onboardingWizard.templateContent"),
-  t("onboardingWizard.templateMarketplace")
-];
+function getMissionPromptChips(): string[] {
+  return [
+    t("onboardingWizard.templateSaaS"),
+    t("onboardingWizard.templateContent"),
+    t("onboardingWizard.templateMarketplace"),
+  ];
+}
 
 function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: string): string {
   const parts: string[] = [];
@@ -1375,7 +1377,7 @@ export function OnboardingWizard() {
                       </div>
                       {/* Prompt chips for inspiration */}
                       <div className="flex flex-wrap gap-1.5">
-                        {MISSION_PROMPT_CHIPS.map((chip) => (
+                        {getMissionPromptChips().map((chip) => (
                           <button
                             key={chip}
                             className={cn(

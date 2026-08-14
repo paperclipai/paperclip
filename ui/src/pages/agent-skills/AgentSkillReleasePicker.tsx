@@ -12,7 +12,9 @@ import {
 /** Sentinel value for the "no pin / live default" option (Radix forbids ""). */
 export const RELEASE_DEFAULT_VALUE = "default";
 
-const DEFAULT_LABEL = t("agentSkill.releasePicker.defaultLabel");
+function getDefaultLabel(): string {
+  return t("agentSkill.releasePicker.defaultLabel");
+}
 
 /**
  * Render a bundled release's calendar date. Plain `YYYY-MM-DD` strings (like the
@@ -72,7 +74,7 @@ export function AgentSkillReleasePicker({
   const selected = value ? releases.find((release) => release.id === value) ?? null : null;
   // Closed trigger shows the release name only; the `· released <date>` suffix
   // lives in the open menu, where dates are meaningful for comparing options.
-  const triggerLabel = selected ? releaseName(selected) : DEFAULT_LABEL;
+  const triggerLabel = selected ? releaseName(selected) : getDefaultLabel();
 
   return (
     <Select
@@ -85,10 +87,10 @@ export function AgentSkillReleasePicker({
         className="w-full max-w-(--sz-16rem) sm:w-(--sz-16rem)"
         aria-label={t("agentSkill.releasePicker.ariaLabel")}
       >
-        <SelectValue placeholder={DEFAULT_LABEL}>{triggerLabel}</SelectValue>
+        <SelectValue placeholder={getDefaultLabel()}>{triggerLabel}</SelectValue>
       </SelectTrigger>
       <SelectContent align="end" className="max-w-(--sz-20rem)">
-        <SelectItem value={RELEASE_DEFAULT_VALUE}>{DEFAULT_LABEL}</SelectItem>
+        <SelectItem value={RELEASE_DEFAULT_VALUE}>{getDefaultLabel()}</SelectItem>
         {releases.map((release) => (
           <SelectItem key={release.id} value={release.id}>
             <span className="flex items-center gap-2">

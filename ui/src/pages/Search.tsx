@@ -60,28 +60,32 @@ import { t, useTranslation } from "@/i18n";
 const SEARCH_DEBOUNCE_MS = 250;
 const IDENTIFIER_PATTERN = /^[A-Z]+-\d+$/;
 
-const SCOPE_LABELS: Record<CompanySearchScope, string> = {
-  all: t("search.scopeAll"),
-  issues: t("search.scopeIssues"),
-  comments: t("search.scopeComments"),
-  documents: t("search.scopeDocuments"),
-  artifacts: t("search.scopeArtifacts"),
-  agents: t("search.scopeAgents"),
-  projects: t("search.scopeProjects"),
-};
+function getScopeLabel(scope: CompanySearchScope): string {
+  switch (scope) {
+    case "all": return t("search.scopeAll");
+    case "issues": return t("search.scopeIssues");
+    case "comments": return t("search.scopeComments");
+    case "documents": return t("search.scopeDocuments");
+    case "artifacts": return t("search.scopeArtifacts");
+    case "agents": return t("search.scopeAgents");
+    case "projects": return t("search.scopeProjects");
+  }
+}
 
 type SubGroupKey = "issues" | "comments" | "documents" | "artifacts" | "agents" | "projects";
 
 const SUBGROUP_ORDER: SubGroupKey[] = ["issues", "comments", "documents", "artifacts", "agents", "projects"];
 
-const SUBGROUP_LABELS: Record<SubGroupKey, string> = {
-  issues: t("search.scopeIssues"),
-  comments: t("search.scopeComments"),
-  documents: t("search.scopeDocuments"),
-  artifacts: t("search.scopeArtifacts"),
-  agents: t("search.scopeAgents"),
-  projects: t("search.scopeProjects"),
-};
+function getSubgroupLabel(key: SubGroupKey): string {
+  switch (key) {
+    case "issues": return t("search.scopeIssues");
+    case "comments": return t("search.scopeComments");
+    case "documents": return t("search.scopeDocuments");
+    case "artifacts": return t("search.scopeArtifacts");
+    case "agents": return t("search.scopeAgents");
+    case "projects": return t("search.scopeProjects");
+  }
+}
 
 function classifyResult(result: CompanySearchResult): SubGroupKey {
   if (result.type === "artifact") return "artifacts";
@@ -114,7 +118,7 @@ function isCompanySearchScope(value: string | null): value is CompanySearchScope
 
 function describeScope(scope: CompanySearchScope) {
   if (scope === "all") return t("search.allScopes");
-  return SCOPE_LABELS[scope];
+  return getScopeLabel(scope);
 }
 
 function totalMatchCount(counts: Partial<Record<CompanySearchCountType, number>>): number {
@@ -523,7 +527,7 @@ export function Search() {
         value,
         label: (
           <span className="flex items-center">
-            {SCOPE_LABELS[value as CompanySearchScope]}
+            {getScopeLabel(value as CompanySearchScope)}
             {dashOut ? (
               <span className="ml-1.5 text-(length:--text-nano) text-muted-foreground">—</span>
             ) : count !== null ? (
@@ -954,11 +958,11 @@ function SearchTabContent({
           subgroups.map((group, groupIndex) => (
             <section
               key={group.key}
-              aria-label={SUBGROUP_LABELS[group.key]}
+              aria-label={getSubgroupLabel(group.key)}
               className={cn("flex flex-col", groupIndex > 0 && "mt-6")}
             >
               <IssueGroupHeader
-                label={SUBGROUP_LABELS[group.key]}
+                label={getSubgroupLabel(group.key)}
                 trailing={
                   <span className="text-xs font-normal tabular-nums text-muted-foreground">
                     {group.results.length}
