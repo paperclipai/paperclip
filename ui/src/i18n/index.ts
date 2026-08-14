@@ -24,10 +24,15 @@ if (typeof document !== "undefined") {
   document.documentElement.setAttribute("lang", resolveInitialLocale());
 }
 
-/** Persist the user's locale preference and switch the active language. */
-export function setLocale(locale: string) {
+/** Persist the user's locale preference and switch the active language.
+ *  Returns whether the preference was persisted; when storage is unavailable
+ *  the switch still applies for the session, and callers that need a reload
+ *  (to re-evaluate module-level t() caches) should only reload when true. */
+export function setLocale(locale: string): boolean {
+  let persisted = false;
   try {
     localStorage.setItem(LOCALE_STORAGE_KEY, locale);
+    persisted = true;
   } catch {
     // Storage may be unavailable (private mode); switching still applies for
     // the session.
@@ -37,6 +42,7 @@ export function setLocale(locale: string) {
     document.documentElement.setAttribute("lang", locale);
   }
   void i18n.changeLanguage(locale);
+  return persisted;
 }
 
 export function t(key: string, options: TOptions = {}) {
