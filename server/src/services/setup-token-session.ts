@@ -268,8 +268,6 @@ export const SETUP_TOKEN_SESSION_NOT_FOUND = "Setup-token login session not foun
 export const SETUP_TOKEN_SUBMIT_CONFLICT = "The setup-token login session cannot accept this code.";
 export const SETUP_TOKEN_RATE_LIMITED = "Too many setup-token login attempts. Try again later.";
 export const SETUP_TOKEN_CAP_EXCEEDED = "Too many active setup-token login sessions.";
-export const SETUP_TOKEN_TRANSPORT_INSECURE =
-  "This response requires a secure transport and is not available on this request.";
 // The fixed error for a completion that is not ready. The session is not
 // `completed` with a stored secret yet. It leaks no session state.
 export const SETUP_TOKEN_TOKEN_UNAVAILABLE = "The setup-token is not available for this session.";

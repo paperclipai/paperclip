@@ -1,12 +1,19 @@
 import { z } from "zod";
 import { AGENT_ADAPTER_TYPES } from "../constants.js";
-import { ADAPTER_AUTH_PANEL_MODES } from "../types/agent.js";
+import { ADAPTER_AUTH_PANEL_MODES, SETUP_TOKEN_TRANSPORT_ADVISORY_CODE } from "../types/agent.js";
 import {
   adapterAuthSessionFailureSchema,
   adapterAuthSessionStatusSchema,
 } from "./adapter-auth-session.js";
 
 const isoDateTime = z.union([z.date(), z.string().datetime()]);
+
+// The transport advisory schema. A guarded confidential response carries it when
+// the login rides a non-confidential transport. The client shows a disclaimer.
+export const setupTokenTransportAdvisorySchema = z.object({
+  code: z.literal(SETUP_TOKEN_TRANSPORT_ADVISORY_CODE),
+}).strict();
+export type SetupTokenTransportAdvisory = z.infer<typeof setupTokenTransportAdvisorySchema>;
 
 // The start request for a company-and-environment Claude login session. The
 // company and the owner user come from the authenticated caller, not from this
@@ -40,6 +47,7 @@ export const claudeSetupTokenSessionResponseSchema = z.object({
   status: adapterAuthSessionStatusSchema,
   expiresAt: isoDateTime.nullable(),
   failure: adapterAuthSessionFailureSchema.nullable(),
+  transportAdvisory: setupTokenTransportAdvisorySchema.nullable().optional(),
 }).strict();
 export type ClaudeSetupTokenSessionResponse =
   z.infer<typeof claudeSetupTokenSessionResponseSchema>;
@@ -48,6 +56,7 @@ export type ClaudeSetupTokenSessionResponse =
 // user opens. It carries no server-displayed code.
 export const claudeSetupTokenSessionPromptSchema = z.object({
   authorizationUrl: z.string().min(1),
+  transportAdvisory: setupTokenTransportAdvisorySchema.nullable().optional(),
 }).strict();
 export type ClaudeSetupTokenSessionPrompt =
   z.infer<typeof claudeSetupTokenSessionPromptSchema>;

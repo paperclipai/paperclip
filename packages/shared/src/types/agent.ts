@@ -224,12 +224,32 @@ export type AdapterAuthPanelMode = (typeof ADAPTER_AUTH_PANEL_MODES)[number];
 // different: the provider shows a browser code, and the user submits that code.
 // So this contract carries a submitted browser code, not a displayed code.
 
+// The transport advisory for a setup-token confidential response. The product
+// owner set a non-negotiable requirement: do not force TLS. Many users run
+// Paperclip over plain HTTP on a home server or a Tailscale tailnet. So the
+// setup-token routes do not block a non-confidential transport. They attach this
+// advisory to the confidential response instead. The client shows a visible,
+// non-blocking disclaimer and the login still proceeds. A confidential transport
+// (direct TLS, a local-trusted loopback, or an allowlisted TLS proxy) carries no
+// advisory.
+export const SETUP_TOKEN_TRANSPORT_ADVISORY_CODE = "insecure_transport" as const;
+export type SetupTokenTransportAdvisoryCode = typeof SETUP_TOKEN_TRANSPORT_ADVISORY_CODE;
+
+// The advisory signal on a setup-token confidential response. A `null` or an
+// absent value means the transport is confidential and needs no disclaimer.
+export interface SetupTokenTransportAdvisory {
+  code: SetupTokenTransportAdvisoryCode;
+}
+
 // The one-time Claude login prompt. The server returns it only through an owner
 // read. It carries the authorization URL the user opens. The provider shows the
 // browser code in the browser; the user submits that code back to the server.
 // This prompt carries no server-displayed code.
 export interface ClaudeSetupTokenSessionPrompt {
   authorizationUrl: string;
+  // The transport advisory. It is present and non-null when the login rides a
+  // non-confidential transport. The client shows a disclaimer, not a block.
+  transportAdvisory?: SetupTokenTransportAdvisory | null;
 }
 
 // The public Claude login-session response. It reuses the adapter login-session
@@ -242,6 +262,10 @@ export interface ClaudeSetupTokenSessionResponse {
   status: AdapterAuthSessionStatus;
   expiresAt: string | null;
   failure: AdapterAuthSessionFailure | null;
+  // The transport advisory. A guarded route (the browser-code submit) sets it
+  // when the login rides a non-confidential transport. The status and the start
+  // responses omit it, because they carry no confidential value.
+  transportAdvisory?: SetupTokenTransportAdvisory | null;
 }
 
 // The owner read of a Claude login session. It adds the panel mode and the

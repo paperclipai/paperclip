@@ -104,7 +104,6 @@ import {
   assessConfidentialStartup,
   evaluateConfidentialTransport,
   SETUP_TOKEN_START_FAILED,
-  SETUP_TOKEN_TRANSPORT_INSECURE,
   SETUP_TOKEN_SESSION_NOT_FOUND,
   type ConfidentialTransportConfig,
   type SetupTokenCleanupRecord,
@@ -123,8 +122,11 @@ import type {
   AdapterAuthSessionFailure,
   ClaudeSetupTokenSessionResponse,
   ClaudeSetupTokenSessionOwnerResponse,
+  ClaudeSetupTokenSessionPrompt,
   ClaudeSetupTokenCompletionResponse,
+  SetupTokenTransportAdvisory,
 } from "@paperclipai/shared";
+import { SETUP_TOKEN_TRANSPORT_ADVISORY_CODE } from "@paperclipai/shared";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import {
   checkStagedCredentialReadiness,
@@ -4411,12 +4413,18 @@ export function agentRoutes(
   };
 
   /**
-   * Applies the fail-closed confidential transport guard (SR-6, SR-7). It reads
-   * the raw socket TLS bit and the immediate peer address, so the global
-   * `trust proxy` setting cannot influence the decision. It returns false and
-   * sends the fixed no-secret error when the transport is not confidential.
+   * Assesses the setup-token confidential transport (SR-6, SR-7). The product
+   * owner set a non-negotiable requirement: do not force TLS. Many users run
+   * Paperclip over plain HTTP on a home server or a Tailscale tailnet. So the
+   * route does not block a non-confidential transport. It returns a non-blocking
+   * advisory instead, and the route attaches it to the confidential response.
+   * The client shows a visible disclaimer and lets the login proceed. The
+   * function reads the raw socket TLS bit and the immediate peer address, so the
+   * global `trust proxy` setting cannot change the result. It returns null when
+   * the transport is confidential (direct TLS, a local-trusted loopback, or an
+   * allowlisted TLS proxy), so a confidential response shows no disclaimer.
    */
-  const enforceSetupTokenTransport = (req: Request, res: Response): boolean => {
+  const assessSetupTokenTransport = (req: Request): SetupTokenTransportAdvisory | null => {
     const socket = req.socket as { encrypted?: boolean; remoteAddress?: string };
     const forwardedProto = req.headers["x-forwarded-proto"];
     const decision = evaluateConfidentialTransport(setupTokenConfidentialConfig, {
@@ -4424,12 +4432,7 @@ export function agentRoutes(
       remoteAddress: socket?.remoteAddress,
       forwardedProto: Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto,
     });
-    if (!decision.allowed) {
-      res.setHeader("Cache-Control", "no-store");
-      res.status(403).json({ error: SETUP_TOKEN_TRANSPORT_INSECURE });
-      return false;
-    }
-    return true;
+    return decision.allowed ? null : { code: SETUP_TOKEN_TRANSPORT_ADVISORY_CODE };
   };
 
   const sendSetupTokenError = (res: Response, err: unknown): void => {
@@ -4480,12 +4483,13 @@ export function agentRoutes(
     if (!agent) return;
     const scope = buildSetupTokenScope(req, agent);
     res.setHeader("Cache-Control", "no-store");
-    // SR-6 and SR-7: the full login URL is a confidential response.
-    if (!enforceSetupTokenTransport(req, res)) return;
+    // SR-6 and SR-7: the full login URL is a confidential response. The route
+    // does not force TLS. It attaches a non-blocking advisory instead.
+    const transportAdvisory = assessSetupTokenTransport(req);
     try {
       const view = setupTokenLoginService.readPrompt(req.params.sessionId as string, scope);
       // SR-5: the full login URL rides only in this authorized owner response.
-      res.json({ state: view.state, loginUrl: view.loginUrl });
+      res.json({ state: view.state, loginUrl: view.loginUrl, transportAdvisory });
     } catch (err) {
       sendSetupTokenError(res, err);
     }
@@ -4498,9 +4502,9 @@ export function agentRoutes(
     const browserCode = typeof req.body?.browserCode === "string" ? req.body.browserCode : null;
     res.setHeader("Cache-Control", "no-store");
     // SR-6 and SR-7: the browser code is the confidential OAuth authorization
-    // secret. Enforce the fail-closed confidential transport guard before the
-    // route reads it, so the code never rides an untrusted transport.
-    if (!enforceSetupTokenTransport(req, res)) return;
+    // secret. The route does not force TLS. It attaches a non-blocking advisory
+    // to the response instead, so the client can show a disclaimer.
+    const transportAdvisory = assessSetupTokenTransport(req);
     if (!browserCode) {
       // The route echoes no input; it returns fixed error text only (SR-1).
       res.status(400).json({ error: "A browserCode is required." });
@@ -4508,7 +4512,7 @@ export function agentRoutes(
     }
     try {
       const result = setupTokenLoginService.submitCode(req.params.sessionId as string, scope, browserCode);
-      res.json({ state: result.state });
+      res.json({ state: result.state, transportAdvisory });
     } catch (err) {
       sendSetupTokenError(res, err);
     }
@@ -4543,14 +4547,16 @@ export function agentRoutes(
     if (!agent) return;
     const scope = buildSetupTokenScope(req, agent);
     res.setHeader("Cache-Control", "no-store");
-    if (!enforceSetupTokenTransport(req, res)) return;
+    // SR-6 and SR-7: the completion read is a confidential response. The route
+    // does not force TLS. It attaches a non-blocking advisory instead.
+    const transportAdvisory = assessSetupTokenTransport(req);
     try {
       // The service returns the non-secret `storedSessionId` claim from a
       // completed session whose owner-bound secret write succeeded. It returns the
       // fixed unavailable error when the session is not completed with a stored
       // secret. The response carries no token (Control 1).
       const result = setupTokenLoginService.completeSession(req.params.sessionId as string, scope);
-      res.json({ storedSessionId: result.storedSessionId });
+      res.json({ storedSessionId: result.storedSessionId, transportAdvisory });
     } catch (err) {
       sendSetupTokenError(res, err);
     }
@@ -4720,8 +4726,9 @@ export function agentRoutes(
     const ownerUserId = resolveCompanySessionOwner(req, companyId, res);
     if (ownerUserId === null) return;
     res.setHeader("Cache-Control", "no-store");
-    // SR-6 and SR-7: the full login URL is a confidential response.
-    if (!enforceSetupTokenTransport(req, res)) return;
+    // SR-6 and SR-7: the full login URL is a confidential response. The route
+    // does not force TLS. It attaches a non-blocking advisory instead.
+    const transportAdvisory = assessSetupTokenTransport(req);
     try {
       const sessionId = req.params.sessionId as string;
       const scope = setupTokenLoginService.resolveCompanyScope(
@@ -4737,7 +4744,11 @@ export function agentRoutes(
         return;
       }
       // SR-5: the full login URL rides only in this authorized owner response.
-      res.json({ authorizationUrl: descriptor.loginUrl });
+      const body: ClaudeSetupTokenSessionPrompt = {
+        authorizationUrl: descriptor.loginUrl,
+        transportAdvisory,
+      };
+      res.json(body);
     } catch (err) {
       sendSetupTokenError(res, err);
     }
@@ -4750,9 +4761,9 @@ export function agentRoutes(
     const browserCode = typeof req.body?.browserCode === "string" ? req.body.browserCode : null;
     res.setHeader("Cache-Control", "no-store");
     // SR-6 and SR-7: the browser code is the confidential OAuth authorization
-    // secret. Enforce the fail-closed transport guard before the route forwards
-    // it, so the code never rides an untrusted transport.
-    if (!enforceSetupTokenTransport(req, res)) return;
+    // secret. The route does not force TLS. It attaches a non-blocking advisory
+    // to the response instead, so the client can show a disclaimer.
+    const transportAdvisory = assessSetupTokenTransport(req);
     // Validate the browser code with the shared grammar before the route forwards
     // it. The grammar rejects an empty code, an oversized code, and a control
     // byte. The route echoes no input; it returns fixed error text only (SR-1).
@@ -4768,7 +4779,11 @@ export function agentRoutes(
       );
       setupTokenLoginService.submitCode(sessionId, scope, browserCode);
       const descriptor = setupTokenLoginService.describeOwned(sessionId, scope);
-      res.json(toClaudePublicResponse(descriptor));
+      const body: ClaudeSetupTokenSessionResponse = {
+        ...toClaudePublicResponse(descriptor),
+        transportAdvisory,
+      };
+      res.json(body);
     } catch (err) {
       sendSetupTokenError(res, err);
     }

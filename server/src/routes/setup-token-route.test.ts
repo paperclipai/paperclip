@@ -12,8 +12,9 @@
 //     metadata, or a non-owner response. The owner read-prompt response carries
 //     the full URL with `Cache-Control: no-store`; every other response carries
 //     the sanitized URL form only.
-//   * SR-6 and SR-7: the fail-closed confidential transport guard rejects a
-//     non-TLS request and a spoofed forwarded protocol through the wired route.
+//   * SR-6 and SR-7: the route does not force TLS. On a non-confidential
+//     transport it proceeds and attaches a non-blocking advisory to the
+//     response, so the login completes and the client shows a disclaimer.
 
 import express from "express";
 import { Writable } from "node:stream";
@@ -23,7 +24,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SETUP_TOKEN_SESSION_NOT_FOUND,
   SETUP_TOKEN_SUBMIT_CONFLICT,
-  SETUP_TOKEN_TRANSPORT_INSECURE,
   type SetupTokenCleanupRecord,
   type SetupTokenCleanupStore,
   type SetupTokenLeaseManager,
@@ -31,6 +31,7 @@ import {
   type SetupTokenLoginProcessFactory,
   type SetupTokenSecretWriter,
 } from "../services/setup-token-session.js";
+import { SETUP_TOKEN_TRANSPORT_ADVISORY_CODE } from "@paperclipai/shared";
 
 // --- Test fixtures -----------------------------------------------------------
 
@@ -410,10 +411,14 @@ describe("setup-token login route — full path", () => {
     expect(promptRes.body.loginUrl).toBe(FULL_LOGIN_URL);
     expect(promptRes.body.state).toBe("awaiting_code");
     expect(promptRes.headers["cache-control"]).toBe("no-store");
+    // The default deployment is a local-trusted loopback: a confidential
+    // transport. So the response carries no advisory.
+    expect(promptRes.body.transportAdvisory).toBeNull();
 
     // Submit the one browser code. The response carries no secret.
     const codeRes = await request(app).post(`${BASE}/${sessionId}/code`).send({ browserCode: BROWSER_CODE });
     expect(codeRes.status, JSON.stringify(codeRes.body)).toBe(200);
+    expect(codeRes.body.transportAdvisory).toBeNull();
     expect(transport.submittedCodes).toEqual([BROWSER_CODE]);
     expectNoSecret(JSON.stringify(codeRes.body));
 
@@ -428,6 +433,7 @@ describe("setup-token login route — full path", () => {
     expect(tokenRes.status, JSON.stringify(tokenRes.body)).toBe(200);
     expect(tokenRes.body.storedSessionId).toBe(sessionId);
     expect(tokenRes.body.token).toBeUndefined();
+    expect(tokenRes.body.transportAdvisory).toBeNull();
     expect(tokenRes.headers["cache-control"]).toBe("no-store");
     expectNoSecret(JSON.stringify(tokenRes.body));
 
@@ -522,68 +528,49 @@ describe("setup-token login route — SR-1 and SR-5 (no secret in a sink)", () =
   });
 });
 
-describe("setup-token login route — SR-6 and SR-7 (fail-closed transport guard)", () => {
-  it("rejects a non-TLS confidential request and a spoofed forwarded protocol", async () => {
-    // Authenticated mode with no proxy allowlist: a loopback HTTP peer does not
-    // pass the confidential guard, so read-prompt and receive-token fail closed.
+describe("setup-token login route — SR-6 and SR-7 (advisory, non-blocking transport)", () => {
+  it("proceeds on a non-confidential transport and attaches the advisory", async () => {
+    // Authenticated mode with no proxy allowlist: a loopback HTTP peer is not a
+    // confidential transport. The product owner set a non-negotiable requirement:
+    // do not force TLS. So read-prompt, submit-code, and completion proceed and
+    // each carries the non-blocking advisory.
     const transport = buildTransport({ onSubmit: "complete" });
     const { app } = await createApp({ transport, deploymentMode: "authenticated", confidentialProxyAllowlist: [] });
 
     const startRes = await request(app).post(BASE).send({});
     const sessionId = startRes.body.sessionId as string;
 
-    // read-prompt over plain HTTP → fixed no-secret error, no URL.
+    // read-prompt over plain HTTP → the login URL surfaces with the advisory.
     const promptRes = await request(app).get(`${BASE}/${sessionId}/prompt`).send();
-    expect(promptRes.status).toBe(403);
-    expect(promptRes.body.error).toBe(SETUP_TOKEN_TRANSPORT_INSECURE);
+    expect(promptRes.status).toBe(200);
+    expect(promptRes.body.loginUrl).toBe(FULL_LOGIN_URL);
+    expect(promptRes.body.transportAdvisory).toEqual({ code: SETUP_TOKEN_TRANSPORT_ADVISORY_CODE });
     expect(promptRes.headers["cache-control"]).toBe("no-store");
-    expect(promptRes.body.loginUrl).toBeUndefined();
-    expectNoSecret(JSON.stringify(promptRes.body));
 
-    // A spoofed forwarded protocol does not unlock the response. The guard reads
-    // the raw socket, not the header, unless the peer is on the allowlist.
-    const spoofRes = await request(app)
-      .get(`${BASE}/${sessionId}/prompt`)
-      .set("X-Forwarded-Proto", "https")
-      .send();
-    expect(spoofRes.status).toBe(403);
-    expect(spoofRes.body.error).toBe(SETUP_TOKEN_TRANSPORT_INSECURE);
-    expectNoSecret(JSON.stringify(spoofRes.body));
-
-    // submit-code over plain HTTP → the guard fails closed. The browser code is
-    // the confidential OAuth secret, so it must never ride an untrusted transport.
-    // A spoofed forwarded protocol does not unlock it either. The code never
-    // reaches the transport.
+    // submit-code over plain HTTP → the route accepts the code and returns the
+    // advisory. The login proceeds.
     const codeRes = await request(app).post(`${BASE}/${sessionId}/code`).send({ browserCode: BROWSER_CODE });
-    expect(codeRes.status).toBe(403);
-    expect(codeRes.body.error).toBe(SETUP_TOKEN_TRANSPORT_INSECURE);
+    expect(codeRes.status).toBe(200);
+    expect(codeRes.body.transportAdvisory).toEqual({ code: SETUP_TOKEN_TRANSPORT_ADVISORY_CODE });
+    expect(transport.submittedCodes).toEqual([BROWSER_CODE]);
     expectNoSecret(JSON.stringify(codeRes.body));
 
-    const spoofCodeRes = await request(app)
-      .post(`${BASE}/${sessionId}/code`)
-      .set("X-Forwarded-Proto", "https")
-      .send({ browserCode: BROWSER_CODE });
-    expect(spoofCodeRes.status).toBe(403);
-    expect(spoofCodeRes.body.error).toBe(SETUP_TOKEN_TRANSPORT_INSECURE);
-    expectNoSecret(JSON.stringify(spoofCodeRes.body));
+    await settle();
 
-    expect(transport.submittedCodes).toEqual([]);
-
-    // The completion over plain HTTP also fails closed and returns no claim.
-    const tokenRes = await request(app)
-      .post(`${BASE}/${sessionId}/token`)
-      .set("X-Forwarded-Proto", "https")
-      .send({});
-    expect(tokenRes.status).toBe(403);
-    expect(tokenRes.body.error).toBe(SETUP_TOKEN_TRANSPORT_INSECURE);
+    // The completion over plain HTTP returns the non-secret claim and the
+    // advisory. It still carries no token.
+    const tokenRes = await request(app).post(`${BASE}/${sessionId}/token`).send({});
+    expect(tokenRes.status).toBe(200);
+    expect(tokenRes.body.storedSessionId).toBe(sessionId);
     expect(tokenRes.body.token).toBeUndefined();
-    expect(tokenRes.body.storedSessionId).toBeUndefined();
+    expect(tokenRes.body.transportAdvisory).toEqual({ code: SETUP_TOKEN_TRANSPORT_ADVISORY_CODE });
     expectNoSecret(JSON.stringify(tokenRes.body));
   });
 
-  it("ignores a forwarded protocol from a non-allowlisted peer", async () => {
-    // A non-empty allowlist that does not match the loopback peer still fails
-    // closed for a forwarded HTTPS protocol.
+  it("attaches the advisory for a forwarded protocol from a non-allowlisted peer", async () => {
+    // A non-empty allowlist that does not match the loopback peer is still a
+    // non-confidential transport for a forwarded HTTPS protocol. The route reads
+    // the raw socket, not the header. So the prompt proceeds with the advisory.
     const transport = buildTransport({ onSubmit: "pending" });
     const { app } = await createApp({
       transport,
@@ -598,9 +585,9 @@ describe("setup-token login route — SR-6 and SR-7 (fail-closed transport guard
       .get(`${BASE}/${sessionId}/prompt`)
       .set("X-Forwarded-Proto", "https")
       .send();
-    expect(promptRes.status).toBe(403);
-    expect(promptRes.body.error).toBe(SETUP_TOKEN_TRANSPORT_INSECURE);
-    expectNoSecret(JSON.stringify(promptRes.body));
+    expect(promptRes.status).toBe(200);
+    expect(promptRes.body.loginUrl).toBe(FULL_LOGIN_URL);
+    expect(promptRes.body.transportAdvisory).toEqual({ code: SETUP_TOKEN_TRANSPORT_ADVISORY_CODE });
   });
 });
 
@@ -659,12 +646,16 @@ describe("company-and-environment setup-token route — full path", () => {
     expect(promptRes.status, JSON.stringify(promptRes.body)).toBe(200);
     expect(promptRes.body.authorizationUrl).toBe(FULL_LOGIN_URL);
     expect(promptRes.headers["cache-control"]).toBe("no-store");
+    // The default deployment is a local-trusted loopback: a confidential
+    // transport. So the prompt carries no advisory.
+    expect(promptRes.body.transportAdvisory).toBeNull();
 
     // Submit the one browser code. The response carries no secret.
     const codeRes = await request(app)
       .post(`${COMPANY_BASE}/${sessionId}/code`)
       .send({ browserCode: BROWSER_CODE });
     expect(codeRes.status, JSON.stringify(codeRes.body)).toBe(200);
+    expect(codeRes.body.transportAdvisory).toBeNull();
     expect(transport.submittedCodes).toEqual([BROWSER_CODE]);
     expectNoSecret(JSON.stringify(codeRes.body));
 
@@ -872,8 +863,8 @@ describe("company-and-environment setup-token route — browser-code grammar", (
   });
 });
 
-describe("company-and-environment setup-token route — fail-closed transport guard", () => {
-  it("rejects a non-TLS prompt and code request", async () => {
+describe("company-and-environment setup-token route — advisory transport", () => {
+  it("proceeds on a non-TLS prompt and code request and attaches the advisory", async () => {
     const transport = buildTransport({ onSubmit: "complete" });
     const { app } = await createApp({
       transport,
@@ -884,20 +875,21 @@ describe("company-and-environment setup-token route — fail-closed transport gu
     const startRes = await startCompanySession(app);
     const sessionId = startRes.body.sessionId as string;
 
-    // The prompt over plain HTTP fails closed and returns no URL.
+    // The prompt over plain HTTP surfaces the URL with the advisory. The URL
+    // query is the owner-only confidential value, so the body holds it by design.
     const promptRes = await request(app).get(`${COMPANY_BASE}/${sessionId}/prompt`).send();
-    expect(promptRes.status).toBe(403);
-    expect(promptRes.body.error).toBe(SETUP_TOKEN_TRANSPORT_INSECURE);
-    expect(promptRes.body.authorizationUrl).toBeUndefined();
-    expectNoSecret(JSON.stringify(promptRes.body));
+    expect(promptRes.status).toBe(200);
+    expect(promptRes.body.authorizationUrl).toBe(FULL_LOGIN_URL);
+    expect(promptRes.body.transportAdvisory).toEqual({ code: SETUP_TOKEN_TRANSPORT_ADVISORY_CODE });
 
-    // The code over plain HTTP fails closed. The code never reaches the process.
+    // The code over plain HTTP proceeds. The code reaches the process and the
+    // response carries the advisory.
     const codeRes = await request(app)
       .post(`${COMPANY_BASE}/${sessionId}/code`)
       .send({ browserCode: BROWSER_CODE });
-    expect(codeRes.status).toBe(403);
-    expect(codeRes.body.error).toBe(SETUP_TOKEN_TRANSPORT_INSECURE);
-    expect(transport.submittedCodes).toEqual([]);
+    expect(codeRes.status).toBe(200);
+    expect(codeRes.body.transportAdvisory).toEqual({ code: SETUP_TOKEN_TRANSPORT_ADVISORY_CODE });
+    expect(transport.submittedCodes).toEqual([BROWSER_CODE]);
     expectNoSecret(JSON.stringify(codeRes.body));
   });
 });

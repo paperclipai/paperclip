@@ -1213,6 +1213,36 @@ describe("AgentConfigForm environment selector", () => {
     expect(
       result.container.querySelector('input[aria-label="Browser code"]'),
     ).toBeTruthy();
+    // The default prompt carries no advisory: a confidential transport. So the
+    // panel shows no disclaimer.
+    expect(result.container.textContent).not.toContain("not encrypted");
+  });
+
+  it("shows a non-blocking disclaimer when the transport advisory is present", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    // The guarded prompt read reports a non-confidential transport. The server
+    // does not block the login; it attaches the advisory. The panel shows a
+    // disclaimer and the login still proceeds.
+    mockAgentsApi.getClaudeSetupTokenLoginPrompt.mockResolvedValue({
+      authorizationUrl: "https://claude.example.test/authorize",
+      transportAdvisory: { code: "insecure_transport" },
+    });
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() => (result.container.textContent ?? "").includes("not encrypted"));
+
+    // The disclaimer states the transport risk in plain language.
+    expect(result.container.textContent).toContain("not encrypted");
+    expect(result.container.textContent).toContain("clear text");
+    // The login still proceeds: the panel shows the URL and the browser-code
+    // input, so the disclaimer never blocks the flow.
+    expect(result.container.textContent).toContain("https://claude.example.test/authorize");
+    expect(
+      result.container.querySelector('input[aria-label="Browser code"]'),
+    ).toBeTruthy();
   });
 
   it("submits one browser code and clears the input after submit", async () => {

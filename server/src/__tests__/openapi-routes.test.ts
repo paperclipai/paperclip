@@ -346,9 +346,12 @@ describe("openapi routes", () => {
     // The owner start response adds the panel mode and the one-time prompt.
     expect((responseSchemas.start.properties as Record<string, unknown>).panelMode).toBeDefined();
     expect((responseSchemas.start.properties as Record<string, unknown>).prompt).toBeDefined();
-    // The prompt route returns the authorization URL only.
+    // The prompt route returns the authorization URL and the optional transport
+    // advisory. The advisory is present on a non-confidential transport, so the
+    // client can show a non-blocking disclaimer.
     expect(Object.keys(responseSchemas.prompt.properties as Record<string, unknown>)).toEqual([
       "authorizationUrl",
+      "transportAdvisory",
     ]);
   });
 });

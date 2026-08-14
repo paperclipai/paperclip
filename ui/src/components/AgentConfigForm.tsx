@@ -2110,6 +2110,10 @@ function SubmittedBrowserCodeLoginPanel({
   // The server delivers the authorization URL on the guarded prompt read only.
   // Latch it so a later poll does not hide the URL.
   const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
+  // True when the guarded prompt read reports a non-confidential transport. The
+  // server does not block a plain-HTTP login. The panel shows a non-blocking
+  // disclaimer and the login still proceeds. Latch it beside the URL.
+  const [transportInsecure, setTransportInsecure] = useState(false);
   // The browser code the user submits. The panel clears it right after submit, so
   // the secret never lingers in the input.
   const [browserCode, setBrowserCode] = useState("");
@@ -2124,6 +2128,7 @@ function SubmittedBrowserCodeLoginPanel({
   const resetLocalState = () => {
     setStartError(null);
     setAuthorizationUrl(null);
+    setTransportInsecure(false);
     setBrowserCode("");
     setStoredSessionId(null);
     setCompletionFailed(false);
@@ -2187,6 +2192,9 @@ function SubmittedBrowserCodeLoginPanel({
   useEffect(() => {
     const url = promptQuery.data?.authorizationUrl ?? null;
     if (url) setAuthorizationUrl(url);
+    // The advisory rides the same guarded prompt read as the URL. Latch it, so a
+    // later poll does not clear the disclaimer.
+    if (promptQuery.data?.transportAdvisory) setTransportInsecure(true);
   }, [promptQuery.data]);
 
   const submitCode = useMutation({
@@ -2294,6 +2302,17 @@ function SubmittedBrowserCodeLoginPanel({
 
         {isActive && authorizationUrl && !isCompleting && (
           <div className="space-y-2">
+            {transportInsecure && (
+              <div
+                className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-2 py-1.5 text-(length:--text-micro) text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200"
+              >
+                <TriangleAlert className="size-3 shrink-0 mt-0.5" />
+                <span>
+                  This connection is not encrypted. The login code travels in clear text on this
+                  network. Continue only on a network you trust.
+                </span>
+              </div>
+            )}
             <div className="text-(length:--text-micro) text-muted-foreground">
               Open the authorization page, then enter the browser code it shows.
             </div>
