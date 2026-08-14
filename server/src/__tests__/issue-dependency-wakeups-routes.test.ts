@@ -221,6 +221,7 @@ describe("issue dependency wakeups in issue routes", () => {
           }),
         }),
       );
+      expect(mockWakeup).toHaveBeenCalledTimes(1);
     });
   });
 

@@ -53,6 +53,7 @@ type TransitionInput = {
   commentBody?: string | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
   monitorExplicitlyUpdated?: boolean;
+  preservePendingStageOnBlocked?: boolean;
 };
 
 type TransitionResult = {
@@ -713,6 +714,16 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       });
     if (!currentParticipant) {
       throw unprocessable(`No eligible ${activeStage.type} participant is configured for this issue`);
+    }
+
+    // Unresolved first-class blockers suspend an active stage; they do not
+    // decide it. The route enables this only after it has verified the blocker
+    // state (including task-watchdog subtree authorization). Keep the pending
+    // stage, participant, return assignee, and policy intact so the same review
+    // path can resume when dependency wakeup fires.
+    if (requestedStatus === "blocked" && input.preservePendingStageOnBlocked) {
+      patch.status = "blocked";
+      return { patch };
     }
 
     // An escalated review is deliberately held by a human who is not in the

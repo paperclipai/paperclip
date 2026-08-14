@@ -1929,6 +1929,65 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockIssueService.update).toHaveBeenCalledWith(issueId, expect.objectContaining({ status }));
     });
 
+    it("lets an authorized watchdog block an active review without impersonating its reviewer", async () => {
+      denyBaseBoundary();
+      const stageId = "66666666-6666-4666-8666-666666666666";
+      const executionPolicy = {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ type: "agent", agentId: ownerAgentId }],
+        }],
+      };
+      const executionState = {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: ownerAgentId },
+        returnAssignee: { type: "agent", agentId: "99999999-9999-4999-8999-999999999999" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      };
+      const reviewIssue = makeIssue({
+        status: "in_review",
+        assigneeAgentId: ownerAgentId,
+        executionPolicy,
+        executionState,
+      });
+      mockIssueService.getById.mockResolvedValue(reviewIssue);
+      mockIssueService.getDependencyReadiness.mockResolvedValue({
+        blockerIssueIds: ["88888888-8888-4888-8888-888888888888"],
+        isDependencyReady: false,
+        unresolvedBlockerCount: 1,
+      });
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...reviewIssue,
+        ...patch,
+      }));
+
+      const app = await createApp(watchdogActor(), createWatchdogDb());
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "blocked" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({
+        status: "blocked",
+        assigneeAgentId: ownerAgentId,
+        executionPolicy,
+        executionState,
+      });
+      const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+      expect(updatePatch).toMatchObject({ status: "blocked", actorAgentId: peerAgentId });
+      expect(updatePatch).not.toHaveProperty("executionPolicy");
+      expect(updatePatch).not.toHaveProperty("executionState");
+      expect(updatePatch).not.toHaveProperty("assigneeAgentId");
+      expect(updatePatch).not.toHaveProperty("assigneeUserId");
+    });
+
     it("lets a watchdog run transition a watched issue to in_review with a live review path", async () => {
       denyBaseBoundary();
       mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress", assigneeAgentId: ownerAgentId }));

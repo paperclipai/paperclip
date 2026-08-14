@@ -8980,6 +8980,43 @@ export function issueRoutes(
       updateFields.executionPolicy !== undefined
         ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
         : previousExecutionPolicy;
+    const existingExecutionState = parseIssueExecutionState(existing.executionState);
+    const activeStageParticipant = existingExecutionState?.status === "pending"
+      ? existingExecutionState.currentParticipant
+      : null;
+    const actorIsActiveStageParticipant = activeStageParticipant?.type === "agent"
+      ? activeStageParticipant.agentId === actor.agentId
+      : activeStageParticipant?.type === "user" && actor.actorType === "user"
+        ? activeStageParticipant.userId === actor.actorId
+        : false;
+    const blockerMutationRequested = Array.isArray(req.body.blockedByIssueIds);
+    const activeStageBlockingDispositionRequested =
+      updateFields.status === "blocked" ||
+      (updateFields.status === "in_progress" && actorIsActiveStageParticipant);
+    let preservePendingStageOnBlocked = false;
+    if (
+      activeStageParticipant &&
+      (blockerMutationRequested || activeStageBlockingDispositionRequested)
+    ) {
+      const requestedBlockerIds = blockerMutationRequested
+        ? [...new Set(req.body.blockedByIssueIds as string[])]
+        : null;
+      const hasUnresolvedBlocker = requestedBlockerIds
+        ? requestedBlockerIds.length > 0 && await db.select({ id: issueRows.id }).from(issueRows).where(and(
+          eq(issueRows.companyId, existing.companyId),
+          inArray(issueRows.id, requestedBlockerIds),
+          notInArray(issueRows.status, ["done", "cancelled"]),
+        )).limit(1).then((rows) => rows.length > 0)
+        : (await svc.getDependencyReadiness(existing.id)).unresolvedBlockerCount > 0;
+      if (hasUnresolvedBlocker) {
+        // Adding an unresolved dependency to an active stage is itself the
+        // server-owned blocked disposition. Likewise, translate the active
+        // participant's changes-requested status into that disposition: moving
+        // to in_progress cannot be valid until the blockers resolve.
+        updateFields.status = "blocked";
+        preservePendingStageOnBlocked = true;
+      }
+    }
     if (normalizedAssigneeAgentId !== undefined) {
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
     }
@@ -9010,6 +9047,7 @@ export function issueRoutes(
       commentBody,
       reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
       monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,
+      preservePendingStageOnBlocked,
     });
     const decisionId = transition.decision ? randomUUID() : null;
     if (decisionId) {
@@ -9083,7 +9121,6 @@ export function issueRoutes(
       }
     }
     if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
-      const existingExecutionState = parseIssueExecutionState(existing.executionState);
       if (!existingExecutionState || existingExecutionState.status !== "pending") {
         if (reviewRequest !== null) {
           res.status(422).json({ error: "reviewRequest requires an active review or approval stage" });
