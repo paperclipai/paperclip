@@ -4816,8 +4816,8 @@ export function agentRoutes(
     const ownerUserId = resolveCompanySessionOwner(req, companyId, res);
     if (ownerUserId === null) return;
     res.setHeader("Cache-Control", "no-store");
+    const sessionId = req.params.sessionId as string;
     try {
-      const sessionId = req.params.sessionId as string;
       const scope = setupTokenLoginService.resolveCompanyScope(
         sessionId,
         companySetupTokenKey(companyId, ownerUserId),
@@ -4825,6 +4825,22 @@ export function agentRoutes(
       await setupTokenLoginService.cancel(sessionId, scope);
       res.status(200).json({});
     } catch (err) {
+      // Cancel is idempotent. The service removes a session when it reaches a
+      // terminal state, so a repeat cancel, a cancel after a timeout, or a
+      // cancel of an unknown session finds no record and throws the fixed
+      // not-found error. Return the same success as an active cancel, so the
+      // client stops the poll and returns to its start state.
+      //
+      // This keeps the not-found uniform (SR-3). The 200 response is identical
+      // for a missing session, an already-terminal session, and a foreign
+      // session, so the route never confirms a session exists and cancels
+      // nothing for a foreign id. A non-member still fails closed with a 404 at
+      // the company-access gate above, before this handler runs. A non-404
+      // error still surfaces.
+      if (err instanceof SetupTokenSessionError && err.status === 404) {
+        res.status(200).json({});
+        return;
+      }
       sendSetupTokenError(res, err);
     }
   });

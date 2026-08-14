@@ -10,6 +10,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastProvider } from "../context/ToastContext";
 import { AgentConfigForm, AdapterLoginPanel, type AdapterLoginDescriptor } from "./AgentConfigForm";
 import { defaultCreateValues } from "./agent-config-defaults";
+import { ApiError } from "../api/client";
 
 const mockAgentsApi = vi.hoisted(() => ({
   adapterModelProfiles: vi.fn(),
@@ -1416,6 +1417,168 @@ describe("AgentConfigForm environment selector", () => {
     expect(findButton(result.container, "Cancel")).toBeFalsy();
     expect(result.container.textContent).not.toContain("https://claude.example.test/authorize");
     expect(result.container.querySelector('input[aria-label="Browser code"]')).toBeFalsy();
+  });
+
+  it("treats a 404 cancel the same as success and returns to its start state", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    // The server removes a terminal session, so a cancel of an already-terminal
+    // or unknown session can return a 404. The panel must treat that 404 the
+    // same as a successful cancel: clear the session and stop the polls.
+    mockAgentsApi.cancelClaudeSetupTokenLogin.mockRejectedValue(
+      new ApiError("Setup-token login session not found.", 404, {
+        error: "Setup-token login session not found.",
+      }),
+    );
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      (result.container.textContent ?? "").includes("https://claude.example.test/authorize"),
+    );
+
+    await clickByText(result.container, "Cancel");
+    await flushReact();
+
+    expect(mockAgentsApi.cancelClaudeSetupTokenLogin).toHaveBeenCalledWith(
+      "company-1",
+      "claude-session-1",
+    );
+    // The panel reset even though the cancel returned a 404: the Log in button is
+    // available again, and the URL and the browser-code input are gone. No error
+    // message remains.
+    expect(findButton(result.container, "Log in")?.disabled).toBe(false);
+    expect(findButton(result.container, "Cancel")).toBeFalsy();
+    expect(result.container.textContent).not.toContain("https://claude.example.test/authorize");
+    expect(result.container.querySelector('input[aria-label="Browser code"]')).toBeFalsy();
+    expect(result.container.textContent).not.toContain("Could not cancel the login.");
+  });
+
+  it("stops both polls and shows the timed-out state after the client timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+      // The status never reaches a terminal state, and the prompt route returns
+      // 404 forever, so the authorization URL never surfaces. Without the client
+      // cap the panel would poll both routes forever.
+      mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+        sessionId: "claude-session-1",
+        environmentId: "sandbox-1",
+        status: "waiting_for_user",
+        expiresAt: null,
+        failure: null,
+      });
+      mockAgentsApi.getClaudeSetupTokenLoginPrompt.mockRejectedValue(
+        new ApiError("Setup-token login session not found.", 404, {
+          error: "Setup-token login session not found.",
+        }),
+      );
+
+      // Flush React effects and pending promises while the fake clock advances by
+      // zero, so the mocked queries settle without real time.
+      const flushFake = async () => {
+        await act(async () => {
+          for (let index = 0; index < 6; index += 1) {
+            await Promise.resolve();
+            await vi.advanceTimersByTimeAsync(0);
+          }
+        });
+      };
+      const clickFake = async (container: HTMLElement, label: string) => {
+        const button = findButton(container, label);
+        await act(async () => {
+          button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        await flushFake();
+      };
+      const advanceFake = async (ms: number) => {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(ms);
+        });
+        await flushFake();
+      };
+
+      mockEnvironmentsApi.list.mockResolvedValue([
+        makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+        makeEnvironment({
+          id: "sandbox-1",
+          name: "E2B",
+          driver: "sandbox",
+          config: { provider: "e2b" },
+        }),
+      ]);
+
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+      const root = createRoot(container);
+      roots.push(root);
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      });
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <ToastProvider>
+              <TooltipProvider>
+                <AgentConfigForm
+                  mode="edit"
+                  agent={makeAgent({
+                    adapterType: "claude_local",
+                    defaultEnvironmentId: "sandbox-1",
+                  })}
+                  onSave={vi.fn()}
+                  hidePromptTemplate
+                  showAdapterTypeField={false}
+                  showAdapterTestEnvironmentButton
+                />
+              </TooltipProvider>
+            </ToastProvider>
+          </QueryClientProvider>,
+        );
+      });
+      await flushFake();
+
+      await clickFake(container, "Test");
+      await clickFake(container, "Log in");
+
+      // The login is active: both polls have run at least once.
+      const statusCallsAtStart = mockAgentsApi.getClaudeSetupTokenLoginStatus.mock.calls.length;
+      const promptCallsAtStart = mockAgentsApi.getClaudeSetupTokenLoginPrompt.mock.calls.length;
+      expect(statusCallsAtStart).toBeGreaterThanOrEqual(1);
+      expect(promptCallsAtStart).toBeGreaterThanOrEqual(1);
+
+      // Advance six seconds: both polls run again, so polling is active. The panel
+      // has not timed out yet.
+      await advanceFake(6_000);
+      expect(mockAgentsApi.getClaudeSetupTokenLoginStatus.mock.calls.length).toBeGreaterThan(
+        statusCallsAtStart,
+      );
+      expect(mockAgentsApi.getClaudeSetupTokenLoginPrompt.mock.calls.length).toBeGreaterThan(
+        promptCallsAtStart,
+      );
+      expect(container.textContent).not.toContain("The login timed out");
+
+      // Advance past the sixty-second cap. The panel enters the timed-out state.
+      await advanceFake(60_000);
+      expect(container.textContent).toContain("The login timed out");
+      // The Log in button is available again, and the Cancel button is gone.
+      expect(findButton(container, "Log in")?.disabled).toBe(false);
+      expect(findButton(container, "Cancel")).toBeFalsy();
+
+      // Both polls stopped. A further ten seconds adds no new poll call.
+      const statusCallsAtTimeout = mockAgentsApi.getClaudeSetupTokenLoginStatus.mock.calls.length;
+      const promptCallsAtTimeout = mockAgentsApi.getClaudeSetupTokenLoginPrompt.mock.calls.length;
+      await advanceFake(10_000);
+      expect(mockAgentsApi.getClaudeSetupTokenLoginStatus.mock.calls.length).toBe(
+        statusCallsAtTimeout,
+      );
+      expect(mockAgentsApi.getClaudeSetupTokenLoginPrompt.mock.calls.length).toBe(
+        promptCallsAtTimeout,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("opens the authorization URL in a new tab with a safe rel", async () => {

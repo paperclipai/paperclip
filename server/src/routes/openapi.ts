@@ -4695,12 +4695,14 @@ registry.registerPath({
   path: "/api/companies/{companyId}/setup-token-login-sessions/{sessionId}/cancel",
   tags: ["companies"],
   summary: "Cancel a Claude setup-token login session",
+  // Cancel is idempotent. A repeat cancel, a cancel after a timeout, and a
+  // cancel of an unknown session all return 200, so the route documents no 404.
+  // A non-member still fails closed at the company-access gate.
   request: { params: z.object({ companyId: z.string(), sessionId: z.string() }) },
   responses: {
     200: r.ok(),
     401: r.unauthorized,
     403: r.forbidden,
-    404: r.notFound,
   },
 });
 

@@ -703,15 +703,15 @@ describe("company-and-environment setup-token route — object-level authorizati
     const startRes = await startCompanySession(app);
     const sessionId = startRes.body.sessionId as string;
 
-    // A different owner reads the same id. Every action returns the not-found
-    // error, so a caller cannot tell a cross-owner session from a missing one.
+    // A different owner reads the same id. Every read action returns the
+    // not-found error, so a caller cannot tell a cross-owner session from a
+    // missing one.
     useOwner(OTHER_USER_ID);
     const paths: Array<() => request.Test> = [
       () => request(app).get(`${COMPANY_BASE}/${sessionId}`).send(),
       () => request(app).get(`${COMPANY_BASE}/${sessionId}/prompt`).send(),
       () => request(app).post(`${COMPANY_BASE}/${sessionId}/code`).send({ browserCode: BROWSER_CODE }),
       () => request(app).post(`${COMPANY_BASE}/${sessionId}/completion`).send(),
-      () => request(app).post(`${COMPANY_BASE}/${sessionId}/cancel`).send(),
     ];
     for (const call of paths) {
       const res = await call();
@@ -719,6 +719,23 @@ describe("company-and-environment setup-token route — object-level authorizati
       expect(res.body.error).toBe(SETUP_TOKEN_SESSION_NOT_FOUND);
       expectNoSecret(JSON.stringify(res.body));
     }
+
+    // Cancel is idempotent, so a cross-owner cancel returns the same 200 success
+    // as a repeat cancel and a cancel of a missing session. The response is
+    // identical for a foreign, an already-terminal, and a missing session, so it
+    // is not an existence oracle. The route cancels nothing for a foreign id: the
+    // scope check throws before the cancel runs, so the session stays active.
+    const cancelRes = await request(app).post(`${COMPANY_BASE}/${sessionId}/cancel`).send();
+    expect(cancelRes.status).toBe(200);
+    expectNoSecret(JSON.stringify(cancelRes.body));
+
+    // The owner reads the session again. It is still active, so the cross-owner
+    // cancel did not terminate it.
+    useOwner(OWNER_USER_ID);
+    const ownerStatus = await request(app).get(`${COMPANY_BASE}/${sessionId}`).send();
+    expect(ownerStatus.status).toBe(200);
+    expect(ownerStatus.body.status).toBe("waiting_for_user");
+
     expect(transport.submittedCodes).toEqual([]);
   });
 
@@ -787,6 +804,48 @@ describe("company-and-environment setup-token route — object-level authorizati
     // The route rejected the adapter before it started a session, so the store
     // holds no record.
     expect(transport.records).toEqual([]);
+  });
+});
+
+describe("company-and-environment setup-token route — idempotent cancel", () => {
+  it("cancels an active session, then returns 200 on a repeat cancel", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+
+    const startRes = await startCompanySession(app);
+    const sessionId = startRes.body.sessionId as string;
+
+    // The first cancel terminates the active session and returns success.
+    const firstCancel = await request(app).post(`${COMPANY_BASE}/${sessionId}/cancel`).send();
+    expect(firstCancel.status).toBe(200);
+    expect(firstCancel.headers["cache-control"]).toBe("no-store");
+    await settle();
+
+    // The server removed the terminal session, so the status read now returns the
+    // not-found error. This is the state the panel used to poll forever.
+    const statusRes = await request(app).get(`${COMPANY_BASE}/${sessionId}`).send();
+    expect(statusRes.status).toBe(404);
+
+    // The repeat cancel finds no record. It returns the same 200 success instead
+    // of a hard 404, so the client can stop the poll.
+    const repeatCancel = await request(app).post(`${COMPANY_BASE}/${sessionId}/cancel`).send();
+    expect(repeatCancel.status).toBe(200);
+    expect(repeatCancel.headers["cache-control"]).toBe("no-store");
+    expectNoSecret(JSON.stringify(repeatCancel.body));
+  });
+
+  it("returns 200 for a cancel of an unknown session id", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+
+    // The owner is a member of the company, but the session id never existed. The
+    // cancel is idempotent, so it returns success, not a 404.
+    const res = await request(app)
+      .post(`${COMPANY_BASE}/00000000-0000-4000-8000-000000000000/cancel`)
+      .send();
+    expect(res.status).toBe(200);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expectNoSecret(JSON.stringify(res.body));
   });
 });
 

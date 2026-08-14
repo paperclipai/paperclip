@@ -2095,6 +2095,17 @@ const CLAUDE_LOGIN_FAILURE_STATUSES = new Set<AdapterAuthSessionStatus>([
 // could carry a secret.
 const CLAUDE_LOGIN_FAILED_MESSAGE = "The login did not finish. Start the login again.";
 
+// The client wall-clock cap for one active login. The panel polls the status
+// route and the prompt route every two seconds. The server can leave a session
+// short of a terminal status, and the prompt route returns 404 until the URL is
+// ready. Without a cap, the panel polls forever. When this cap passes, the panel
+// stops both polls and shows the timed-out state, so the user can start again.
+const CLAUDE_LOGIN_TIMEOUT_MS = 60_000;
+
+// The fixed, non-secret message for a timed-out Claude login. The panel shows
+// this text, stops both polls, and returns to its start state.
+const CLAUDE_LOGIN_TIMED_OUT_MESSAGE = "The login timed out. Start the login again.";
+
 // The submitted-browser-code login panel for the Claude adapter. It starts a
 // setup-token login, polls the status route, and reads the authorization URL
 // from the guarded prompt route. The user opens the URL, reads the browser code,
@@ -2122,6 +2133,9 @@ function SubmittedBrowserCodeLoginPanel({
   const [storedSessionId, setStoredSessionId] = useState<string | null>(null);
   // True after a completion read fails. The panel returns to its start state.
   const [completionFailed, setCompletionFailed] = useState(false);
+  // True after the client wall-clock cap passes for the active login. The panel
+  // stops both polls and shows the timed-out state.
+  const [timedOut, setTimedOut] = useState(false);
   // Guards the one completion read per session.
   const completionStartedRef = useRef(false);
 
@@ -2132,6 +2146,7 @@ function SubmittedBrowserCodeLoginPanel({
     setBrowserCode("");
     setStoredSessionId(null);
     setCompletionFailed(false);
+    setTimedOut(false);
     completionStartedRef.current = false;
   };
 
@@ -2146,24 +2161,42 @@ function SubmittedBrowserCodeLoginPanel({
     },
   });
 
+  const clearActiveSession = () => {
+    // Return the panel to its idle start state. The Log in button is available
+    // again, and both polls stop because the session id is null.
+    setSessionId(null);
+    resetLocalState();
+  };
+
   const cancelLogin = useMutation({
     mutationFn: () => agentsApi.cancelClaudeSetupTokenLogin(companyId, sessionId!),
     onSuccess: () => {
-      // Return the panel to its idle start state. The Log in button is available
-      // again.
-      setSessionId(null);
-      resetLocalState();
+      clearActiveSession();
     },
     onError: (error) => {
+      // The cancel is resilient. The server removes a terminal session, so a
+      // cancel of an already-terminal or unknown session can return a 404. Treat
+      // that 404 the same as a successful cancel: clear the session and stop the
+      // polls. The panel never keeps polling a session the server no longer
+      // holds. Any other error surfaces and keeps the active login.
+      if (error instanceof ApiError && error.status === 404) {
+        clearActiveSession();
+        return;
+      }
       setStartError(error instanceof Error ? error.message : "Could not cancel the login.");
     },
   });
 
+  // Both polls run only while a session is active and the client cap has not
+  // passed. The timeout stops the polls, so the panel never polls forever.
+  const pollingEnabled = Boolean(sessionId) && !timedOut;
+
   const statusQuery = useQuery({
     queryKey: ["claude-setup-token-status", companyId, sessionId],
     queryFn: () => agentsApi.getClaudeSetupTokenLoginStatus(companyId, sessionId!),
-    enabled: Boolean(sessionId),
+    enabled: pollingEnabled,
     refetchInterval: (query) => {
+      if (timedOut) return false;
       const status = query.state.data?.status;
       return status && ADAPTER_LOGIN_TERMINAL_STATUSES.has(status)
         ? false
@@ -2176,7 +2209,7 @@ function SubmittedBrowserCodeLoginPanel({
   // not-ready and keeps polling.
   const promptQuery = useQuery({
     queryKey: ["claude-setup-token-prompt", companyId, sessionId],
-    enabled: Boolean(sessionId) && !authorizationUrl,
+    enabled: pollingEnabled && !authorizationUrl,
     queryFn: async () => {
       try {
         return await agentsApi.getClaudeSetupTokenLoginPrompt(companyId, sessionId!);
@@ -2186,7 +2219,7 @@ function SubmittedBrowserCodeLoginPanel({
       }
     },
     refetchInterval: (query) =>
-      query.state.data?.authorizationUrl ? false : ADAPTER_LOGIN_POLL_INTERVAL_MS,
+      timedOut || query.state.data?.authorizationUrl ? false : ADAPTER_LOGIN_POLL_INTERVAL_MS,
   });
 
   useEffect(() => {
@@ -2235,8 +2268,19 @@ function SubmittedBrowserCodeLoginPanel({
   const isFailure =
     completionFailed || Boolean(status && CLAUDE_LOGIN_FAILURE_STATUSES.has(status));
   const isCompleting = status === "authenticated" && !isStored && !completionFailed;
-  const isActive = Boolean(sessionId) && !isStored && !isFailure;
+  const isActive = Boolean(sessionId) && !isStored && !isFailure && !timedOut;
   const startDisabled = startLogin.isPending || isActive;
+
+  // Cap the active login at a wall-clock deadline. The timer arms when the login
+  // becomes active and clears when the login leaves the active state (a terminal
+  // status, a stored success, or a new login). When it fires, the panel enters
+  // the timed-out state. The `isActive` guard already excludes `timedOut`, so
+  // the timer does not re-arm after it fires.
+  useEffect(() => {
+    if (!isActive) return;
+    const timer = setTimeout(() => setTimedOut(true), CLAUDE_LOGIN_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [isActive]);
 
   const trimmedCode = browserCode.trim();
   const canSubmit =
@@ -2393,6 +2437,13 @@ function SubmittedBrowserCodeLoginPanel({
           <div className="flex items-start gap-2 text-(length:--text-micro) text-destructive">
             <TriangleAlert className="size-3 shrink-0" />
             <span>{CLAUDE_LOGIN_FAILED_MESSAGE}</span>
+          </div>
+        )}
+
+        {timedOut && !isFailure && !isStored && (
+          <div className="flex items-start gap-2 text-(length:--text-micro) text-destructive">
+            <TriangleAlert className="size-3 shrink-0" />
+            <span>{CLAUDE_LOGIN_TIMED_OUT_MESSAGE}</span>
           </div>
         )}
       </div>
