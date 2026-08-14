@@ -12,6 +12,7 @@ const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
   getDependencyReadiness: vi.fn(),
+  getProposedDependencyReadiness: vi.fn(),
   getRelationSummaries: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
@@ -200,6 +201,11 @@ describe("issue execution policy routes", () => {
     mockIssueService.getDependencyReadiness.mockResolvedValue({
       blockerIssueIds: [],
       isDependencyReady: false,
+      unresolvedBlockerCount: 0,
+    });
+    mockIssueService.getProposedDependencyReadiness.mockResolvedValue({
+      blockerIssueIds: [],
+      isDependencyReady: true,
       unresolvedBlockerCount: 0,
     });
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
@@ -735,6 +741,11 @@ describe("issue execution policy routes", () => {
     };
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.getDependencyReadiness.mockResolvedValue({
+      blockerIssueIds: ["77777777-7777-4777-8777-777777777777"],
+      isDependencyReady: false,
+      unresolvedBlockerCount: 1,
+    });
+    mockIssueService.getProposedDependencyReadiness.mockResolvedValue({
       blockerIssueIds: ["77777777-7777-4777-8777-777777777777"],
       isDependencyReady: false,
       unresolvedBlockerCount: 1,

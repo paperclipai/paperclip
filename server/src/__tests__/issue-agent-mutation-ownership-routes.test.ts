@@ -22,6 +22,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getComment: vi.fn(),
   getDependencyReadiness: vi.fn(),
+  getProposedDependencyReadiness: vi.fn(),
   getRelationSummaries: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   list: vi.fn(),

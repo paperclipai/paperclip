@@ -593,10 +593,26 @@ describe("issue execution policy transitions", () => {
         requestedAssigneePatch: {},
         actor: { agentId: coderAgentId },
         preservePendingStageOnBlocked: true,
+        allowNonParticipantPendingStageBlock: true,
       });
 
       expect(suspended.patch).toEqual({ status: "blocked" });
       expect(suspended.decision).toBeUndefined();
+
+      expect(() => applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: pendingState,
+        },
+        policy,
+        requestedStatus: "blocked",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        preservePendingStageOnBlocked: true,
+      })).toThrow("Only the active reviewer or approver can advance");
 
       const resumed = applyIssueExecutionPolicyTransition({
         issue: {

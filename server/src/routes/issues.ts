@@ -8994,6 +8994,7 @@ export function issueRoutes(
       updateFields.status === "blocked" ||
       (updateFields.status === "in_progress" && actorIsActiveStageParticipant);
     let preservePendingStageOnBlocked = false;
+    let allowNonParticipantPendingStageBlock = req.actor.type === "board";
     if (
       activeStageParticipant &&
       (blockerMutationRequested || activeStageBlockingDispositionRequested)
@@ -9002,13 +9003,13 @@ export function issueRoutes(
         ? [...new Set(req.body.blockedByIssueIds as string[])]
         : null;
       const hasUnresolvedBlocker = requestedBlockerIds
-        ? requestedBlockerIds.length > 0 && await db.select({ id: issueRows.id }).from(issueRows).where(and(
-          eq(issueRows.companyId, existing.companyId),
-          inArray(issueRows.id, requestedBlockerIds),
-          notInArray(issueRows.status, ["done", "cancelled"]),
-        )).limit(1).then((rows) => rows.length > 0)
+        ? (await svc.getProposedDependencyReadiness(existing.id, requestedBlockerIds)).unresolvedBlockerCount > 0
         : (await svc.getDependencyReadiness(existing.id)).unresolvedBlockerCount > 0;
       if (hasUnresolvedBlocker) {
+        if (!actorIsActiveStageParticipant && req.actor.type === "agent") {
+          const actorWatchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
+          allowNonParticipantPendingStageBlock = actorWatchdogScope.kind === "watchdog";
+        }
         // Adding an unresolved dependency to an active stage is itself the
         // server-owned blocked disposition. Likewise, translate the active
         // participant's changes-requested status into that disposition: moving
@@ -9048,6 +9049,7 @@ export function issueRoutes(
       reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
       monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,
       preservePendingStageOnBlocked,
+      allowNonParticipantPendingStageBlock,
     });
     const decisionId = transition.decision ? randomUUID() : null;
     if (decisionId) {

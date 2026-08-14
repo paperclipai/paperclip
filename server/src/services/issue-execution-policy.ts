@@ -54,6 +54,7 @@ type TransitionInput = {
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
   monitorExplicitlyUpdated?: boolean;
   preservePendingStageOnBlocked?: boolean;
+  allowNonParticipantPendingStageBlock?: boolean;
 };
 
 type TransitionResult = {
@@ -722,6 +723,9 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     // stage, participant, return assignee, and policy intact so the same review
     // path can resume when dependency wakeup fires.
     if (requestedStatus === "blocked" && input.preservePendingStageOnBlocked) {
+      if (!principalsEqual(currentParticipant, actor) && !input.allowNonParticipantPendingStageBlock) {
+        throw unprocessable("Only the active reviewer or approver can advance the current execution stage");
+      }
       patch.status = "blocked";
       return { patch };
     }
