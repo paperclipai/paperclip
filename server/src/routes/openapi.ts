@@ -4695,14 +4695,17 @@ registry.registerPath({
   path: "/api/companies/{companyId}/setup-token-login-sessions/{sessionId}/cancel",
   tags: ["companies"],
   summary: "Cancel a Claude setup-token login session",
-  // Cancel is idempotent. A repeat cancel, a cancel after a timeout, and a
-  // cancel of an unknown session all return 200, so the route documents no 404.
-  // A non-member still fails closed at the company-access gate.
+  // The 404 is reserved for the pre-scope non-member gate. The company-access
+  // gate runs before the cancel logic and returns a fixed 404 for a non-member.
+  // Cancel itself is idempotent and stays uniform: a same-company owner-scoped
+  // missing, terminal, or foreign session id all return 200. So the route never
+  // confirms a session exists for the owner.
   request: { params: z.object({ companyId: z.string(), sessionId: z.string() }) },
   responses: {
     200: r.ok(),
     401: r.unauthorized,
     403: r.forbidden,
+    404: r.notFound,
   },
 });
 

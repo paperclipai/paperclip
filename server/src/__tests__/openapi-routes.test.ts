@@ -354,4 +354,16 @@ describe("openapi routes", () => {
       "transportAdvisory",
     ]);
   });
+
+  it("documents the 404 non-member gate on the Claude setup-token cancel route", () => {
+    const { spec } = loadSpecRoutes();
+    const cancel =
+      spec.paths["/api/companies/{companyId}/setup-token-login-sessions/{sessionId}/cancel"].post;
+    // The 404 is reachable at run time. The company-access gate returns a fixed
+    // 404 for a non-member before the cancel logic runs, so the spec declares
+    // it. The idempotent cancel still returns 200 for an owner-scoped missing,
+    // terminal, or foreign session id.
+    const codes = Object.keys(cancel.responses).sort();
+    expect(codes).toEqual(["200", "401", "403", "404"]);
+  });
 });
