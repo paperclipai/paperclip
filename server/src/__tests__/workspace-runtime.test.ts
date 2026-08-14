@@ -43,6 +43,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
+  stopRuntimeServicesForProjectWorkspace,
   type RealizedExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
 import {
@@ -4353,6 +4354,94 @@ describe("ensureRuntimeServicesForRun", () => {
       executionWorkspaceId: "execution-workspace-control-stop",
       workspaceCwd: workspace.cwd,
       runtimeServiceId: worker?.id ?? null,
+    });
+  }, 10_000);
+
+  it("scopes a manual project-workspace start to the workspace so project stop reaps it", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-project-scope-"));
+    const workspace = buildWorkspace(workspaceRoot);
+
+    // Manual project-workspace control start: no executionWorkspaceId and a default
+    // (non-shared) service. Before the scope fix this resolved to `run` scope, which
+    // stop/list — matching on project_workspace scope — could never reach, so stop
+    // was a silent no-op. It must now be project_workspace-scoped and stoppable.
+    const services = await startRuntimeServicesForWorkspaceControl({
+      actor: { id: "agent-1", name: "Codex Coder", companyId: "company-1" },
+      issue: null,
+      workspace,
+      config: {
+        workspaceRuntime: {
+          services: [
+            {
+              name: "web",
+              command:
+                "node -e \"require('node:http').createServer((req,res)=>res.end('ok')).listen(Number(process.env.PORT), '127.0.0.1')\"",
+              port: { type: "auto" },
+              readiness: {
+                type: "http",
+                urlTemplate: "http://127.0.0.1:{{port}}",
+                timeoutSec: 10,
+                intervalMs: 100,
+              },
+            },
+          ],
+        },
+      },
+      adapterEnv: {},
+    });
+
+    expect(services).toHaveLength(1);
+    expect(services[0]?.scopeType).toBe("project_workspace");
+    expect(services[0]?.scopeId).toBe("workspace-1");
+    await expect(fetch(services[0]!.url!)).resolves.toMatchObject({ ok: true });
+
+    await stopRuntimeServicesForProjectWorkspace({ projectWorkspaceId: "workspace-1" });
+    await expect(fetch(services[0]!.url!)).rejects.toThrow();
+  }, 10_000);
+
+  it("keeps execution-workspace runtime scope config-driven (project stop must not reap agent runs)", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-execws-scope-"));
+    const workspace = buildWorkspace(workspaceRoot);
+
+    // Agent/exec-WS starts carry the same projectWorkspaceId as the workspace. The
+    // fix must NOT relabel them: with executionWorkspaceId set, scope stays
+    // config-driven (execution_workspace here) so a project-workspace stop can't
+    // reach it — scopeType is the discriminator that keeps the two paths apart.
+    const services = await startRuntimeServicesForWorkspaceControl({
+      actor: { id: "agent-1", name: "Codex Coder", companyId: "company-1" },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "execution-workspace-scope-guard",
+      config: {
+        workspaceRuntime: {
+          services: [
+            {
+              name: "web",
+              command:
+                "node -e \"require('node:http').createServer((req,res)=>res.end('ok')).listen(Number(process.env.PORT), '127.0.0.1')\"",
+              port: { type: "auto" },
+              readiness: {
+                type: "http",
+                urlTemplate: "http://127.0.0.1:{{port}}",
+                timeoutSec: 10,
+                intervalMs: 100,
+              },
+              lifecycle: "shared",
+              reuseScope: "execution_workspace",
+            },
+          ],
+        },
+      },
+      adapterEnv: {},
+    });
+
+    expect(services[0]?.scopeType).toBe("execution_workspace");
+    await stopRuntimeServicesForProjectWorkspace({ projectWorkspaceId: "workspace-1" });
+    await expect(fetch(services[0]!.url!)).resolves.toMatchObject({ ok: true });
+
+    await stopRuntimeServicesForExecutionWorkspace({
+      executionWorkspaceId: "execution-workspace-scope-guard",
+      workspaceCwd: workspace.cwd,
     });
   }, 10_000);
 });

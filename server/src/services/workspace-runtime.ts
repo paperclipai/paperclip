@@ -3755,10 +3755,19 @@ function resolveServiceScopeId(input: {
   issue: ExecutionWorkspaceIssueRef | null;
   runId: string;
   agent: ExecutionWorkspaceAgentRef;
+  forceProjectWorkspaceScope?: boolean;
 }): {
   scopeType: "project_workspace" | "execution_workspace" | "run" | "agent";
   scopeId: string | null;
 } {
+  // Manual project-workspace control starts have no run or execution workspace to
+  // own the service, so scope it to the project workspace itself — otherwise a
+  // default/ephemeral service resolves to `run` scope and stop/list (which match
+  // on project_workspace scope) can never reach it. Only the control path sets
+  // this; agent runs (ensureRuntimeServicesForRun) keep config-driven scope.
+  if (input.forceProjectWorkspaceScope) {
+    return { scopeType: "project_workspace", scopeId: input.workspace.workspaceId ?? input.workspace.projectId };
+  }
   const scopeTypeRaw = asString(input.service.reuseScope, input.service.lifecycle === "shared" ? "project_workspace" : "run");
   const scopeType =
     scopeTypeRaw === "project_workspace" ||
@@ -4945,6 +4954,7 @@ async function startRuntimeServicesForWorkspaceControlUnlocked(
       issue: input.issue,
       runId: invocationId,
       agent: input.actor,
+      forceProjectWorkspaceScope: !input.executionWorkspaceId && Boolean(input.workspace.workspaceId),
     });
     const reuseKey = resolveRuntimeServiceReuseIdentity({
       service,
@@ -5069,6 +5079,7 @@ export async function startRuntimeServicesForWorkspaceControl(
           issue: input.issue,
           runId: invocationId,
           agent: input.actor,
+          forceProjectWorkspaceScope: !input.executionWorkspaceId && Boolean(input.workspace.workspaceId),
         });
         const reuseKey = resolveRuntimeServiceReuseIdentity({
           service,
