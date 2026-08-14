@@ -69,3 +69,7 @@ tests/storybook-visual/playwright-report/
 .superpowers/
 .claude/worktrees/
 .herenow
+
+# rollback/build snapshots (fleet-audit round 3 ratchet)
+*.bak
+dist.bak-*/
