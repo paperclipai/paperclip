@@ -94,6 +94,10 @@ vi.mock("../adapters/adapter-display-registry", () => ({
 }));
 vi.mock("../adapters/use-disabled-adapters", () => ({
   useDisabledAdaptersSync: () => mockAdapterRegistry.disabled,
+  // Added by #11371's adapter snap. A module mock replaces the whole module,
+  // so every export the component reaches for has to be here — omitting one
+  // makes it undefined and the call throws.
+  useAdapterRegistryLoaded: () => true,
 }));
 vi.mock("../adapters/use-adapter-capabilities", () => ({
   useAdapterCapabilities: () => () => ({

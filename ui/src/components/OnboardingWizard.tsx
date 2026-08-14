@@ -198,8 +198,14 @@ export function OnboardingWizard() {
   // list is fine. Only an error that leaves the list empty is undecidable.
   // Named for what it governs: whether the *draft* can be judged. It is not
   // the same question as whether to mount - see the gate below.
+  // A truthy check, not `!== null`. The context types this `Error | null`, but
+  // `undefined` reaches here in practice - any consumer that provides the
+  // company context without an `error` key, which several tests do - and
+  // `undefined !== null` would read a perfectly healthy load as a failure and
+  // discard the customer's draft. The distinction that matters is "is there an
+  // error", and only a truthy test asks that.
   const ownershipUndecidable =
-    companiesLoading || (companiesError !== null && companies.length === 0);
+    companiesLoading || (Boolean(companiesError) && companies.length === 0);
 
   const { saved, staleStateDetected } = useMemo(() => {
     if (rawBlob === undefined) return { saved: null, staleStateDetected: false };
