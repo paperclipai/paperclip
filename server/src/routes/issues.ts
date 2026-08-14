@@ -9099,11 +9099,7 @@ export function issueRoutes(
         ? [...new Set(req.body.blockedByIssueIds as string[])]
         : null;
       const hasUnresolvedBlocker = requestedBlockerIds
-        ? requestedBlockerIds.length > 0 && await db.select({ id: issueRows.id }).from(issueRows).where(and(
-          eq(issueRows.companyId, existing.companyId),
-          inArray(issueRows.id, requestedBlockerIds),
-          notInArray(issueRows.status, ["done", "cancelled"]),
-        )).limit(1).then((rows) => rows.length > 0)
+        ? (await svc.getProposedDependencyReadiness(existing.id, requestedBlockerIds)).unresolvedBlockerCount > 0
         : (await svc.getDependencyReadiness(existing.id)).unresolvedBlockerCount > 0;
       const [pendingInteraction, pendingApproval] = await Promise.all([
         db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
