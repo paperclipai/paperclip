@@ -25,7 +25,9 @@ interface ThemeToggleProps {
   onAfterToggle?: () => void;
 }
 
-const MENU_ACTION_DESCRIPTION = t("themeToggle.toggleDescription");
+function getToggleDescription(): string {
+  return t("themeToggle.toggleDescription");
+}
 
 /**
  * Canonical theme-toggle widget. Both the signed-out `/auth` chrome and
@@ -59,7 +61,7 @@ export function ThemeToggle({ className, variant = "icon", onAfterToggle }: Them
         </span>
         <span className="min-w-0 flex-1">
           <span className="block text-sm font-medium text-foreground">{label}</span>
-          <span className="block text-xs text-muted-foreground">{MENU_ACTION_DESCRIPTION}</span>
+          <span className="block text-xs text-muted-foreground">{getToggleDescription()}</span>
         </span>
       </button>
     );

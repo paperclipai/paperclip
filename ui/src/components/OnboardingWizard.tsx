@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo, useRef } from "react";
+import { i18n } from "@/i18n";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
@@ -451,7 +452,7 @@ export function OnboardingWizard() {
       recommendedAdapters: all.filter((a) => a.recommended),
       moreAdapters: all.filter((a) => !a.recommended),
     };
-  }, [disabledTypes]);
+  }, [disabledTypes, i18n.language]);
 
   const COMMAND_PLACEHOLDERS: Record<string, string> = {
     claude_local: "claude",

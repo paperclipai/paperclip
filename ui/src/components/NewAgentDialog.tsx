@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { i18n } from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
@@ -117,7 +118,7 @@ export function NewAgentDialog() {
         if (!a.recommended && b.recommended) return 1;
         return a.label.localeCompare(b.label);
       });
-  }, [disabledTypes, serverAdapters]);
+  }, [disabledTypes, serverAdapters, i18n.language]);
 
   function handleAskCeo() {
     closeNewAgent();

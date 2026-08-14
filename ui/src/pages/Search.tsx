@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { i18n } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { Search as SearchIcon, AlertTriangle, FileQuestion, Plus, X } from "lucide-react";
 import {
@@ -539,7 +540,7 @@ export function Search() {
   const operatorPills = useMemo(() => searchFilterPills(draftFilters, parserContext), [draftFilters, parserContext]);
   const operatorSuggestions = useMemo(
     () => (inputFocused ? searchOperatorSuggestions(draftQuery, 4) : []),
-    [draftQuery, inputFocused],
+    [draftQuery, inputFocused, i18n.language],
   );
   const showInitialState = !displayQuery && !hasSearchFilters(activeFilters);
   const isLoading = queryEnabled && isFetching && !data;
