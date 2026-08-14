@@ -595,6 +595,40 @@ describe("issue update comment wakeups", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
+  it("emits a normal assignee wake when the board unblocks an issue", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "blocked",
+    });
+    const updated = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "todo",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ status: "todo" });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        source: "automation",
+        reason: "issue_status_changed",
+        payload: expect.objectContaining({ issueId: existing.id, mutation: "update" }),
+        contextSnapshot: expect.objectContaining({
+          issueId: existing.id,
+          source: "issue.status_change",
+        }),
+      }),
+    );
+  });
+
   it("wakes the assignee on top-level board issue comments", async () => {
     const existing = makeIssue({
       assigneeAgentId: ASSIGNEE_AGENT_ID,
