@@ -378,4 +378,46 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       root.unmount();
     });
   });
+  it("closes without throwing when the browser denies storage access", async () => {
+    // `reset()` clears the draft and `handleClose` calls it, so the close
+    // button is a fourth storage call site. Guarding the read, the cleanup and
+    // the persist effect one at a time is how this one stayed unguarded while
+    // the others looked fixed.
+    const deny = () => {
+      throw new DOMException("The operation is insecure.", "SecurityError");
+    };
+    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(deny);
+    const removeItem = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(deny);
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(deny);
+    mockCompany.companies = [{ id: "c1", name: "My Co", issuePrefix: "MC" }];
+    mockCompany.loading = false;
+
+    const { root, queryClient } = render();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <OnboardingWizard />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const close = [...document.body.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("Close"),
+    );
+    expect(close).toBeDefined();
+    await act(async () => {
+      close!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockDialog.closeOnboarding).toHaveBeenCalled();
+
+    getItem.mockRestore();
+    removeItem.mockRestore();
+    setItem.mockRestore();
+    await act(async () => {
+      root.unmount();
+    });
+  });
 });

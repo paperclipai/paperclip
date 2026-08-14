@@ -117,6 +117,47 @@ Work in this order:
 4. On approval, execute only what they kept. Create exactly the checked options — hire the checked agents and create + delegate the checked follow-up tasks, each in its own task. Skip anything the user unchecked.
 
 Propose, don't decide. Keep it conversational.`;
+/**
+ * The onboarding draft in `localStorage`, via a browser that is allowed to say
+ * no.
+ *
+ * Storage access throws outright where a browser denies it — Safari's private
+ * mode, a blocked third-party context — and every call site here sits in a
+ * render, an effect, or a close handler, so an escaping exception takes down
+ * something the customer was using. Losing the ability to resume onboarding is
+ * a far smaller failure than the wizard tearing down mid-answer, or refusing
+ * to close.
+ *
+ * Routed through one object on purpose. Guarding these one at a time is how
+ * three of the four call sites ended up unguarded while the fourth looked
+ * fixed: the read, the stale-blob cleanup, the persist effect, and `reset()`
+ * all have the same failure and want the same answer.
+ */
+const onboardingDraftStorage = {
+  read(): string | null {
+    try {
+      return localStorage.getItem(ONBOARDING_STORAGE_KEY);
+    } catch {
+      return null;
+    }
+  },
+  write(value: string): void {
+    try {
+      localStorage.setItem(ONBOARDING_STORAGE_KEY, value);
+    } catch {
+      // Storage unavailable: the draft is simply not resumable this session.
+    }
+  },
+  clear(): void {
+    try {
+      localStorage.removeItem(ONBOARDING_STORAGE_KEY);
+    } catch {
+      // Nothing to do. A draft that cannot be cleared is re-rejected on the
+      // next load by the same ownership check that rejected it here.
+    }
+  },
+};
+
 const INCOMPLETE_ONBOARDING_STATE_MESSAGE =
   "Onboarding state is incomplete. Please restart onboarding and try again.";
 
@@ -135,17 +176,12 @@ export function OnboardingWizard() {
   // Parsed once (not re-parsed by the cleanup effect below) so the restored
   // value and the "should we wipe the blob" decision always agree.
   const rawBlob = useMemo(() => {
-    // `getItem` is inside the try, not just the parse. It throws outright when
-    // a browser denies storage access - Safari's private mode, a blocked
-    // third-party context - and this runs during render, so an escaping
-    // exception takes the whole app down. Onboarding without a restored draft
-    // is a working wizard; a render that throws is not.
+    const raw = onboardingDraftStorage.read();
+    if (!raw) return undefined;
     try {
-      const raw = localStorage.getItem(ONBOARDING_STORAGE_KEY);
-      if (!raw) return undefined;
       return JSON.parse(raw) as unknown;
     } catch {
-      return null; // unreadable or malformed: treated as stale below
+      return null; // malformed: treated as stale below
     }
   }, []);
 
@@ -177,15 +213,7 @@ export function OnboardingWizard() {
   // the next onboarding attempt (e.g. a different signed-in user).
   useEffect(() => {
     if (!staleStateDetected) return;
-    // Guarded for the same reason the read above is. A browser that refuses
-    // the read refuses the write, and clearing a blob is a convenience - it
-    // must not be the thing that takes the app down.
-    try {
-      localStorage.removeItem(ONBOARDING_STORAGE_KEY);
-    } catch {
-      // Nothing to do: the draft was already rejected, and it stays rejected
-      // on the next load because the same ownership check runs again.
-    }
+    onboardingDraftStorage.clear();
   }, [staleStateDetected]);
 
   // A saved blob exists but companies haven't settled yet: wait rather than
@@ -474,15 +502,7 @@ function OnboardingWizardInner({
       createdCompanyGoalId, createdProjectId, createdIssueRef,
       onboardingPath, growWorkflows, growPainPoints, growAutomate,
     };
-    // Guarded like the read and the clear. This effect runs on every keystroke
-    // in the wizard, so on a browser that denies storage it is the likeliest
-    // of the three to throw - and losing the ability to resume onboarding is a
-    // far smaller failure than the wizard tearing down mid-answer.
-    try {
-      localStorage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify(state));
-    } catch {
-      // Storage unavailable: the draft simply is not resumable this session.
-    }
+    onboardingDraftStorage.write(JSON.stringify(state));
   }, [
     effectiveOnboardingOpen, step, companyName, companyGoal, missionPath, missionConfirmed,
     q1, q2, q3, q4, agentName, adapterType, cwd, model, command, args, url,
@@ -604,7 +624,7 @@ function OnboardingWizardInner({
   }, [filteredModels, adapterType]);
 
   function reset() {
-    localStorage.removeItem(ONBOARDING_STORAGE_KEY);
+    onboardingDraftStorage.clear();
     setStep(0);
     setOnboardingPath(null);
     setGrowWorkflows("");
