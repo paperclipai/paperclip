@@ -233,6 +233,12 @@ export function OnboardingWizard() {
   // The company the *route* last supplied, so a navigation that stops naming
   // one can drop it without touching a company the wizard created itself.
   const routeCompanyIdRef = useRef<string | null>(null);
+  // The current company, mirrored so the sync effect can read it without
+  // taking it as a dependency. Depending on it would re-run the effect on
+  // every company change, and the effect also calls setStep - it would drag
+  // the user back to the route's initial step mid-flow.
+  const createdCompanyIdRef = useRef<string | null>(null);
+  createdCompanyIdRef.current = createdCompanyId;
 
   // Reset the route-dismissed flag when navigating to a different path.
   useEffect(() => {
@@ -249,9 +255,19 @@ export function OnboardingWizard() {
     }
     const routeCompanyId = effectiveOnboardingOptions.companyId ?? null;
     if (routeCompanyId) {
-      setCreatedCompanyId(routeCompanyId);
-      setCreatedCompanyPrefix(null);
-    } else if (routeCompanyIdRef.current) {
+      // Claim ownership only when the route *introduces* a company. A route
+      // that merely names the one already in hand - the wizard created it,
+      // then the user navigated to that company's onboarding path - has not
+      // supplied anything, so it must not take ownership of it. Otherwise
+      // navigating on to `/onboarding` would clear work the wizard did.
+      if (routeCompanyId !== createdCompanyIdRef.current) {
+        setCreatedCompanyId(routeCompanyId);
+        setCreatedCompanyPrefix(null);
+        routeCompanyIdRef.current = routeCompanyId;
+      }
+      return;
+    }
+    if (routeCompanyIdRef.current) {
       // The route named a company and now does not - the user navigated from
       // an existing company's onboarding to `/onboarding`, or to a prefix that
       // matches nothing. Drop it. Keeping it leaves the wizard showing step 1,
@@ -263,8 +279,8 @@ export function OnboardingWizard() {
       // in those cases, and clearing them would discard real progress.
       setCreatedCompanyId(null);
       setCreatedCompanyPrefix(null);
+      routeCompanyIdRef.current = null;
     }
-    routeCompanyIdRef.current = routeCompanyId;
   }, [
     effectiveOnboardingOpen,
     effectiveOnboardingOptions.companyId,
