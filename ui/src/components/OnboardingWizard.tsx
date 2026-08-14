@@ -149,13 +149,19 @@ export function OnboardingWizard() {
     }
   }, []);
 
-  // A failed company query is not an answer. React Query reports it as
-  // `isLoading === false` with `data` defaulted to an empty list, which reads
-  // exactly like "settled, and this account owns nothing" - and that verdict
-  // deletes the draft below. Discarding a customer's onboarding because their
-  // company request timed out is the one outcome here that cannot be undone,
-  // so an errored list is treated like a loading one: not decidable.
-  const companiesUndecided = companiesLoading || companiesError !== null;
+  // A failed company query is not an answer *when it left us with nothing*.
+  // React Query reports that as `isLoading === false` with `data` defaulted to
+  // an empty list, which reads exactly like "settled, and this account owns
+  // nothing" - and that verdict deletes the draft below. Discarding a
+  // customer's onboarding because their company request timed out is the one
+  // outcome here that cannot be undone.
+  //
+  // An error with companies still in hand is a different thing: a background
+  // refetch failed over a cache that is still good. Blocking on that would
+  // fail closed, and onboarding would simply never appear for a customer whose
+  // list is fine. Only an error that leaves the list empty is undecidable.
+  const companiesUndecided =
+    companiesLoading || (companiesError !== null && companies.length === 0);
 
   const { saved, staleStateDetected } = useMemo(() => {
     if (rawBlob === undefined) return { saved: null, staleStateDetected: false };
@@ -170,8 +176,15 @@ export function OnboardingWizard() {
   // A discarded/malformed state should not sit in storage waiting to confuse
   // the next onboarding attempt (e.g. a different signed-in user).
   useEffect(() => {
-    if (staleStateDetected) {
+    if (!staleStateDetected) return;
+    // Guarded for the same reason the read above is. A browser that refuses
+    // the read refuses the write, and clearing a blob is a convenience - it
+    // must not be the thing that takes the app down.
+    try {
       localStorage.removeItem(ONBOARDING_STORAGE_KEY);
+    } catch {
+      // Nothing to do: the draft was already rejected, and it stays rejected
+      // on the next load because the same ownership check runs again.
     }
   }, [staleStateDetected]);
 
@@ -461,7 +474,15 @@ function OnboardingWizardInner({
       createdCompanyGoalId, createdProjectId, createdIssueRef,
       onboardingPath, growWorkflows, growPainPoints, growAutomate,
     };
-    localStorage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify(state));
+    // Guarded like the read and the clear. This effect runs on every keystroke
+    // in the wizard, so on a browser that denies storage it is the likeliest
+    // of the three to throw - and losing the ability to resume onboarding is a
+    // far smaller failure than the wizard tearing down mid-answer.
+    try {
+      localStorage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify(state));
+    } catch {
+      // Storage unavailable: the draft simply is not resumable this session.
+    }
   }, [
     effectiveOnboardingOpen, step, companyName, companyGoal, missionPath, missionConfirmed,
     q1, q2, q3, q4, agentName, adapterType, cwd, model, command, args, url,

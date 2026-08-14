@@ -303,11 +303,16 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     // Safari's private mode and blocked third-party contexts make getItem
     // throw outright. This runs during render, so an escaping exception takes
     // the whole app down rather than just losing a draft.
-    const getItem = vi
-      .spyOn(Storage.prototype, "getItem")
-      .mockImplementation(() => {
-        throw new DOMException("The operation is insecure.", "SecurityError");
-      });
+    // A browser that refuses the read refuses the write too, so deny both —
+    // otherwise the cleanup effect's removeItem is never exercised.
+    const deny = () => {
+      throw new DOMException("The operation is insecure.", "SecurityError");
+    };
+    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(deny);
+    const removeItem = vi
+      .spyOn(Storage.prototype, "removeItem")
+      .mockImplementation(deny);
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(deny);
     mockCompany.companies = [{ id: "c1", name: "My Co", issuePrefix: "MC" }];
     mockCompany.loading = false;
 
@@ -327,6 +332,48 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     expect(document.body.textContent).not.toBe("");
 
     getItem.mockRestore();
+    removeItem.mockRestore();
+    setItem.mockRestore();
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("still opens when a background company refetch fails over a good cache", async () => {
+    // An error with companies in hand is a failed refetch over a cache that is
+    // still usable, not an unanswerable question. Treating it as undecidable
+    // would fail closed: onboarding would never appear for a customer whose
+    // company list is perfectly fine.
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 3,
+        companyName: "Saved Co",
+        agentName: "Ops Lead",
+        createdCompanyId: "c1",
+      }),
+    );
+    mockCompany.companies = [{ id: "c1", name: "Saved Co", issuePrefix: "SC" }];
+    mockCompany.loading = false;
+    mockCompany.error = new Error("refetch failed");
+
+    const { root, queryClient } = render();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <OnboardingWizard />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    // Mounted, and the owned draft was restored rather than withheld.
+    expect(document.body.textContent).toContain("Create your first agent");
+    const nameInput = document.body.querySelector(
+      'input[placeholder="Chief of staff"]',
+    ) as HTMLInputElement | null;
+    expect(nameInput?.value).toBe("Ops Lead");
+
     await act(async () => {
       root.unmount();
     });
