@@ -1103,7 +1103,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               onClick={handleSave}
               disabled={!isCreate && props.isSaving}
             >
-              {!isCreate && (props.isSaving ? t("agentConfig.saving") : t("agentConfig.save"))}
+              {!isCreate && props.isSaving ? t("agentConfig.saving") : t("agentConfig.save")}
             </Button>
           </div>
         </div>

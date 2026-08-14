@@ -259,7 +259,7 @@ export function SidebarAccountMenu({
                 type="button"
                 className="flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left transition-colors hover:bg-accent/60"
                 aria-label={t("sidebar.switchLanguage")}
-                onClick={() => setLocale(i18n.language === "zh-CN" ? "en" : "zh-CN")}
+                onClick={() => { setLocale(i18n.language === "zh-CN" ? "en" : "zh-CN"); window.location.reload(); }}
               >
                 <span className="mt-0.5 rounded-lg border border-border bg-background/70 p-2 text-muted-foreground">
                   <Languages className="size-4" />
