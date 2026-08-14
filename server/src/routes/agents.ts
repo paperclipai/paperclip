@@ -4505,6 +4505,16 @@ export function agentRoutes(
     if (!agent) return;
     const scope = buildSetupTokenScope(req, agent);
     res.setHeader("Cache-Control", "no-store");
+    // Reject the agent default environment before the service starts, so the
+    // agent-scoped start route enforces the same sandbox environment guard as the
+    // company-scoped device-login route. Without this guard the route passes the
+    // agent default environment straight into session startup, and the transport
+    // acquires the sandbox with no independent driver, status, or provider check.
+    // The guard rejects a missing, an archived, a local, an SSH, or a
+    // fake-provider environment. It does not compare the environment against the
+    // caller company; the catalog is instance-scoped, and the acquired lease
+    // records the caller company.
+    await assertSandboxLoginEnvironment(agent.companyId, scope.environmentId);
     if (!SETUP_TOKEN_LOGIN_TRANSPORT_READY) {
       // The live login transport binds at a later call site. Fail closed with the
       // fixed no-secret error until then.

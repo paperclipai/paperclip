@@ -511,6 +511,66 @@ describe("setup-token login route — full path", () => {
   });
 });
 
+describe("setup-token login route — fail-closed environment (agent-scoped)", () => {
+  it("rejects a missing agent default environment and writes no scope", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+    mockEnvironmentService.getById.mockResolvedValue(null);
+
+    const res = await request(app).post(BASE).send({});
+    expect(res.status).toBe(422);
+    // The route rejected the environment before it started a session, so no store
+    // holds an empty environment scope.
+    expect(transport.records).toEqual([]);
+  });
+
+  it("rejects an archived, a local, an ssh, and a fake-provider default environment", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+
+    const cases = [
+      { id: ENVIRONMENT_ID, driver: "sandbox", status: "archived", config: { provider: "kubernetes" } },
+      { id: ENVIRONMENT_ID, driver: "local", status: "active", config: {} },
+      { id: ENVIRONMENT_ID, driver: "ssh", status: "active", config: {} },
+      { id: ENVIRONMENT_ID, driver: "sandbox", status: "active", config: { provider: "fake" } },
+    ];
+    for (const environment of cases) {
+      mockEnvironmentService.getById.mockResolvedValueOnce(environment);
+      const res = await request(app).post(BASE).send({});
+      expect(res.status, JSON.stringify(environment)).toBe(422);
+    }
+    // No rejected environment reached the store.
+    expect(transport.records).toEqual([]);
+  });
+
+  it("rejects an agent default environment that another company owns", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+    // The environment binds to another company only, so the login would run the
+    // process in a foreign company sandbox. The guard fails closed.
+    mockEnvironmentService.listBoundCompanyIds.mockResolvedValue([OTHER_COMPANY_ID]);
+
+    const res = await request(app).post(BASE).send({});
+    expect(res.status).toBe(403);
+    // The route rejected the environment before it started a session.
+    expect(transport.records).toEqual([]);
+  });
+
+  it("accepts an instance-global agent default environment with no company binding", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+    // An environment with no company binding is instance-global and open to every
+    // member, so the agent-scoped login proceeds. This keeps the relaxed,
+    // instance-scoped catalog behavior intact.
+    mockEnvironmentService.listBoundCompanyIds.mockResolvedValue([]);
+
+    const res = await request(app).post(BASE).send({});
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(transport.records).toHaveLength(1);
+    expect(transport.records[0]?.environmentId).toBe(ENVIRONMENT_ID);
+  });
+});
+
 describe("setup-token login route — SR-1 and SR-5 (no secret in a sink)", () => {
   it("keeps the code, the URL query, and the token out of every log, activity, and non-owner sink", async () => {
     const transport = buildTransport({ onSubmit: "complete" });
