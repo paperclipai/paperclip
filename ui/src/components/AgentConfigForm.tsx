@@ -2193,6 +2193,27 @@ function SubmittedBrowserCodeLoginPanel({
     },
   });
 
+  // Release the server session at once, without a change to the panel state. The
+  // client-cutoff timer and the unmount path both use this. The server holds a
+  // per-owner reservation until the session reaches a terminal state, so an
+  // abandoned session locks the owner out until the server deadline. A best-
+  // effort cancel frees that reservation now, so the same owner can start a new
+  // login and does not hit the "too many active sessions" cap. The server
+  // removes a terminal session, so a 404 means the session is already gone. Treat
+  // that 404 the same as a successful cancel. This is a fire-and-forget cleanup,
+  // so it drops every error. The manual Cancel button uses the `cancelLogin`
+  // mutation instead, because that path also returns the panel to its idle start
+  // state.
+  const releaseServerSession = useCallback(
+    (id: string) => {
+      void agentsApi.cancelClaudeSetupTokenLogin(companyId, id).catch(() => {
+        // Drop the error. A 404 means the server already removed the session. A
+        // cleanup path cannot surface any other error, so it stays silent.
+      });
+    },
+    [companyId],
+  );
+
   // Both polls run only while a session is active and the client cap has not
   // passed. The timeout stops the polls, so the panel never polls forever.
   const pollingEnabled = Boolean(sessionId) && !timedOut;
@@ -2281,6 +2302,21 @@ function SubmittedBrowserCodeLoginPanel({
   const isActive = Boolean(sessionId) && !isStored && !isFailure && !timedOut;
   const startDisabled = startLogin.isPending || isActive;
 
+  // Hold the active session id for the unmount cleanup. The panel updates it on
+  // every render. When the panel unmounts, or the parent removes it as the login
+  // closes, with an active, non-terminal session, the cleanup releases that
+  // session on the server. The ref is null once the session leaves the active
+  // state, so the cleanup never cancels a session the server already removed.
+  const activeSessionRef = useRef<string | null>(null);
+  activeSessionRef.current = isActive ? sessionId : null;
+
+  useEffect(() => {
+    return () => {
+      const id = activeSessionRef.current;
+      if (id) releaseServerSession(id);
+    };
+  }, [releaseServerSession]);
+
   // Cap the active login at the server deadline. The timer arms when the login
   // becomes active and clears when the login leaves the active state (a terminal
   // status, a stored success, or a new login). It re-arms when `expiresAt`
@@ -2298,9 +2334,17 @@ function SubmittedBrowserCodeLoginPanel({
     const remainingMs = Number.isFinite(deadlineMs)
       ? Math.max(0, deadlineMs - Date.now())
       : CLAUDE_LOGIN_FAILSAFE_TIMEOUT_MS;
-    const timer = setTimeout(() => setTimedOut(true), remainingMs);
+    const timer = setTimeout(() => {
+      // Release the server session first, then show the timed-out state. The
+      // cancel frees the server reservation now, so an immediate retry by the
+      // same owner starts a new session instead of a lockout on the per-owner
+      // cap. The panel keeps the timed-out state, so the user sees why the login
+      // stopped.
+      if (sessionId) releaseServerSession(sessionId);
+      setTimedOut(true);
+    }, remainingMs);
     return () => clearTimeout(timer);
-  }, [isActive, expiresAt]);
+  }, [isActive, expiresAt, sessionId, releaseServerSession]);
 
   const trimmedCode = browserCode.trim();
   const canSubmit =

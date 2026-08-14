@@ -1455,6 +1455,46 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.textContent).not.toContain("Could not cancel the login.");
   });
 
+  it("cancels the active server session when the panel unmounts", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderClaudeSandbox();
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      (result.container.textContent ?? "").includes("https://claude.example.test/authorize"),
+    );
+    // The login is active before the unmount.
+    expect(findButton(result.container, "Cancel")).toBeTruthy();
+
+    await act(async () => {
+      result.root.unmount();
+    });
+
+    // The unmount released the active server session, so the abandoned session
+    // does not hold the per-owner reservation until the server deadline.
+    expect(mockAgentsApi.cancelClaudeSetupTokenLogin).toHaveBeenCalledWith(
+      "company-1",
+      "claude-session-1",
+    );
+  });
+
+  it("does not cancel on unmount when no login is active", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderClaudeSandbox();
+
+    await runTest(result.container);
+    // The panel shows the Log in button but no session started, so no active
+    // session exists to cancel.
+    expect(findButton(result.container, "Log in")).toBeTruthy();
+
+    await act(async () => {
+      result.root.unmount();
+    });
+
+    expect(mockAgentsApi.cancelClaudeSetupTokenLogin).not.toHaveBeenCalled();
+  });
+
   it("stops both polls and shows the timed-out state at the server deadline", async () => {
     vi.useFakeTimers();
     // Pin the clock to a known base. The panel arms the timed-out timer from the
@@ -1580,6 +1620,14 @@ describe("AgentConfigForm environment selector", () => {
       // Total elapsed after this step is 1 second past `serverDeadlineMs`.
       await advanceFake(serverDeadlineMs - 66_000 + 1_000);
       expect(container.textContent).toContain("The login timed out");
+      // The panel released the server session when the cutoff fired. The cancel
+      // frees the per-owner reservation now, so an immediate retry by the same
+      // owner starts a new session and does not hit the "too many active
+      // sessions" cap.
+      expect(mockAgentsApi.cancelClaudeSetupTokenLogin).toHaveBeenCalledWith(
+        "company-1",
+        "claude-session-1",
+      );
       // The Log in button is available again, and the Cancel button is gone.
       expect(findButton(container, "Log in")?.disabled).toBe(false);
       expect(findButton(container, "Cancel")).toBeFalsy();
