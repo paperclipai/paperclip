@@ -212,29 +212,49 @@ export function OnboardingWizard() {
   const companiesQuery = useQuery({
     ...companiesListQueryOptions,
     staleTime: 0,
-    // Only a saved draft poses the question. Without one there is nothing to
-    // authorize, and this must not add a request to every wizard mount.
-    enabled: rawBlob !== undefined,
+    // Only a *parseable* saved draft poses the question. Without one there is
+    // nothing to authorize, and this must not add a request to every wizard
+    // mount - nor make the cleanup of unreadable junk wait on an endpoint that
+    // has no bearing on whether it is junk.
+    enabled: rawBlob !== undefined && rawBlob !== null,
   });
 
-  // Decidable only with a list fetched since this component mounted, that
-  // actually arrived, and that the server was willing to give us. A 401 or 403
-  // is folded into `{ companies: [], unauthorized: true }` by
-  // `companiesListQueryOptions` rather than thrown, so without this last check
-  // an auth blip would read as "this account owns nothing" and delete the
+  // Decidable only with a list that succeeded, was fetched since this
+  // component mounted, actually arrived, and that the server was willing to
+  // give us.
+  //
+  // `isSuccess` is what ties the answer to this session. React Query keeps the
+  // last good `data` when a refetch fails, so after an account switch the
+  // retained value is the *previous* account's list - but a failed refetch
+  // flips status to error, so `isSuccess` rejects it. Combined with
+  // `staleTime: 0`, which makes every mount refetch, and the mount gate below
+  // holding while that is in flight, a success here is always this session's.
+  //
+  // `isFetchedAfterMount` looks like it belongs here too and does not: it is
+  // true after a *failed* refetch as well, so it never rejects anything
+  // `isSuccess` has not already rejected. Left out rather than kept as
+  // decoration - no test could distinguish it, which is how a guard rots.
+  //
+  // The `unauthorized` check is the last one: `companiesListQueryOptions`
+  // folds 401 and 403 into `{ companies: [], unauthorized: true }` rather than
+  // throwing, so an auth blip arrives as a *successful* fetch of an empty list
+  // and would otherwise read as "this account owns nothing" and delete the
   // draft.
   const ownershipDecidable =
-    companiesQuery.isFetchedAfterMount &&
+    companiesQuery.isSuccess &&
     companiesQuery.data !== undefined &&
     !companiesQuery.data.unauthorized;
 
   const { saved, staleStateDetected } = useMemo(() => {
     if (rawBlob === undefined) return { saved: null, staleStateDetected: false };
+    // Unreadable, so junk regardless of who owns what. Judged before the
+    // ownership check rather than after it, so clearing it does not wait on a
+    // company request that cannot change the answer.
+    if (rawBlob === null) return { saved: null, staleStateDetected: true };
     // Not decidable yet, or not decidable at all. Either way: restore nothing,
     // delete nothing. A draft withheld is recoverable on the next load; a
     // draft deleted, or one handed to the wrong account, is not.
     if (!ownershipDecidable) return { saved: null, staleStateDetected: false };
-    if (rawBlob === null) return { saved: null, staleStateDetected: true };
     const restored = restoreOnboardingState(rawBlob, companiesQuery.data!.companies);
     return { saved: restored, staleStateDetected: restored === null };
   }, [rawBlob, ownershipDecidable, companiesQuery.data]);
@@ -251,7 +271,13 @@ export function OnboardingWizard() {
   // guess at the draft. Its ~20 `useState(saved?.x ?? default)` initializers
   // only read `saved` once.
   //
-  // While *in flight*, not on failure. The companies query sets `retry: false`,
+  // `isFetching`, not `isLoading`. `isLoading` is false whenever the cache
+  // holds retained data, so a refetch over a warm cache would mount the wizard
+  // while ownership was still undecidable - and with the wizard open, the
+  // persist effect would overwrite the customer's own draft with defaults
+  // before the answer arrived. `isFetching` covers the refetch too.
+  //
+  // While in flight, not on failure. The companies query sets `retry: false`,
   // so a failed fetch stays failed; and with no companies the dashboard offers
   // a "Get Started" button wired to onboarding, which a gate that returned null
   // here would make do nothing at all.
@@ -260,7 +286,7 @@ export function OnboardingWizard() {
   // it is itself gated on `effectiveOnboardingOpen`, so a mounted-but-closed
   // wizard writes nothing. If the wizard is open the customer is onboarding
   // right now, which supersedes the draft anyway.
-  if (rawBlob !== undefined && companiesQuery.isLoading) {
+  if (rawBlob !== undefined && companiesQuery.isFetching) {
     return null;
   }
 
