@@ -1,0 +1,14 @@
+# Normalize line endings: store LF in the repo on every platform.
+# Prevents whole-file diffs when contributors on Windows (CRLF) and
+# macOS/Linux (LF) touch the same files.
+* text=auto
+
+# Source and i18n files are committed as LF on all platforms. The i18n
+# locale mirrors (38 files) are generated from en.json by scripts/sync-locales.mjs;
+# keeping them LF keeps their diffs minimal when syncing.
+*.json text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.md text eol=lf
