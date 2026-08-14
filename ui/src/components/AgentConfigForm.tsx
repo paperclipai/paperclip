@@ -490,6 +490,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // the normal agent-update patch path, so no manual bind step remains. Flush any
   // pending editor draft first, keep every unrelated binding, and mark the merged
   // set into the overlay so the editor and the saved patch agree.
+  //
+  // An update can never consume a fresh login's stored-session claim -- only the
+  // create and hire paths can, per `enforceClaudeOAuthBindingClaim`. So this save
+  // must set `applyStoredClaudeLogin`, the same way `handleApplyStoredClaudeLoginEdit`
+  // does, or the server rejects the patch with the fixed claim error even though
+  // the login already stored the token. Without the flag every fresh login on an
+  // existing agent's own page fails to save the binding.
   const handleClaudeLoginStoredEdit = async () => {
     if (isCreate) return;
     const flushedEnv = flushEnvironmentDraft();
@@ -502,7 +509,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       adapterConfig: { ...overlay.adapterConfig, env: nextEnv },
     };
     setOverlay(nextOverlay);
-    await props.onSave(buildAgentUpdatePatch(props.agent, nextOverlay));
+    await props.onSave({
+      ...buildAgentUpdatePatch(props.agent, nextOverlay),
+      applyStoredClaudeLogin: true,
+    });
   };
 
   // Create mode: bind the fixed reference to an existing stored login with no new

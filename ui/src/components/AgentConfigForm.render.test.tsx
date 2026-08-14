@@ -2149,6 +2149,12 @@ describe("AgentConfigForm edit-mode Claude OAuth binding", () => {
     expect(bindings.CLAUDE_CODE_OAUTH_TOKEN).toEqual(FIXED_CLAUDE_OAUTH_BINDING);
     // The persisted patch never carries a token value.
     expect(JSON.stringify(adapterConfig.env)).not.toContain("sk-ant");
+    // An update can never consume the fresh login's stored-session claim -- only
+    // create and hire can, per `enforceClaudeOAuthBindingClaim`. So a save that
+    // introduces the binding through an update must set `applyStoredClaudeLogin`,
+    // or the server rejects the patch with the fixed claim error even though the
+    // login already stored the token. Regression coverage for that gap.
+    expect(patch.applyStoredClaudeLogin).toBe(true);
   });
 
   it("keeps every unrelated existing binding when it adds the fixed binding", async () => {
