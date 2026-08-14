@@ -43,7 +43,10 @@ import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/a
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
-import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
+import {
+  companyPrefixFromOnboardingPath,
+  resolveRouteOnboardingOptions,
+} from "../lib/onboarding-route";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
 import { AgentCapsule } from "./AgentCapsule";
@@ -134,7 +137,13 @@ export function OnboardingWizard() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
-  const { companyPrefix } = useParams<{ companyPrefix?: string }>();
+  const { companyPrefix: matchedCompanyPrefix } = useParams<{ companyPrefix?: string }>();
+  // This component renders beside `<Routes>`, not inside it (`App.tsx`), so it
+  // has no route match and `useParams()` gives nothing. Read the prefix from
+  // the pathname, which `useLocation()` supplies without a match. The param is
+  // kept first so a future move inside the route tree needs no change here.
+  const companyPrefix =
+    matchedCompanyPrefix ?? companyPrefixFromOnboardingPath(location.pathname);
 
   // Support opening the wizard from a route (e.g. /onboarding or an existing
   // company's "add agent" entry point) in addition to the dialog context.
