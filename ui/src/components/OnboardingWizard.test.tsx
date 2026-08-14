@@ -206,10 +206,10 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     await renderTree();
     await flushReact();
 
-    // The draft is restored once companies settle: step 3 (Create your team
-    // lead) with the saved agent name in the input, not the defaults
+    // The draft is restored once companies settle: step 3 (Create your first
+    // agent) with the saved agent name in the input, not the defaults
     // (step 0, "Chief of staff").
-    expect(document.body.textContent).toContain("Create your team lead");
+    expect(document.body.textContent).toContain("Create your first agent");
     const nameInput = document.body.querySelector(
       'input[placeholder="Chief of staff"]',
     ) as HTMLInputElement | null;
