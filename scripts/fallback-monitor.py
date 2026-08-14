@@ -18,7 +18,13 @@ from urllib.parse import urlparse
 from mc_emergency_stop_guard import guard_decision, include_audit_signature, guard_summary
 
 LIMIT_RE = re.compile(
-    r"You[‘’']ve hit your (session|weekly|daily|5-?hour|usage) limit",
+    # Codex/Spark has emitted both "You've hit your usage limit" and the
+    # terser "usage limit reached" family.  Keep the first capture compatible
+    # with limit_kind_from_match(), while infer_limit_kind() handles the terse
+    # alternatives below.
+    r"(?:You[‘’']ve hit your (session|weekly|daily|5-?hour|usage) limit|"
+    r"You[‘’']ve reached your (session|weekly|daily|5-?hour|usage) limit|"
+    r"(?:session|weekly|daily|5-?hour|usage) limit(?: has been)? reached)",
     re.IGNORECASE,
 )
 GEMINI_QUOTA_RE = re.compile(
@@ -106,6 +112,12 @@ SESSION_FALLBACK_HOURS = 6
 WEEKLY_FALLBACK_DAYS = 7
 USAGE_FALLBACK_HOURS = 6
 GEMINI_USAGE_FALLBACK_HOURS = 108
+# Spark can exhaust without an adapter error: it reports successful heartbeats
+# with q=0.000 / zero output.  The TSBC burn driver has used a 12-run threshold
+# since 2026-07-24; preserve that deliberately conservative proven value here.
+SPARK_MODEL_ID = "gpt-5.3-codex-spark"
+SPARK_EMPTY_OUTPUT_MAX_TOKENS = 1
+SPARK_EMPTY_OUTPUT_STREAK = 12
 
 # A transient blip on an idempotent read must NOT crash this handler with a hard
 # exit: a non-zero exit cascades the execution issue back onto the primary's
@@ -163,6 +175,12 @@ def parse_args() -> argparse.Namespace:
     # the schedule so a slightly late tick still sees the last failed run.
     ap.add_argument("--since-minutes", type=int, default=25)
     ap.add_argument("--max-runs", type=int, default=100)
+    ap.add_argument(
+        "--spark-empty-streak",
+        type=int,
+        default=SPARK_EMPTY_OUTPUT_STREAK,
+        help="Consecutive successful near-zero-output Spark runs that signal quota exhaustion.",
+    )
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument(
         "--source-issue-id",
@@ -499,6 +517,86 @@ def list_recent_failed_runs(
         if ts is None or ts >= cutoff:
             fresh.append(r)
     return fresh
+
+
+def list_recent_successful_runs(
+    base: str, key: str, company_id: str, cutoff: datetime, max_runs: int
+) -> list[dict[str, Any]]:
+    """Return recent successful runs for the Spark soft-degrade detector."""
+    q = urllib.parse.urlencode({"status": "succeeded", "limit": str(max_runs)})
+    payload = api(base, key, "GET", f"/api/companies/{company_id}/heartbeat-runs?{q}")
+    runs = payload if isinstance(payload, list) else payload.get("runs", []) if isinstance(payload, dict) else []
+    fresh: list[dict[str, Any]] = []
+    for run in runs:
+        if (run.get("status") or "").lower() != "succeeded":
+            continue
+        ts = parse_iso(run.get("finishedAt") or run.get("startedAt") or run.get("createdAt"))
+        if ts is None or ts >= cutoff:
+            fresh.append(run)
+    return fresh
+
+
+def agent_serves_spark(agent: dict[str, Any] | None) -> bool:
+    """Whether this registered primary is served by the Spark pool.
+
+    The model is nested differently across API generations, so matching the
+    JSON representation is intentionally schema-tolerant while still exact on
+    the model id.  Do not infer Spark from an agent name or role.
+    """
+    if not isinstance(agent, dict):
+        return False
+    return SPARK_MODEL_ID in json.dumps(agent.get("adapterConfig") or {}, sort_keys=True)
+
+
+def run_output_tokens(run: dict[str, Any]) -> int | None:
+    """Read persisted output-token telemetry without treating absent data as 0."""
+    candidates: list[Any] = [
+        run.get("outputTokens"),
+        run.get("output_tokens"),
+    ]
+    for container_name in ("usageJson", "usage", "resultJson"):
+        container = run.get(container_name)
+        if isinstance(container, dict):
+            candidates.extend((container.get("outputTokens"), container.get("output_tokens")))
+            nested_usage = container.get("usage")
+            if isinstance(nested_usage, dict):
+                candidates.extend((nested_usage.get("outputTokens"), nested_usage.get("output_tokens")))
+    for value in candidates:
+        if isinstance(value, bool):
+            continue
+        try:
+            if value is not None:
+                return max(0, int(value))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def detect_spark_empty_output_streak(
+    runs: list[dict[str, Any]], primary_id: str, threshold: int
+) -> list[dict[str, Any]]:
+    """Return the newest zero-output run streak when it proves Spark degraded.
+
+    A missing usage payload is unknown, not zero.  A meaningful successful run
+    breaks the streak, so only consecutive current results can trigger a move.
+    """
+    if threshold < 1:
+        return []
+    primary_runs = [run for run in runs if str(run.get("agentId") or "") == primary_id]
+    primary_runs.sort(
+        key=lambda run: parse_iso(run.get("finishedAt") or run.get("startedAt") or run.get("createdAt"))
+        or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    streak: list[dict[str, Any]] = []
+    for run in primary_runs:
+        output = run_output_tokens(run)
+        if output is None or output > SPARK_EMPTY_OUTPUT_MAX_TOKENS:
+            break
+        streak.append(run)
+        if len(streak) >= threshold:
+            return streak
+    return []
 
 
 def fetch_run_log_text(base: str, key: str, run_id: str) -> str:
@@ -1231,6 +1329,36 @@ def main() -> None:
                 scan_targets = {target_id}
         cutoff = now_utc() - timedelta(minutes=args.since_minutes)
         runs = list_recent_failed_runs(base, key, company_id, cutoff, args.max_runs)
+        # Spark quota exhaustion can look like a clean success with no output,
+        # so it never appears in the failed-run feed above.  Fetch successful
+        # runs once, then synthesize the same bounded usage-limit transition the
+        # proven TSBC burn driver uses after 12 q=0.000 results.
+        successful_runs = list_recent_successful_runs(
+            base, key, company_id, cutoff, args.max_runs
+        )
+        spark_soft_degrades: dict[str, list[dict[str, Any]]] = {}
+        for primary_id in scan_targets:
+            agent = fetch_agent(base, key, primary_id)
+            if not agent_serves_spark(agent):
+                continue
+            streak = detect_spark_empty_output_streak(
+                successful_runs, primary_id, args.spark_empty_streak
+            )
+            if streak:
+                spark_soft_degrades[primary_id] = streak
+                newest = streak[0]
+                runs.insert(
+                    0,
+                    {
+                        "id": newest.get("id") or f"spark-empty-{primary_id}",
+                        "agentId": primary_id,
+                        "error": "Spark usage limit reached (successful empty-output streak)",
+                        "finishedAt": newest.get("finishedAt") or newest.get("startedAt") or newest.get("createdAt"),
+                        "softDegrade": True,
+                        "emptyOutputStreak": len(streak),
+                        "emptyOutputRunIds": [str(item.get("id")) for item in streak if item.get("id")],
+                    },
+                )
         if args.force and args.primary_id:
             target_id = str(args.primary_id).strip()
             if target_id:
@@ -1339,6 +1467,10 @@ def main() -> None:
                     "unavailableSisters": unavailable_sisters,
                     "runId": run["id"],
                     "limitKind": limit_kind,
+                    "trigger": "spark-empty-output-streak" if run.get("softDegrade") else "run-limit-text",
+                    "limitProvider": "spark" if run.get("softDegrade") else provider_hint,
+                    "emptyOutputStreak": run.get("emptyOutputStreak"),
+                    "emptyOutputRunIds": run.get("emptyOutputRunIds") or [],
                     "resetAt": iso_z(reset_at),
                     "wouldMove": moved_preview,
                     "wouldSkipActiveRun": skipped_preview,
@@ -1365,7 +1497,9 @@ def main() -> None:
                 "sisterAgentId": first_sister_id,
                 "sisterAgentIds": sister_ids,
                 "runId": run["id"],
+                "trigger": "spark-empty-output-streak" if run.get("softDegrade") else "run-limit-text",
                 "limitKind": limit_kind,
+                "limitProvider": "spark" if run.get("softDegrade") else provider_hint,
                 "status": "active",
                 "detectedAt": iso_z(now_utc()),
                 "resetAt": iso_z(reset_at),
@@ -1375,6 +1509,9 @@ def main() -> None:
                 "releasedCheckouts": released,
                 "reassignFailed": reassign_failed,
             }
+            if run.get("softDegrade"):
+                state["emptyOutputStreak"] = run.get("emptyOutputStreak")
+                state["emptyOutputRunIds"] = run.get("emptyOutputRunIds") or []
             fh.seek(0)
             fh.truncate(0)
             fh.write(json.dumps(state, indent=2) + "\n")
@@ -1389,6 +1526,10 @@ def main() -> None:
                 "unavailableSisters": unavailable_sisters,
                 "runId": run["id"],
                 "limitKind": limit_kind,
+                "trigger": "spark-empty-output-streak" if run.get("softDegrade") else "run-limit-text",
+                "limitProvider": "spark" if run.get("softDegrade") else provider_hint,
+                "emptyOutputStreak": run.get("emptyOutputStreak"),
+                "emptyOutputRunIds": run.get("emptyOutputRunIds") or [],
                 "resetAt": iso_z(reset_at),
                 "moved": moved,
                 "movedTargets": moved_targets,
