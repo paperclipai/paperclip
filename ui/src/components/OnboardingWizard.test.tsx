@@ -25,6 +25,10 @@ const mockCompany = vi.hoisted(() => ({
 const mockCompaniesApi = vi.hoisted(() => ({
   create: vi.fn(),
   update: vi.fn(),
+  // The gate fetches the list itself now, rather than reading the shared
+  // cache, so ownership cases are driven from here. `mockCompany.companies`
+  // below still feeds the *inner* wizard, which is a different question.
+  list: vi.fn(),
 }));
 const mockGoalsApi = vi.hoisted(() => ({
   create: vi.fn(),
@@ -113,6 +117,7 @@ vi.mock("./AsciiArtAnimation", () => ({ AsciiArtAnimation: () => null }));
 vi.mock("./FrontDoor", () => ({ FrontDoor: () => null }));
 vi.mock("./AgentCapsule", () => ({ AgentCapsule: () => null }));
 
+import { ApiError } from "../api/client";
 import { ONBOARDING_STORAGE_KEY, OnboardingWizard } from "./OnboardingWizard";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -144,6 +149,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockCompany.companies = [];
     mockCompany.loading = false;
     mockCompany.error = null;
+    mockCompaniesApi.list.mockResolvedValue([]);
     mockAdapterRegistry.list = [];
     mockAdapterRegistry.disabled = new Set<string>();
     mockCompaniesApi.create.mockResolvedValue({
@@ -186,6 +192,15 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockDialog.onboardingOptions = {};
     mockCompany.companies = [];
     mockCompany.loading = true;
+    // Deferred rather than swapped later: the gate's fetch fires on the first
+    // render, so replacing the mock afterwards would never reach it.
+    let resolveList: (companies: Array<{ id: string; name: string; issuePrefix: string }>) => void =
+      () => {};
+    mockCompaniesApi.list.mockReturnValue(
+      new Promise<Array<{ id: string; name: string; issuePrefix: string }>>((resolve) => {
+        resolveList = resolve;
+      }),
+    );
 
     const { container, root, queryClient } = render();
     const renderTree = () =>
@@ -208,6 +223,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     // Companies resolve asynchronously, owning the saved company.
     mockCompany.companies = [{ id: "c1", name: "Saved Co", issuePrefix: "SC" }];
     mockCompany.loading = false;
+    await act(async () => {
+      resolveList([{ id: "c1", name: "Saved Co", issuePrefix: "SC" }]);
+    });
 
     await renderTree();
     await flushReact();
@@ -242,6 +260,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     );
     mockCompany.companies = [{ id: "company-new", name: "My Co", issuePrefix: "MC" }];
     mockCompany.loading = false;
+    mockCompaniesApi.list.mockResolvedValue([
+      { id: "company-new", name: "My Co", issuePrefix: "MC" },
+    ]);
 
     const { root, queryClient } = render();
     await act(async () => {
@@ -281,6 +302,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockCompany.companies = [];
     mockCompany.loading = false;
     mockCompany.error = new Error("company list unavailable");
+    mockCompaniesApi.list.mockRejectedValue(new Error("company list unavailable"));
 
     const { root, queryClient } = render();
     await act(async () => {
@@ -371,6 +393,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockCompany.companies = [{ id: "c1", name: "Saved Co", issuePrefix: "SC" }];
     mockCompany.loading = false;
     mockCompany.error = new Error("refetch failed");
+    mockCompaniesApi.list.mockRejectedValue(new Error("refetch failed"));
 
     const { root, queryClient } = render();
     await act(async () => {
@@ -452,6 +475,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockCompany.companies = [];
     mockCompany.loading = false;
     mockCompany.error = new Error("company list unavailable");
+    mockCompaniesApi.list.mockRejectedValue(new Error("company list unavailable"));
 
     const { root, queryClient } = render();
     await act(async () => {
@@ -491,6 +515,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockCompany.companies = [{ id: "company-a", name: "Account A Co", issuePrefix: "AAC" }];
     mockCompany.loading = false;
     mockCompany.error = new Error("refetch failed for the new account");
+    mockCompaniesApi.list.mockRejectedValue(new Error("refetch failed for the new account"));
 
     const { root, queryClient } = render();
     await act(async () => {
@@ -508,6 +533,91 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       'input[placeholder="Chief of staff"]',
     ) as HTMLInputElement | null;
     expect(nameInput?.value ?? "").not.toBe("A's Lead");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+  it("does not judge ownership against a warm cache that never refetched", async () => {
+    // The door this whole change exists to shut, and the one the previous
+    // version missed. `main.tsx` sets `staleTime: 30_000`, so for thirty
+    // seconds after a sign-in the company list is served straight from cache
+    // with no request — and `Auth.tsx` invalidates on sign-in but invalidation
+    // keeps serving the old data while refetching. Either way account A's
+    // companies arrive with *no loading state and no error*, so a gate keyed
+    // on "not loading, no error" reads them as authoritative.
+    //
+    // Here the context reports exactly that healthy-looking stale state, and
+    // the fetch for this session has not answered. A's draft must not be
+    // restored on the strength of A's cached list.
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 3,
+        companyName: "Account A Co",
+        agentName: "A's Lead",
+        createdCompanyId: "company-a",
+      }),
+    );
+    // The shared cache still holds A's list, and looks entirely healthy.
+    mockCompany.companies = [{ id: "company-a", name: "Account A Co", issuePrefix: "AAC" }];
+    mockCompany.loading = false;
+    mockCompany.error = null;
+    // The list fetched for *this* session answers with B's companies, which
+    // do not include A's. Note the fetch must actually complete: leaving it
+    // pending would keep the wizard unmounted and the assertion below would
+    // hold for the wrong reason.
+    mockCompaniesApi.list.mockResolvedValue([
+      { id: "company-b", name: "Account B Co", issuePrefix: "BBC" },
+    ]);
+
+    const { root, queryClient } = render();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <OnboardingWizard />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    // Mounted — so this is a real observation, not an unmounted false pass.
+    expect(document.body.textContent).not.toBe("");
+    expect(document.body.textContent).not.toContain("A's Lead");
+    const nameInput = document.body.querySelector(
+      'input[placeholder="Chief of staff"]',
+    ) as HTMLInputElement | null;
+    expect(nameInput?.value ?? "").not.toBe("A's Lead");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not delete a draft when the company list comes back unauthorized", async () => {
+    // `companiesListQueryOptions` folds 401/403 into
+    // `{ companies: [], unauthorized: true }` rather than throwing, so an auth
+    // blip arrives as a successful fetch of an empty list — which reads as
+    // "this account owns nothing" and would delete the draft.
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({ step: 3, companyName: "Saved Co", createdCompanyId: "c1" }),
+    );
+    mockCompaniesApi.list.mockRejectedValue(
+      new ApiError("forbidden", 403, null),
+    );
+
+    const { root, queryClient } = render();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <OnboardingWizard />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)).not.toBeNull();
 
     await act(async () => {
       root.unmount();

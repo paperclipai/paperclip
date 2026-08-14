@@ -5,6 +5,7 @@ import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { companiesApi } from "../api/companies";
+import { companiesListQueryOptions } from "../api/companies-query";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
@@ -171,7 +172,8 @@ const INCOMPLETE_ONBOARDING_STATE_MESSAGE =
  * clear before computing `saved` and mounting the inner component at all.
  */
 export function OnboardingWizard() {
-  const { companies, loading: companiesLoading, error: companiesError } = useCompany();
+  // Deliberately does not call `useCompany()`. The list it exposes is the
+  // shared cache, which is what this gate must not trust - see below.
 
   // Parsed once (not re-parsed by the cleanup effect below) so the restored
   // value and the "should we wipe the blob" decision always agree.
@@ -185,48 +187,57 @@ export function OnboardingWizard() {
     }
   }, []);
 
-  // A failed company query is not an answer *when it left us with nothing*.
-  // React Query reports that as `isLoading === false` with `data` defaulted to
-  // an empty list, which reads exactly like "settled, and this account owns
-  // nothing" - and that verdict deletes the draft below. Discarding a
-  // customer's onboarding because their company request timed out is the one
-  // outcome here that cannot be undone.
+  // Whether this account owns the company the draft names is an authorization
+  // question, and the shared company cache cannot answer it.
   //
-  // An error with companies still in hand is a different thing: a background
-  // refetch failed over a cache that is still good. Blocking on that would
-  // fail closed, and onboarding would simply never appear for a customer whose
-  // list is fine. Only an error that leaves the list empty is undecidable.
-  // Named for what it governs: whether the *draft* can be judged. It is not
-  // the same question as whether to mount - see the gate below.
-  // Any error at all, not only one that left the list empty.
+  // `main.tsx` sets `staleTime: 30_000` for every query, so for thirty seconds
+  // after a sign-in a mounted observer of the company list serves whatever is
+  // cached with no request at all. `Auth.tsx` invalidates the list on sign-in,
+  // but invalidation keeps serving the old data while it refetches. Neither
+  // shows up as loading and neither shows up as an error, so the previous
+  // account's companies arrive looking perfectly healthy - and a check that
+  // trusts "not loading, no error" finds the old company id in them and hands
+  // one account's onboarding draft to the next.
   //
-  // The companies cache is not scoped to an account and survives sign-out -
-  // `useSignOut` invalidates only the session and health queries, and
-  // invalidation keeps serving the old data anyway. So after A signs out and B
-  // signs in, a *failed* refetch leaves A's companies in hand. Trusting a
-  // non-empty list there would find A's company id in it, call the draft
-  // owned, and hand A's onboarding to B - which is the exact leak this whole
-  // change exists to close, reached through a different door.
+  // Sign-out does not help: `useSignOut` never clears the company cache, and
+  // on the self-hosted path there is no document reload to clear it either.
+  // Even once that is fixed, an account change can skip the button entirely -
+  // a session lapsing server-side, a second account signing in on a warm tab.
   //
-  // The cost is small and recoverable: during a transient refetch failure the
-  // draft is not restored. It is not deleted either, and the next successful
-  // load restores it.
-  //
-  // A truthy check rather than `!== null`. The context types this
-  // `Error | null`, but `undefined` reaches here from any consumer that
-  // provides the company context without an `error` key, and `undefined !==
-  // null` would read a healthy load as a failure.
-  const ownershipUndecidable = companiesLoading || Boolean(companiesError);
+  // So this asks for a list fetched *for this mount*, rather than reading the
+  // one in hand. `isFetchedAfterMount` is the part that matters; `staleTime: 0`
+  // is what makes that reachable while the shared entry is still fresh. It
+  // shares the query key, so the result populates the same cache entry the
+  // rest of the app reads.
+  const companiesQuery = useQuery({
+    ...companiesListQueryOptions,
+    staleTime: 0,
+    // Only a saved draft poses the question. Without one there is nothing to
+    // authorize, and this must not add a request to every wizard mount.
+    enabled: rawBlob !== undefined,
+  });
+
+  // Decidable only with a list fetched since this component mounted, that
+  // actually arrived, and that the server was willing to give us. A 401 or 403
+  // is folded into `{ companies: [], unauthorized: true }` by
+  // `companiesListQueryOptions` rather than thrown, so without this last check
+  // an auth blip would read as "this account owns nothing" and delete the
+  // draft.
+  const ownershipDecidable =
+    companiesQuery.isFetchedAfterMount &&
+    companiesQuery.data !== undefined &&
+    !companiesQuery.data.unauthorized;
 
   const { saved, staleStateDetected } = useMemo(() => {
     if (rawBlob === undefined) return { saved: null, staleStateDetected: false };
-    // Companies not settled yet: restoreOnboardingState must not be called
-    // (see its CONTRACT). Not stale, just not decidable yet.
-    if (ownershipUndecidable) return { saved: null, staleStateDetected: false };
+    // Not decidable yet, or not decidable at all. Either way: restore nothing,
+    // delete nothing. A draft withheld is recoverable on the next load; a
+    // draft deleted, or one handed to the wrong account, is not.
+    if (!ownershipDecidable) return { saved: null, staleStateDetected: false };
     if (rawBlob === null) return { saved: null, staleStateDetected: true };
-    const restored = restoreOnboardingState(rawBlob, companies);
+    const restored = restoreOnboardingState(rawBlob, companiesQuery.data!.companies);
     return { saved: restored, staleStateDetected: restored === null };
-  }, [rawBlob, ownershipUndecidable, companies]);
+  }, [rawBlob, ownershipDecidable, companiesQuery.data]);
 
   // A discarded/malformed state should not sit in storage waiting to confuse
   // the next onboarding attempt (e.g. a different signed-in user).
@@ -235,24 +246,21 @@ export function OnboardingWizard() {
     onboardingDraftStorage.clear();
   }, [staleStateDetected]);
 
-  // A saved blob exists and the company list is still in flight: wait rather
-  // than mount the inner wizard with a premature, and unrecoverable, guess at
-  // the draft.
+  // A saved blob exists and the verification fetch is still in flight: wait,
+  // rather than mount the inner wizard with a premature and unrecoverable
+  // guess at the draft. Its ~20 `useState(saved?.x ?? default)` initializers
+  // only read `saved` once.
   //
-  // Only while *loading*, not on error. An error with an empty list is still
-  // undecidable - nothing is restored and nothing is cleared, per the memo
-  // above - but withholding the wizard on top of that is a dead end, because
-  // the companies query sets `retry: false`. With no companies the dashboard
-  // offers a "Get Started" button that opens onboarding, and a gate that
-  // returned null here would make that button do nothing at all until a
-  // refetch happened to succeed.
+  // While *in flight*, not on failure. The companies query sets `retry: false`,
+  // so a failed fetch stays failed; and with no companies the dashboard offers
+  // a "Get Started" button wired to onboarding, which a gate that returned null
+  // here would make do nothing at all.
   //
   // Mounting does not cost the draft. The persist effect that would overwrite
   // it is itself gated on `effectiveOnboardingOpen`, so a mounted-but-closed
-  // wizard writes nothing, and the blob survives for a later load that can
-  // decide. If the wizard *is* open the customer is onboarding right now,
-  // which supersedes the draft anyway.
-  if (rawBlob !== undefined && companiesLoading) {
+  // wizard writes nothing. If the wizard is open the customer is onboarding
+  // right now, which supersedes the draft anyway.
+  if (rawBlob !== undefined && companiesQuery.isLoading) {
     return null;
   }
 

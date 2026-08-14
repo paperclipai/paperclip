@@ -43,6 +43,14 @@ vi.mock("../context/DialogContext", () => ({
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => mockCompany,
 }));
+// The restore gate fetches the company list itself to verify draft ownership,
+// rather than trusting the shared cache, so this module now needs stubbing
+// here. An empty list is fine: the drafts in this file carry no
+// `createdCompanyId`, so there is no ownership question — but the fetch has to
+// succeed for the gate to treat the draft as decidable at all.
+vi.mock("../api/companies", () => ({
+  companiesApi: { create: vi.fn(), list: vi.fn().mockResolvedValue([]) },
+}));
 vi.mock("../adapters", () => ({
   listUIAdapters: () => mockAdapterRegistry.list,
   getUIAdapter: () => ({ buildAdapterConfig: () => ({}) }),
