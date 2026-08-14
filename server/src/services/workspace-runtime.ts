@@ -3035,7 +3035,9 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   // path makes the "git" spawn fail with a raw "spawn git ENOENT" error. That
   // error hides the real cause: the base project checkout is not on disk.
   // Throw a clear cause first so a future failure names the missing checkout.
-  const baseCwd = asString(input.base.baseCwd, "").trim();
+  // Keep the persisted path exact. A directory name can start or end with a
+  // space, so a trim would change a valid checkout path.
+  const baseCwd = asString(input.base.baseCwd, "");
   if (!baseCwd) {
     throw new Error(
       "Cannot rebuild the git worktree: the base project checkout path is empty.",
