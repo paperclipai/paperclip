@@ -35,8 +35,10 @@ import {
   buildSetupTokenLoginTransport,
   createProductionSetupTokenSandboxProvider,
   createProductionSetupTokenCleanupStore,
+  createSetupTokenSecretWriter,
   createWorkerBoundSetupTokenPtyOpener,
 } from "./services/setup-token-transport-binding.js";
+import { secretService } from "./services/secrets.js";
 import { environmentService } from "./services/environments.js";
 import { environmentRuntimeService } from "./services/environment-runtime.js";
 import { projectRoutes } from "./routes/projects.js";
@@ -461,6 +463,12 @@ export async function createApp(
       log: (line) => logger.info(line),
     }),
     store: createProductionSetupTokenCleanupStore(db),
+    // Bind the owner-bound secret writer, so a completed login stores the minted
+    // token in the secret store. The writer reads the company and the owner only
+    // from the immutable session scope and writes with `mode: "first_write"`. The
+    // confirm-replacement flow owns rotation. Without this writer the router falls
+    // back to the deferred, fail-closed 503 and never stores the token.
+    completeCredential: createSetupTokenSecretWriter({ secrets: secretService(db) }),
   });
   api.use(
     agentRoutes(db, {

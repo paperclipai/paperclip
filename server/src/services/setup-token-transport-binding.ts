@@ -28,6 +28,7 @@ import {
   type SetupTokenLoginOutcome,
   type SetupTokenLoginProcess,
   type SetupTokenLoginProcessFactory,
+  type SetupTokenSecretWriter,
   type SetupTokenSessionScope,
 } from "./setup-token-session.js";
 import type { environmentService } from "./environments.js";
@@ -70,20 +71,76 @@ export interface SetupTokenLoginTransportDeps {
   sandbox: SetupTokenSandboxProvider;
   /** The durable cleanup store. Defaults to the database-backed store over `db`. */
   store: SetupTokenCleanupStore;
+  /**
+   * The owner-bound secret writer. The binding forwards it to the router, so a
+   * completed login stores the minted token in the secret store. When a caller
+   * omits it, the router keeps its deferred, fail-closed writer.
+   */
+  completeCredential?: SetupTokenSecretWriter;
   /** A non-leaking status sink. It receives only fixed status lines. */
   log?: (line: string) => void;
 }
 
 /**
  * The production transport the router binds through `options.setupTokenLogin`. It
- * carries the live lease manager, the login-process factory, and the durable
- * cleanup store. It omits the secret writer, so the router keeps its deferred,
- * fail-closed writer until a later phase binds the owner-bound secret write.
+ * carries the live lease manager, the login-process factory, the durable cleanup
+ * store, and the owner-bound secret writer. The router uses the writer for the
+ * final secret write; when the binding omits it, the router keeps its deferred,
+ * fail-closed writer.
  */
 export interface SetupTokenLoginTransportBinding {
   factory: SetupTokenLoginProcessFactory;
   leases: SetupTokenLeaseManager;
   store: SetupTokenCleanupStore;
+  completeCredential?: SetupTokenSecretWriter;
+}
+
+/**
+ * The narrow secret-completion surface the production writer needs. The secrets
+ * service exposes `completeClaudeOAuthUserSecret` as the owner-bound
+ * compare-and-set for the Claude Code OAuth value. The writer forwards only the
+ * scope owner, the session id, the mode, and the token to it.
+ */
+export interface SetupTokenSecretCompletion {
+  completeClaudeOAuthUserSecret(
+    companyId: string,
+    ownerUserId: string,
+    input: {
+      sessionId: string;
+      mode: "first_write" | "confirmed_rotation";
+      value: string;
+      expectedSecretId?: string | null;
+      expectedLatestVersion?: number | null;
+    },
+    actor?: { userId?: string | null; agentId?: string | null },
+  ): Promise<unknown>;
+}
+
+/**
+ * Builds the production owner-bound secret writer for the login session. It adapts
+ * the session writer input `{ scope, sessionId, token }` to the secrets service
+ * compare-and-set. It always writes with `mode: "first_write"`, so the login
+ * creates the first owner value only. The confirm-replacement flow owns
+ * `confirmed_rotation`; that flow supplies the expected version after the owner
+ * confirms the replacement, so the session writer never rotates.
+ *
+ * It reads the company and the owner only from the immutable session scope, so a
+ * request cannot redirect the write to another owner (Control 4). It never logs
+ * the token and never puts the token in an error; it lets the secrets service
+ * error propagate unchanged, and the session maps a rejection to the fixed,
+ * non-secret storage error (Control 1).
+ */
+export function createSetupTokenSecretWriter(deps: {
+  secrets: SetupTokenSecretCompletion;
+}): SetupTokenSecretWriter {
+  return async ({ scope, sessionId, token }) => {
+    await deps.secrets.completeClaudeOAuthUserSecret(
+      scope.companyId,
+      scope.ownerUserId,
+      { sessionId, mode: "first_write", value: token },
+      { userId: scope.ownerUserId },
+    );
+  };
 }
 
 /** The immutable scope key that correlates one acquire with one factory call. */
@@ -205,7 +262,7 @@ export function buildSetupTokenLoginTransport(
     };
   };
 
-  return { factory, leases, store: deps.store };
+  return { factory, leases, store: deps.store, completeCredential: deps.completeCredential };
 }
 
 /** The dependencies the production sandbox provider needs. */

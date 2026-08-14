@@ -3,15 +3,23 @@ import { describe, expect, it, vi } from "vitest";
 import {
   buildSetupTokenLoginTransport,
   createProductionSetupTokenSandboxProvider,
+  createSetupTokenSecretWriter,
   createWorkerBoundSetupTokenPtyOpener,
   type SetupTokenSandboxProvider,
+  type SetupTokenSecretCompletion,
 } from "./setup-token-transport-binding.js";
 import {
   SetupTokenSessionService,
+  SETUP_TOKEN_STORAGE_FAILED,
   isTerminalSessionState,
   type SetupTokenCleanupIdentity,
   type SetupTokenCleanupRecord,
   type SetupTokenCleanupStore,
+  type SetupTokenCredentialSink,
+  type SetupTokenLoginOutcome,
+  type SetupTokenLoginProcess,
+  type SetupTokenLoginProcessFactory,
+  type SetupTokenPromptSink,
   type SetupTokenSessionScope,
   type SetupTokenSessionState,
 } from "./setup-token-session.js";
@@ -627,3 +635,184 @@ describe("worker-bound live pseudo-terminal opener", () => {
 
 // A compile-time guard: a terminal state helper stays importable for the tests.
 void isTerminalSessionState;
+
+// A synthetic token. No real token is present. The tests assert the token never
+// reaches a log or an error message.
+const SYNTH_TOKEN = "sk-ant-oat01-SYNTHETICSYNTHETICSYNTHETIC01";
+
+/**
+ * A recording secret-completion stub. It stands in for the secrets service. It
+ * records every completion call and optionally rejects, so a test drives the
+ * writer success path and the writer rejection path.
+ */
+function createRecordingSecrets(options?: { rejectWith?: Error }) {
+  const calls: Array<{
+    companyId: string;
+    ownerUserId: string;
+    input: { sessionId: string; mode: string; value: string };
+    actor: { userId?: string | null; agentId?: string | null } | undefined;
+  }> = [];
+  const secrets: SetupTokenSecretCompletion = {
+    async completeClaudeOAuthUserSecret(companyId, ownerUserId, input, actor) {
+      calls.push({ companyId, ownerUserId, input, actor });
+      if (options?.rejectWith) throw options.rejectWith;
+      return { secretId: "secret-1", latestVersion: 1 };
+    },
+  };
+  return { secrets, calls };
+}
+
+/**
+ * A controllable fake login process. It surfaces the prompt and the credential on
+ * demand, so a test drives the session to the owner-bound secret write without a
+ * live pseudo-terminal.
+ */
+class FakeLoginProcess implements SetupTokenLoginProcess {
+  readonly done: Promise<SetupTokenLoginOutcome>;
+  private resolveDone!: (outcome: SetupTokenLoginOutcome) => void;
+  constructor(
+    readonly onPrompt: SetupTokenPromptSink,
+    readonly onCredential: SetupTokenCredentialSink,
+  ) {
+    this.done = new Promise((resolve) => {
+      this.resolveDone = resolve;
+    });
+  }
+  surfacePrompt(url: string): void {
+    this.onPrompt({ url });
+  }
+  // The credential sink awaits the owner-bound secret write. The test awaits this
+  // call, so the write settles before it asserts.
+  async surfaceCredential(token: string): Promise<void> {
+    await this.onCredential(token);
+  }
+  finish(outcome: SetupTokenLoginOutcome): void {
+    this.resolveDone(outcome);
+  }
+  submitCode(): void {}
+  stop(): void {}
+}
+
+/** Builds a fake factory that hands the first process to the test. */
+function createFakeFactory() {
+  const processes: FakeLoginProcess[] = [];
+  const factory: SetupTokenLoginProcessFactory = ({ onPrompt, onCredential }) => {
+    const process = new FakeLoginProcess(onPrompt, onCredential);
+    processes.push(process);
+    return process;
+  };
+  return { factory, processes };
+}
+
+describe("production setup-token secret writer", () => {
+  it("forwards the scope owner, the session id, the token, and first_write mode", async () => {
+    const { secrets, calls } = createRecordingSecrets();
+    const writer = createSetupTokenSecretWriter({ secrets });
+
+    await writer({ scope: SCOPE, sessionId: "session-7", token: SYNTH_TOKEN });
+
+    // The writer called the compare-and-set one time with the scope owner, the
+    // session id, the token, and the fixed first_write mode. It set the actor to
+    // the scope owner.
+    expect(calls).toEqual([
+      {
+        companyId: SCOPE.companyId,
+        ownerUserId: SCOPE.ownerUserId,
+        input: { sessionId: "session-7", mode: "first_write", value: SYNTH_TOKEN },
+        actor: { userId: SCOPE.ownerUserId },
+      },
+    ]);
+  });
+
+  it("carries the writer through the transport binding to the router", () => {
+    const sandbox = createFakeSandbox();
+    const store = createRecordingStore();
+    const { secrets } = createRecordingSecrets();
+    const writer = createSetupTokenSecretWriter({ secrets });
+
+    const transport = buildSetupTokenLoginTransport({
+      sandbox: sandbox.provider,
+      store: store.store,
+      completeCredential: writer,
+    });
+
+    // The binding forwards the writer, so the router uses the real secret write
+    // instead of the deferred fail-closed default.
+    expect(transport.completeCredential).toBe(writer);
+  });
+
+  it("surfaces SETUP_TOKEN_STORAGE_FAILED with no token when the secret write rejects", async () => {
+    const store = createRecordingStore();
+    const { secrets, calls } = createRecordingSecrets({ rejectWith: new Error("storage down") });
+    const { factory, processes } = createFakeFactory();
+    const service = new SetupTokenSessionService({
+      factory,
+      leases: buildSetupTokenLoginTransport({ sandbox: createFakeSandbox().provider, store: store.store }).leases,
+      store: store.store,
+      completeCredential: createSetupTokenSecretWriter({ secrets }),
+      rateLimiter: allowAllRateLimiter,
+      ttlMs: 5 * 60_000,
+    });
+
+    const started = await service.start(SCOPE);
+    await flush();
+    processes[0].surfacePrompt("https://claude.com/oauth/authorize?code=abc");
+    service.submitCode(started.sessionId, SCOPE, "browser-code");
+
+    // The secret write rejects. The session maps it to the fixed, non-secret
+    // storage error and never leaks the token.
+    let error: unknown;
+    await processes[0].surfaceCredential(SYNTH_TOKEN).catch((err) => {
+      error = err;
+    });
+    expect(error).toMatchObject({ message: SETUP_TOKEN_STORAGE_FAILED });
+    expect(String((error as Error).message)).not.toContain(SYNTH_TOKEN);
+    // The writer forwarded the call to the secrets service before it rejected.
+    expect(calls).toHaveLength(1);
+
+    await service.shutdown();
+  });
+
+  it("stores the credential on a completed login through the bound writer", async () => {
+    const store = createRecordingStore();
+    const { secrets, calls } = createRecordingSecrets();
+    const { factory, processes } = createFakeFactory();
+    const logs: string[] = [];
+    const service = new SetupTokenSessionService({
+      factory,
+      leases: buildSetupTokenLoginTransport({ sandbox: createFakeSandbox().provider, store: store.store }).leases,
+      store: store.store,
+      completeCredential: createSetupTokenSecretWriter({ secrets }),
+      rateLimiter: allowAllRateLimiter,
+      ttlMs: 5 * 60_000,
+      log: (line) => logs.push(line),
+    });
+
+    const started = await service.start(SCOPE);
+    await flush();
+    processes[0].surfacePrompt("https://claude.com/oauth/authorize?code=abc");
+    service.submitCode(started.sessionId, SCOPE, "browser-code");
+    await processes[0].surfaceCredential(SYNTH_TOKEN);
+    processes[0].finish("success");
+    await flush();
+
+    // The token reached the owner-bound writer one time with the scope owner.
+    expect(calls).toEqual([
+      {
+        companyId: SCOPE.companyId,
+        ownerUserId: SCOPE.ownerUserId,
+        input: { sessionId: started.sessionId, mode: "first_write", value: SYNTH_TOKEN },
+        actor: { userId: SCOPE.ownerUserId },
+      },
+    ]);
+    // The completion reports the stored credential. The deferred fail-closed 503
+    // did not run.
+    const completion = service.completeSession(started.sessionId, SCOPE);
+    expect(completion.storedSessionId).toBe(started.sessionId);
+    expect(completion).not.toHaveProperty("token");
+    // No log line carries the token.
+    expect(logs.join("\n")).not.toContain(SYNTH_TOKEN);
+
+    await service.shutdown();
+  });
+});
