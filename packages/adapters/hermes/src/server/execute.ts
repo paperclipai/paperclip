@@ -601,13 +601,13 @@ export async function execute(
     quietMode: useQuiet,
   });
 
+  if (parsed.sessionId) {
+    await ctx.onLog("stdout", `[hermes] Session: ${parsed.sessionId}\n`);
+  }
   await ctx.onLog(
     "stdout",
     `[hermes] Exit code: ${result.exitCode ?? "null"}, timed out: ${result.timedOut}\n`,
   );
-  if (parsed.sessionId) {
-    await ctx.onLog("stdout", `[hermes] Session: ${parsed.sessionId}\n`);
-  }
 
   // ── Build result ───────────────────────────────────────────────────────
   const executionResult: AdapterExecutionResult = {
