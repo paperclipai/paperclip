@@ -323,6 +323,21 @@ export function OnboardingWizard() {
     if (company) setCreatedCompanyPrefix(company.issuePrefix);
   }, [effectiveOnboardingOpen, createdCompanyId, createdCompanyPrefix, companies]);
 
+  // Backfill the name too, for the same company and the same reason.
+  //
+  // `companyName` is otherwise only ever typed on step 1, so a company that
+  // enters the wizard further along has none. That is a dead end rather than a
+  // cosmetic gap: the mission step prints the name in its own copy, and both
+  // ways forward from that step - the button and the Enter key - require
+  // `companyName.trim()`. An existing company opened on the mission step could
+  // not leave it. Nothing reached that state until the dashboard started
+  // opening agentless companies there.
+  useEffect(() => {
+    if (!effectiveOnboardingOpen || !createdCompanyId || companyName) return;
+    const company = companies.find((c) => c.id === createdCompanyId);
+    if (company) setCompanyName(company.name);
+  }, [effectiveOnboardingOpen, createdCompanyId, companyName, companies]);
+
   // Persist wizard state to localStorage on every change
   useEffect(() => {
     if (!effectiveOnboardingOpen) return;
@@ -643,7 +658,41 @@ export function OnboardingWizard() {
   // mission step (e.g. via Back) doesn't create a duplicate company.
   async function handleConfirmMission() {
     if (createdCompanyId) {
-      setStep(3);
+      // An existing company needs its mission written, not just skipped past.
+      // This branch used to advance without saving anything, which was
+      // harmless while nothing sent an existing company to the mission step -
+      // a company reached step 2 only by creating itself on step 1, one line
+      // below. The dashboard now opens an agentless company here, so the
+      // customer types a mission and presses "Confirm mission". Advancing
+      // without writing it would leave the company with no mission at all,
+      // which is the state this whole change exists to remove.
+      //
+      // Only when the wizard has not already written one. Returning to step 2
+      // and confirming again must not add a second goal.
+      if (createdCompanyGoalId) {
+        setStep(3);
+        return;
+      }
+      setLoading(true);
+      setError(null);
+      try {
+        const parsedGoal = parseOnboardingGoalInput(companyGoal);
+        const goal = await goalsApi.create(createdCompanyId, {
+          title: parsedGoal.title,
+          ...(parsedGoal.description ? { description: parsedGoal.description } : {}),
+          level: "company",
+          status: "active"
+        });
+        setCreatedCompanyGoalId(goal.id);
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.goals.list(createdCompanyId)
+        });
+        setStep(3);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to save the mission");
+      } finally {
+        setLoading(false);
+      }
       return;
     }
     setLoading(true);

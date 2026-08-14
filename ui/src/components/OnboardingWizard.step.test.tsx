@@ -90,6 +90,26 @@ function currentStep(): "mission" | "agent" | "closed" | "other" {
   return "other";
 }
 
+function confirmMissionButton(): HTMLButtonElement | null {
+  return (
+    [...document.body.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Confirm mission"),
+    ) ?? null
+  );
+}
+
+function missionTextarea(): HTMLTextAreaElement | null {
+  return document.body.querySelector("textarea");
+}
+
+/** Type into a controlled React input without a full user-event dependency. */
+function setControlledValue(el: HTMLTextAreaElement | HTMLInputElement, value: string) {
+  const prototype =
+    el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(el, value);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 const COMPANY_GOAL = {
   id: "goal-1",
   companyId: "company-1",
@@ -253,6 +273,96 @@ describe("OnboardingWizard — which step it lands on", () => {
     await settle();
 
     expect(currentStep()).toBe("agent");
+  });
+
+  describe("the mission step, reached with a company that already exists", () => {
+    // Nothing sent an existing company here until the dashboard started
+    // opening agentless ones on this step. Both defects below were reachable
+    // the moment it did.
+
+    async function openOnMissionStepForExistingCompany() {
+      dialogState.onboardingOpen = true;
+      dialogState.onboardingOptions = {
+        companyId: "company-1",
+        initialStep: ONBOARDING_MISSION_STEP,
+      };
+      await render();
+      await settle();
+      expect(currentStep()).toBe("mission");
+    }
+
+    async function click(el: Element) {
+      await act(async () => {
+        el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+    }
+
+    it("names the company it is asking about, so the step can be completed", async () => {
+      // `companyName` is only ever typed on step 1. Without a backfill it is
+      // empty here, the step's own copy has a blank where the name goes, and
+      // "Confirm mission" stays disabled — a customer sent to this step could
+      // not leave it.
+      await openOnMissionStepForExistingCompany();
+
+      expect(document.body.textContent).toContain("Acme");
+
+      const direct = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("I know my mission"),
+      )!;
+      await click(direct);
+      setControlledValue(missionTextarea()!, "Ship the thing");
+      await settle();
+
+      expect(confirmMissionButton()?.disabled).toBe(false);
+    });
+
+    it("saves the mission it asked for", async () => {
+      // Confirming used to advance to the agent step and write nothing, so the
+      // company kept no mission — the exact state this change exists to remove.
+      mockGoalsApi.create.mockResolvedValue({ id: "goal-new" });
+      await openOnMissionStepForExistingCompany();
+
+      const direct = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("I know my mission"),
+      )!;
+      await click(direct);
+      setControlledValue(missionTextarea()!, "Ship the thing");
+      await settle();
+      await click(confirmMissionButton()!);
+      await settle();
+
+      expect(mockGoalsApi.create).toHaveBeenCalledWith(
+        "company-1",
+        expect.objectContaining({ title: "Ship the thing", level: "company", status: "active" }),
+      );
+      expect(currentStep()).toBe("agent");
+    });
+
+    it("does not write a second mission when the step is confirmed twice", async () => {
+      mockGoalsApi.create.mockResolvedValue({ id: "goal-new" });
+      await openOnMissionStepForExistingCompany();
+
+      const direct = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("I know my mission"),
+      )!;
+      await click(direct);
+      setControlledValue(missionTextarea()!, "Ship the thing");
+      await settle();
+      await click(confirmMissionButton()!);
+      await settle();
+
+      // Back to the mission step, then forward again.
+      const back = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("Back"),
+      )!;
+      await click(back);
+      await settle();
+      await click(confirmMissionButton()!);
+      await settle();
+
+      expect(mockGoalsApi.create).toHaveBeenCalledTimes(1);
+      expect(currentStep()).toBe("agent");
+    });
   });
 
   it("applies the step again when the wizard is re-opened", async () => {
