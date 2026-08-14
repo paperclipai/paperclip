@@ -1654,12 +1654,10 @@ export function agentRoutes(
     return record?.type === "secret_ref" && typeof record.secretId === "string";
   }
 
-  // codex_local agents inherit whatever Codex login is already on the device
-  // (the host's ~/.codex or $CODEX_HOME) by default, so a fresh agent needs no
-  // env overrides at all. We only carve out an isolated per-agent CODEX_HOME
-  // when the agent sets its own OPENAI_API_KEY, so that key's api-key auth.json
-  // does not collide with the shared company home other agents use for the host
-  // login. Agents without a key share the host credentials.
+  // Every codex_local agent gets an isolated managed home. Auth may still be
+  // seeded from the host login, but skills, tools, sessions, and generated
+  // state must never cross agent boundaries. The empty key also prevents a
+  // host OPENAI_API_KEY from leaking through process inheritance.
   function applyCodexLocalKeyIsolation(
     companyId: string,
     agentId: string,
@@ -1667,13 +1665,22 @@ export function agentRoutes(
     adapterConfig: Record<string, unknown>,
   ): Record<string, unknown> {
     if (adapterType !== "codex_local") return adapterConfig;
-    const existingEnv = asRecord(adapterConfig.env);
-    if (!existingEnv) return adapterConfig;
-    if (!codexLocalEnvKeyConfigured(existingEnv.OPENAI_API_KEY)) return adapterConfig;
-    if (codexLocalEnvKeyConfigured(existingEnv.CODEX_HOME)) return adapterConfig;
+    const existingEnv = asRecord(adapterConfig.env) ?? {};
+    const isolatedEnv = {
+      ...existingEnv,
+      OPENAI_API_KEY: codexLocalEnvKeyConfigured(existingEnv.OPENAI_API_KEY)
+        ? existingEnv.OPENAI_API_KEY
+        : "",
+    };
+    if (codexLocalEnvKeyConfigured(existingEnv.CODEX_HOME)) {
+      return { ...adapterConfig, env: isolatedEnv };
+    }
     return {
       ...adapterConfig,
-      env: { ...existingEnv, CODEX_HOME: codexLocalAgentHome(companyId, agentId) },
+      env: {
+        ...isolatedEnv,
+        CODEX_HOME: codexLocalAgentHome(companyId, agentId),
+      },
     };
   }
 

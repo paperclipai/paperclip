@@ -26,6 +26,7 @@ import {
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
+  writePaperclipCodexUserSkillDenylist,
 } from "./server-utils.js";
 
 function isPidAlive(pid: number) {
@@ -208,6 +209,45 @@ describe("materializePaperclipSkillCopy", () => {
 
       await expect(materializePaperclipSkillCopy(source, target)).resolves.toMatchObject({ copiedFiles: 1 });
       await expect(fs.readFile(path.join(target, "SKILL.md"), "utf8")).resolves.toBe("# skill\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Codex user skill isolation", () => {
+  it("disables unselected host skills and reconciles the managed block", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-skill-denylist-"));
+    try {
+      const codexHome = path.join(root, "codex-home");
+      const userHome = path.join(root, "user-home");
+      const alpha = path.join(userHome, ".agents", "skills", "alpha");
+      const beta = path.join(userHome, ".agents", "skills", "beta");
+      await fs.mkdir(alpha, { recursive: true });
+      await fs.mkdir(beta, { recursive: true });
+      await fs.writeFile(path.join(alpha, "SKILL.md"), "# alpha\n", "utf8");
+      await fs.writeFile(path.join(beta, "SKILL.md"), "# beta\n", "utf8");
+
+      const first = await writePaperclipCodexUserSkillDenylist({
+        codexHome,
+        userHome,
+        selectedSkillSources: [alpha],
+      });
+      expect(first.disabledSkillCount).toBe(1);
+      const firstConfig = await fs.readFile(first.configPath, "utf8");
+      expect(firstConfig).toContain(JSON.stringify(path.join(beta, "SKILL.md")));
+      expect(firstConfig).not.toContain(JSON.stringify(path.join(alpha, "SKILL.md")));
+
+      const second = await writePaperclipCodexUserSkillDenylist({
+        codexHome,
+        userHome,
+        selectedSkillSources: [beta],
+      });
+      expect(second.disabledSkillCount).toBe(1);
+      const secondConfig = await fs.readFile(second.configPath, "utf8");
+      expect(secondConfig).toContain(JSON.stringify(path.join(alpha, "SKILL.md")));
+      expect(secondConfig).not.toContain(JSON.stringify(path.join(beta, "SKILL.md")));
+      expect(secondConfig.match(/BEGIN PAPERCLIP CODEX USER SKILL DENYLIST/g)).toHaveLength(1);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

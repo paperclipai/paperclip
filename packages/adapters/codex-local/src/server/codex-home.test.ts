@@ -384,6 +384,30 @@ describe("seedManagedCodexHome", () => {
     }
   });
 
+  it("does not inherit host config, instructions, or tools into a managed agent home", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-capabilities-"));
+    try {
+      const sharedCodexHome = path.join(root, "shared-codex-home");
+      const agentHome = path.join(root, "agent-home");
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.mkdir(agentHome, { recursive: true });
+      await fs.writeFile(path.join(sharedCodexHome, "auth.json"), '{"OPENAI_API_KEY":"shared"}', "utf8");
+      await fs.writeFile(path.join(sharedCodexHome, "config.toml"), '[mcp_servers.host-tool]\ncommand = "host-tool"\n', "utf8");
+      await fs.writeFile(path.join(sharedCodexHome, "config.json"), '{"plugins":["host-plugin"]}', "utf8");
+      await fs.writeFile(path.join(sharedCodexHome, "instructions.md"), "host instructions", "utf8");
+      await fs.writeFile(path.join(agentHome, "config.toml"), "stale inherited config", "utf8");
+
+      await seedManagedCodexHome(agentHome, { CODEX_HOME: sharedCodexHome }, async () => {});
+
+      expect((await fs.lstat(path.join(agentHome, "auth.json"))).isSymbolicLink()).toBe(true);
+      await expect(fs.access(path.join(agentHome, "config.toml"))).rejects.toThrow();
+      await expect(fs.access(path.join(agentHome, "config.json"))).rejects.toThrow();
+      await expect(fs.access(path.join(agentHome, "instructions.md"))).rejects.toThrow();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("writes an API-key auth.json into the home when an apiKey is supplied", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-apikey-"));
     try {

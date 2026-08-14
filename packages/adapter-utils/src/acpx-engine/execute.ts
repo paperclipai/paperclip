@@ -56,6 +56,7 @@ import {
   rewriteWorkspaceCwdEnvVarsForExecution,
   shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
+  writePaperclipCodexUserSkillDenylist,
   type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
@@ -540,8 +541,8 @@ function defaultStateDir(companyId: string, agentId: string): string {
   return path.join(defaultPaperclipInstanceDir(), "companies", companyId, "acp-engine", "agents", agentId);
 }
 
-function resolveManagedCodexHomeDir(companyId: string): string {
-  return path.join(defaultPaperclipInstanceDir(), "companies", companyId, "codex-home");
+function resolveManagedCodexHomeDir(companyId: string, agentId: string): string {
+  return path.join(defaultPaperclipInstanceDir(), "companies", companyId, "agents", agentId, "codex-home");
 }
 
 // Walk up from startDir looking for `node_modules/.bin/<binName>`. This matches
@@ -713,12 +714,6 @@ function isErrnoException(err: unknown, code: string): err is NodeJS.ErrnoExcept
   return err instanceof Error && "code" in err && err.code === code;
 }
 
-async function ensureCopiedFile(target: string, source: string): Promise<void> {
-  if (await pathExists(target)) return;
-  await ensureParentDir(target);
-  await fs.copyFile(source, target);
-}
-
 async function prepareManagedCodexHome(input: {
   companyId: string;
   sourceHome: string;
@@ -734,13 +729,12 @@ async function prepareManagedCodexHome(input: {
   if (await pathExists(authJson)) await ensureSymlink(path.join(targetHome, "auth.json"), authJson);
 
   for (const name of ["config.json", "config.toml", "instructions.md"]) {
-    const source = path.join(sourceHome, name);
-    if (await pathExists(source)) await ensureCopiedFile(path.join(targetHome, name), source);
+    await fs.rm(path.join(targetHome, name), { force: true });
   }
 
   await onLog(
     "stdout",
-    `[paperclip] Using Paperclip-managed ACPX Codex home "${targetHome}" (seeded from "${sourceHome}").\n`,
+    `[paperclip] Using Paperclip-managed ACPX Codex home "${targetHome}" (auth seeded from "${sourceHome}"; host skills and tools remain opt-in).\n`,
   );
   return targetHome;
 }
@@ -943,6 +937,7 @@ async function reconcileManagedCodexSkills(input: {
 
 async function prepareCodexSkillRuntime(input: {
   companyId: string;
+  agentId: string;
   config: Record<string, unknown>;
   env: Record<string, string>;
   moduleDir: string;
@@ -970,12 +965,21 @@ async function prepareCodexSkillRuntime(input: {
     typeof process.env.CODEX_HOME === "string" && process.env.CODEX_HOME.trim().length > 0
       ? path.resolve(process.env.CODEX_HOME.trim())
       : path.join(os.homedir(), ".codex");
-  const managedCodexHome = resolveManagedCodexHomeDir(input.companyId);
-  const effectiveCodexHome = configuredCodexHome ??
-    await prepareManagedCodexHome({
+  const managedCodexHome = resolveManagedCodexHomeDir(input.companyId, input.agentId);
+  const managedCompanyRoot = path.dirname(managedCodexHome);
+  const configuredHomeRelative = configuredCodexHome
+    ? path.relative(managedCompanyRoot, configuredCodexHome)
+    : null;
+  const configuredHomeIsManaged = configuredHomeRelative != null &&
+    configuredHomeRelative !== "" &&
+    !configuredHomeRelative.startsWith("..") &&
+    !path.isAbsolute(configuredHomeRelative);
+  const effectiveCodexHome = configuredCodexHome != null && !configuredHomeIsManaged
+    ? configuredCodexHome
+    : await prepareManagedCodexHome({
       companyId: input.companyId,
       sourceHome: sourceCodexHome,
-      targetHome: managedCodexHome,
+      targetHome: configuredCodexHome ?? managedCodexHome,
       onLog: input.onLog,
     });
   const { allSkills, selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config, input.moduleDir);
@@ -1020,6 +1024,19 @@ async function prepareCodexSkillRuntime(input: {
     }
   }
   await writeManagedCodexSkillsManifest(skillsHome, selectedSkills.map((entry) => entry.runtimeName));
+
+  if (configuredCodexHome == null || configuredHomeIsManaged) {
+    const skillIsolation = await writePaperclipCodexUserSkillDenylist({
+      codexHome: effectiveCodexHome,
+      selectedSkillSources: selectedSkills.map((entry) => entry.source),
+    });
+    if (skillIsolation.disabledSkillCount > 0) {
+      await input.onLog(
+        "stdout",
+        `[paperclip] Disabled ${skillIsolation.disabledSkillCount} unselected host Codex skill(s) for this managed ACPX home.\n`,
+      );
+    }
+  }
 
   input.env.CODEX_HOME = effectiveCodexHome;
 
@@ -1645,6 +1662,7 @@ async function buildRuntime(input: {
     const preparedSkills = await measureStartupStep(input.ctx, nowMs, "codex-home.seed", () =>
       prepareCodexSkillRuntime({
         companyId: agent.companyId,
+        agentId: agent.id,
         config,
         env,
         moduleDir: input.engine.moduleDir,

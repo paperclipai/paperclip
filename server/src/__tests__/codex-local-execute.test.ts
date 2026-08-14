@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
-import { execute } from "@paperclipai/adapter-codex-local/server";
+import { ensureCodexSkillsInjected, execute } from "@paperclipai/adapter-codex-local/server";
 
 async function writeFakeCodexCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
@@ -117,7 +117,29 @@ function createLocalSandboxRunner() {
 }
 
 describe("codex execute", () => {
-  it("uses a Paperclip-managed CODEX_HOME outside worktree mode while preserving shared auth and config", async () => {
+  it("revokes a previously selected skill when it is no longer desired", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-revoke-skill-"));
+    try {
+      const skillsHome = path.join(root, "codex-home", "skills");
+      const source = path.join(root, "runtime", "skills", "demo");
+      await fs.mkdir(source, { recursive: true });
+      await fs.mkdir(skillsHome, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# demo\n", "utf8");
+      await fs.symlink(source, path.join(skillsHome, "demo"));
+
+      await ensureCodexSkillsInjected(async () => {}, {
+        skillsHome,
+        skillsEntries: [{ key: "company/demo", runtimeName: "demo", source }],
+        desiredSkillNames: [],
+      });
+
+      await expect(fs.access(path.join(skillsHome, "demo"))).rejects.toThrow();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses a Paperclip-managed CODEX_HOME outside worktree mode while inheriting auth only", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-default-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "codex");
@@ -130,6 +152,8 @@ describe("codex execute", () => {
       "default",
       "companies",
       "company-1",
+      "agents",
+      "agent-1",
       "codex-home",
     );
     await fs.mkdir(workspace, { recursive: true });
@@ -196,7 +220,7 @@ describe("codex execute", () => {
       expect((await fs.lstat(managedAuth)).isSymbolicLink()).toBe(true);
       expect(await fs.realpath(managedAuth)).toBe(await fs.realpath(path.join(sharedCodexHome, "auth.json")));
       expect((await fs.lstat(managedConfig)).isFile()).toBe(true);
-      expect(await fs.readFile(managedConfig, "utf8")).toBe('model = "codex-mini-latest"\n');
+      expect(await fs.readFile(managedConfig, "utf8")).toBe("");
       await expect(fs.lstat(path.join(sharedCodexHome, "companies", "company-1"))).rejects.toThrow();
       expect(logs).toContainEqual(
         expect.objectContaining({
@@ -219,7 +243,7 @@ describe("codex execute", () => {
     }
   });
 
-  it("writes managed MCP gateways into Codex config and warns on overlapping direct entries without logging tokens", async () => {
+  it("writes governed MCP gateways without inheriting overlapping direct host entries", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-managed-mcp-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "codex");
@@ -232,6 +256,8 @@ describe("codex execute", () => {
       "default",
       "companies",
       "company-1",
+      "agents",
+      "agent-1",
       "codex-home",
     );
     await fs.mkdir(workspace, { recursive: true });
@@ -308,18 +334,13 @@ describe("codex execute", () => {
       expect(result.errorMessage).toBeNull();
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       const configText = capture.codexConfigContents ?? "";
-      expect(configText).toContain("[mcp_servers.github]");
-      expect(configText).toContain("[mcp_servers.\"paperclip-github\"]");
+      expect(configText).not.toContain("https://raw.example/mcp");
+      expect(configText).not.toContain('model = "codex-mini-latest"');
+      expect(configText).toContain("[mcp_servers.\"github\"]");
+      expect(configText).not.toContain("[mcp_servers.\"paperclip-github\"]");
       expect(configText).toContain('url = "http://paperclip.local:3100/api/tool-gateway/gateways/gateway-1/mcp"');
       expect(configText).toContain('Authorization = "Bearer pcgw_secret-managed-token"');
-      expect(logs).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            stream: "stderr",
-            chunk: expect.stringContaining("Paperclip cannot enforce policies for that direct entry"),
-          }),
-        ]),
-      );
+      expect(JSON.stringify(logs)).not.toContain("Paperclip cannot enforce policies for that direct entry");
       expect(JSON.stringify(logs)).not.toContain("pcgw_secret-managed-token");
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
@@ -1322,7 +1343,7 @@ process.exit(1);
       await fs.rm(root, { recursive: true, force: true });
     }
   });
-  it("uses a worktree-isolated CODEX_HOME while preserving shared auth and config", async () => {
+  it("uses a worktree-isolated CODEX_HOME while inheriting auth only", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "codex");
@@ -1335,6 +1356,8 @@ process.exit(1);
       "worktree-1",
       "companies",
       "company-1",
+      "agents",
+      "agent-1",
       "codex-home",
     );
     const homeSkill = path.join(isolatedCodexHome, "skills", "paperclip");
@@ -1414,7 +1437,7 @@ process.exit(1);
       expect((await fs.lstat(isolatedAuth)).isSymbolicLink()).toBe(true);
       expect(await fs.realpath(isolatedAuth)).toBe(await fs.realpath(path.join(sharedCodexHome, "auth.json")));
       expect((await fs.lstat(isolatedConfig)).isFile()).toBe(true);
-      expect(await fs.readFile(isolatedConfig, "utf8")).toBe('model = "codex-mini-latest"\n');
+      expect(await fs.readFile(isolatedConfig, "utf8")).toBe("");
       expect((await fs.lstat(homeSkill)).isSymbolicLink()).toBe(true);
       expect(logs).toContainEqual(
         expect.objectContaining({

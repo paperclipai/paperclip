@@ -841,7 +841,7 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(await pathExists(path.join(skillsHome, legacy.runtimeName))).toBe(false);
   });
 
-  it.skipIf(process.platform === "win32")("replaces stale managed Codex auth files with source symlinks", async () => {
+  it.skipIf(process.platform === "win32")("replaces stale managed Codex auth and removes inherited host capabilities", async () => {
     const root = await makeTempRoot();
     const sourceCodexHome = path.join(root, "source-codex-home");
     const paperclipHome = path.join(root, "paperclip-home");
@@ -852,6 +852,8 @@ describe("shared ACPX engine runtime behavior", () => {
       paperclipInstanceId,
       "companies",
       "company-1",
+      "agents",
+      "agent-1",
       "codex-home",
     );
     await fs.mkdir(sourceCodexHome, { recursive: true });
@@ -860,6 +862,8 @@ describe("shared ACPX engine runtime behavior", () => {
     const managedAuth = path.join(managedCodexHome, "auth.json");
     await fs.writeFile(sourceAuth, "{\"source\":true}", "utf8");
     await fs.writeFile(managedAuth, "{\"stale\":true}", "utf8");
+    await fs.writeFile(path.join(sourceCodexHome, "config.toml"), '[mcp_servers.host]\ncommand = "host-tool"\n', "utf8");
+    await fs.writeFile(path.join(managedCodexHome, "config.toml"), "stale inherited config\n", "utf8");
 
     const previousCodexHome = process.env.CODEX_HOME;
     const previousPaperclipHome = process.env.PAPERCLIP_HOME;
@@ -886,6 +890,9 @@ describe("shared ACPX engine runtime behavior", () => {
     const authStat = await fs.lstat(managedAuth);
     expect(authStat.isSymbolicLink()).toBe(true);
     expect(path.resolve(path.dirname(managedAuth), await fs.readlink(managedAuth))).toBe(sourceAuth);
+    const managedConfig = await fs.readFile(path.join(managedCodexHome, "config.toml"), "utf8");
+    expect(managedConfig).not.toContain("host-tool");
+    expect(managedConfig).not.toContain("stale inherited config");
   });
 
   it("uses direct registry commands and per-session env across ACPX agent changes", async () => {

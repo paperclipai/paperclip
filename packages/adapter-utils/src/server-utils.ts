@@ -245,6 +245,98 @@ export interface PaperclipSkillEntry {
   missingDetail?: string | null;
 }
 
+const PAPERCLIP_CODEX_SKILL_DENYLIST_START = "# BEGIN PAPERCLIP CODEX USER SKILL DENYLIST";
+const PAPERCLIP_CODEX_SKILL_DENYLIST_END = "# END PAPERCLIP CODEX USER SKILL DENYLIST";
+
+function stripPaperclipCodexSkillDenylist(config: string): string {
+  const start = config.indexOf(PAPERCLIP_CODEX_SKILL_DENYLIST_START);
+  if (start < 0) return config.trimEnd();
+  const end = config.indexOf(PAPERCLIP_CODEX_SKILL_DENYLIST_END, start);
+  if (end < 0) return config.slice(0, start).trimEnd();
+  return `${config.slice(0, start)}${config.slice(end + PAPERCLIP_CODEX_SKILL_DENYLIST_END.length)}`.trimEnd();
+}
+
+async function listSkillMarkdownFiles(root: string): Promise<string[]> {
+  const found: string[] = [];
+  const visited = new Set<string>();
+
+  async function walk(directory: string): Promise<void> {
+    const realDirectory = await fs.realpath(directory).catch(() => null);
+    if (!realDirectory || visited.has(realDirectory)) return;
+    visited.add(realDirectory);
+
+    const entries = await fs.readdir(directory, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const candidate = path.join(directory, entry.name);
+      if (entry.name === "SKILL.md" && entry.isFile()) {
+        found.push(candidate);
+        continue;
+      }
+      if (entry.isDirectory()) {
+        await walk(candidate);
+        continue;
+      }
+      if (!entry.isSymbolicLink()) continue;
+      const stat = await fs.stat(candidate).catch(() => null);
+      if (stat?.isDirectory()) await walk(candidate);
+      else if (entry.name === "SKILL.md" && stat?.isFile()) found.push(candidate);
+    }
+  }
+
+  await walk(root);
+  return found.sort();
+}
+
+/**
+ * Codex discovers every skill below `$HOME/.agents/skills` independently of
+ * `CODEX_HOME`. Keep those host skills visible as explicit Paperclip choices,
+ * but disable them in managed agent homes unless their source was selected for
+ * this agent. An external CODEX_HOME is operator-owned and must not call this.
+ */
+export async function writePaperclipCodexUserSkillDenylist(input: {
+  codexHome: string;
+  selectedSkillSources: string[];
+  userHome?: string;
+}): Promise<{ configPath: string; disabledSkillCount: number }> {
+  const configPath = path.join(input.codexHome, "config.toml");
+  const userSkillsRoot = path.join(input.userHome ?? os.homedir(), ".agents", "skills");
+  const selectedSources = new Set(
+    await Promise.all(input.selectedSkillSources.map((source) => fs.realpath(source).catch(() => path.resolve(source)))),
+  );
+  const skillFiles = await listSkillMarkdownFiles(userSkillsRoot);
+  const disabledSkillFiles: string[] = [];
+  for (const skillFile of skillFiles) {
+    const sourceDirectory = await fs.realpath(path.dirname(skillFile)).catch(() => path.resolve(path.dirname(skillFile)));
+    if (!selectedSources.has(sourceDirectory)) disabledSkillFiles.push(path.resolve(skillFile));
+  }
+
+  await fs.mkdir(input.codexHome, { recursive: true });
+  const existing = await fs.readFile(configPath, "utf8").catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+    throw error;
+  });
+  const unmanagedConfig = stripPaperclipCodexSkillDenylist(existing);
+  const block = disabledSkillFiles.length > 0
+    ? [
+        PAPERCLIP_CODEX_SKILL_DENYLIST_START,
+        "# Host user skills are opt-in for Paperclip-managed Codex agents.",
+        ...disabledSkillFiles.flatMap((skillFile) => [
+          "",
+          "[[skills.config]]",
+          `path = ${JSON.stringify(skillFile)}`,
+          "enabled = false",
+        ]),
+        PAPERCLIP_CODEX_SKILL_DENYLIST_END,
+      ].join("\n")
+    : "";
+  const next = block
+    ? `${unmanagedConfig}${unmanagedConfig ? "\n\n" : ""}${block}\n`
+    : `${unmanagedConfig}${unmanagedConfig ? "\n" : ""}`;
+  await fs.writeFile(configPath, next, { mode: 0o600 });
+  await fs.chmod(configPath, 0o600);
+  return { configPath, disabledSkillCount: disabledSkillFiles.length };
+}
+
 export interface PaperclipDesiredSkillEntry {
   key: string;
   versionId: string | null;

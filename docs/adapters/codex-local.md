@@ -3,7 +3,7 @@ title: Codex
 summary: OpenAI Codex local adapter setup and configuration
 ---
 
-The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session persistence via `previous_response_id` chaining and skills injection through the global Codex skills directory.
+The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session persistence via `previous_response_id` chaining and per-agent skill selection.
 
 ## Prerequisites
 
@@ -31,9 +31,11 @@ The `codex_local` adapter runs OpenAI's Codex CLI locally. It supports session p
 
 Codex uses `previous_response_id` for session continuity. The adapter serializes and restores this across heartbeats, allowing the agent to maintain conversation context.
 
-## Skills Injection
+## Skills and tools
 
-The adapter symlinks Paperclip skills into the global Codex skills directory (`~/.codex/skills`). Existing user skills are not overwritten.
+Paperclip materializes only the skills selected for an agent into that agent's managed `CODEX_HOME/skills`. Codex also scans `$HOME/.agents/skills` independently of `CODEX_HOME`, so Paperclip writes explicit `skills.config` deny entries for unselected host skills in managed homes. Selecting an imported host skill omits it from that denylist.
+
+Host MCP servers, apps, plugins, and global instructions are not copied into managed homes. Tools granted through Paperclip's governed tool profiles are added for the run. Setting adapter env `CODEX_HOME` to an external, self-managed Codex home is the explicit all-profile opt-in; Paperclip does not seed or overwrite that home.
 
 ## Fast Mode
 
@@ -47,7 +49,7 @@ Paperclip currently applies that only when the selected model is `gpt-5.4`. On o
 
 ## Managed `CODEX_HOME`
 
-When Paperclip is running inside a managed worktree instance (`PAPERCLIP_IN_WORKTREE=true`), the adapter instead uses a worktree-isolated `CODEX_HOME` under the Paperclip instance so Codex skills, sessions, logs, and other runtime state do not leak across checkouts. It seeds that isolated home from the user's main Codex home for shared auth/config continuity.
+Paperclip uses a managed `CODEX_HOME` under the Paperclip instance so Codex skills, tools, sessions, logs, and other runtime state do not leak across agents or checkouts. It shares only authentication with the user's main Codex home; host configuration and capabilities remain opt-in.
 
 ### Per-agent isolation and auth seeding
 
@@ -55,7 +57,7 @@ For `codex_local` agents the server isolation guard pins each agent to a per-age
 
 A managed home is created empty, so the adapter must provision auth into it before launching Codex — otherwise the agent runs with zero credentials and the provider returns `401 Missing bearer`. The seeding contract:
 
-- **Managed homes** (the default home and any configured `CODEX_HOME` under the company tree) are always seeded: the ChatGPT-subscription `auth.json` is symlinked from the host Codex home, or, when a per-agent `OPENAI_API_KEY` is configured, an API-key `auth.json` is written instead.
+- **Managed homes** (the default home and any configured `CODEX_HOME` under the company tree) are always seeded with authentication only: the ChatGPT-subscription `auth.json` is symlinked from the host Codex home, or, when a per-agent `OPENAI_API_KEY` is configured, an API-key `auth.json` is written instead. Host `config.toml`, `config.json`, and `instructions.md` are removed before Paperclip writes the agent's selected skills and managed tool gateways.
 - **Genuine external overrides** (a `CODEX_HOME` outside the Paperclip-managed company tree) are treated as self-managed and are never seeded or overwritten.
 - **Fail-fast guard:** if a managed home ends up with no usable `auth.json` and no configured API key, the run fails with an explicit `adapter_failed` ("no Codex credentials provisioned for managed home …") rather than emitting an unauthenticated request.
 

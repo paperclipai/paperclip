@@ -5,7 +5,7 @@ import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
-const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
+const HOST_CAPABILITY_FILES = ["config.json", "config.toml", "instructions.md"] as const;
 const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
 const MANAGED_MCP_BLOCK_START = "# BEGIN PAPERCLIP MANAGED MCP";
 const MANAGED_MCP_BLOCK_END = "# END PAPERCLIP MANAGED MCP";
@@ -21,7 +21,7 @@ const MANAGED_MCP_BLOCK_END = "# END PAPERCLIP MANAGED MCP";
  * excluded — it is large host-local runtime state the sandbox run never needs.
  */
 export const CODEX_SYNC_ALLOWLIST = [
-  ...COPIED_SHARED_FILES,
+  ...HOST_CAPABILITY_FILES,
   ...SYMLINKED_SHARED_FILES,
   "skills",
 ] as const;
@@ -105,15 +105,18 @@ function isWorktreeMode(env: NodeJS.ProcessEnv): boolean {
 export function resolveManagedCodexHomeDir(
   env: NodeJS.ProcessEnv,
   companyId?: string,
+  agentId?: string,
 ): string {
   const instanceRoot = resolvePaperclipInstanceRootForAdapter({
     homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
     instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
     env,
   });
-  return companyId
-    ? path.resolve(instanceRoot, "companies", companyId, "codex-home")
-    : path.resolve(instanceRoot, "codex-home");
+  if (!companyId) return path.resolve(instanceRoot, "codex-home");
+  if (agentId) {
+    return path.resolve(instanceRoot, "companies", companyId, "agents", agentId, "codex-home");
+  }
+  return path.resolve(instanceRoot, "companies", companyId, "codex-home");
 }
 
 /**
@@ -222,13 +225,6 @@ export async function ensureSymlink(target: string, source: string): Promise<voi
 
   await fs.unlink(target);
   await createExpectedSymlink(target, source);
-}
-
-async function ensureCopiedFile(target: string, source: string): Promise<void> {
-  const existing = await fs.lstat(target).catch(() => null);
-  if (existing) return;
-  await ensureParentDir(target);
-  await fs.copyFile(source, target);
 }
 
 function tomlString(value: string): string {
@@ -568,12 +564,13 @@ export async function stageCodexHomeForSync(
 }
 
 /**
- * Seeds auth/config into an explicit Paperclip-managed `targetHome`. Symlinks
+ * Seeds auth into an explicit Paperclip-managed `targetHome`. Symlinks
  * `auth.json` from the shared source home (so ChatGPT-subscription credentials
- * stay live and single-use refresh tokens are not copied), copies the static
- * shared config files, and — when an API key is supplied — writes an API-key
- * `auth.json` instead. Used both for the default company home and for the
- * per-agent home set by the server isolation guard.
+ * stay live and single-use refresh tokens are not copied), removes inherited
+ * host capability files, and — when an API key is supplied — writes an API-key
+ * `auth.json` instead. Paperclip recreates the run's selected skills and managed
+ * MCP gateways after this reset. A genuine external CODEX_HOME remains the
+ * explicit opt-in path for the host Codex profile and is never seeded here.
  */
 export async function seedManagedCodexHome(
   targetHome: string,
@@ -607,15 +604,13 @@ export async function seedManagedCodexHome(
       await ensureSymlink(path.join(targetHome, name), source);
     }
 
-    for (const name of COPIED_SHARED_FILES) {
-      const source = path.join(sourceHome, name);
-      if (!(await pathExists(source))) continue;
-      await ensureCopiedFile(path.join(targetHome, name), source);
+    for (const name of HOST_CAPABILITY_FILES) {
+      await fs.rm(path.join(targetHome, name), { force: true });
     }
 
     await onLog(
       "stdout",
-      `[paperclip] Using ${isWorktreeMode(env) ? "worktree-isolated" : "Paperclip-managed"} Codex home "${targetHome}" (seeded from "${sourceHome}").\n`,
+      `[paperclip] Using ${isWorktreeMode(env) ? "worktree-isolated" : "Paperclip-managed"} Codex home "${targetHome}" (auth seeded from "${sourceHome}"; host skills and tools remain opt-in).\n`,
     );
   }
 
@@ -632,9 +627,9 @@ export async function prepareManagedCodexHome(
   env: NodeJS.ProcessEnv,
   onLog: AdapterExecutionContext["onLog"],
   companyId?: string,
-  options: { apiKey?: string | null } = {},
+  options: { apiKey?: string | null; agentId?: string } = {},
 ): Promise<string> {
-  const targetHome = resolveManagedCodexHomeDir(env, companyId);
+  const targetHome = resolveManagedCodexHomeDir(env, companyId, options.agentId);
   await seedManagedCodexHome(targetHome, env, onLog, options);
   return targetHome;
 }

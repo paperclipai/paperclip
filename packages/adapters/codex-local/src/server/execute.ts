@@ -45,6 +45,7 @@ import {
   renderPaperclipWakePrompt,
   isPaperclipRecoveryWakePayload,
   stringifyPaperclipWakePayload,
+  writePaperclipCodexUserSkillDenylist,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   joinPromptSections,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -230,12 +231,16 @@ async function isLikelyPaperclipRuntimeSkillPath(
   return false;
 }
 
-async function pruneBrokenUnavailablePaperclipSkillSymlinks(
+async function pruneUnselectedPaperclipSkillSymlinks(
   skillsHome: string,
   allowedSkillNames: Iterable<string>,
+  availableSkillEntries: Array<{ runtimeName: string; source: string }>,
   onLog: AdapterExecutionContext["onLog"],
 ) {
   const allowed = new Set(Array.from(allowedSkillNames));
+  const availableByName = new Map(
+    availableSkillEntries.map((entry) => [entry.runtimeName, path.resolve(entry.source)]),
+  );
   const entries = await fs.readdir(skillsHome, { withFileTypes: true }).catch(() => []);
 
   for (const entry of entries) {
@@ -246,19 +251,17 @@ async function pruneBrokenUnavailablePaperclipSkillSymlinks(
     if (!linkedPath) continue;
 
     const resolvedLinkedPath = path.resolve(path.dirname(target), linkedPath);
-    if (await pathExists(resolvedLinkedPath)) continue;
-    if (
-      !(await isLikelyPaperclipRuntimeSkillPath(resolvedLinkedPath, entry.name, {
+    const isKnownPaperclipSkill = availableByName.get(entry.name) === resolvedLinkedPath;
+    const isBrokenPaperclipSkill = !(await pathExists(resolvedLinkedPath)) &&
+      await isLikelyPaperclipRuntimeSkillPath(resolvedLinkedPath, entry.name, {
         requireSkillMarkdown: false,
-      }))
-    ) {
-      continue;
-    }
+      });
+    if (!isKnownPaperclipSkill && !isBrokenPaperclipSkill) continue;
 
     await fs.unlink(target).catch(() => {});
     await onLog(
       "stdout",
-      `[paperclip] Removed stale Codex skill "${entry.name}" from ${skillsHome}\n`,
+      `[paperclip] Revoked unselected Codex skill "${entry.name}" from ${skillsHome}\n`,
     );
   }
 }
@@ -505,10 +508,9 @@ export async function ensureCodexSkillsInjected(
     options.desiredSkillNames ?? allSkillsEntries.map((entry) => entry.key);
   const desiredSet = new Set(desiredSkillNames);
   const skillsEntries = allSkillsEntries.filter((entry) => desiredSet.has(entry.key));
-  if (skillsEntries.length === 0) return;
 
   const skillsHome = options.skillsHome ?? resolveCodexSkillsDir(resolveSharedCodexHomeDir());
-  await fs.mkdir(skillsHome, { recursive: true });
+  if (skillsEntries.length > 0) await fs.mkdir(skillsHome, { recursive: true });
   const linkSkill = options.linkSkill;
   for (const entry of skillsEntries) {
     const target = path.join(skillsHome, entry.runtimeName);
@@ -554,9 +556,10 @@ export async function ensureCodexSkillsInjected(
     }
   }
 
-  await pruneBrokenUnavailablePaperclipSkillSymlinks(
+  await pruneUnselectedPaperclipSkillSymlinks(
     skillsHome,
     skillsEntries.map((entry) => entry.runtimeName),
+    allSkillsEntries,
     onLog,
   );
 }
@@ -674,13 +677,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (configuredCodexHome == null) {
     await prepareManagedCodexHome(process.env, onLog, agent.companyId, {
       apiKey: configuredOpenAiApiKey,
+      agentId: agent.id,
     });
   } else if (configuredHomeIsManaged) {
     await seedManagedCodexHome(configuredCodexHome, process.env, onLog, {
       apiKey: configuredOpenAiApiKey,
     });
   }
-  const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
+  const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId, agent.id);
   const effectiveCodexHome = configuredCodexHome ?? defaultCodexHome;
   await fs.mkdir(effectiveCodexHome, { recursive: true });
 
@@ -707,7 +711,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // Merge custom model providers (PAPERCLIP_CODEX_PROVIDERS) into the managed
   // CODEX_HOME's config.toml BEFORE the home is shipped to a remote execution
   // target, so both local and sandboxed Codex processes pick up the routing.
-  // An explicit env.CODEX_HOME override is treated as user-managed and skipped.
+  // A genuine external env.CODEX_HOME override is user-managed and skipped;
+  // the server-assigned per-agent home is still Paperclip-managed.
   const envConfigStrings = Object.fromEntries(
     Object.entries(envConfig).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -715,7 +720,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const preparedRuntimeConfig = await prepareCodexRuntimeConfig({
     env: envConfigStrings,
-    codexHome: configuredCodexHome ? null : effectiveCodexHome,
+    codexHome: configuredCodexHome != null && !configuredHomeIsManaged ? null : effectiveCodexHome,
   });
   // Curated allowlist dir staged for the remote `home` asset (see below). Held
   // here so the outer `finally` can remove it on every exit path (teardown and
@@ -724,6 +729,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   try {
     for (const note of preparedRuntimeConfig.notes) {
       await onLog("stdout", `[paperclip] ${note}\n`);
+    }
+    if (configuredCodexHome == null || configuredHomeIsManaged) {
+      const desiredSkillSet = new Set(desiredSkillNames);
+      const skillIsolation = await writePaperclipCodexUserSkillDenylist({
+        codexHome: effectiveCodexHome,
+        selectedSkillSources: codexSkillEntries
+          .filter((entry) => desiredSkillSet.has(entry.key))
+          .map((entry) => entry.source),
+      });
+      if (skillIsolation.disabledSkillCount > 0) {
+        await onLog(
+          "stdout",
+          `[paperclip] Disabled ${skillIsolation.disabledSkillCount} unselected host Codex skill(s) for this managed agent home.\n`,
+        );
+      }
     }
     const paperclipBaseEnv = buildPaperclipEnv(agent);
     const runtimeMcpGateways = (ctx.runtimeMcp?.getServers() ?? []).map((server) => ({
