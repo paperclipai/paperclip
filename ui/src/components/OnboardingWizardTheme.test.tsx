@@ -24,8 +24,14 @@ describe("OnboardingWizard decorative panel theming", () => {
   );
 
   it("does not hardcode a dark decorative panel background", () => {
-    expect(source).not.toContain("bg-[#1d1d1d]");
-    expect(source).not.toMatch(/bg-\[#[0-9a-fA-F]{3,8}\]/);
+    // Both spellings of a hardcoded surface. The bracket form is what this
+    // guard was written against; master has since migrated the codebase to the
+    // CSS-variable form, and a check that knows only the old spelling passes
+    // whether or not the panel is themed - it did exactly that until this
+    // widened it.
+    expect(source).not.toMatch(
+      /bg-(?:\[#[0-9a-fA-F]{3,8}\]|\(--hex-[0-9a-fA-F]{3,8}\))/
+    );
   });
 
   it("themes the decorative panel with shadcn surface tokens", () => {
