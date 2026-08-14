@@ -767,6 +767,231 @@ describe("InviteLandingPage", () => {
     });
   });
 
+  // The `["companies"]` cache entry is shared app-wide and carries no account
+  // identity, so a list fetched moments ago for a different account is still inside
+  // the app-wide staleTime. Membership decisions on this page — the post-sign-in
+  // redirect, the "already a member" panel, and clearing the pending invite token —
+  // must run against a list fetched for the account that is signed in now.
+  describe("membership checks against a previous account's cached company list", () => {
+    const PREVIOUS_ACCOUNT_COMPANIES = [{ id: "company-1", name: "Acme Robotics" }];
+
+    // Mirrors the app-wide default in main.tsx. Without it every cache entry is
+    // stale on read and the staleness these tests cover cannot occur.
+    // `ownerId` is whose list this warm entry is. Since #11488 the entry is keyed
+    // by account, so "a list left by a previous account" means putting it under
+    // that account's key — which is also why the page can no longer reach it.
+    // `null` is the signed-out / local_trusted key.
+    function createAppLikeQueryClient(ownerId: string | null) {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+      });
+      queryClient.setQueryData(queryKeys.companies.list(ownerId), {
+        companies: PREVIOUS_ACCOUNT_COMPANIES,
+        unauthorized: false,
+      });
+      return queryClient;
+    }
+
+    it("re-reads membership for the account that just signed in", async () => {
+      getSessionMock.mockResolvedValueOnce(null);
+      getSessionMock.mockResolvedValue({
+        session: { id: "session-2", userId: "user-2" },
+        user: {
+          id: "user-2",
+          name: "Sam Example",
+          email: "sam@example.com",
+          image: null,
+        },
+      });
+      // The account signing in here has no companies of its own.
+      listCompaniesMock.mockResolvedValue([]);
+      acceptInviteMock.mockResolvedValue({
+        id: "join-1",
+        companyId: "company-1",
+        requestType: "human",
+        status: "pending_approval",
+      });
+
+      const root = createRoot(container);
+      const queryClient = createAppLikeQueryClient("user-1");
+
+      await act(async () => {
+        root.render(
+          <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+            <QueryClientProvider client={queryClient}>
+              <Routes>
+                <Route path="/invite/:token" element={<InviteLandingPage />} />
+              </Routes>
+            </QueryClientProvider>
+          </MemoryRouter>,
+        );
+      });
+      await flushReact();
+      await flushReact();
+
+      const inputValueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      const existingAccountButton = Array.from(container.querySelectorAll("button")).find(
+        (button) => button.textContent === "I already have an account",
+      );
+      await act(async () => {
+        existingAccountButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+
+      const emailInput = container.querySelector('input[name="email"]') as HTMLInputElement | null;
+      const passwordInput = container.querySelector('input[name="password"]') as HTMLInputElement | null;
+
+      await act(async () => {
+        inputValueSetter!.call(emailInput, "sam@example.com");
+        emailInput!.dispatchEvent(new Event("input", { bubbles: true }));
+        inputValueSetter!.call(passwordInput, "supersecret");
+        passwordInput!.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+
+      const authForm = container.querySelector('[data-testid="invite-inline-auth"]') as HTMLFormElement | null;
+      await act(async () => {
+        authForm?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      });
+      await flushReact();
+      await flushReact();
+      await flushReact();
+      await flushReact();
+
+      expect(signInEmailMock).toHaveBeenCalledWith({
+        email: "sam@example.com",
+        password: "supersecret",
+      });
+      // The cached list was refused, not read as proof of membership.
+      expect(listCompaniesMock).toHaveBeenCalled();
+      expect(queryClient.getQueryData(queryKeys.companies.list("user-2"))).toMatchObject({
+        companies: [],
+        unauthorized: false,
+      });
+      // The previous account's entry is untouched — and unreachable from here.
+      expect(queryClient.getQueryData(queryKeys.companies.list("user-1"))).toMatchObject({
+        companies: PREVIOUS_ACCOUNT_COMPANIES,
+      });
+      expect(setSelectedCompanyIdMock).not.toHaveBeenCalled();
+      expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
+      expect(container.textContent).toContain("Request to join Acme Robotics");
+
+      await act(async () => {
+        root.unmount();
+      });
+    });
+
+    it("re-reads membership on mount for an already signed-in account", async () => {
+      getSessionMock.mockResolvedValue({
+        session: { id: "session-2", userId: "user-2" },
+        user: {
+          id: "user-2",
+          name: "Sam Example",
+          email: "sam@example.com",
+          image: null,
+        },
+      });
+      listCompaniesMock.mockResolvedValue([]);
+      acceptInviteMock.mockResolvedValue({
+        id: "join-1",
+        companyId: "company-1",
+        requestType: "human",
+        status: "pending_approval",
+      });
+
+      const root = createRoot(container);
+      const queryClient = createAppLikeQueryClient("user-1");
+
+      await act(async () => {
+        root.render(
+          <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+            <QueryClientProvider client={queryClient}>
+              <Routes>
+                <Route path="/invite/:token" element={<InviteLandingPage />} />
+              </Routes>
+            </QueryClientProvider>
+          </MemoryRouter>,
+        );
+      });
+      await flushReact();
+      await flushReact();
+      await flushReact();
+      await flushReact();
+
+      expect(listCompaniesMock).toHaveBeenCalled();
+      expect(container.textContent).not.toContain("Already in this company");
+      expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
+      expect(container.textContent).toContain("Request to join Acme Robotics");
+
+      await act(async () => {
+        root.unmount();
+      });
+    });
+
+    it("keeps the pending invite token when the session has lapsed", async () => {
+      // Session gone server-side, previous account's list still warm in the cache.
+      // Nobody is signed in, so nothing here proves membership — the token has to
+      // survive for the sign-in that follows.
+      getSessionMock.mockResolvedValue(null);
+
+      const root = createRoot(container);
+      const queryClient = createAppLikeQueryClient("user-1");
+
+      await act(async () => {
+        root.render(
+          <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+            <QueryClientProvider client={queryClient}>
+              <Routes>
+                <Route path="/invite/:token" element={<InviteLandingPage />} />
+              </Routes>
+            </QueryClientProvider>
+          </MemoryRouter>,
+        );
+      });
+      await flushReact();
+      await flushReact();
+      await flushReact();
+
+      expect(container.querySelector('[data-testid="invite-inline-auth"]')).not.toBeNull();
+      expect(localStorage.getItem("paperclip:pending-invite-token")).toBe("pcp_invite_test");
+
+      await act(async () => {
+        root.unmount();
+      });
+    });
+
+    it("still reads the shared list as membership on a local_trusted instance", async () => {
+      // No accounts exist in this mode, so the shared list cannot belong to anyone
+      // else and stays authoritative.
+      healthGetMock.mockResolvedValue({ status: "ok", deploymentMode: "local_trusted" });
+      getSessionMock.mockResolvedValue(null);
+
+      const root = createRoot(container);
+      const queryClient = createAppLikeQueryClient(null);
+
+      await act(async () => {
+        root.render(
+          <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+            <QueryClientProvider client={queryClient}>
+              <Routes>
+                <Route path="/invite/:token" element={<InviteLandingPage />} />
+              </Routes>
+            </QueryClientProvider>
+          </MemoryRouter>,
+        );
+      });
+      await flushReact();
+      await flushReact();
+      await flushReact();
+
+      expect(container.textContent).toContain("Already in this company");
+      expect(acceptInviteMock).not.toHaveBeenCalled();
+
+      await act(async () => {
+        root.unmount();
+      });
+    });
+  });
+
   it("shows invite details instead of auto-redirecting for signed-in existing members", async () => {
     getSessionMock.mockResolvedValue({
       session: { id: "session-1", userId: "user-1" },

@@ -242,10 +242,21 @@ export function InviteLandingPage() {
     retry: false,
   });
 
+  // The company list is keyed by account now (#11488), so a list belonging to
+  // somebody else cannot be read here at all. The mount-scoped gate below is kept
+  // as a second line rather than removed with the first: this page turns the list
+  // into an authorization verdict, and it should not be the place that discovers
+  // a hole in the keying. `local_trusted` instances have no accounts, so there the
+  // shared list is the only identity there is and the gate stays open.
   const companiesQuery = useCompanyListQuery({
     enabled: !!sessionQuery.data && !!inviteQuery.data?.companyId,
+    staleTime: 0,
   });
-  const companyList = companiesQuery.data?.companies ?? [];
+  const membershipIsAccountScoped = healthQuery.data?.deploymentMode !== "local_trusted";
+  const membershipListIsCurrent = membershipIsAccountScoped
+    ? Boolean(sessionQuery.data) && companiesQuery.isFetchedAfterMount
+    : true;
+  const companyList = membershipListIsCurrent ? companiesQuery.data?.companies ?? [] : [];
 
   useEffect(() => {
     if (token) rememberPendingInviteToken(token);
@@ -256,18 +267,19 @@ export function InviteLandingPage() {
   }, [token]);
 
   useEffect(() => {
+    if (!membershipListIsCurrent) return;
     const list = companiesQuery.data?.companies;
     if (!list || !inviteQuery.data?.companyId) return;
     if (list.some((c) => c.id === inviteQuery.data!.companyId)) {
       clearPendingInviteToken(token);
     }
-  }, [companiesQuery.data, inviteQuery.data, token]);
+  }, [companiesQuery.data, inviteQuery.data, membershipListIsCurrent, token]);
 
   const invite = inviteQuery.data;
   const isCheckingExistingMembership =
     Boolean(sessionQuery.data) &&
     Boolean(invite?.companyId) &&
-    companiesQuery.isLoading;
+    !membershipListIsCurrent;
   const isCurrentMember =
     Boolean(invite?.companyId) &&
     companyList.some((company) => company.id === invite?.companyId);
@@ -369,9 +381,11 @@ export function InviteLandingPage() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
       await queryClient.invalidateQueries({ queryKey: queryKeys.health });
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
-      // Keyed to the account that just signed in, and forced past whatever is
-      // cached for it, so this cannot be answered with the previous account's
-      // membership.
+      // Keyed to the account that just signed in — the helper resolves the
+      // identity past the invalidation above rather than trusting the session
+      // entry still sitting in the cache — and forced past whatever is cached
+      // for it. This replaces the hand-rolled cancel-and-refetch this PR
+      // originally carried, which #11488 made both unnecessary and weaker.
       const { companies: freshCompanies } = await fetchCompanyListForCurrentAccount(queryClient);
 
       if (invite?.companyId && freshCompanies.some((company) => company.id === invite.companyId)) {
