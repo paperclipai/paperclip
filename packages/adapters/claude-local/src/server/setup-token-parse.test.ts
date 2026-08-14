@@ -240,9 +240,12 @@ const TOKEN_FRAGMENT_A = `${SETUP_TOKEN_PREFIX}AAAABBBBCCCCDDDDEEEE1111`;
 const TOKEN_FRAGMENT_B = "2222FFFFGGGG_HHHH-IIII";
 const FULL_TOKEN = `${TOKEN_FRAGMENT_A}${TOKEN_FRAGMENT_B}`;
 
-// Builds the success screen around a token body. The body holds the token
-// fragment lines, already split the way the terminal wraps them.
-function successScreen(body: string[]): string {
+// Builds the success screen around a token body, joined with `delimiter`. The
+// body holds the token fragment lines, already split the way the terminal wraps
+// them. The real terminal redraw joins the anchor lines and the token with a
+// bare carriage return, or a CRLF pair, instead of a line feed, so the tests
+// vary the delimiter to prove the parser reads each real record shape.
+function successScreenJoined(body: string[], delimiter: string): string {
   return [
     "✓ Long-lived authentication token created successfully!",
     "",
@@ -253,7 +256,12 @@ function successScreen(body: string[]): string {
     SETUP_TOKEN_AFTER_ANCHOR,
     "",
     "Use this token by setting: export CLAUDE_CODE_OAUTH_TOKEN=<token>",
-  ].join("\n");
+  ].join(delimiter);
+}
+
+// Builds the success screen around a token body, joined with line feeds.
+function successScreen(body: string[]): string {
+  return successScreenJoined(body, "\n");
 }
 
 describe("parseSetupTokenCredential", () => {
@@ -265,6 +273,58 @@ describe("parseSetupTokenCredential", () => {
   it("returns a single-line token from the success record", () => {
     const text = successScreen([FULL_TOKEN]);
     expect(parseSetupTokenCredential(text)).toBe(FULL_TOKEN);
+  });
+
+  it("returns the token from a bare carriage-return success record", () => {
+    // The real terminal redraw joins the before-anchor line, the token, and the
+    // after-anchor line with a bare carriage return. The parser canonicalizes
+    // each bare carriage return to a line feed before the split, so each anchor
+    // line and the token land on their own lines and the token binds.
+    const text = successScreenJoined([FULL_TOKEN], "\r");
+    expect(parseSetupTokenCredential(text)).toBe(FULL_TOKEN);
+  });
+
+  it("returns the token from a CRLF-delimited success record", () => {
+    // A terminal that ends each line with a carriage return and a line feed
+    // must parse the same as a plain line-feed record. The parser maps each
+    // CRLF pair to one line feed, so no empty line splits between the anchors.
+    const text = successScreenJoined([FULL_TOKEN], "\r\n");
+    expect(parseSetupTokenCredential(text)).toBe(FULL_TOKEN);
+  });
+
+  it("returns the de-wrapped token from a bare carriage-return wrapped record", () => {
+    // The terminal wraps the token across two physical lines and joins every
+    // line with a bare carriage return. The parser canonicalizes the delimiter,
+    // then joins the two fragment lines into the full token.
+    const text = successScreenJoined([TOKEN_FRAGMENT_A, TOKEN_FRAGMENT_B], "\r");
+    expect(parseSetupTokenCredential(text)).toBe(FULL_TOKEN);
+  });
+
+  it("returns null for duplicate anchors in a bare carriage-return record", () => {
+    // Canonicalization keeps the duplicate-anchor guard closed. Two success
+    // blocks joined by a bare carriage return still fail closed.
+    const one = successScreenJoined([FULL_TOKEN], "\r");
+    const text = `${one}\r${one}`;
+    expect(parseSetupTokenCredential(text)).toBeNull();
+  });
+
+  it("returns null for junk between the anchors in a bare carriage-return record", () => {
+    // A stray prose line between the anchors fails the fragment test, so the
+    // parser fails closed after canonicalization.
+    const text = successScreenJoined([TOKEN_FRAGMENT_A, "a stray note", TOKEN_FRAGMENT_B], "\r");
+    expect(parseSetupTokenCredential(text)).toBeNull();
+  });
+
+  it("returns null for a wrong token prefix in a bare carriage-return record", () => {
+    const text = successScreenJoined(["sk-ant-api03-AAAABBBBCCCCDDDDEEEE1111"], "\r");
+    expect(parseSetupTokenCredential(text)).toBeNull();
+  });
+
+  it("returns null for extra token text in a bare carriage-return record", () => {
+    // The token line holds the token and extra prose. The parser reads only a
+    // token fragment on each line, so canonicalization does not open a gap.
+    const text = successScreenJoined([`${FULL_TOKEN} keep this secret`], "\r");
+    expect(parseSetupTokenCredential(text)).toBeNull();
   });
 
   it("reads the token through ANSI color sequences", () => {

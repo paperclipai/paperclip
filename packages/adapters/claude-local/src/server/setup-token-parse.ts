@@ -334,7 +334,15 @@ function singleAnchorIndex(lines: string[], anchor: string): number | null {
 export function parseSetupTokenCredential(text: string): string | null {
   if (typeof text !== "string" || text.length === 0) return null;
   const clean = stripTerminalControls(text);
-  const lines = clean.split("\n");
+  // Canonicalize the record delimiter. The real terminal redraw joins the
+  // before-anchor line, the token, and the after-anchor line with a bare
+  // carriage return, or a CRLF pair, instead of a line feed. Map each CRLF and
+  // each bare carriage return to one line feed, so each anchor line and each
+  // token fragment lands on its own line. This step changes the record
+  // delimiter only. It cannot add a token byte, and the interval validation
+  // below still rejects partial, extra, or prose data.
+  const normalized = clean.replace(/\r\n|\r/g, "\n");
+  const lines = normalized.split("\n");
 
   const beforeIndex = singleAnchorIndex(lines, SETUP_TOKEN_BEFORE_ANCHOR);
   const afterIndex = singleAnchorIndex(lines, SETUP_TOKEN_AFTER_ANCHOR);

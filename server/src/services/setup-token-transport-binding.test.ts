@@ -24,7 +24,11 @@ import {
   type SetupTokenSessionState,
 } from "./setup-token-session.js";
 import type { SetupTokenPtySessionOpener } from "@paperclipai/adapter-utils/setup-token-transport";
-import { CLAUDE_SETUP_TOKEN_COMMAND } from "@paperclipai/adapter-claude-local/server";
+import {
+  CLAUDE_SETUP_TOKEN_COMMAND,
+  SETUP_TOKEN_AFTER_ANCHOR,
+  SETUP_TOKEN_BEFORE_ANCHOR,
+} from "@paperclipai/adapter-claude-local/server";
 
 // The owner scope for one login session. The per-owner session cap is one, so one
 // scope holds one live session.
@@ -630,6 +634,212 @@ describe("worker-bound live pseudo-terminal opener", () => {
     await expect(
       openLivePtySession({ scope: SCOPE, environmentId: "env-1", leaseId: "missing" }),
     ).rejects.toMatchObject({ status: 503 });
+  });
+});
+
+// The fixed, closed set of diagnostic lines the login runner emits. The runner
+// is the sole producer. Every line is an approved non-secret literal. The
+// application binding forwards each line verbatim, so a captured line must be a
+// member of this set.
+const DIAGNOSTIC_ALLOWLIST = new Set<string>([
+  "[paperclip] Setup-token login: the process stop step errored.",
+  "[paperclip] Setup-token login: the driver dispose step errored.",
+  "[paperclip] Setup-token login: the code input step errored.",
+  "[paperclip] Setup-token login: sent the browser code to the prompt.",
+  "[paperclip] Setup-token login: delivered the credential to the sink.",
+  "[paperclip] Setup-token login: the credential delivery step errored.",
+  "[paperclip] Setup-token login cancelled before start.",
+  "[paperclip] Setup-token login timed out; stopping the process.",
+  "[paperclip] Setup-token login cancelled; stopping the process.",
+  "[paperclip] Setup-token login command ended with a non-zero exit code.",
+  "[paperclip] Setup-token login: the credential did not land; treating the run as a failure.",
+  "[paperclip] Setup-token login: surfaced the sign-in prompt.",
+  "[paperclip] Setup-token login command ended successfully.",
+]);
+
+// Synthetic sentinels. No real secret is present. The tests assert that no
+// captured diagnostic line carries any of these values, so the binding never
+// leaks the token, the browser code, or the authorization URL to a log.
+const TOKEN_SENTINEL = "sk-ant-oat01-SENTINELTOKENAAAAAAAAAAAA";
+const BROWSER_CODE_SENTINEL = "SENTINEL-BROWSER-CODE";
+const URL_CLIENT_SENTINEL = "sentinelurlclient";
+const AUTHORIZATION_URL_SENTINEL =
+  "https://claude.com/cai/oauth/authorize" +
+  `?client_id=${URL_CLIENT_SENTINEL}` +
+  "&code=redacted" +
+  "&code_challenge=chal-000" +
+  "&code_challenge_method=S256" +
+  "&redirect_uri=https%3A%2F%2Fclaude.com%2Fcallback" +
+  "&response_type=code" +
+  "&scope=user%3Ainference" +
+  "&state=state-000";
+
+// A complete sign-in prompt block. The parser binds the authorization URL to
+// the preamble and the prompt line after it.
+const PROMPT_OUTPUT = [
+  "Browser didn’t open? Use the url below to sign in (c to copy)",
+  AUTHORIZATION_URL_SENTINEL,
+  "Paste code here if prompted >",
+].join("\n");
+
+// A complete success record. The parser binds the token between the two
+// anchors.
+const CREDENTIAL_OUTPUT = [
+  "✓ Long-lived authentication token created successfully!",
+  "",
+  SETUP_TOKEN_BEFORE_ANCHOR,
+  "",
+  TOKEN_SENTINEL,
+  "",
+  SETUP_TOKEN_AFTER_ANCHOR,
+].join("\n");
+
+/**
+ * A fake sandbox that streams controllable output. The test emits the prompt
+ * block and the credential block on demand, and it ends the login process with
+ * a chosen exit code. The runner drives its full diagnostic path over this
+ * fake, so the test captures every line the binding forwards.
+ */
+function createStreamingSandbox() {
+  let listener: ((chunk: string) => void) | null = null;
+  let resolveExit: (value: { exitCode: number | null }) => void = () => {};
+  const exit = new Promise<{ exitCode: number | null }>((resolve) => {
+    resolveExit = resolve;
+  });
+  const writes: string[] = [];
+
+  const openPtySession: SetupTokenPtySessionOpener = async () => ({
+    onData(next): void {
+      listener = next;
+    },
+    write(data): void {
+      writes.push(data);
+    },
+    wait: () => exit,
+    kill(): void {
+      resolveExit({ exitCode: 137 });
+    },
+    async close(): Promise<void> {},
+  });
+
+  const provider: SetupTokenSandboxProvider = {
+    async acquire() {
+      return { leaseId: "lease-1", openPtySession };
+    },
+    async release() {},
+  };
+
+  return {
+    provider,
+    emit(chunk: string): void {
+      listener?.(chunk);
+    },
+    finishProcess(exitCode: number | null): void {
+      resolveExit({ exitCode });
+    },
+    get writes() {
+      return writes;
+    },
+  };
+}
+
+/** Waits `ms` milliseconds of real time, so the code-submit settle can pass. */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Drives one login run through the binding factory and returns every captured
+ * diagnostic line. The caller controls the run through `drive`, so one call
+ * exercises the success path and another exercises the failure path. The `drive`
+ * callback receives the sandbox and the process handle.
+ */
+async function captureDiagnostics(
+  drive: (
+    sandbox: ReturnType<typeof createStreamingSandbox>,
+    process: SetupTokenLoginProcess,
+  ) => Promise<void>,
+): Promise<string[]> {
+  const captured: string[] = [];
+  const sandbox = createStreamingSandbox();
+  const store = createRecordingStore();
+  const transport = buildSetupTokenLoginTransport({
+    sandbox: sandbox.provider,
+    store: store.store,
+    log: (line) => captured.push(line),
+  });
+
+  await transport.leases.acquire({ scope: SCOPE, deadline: Date.now() + 60_000 });
+  const controller = new AbortController();
+  const process = transport.factory({
+    scope: SCOPE,
+    onPrompt: () => {},
+    onCredential: async () => {},
+    timeoutMs: 60_000,
+    signal: controller.signal,
+  });
+  // Let the transport open the session and register the output listener before
+  // the driver emits any output.
+  await flush();
+
+  await drive(sandbox, process);
+  await process.done;
+  await flush();
+  return captured;
+}
+
+/** Asserts a captured diagnostic set is allowlisted and carries no secret. */
+function expectSafeDiagnostics(captured: string[]): void {
+  for (const line of captured) {
+    expect(DIAGNOSTIC_ALLOWLIST.has(line), line).toBe(true);
+  }
+  const joined = captured.join("\n");
+  expect(joined).not.toContain(TOKEN_SENTINEL);
+  expect(joined).not.toContain(BROWSER_CODE_SENTINEL);
+  expect(joined).not.toContain(AUTHORIZATION_URL_SENTINEL);
+  expect(joined).not.toContain(URL_CLIENT_SENTINEL);
+}
+
+describe("setup-token production transport binding diagnostics", () => {
+  it("forwards only allowlisted, non-secret diagnostics on a success path", async () => {
+    const captured = await captureDiagnostics(async (sandbox, process) => {
+      // Surface the prompt. The runner logs the prompt line and starts the code
+      // input step, which waits for the browser code.
+      sandbox.emit(PROMPT_OUTPUT);
+      await flush();
+      // Submit the browser code. The runner writes the code, lets the paste
+      // buffer settle, writes the Enter byte, and logs the code-sent line.
+      process.submitCode(BROWSER_CODE_SENTINEL);
+      await delay(250);
+      // Deliver the token, then end the process cleanly. The runner binds the
+      // token, delivers it to the sink, and logs the success line.
+      sandbox.emit(CREDENTIAL_OUTPUT);
+      sandbox.finishProcess(0);
+    });
+
+    // The run reached the success lines, so the capture is not empty.
+    expect(captured).toContain("[paperclip] Setup-token login: surfaced the sign-in prompt.");
+    expect(captured).toContain(
+      "[paperclip] Setup-token login: delivered the credential to the sink.",
+    );
+    expect(captured).toContain("[paperclip] Setup-token login command ended successfully.");
+    // The runner sent the browser code, so the code-input path ran. The code
+    // still never reaches a log line.
+    expect(captured).toContain("[paperclip] Setup-token login: sent the browser code to the prompt.");
+    expectSafeDiagnostics(captured);
+  });
+
+  it("forwards only allowlisted, non-secret diagnostics on a failure path", async () => {
+    const captured = await captureDiagnostics(async (sandbox, process) => {
+      void process;
+      // The login process ends with a non-zero exit code before any prompt.
+      sandbox.finishProcess(1);
+    });
+
+    expect(captured).toContain(
+      "[paperclip] Setup-token login command ended with a non-zero exit code.",
+    );
+    expectSafeDiagnostics(captured);
   });
 });
 

@@ -469,6 +469,11 @@ export async function createApp(
     // confirm-replacement flow owns rotation. Without this writer the router falls
     // back to the deferred, fail-closed 503 and never stores the token.
     completeCredential: createSetupTokenSecretWriter({ secrets: secretService(db) }),
+    // Forward the login runner diagnostic lines to the server logger. The
+    // runner is the sole producer, and every line is a fixed, non-secret
+    // literal. Without this sink the diagnostics fall back to a no-op in
+    // production, so a failed login leaves no log trail.
+    log: (line) => logger.info(line),
   });
   api.use(
     agentRoutes(db, {

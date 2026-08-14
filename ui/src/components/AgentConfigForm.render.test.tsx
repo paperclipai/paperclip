@@ -1391,6 +1391,51 @@ describe("AgentConfigForm environment selector", () => {
     expect(findButton(result.container, "Log in")?.disabled).toBe(false);
   });
 
+  it("shows a terminal failure and stops polling on a status 404 from server cleanup", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    // The server removes the row and the in-memory session at once on a
+    // non-stored terminal state, so the status route returns 404 when the login
+    // fails and the cleanup wins the race against the next poll. The panel must
+    // fail loudly instead of holding stale data.
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockRejectedValue(
+      new ApiError("Setup-token login session not found.", 404, {
+        error: "Setup-token login session not found.",
+      }),
+    );
+    // The prompt route also returns 404, so no authorization URL ever surfaces.
+    mockAgentsApi.getClaudeSetupTokenLoginPrompt.mockRejectedValue(
+      new ApiError("Setup-token login session not found.", 404, {
+        error: "Setup-token login session not found.",
+      }),
+    );
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      (result.container.textContent ?? "").includes("The login did not finish"),
+    );
+
+    // The panel shows the fixed failure message and returns to its start state.
+    expect(result.container.textContent).toContain("The login did not finish");
+    expect(findButton(result.container, "Log in")?.disabled).toBe(false);
+
+    // The panel shows no credential material: no authorization URL and no
+    // browser-code input.
+    expect(result.container.textContent).not.toContain("https://claude.example.test/authorize");
+    expect(result.container.querySelector('input[aria-label="Browser code"]')).toBeFalsy();
+
+    // The stale polling stopped. The status call count stays fixed after the
+    // failure, so the panel does not poll a session the server removed.
+    const statusCallsAtFailure = mockAgentsApi.getClaudeSetupTokenLoginStatus.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    await flushReact();
+    expect(mockAgentsApi.getClaudeSetupTokenLoginStatus.mock.calls.length).toBe(
+      statusCallsAtFailure,
+    );
+  });
+
   it("cancels an active Claude login and returns to its start state", async () => {
     mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
     const result = await renderClaudeSandbox();

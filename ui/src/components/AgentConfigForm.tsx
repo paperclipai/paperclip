@@ -2142,6 +2142,11 @@ function SubmittedBrowserCodeLoginPanel({
   // True after the client wall-clock cap passes for the active login. The panel
   // stops both polls and shows the timed-out state.
   const [timedOut, setTimedOut] = useState(false);
+  // True after the status poll returns 404. The server removes the row and the
+  // in-memory session at once on any non-stored terminal state, so a status 404
+  // means the login failed and the server cleaned up. The panel stops both
+  // polls and shows a terminal failure state. It shows no credential material.
+  const [statusGone, setStatusGone] = useState(false);
   // Guards the one completion read per session.
   const completionStartedRef = useRef(false);
 
@@ -2153,6 +2158,7 @@ function SubmittedBrowserCodeLoginPanel({
     setStoredSessionId(null);
     setCompletionFailed(false);
     setTimedOut(false);
+    setStatusGone(false);
     completionStartedRef.current = false;
   };
 
@@ -2215,21 +2221,42 @@ function SubmittedBrowserCodeLoginPanel({
   );
 
   // Both polls run only while a session is active and the client cap has not
-  // passed. The timeout stops the polls, so the panel never polls forever.
-  const pollingEnabled = Boolean(sessionId) && !timedOut;
+  // passed. The timeout stops the polls, so the panel never polls forever. A
+  // status 404 also stops the polls: the server cleaned up the session, so the
+  // panel enters a terminal failure state instead.
+  const pollingEnabled = Boolean(sessionId) && !timedOut && !statusGone;
 
   const statusQuery = useQuery({
     queryKey: ["claude-setup-token-status", companyId, sessionId],
     queryFn: () => agentsApi.getClaudeSetupTokenLoginStatus(companyId, sessionId!),
     enabled: pollingEnabled,
+    // A status 404 is terminal. The server removes a cleaned-up session at once,
+    // so a retry cannot recover it. Stop at once and fail loudly.
+    retry: (failureCount, error) => {
+      if (error instanceof ApiError && error.status === 404) return false;
+      return failureCount < 3;
+    },
     refetchInterval: (query) => {
-      if (timedOut) return false;
+      if (timedOut || statusGone) return false;
       const status = query.state.data?.status;
       return status && ADAPTER_LOGIN_TERMINAL_STATUSES.has(status)
         ? false
         : ADAPTER_LOGIN_POLL_INTERVAL_MS;
     },
   });
+
+  // Fail loudly on a status 404. The server cleans up the reservation, the row,
+  // and the in-memory session at once on any non-stored terminal state, so the
+  // status route returns 404 when a login fails and the server cleanup wins the
+  // race against the next poll. React Query keeps the last successful data on
+  // error, so without this branch the panel would hold stale data and show
+  // nothing. Enter the terminal failure state, which stops both polls.
+  useEffect(() => {
+    const error = statusQuery.error;
+    if (error instanceof ApiError && error.status === 404) {
+      setStatusGone(true);
+    }
+  }, [statusQuery.error]);
 
   // Poll the guarded prompt route until it returns the authorization URL. The
   // route returns 404 until the URL is ready, so the panel treats a 404 as
@@ -2297,7 +2324,9 @@ function SubmittedBrowserCodeLoginPanel({
 
   const isStored = storedSessionId !== null;
   const isFailure =
-    completionFailed || Boolean(status && CLAUDE_LOGIN_FAILURE_STATUSES.has(status));
+    completionFailed ||
+    statusGone ||
+    Boolean(status && CLAUDE_LOGIN_FAILURE_STATUSES.has(status));
   const isCompleting = status === "authenticated" && !isStored && !completionFailed;
   const isActive = Boolean(sessionId) && !isStored && !isFailure && !timedOut;
   const startDisabled = startLogin.isPending || isActive;
