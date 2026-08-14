@@ -3031,7 +3031,22 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     }
     return realized;
   }
-  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], input.base.baseCwd);
+  // Validate the base checkout before the git spawn. A missing or empty base
+  // path makes the "git" spawn fail with a raw "spawn git ENOENT" error. That
+  // error hides the real cause: the base project checkout is not on disk.
+  // Throw a clear cause first so a future failure names the missing checkout.
+  const baseCwd = asString(input.base.baseCwd, "").trim();
+  if (!baseCwd) {
+    throw new Error(
+      "Cannot rebuild the git worktree: the base project checkout path is empty.",
+    );
+  }
+  if (!await directoryExists(baseCwd)) {
+    throw new Error(
+      "Cannot rebuild the git worktree: the base project checkout directory does not exist.",
+    );
+  }
+  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], baseCwd);
   const recordedBaseRefSha = readRecordedBaseRefSha(input.workspace.metadata);
   if (await directoryExists(cwd)) {
     const reuseBaseRef = input.workspace.baseRef ?? input.base.repoRef ?? null;
