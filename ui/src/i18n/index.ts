@@ -18,6 +18,12 @@ void i18n.use(initReactI18next).init(i18nextOptions).catch((error: unknown) => {
   console.error("Failed to initialize i18next", error);
 });
 
+// First paint may have the static lang attr; sync it with the resolved locale
+// (localStorage preference or VITE_DEFAULT_LOCALE) once the app boots.
+if (typeof document !== "undefined") {
+  document.documentElement.setAttribute("lang", resolveInitialLocale());
+}
+
 /** Persist the user's locale preference and switch the active language. */
 export function setLocale(locale: string) {
   try {
@@ -25,6 +31,10 @@ export function setLocale(locale: string) {
   } catch {
     // Storage may be unavailable (private mode); switching still applies for
     // the session.
+  }
+  // Keep <html lang> in sync for screen readers and browser translation hints.
+  if (typeof document !== "undefined") {
+    document.documentElement.setAttribute("lang", locale);
   }
   void i18n.changeLanguage(locale);
 }

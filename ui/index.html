@@ -18,6 +18,18 @@
     <link rel="manifest" href="/site.webmanifest" crossorigin="use-credentials" />
     <script>
       (() => {
+        // Keep <html lang> in sync with the persisted UI language (see
+        // ui/src/i18n/locales.ts LOCALE_STORAGE_KEY). Done inline before first
+        // paint so screen readers and browser translation hints see the right
+        // language immediately, matching the theme script above.
+        try {
+          const locale = window.localStorage.getItem("paperclip.locale");
+          if (locale && locale.length >= 2) {
+            document.documentElement.setAttribute("lang", locale);
+          }
+        } catch {
+          // Fall back to the static lang attribute.
+        }
         const key = "paperclip.theme";
         const darkThemeColor = "#18181b";
         const lightThemeColor = "#ffffff";
