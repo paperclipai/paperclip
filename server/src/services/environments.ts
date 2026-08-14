@@ -822,6 +822,26 @@ export function environmentService(db: Db) {
       return row ? toEnvironment(row) : null;
     },
 
+    /**
+     * List the companies that own an environment through a built-in managed
+     * resource binding. A managed sandbox row binds to each company that the
+     * instance provisions it for. An operator-created environment has no
+     * binding, so this returns an empty list. The caller treats an empty list
+     * as an instance-global environment with no company owner.
+     */
+    listBoundCompanyIds: async (environmentId: string): Promise<string[]> => {
+      const rows = await db
+        .select({ companyId: builtInManagedResources.companyId })
+        .from(builtInManagedResources)
+        .where(
+          and(
+            eq(builtInManagedResources.resourceKind, MANAGED_ENVIRONMENT_RESOURCE_KIND),
+            eq(builtInManagedResources.resourceId, environmentId),
+          ),
+        );
+      return Array.from(new Set(rows.map((row) => row.companyId)));
+    },
+
     getLeaseById: async (id: string): Promise<EnvironmentLease | null> => {
       const row = await db
         .select()

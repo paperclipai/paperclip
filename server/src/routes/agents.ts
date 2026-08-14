@@ -1157,6 +1157,18 @@ export function agentRoutes(
     await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
       allowedDrivers: ["sandbox"],
     });
+    // Reject an environment that another company owns. A managed sandbox
+    // environment binds to the companies that the instance provisions it for.
+    // When the environment binds to companies but not the request company, the
+    // environment belongs to another company. A login there runs the process in
+    // a foreign company sandbox, so the guard fails closed. An environment with
+    // no company binding is instance-global and stays open to every member.
+    const boundCompanyIds = await environmentsSvc.listBoundCompanyIds(environmentId);
+    if (boundCompanyIds.length > 0 && !boundCompanyIds.includes(companyId)) {
+      throw forbidden("The selected environment belongs to another company.", {
+        code: "environment_company_mismatch",
+      });
+    }
   }
 
   // Read a login session for its owner. The durable row is the authority for the
@@ -4672,9 +4684,10 @@ export function agentRoutes(
     // Resolve the environment server-side to a live instance sandbox. It fails
     // closed on a missing, archived, non-sandbox, or fake-provider environment, so
     // the route never persists an empty or invalid environment scope. It runs
-    // before the session starts, so no store holds a rejected environment. The
-    // catalog is instance-scoped (see `assertSandboxLoginEnvironment`), so the
-    // guard does not bind the environment to the caller company.
+    // before the session starts, so no store holds a rejected environment. It
+    // also rejects an environment that another company owns (see
+    // `assertSandboxLoginEnvironment`), so a login never runs in a foreign
+    // company sandbox.
     await assertSandboxLoginEnvironment(companyId, environmentId);
 
     const scope: SetupTokenSessionScope = {

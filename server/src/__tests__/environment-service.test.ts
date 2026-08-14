@@ -783,6 +783,47 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("lists the companies that own a managed sandbox environment", async () => {
+    const companyA = randomUUID();
+    const companyB = randomUUID();
+    await db.insert(companies).values([
+      { id: companyA, name: "Company A", status: "active", issuePrefix: "CA", createdAt: new Date(), updatedAt: new Date() },
+      { id: companyB, name: "Company B", status: "active", issuePrefix: "CB", createdAt: new Date(), updatedAt: new Date() },
+    ]);
+    // Two companies provision the same managed sandbox slot, so both bind to the
+    // one environment row.
+    const created = await svc.ensureManagedSandboxEnvironment({
+      companyId: companyA,
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "us" },
+    });
+    const environmentId = created.environment.id;
+    await svc.ensureManagedSandboxEnvironment({
+      companyId: companyB,
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "us" },
+    });
+
+    const owners = await svc.listBoundCompanyIds(environmentId);
+    expect(owners.slice().sort()).toEqual([companyA, companyB].sort());
+
+    // An operator-created environment has no managed binding, so it lists no
+    // owner and stays instance-global.
+    const unboundId = randomUUID();
+    await db.insert(environments).values({
+      id: unboundId,
+      name: "Operator sandbox",
+      driver: "sandbox",
+      status: "active",
+      config: { provider: "kubernetes" },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    expect(await svc.listBoundCompanyIds(unboundId)).toEqual([]);
+  });
+
   it("preserves tenant env vars across managed sandbox boot reconciles", async () => {
     // The cloud contract lets tenants add env vars — and only env vars —
     // to the managed sandbox environment. The provisioner reconciles

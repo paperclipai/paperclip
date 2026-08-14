@@ -78,7 +78,10 @@ const mockAgentService = vi.hoisted(() => ({ getById: vi.fn() }));
 // The environment service the company-and-environment routes call to resolve the
 // sandbox environment server-side. A test sets the resolved environment shape to
 // prove the fail-closed environment guard.
-const mockEnvironmentService = vi.hoisted(() => ({ getById: vi.fn() }));
+const mockEnvironmentService = vi.hoisted(() => ({
+  getById: vi.fn(),
+  listBoundCompanyIds: vi.fn(),
+}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockHeartbeatService = vi.hoisted(() => ({ wakeup: vi.fn() }));
 const mockIssueService = vi.hoisted(() => ({ getById: vi.fn(), getByIdentifier: vi.fn() }));
@@ -390,6 +393,10 @@ beforeEach(() => {
     status: "active",
     config: { provider: "kubernetes" },
   });
+  // The default environment has no company binding, so it is instance-global
+  // and open to every member. A test overrides this to prove the guard rejects
+  // an environment that another company owns.
+  mockEnvironmentService.listBoundCompanyIds.mockResolvedValue([]);
 });
 
 describe("setup-token login route — full path", () => {
@@ -888,6 +895,32 @@ describe("company-and-environment setup-token route — fail-closed environment"
     }
     // No rejected environment reached the store.
     expect(transport.records).toEqual([]);
+  });
+
+  it("rejects an environment that another company owns", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+    // The environment binds to another company only, so the request company does
+    // not own it. The guard fails closed before the session starts.
+    mockEnvironmentService.listBoundCompanyIds.mockResolvedValue([OTHER_COMPANY_ID]);
+
+    const res = await startCompanySession(app);
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("The selected environment belongs to another company.");
+    // No rejected environment reached the store.
+    expect(transport.records).toEqual([]);
+  });
+
+  it("accepts an environment the request company also owns", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+    // The environment binds to the request company and another company. A shared
+    // managed sandbox binds to many companies at once, so a co-owned binding
+    // stays open to the request company.
+    mockEnvironmentService.listBoundCompanyIds.mockResolvedValue([OTHER_COMPANY_ID, COMPANY_ID]);
+
+    const res = await startCompanySession(app);
+    expect(res.status).toBe(201);
   });
 });
 
