@@ -1,4 +1,5 @@
 import type { UsageSummary } from "@paperclipai/adapter-utils";
+import { weightedBudgetTokens } from "@paperclipai/adapter-utils";
 import {
   asString,
   asNumber,
@@ -109,6 +110,7 @@ export function claudeAssistantMessageUsage(event: unknown): {
   messageId: string;
   usage: UsageSummary;
   inputTokensForTurn: number;
+  weightedInputTokensForTurn: number;
   hasToolUse: boolean;
 } | null {
   const eventObj = parseObject(event);
@@ -125,10 +127,18 @@ export function claudeAssistantMessageUsage(event: unknown): {
     asNumber(usage.input_tokens, 0) +
     asNumber(usage.cache_creation_input_tokens, 0) +
     asNumber(usage.cache_read_input_tokens, 0);
+  // Budget-weighted projection of the next turn: cache reads at reduced
+  // weight so the predictive stop matches the weighted budget (TSMC-20840).
+  const weightedInputTokensForTurn = weightedBudgetTokens({
+    inputTokens:
+      asNumber(usage.input_tokens, 0) + asNumber(usage.cache_creation_input_tokens, 0),
+    cachedInputTokens: asNumber(usage.cache_read_input_tokens, 0),
+  });
   const content = Array.isArray(message.content) ? message.content : [];
   return {
     messageId,
     inputTokensForTurn,
+    weightedInputTokensForTurn,
     hasToolUse: content.some((entry) =>
       asString(parseObject(entry).type, "") === "tool_use"
     ),

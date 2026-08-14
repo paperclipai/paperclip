@@ -83,6 +83,8 @@ describe("claudeAssistantMessageUsage", () => {
     })).toEqual({
       messageId: "msg-1",
       inputTokensForTurn: 26_924,
+      // 9_787 fresh + floor(0.1 * 17_137) cached (TSMC-20840 weighting).
+      weightedInputTokensForTurn: 11_500,
       hasToolUse: false,
       usage: {
         inputTokens: 9_787,

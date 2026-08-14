@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { weightedBudgetTokens } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetRemoteCwd,
   adapterExecutionTargetSessionMatches,
@@ -403,7 +404,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (stream !== "stdout" || tokenBudgetExceeded) return;
       observedStdout = `${observedStdout}${chunk}`.slice(-1024 * 1024);
       const observedUsage = inspectAntigravityStream(observedStdout).usage;
-      const observed = observedUsage.inputTokens + observedUsage.cachedInputTokens + observedUsage.outputTokens;
+      // Budget-weighted: cache reads at reduced weight (TSMC-20840).
+      const observed = weightedBudgetTokens(observedUsage);
       tokenBudgetObserved = Math.max(tokenBudgetObserved, observed);
       if (observed <= maxTokensPerRun) return;
 
@@ -470,7 +472,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         forceKillTimer = null;
       }
       const parsed = parseAntigravityOutput(proc.stdout, proc.stderr);
-      const finalObserved = parsed.usage.inputTokens + parsed.usage.cachedInputTokens + parsed.usage.outputTokens;
+      const finalObserved = weightedBudgetTokens(parsed.usage);
       tokenBudgetObserved = Math.max(tokenBudgetObserved, finalObserved);
       if (finalObserved > maxTokensPerRun) tokenBudgetExceeded = true;
       return { proc, parsed };

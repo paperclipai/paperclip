@@ -12,6 +12,7 @@ import type {
   AdapterExecutionResult,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
+import { weightedBudgetTokens } from "../token-budget.js";
 import {
   adapterExecutionTargetSessionIdentity,
   describeAdapterExecutionTarget,
@@ -2644,15 +2645,20 @@ function usdCostAmount(cost: AcpRuntimeUsageCost | null | undefined): number | n
  */
 function usageBreakdownTotalTokens(breakdown: AcpRuntimeUsageBreakdown | null | undefined): number {
   if (!breakdown) return 0;
-  const reportedTotal = Math.floor(asNumber(breakdown.totalTokens, 0));
-  if (reportedTotal > 0) return reportedTotal;
-  return Math.max(0, Math.floor(
-    asNumber(breakdown.inputTokens, 0) +
-    asNumber(breakdown.outputTokens, 0) +
-    asNumber(breakdown.cachedReadTokens, 0) +
-    asNumber(breakdown.cachedWriteTokens, 0) +
-    asNumber(breakdown.thoughtTokens, 0),
-  ));
+  // Budget-weighted: cache READS count at CACHED_INPUT_BUDGET_WEIGHT so a
+  // multi-turn run is not charged turns x resident-context (TSMC-20840).
+  // Prefer the component breakdown; the runtime's opaque totalTokens (which
+  // counts cache reads at full weight) is only a fallback when no components
+  // were reported.
+  const componentTotal = weightedBudgetTokens({
+    inputTokens: asNumber(breakdown.inputTokens, 0),
+    outputTokens: asNumber(breakdown.outputTokens, 0),
+    cachedInputTokens: asNumber(breakdown.cachedReadTokens, 0),
+    cachedWriteTokens: asNumber(breakdown.cachedWriteTokens, 0),
+    thoughtTokens: asNumber(breakdown.thoughtTokens, 0),
+  });
+  if (componentTotal > 0) return componentTotal;
+  return Math.max(0, Math.floor(asNumber(breakdown.totalTokens, 0)));
 }
 
 function resolveMaxTokensPerRun(config: Record<string, unknown>): number {
@@ -2675,11 +2681,13 @@ const MIN_ACP_NEXT_STEP_TOKEN_RESERVE = 8_192;
 
 function usageSummaryTotalTokens(usage: UsageSummary | null | undefined): number {
   if (!usage) return 0;
-  return Math.max(0, Math.floor(
-    asNumber(usage.inputTokens, 0) +
-    asNumber(usage.cachedInputTokens, 0) +
-    asNumber(usage.outputTokens, 0),
-  ));
+  // Budget-weighted (TSMC-20840): only feeds enforceTokenBudget; reported
+  // usage stays raw.
+  return weightedBudgetTokens({
+    inputTokens: asNumber(usage.inputTokens, 0),
+    cachedInputTokens: asNumber(usage.cachedInputTokens, 0),
+    outputTokens: asNumber(usage.outputTokens, 0),
+  });
 }
 
 async function readRuntimeStatus(

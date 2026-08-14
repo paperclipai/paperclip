@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult, UsageSummary } from "@paperclipai/adapter-utils";
+import { weightedBudgetTokens } from "@paperclipai/adapter-utils";
 import {
   runningProcesses,
   signalRunningProcess,
@@ -903,13 +904,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         observedMessageUsage.outputTokens += observed.usage.outputTokens;
       }
       if (observed.hasToolUse) {
-        predictedNextTurnTokens = Math.max(predictedNextTurnTokens, observed.inputTokensForTurn);
+        predictedNextTurnTokens = Math.max(predictedNextTurnTokens, observed.weightedInputTokensForTurn);
       }
     }
-    tokenBudgetObserved =
-      observedMessageUsage.inputTokens +
-      observedMessageUsage.cachedInputTokens +
-      observedMessageUsage.outputTokens;
+    // Budget-weighted: cache reads count at CACHED_INPUT_BUDGET_WEIGHT so a
+    // multi-turn run is not charged turns x resident-context (TSMC-20840).
+    tokenBudgetObserved = weightedBudgetTokens(observedMessageUsage);
     const nextTurnWouldExhaustBudget =
       predictedNextTurnTokens > 0 &&
       tokenBudgetObserved + predictedNextTurnTokens >= maxTokensPerRun;
@@ -1005,10 +1005,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     const parsedStream = parseClaudeStreamJson(proc.stdout);
     if (parsedStream.usage) {
-      const finalObserved =
-        parsedStream.usage.inputTokens +
-        (parsedStream.usage.cachedInputTokens ?? 0) +
-        parsedStream.usage.outputTokens;
+      const finalObserved = weightedBudgetTokens(parsedStream.usage);
       tokenBudgetObserved = Math.max(tokenBudgetObserved, finalObserved);
       if (maxTokensPerRun > 0 && tokenBudgetObserved >= maxTokensPerRun) {
         tokenBudgetExceeded = true;

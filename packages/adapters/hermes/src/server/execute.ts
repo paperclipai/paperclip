@@ -29,6 +29,7 @@ import type {
   AdapterExecutionResult,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
+import { weightedBudgetTokens } from "@paperclipai/adapter-utils";
 
 import {
   runChildProcess,
@@ -494,9 +495,10 @@ async function readHermesRunUsageBySource(
 
 function totalUsageTokens(usage: UsageSummary | undefined): number {
   if (!usage) return 0;
-  return Math.max(0, Math.floor(
-    (usage.inputTokens ?? 0) + (usage.cachedInputTokens ?? 0) + (usage.outputTokens ?? 0),
-  ));
+  // Budget-weighted: cache reads at reduced weight so multi-turn runs are not
+  // charged turns x resident-context (TSMC-20840). Only feeds the per-run
+  // token budget; reported usage stays raw.
+  return weightedBudgetTokens(usage);
 }
 
 // ---------------------------------------------------------------------------

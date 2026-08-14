@@ -150,7 +150,7 @@ describe("claude_local ACP startup fallback", () => {
         id: "msg-cap",
         content: [{ type: "text", text: "working" }],
         usage: {
-          input_tokens: 10_000,
+          input_tokens: 95_000,
           cache_creation_input_tokens: 1,
           cache_read_input_tokens: 90_000,
           output_tokens: 1,
@@ -176,20 +176,62 @@ describe("claude_local ACP startup fallback", () => {
 
     const result = await execute(ctx as never);
 
+    // Budget-weighted (TSMC-20840): 95_001 fresh + 1 out + 0.1 * 90_000 cached
+    // = 104_002 >= 100_000.
     expect(result).toMatchObject({
       errorCode: "token_budget_exhausted",
       clearSession: true,
       usage: {
-        inputTokens: 10_001,
+        inputTokens: 95_001,
         cachedInputTokens: 90_000,
         outputTokens: 1,
       },
       resultJson: {
         stopReason: "token_budget_exhausted",
         maxTokensPerRun: 100_000,
-        observedTokens: 100_002,
+        observedTokens: 104_002,
       },
     });
+  });
+
+  it("does not exhaust the budget on a cache-read-heavy multi-turn run (TSMC-20840)", async () => {
+    // The Kestrel shape: ~28K fresh input, ~360K cache reads, ~5K output.
+    // Full-weight accounting charged this 393K; weighted it is ~69K.
+    const assistantEvent = JSON.stringify({
+      type: "assistant",
+      uuid: "event-cache-heavy",
+      session_id: "claude-session-cache-heavy",
+      message: {
+        id: "msg-cache-heavy",
+        content: [{ type: "text", text: "report written" }],
+        usage: {
+          input_tokens: 28_000,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 360_000,
+          output_tokens: 5_000,
+        },
+      },
+    });
+    runAdapterExecutionTargetProcess.mockImplementationOnce(async (...args: unknown[]) => {
+      const options = args[4] as {
+        onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+      };
+      await options.onLog("stdout", `${assistantEvent}\n`);
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: assistantEvent,
+        stderr: "",
+        pid: 123,
+        startedAt: new Date().toISOString(),
+      };
+    });
+    const ctx = buildContext({ maxTokensPerRun: 100_000 });
+
+    const result = await execute(ctx as never);
+
+    expect(result.errorCode).not.toBe("token_budget_exhausted");
   });
 
   it("stops before a tool call when the next context-bearing turn cannot fit", async () => {
@@ -238,16 +280,19 @@ describe("claude_local ACP startup fallback", () => {
       };
     });
 
-    const result = await execute(buildContext({ maxTokensPerRun: 100_000 }) as never);
+    const result = await execute(buildContext({ maxTokensPerRun: 40_000 }) as never);
 
+    // Budget-weighted (TSMC-20840): observed = (20_001 + 10_001 fresh) + 20 out
+    // + 0.1 * 50_000 cached = 35_022; weighted next-turn projection from msg-2
+    // = 10_001 + 0.1 * 20_000 = 12_001; 35_022 + 12_001 >= 40_000.
     expect(result).toMatchObject({
       errorCode: "token_budget_exhausted",
       clearSession: true,
       resultJson: {
         stopReason: "token_budget_exhausted",
-        maxTokensPerRun: 100_000,
-        observedTokens: 80_022,
-        predictedNextTurnTokens: 30_001,
+        maxTokensPerRun: 40_000,
+        observedTokens: 35_022,
+        predictedNextTurnTokens: 12_001,
       },
     });
   });

@@ -474,7 +474,7 @@ describe("hermes execute", () => {
       config: {
         cwd: root,
         model: "grok-4.5",
-        maxTokensPerRun: 100_000,
+        maxTokensPerRun: 40_000,
         liveUsagePollIntervalMs: 5,
       },
       context: {},
@@ -486,10 +486,11 @@ describe("hermes execute", () => {
     expect(result.errorCode).toBe("token_budget_exhausted");
     expect(result.clearSession).toBe(true);
     expect(result.usage).toEqual({ inputTokens: 30_000, outputTokens: 5_000, cachedInputTokens: 65_000 });
+    // Budget-weighted (TSMC-20840): 30_000 + 5_000 + 0.1 * 65_000 = 41_500.
     expect(result.resultJson).toMatchObject({
       stopReason: "token_budget_exhausted",
-      maxTokensPerRun: 100_000,
-      observedTokens: 100_000,
+      maxTokensPerRun: 40_000,
+      observedTokens: 41_500,
       session_id: "sess-live-cap",
     });
   });
