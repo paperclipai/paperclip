@@ -475,6 +475,56 @@ describe("OnboardingWizard — which step it lands on", () => {
       );
     });
 
+    it("does not hand a new company the mission written for the old one", async () => {
+      // A route change can switch companies while the write is in flight, and
+      // the switch clears exactly the state the write is about to set. The
+      // goal is written and correct either way — but attributing it to the
+      // company now in hand would undo the clearing and let that company skip
+      // its own mission.
+      let resolveCreate: (goal: { id: string }) => void = () => {};
+      mockGoalsApi.create.mockReturnValue(
+        new Promise<{ id: string }>((resolve) => {
+          resolveCreate = resolve;
+        }),
+      );
+      routerState.pathname = "/PC1/onboarding";
+      await render();
+      await settle();
+      expect(currentStep()).toBe("mission");
+
+      const direct = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("I know my mission"),
+      )!;
+      await click(direct);
+      setControlledValue(missionTextarea()!, "Acme's mission");
+      await settle();
+      await click(confirmMissionButton()!);
+
+      // Switch companies before the write lands, then let it land.
+      routerState.pathname = "/PC2/onboarding";
+      await rerender();
+      await settle();
+      await act(async () => resolveCreate({ id: "goal-company-1" }));
+      await settle();
+
+      // Globex must still be asked, and must write its own mission.
+      expect(currentStep()).toBe("mission");
+      mockGoalsApi.create.mockResolvedValue({ id: "goal-company-2" });
+      const direct2 = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("I know my mission"),
+      )!;
+      await click(direct2);
+      setControlledValue(missionTextarea()!, "Globex's mission");
+      await settle();
+      await click(confirmMissionButton()!);
+      await settle();
+
+      expect(mockGoalsApi.create).toHaveBeenLastCalledWith(
+        "company-2",
+        expect.objectContaining({ title: "Globex's mission" }),
+      );
+    });
+
     it("does not write a second mission when the step is confirmed twice", async () => {
       mockGoalsApi.create.mockResolvedValue({ id: "goal-new" });
       await openOnMissionStepForExistingCompany();

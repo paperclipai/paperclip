@@ -725,10 +725,17 @@ export function OnboardingWizard() {
               level: "company",
               status: "active"
             });
-        setCreatedCompanyGoalId(goal.id);
         queryClient.invalidateQueries({
           queryKey: queryKeys.goals.list(createdCompanyId)
         });
+        // The company this started for may not be the one in hand any more: a
+        // route change can switch companies while the write is in flight, and
+        // the switch clears exactly the state these two lines set. Writing
+        // anyway would hand the new company the old one's goal, which the
+        // clearing was there to prevent. The goal itself is written and
+        // correct either way; only this wizard has moved on.
+        if (createdCompanyIdRef.current !== createdCompanyId) return;
+        setCreatedCompanyGoalId(goal.id);
         setStep(3);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to save the mission");
@@ -835,10 +842,14 @@ export function OnboardingWizard() {
         });
       }
       const agent = hire.agent;
-      setCreatedAgentId(agent.id);
       queryClient.invalidateQueries({
         queryKey: queryKeys.agents.list(createdCompanyId)
       });
+      // Same guard as the mission write above, for the step that follows it.
+      // The agent is hired either way; this only declines to attribute it to
+      // whichever company the wizard has moved on to.
+      if (createdCompanyIdRef.current !== createdCompanyId) return;
+      setCreatedAgentId(agent.id);
 
       // Seed the CEO's agent instructions file so the agent always has
       // company context + a hiring-plan output format rule. Non-fatal on
