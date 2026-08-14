@@ -267,7 +267,7 @@ pnpm paperclipai configure --section secrets
 Inline secret migration command:
 
 ```sh
-pnpm paperclipai secrets migrate-inline-env --company-id <company-id> --apply
+pnpm exec paperclipai secrets migrate-inline-env --company-id <company-id> --apply
 
 # direct database maintenance fallback
 pnpm secrets:migrate-inline-env --apply

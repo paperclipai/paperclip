@@ -102,6 +102,12 @@ describe("DocumentAnnotationPopover", () => {
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
     setter?.call(textarea, "Looks good");
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    // Wait for React to commit the composer value before the submit shortcut.
+    // The Comment button enables only after the controlled value updates, so its
+    // enabled state proves the keydown handler now reads the typed text. Without
+    // this wait the keydown can run against an empty composer and never submit.
+    const commentButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Comment")) as HTMLButtonElement;
+    await vi.waitFor(() => expect(commentButton.disabled).toBe(false));
     textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }));
     await vi.waitFor(() => expect(mutations.create).toHaveBeenCalledWith("Looks good"));
   });

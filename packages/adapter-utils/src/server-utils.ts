@@ -590,6 +590,14 @@ type PaperclipWakePlanReviewContext = {
   truncated: boolean;
 };
 
+type PaperclipWakeDocumentReviewContext = {
+  issueId: string | null;
+  documents: Array<PaperclipWakePlanReviewContext & { title: string | null }>;
+  totals: PaperclipWakePlanReviewContext["totals"];
+  limits: PaperclipWakePlanReviewContext["limits"];
+  truncated: boolean;
+};
+
 type PaperclipWakeContinuationSummary = {
   key: string | null;
   title: string | null;
@@ -678,6 +686,7 @@ type PaperclipWakePayload = {
   executionStage: PaperclipWakeExecutionStage | null;
   continuationSummary: PaperclipWakeContinuationSummary | null;
   planReviewContext: PaperclipWakePlanReviewContext | null;
+  documentReviewContext: PaperclipWakeDocumentReviewContext | null;
   livenessContinuation: PaperclipWakeLivenessContinuation | null;
   taskWatchdog: PaperclipWakeTaskWatchdogContext | null;
   interactionKind: string | null;
@@ -993,6 +1002,41 @@ function normalizePaperclipWakePlanReviewContext(value: unknown): PaperclipWakeP
   };
 }
 
+function normalizePaperclipWakeDocumentReviewContext(value: unknown): PaperclipWakeDocumentReviewContext | null {
+  const context = parseObject(value);
+  const issueId = asString(context.issueId, "").trim() || null;
+  const documents = Array.isArray(context.documents)
+    ? context.documents.flatMap((value) => {
+        const document = parseObject(value);
+        const normalized = normalizePaperclipWakePlanReviewContext({ ...document, issueId });
+        return normalized
+          ? [{ ...normalized, title: asString(document.title, "").trim() || null }]
+          : [];
+      })
+    : [];
+  if (!issueId && documents.length === 0) return null;
+  const totalsRaw = parseObject(context.totals);
+  const openThreadCount = asNumber(totalsRaw.openThreadCount, documents.reduce((sum, doc) => sum + doc.totals.openThreadCount, 0));
+  const includedThreadCount = asNumber(totalsRaw.includedThreadCount, documents.reduce((sum, doc) => sum + doc.totals.includedThreadCount, 0));
+  const commentCount = asNumber(totalsRaw.commentCount, documents.reduce((sum, doc) => sum + doc.totals.commentCount, 0));
+  const includedCommentCount = asNumber(totalsRaw.includedCommentCount, documents.reduce((sum, doc) => sum + doc.totals.includedCommentCount, 0));
+  const limits = documents[0]?.limits ?? null;
+  return {
+    issueId,
+    documents,
+    totals: {
+      openThreadCount,
+      includedThreadCount,
+      omittedThreadCount: asNumber(totalsRaw.omittedThreadCount, Math.max(0, openThreadCount - includedThreadCount)),
+      commentCount,
+      includedCommentCount,
+      omittedCommentCount: asNumber(totalsRaw.omittedCommentCount, Math.max(0, commentCount - includedCommentCount)),
+    },
+    limits,
+    truncated: asBoolean(context.truncated, false),
+  };
+}
+
 function normalizePaperclipWakeContinuationSummary(value: unknown): PaperclipWakeContinuationSummary | null {
   const summary = parseObject(value);
   const body = asString(summary.body, "").trim();
@@ -1284,6 +1328,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   const executionStage = normalizePaperclipWakeExecutionStage(payload.executionStage);
   const continuationSummary = normalizePaperclipWakeContinuationSummary(payload.continuationSummary);
   const planReviewContext = normalizePaperclipWakePlanReviewContext(payload.planReviewContext);
+  const documentReviewContext = normalizePaperclipWakeDocumentReviewContext(payload.documentReviewContext);
   const annotationDeltas = Array.isArray(payload.annotationDeltas)
     ? payload.annotationDeltas
         .map((entry) => normalizePaperclipWakeAnnotationDelta(entry))
@@ -1312,7 +1357,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   const checkboxSelection = normalizePaperclipWakeCheckboxSelection(payload.checkboxSelection);
   const executionWorkspace = normalizePaperclipWakeExecutionWorkspace(payload.executionWorkspace);
   const agentMessage = normalizePaperclipWakeAgentMessage(payload.agentMessage);
-  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !agentMessage && !recovery && !normalizePaperclipWakeIssue(payload.issue)) {
+  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !documentReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !agentMessage && !recovery && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -1330,6 +1375,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     executionStage,
     continuationSummary,
     planReviewContext,
+    documentReviewContext,
     annotationDeltas,
     livenessContinuation,
     taskWatchdog,
@@ -1758,6 +1804,50 @@ export function renderPaperclipWakePrompt(
     if (context.totals.omittedThreadCount > 0 || context.totals.omittedCommentCount > 0 || context.truncated) {
       lines.push("[plan review context truncated]");
     }
+  }
+
+  if (normalized.documentReviewContext) {
+    const context = normalized.documentReviewContext;
+    lines.push(
+      "",
+      "## Open document annotations",
+      "",
+      "These open annotations are grouped by issue document. Resolved annotations were intentionally omitted.",
+      "Scope: a document annotation authorizes document edits and thread replies only; propose a child issue before making code changes.",
+      "For snapshot documents such as QA evidence and run summaries, prefer replying and resolving the thread over rewriting the snapshot.",
+      `- open annotation threads included: ${context.totals.includedThreadCount}/${context.totals.openThreadCount}`,
+      `- annotation comments included: ${context.totals.includedCommentCount}/${context.totals.commentCount}`,
+    );
+    for (const document of context.documents) {
+      lines.push(
+        "",
+        `### ${document.title ?? document.documentKey ?? "Document"}`,
+        `- document key: ${document.documentKey ?? "unknown"}`,
+        `- latest revision: ${document.latestRevisionNumber ?? "unknown"}${document.latestRevisionId ? ` (${document.latestRevisionId})` : ""}`,
+      );
+      for (const thread of document.threads) {
+        const state = [
+          thread.status,
+          thread.revisionNumber ? `revision #${thread.revisionNumber}` : null,
+          thread.anchorState,
+          thread.anchorConfidence,
+        ].filter(Boolean).join(", ");
+        lines.push(`- thread ${thread.id ?? "unknown"}${state ? ` (${state})` : ""}`);
+        renderPlanReviewText("  selected text", thread.selectedText, thread.selectedTextTruncated);
+        renderPlanReviewText("  context before", thread.prefixText, thread.prefixTextTruncated);
+        renderPlanReviewText("  context after", thread.suffixText, thread.suffixTextTruncated);
+        for (const comment of thread.comments) {
+          lines.push(
+            `  comment ${comment.id ?? "unknown"} by ${planReviewAuthorLabel(comment.author)}${comment.createdAt ? ` at ${comment.createdAt}` : ""}:`,
+            comment.body,
+          );
+          if (comment.bodyTruncated) lines.push("[document annotation comment body truncated]");
+        }
+        if (thread.commentsTruncated) lines.push("[document annotation thread comments truncated]");
+      }
+      if (document.truncated) lines.push("[document annotation context truncated]");
+    }
+    if (context.truncated) lines.push("[document review context truncated]");
   }
 
   if (executionStage) {

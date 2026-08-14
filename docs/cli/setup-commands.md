@@ -104,7 +104,7 @@ This now includes bind-oriented deployment settings such as `PAPERCLIP_BIND` and
 Allow a private hostname for authenticated/private mode:
 
 ```sh
-pnpm paperclipai allowed-hostname my-tailscale-host
+pnpm exec paperclipai allowed-hostname my-tailscale-host
 ```
 
 ## Local Storage Paths

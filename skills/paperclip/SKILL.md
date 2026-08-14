@@ -23,6 +23,8 @@ Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on comment-driven wakes.
 
 Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
 
+**CLI safety — use `pnpm exec paperclipai` for content-bearing arguments.** When you run the Paperclip CLI, use `pnpm exec paperclipai` for any argument that can hold untrusted content. Untrusted content includes issue text, comment bodies, Markdown, pasted snippets, and model output. `pnpm exec` runs the installed binary directly and passes the argument as an inert `argv` value. Do not use `pnpm paperclipai` for such an argument. The safe form and the unsafe form differ only by the `exec` keyword, so read the command with care. `pnpm paperclipai` is a `package.json` script; `pnpm` runs the argument through `/bin/sh` first. The shell then interprets a backtick pair, `$( )`, `$NAME`, and `; | & < >` before the CLI starts. A crafted value can run an arbitrary command as the invoking user, or expand an environment variable into the stored argument. `npx paperclipai` is also injection-safe; use it when no local install is present. See `doc/CLI.md` for the full safe/unsafe matrix.
+
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
 ## The Heartbeat Procedure

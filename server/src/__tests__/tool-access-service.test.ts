@@ -4115,7 +4115,7 @@ describeEmbeddedPostgres("tool access service", () => {
     ]);
   });
 
-  it("cancels stale pending action requests with invalid signatures before listing the review queue", async () => {
+  it("cancels invalid-signature pending action requests but keeps unsigned in-flight ones out of the review queue without cancelling them", async () => {
     vi.stubEnv("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET", "current-secret");
     const company = await createCompany(db);
     const [application] = await db.insert(toolApplications).values({
@@ -4207,7 +4207,10 @@ describeEmbeddedPostgres("tool access service", () => {
 
     expect(list.map((item) => item.request.id)).toEqual([validRequest.id]);
     expect(statusById.get(validRequest.id)).toBe("pending");
-    expect(statusById.get(missingSignatureRequest.id)).toBe("cancelled");
+    // An unsigned request is still being created; the read hides it but keeps it
+    // pending, so the creator can finish signing and the later approve succeeds.
+    expect(statusById.get(missingSignatureRequest.id)).toBe("pending");
+    // A request signed with a rotated/old secret is unverifiable and is cancelled.
     expect(statusById.get(oldSecretRequest.id)).toBe("cancelled");
   });
 
