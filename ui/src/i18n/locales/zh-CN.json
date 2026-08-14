@@ -4385,7 +4385,12 @@
     "parentWorkspaceWarning": "警告：此子任务将不再使用父任务工作区。",
     "parentWorkspaceWarningWithLabel": "警告：此子任务将不再使用父任务工作区（{{label}}）。",
     "primaryLaneHint": "在代理的主模型上运行。",
-    "priority": "优先级",
+    "priority": {
+      "critical": "严重",
+      "high": "高",
+      "medium": "中",
+      "low": "低"
+    },
     "priority.critical": "紧急",
     "priority.high": "高",
     "priority.low": "低",
@@ -4415,7 +4420,15 @@
     "subTaskOf": "所属父任务",
     "subTaskTitle": "新建子任务",
     "taskTitlePlaceholder": "任务标题",
-    "thinkingEffort": "思考强度",
+    "thinkingEffort": {
+      "default": "默认",
+      "low": "低",
+      "medium": "中",
+      "high": "高",
+      "minimal": "极简",
+      "xhigh": "超高",
+      "max": "最高"
+    },
     "thinkingEffort.default": "默认",
     "thinkingEffort.high": "高",
     "thinkingEffort.low": "低",
@@ -4433,7 +4446,21 @@
     "watchdogInstructionsPlaceholder": "看门狗应监视什么？如何让工作持续推进？",
     "workspaceMode.isolated": "新建隔离工作区",
     "workspaceMode.projectDefault": "项目默认",
-    "workspaceMode.reuseExisting": "复用现有工作区"
+    "workspaceMode.reuseExisting": "复用现有工作区",
+    "status": {
+      "backlog": "待办",
+      "backlogDescription": "已搁置 - 不会唤醒被指派者",
+      "todo": "待处理",
+      "todoDescription": "可执行 - 将唤醒被指派者",
+      "inProgress": "进行中",
+      "inReview": "审查中",
+      "done": "已完成"
+    },
+    "workspaceMode": {
+      "projectDefault": "项目默认",
+      "isolated": "新建隔离工作区",
+      "reuseExisting": "复用现有工作区"
+    }
   },
   "workMode": {
     "agentMode": "代理模式",

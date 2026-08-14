@@ -4385,7 +4385,12 @@
     "parentWorkspaceWarning": "Warning: this sub-task will no longer use the parent task workspace.",
     "parentWorkspaceWarningWithLabel": "Warning: this sub-task will no longer use the parent task workspace ({{label}}).",
     "primaryLaneHint": "Runs on the agent's primary model.",
-    "priority": "Priority",
+    "priority": {
+      "critical": "Critical",
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low"
+    },
     "priority.critical": "Critical",
     "priority.high": "High",
     "priority.low": "Low",
@@ -4415,7 +4420,15 @@
     "subTaskOf": "Sub-task of",
     "subTaskTitle": "New sub-task",
     "taskTitlePlaceholder": "Task title",
-    "thinkingEffort": "Thinking effort",
+    "thinkingEffort": {
+      "default": "Default",
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High",
+      "minimal": "Minimal",
+      "xhigh": "X-High",
+      "max": "Max"
+    },
     "thinkingEffort.default": "Default",
     "thinkingEffort.high": "High",
     "thinkingEffort.low": "Low",
@@ -4433,7 +4446,21 @@
     "watchdogInstructionsPlaceholder": "What should the watchdog watch for and how should it keep work moving?",
     "workspaceMode.isolated": "New isolated workspace",
     "workspaceMode.projectDefault": "Project default",
-    "workspaceMode.reuseExisting": "Reuse existing workspace"
+    "workspaceMode.reuseExisting": "Reuse existing workspace",
+    "status": {
+      "backlog": "Backlog",
+      "backlogDescription": "Parked - assignee will not be woken",
+      "todo": "Todo",
+      "todoDescription": "Executable - assignee will be woken",
+      "inProgress": "In Progress",
+      "inReview": "In Review",
+      "done": "Done"
+    },
+    "workspaceMode": {
+      "projectDefault": "Project default",
+      "isolated": "New isolated workspace",
+      "reuseExisting": "Reuse existing workspace"
+    }
   },
   "workMode": {
     "agentMode": "Agent mode",
