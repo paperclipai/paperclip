@@ -59,85 +59,96 @@ export interface AdapterDisplayInfo {
   hideFromVisualSelection?: boolean;
 }
 
-const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
+interface AdapterDisplayEntry {
+  label: string;
+  descriptionKey: string;
+  icon: ComponentType<{ className?: string }>;
+  recommended?: boolean;
+  comingSoon?: boolean;
+  disabledLabelKey?: string;
+  experimental?: boolean;
+  hideFromVisualSelection?: boolean;
+}
+
+const adapterDisplayMap: Record<string, AdapterDisplayEntry> = {
   acpx_local: {
     label: "ACPX (retired)",
-    description: t("adapterDisplay.acpxRetired"),
+    descriptionKey: "adapterDisplay.acpxRetired",
     icon: Bot,
     comingSoon: true,
-    disabledLabel: t("adapterDisplay.acpxDisabledLabel"),
+    disabledLabelKey: "adapterDisplay.acpxDisabledLabel",
     hideFromVisualSelection: true,
   },
   claude_local: {
     label: "Claude Code",
-    description: t("adapterDisplay.claudeCodeHarness"),
+    descriptionKey: "adapterDisplay.claudeCodeHarness",
     icon: Sparkles,
     recommended: true,
   },
   codex_local: {
     label: "Codex",
-    description: t("adapterDisplay.codexHarness"),
+    descriptionKey: "adapterDisplay.codexHarness",
     icon: Code,
     recommended: true,
   },
   gemini_local: {
     label: "Gemini CLI",
-    description: t("adapterDisplay.geminiHarness"),
+    descriptionKey: "adapterDisplay.geminiHarness",
     icon: Gem,
   },
   grok_local: {
     label: "Grok Build",
-    description: t("adapterDisplay.grokHarness"),
+    descriptionKey: "adapterDisplay.grokHarness",
     icon: Bot,
   },
   hermes_gateway: {
     label: "Hermes Gateway",
-    description: t("adapterDisplay.hermesGatewayServer"),
+    descriptionKey: "adapterDisplay.hermesGatewayServer",
     icon: Bot,
     hideFromVisualSelection: true,
   },
   hermes_local: {
     label: "Hermes",
-    description: t("adapterDisplay.hermesHarness"),
+    descriptionKey: "adapterDisplay.hermesHarness",
     icon: Bot,
   },
   opencode_local: {
     label: "OpenCode",
-    description: t("adapterDisplay.opencodeHarness"),
+    descriptionKey: "adapterDisplay.opencodeHarness",
     icon: OpenCodeLogoIcon,
   },
   pi_local: {
     label: "Pi",
-    description: t("adapterDisplay.piHarness"),
+    descriptionKey: "adapterDisplay.piHarness",
     icon: Terminal,
   },
   cursor: {
     label: "Cursor",
-    description: t("adapterDisplay.cursorHarness"),
+    descriptionKey: "adapterDisplay.cursorHarness",
     icon: MousePointer2,
   },
   cursor_cloud: {
     label: "Cursor Cloud",
-    description: t("adapterDisplay.cursorCloudAgent"),
+    descriptionKey: "adapterDisplay.cursorCloudAgent",
     icon: MousePointer2,
   },
   openclaw_gateway: {
     label: "OpenClaw Gateway",
-    description: t("adapterDisplay.externalGateway"),
+    descriptionKey: "adapterDisplay.externalGateway",
     icon: Bot,
     comingSoon: true,
-    disabledLabel: t("adapterDisplay.gatewayDisabledLabel"),
+    disabledLabelKey: "adapterDisplay.gatewayDisabledLabel",
     hideFromVisualSelection: true,
   },
   process: {
     label: "Process",
-    description: t("adapterDisplay.internalProcess"),
+    descriptionKey: "adapterDisplay.internalProcess",
     icon: Cpu,
     comingSoon: true,
   },
   http: {
     label: "HTTP",
-    description: t("adapterDisplay.internalHttp"),
+    descriptionKey: "adapterDisplay.internalHttp",
     icon: Cpu,
     comingSoon: true,
   },
@@ -178,7 +189,18 @@ export function getAdapterLabels(): Record<string, string> {
 
 export function getAdapterDisplay(type: string): AdapterDisplayInfo {
   const known = adapterDisplayMap[type];
-  if (known) return known;
+  if (known) {
+    return {
+      label: known.label,
+      description: t(known.descriptionKey),
+      icon: known.icon,
+      recommended: known.recommended,
+      comingSoon: known.comingSoon,
+      experimental: known.experimental,
+      hideFromVisualSelection: known.hideFromVisualSelection,
+      ...(known.disabledLabelKey ? { disabledLabel: t(known.disabledLabelKey) } : {}),
+    };
+  }
 
   const suffix = getTypeSuffix(type);
   const label = withSuffix(humanizeType(type), suffix);

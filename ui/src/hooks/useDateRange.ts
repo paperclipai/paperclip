@@ -3,14 +3,16 @@ import { t } from "@/i18n";
 
 export type DatePreset = "mtd" | "7d" | "30d" | "ytd" | "all" | "custom";
 
-export const PRESET_LABELS: Record<DatePreset, string> = {
-  mtd: t("costs.presetMtd"),
-  "7d": t("costs.preset7d"),
-  "30d": t("costs.preset30d"),
-  ytd: t("costs.presetYtd"),
-  all: t("costs.presetAll"),
-  custom: t("costs.presetCustom"),
-};
+export function getPresetLabel(preset: DatePreset): string {
+  switch (preset) {
+    case "mtd": return t("costs.presetMtd");
+    case "7d": return t("costs.preset7d");
+    case "30d": return t("costs.preset30d");
+    case "ytd": return t("costs.presetYtd");
+    case "all": return t("costs.presetAll");
+    case "custom": return t("costs.presetCustom");
+  }
+}
 
 export const PRESET_KEYS: DatePreset[] = ["mtd", "7d", "30d", "ytd", "all", "custom"];
 
