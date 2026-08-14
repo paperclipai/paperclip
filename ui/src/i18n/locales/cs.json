@@ -4709,7 +4709,9 @@
     "fullErrorOutput": "Full error output",
     "company": "Company",
     "settings": "Settings",
-    "instanceSettings": "Instance settings"
+    "instanceSettings": "Instance settings",
+    "alphaNotice": "Plugins are alpha.",
+    "alphaDescription": "The plugin runtime and API surface are still changing. Expect breaking changes while this feature settles."
   },
   "themeToggle": {
     "toggleDescription": "Toggle the app appearance.",
@@ -4727,5 +4729,60 @@
     "users": "Users",
     "noTokenUsage": "No issue-linked token usage yet.",
     "noProviderUsage": "No provider usage attributed yet."
+  },
+  "inboxPolicy": {
+    "title": "Let agents tidy my inbox",
+    "description": "Choose whether the agents you manage may archive tasks out of your inbox on your behalf. You can undo any archive, and every agent archive is attributed in the task's properties.",
+    "ariaLabel": "Inbox agent archiving policy",
+    "anyAgents": "Any of my agents",
+    "anyAgentsDesc": "Let any agent you manage archive tasks out of your inbox.",
+    "chosenAgents": "Only chosen agents",
+    "chosenAgentsDesc": "Restrict inbox tidying to the agents you pick below.",
+    "off": "Off",
+    "offDesc": "Agents can never archive tasks from your inbox.",
+    "allowedAgents": "Agents allowed to tidy my inbox",
+    "noAgents": "You don't manage any agents yet.",
+    "allowAgent": "Allow {{name}} to tidy my inbox",
+    "failedLoad": "Failed to load inbox agent policy.",
+    "failedSave": "Failed to save inbox agent policy.",
+    "loading": "Loading inbox agent policy…",
+    "saved": "Saved",
+    "saving": "Saving…",
+    "save": "Save"
+  },
+  "adapterManager": {
+    "reinstallTitle": "Reinstall adapter (pull latest from npm)",
+    "reinstallAdapter": "Reinstall Adapter",
+    "alpha": "Alpha",
+    "installAdapter": "Install Adapter",
+    "alphaNotice": "External adapters are alpha.",
+    "alphaDescription": "The adapter plugin system is under active development. APIs and storage format may change. Use the provided marketplace or install from npm.",
+    "externalAdapters": "External Adapters",
+    "noExternalAdapters": "No external adapters installed",
+    "installHint": "Install an adapter package to extend model support.",
+    "hiddenFromMenus": "Hidden from menus",
+    "showInMenus": "Show in agent menus",
+    "hideFromMenus": "Hide from agent menus",
+    "package": "Package",
+    "current": "Current",
+    "latestOnNpm": "Latest on npm",
+    "settings": "Settings",
+    "instanceSettings": "Instance settings",
+    "adapters": "Adapters",
+    "company": "Company",
+    "checking": "checking...",
+    "installedLocal": "Installed from local path",
+    "installedNpm": "Installed from npm"
+  },
+  "pluginSettings": {
+    "pluginDetails": "Plugin Details",
+    "loadingDetails": "Loading plugin details...",
+    "about": "About",
+    "author": "Author",
+    "categories": "Categories",
+    "none": "None",
+    "pid": "PID",
+    "uptime": "Uptime",
+    "pendingRpcs": "Pending RPCs"
   }
 }
