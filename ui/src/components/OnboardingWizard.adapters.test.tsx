@@ -29,6 +29,7 @@ const mockCompany = vi.hoisted(() => ({
 const mockAdapterRegistry = vi.hoisted(() => ({
   list: [] as Array<{ type: string }>,
   disabled: new Set<string>(),
+  loaded: true,
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -58,6 +59,7 @@ vi.mock("../adapters/adapter-display-registry", () => ({
 }));
 vi.mock("../adapters/use-disabled-adapters", () => ({
   useDisabledAdaptersSync: () => mockAdapterRegistry.disabled,
+  useAdapterRegistryLoaded: () => mockAdapterRegistry.loaded,
 }));
 vi.mock("../adapters/use-adapter-capabilities", () => ({
   useAdapterCapabilities: () => () => ({
@@ -111,6 +113,7 @@ describe("OnboardingWizard adapter selection", () => {
     mockCompany.companies = [];
     mockAdapterRegistry.list = [];
     mockAdapterRegistry.disabled = new Set<string>();
+    mockAdapterRegistry.loaded = true;
   });
 
   afterEach(() => {
@@ -157,6 +160,29 @@ describe("OnboardingWizard adapter selection", () => {
       window.localStorage.getItem(ONBOARDING_STORAGE_KEY) ?? "{}",
     );
     expect(saved.adapterType).toBe("claude_local");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+  it("does not replace a saved adapter before the registry has loaded", async () => {
+    // External adapter types are only registered once the adapters query
+    // resolves. Until then `listUIAdapters()` returns the built-ins alone, so
+    // a saved external adapter looks exactly like a disabled one — and
+    // snapping would swap the customer's choice for a built-in and persist it.
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({ step: 0, adapterType: "acme_external" }),
+    );
+    mockAdapterRegistry.loaded = false;
+    mockAdapterRegistry.list = [{ type: "codex_local" }];
+
+    const { root } = await mount();
+
+    const saved = JSON.parse(
+      window.localStorage.getItem(ONBOARDING_STORAGE_KEY) ?? "{}",
+    );
+    expect(saved.adapterType).toBe("acme_external");
 
     await act(async () => {
       root.unmount();
