@@ -261,8 +261,9 @@ export function buildPrompt(
 // Output parsing
 // ---------------------------------------------------------------------------
 
-/** Regex to extract session ID from Hermes quiet-mode output: "session_id: <id>" */
-const SESSION_ID_REGEX = /^session_id:\s*(\S+)/m;
+/** Canonical terminal session line emitted by Hermes quiet mode. */
+const SESSION_ID_REGEX =
+  /(?:^|\n)session_id:\s*(\d{8}_\d{6}_[a-z0-9]+)\s*$/i;
 
 /** Regex to extract token usage from Hermes output. */
 const TOKEN_USAGE_REGEX =
@@ -329,7 +330,7 @@ function parseHermesOutput(
   if (sessionMatch?.[1]) {
     result.sessionId = sessionMatch?.[1] ?? null;
     // The response is everything before the session_id line
-    const sessionLineIdx = stdout.lastIndexOf("\nsession_id:");
+    const sessionLineIdx = sessionMatch.index ?? -1;
     if (sessionLineIdx > 0) {
       result.response = cleanResponse(stdout.slice(0, sessionLineIdx));
     }

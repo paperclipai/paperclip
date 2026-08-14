@@ -150,6 +150,36 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     });
   });
 
+  it("uses only the canonical terminal quiet-mode session line", async () => {
+    vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: [
+        "Answer text",
+        "session_id: 20260101_010101_deadbeef",
+        "Still part of the answer.",
+        "",
+        "session_id: 20260814_144930_03a3ec",
+      ].join("\n"),
+      stderr: "",
+      pid: null,
+      startedAt: null,
+    });
+
+    const { ctx } = makeCtx();
+    const result = await execute(ctx as any);
+
+    expect(result.sessionParams).toEqual({ sessionId: "20260814_144930_03a3ec" });
+    expect(result.resultJson).toMatchObject({
+      result: [
+        "Answer text",
+        "session_id: 20260101_010101_deadbeef",
+        "Still part of the answer.",
+      ].join("\n"),
+    });
+  });
+
   it("preserves footer-shaped answer prose and does not persist it as a session", async () => {
     vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
       exitCode: 0,
