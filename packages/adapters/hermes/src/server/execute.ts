@@ -133,6 +133,47 @@ function renderConditionalSections(template: string, vars: Record<string, unknow
   );
 }
 
+function fencePaperclipTaskText(value: string): string {
+  const longestBacktickRun = Math.max(
+    2,
+    ...Array.from(value.matchAll(/`+/g), (match) => match[0].length),
+  );
+  const fence = "`".repeat(longestBacktickRun + 1);
+  return [fence + "text", value, fence].join("\n");
+}
+
+function readLatestWakeCommentBody(context: Record<string, unknown>): string {
+  const directComment = context.paperclipWakeComment;
+  if (directComment && typeof directComment === "object" && !Array.isArray(directComment)) {
+    const body = (directComment as Record<string, unknown>).body;
+    if (typeof body === "string" && body.trim()) return body.trim();
+  }
+
+  const wake = context.paperclipWake;
+  if (!wake || typeof wake !== "object" || Array.isArray(wake)) return "";
+  const comments = (wake as Record<string, unknown>).comments;
+  if (!Array.isArray(comments)) return "";
+  for (let index = comments.length - 1; index >= 0; index -= 1) {
+    const comment = comments[index];
+    if (!comment || typeof comment !== "object" || Array.isArray(comment)) continue;
+    const body = (comment as Record<string, unknown>).body;
+    if (typeof body === "string" && body.trim()) return body.trim();
+  }
+  return "";
+}
+
+function stripLatestWakeCommentFromTaskMarkdown(
+  taskMarkdown: string,
+  context: Record<string, unknown>,
+): string {
+  const commentBody = readLatestWakeCommentBody(context);
+  if (!taskMarkdown || !commentBody) return taskMarkdown;
+  const section = `\n\nLatest wake comment:\n${fencePaperclipTaskText(commentBody)}`;
+  const sectionIndex = taskMarkdown.lastIndexOf(section);
+  if (sectionIndex < 0) return taskMarkdown;
+  return taskMarkdown.slice(0, sectionIndex) + taskMarkdown.slice(sectionIndex + section.length);
+}
+
 export function buildPrompt(
   ctx: AdapterExecutionContext,
   config: Record<string, unknown>,
@@ -160,15 +201,22 @@ export function buildPrompt(
     paperclipApiUrl = paperclipApiUrl.replace(/\/+$/, "") + "/api";
   }
 
-  const paperclipTaskMarkdown = selectPaperclipTaskMarkdown(context, {
+  const selectedPaperclipTaskMarkdown = selectPaperclipTaskMarkdown(context, {
     resumedSession: options.resumedSession === true,
   });
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
     resumedSession: options.resumedSession === true,
     // The task-context markdown is the authoritative brief on this lane; keep
     // the wake prompt's description copy out so the prompt carries it once.
-    suppressIssueDescription: paperclipTaskMarkdown.length > 0,
+    suppressIssueDescription: selectedPaperclipTaskMarkdown.length > 0,
   });
+  const shouldUseResumeDeltaPrompt = options.resumedSession === true && wakePrompt.length > 0;
+  // Resume deltas already carry the complete pending-comment batch. Keep the
+  // selected compact/full task brief, but remove its duplicate latest-comment
+  // section so Hermes sees each user comment exactly once.
+  const paperclipTaskMarkdown = shouldUseResumeDeltaPrompt
+    ? stripLatestWakeCommentFromTaskMarkdown(selectedPaperclipTaskMarkdown, context)
+    : selectedPaperclipTaskMarkdown;
   const sessionHandoffMarkdown = cfgString(context.paperclipSessionHandoffMarkdown)?.trim() || "";
   const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake) || "";
 
@@ -198,7 +246,7 @@ export function buildPrompt(
     paperclipRunIdEnv: "PAPERCLIP_RUN_ID",
   };
 
-  const rendered = isPaperclipRecoveryWakePayload(context.paperclipWake)
+  const rendered = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
     ? ""
     : renderTemplate(renderConditionalSections(template, vars), vars);
   return joinPromptSections([
@@ -217,7 +265,11 @@ export function buildPrompt(
 const SESSION_ID_REGEX = /^session_id:\s*(\S+)/m;
 
 /** Regex for legacy session output format */
-const SESSION_ID_REGEX_LEGACY = /session[_ ](?:id|saved)[:\s]+([a-zA-Z0-9_-]+)/i;
+const SESSION_ID_REGEX_LEGACY =
+  /^(?:session[_ ](?:id|saved)|session):\s*([a-zA-Z0-9_-]+)/im;
+
+/** Hermes 0.20+ non-quiet resume footer: "hermes --resume <id>" */
+const SESSION_ID_REGEX_RESUME = /\bhermes\s+--resume\s+([a-zA-Z0-9_-]+)/i;
 
 /** Regex to extract token usage from Hermes output. */
 const TOKEN_USAGE_REGEX =
@@ -247,6 +299,9 @@ function cleanResponse(raw: string): string {
       if (!t) return true; // keep blank lines for paragraph separation
       if (t.startsWith("[tool]") || t.startsWith("[hermes]") || t.startsWith("[paperclip]")) return false;
       if (t.startsWith("session_id:")) return false;
+      if (/^session:\s*\S+/i.test(t)) return false;
+      if (/^resume this session with:/i.test(t)) return false;
+      if (/^hermes\s+--resume\s+\S+/i.test(t)) return false;
       if (/^\[\d{4}-\d{2}-\d{2}T/.test(t)) return false;
       if (/^\[done\]\s*┊/.test(t)) return false;
       if (/^┊\s*[\p{Emoji_Presentation}]/u.test(t) && !/^┊\s*💬/.test(t)) return false;
@@ -285,7 +340,7 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
     }
   } else {
     // Legacy format (non-quiet mode)
-    const legacyMatch = combined.match(SESSION_ID_REGEX_LEGACY);
+    const legacyMatch = combined.match(SESSION_ID_REGEX_LEGACY) ?? combined.match(SESSION_ID_REGEX_RESUME);
     if (legacyMatch?.[1]) {
       result.sessionId = legacyMatch?.[1] ?? null;
     }
@@ -349,6 +404,11 @@ export async function execute(
   const prevSessionId = cfgString(
     (ctx.runtime?.sessionParams as Record<string, unknown> | null)?.sessionId,
   );
+  const context = (ctx as any).context || {};
+  const resumedWakePrompt = prevSessionId
+    ? renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: true })
+    : "";
+  const shouldUseResumeDeltaPrompt = Boolean(prevSessionId) && resumedWakePrompt.length > 0;
 
   // ── Resolve provider (defense in depth) ────────────────────────────────
   // Priority chain:
@@ -386,7 +446,7 @@ export async function execute(
   // when present, inject that bundle into the Hermes prompt.
   const instructionsFilePath = cfgString(config.instructionsFilePath);
   let agentInstructions = "";
-  if (instructionsFilePath) {
+  if (instructionsFilePath && !shouldUseResumeDeltaPrompt) {
     try {
       agentInstructions = await fs.readFile(instructionsFilePath, "utf-8");
       const loadedInstructionsLength = agentInstructions.length;
@@ -416,7 +476,10 @@ export async function execute(
 
   // ── Build command args ─────────────────────────────────────────────────
   // Use -Q (quiet) to get clean output: just response + session_id line
-  const useQuiet = cfgBoolean(config.quiet) === true; // default false
+  // The config schema defaults quiet mode to true. Keep the runtime default in
+  // sync so agents created before schema values were persisted also get clean,
+  // parseable output. Users can still explicitly opt out with quiet=false.
+  const useQuiet = cfgBoolean(config.quiet) !== false;
   const args: string[] = ["chat", "-q", prompt];
   if (useQuiet) args.push("-Q");
 

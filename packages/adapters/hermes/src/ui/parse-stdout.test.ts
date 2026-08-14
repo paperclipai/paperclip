@@ -78,4 +78,16 @@ describe("parseHermesStdoutLine — ANSI stripping", () => {
     const result = parseHermesStdoutLine("\x1b[0m", TS);
     expect(result).toHaveLength(0);
   });
+
+  it("renders Hermes 0.20 resume footer lines as system metadata", () => {
+    for (const line of [
+      "Resume this session with:",
+      "hermes --resume 20260814_144930_03a3ec",
+      "Session: 20260814_144930_03a3ec",
+    ]) {
+      expect(parseHermesStdoutLine(line, TS)).toEqual([
+        { kind: "system", ts: TS, text: line },
+      ]);
+    }
+  });
 });

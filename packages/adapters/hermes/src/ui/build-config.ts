@@ -81,6 +81,13 @@ export function buildHermesConfig(
     ac.promptTemplate = v.promptTemplate;
   }
 
+  // Hermes's adapter-specific fields are rendered from config-schema.ts and
+  // stored here by SchemaConfigFields. Preserve them when creating an agent;
+  // schema values intentionally win over the legacy defaults above.
+  if (v.adapterSchemaValues) {
+    Object.assign(ac, v.adapterSchemaValues);
+  }
+
   // Heartbeat config is handled by Paperclip itself
 
   return ac;
