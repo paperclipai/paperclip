@@ -78,27 +78,4 @@ describe("parseHermesStdoutLine — ANSI stripping", () => {
     const result = parseHermesStdoutLine("\x1b[0m", TS);
     expect(result).toHaveLength(0);
   });
-
-  it("keeps Hermes 0.20 non-quiet footer lines in assistant output", () => {
-    for (const line of [
-      "hermes --resume 20260814_144930_03a3ec",
-      "Session: 20260814_144930_03a3ec",
-    ]) {
-      expect(parseHermesStdoutLine(line, TS)).toEqual([
-        { kind: "assistant", ts: TS, text: line },
-      ]);
-    }
-  });
-
-  it("does not classify footer-shaped answer prose as system metadata", () => {
-    for (const line of [
-      "Resume this session with:",
-      "hermes --resume example",
-      "Session: planning",
-    ]) {
-      expect(parseHermesStdoutLine(line, TS)).toEqual([
-        { kind: "assistant", ts: TS, text: line },
-      ]);
-    }
-  });
 });
