@@ -398,7 +398,13 @@ export function folderService(db: Db, mutationLockHeld = false) {
     return { kind: input.kind, itemId: row.id, folderId: row.folderId ?? null };
   }
 
-  async function uniqueSiblingSlug(companyId: string, parentId: string | null, baseSlug: string, stableSuffix: string) {
+  async function uniqueSiblingSlug(
+    companyId: string,
+    parentId: string | null,
+    baseSlug: string,
+    stableSuffix: string,
+    excludeFolderId?: string,
+  ) {
     const siblingSlugs = new Set(await db
       .select({ slug: folders.slug })
       .from(folders)
@@ -406,6 +412,7 @@ export function folderService(db: Db, mutationLockHeld = false) {
         eq(folders.companyId, companyId),
         eq(folders.kind, "skill"),
         parentId === null ? sql`${folders.parentId} is null` : eq(folders.parentId, parentId),
+        excludeFolderId ? sql`${folders.id} != ${excludeFolderId}` : undefined,
       ))
       .then((rows) => rows.map((row) => row.slug)));
     if (!siblingSlugs.has(baseSlug)) return baseSlug;
@@ -536,10 +543,10 @@ export function folderService(db: Db, mutationLockHeld = false) {
     const patch: { name?: string; slug?: string } = {};
     if (existing.name !== name) patch.name = name;
     if (existing.slug !== desiredSlug) {
-      // uniqueSiblingSlug treats every sibling slug (including this folder's own,
-      // stale one) as taken, which is harmless here since we only reach this
-      // branch when the desired slug differs from the stale one.
-      const slug = await uniqueSiblingSlug(companyId, existing.parentId, desiredSlug, projectId);
+      // Exclude this folder's own (stale) slug from the collision check, so
+      // repeated resyncs of an unchanged desired slug converge on the same
+      // result instead of appending a new suffix every time.
+      const slug = await uniqueSiblingSlug(companyId, existing.parentId, desiredSlug, projectId, existing.id);
       if (slug !== existing.slug) patch.slug = slug;
     }
     if (Object.keys(patch).length > 0) {

@@ -85,4 +85,25 @@ describeEmbeddedPostgres("project rename resyncs its skill folder", () => {
     const result = await folderSvc.renameProjectFolder(companyId, "project-without-folder", "New Name");
     expect(result).toBeNull();
   });
+
+  it("keeps a collision-resolved slug stable across repeated resyncs (#11365)", async () => {
+    const companyId = await seedCompany();
+    const folderSvc = folderService(db);
+
+    const sibling = await folderSvc.ensureProjectFolder(companyId, "project-sibling", "Zeta");
+    expect(sibling).toMatchObject({ name: "Zeta", slug: "zeta" });
+
+    await folderSvc.ensureProjectFolder(companyId, "project-renamed", "Other Name");
+
+    const firstResync = await folderSvc.renameProjectFolder(companyId, "project-renamed", "Zeta");
+    expect(firstResync?.name).toBe("Zeta");
+    expect(firstResync?.slug).not.toBe("zeta");
+    expect(firstResync?.slug?.startsWith("zeta-")).toBe(true);
+
+    const secondResync = await folderSvc.renameProjectFolder(companyId, "project-renamed", "Zeta");
+    expect(secondResync?.slug).toBe(firstResync?.slug);
+
+    const thirdResync = await folderSvc.renameProjectFolder(companyId, "project-renamed", "Zeta");
+    expect(thirdResync?.slug).toBe(firstResync?.slug);
+  });
 });
