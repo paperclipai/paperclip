@@ -61,6 +61,7 @@ import {
 import {
   buildFixedClaudeOAuthBinding,
   CLAUDE_OAUTH_TOKEN_ENV_KEY,
+  isFixedClaudeOAuthBinding,
 } from "./environment-variables-editor/model";
 import { AgentSecretAccessEditor } from "./AgentSecretAccessEditor";
 import { useProposalReview } from "../pages/secrets/proposal-review";
@@ -456,7 +457,21 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // in the create request; the server binds and enforces the token
   // independently. The claim never carries a token value.
   const claudeStoredSessionId = isCreate ? val!.claudeStoredSessionId ?? null : null;
-  const hasFixedClaudeOAuthBinding = isCreate && Boolean(claudeStoredSessionId);
+
+  // The effective environment bindings in edit mode: the overlay value if the
+  // operator changed it, else the agent's saved `adapterConfig.env`.
+  const effectiveEditEnv = !isCreate
+    ? (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>))
+    : EMPTY_ENV;
+
+  // The fixed binding is present in create mode after a login stores the claim.
+  // In edit mode it is present when the agent's saved bindings already hold the
+  // fixed `CLAUDE_CODE_OAUTH_TOKEN` reference. The edit check matches the exact
+  // fixed shape, so an operator-typed plain variable with the same name stays
+  // editable and is never converted to the fixed reference.
+  const hasFixedClaudeOAuthBinding = isCreate
+    ? Boolean(claudeStoredSessionId)
+    : isFixedClaudeOAuthBinding(effectiveEditEnv[CLAUDE_OAUTH_TOKEN_ENV_KEY]);
 
   // Add the fixed binding to the create-mode form state after the login stores.
   // Keep every unrelated binding. Hold the claim so the create request sends it.
@@ -467,6 +482,27 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       envBindings: { ...existingBindings, ...buildFixedClaudeOAuthBinding() },
       claudeStoredSessionId: storedSessionId,
     });
+  };
+
+  // Edit mode: after a login stores the token, add the fixed binding to the
+  // existing agent and persist it at once. The server already stored the token;
+  // this step binds `CLAUDE_CODE_OAUTH_TOKEN` to the agent's environment through
+  // the normal agent-update patch path, so no manual bind step remains. Flush any
+  // pending editor draft first, keep every unrelated binding, and mark the merged
+  // set into the overlay so the editor and the saved patch agree.
+  const handleClaudeLoginStoredEdit = async () => {
+    if (isCreate) return;
+    const flushedEnv = flushEnvironmentDraft();
+    const baseEnv =
+      flushedEnv ??
+      (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
+    const nextEnv = { ...baseEnv, ...buildFixedClaudeOAuthBinding() };
+    const nextOverlay: AgentConfigOverlay = {
+      ...overlay,
+      adapterConfig: { ...overlay.adapterConfig, env: nextEnv },
+    };
+    setOverlay(nextOverlay);
+    await props.onSave(buildAgentUpdatePatch(props.agent, nextOverlay));
   };
 
   // The fixed binding is not editable in the environment-variables editor. Strip
@@ -1390,7 +1426,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               companyId={selectedCompanyId!}
               adapterType={adapterType}
               environmentId={effectiveLoginEnvironmentId!}
-              onStored={isCreate ? handleClaudeLoginStored : undefined}
+              onStored={isCreate ? handleClaudeLoginStored : handleClaudeLoginStoredEdit}
             />
           )}
 
@@ -1609,8 +1645,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       ? stripFixedClaudeOAuthBinding(
                           (val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>,
                         )
-                      : ((eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>))
-                      )
+                      : stripFixedClaudeOAuthBinding(effectiveEditEnv)
                   }
                   secrets={availableSecrets}
                   userSecretDefinitions={userSecretDefinitions}
@@ -1621,7 +1656,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   onChange={(env) =>
                     isCreate
                       ? set!({ envBindings: mergeFixedClaudeOAuthBinding(env ?? {}), envVars: "" })
-                      : mark("adapterConfig", "env", env)
+                      : mark(
+                          "adapterConfig",
+                          "env",
+                          // Re-merge the fixed binding so an unrelated edit never
+                          // drops it. When no fixed binding is present, pass the
+                          // editor value through unchanged (an empty editor emits
+                          // `undefined`, which clears the agent's variables).
+                          hasFixedClaudeOAuthBinding ? mergeFixedClaudeOAuthBinding(env ?? {}) : env,
+                        )
                   }
                 />
               </Field>

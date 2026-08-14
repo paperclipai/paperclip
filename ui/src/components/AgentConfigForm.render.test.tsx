@@ -1942,3 +1942,162 @@ describe("AgentConfigForm create-mode Claude OAuth binding", () => {
     expect(editableNames).not.toContain("CLAUDE_CODE_OAUTH_TOKEN");
   });
 });
+
+// Render the edit-mode form for an existing Claude agent in a sandbox
+// environment. The helper returns the `onSave` spy so a test can read the patch
+// that a stored login sends to the agent-update path.
+async function renderEditClaudeSandbox(agentOverrides: Partial<Agent> = {}) {
+  mockEnvironmentsApi.list.mockResolvedValue([
+    makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    makeEnvironment({
+      id: "sandbox-1",
+      name: "E2B",
+      driver: "sandbox",
+      config: { provider: "e2b" },
+    }),
+  ]);
+
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  const onSave = vi.fn().mockResolvedValue(undefined);
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <TooltipProvider>
+            <AgentConfigForm
+              mode="edit"
+              agent={makeAgent({
+                adapterType: "claude_local",
+                defaultEnvironmentId: "sandbox-1",
+                ...agentOverrides,
+              })}
+              onSave={onSave}
+              hidePromptTemplate
+              showAdapterTypeField={false}
+              showAdapterTestEnvironmentButton
+            />
+          </TooltipProvider>
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+  });
+
+  await flushReact();
+  return { container, root, onSave };
+}
+
+describe("AgentConfigForm edit-mode Claude OAuth binding", () => {
+  let roots: Root[] = [];
+
+  beforeEach(() => {
+    mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
+    mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockAgentsApi.detectModel.mockResolvedValue(null);
+    mockAgentsApi.list.mockResolvedValue([]);
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockSecretsApi.list.mockResolvedValue([]);
+    mockSecretsApi.listProposals.mockResolvedValue([]);
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockAgentsApi.startClaudeSetupTokenLogin.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "starting",
+      expiresAt: null,
+      failure: null,
+      panelMode: "submitted_browser_code",
+      prompt: null,
+    });
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+    });
+    mockAgentsApi.getClaudeSetupTokenLoginPrompt.mockResolvedValue({
+      authorizationUrl: "https://claude.example.test/authorize",
+    });
+    mockAgentsApi.completeClaudeSetupTokenLogin.mockResolvedValue({
+      storedSessionId: "stored-session-1",
+    });
+    mockAgentsApi.cancelClaudeSetupTokenLogin.mockResolvedValue(undefined);
+  });
+
+  afterEach(async () => {
+    for (const root of roots) {
+      await act(async () => {
+        root.unmount();
+      });
+    }
+    roots = [];
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  it("adds the fixed CLAUDE_CODE_OAUTH_TOKEN binding to the agent and persists it", async () => {
+    const result = await renderEditClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() => result.onSave.mock.calls.length > 0);
+
+    // A stored login sends one agent-update patch. The patch replaces the adapter
+    // config, and its env holds the fixed binding, so the agent keeps the binding
+    // without a manual step.
+    const patch = result.onSave.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(patch.replaceAdapterConfig).toBe(true);
+    const adapterConfig = patch.adapterConfig as Record<string, unknown>;
+    const bindings = adapterConfig.env as Record<string, unknown>;
+    expect(bindings.CLAUDE_CODE_OAUTH_TOKEN).toEqual(FIXED_CLAUDE_OAUTH_BINDING);
+    // The persisted patch never carries a token value.
+    expect(JSON.stringify(adapterConfig.env)).not.toContain("sk-ant");
+  });
+
+  it("keeps every unrelated existing binding when it adds the fixed binding", async () => {
+    const result = await renderEditClaudeSandbox({
+      adapterConfig: { env: { EXISTING_VAR: { type: "plain", value: "keep-me" } } },
+    });
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() => result.onSave.mock.calls.length > 0);
+
+    const patch = result.onSave.mock.calls.at(-1)![0] as Record<string, unknown>;
+    const adapterConfig = patch.adapterConfig as Record<string, unknown>;
+    const bindings = adapterConfig.env as Record<string, unknown>;
+    expect(bindings.EXISTING_VAR).toEqual({ type: "plain", value: "keep-me" });
+    expect(bindings.CLAUDE_CODE_OAUTH_TOKEN).toEqual(FIXED_CLAUDE_OAUTH_BINDING);
+  });
+
+  it("keeps a saved fixed binding out of the editable environment-variables editor", async () => {
+    const result = await renderEditClaudeSandbox({
+      adapterConfig: {
+        env: {
+          CLAUDE_CODE_OAUTH_TOKEN: FIXED_CLAUDE_OAUTH_BINDING,
+          OTHER_VAR: { type: "plain", value: "shown" },
+        },
+      },
+    });
+    roots.push(result.root);
+
+    // The saved fixed binding shows only in the read-only note. It never appears
+    // as an editable name input, and the unrelated variable stays editable.
+    const note = result.container.querySelector('[role="note"]');
+    expect(note?.textContent).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+    const editableNames = Array.from(
+      result.container.querySelectorAll<HTMLInputElement>("input"),
+    ).map((input) => input.value);
+    expect(editableNames).toContain("OTHER_VAR");
+    expect(editableNames).not.toContain("CLAUDE_CODE_OAUTH_TOKEN");
+  });
+});

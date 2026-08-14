@@ -160,6 +160,17 @@ export function buildFixedClaudeOAuthBinding(): Record<string, EnvBinding> {
   );
 }
 
+/**
+ * Report whether a binding is the fixed `CLAUDE_CODE_OAUTH_TOKEN` binding that
+ * {@link buildFixedClaudeOAuthBinding} builds. The check matches the exact shape:
+ * a `user_secret_ref` that points at the `CLAUDE_CODE_OAUTH_TOKEN` user-secret
+ * key. Edit mode uses this test to hold an operator-typed plain variable with the
+ * same name editable, and to make only the login-authored reference fixed.
+ */
+export function isFixedClaudeOAuthBinding(binding: EnvBinding | null | undefined): boolean {
+  return isUserSecretRef(binding) && binding.key === CLAUDE_OAUTH_TOKEN_ENV_KEY;
+}
+
 export const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 export type NameIssueLevel = "error" | "warn";
