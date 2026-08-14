@@ -32,6 +32,7 @@ const mockGoalsApi = vi.hoisted(() => ({
   update: vi.fn(),
 }));
 const mockAdaptersApi = vi.hoisted(() => ({ list: vi.fn() }));
+const mockCompaniesApi = vi.hoisted(() => ({ create: vi.fn() }));
 
 const routerState = vi.hoisted(() => ({ pathname: "/" }));
 const dialogState = vi.hoisted(() => ({
@@ -52,7 +53,7 @@ const companyState = vi.hoisted(() => ({
 
 vi.mock("../api/goals", () => ({ goalsApi: mockGoalsApi }));
 vi.mock("@/api/adapters", () => ({ adaptersApi: mockAdaptersApi }));
-vi.mock("../api/companies", () => ({ companiesApi: { create: vi.fn() } }));
+vi.mock("../api/companies", () => ({ companiesApi: mockCompaniesApi }));
 vi.mock("../api/agents", () => ({
   agentsApi: { create: vi.fn(), adapterModels: vi.fn().mockResolvedValue([]) },
 }));
@@ -550,6 +551,56 @@ describe("OnboardingWizard — which step it lands on", () => {
       expect(mockGoalsApi.create).toHaveBeenCalledTimes(1);
       expect(currentStep()).toBe("agent");
     });
+  });
+
+  it("does not adopt a company it created once a route has supplied one", async () => {
+    // The same guard from the other end. Nothing was in hand when the create
+    // started, so "unchanged" means still nothing. A route that supplied a
+    // company while the request was open has taken over the wizard, and
+    // adopting the new company would fight it — and would leave the customer
+    // on a company they never navigated to.
+    let resolveCreate: (company: { id: string; issuePrefix: string }) => void = () => {};
+    mockCompaniesApi.create.mockReturnValue(
+      new Promise<{ id: string; issuePrefix: string }>((resolve) => {
+        resolveCreate = resolve;
+      }),
+    );
+    routerState.pathname = "/onboarding";
+    await render();
+    await settle();
+
+    // Step 1: name a new company, then confirm the mission to create it.
+    const nameInput = document.body.querySelector("input")! as HTMLInputElement;
+    setControlledValue(nameInput, "Initech");
+    await settle();
+    const next = [...document.body.querySelectorAll("button")].find(
+      (b) => b.textContent?.trim() === "Next",
+    )!;
+    await act(async () => {
+      next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await settle();
+    setControlledValue(missionTextarea()!, "Initech's mission");
+    await settle();
+    await act(async () => {
+      confirmMissionButton()!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // A route supplies an existing company before the create lands.
+    routerState.pathname = "/PC1/onboarding";
+    await rerender();
+    await settle();
+    expect(mockCompaniesApi.create).toHaveBeenCalledWith({ name: "Initech" });
+    await act(async () => resolveCreate({ id: "company-created", issuePrefix: "INI" }));
+    await settle();
+
+    // Adopting the created company would select it globally and take the
+    // customer off the one they navigated to. Asserted on the selection call
+    // rather than on the rendered name: the name reads "Acme" either way,
+    // because the switch reset clears it and the backfill refills it from the
+    // company list, which has no entry for the company just created.
+    expect(companyState.setSelectedCompanyId).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Acme");
   });
 
   it("applies the step again when the wizard is re-opened", async () => {

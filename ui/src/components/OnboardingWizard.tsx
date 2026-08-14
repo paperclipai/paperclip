@@ -530,6 +530,23 @@ export function OnboardingWizard() {
     setRouteDismissed(true);
   }
 
+  /**
+   * Whether the company an async handler started for is still the one in hand.
+   *
+   * A route change can switch companies while a request is in flight, and the
+   * switch clears the created resource ids so the new company starts clean. A
+   * write that lands afterwards would put them back, and hand that company the
+   * previous one's goal, project, issue or agent — which is exactly what the
+   * clearing exists to prevent.
+   *
+   * Every async write below asks this before it attributes anything. It never
+   * cancels the server work, which is done and correct either way; it declines
+   * only to record it against a company it does not belong to.
+   */
+  function stillTheSameCompany(companyIdAtStart: string | null) {
+    return createdCompanyIdRef.current === companyIdAtStart;
+  }
+
   async function handleLaunchToDashboard() {
     if (!createdCompanyId || !createdAgentId) {
       setError(INCOMPLETE_ONBOARDING_STATE_MESSAGE);
@@ -542,7 +559,7 @@ export function OnboardingWizard() {
       if (!goalId) {
         const goals = await goalsApi.list(createdCompanyId);
         goalId = selectDefaultCompanyGoalId(goals);
-        setCreatedCompanyGoalId(goalId);
+        if (stillTheSameCompany(createdCompanyId)) setCreatedCompanyGoalId(goalId);
       }
 
       let projectId = createdProjectId;
@@ -561,7 +578,7 @@ export function OnboardingWizard() {
             queryKey: queryKeys.projects.list(createdCompanyId)
           });
         }
-        setCreatedProjectId(projectId);
+        if (stillTheSameCompany(createdCompanyId)) setCreatedProjectId(projectId);
       }
 
       let issueRef = createdIssueRef;
@@ -577,7 +594,7 @@ export function OnboardingWizard() {
           })
         );
         issueRef = issue.identifier ?? issue.id;
-        setCreatedIssueRef(issueRef);
+        if (stillTheSameCompany(createdCompanyId)) setCreatedIssueRef(issueRef);
         queryClient.invalidateQueries({
           queryKey: queryKeys.issues.list(createdCompanyId)
         });
@@ -728,13 +745,7 @@ export function OnboardingWizard() {
         queryClient.invalidateQueries({
           queryKey: queryKeys.goals.list(createdCompanyId)
         });
-        // The company this started for may not be the one in hand any more: a
-        // route change can switch companies while the write is in flight, and
-        // the switch clears exactly the state these two lines set. Writing
-        // anyway would hand the new company the old one's goal, which the
-        // clearing was there to prevent. The goal itself is written and
-        // correct either way; only this wizard has moved on.
-        if (createdCompanyIdRef.current !== createdCompanyId) return;
+        if (!stillTheSameCompany(createdCompanyId)) return;
         setCreatedCompanyGoalId(goal.id);
         setStep(3);
       } catch (err) {
@@ -748,10 +759,16 @@ export function OnboardingWizard() {
     setError(null);
     try {
       const company = await companiesApi.create({ name: companyName.trim() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      // Same guard as the others, from the other end: nothing was in hand when
+      // this started, so "unchanged" means still nothing. A route that supplied
+      // a company while the request was open has taken over the wizard, and
+      // adopting the company just created would fight it — and would leave the
+      // customer on a company they never navigated to.
+      if (!stillTheSameCompany(null)) return;
       setCreatedCompanyId(company.id);
       setCreatedCompanyPrefix(company.issuePrefix);
       setSelectedCompanyId(company.id);
-      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
 
       const parsedGoal = parseOnboardingGoalInput(companyGoal);
       const goal = await goalsApi.create(company.id, {
@@ -762,10 +779,11 @@ export function OnboardingWizard() {
         level: "company",
         status: "active"
       });
-      setCreatedCompanyGoalId(goal.id);
       queryClient.invalidateQueries({
         queryKey: queryKeys.goals.list(company.id)
       });
+      if (!stillTheSameCompany(company.id)) return;
+      setCreatedCompanyGoalId(goal.id);
 
       setStep(3); // → Create your team lead
     } catch (err) {
@@ -845,10 +863,7 @@ export function OnboardingWizard() {
       queryClient.invalidateQueries({
         queryKey: queryKeys.agents.list(createdCompanyId)
       });
-      // Same guard as the mission write above, for the step that follows it.
-      // The agent is hired either way; this only declines to attribute it to
-      // whichever company the wizard has moved on to.
-      if (createdCompanyIdRef.current !== createdCompanyId) return;
+      if (!stillTheSameCompany(createdCompanyId)) return;
       setCreatedAgentId(agent.id);
 
       // Seed the CEO's agent instructions file so the agent always has
