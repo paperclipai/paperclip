@@ -463,6 +463,31 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       });
     });
 
+    // The two lock columns can name different runs, and clearCheckoutRunIfTerminal
+    // refuses to clear a terminal checkoutRunId while executionRunId is still live.
+    // Reading checkoutRunId first would call that a stale lock and advise a retry
+    // that can never reap anything — the same "retry into an identical 409" misread
+    // this payload exists to remove.
+    it("blames the live execution run when the checkout lock is already terminal", async () => {
+      const { agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
+
+      const details = await describeRunLockConflict(db, {
+        checkoutRunId: failedRunId,
+        executionRunId: currentRunId,
+        actorAgentId: agentId,
+        actorRunId: null,
+      });
+
+      expect(details).toMatchObject({
+        holderRunId: currentRunId,
+        holderRunStatus: "running",
+        holderRunAgentId: agentId,
+        holderRunIsLive: true,
+        conflictReason: "live_sibling_run",
+      });
+      expect(details.hint).not.toMatch(/retry that same call/i);
+    });
+
     it("falls back to executionRunId when no checkout lock is held", async () => {
       const { agentId, currentRunId, failedRunId } = await seedCompanyAgentAndRuns();
 

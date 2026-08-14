@@ -1162,9 +1162,11 @@ export async function heartbeatRunIsTerminalOrMissing(
  *   "retry once" advice below. `holderRunStatus` / `holderRunIsLive` still carry
  *   the liveness fact, and the hint switches to `ACTOR_RUN_TERMINAL_HINT` so the
  *   caller is told its own run has ended rather than being left to infer it.
- * - `stale_lock_pending_reap` — the holding run is terminal or missing. The lock
- *   is cleared automatically on the next assignee checkout/PATCH, which makes this
- *   the one reason the docs allow retrying — once, and only as the assignee.
+ * - `stale_lock_pending_reap` — every run the lock names is terminal or missing.
+ *   The lock is cleared automatically on the next assignee checkout/PATCH, which
+ *   makes this the one reason the docs allow retrying — once, and only as the
+ *   assignee. It requires *both* named runs to be dead because the reap does: a
+ *   terminal checkout lock is not cleared while a live execution run remains.
  * - `live_sibling_run` — a *different, still running* run of the caller's own agent
  *   holds it. Concurrent runs per agent are normal (`maxConcurrentRuns` is above 1
  *   for a normal agent), so being the assignee is not evidence that the lock is stale.
@@ -1227,12 +1229,11 @@ export async function describeRunLockConflict(
     actorRunId: string | null;
   },
 ): Promise<RunLockConflictDetails> {
-  const holderRunId = params.checkoutRunId ?? params.executionRunId ?? null;
   const describe = (
     reason: RunLockConflictReason,
-    holder: { status: string | null; agentId: string | null; isLive: boolean },
+    holder: { runId: string | null; status: string | null; agentId: string | null; isLive: boolean },
   ): RunLockConflictDetails => ({
-    holderRunId,
+    holderRunId: holder.runId,
     holderRunStatus: holder.status,
     holderRunAgentId: holder.agentId,
     holderRunIsLive: holder.isLive,
@@ -1243,25 +1244,43 @@ export async function describeRunLockConflict(
         : RUN_LOCK_CONFLICT_HINTS[reason],
   });
 
-  if (!holderRunId) {
-    return describe("no_run_lock", { status: null, agentId: null, isLive: false });
+  // A row can name two different runs, and the lock is only stale when *both* are
+  // terminal: clearCheckoutRunIfTerminal deliberately refuses to clear a terminal
+  // checkoutRunId while executionRunId still points at a live run. Reading
+  // checkoutRunId unconditionally would then report `stale_lock_pending_reap` for a
+  // conflict a live execution run is really holding, and its "retry that same call
+  // once" hint would loop on the identical 409 — the exact misread this payload
+  // exists to remove. So: prefer a live holder, and fall back to the checkout lock.
+  const candidateRunIds = [params.checkoutRunId, params.executionRunId].filter(
+    (runId): runId is string => Boolean(runId),
+  );
+  const orderedRunIds = [...new Set(candidateRunIds)];
+
+  if (orderedRunIds.length === 0) {
+    return describe("no_run_lock", { runId: null, status: null, agentId: null, isLive: false });
   }
 
-  const run = await dbOrTx
-    .select({ status: heartbeatRuns.status, agentId: heartbeatRuns.agentId })
+  const rows = await dbOrTx
+    .select({ id: heartbeatRuns.id, status: heartbeatRuns.status, agentId: heartbeatRuns.agentId })
     .from(heartbeatRuns)
-    .where(eq(heartbeatRuns.id, holderRunId))
-    .then((rows: Array<{ status: string; agentId: string }>) => rows[0] ?? null);
+    .where(inArray(heartbeatRuns.id, orderedRunIds))
+    .then((found: Array<{ id: string; status: string; agentId: string }>) => found);
+  const runById = new Map(rows.map((row) => [row.id, row]));
 
   // A missing heartbeat_runs row is treated as not live, matching
   // heartbeatRunIsTerminalOrMissing: a run we cannot see cannot make progress.
-  const holder = {
-    status: run?.status ?? null,
-    agentId: run?.agentId ?? null,
-    isLive: run ? !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status) : false,
-  };
+  const holders = orderedRunIds.map((runId) => {
+    const run = runById.get(runId) ?? null;
+    return {
+      runId,
+      status: run?.status ?? null,
+      agentId: run?.agentId ?? null,
+      isLive: run ? !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status) : false,
+    };
+  });
+  const holder = holders.find((candidate) => candidate.isLive) ?? holders[0];
 
-  if (params.actorRunId && holderRunId === params.actorRunId) {
+  if (params.actorRunId && holder.runId === params.actorRunId) {
     return describe("actor_run_holds_lock", holder);
   }
   if (!holder.isLive) return describe("stale_lock_pending_reap", holder);
