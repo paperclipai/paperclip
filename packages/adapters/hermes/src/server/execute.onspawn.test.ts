@@ -145,6 +145,36 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     });
   });
 
+  it("preserves footer-shaped answer prose and does not persist it as a session", async () => {
+    vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: [
+        "Session: planning",
+        "Resume this session with:",
+        "hermes --resume example",
+        "This is ordinary answer content.",
+      ].join("\n"),
+      stderr: "",
+      pid: null,
+      startedAt: null,
+    });
+
+    const { ctx } = makeCtx({ quiet: false });
+    const result = await execute(ctx as any);
+
+    expect(result.sessionParams).toBeUndefined();
+    expect(result.resultJson).toMatchObject({
+      result: [
+        "Session: planning",
+        "Resume this session with:",
+        "hermes --resume example",
+        "This is ordinary answer content.",
+      ].join("\n"),
+    });
+  });
+
   it("sends only the wake delta when resuming and does not reinject managed instructions", async () => {
     const { ctx } = makeCtx({ instructionsFilePath: "/managed/AGENTS.md" });
     (ctx.runtime as any).sessionParams = { sessionId: "20260814_155413_3d2fdf" };

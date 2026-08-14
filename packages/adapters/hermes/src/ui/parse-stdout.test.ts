@@ -81,12 +81,23 @@ describe("parseHermesStdoutLine — ANSI stripping", () => {
 
   it("renders Hermes 0.20 resume footer lines as system metadata", () => {
     for (const line of [
-      "Resume this session with:",
       "hermes --resume 20260814_144930_03a3ec",
       "Session: 20260814_144930_03a3ec",
     ]) {
       expect(parseHermesStdoutLine(line, TS)).toEqual([
         { kind: "system", ts: TS, text: line },
+      ]);
+    }
+  });
+
+  it("does not classify footer-shaped answer prose as system metadata", () => {
+    for (const line of [
+      "Resume this session with:",
+      "hermes --resume example",
+      "Session: planning",
+    ]) {
+      expect(parseHermesStdoutLine(line, TS)).toEqual([
+        { kind: "assistant", ts: TS, text: line },
       ]);
     }
   });

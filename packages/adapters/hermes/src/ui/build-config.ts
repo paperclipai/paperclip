@@ -88,6 +88,15 @@ export function buildHermesConfig(
     Object.assign(ac, v.adapterSchemaValues);
   }
 
+  // The shared create form also supplies run limits. SchemaConfigFields
+  // materializes number defaults (maxTurnsPerRun=0, timeoutSec=1800), so those
+  // defaults must not erase an explicit shared-form turn limit or its scaled
+  // timeout.
+  if (v.maxTurnsPerRun > 0) {
+    ac.maxTurnsPerRun = v.maxTurnsPerRun;
+    ac.timeoutSec = Math.max(DEFAULT_TIMEOUT_SEC, v.maxTurnsPerRun * 20);
+  }
+
   // Heartbeat config is handled by Paperclip itself
 
   return ac;

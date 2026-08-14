@@ -266,10 +266,15 @@ const SESSION_ID_REGEX = /^session_id:\s*(\S+)/m;
 
 /** Regex for legacy session output format */
 const SESSION_ID_REGEX_LEGACY =
-  /^(?:session[_ ](?:id|saved)|session):\s*([a-zA-Z0-9_-]+)/im;
+  /^session[_ ](?:id|saved):\s*([a-zA-Z0-9_-]+)/im;
 
-/** Hermes 0.20+ non-quiet resume footer: "hermes --resume <id>" */
-const SESSION_ID_REGEX_RESUME = /\bhermes\s+--resume\s+([a-zA-Z0-9_-]+)/i;
+/**
+ * Hermes 0.20+ non-quiet footer. Require the complete terminal block and the
+ * same id on both lines so answer prose that mentions Session or --resume is
+ * never interpreted as resumable metadata.
+ */
+const SESSION_FOOTER_REGEX =
+  /(?:^|\n)(?:[ \t]*\n)*[ \t]*Resume this session with:[ \t]*\n[ \t]*hermes[ \t]+--resume[ \t]+([a-zA-Z0-9_-]+)[ \t]*\n[ \t]*Session:[ \t]*\1[ \t]*(?:\n[ \t]*)*$/i;
 
 /** Regex to extract token usage from Hermes output. */
 const TOKEN_USAGE_REGEX =
@@ -299,9 +304,6 @@ function cleanResponse(raw: string): string {
       if (!t) return true; // keep blank lines for paragraph separation
       if (t.startsWith("[tool]") || t.startsWith("[hermes]") || t.startsWith("[paperclip]")) return false;
       if (t.startsWith("session_id:")) return false;
-      if (/^session:\s*\S+/i.test(t)) return false;
-      if (/^resume this session with:/i.test(t)) return false;
-      if (/^hermes\s+--resume\s+\S+/i.test(t)) return false;
       if (/^\[\d{4}-\d{2}-\d{2}T/.test(t)) return false;
       if (/^\[done\]\s*┊/.test(t)) return false;
       if (/^┊\s*[\p{Emoji_Presentation}]/u.test(t) && !/^┊\s*💬/.test(t)) return false;
@@ -340,13 +342,18 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
     }
   } else {
     // Legacy format (non-quiet mode)
-    const legacyMatch = combined.match(SESSION_ID_REGEX_LEGACY) ?? combined.match(SESSION_ID_REGEX_RESUME);
-    if (legacyMatch?.[1]) {
-      result.sessionId = legacyMatch?.[1] ?? null;
+    const footerMatch = stdout.match(SESSION_FOOTER_REGEX);
+    const legacyMatch = combined.match(SESSION_ID_REGEX_LEGACY);
+    const sessionMatch = footerMatch ?? legacyMatch;
+    if (sessionMatch?.[1]) {
+      result.sessionId = sessionMatch[1];
     }
     // In non-quiet mode, extract clean response from stdout by
     // filtering out tool lines, system messages, and noise
-    const cleaned = cleanResponse(stdout);
+    const responseText = footerMatch?.index == null
+      ? stdout
+      : stdout.slice(0, footerMatch.index);
+    const cleaned = cleanResponse(responseText);
     if (cleaned.length > 0) {
       result.response = cleaned;
     }

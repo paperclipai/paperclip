@@ -17,6 +17,7 @@ describe("buildHermesConfig", () => {
         quiet: true,
         persistSession: false,
         maxTurnsPerRun: 12,
+        timeoutSec: 1800,
       },
     } as any);
 
@@ -24,7 +25,8 @@ describe("buildHermesConfig", () => {
       provider: "openrouter",
       quiet: true,
       persistSession: false,
-      maxTurnsPerRun: 12,
+      maxTurnsPerRun: 1000,
+      timeoutSec: 20000,
     });
   });
 });
