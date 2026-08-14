@@ -537,7 +537,7 @@ export function Search() {
         ),
       } satisfies PageTabItem;
     });
-  }, [counts, data, filtersActive]);
+  }, [counts, data, filtersActive, i18n.language]);
 
   const subgroups = useMemo(() => buildSubgroups(data?.results ?? []), [data?.results]);
 
