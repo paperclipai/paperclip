@@ -351,11 +351,14 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     });
   });
 
-  it("still opens when a background company refetch fails over a good cache", async () => {
-    // An error with companies in hand is a failed refetch over a cache that is
-    // still usable, not an unanswerable question. Treating it as undecidable
-    // would fail closed: onboarding would never appear for a customer whose
-    // company list is perfectly fine.
+  it("opens but does not restore when a refetch fails over a cached list", async () => {
+    // The companies cache is not account-scoped and survives sign-out, so a
+    // failed refetch after an account switch can leave the *previous*
+    // account's companies in hand. Trusting a non-empty list there would find
+    // the old company id in it and hand that draft to the new account — the
+    // leak this whole change closes, through a different door.
+    //
+    // So: mount (no dead end), do not restore, do not delete.
     window.localStorage.setItem(
       ONBOARDING_STORAGE_KEY,
       JSON.stringify({
@@ -379,12 +382,13 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     });
     await flushReact();
 
-    // Mounted, and the owned draft was restored rather than withheld.
-    expect(document.body.textContent).toContain("Create your first agent");
+    // Mounted rather than blank...
+    expect(document.body.textContent).not.toBe("");
+    // ...but the draft was not restored, because the list cannot be trusted.
     const nameInput = document.body.querySelector(
       'input[placeholder="Chief of staff"]',
     ) as HTMLInputElement | null;
-    expect(nameInput?.value).toBe("Ops Lead");
+    expect(nameInput?.value ?? "").not.toBe("Ops Lead");
 
     await act(async () => {
       root.unmount();
@@ -460,6 +464,50 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     await flushReact();
 
     expect(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)).toBe(draft);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+  it("does not hand one account's draft to the next when a refetch fails after a switch", async () => {
+    // The attack path in full. Account A onboards and leaves a draft naming
+    // its company. A signs out — which does not clear the companies cache,
+    // because `useSignOut` invalidates only the session and health queries.
+    // B signs in and the companies refetch fails, so A's list is still in
+    // hand. A list that still contains A's company must not be read as proof
+    // that B owns it.
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        // Step 3 so the agent-name input renders and can be asserted on —
+        // step 4 has no such field, which would make this pass for the wrong
+        // reason whether or not the draft was restored.
+        step: 3,
+        companyName: "Account A Co",
+        agentName: "A's Lead",
+        createdCompanyId: "company-a",
+      }),
+    );
+    mockCompany.companies = [{ id: "company-a", name: "Account A Co", issuePrefix: "AAC" }];
+    mockCompany.loading = false;
+    mockCompany.error = new Error("refetch failed for the new account");
+
+    const { root, queryClient } = render();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <OnboardingWizard />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    // Account A's agent name must not appear in account B's wizard.
+    expect(document.body.textContent).not.toContain("A's Lead");
+    const nameInput = document.body.querySelector(
+      'input[placeholder="Chief of staff"]',
+    ) as HTMLInputElement | null;
+    expect(nameInput?.value ?? "").not.toBe("A's Lead");
 
     await act(async () => {
       root.unmount();

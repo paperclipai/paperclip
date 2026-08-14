@@ -198,14 +198,25 @@ export function OnboardingWizard() {
   // list is fine. Only an error that leaves the list empty is undecidable.
   // Named for what it governs: whether the *draft* can be judged. It is not
   // the same question as whether to mount - see the gate below.
-  // A truthy check, not `!== null`. The context types this `Error | null`, but
-  // `undefined` reaches here in practice - any consumer that provides the
-  // company context without an `error` key, which several tests do - and
-  // `undefined !== null` would read a perfectly healthy load as a failure and
-  // discard the customer's draft. The distinction that matters is "is there an
-  // error", and only a truthy test asks that.
-  const ownershipUndecidable =
-    companiesLoading || (Boolean(companiesError) && companies.length === 0);
+  // Any error at all, not only one that left the list empty.
+  //
+  // The companies cache is not scoped to an account and survives sign-out -
+  // `useSignOut` invalidates only the session and health queries, and
+  // invalidation keeps serving the old data anyway. So after A signs out and B
+  // signs in, a *failed* refetch leaves A's companies in hand. Trusting a
+  // non-empty list there would find A's company id in it, call the draft
+  // owned, and hand A's onboarding to B - which is the exact leak this whole
+  // change exists to close, reached through a different door.
+  //
+  // The cost is small and recoverable: during a transient refetch failure the
+  // draft is not restored. It is not deleted either, and the next successful
+  // load restores it.
+  //
+  // A truthy check rather than `!== null`. The context types this
+  // `Error | null`, but `undefined` reaches here from any consumer that
+  // provides the company context without an `error` key, and `undefined !==
+  // null` would read a healthy load as a failure.
+  const ownershipUndecidable = companiesLoading || Boolean(companiesError);
 
   const { saved, staleStateDetected } = useMemo(() => {
     if (rawBlob === undefined) return { saved: null, staleStateDetected: false };
