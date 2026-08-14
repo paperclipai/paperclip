@@ -23,6 +23,7 @@ import { AgentDetail } from "./pages/AgentDetail";
 import { Projects } from "./pages/Projects";
 import { ProjectDetail } from "./pages/ProjectDetail";
 import { ProjectWorkspaceDetail } from "./pages/ProjectWorkspaceDetail";
+import { Previews } from "./pages/Previews";
 import { Workspaces } from "./pages/Workspaces";
 import { Issues } from "./pages/Issues";
 import { Search } from "./pages/Search";
@@ -46,6 +47,7 @@ import { CompanyActivity } from "./pages/audit/CompanyActivity";
 import { Inbox } from "./pages/Inbox";
 import { WhatNeedsMe } from "./pages/WhatNeedsMe";
 import { DecisionQueuePage } from "./pages/DecisionQueuePage";
+import MonitoringComparison from "./pages/MonitoringComparison";
 import { TrainingInspector, TrainingLibrary } from "./pages/Training";
 import { BoardChat } from "./pages/BoardChat";
 import { CompanySettings } from "./pages/CompanySettings";
@@ -165,6 +167,7 @@ function boardRoutes() {
       <Route path="skills/:skillId/studio" element={<LegacySkillStudioRedirect />} />
       <Route path="skills/*" element={<CompanySkills />} />
       <Route path="settings" element={<LegacySettingsRedirect />} />
+      <Route path="monitoring" element={<MonitoringComparison />} />
       <Route path="settings/*" element={<LegacySettingsRedirect />} />
       <Route path="plugins/:pluginId" element={<PluginPage />} />
       <Route path="org" element={<OrgPage tab="chart" />} />
@@ -183,6 +186,7 @@ function boardRoutes() {
       <Route path="projects/:projectId/issues" element={<ProjectDetail />} />
       <Route path="projects/:projectId/issues/:filter" element={<ProjectDetail />} />
       <Route path="projects/:projectId/workspaces/:workspaceId" element={<ProjectWorkspaceDetail />} />
+      <Route path="previews" element={<Previews />} />
       <Route path="projects/:projectId/workspaces" element={<ProjectDetail />} />
       <Route path="projects/:projectId/configuration" element={<ProjectDetail />} />
       <Route path="projects/:projectId/budget" element={<ProjectDetail />} />

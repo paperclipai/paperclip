@@ -14,9 +14,11 @@ import { PageTabBar } from "../components/PageTabBar";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import {
   buildWorkspaceRuntimeControlSections,
+  getRunningRuntimeServiceUrl,
   WorkspaceRuntimeControls,
   type WorkspaceRuntimeControlRequest,
 } from "../components/WorkspaceRuntimeControls";
+import { RuntimePreviewFrame } from "../components/RuntimePreviewFrame";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
@@ -718,6 +720,22 @@ export function ProjectWorkspaceDetail() {
               onAction={(request) => controlRuntimeServices.mutate(request)}
             />
           </Card>
+
+          {getRunningRuntimeServiceUrl(runtimeControlSections) ? (
+            <Card className="block p-5">
+              <div className="space-y-1">
+                <div className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Live preview</div>
+                <h2 className="text-lg font-semibold">App preview</h2>
+                <p className="text-sm text-muted-foreground">
+                  The running dev service for this workspace, embedded live. Stop it from the controls above.
+                </p>
+              </div>
+              <RuntimePreviewFrame
+                className="mt-4"
+                url={getRunningRuntimeServiceUrl(runtimeControlSections)}
+              />
+            </Card>
+          ) : null}
         </div>
       </div>
       ) : null}

@@ -16,6 +16,7 @@ import {
   Package,
   Settings,
   FolderOpen,
+  MonitorPlay,
   PanelLeftClose,
   PanelLeftOpen,
   Pin,
@@ -244,6 +245,7 @@ export function Sidebar() {
           ) : null}
           <SidebarNavItem to="/artifacts" label="Artifacts" icon={Package} />
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
+          <SidebarNavItem to="/previews" label="Previews" icon={MonitorPlay} />
           {showWorkspacesLink ? (
             <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
           ) : null}
