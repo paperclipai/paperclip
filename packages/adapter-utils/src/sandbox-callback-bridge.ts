@@ -43,6 +43,13 @@ const DEFAULT_BRIDGE_WATCHDOG_TIMEOUT_MS = 20_000;
 // 30s response deadline, so the backstop lands before the in-sandbox client
 // gives up.
 const DEFAULT_BRIDGE_ABORTED_HANDLER_GRACE_MS = 5_000;
+// The recovery path retries the 504 backstop write this many times before it
+// gives up. A single transient write failure, or one that exceeds the iteration
+// timeout, then does not strand the caller with no terminal response.
+const MAX_BACKSTOP_WRITE_ATTEMPTS = 3;
+// The delay between two 504 backstop write attempts. It is short, so all retries
+// finish well under the in-sandbox 30s response deadline.
+const BACKSTOP_WRITE_RETRY_MS = 50;
 const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
 const SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT = "paperclip-bridge-server.mjs";
 const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
@@ -830,6 +837,14 @@ export async function startSandboxCallbackBridgeWorker(input: {
   const inFlightRequestGuards = new Map<string, RequestFinalizeGuard>();
 
   const processRequestFile = async (fileName: string) => {
+    // Skip a request that already has an active attempt. The guard map holds only
+    // in-flight attempts; the attempt's finally removes its guard when it ends. A
+    // file that still has a guard is in flight, or it waits for its aborted-handler
+    // 504 backstop. A second attempt would register a new guard and re-run the host
+    // mutation, so the mutation could apply twice.
+    if (inFlightRequestGuards.has(fileName)) {
+      return;
+    }
     const requestPath = path.posix.join(directories.requestsDir, fileName);
     const responsePath = path.posix.join(directories.responsesDir, fileName);
     const guard: RequestFinalizeGuard = {
@@ -994,30 +1009,44 @@ export async function startSandboxCallbackBridgeWorker(input: {
     const requestPath = path.posix.join(directories.requestsDir, fileName);
     const responsePath = path.posix.join(directories.responsesDir, fileName);
     const requestId = fileName.replace(/\.json$/i, "") || randomUUID();
-    try {
-      await withTimeout(
-        writeBridgeResponse(input.client, requestPath, responsePath, {
-          id: requestId,
-          status: 504,
-          headers: {
-            "content-type": "application/json",
-            "x-paperclip-bridge-outcome": "indeterminate",
-          },
-          body: JSON.stringify({ error: message, outcome: "indeterminate", retryable: false }),
-          completedAt: new Date().toISOString(),
-        }, {
-          requireRequestPath: false,
-        }),
-        iterationTimeoutMs,
-        `Sandbox callback bridge write 504 backstop for ${requestId}`,
-      );
-    } catch (error) {
-      console.warn(
-        `[paperclip] sandbox callback bridge failed to write 504 backstop for ${requestId}: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    } finally {
-      await input.client.remove(requestPath).catch(() => undefined);
+    for (let attempt = 1; attempt <= MAX_BACKSTOP_WRITE_ATTEMPTS; attempt += 1) {
+      try {
+        await withTimeout(
+          writeBridgeResponse(input.client, requestPath, responsePath, {
+            id: requestId,
+            status: 504,
+            headers: {
+              "content-type": "application/json",
+              "x-paperclip-bridge-outcome": "indeterminate",
+            },
+            body: JSON.stringify({ error: message, outcome: "indeterminate", retryable: false }),
+            completedAt: new Date().toISOString(),
+          }, {
+            requireRequestPath: false,
+          }),
+          iterationTimeoutMs,
+          `Sandbox callback bridge write 504 backstop for ${requestId}`,
+        );
+        // The 504 backstop reached the caller. Remove the request file, so the
+        // poll loop does not list it again and re-run the mutation.
+        await input.client.remove(requestPath).catch(() => undefined);
+        return;
+      } catch (error) {
+        console.warn(
+          `[paperclip] sandbox callback bridge failed to write 504 backstop for ${requestId} (attempt ${attempt}/${MAX_BACKSTOP_WRITE_ATTEMPTS}): ${error instanceof Error ? error.message : String(error)}`,
+        );
+        if (attempt < MAX_BACKSTOP_WRITE_ATTEMPTS) {
+          await new Promise((resolve) => setTimeout(resolve, BACKSTOP_WRITE_RETRY_MS));
+        }
+      }
     }
+    // Every backstop write failed. Keep the request file and clear the fence, so a
+    // late handler can still finalize its own 504, and a later recovery pass can
+    // re-arm the backstop. The guard stays in the map, so the poll loop skips the
+    // file and does not re-run the mutation. A removed file plus a set fence would
+    // strand the caller until its own deadline and give it a generic 502 instead
+    // of the terminal 504.
+    guard.finalized = false;
   };
 
   // Arm the backstop timer for a handler the recovery path just aborted. It is
@@ -1082,25 +1111,26 @@ export async function startSandboxCallbackBridgeWorker(input: {
       "Sandbox callback bridge list pending requests",
     ).catch(() => [] as string[]);
     for (const fileName of fileNames) {
-      if (options.abandonInFlight) {
-        const guard = inFlightRequestGuards.get(fileName);
-        if (guard) {
-          if (guard.claim === "handler") {
-            // The handler already started this request's host operation, or it
-            // already finalized the request. The timeout and watchdog cannot
-            // cancel a host operation that is in flight. A competing 503 here
-            // makes the caller retry while the original mutation still completes,
-            // so the mutation applies twice. The abort loop above already
-            // signalled the handler and armed the 504 backstop; leave the request
-            // for the handler to finalize, or for the backstop to finalize when
-            // the handler never settles.
-            continue;
-          }
-          // The handler did not start the host operation yet. Claim the request,
-          // so the handler bails at its host-operation claim instead of running
-          // the mutation. A retry after the 503 then applies the mutation once.
-          guard.claim = "abandon";
-        }
+      const guard = inFlightRequestGuards.get(fileName);
+      if (guard && guard.claim === "handler" && (options.abandonInFlight || guard.controller.signal.aborted)) {
+        // The handler already started this request's host operation, or it already
+        // finalized the request. The timeout and watchdog cannot cancel a host
+        // operation that is in flight. A competing 503 here makes the caller retry
+        // while the original mutation still completes, so the mutation applies
+        // twice. Leave the request for the handler to finalize, or for the 504
+        // backstop to finalize when the handler never settles. The recovery path
+        // reaches this skip through `abandonInFlight`. The stop drain reaches it
+        // only when the recovery path already aborted the handler, so a request
+        // whose 504 backstop write failed and kept its file never gets a competing
+        // 503 on stop. A normal in-flight handler at a graceful stop is not
+        // aborted, so it still gets the stop drain 503.
+        continue;
+      }
+      if (options.abandonInFlight && guard) {
+        // The handler did not start the host operation yet. Claim the request, so
+        // the handler bails at its host-operation claim instead of running the
+        // mutation. A retry after the 503 then applies the mutation once.
+        guard.claim = "abandon";
       }
       const requestPath = path.posix.join(directories.requestsDir, fileName);
       const responsePath = path.posix.join(directories.responsesDir, fileName);
@@ -1579,7 +1609,7 @@ export async function startSandboxCallbackBridgeServer(input: {
   };
 }
 
-function getSandboxCallbackBridgeServerSource(): string {
+export function getSandboxCallbackBridgeServerSource(): string {
   return `import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
@@ -1704,8 +1734,21 @@ const server = createServer(async (req, res) => {
     await fs.rename(tempPath, requestPath);
 
     const response = await waitForResponse(requestId);
-    res.statusCode = typeof response.status === "number" ? response.status : 200;
-    for (const [key, value] of Object.entries(response.headers || {})) {
+    const responseHeaders = response.headers || {};
+    // The host marks a possibly-committed mutation with an indeterminate outcome.
+    // The host cannot cancel a host operation that is in flight, so the mutation
+    // may have committed before the worker aborted the handler. A 5xx status is
+    // retryable by convention, so a caller that retries 5xx would apply the
+    // mutation twice. Map the indeterminate outcome to a non-retryable 409, so a
+    // standard retry policy does not repeat the request. The outcome header and
+    // body stay, so a caller that reads them still sees the indeterminate result.
+    const bridgeOutcome = responseHeaders["x-paperclip-bridge-outcome"];
+    if (bridgeOutcome === "indeterminate") {
+      res.statusCode = 409;
+    } else {
+      res.statusCode = typeof response.status === "number" ? response.status : 200;
+    }
+    for (const [key, value] of Object.entries(responseHeaders)) {
       if (typeof value !== "string" || key.toLowerCase() === "content-length") continue;
       res.setHeader(key, value);
     }
