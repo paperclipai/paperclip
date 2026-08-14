@@ -557,6 +557,48 @@ describe("OnboardingWizard — which step it lands on", () => {
       expect(document.body.textContent).not.toContain("Acme's mission");
     });
 
+    it("withdraws a company the wizard created once the route stops naming it", async () => {
+      // The route only introduces a company when it names one the wizard is
+      // not already holding, so a company the wizard *created* was never
+      // recorded as route-owned and was never withdrawn. Visiting its own
+      // onboarding path and then `/onboarding` left the wizard showing
+      // "create a company" while still holding it — and the next confirmation
+      // wrote that customer's new mission into the old company.
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-1", issuePrefix: "PC1" });
+      mockGoalsApi.create.mockResolvedValue({ id: "goal-company-1" });
+      routerState.pathname = "/onboarding";
+      await render();
+      await settle();
+
+      const nameInput = document.body.querySelector("input")! as HTMLInputElement;
+      setControlledValue(nameInput, "Acme");
+      await settle();
+      await click(
+        [...document.body.querySelectorAll("button")].find(
+          (b) => b.textContent?.trim() === "Next",
+        )!,
+      );
+      await settle();
+      setControlledValue(missionTextarea()!, "Acme's mission");
+      await settle();
+      await click(confirmMissionButton()!);
+      await settle();
+      expect(mockCompaniesApi.create).toHaveBeenCalled();
+      expect(currentStep()).toBe("agent");
+
+      // Its own onboarding path, then back to the unprefixed one.
+      routerState.pathname = "/PC1/onboarding";
+      await rerender();
+      await settle();
+      routerState.pathname = "/onboarding";
+      await rerender();
+      await settle();
+
+      const nameAfter = document.body.querySelector("input") as HTMLInputElement | null;
+      expect(nameAfter?.value).toBe("");
+      expect(document.body.textContent).not.toContain("Acme's mission");
+    });
+
     it("does not write a second mission when the step is confirmed twice", async () => {
       mockGoalsApi.create.mockResolvedValue({ id: "goal-new" });
       await openOnMissionStepForExistingCompany();

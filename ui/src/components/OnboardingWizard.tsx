@@ -320,9 +320,26 @@ export function OnboardingWizard() {
       // navigating on to `/onboarding` would clear work the wizard did.
       if (routeCompanyId !== createdCompanyIdRef.current) {
         setCreatedCompanyId(routeCompanyId);
-        routeCompanyIdRef.current = routeCompanyId;
         clearCompanyScopedState();
       }
+      // Ownership is recorded either way, including when the route merely
+      // names the company already in hand. Only the clearing above is
+      // conditional.
+      //
+      // This is a deliberate change to the rule the comment above described.
+      // Not recording ownership there protected wizard-created work from a
+      // later `/onboarding`, but it also meant that company was never
+      // withdrawn: create a company on step 1, visit its own onboarding path,
+      // then go to `/onboarding`, and the wizard shows "create a company"
+      // while still holding the previous one. The next confirmation then
+      // writes that customer's new mission into the old company - which is
+      // exactly the failure the withdrawal branch below was written to
+      // prevent, reached by a path it could not see.
+      //
+      // Losing the step-1 progress on `/onboarding` is the better error:
+      // `/onboarding` is a request to start a company, so honouring it beats
+      // silently writing into a different one.
+      routeCompanyIdRef.current = routeCompanyId;
       return;
     }
     if (routeCompanyIdRef.current) {
@@ -790,6 +807,12 @@ export function OnboardingWizard() {
       // customer on a company they never navigated to.
       if (!stillTheSameCompany(null)) return;
       setCreatedCompanyId(company.id);
+      // Keep the mirror current here rather than waiting for the next render.
+      // The goal write below asks `stillTheSameCompany(company.id)`, and a ref
+      // that still held the pre-create value would answer "no" to the handler
+      // that just did the creating - so the goal would never be attributed and
+      // the wizard would sit on the mission step it had just completed.
+      createdCompanyIdRef.current = company.id;
       setCreatedCompanyPrefix(company.issuePrefix);
       setSelectedCompanyId(company.id);
 
