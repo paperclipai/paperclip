@@ -610,6 +610,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       </div>
       {showComposer ? (
         <div
+          data-testid="task-chat-composer-dock"
           className={cn(
             "sticky",
             // Mobile mirrors the flag-off thread's dock: lifted above the
@@ -624,9 +625,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             isMobile
               ? "bottom-(--tc-composer-bottom) z-20 transition-[bottom] duration-200 ease-out"
               : "bottom-0 z-10",
-            // Keep the composer visibly narrower than the thread while its
-            // accessories and footer continue to share the same column.
-            "mx-auto flex w-(--pct-80) max-w-(--tc-shell-max-w) flex-col gap-2 bg-background/80 px-4 pb-2 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60",
+            // Match the thread width on mobile. Keep the intentionally
+            // narrower composer on larger screens.
+            "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 bg-background/80 px-4 pb-2 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60 md:w-(--pct-80)",
           )}
         >
           {composerAccessory}

@@ -26,11 +26,12 @@ import {
 import { getUIAdapter } from "../adapters";
 import { listUIAdapters } from "../adapters";
 import { isVisualAdapterChoice } from "../adapters/metadata";
-import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
+import { useDisabledAdaptersSync, useAdapterRegistryLoaded } from "../adapters/use-disabled-adapters";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { parseOnboardingGoalInput } from "../lib/onboarding-goal";
+import { restoreOnboardingState } from "../lib/onboarding-state";
 import { composeCeoInstructions } from "../lib/ceo-instructions";
 import {
   buildOnboardingIssuePayload,
@@ -85,7 +86,9 @@ function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: s
   return parts.join(" ");
 }
 
-const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
+// Exported so tests write/read the exact key the component uses, instead of
+// duplicating the literal and silently drifting from it if it's ever renamed.
+export const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
 const DEFAULT_TASK_TITLE = "Paperclip onboarding";
 const DEFAULT_TASK_DESCRIPTION = `You are the Paperclip agent. This is your first task. Your job here is to
 understand what the user wants and turn it into a concrete plan — not to
@@ -114,19 +117,153 @@ Work in this order:
 4. On approval, execute only what they kept. Create exactly the checked options — hire the checked agents and create + delegate the checked follow-up tasks, each in its own task. Skip anything the user unchecked.
 
 Propose, don't decide. Keep it conversational.`;
+/**
+ * The onboarding draft in `localStorage`, via a browser that is allowed to say
+ * no.
+ *
+ * Storage access throws outright where a browser denies it — Safari's private
+ * mode, a blocked third-party context — and every call site here sits in a
+ * render, an effect, or a close handler, so an escaping exception takes down
+ * something the customer was using. Losing the ability to resume onboarding is
+ * a far smaller failure than the wizard tearing down mid-answer, or refusing
+ * to close.
+ *
+ * Routed through one object on purpose. Guarding these one at a time is how
+ * three of the four call sites ended up unguarded while the fourth looked
+ * fixed: the read, the stale-blob cleanup, the persist effect, and `reset()`
+ * all have the same failure and want the same answer.
+ */
+const onboardingDraftStorage = {
+  read(): string | null {
+    try {
+      return localStorage.getItem(ONBOARDING_STORAGE_KEY);
+    } catch {
+      return null;
+    }
+  },
+  write(value: string): void {
+    try {
+      localStorage.setItem(ONBOARDING_STORAGE_KEY, value);
+    } catch {
+      // Storage unavailable: the draft is simply not resumable this session.
+    }
+  },
+  clear(): void {
+    try {
+      localStorage.removeItem(ONBOARDING_STORAGE_KEY);
+    } catch {
+      // Nothing to do. A draft that cannot be cleared is re-rejected on the
+      // next load by the same ownership check that rejected it here.
+    }
+  },
+};
+
 const INCOMPLETE_ONBOARDING_STATE_MESSAGE =
   "Onboarding state is incomplete. Please restart onboarding and try again.";
 
-function loadSavedState(): Record<string, unknown> | null {
-  try {
-    const raw = localStorage.getItem(ONBOARDING_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
+/**
+ * Thin gate in front of {@link OnboardingWizardInner}. The inner component's
+ * ~20 `useState(saved?.x ?? default)` initializers only read `saved` on their
+ * very first render, so it must never mount before the restored draft is
+ * final, otherwise every field locks to its default and the draft is lost
+ * for good. restoreOnboardingState requires the SETTLED companies list (see
+ * its JSDoc), so when a saved blob exists we wait for `companiesLoading` to
+ * clear before computing `saved` and mounting the inner component at all.
+ */
+export function OnboardingWizard() {
+  const { companies, loading: companiesLoading, error: companiesError } = useCompany();
+
+  // Parsed once (not re-parsed by the cleanup effect below) so the restored
+  // value and the "should we wipe the blob" decision always agree.
+  const rawBlob = useMemo(() => {
+    const raw = onboardingDraftStorage.read();
+    if (!raw) return undefined;
+    try {
+      return JSON.parse(raw) as unknown;
+    } catch {
+      return null; // malformed: treated as stale below
+    }
+  }, []);
+
+  // A failed company query is not an answer *when it left us with nothing*.
+  // React Query reports that as `isLoading === false` with `data` defaulted to
+  // an empty list, which reads exactly like "settled, and this account owns
+  // nothing" - and that verdict deletes the draft below. Discarding a
+  // customer's onboarding because their company request timed out is the one
+  // outcome here that cannot be undone.
+  //
+  // An error with companies still in hand is a different thing: a background
+  // refetch failed over a cache that is still good. Blocking on that would
+  // fail closed, and onboarding would simply never appear for a customer whose
+  // list is fine. Only an error that leaves the list empty is undecidable.
+  // Named for what it governs: whether the *draft* can be judged. It is not
+  // the same question as whether to mount - see the gate below.
+  // Any error at all, not only one that left the list empty.
+  //
+  // The companies cache is not scoped to an account and survives sign-out -
+  // `useSignOut` invalidates only the session and health queries, and
+  // invalidation keeps serving the old data anyway. So after A signs out and B
+  // signs in, a *failed* refetch leaves A's companies in hand. Trusting a
+  // non-empty list there would find A's company id in it, call the draft
+  // owned, and hand A's onboarding to B - which is the exact leak this whole
+  // change exists to close, reached through a different door.
+  //
+  // The cost is small and recoverable: during a transient refetch failure the
+  // draft is not restored. It is not deleted either, and the next successful
+  // load restores it.
+  //
+  // A truthy check rather than `!== null`. The context types this
+  // `Error | null`, but `undefined` reaches here from any consumer that
+  // provides the company context without an `error` key, and `undefined !==
+  // null` would read a healthy load as a failure.
+  const ownershipUndecidable = companiesLoading || Boolean(companiesError);
+
+  const { saved, staleStateDetected } = useMemo(() => {
+    if (rawBlob === undefined) return { saved: null, staleStateDetected: false };
+    // Companies not settled yet: restoreOnboardingState must not be called
+    // (see its CONTRACT). Not stale, just not decidable yet.
+    if (ownershipUndecidable) return { saved: null, staleStateDetected: false };
+    if (rawBlob === null) return { saved: null, staleStateDetected: true };
+    const restored = restoreOnboardingState(rawBlob, companies);
+    return { saved: restored, staleStateDetected: restored === null };
+  }, [rawBlob, ownershipUndecidable, companies]);
+
+  // A discarded/malformed state should not sit in storage waiting to confuse
+  // the next onboarding attempt (e.g. a different signed-in user).
+  useEffect(() => {
+    if (!staleStateDetected) return;
+    onboardingDraftStorage.clear();
+  }, [staleStateDetected]);
+
+  // A saved blob exists and the company list is still in flight: wait rather
+  // than mount the inner wizard with a premature, and unrecoverable, guess at
+  // the draft.
+  //
+  // Only while *loading*, not on error. An error with an empty list is still
+  // undecidable - nothing is restored and nothing is cleared, per the memo
+  // above - but withholding the wizard on top of that is a dead end, because
+  // the companies query sets `retry: false`. With no companies the dashboard
+  // offers a "Get Started" button that opens onboarding, and a gate that
+  // returned null here would make that button do nothing at all until a
+  // refetch happened to succeed.
+  //
+  // Mounting does not cost the draft. The persist effect that would overwrite
+  // it is itself gated on `effectiveOnboardingOpen`, so a mounted-but-closed
+  // wizard writes nothing, and the blob survives for a later load that can
+  // decide. If the wizard *is* open the customer is onboarding right now,
+  // which supersedes the draft anyway.
+  if (rawBlob !== undefined && companiesLoading) {
     return null;
   }
+
+  return <OnboardingWizardInner saved={saved} />;
 }
 
-export function OnboardingWizard() {
+function OnboardingWizardInner({
+  saved,
+}: {
+  saved: Record<string, unknown> | null;
+}) {
   const {
     onboardingOpen,
     onboardingOptions,
@@ -181,12 +318,10 @@ export function OnboardingWizard() {
   // mounted globally, including on /auth, where protected adapter routes are
   // expected to reject signed-out browsers.
   const disabledTypes = useDisabledAdaptersSync({ enabled: effectiveOnboardingOpen });
+  const adapterRegistryLoaded = useAdapterRegistryLoaded({ enabled: effectiveOnboardingOpen });
 
   const initialStep = effectiveOnboardingOptions.initialStep ?? 0;
   const existingCompanyId = effectiveOnboardingOptions.companyId;
-
-  // Restore saved state from localStorage (read once on mount)
-  const saved = useMemo(loadSavedState, []);
 
   const [step, setStep] = useState<Step>((saved?.step as Step) ?? initialStep);
   const [onboardingPath, setOnboardingPath] = useState<"create" | "grow" | null>((saved?.onboardingPath as "create" | "grow" | null) ?? null);
@@ -395,7 +530,7 @@ export function OnboardingWizard() {
       createdCompanyGoalId, createdProjectId, createdIssueRef,
       onboardingPath, growWorkflows, growPainPoints, growAutomate,
     };
-    localStorage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify(state));
+    onboardingDraftStorage.write(JSON.stringify(state));
   }, [
     effectiveOnboardingOpen, step, companyName, companyGoal, missionPath, missionConfirmed,
     q1, q2, q3, q4, agentName, adapterType, cwd, model, command, args, url,
@@ -451,6 +586,39 @@ export function OnboardingWizard() {
       moreAdapters: all.filter((a) => !a.recommended),
     };
   }, [disabledTypes]);
+
+  // The default (or a saved) adapterType can name an adapter the server has
+  // since disabled — e.g. a cloud sandbox registry without claude_local. The
+  // grid hides it, so without this snap the wizard would silently keep an
+  // invisible selection and create an agent that can never acquire a lease.
+  useEffect(() => {
+    // Not until the registry has loaded. External adapter types are only
+    // registered once the adapters query resolves, so before that a saved
+    // external adapter is indistinguishable from a disabled one - and snapping
+    // would replace the customer's choice with a built-in and persist it.
+    if (!adapterRegistryLoaded) return;
+    const visible = [...recommendedAdapters, ...moreAdapters].filter(
+      (a) => !a.comingSoon,
+    );
+    if (visible.length === 0) return;
+    if (visible.some((a) => a.type === adapterType)) return;
+    const next = visible[0].type as AdapterType;
+    setAdapterType(next);
+    if (next === "codex_local") return;
+    if (next === "opencode_local") {
+      setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
+      return;
+    }
+    if (next === "gemini_local") {
+      setModel(DEFAULT_GEMINI_LOCAL_MODEL);
+      return;
+    }
+    if (next === "cursor") {
+      setModel(DEFAULT_CURSOR_LOCAL_MODEL);
+      return;
+    }
+    setModel("");
+  }, [adapterRegistryLoaded, recommendedAdapters, moreAdapters, adapterType]);
 
   const COMMAND_PLACEHOLDERS: Record<string, string> = {
     claude_local: "claude",
@@ -517,7 +685,7 @@ export function OnboardingWizard() {
   }, [filteredModels, adapterType]);
 
   function reset() {
-    localStorage.removeItem(ONBOARDING_STORAGE_KEY);
+    onboardingDraftStorage.clear();
     setStep(0);
     setOnboardingPath(null);
     setGrowWorkflows("");
