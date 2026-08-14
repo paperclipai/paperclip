@@ -169,8 +169,18 @@ export function OnboardingWizard() {
     ? selectDefaultCompanyGoalId(routeCompanyGoals) !== null
     : undefined;
 
+  // Hold the options back until the mission is known, exactly as they are held
+  // back while companies load. Resolving early and correcting later would let
+  // a late goal result flip `initialStep` from 2 to 3 under someone already
+  // typing their mission, and the sync effect would move them off it.
+  //
+  // Settling first means the step is decided once and never changes for an
+  // open wizard.
+  const routeMissionPending =
+    routeMatchedCompanyId !== null && routeCompanyHasMission === undefined;
+
   const routeOnboardingOptions =
-    companyPrefix && companiesLoading
+    (companyPrefix && companiesLoading) || routeMissionPending
       ? null
       : resolveRouteOnboardingOptions({
           pathname: location.pathname,

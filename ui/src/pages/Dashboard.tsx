@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "@/lib/router";
-import { shouldRouteAgentlessCompanyToOnboarding } from "../lib/onboarding-route";
+import {
+  ONBOARDING_AGENT_STEP,
+  shouldRouteAgentlessCompanyToOnboarding,
+} from "../lib/onboarding-route";
+import { selectDefaultCompanyGoalId } from "../lib/onboarding-launch";
+import { goalsApi } from "../api/goals";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
@@ -69,14 +74,35 @@ export function Dashboard() {
   // mounted globally, so there is no route to race and no redirect to loop.
   // Placed with the other hooks — the early returns below mean anything
   // further down would be called conditionally.
+  // Which company, and which step. Opening with empty options would start the
+  // wizard at the front door with no company, and the new-company path there
+  // would create a *second* company instead of giving this one an agent.
+  //
+  // Same goal list and query key the wizard and the launch path use, so this
+  // is a shared cache entry rather than another request.
+  const { data: dashboardCompanyGoals } = useQuery({
+    queryKey: queryKeys.goals.list(selectedCompanyId!),
+    queryFn: () => goalsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
   const shouldOpenOnboarding = shouldRouteAgentlessCompanyToOnboarding({
     pathname: location.pathname,
     agentsLoaded: agents !== undefined,
     agentCount: agents?.length ?? 0,
   });
   useEffect(() => {
-    if (shouldOpenOnboarding) openOnboarding();
-  }, [shouldOpenOnboarding, openOnboarding]);
+    if (!shouldOpenOnboarding || !selectedCompanyId) return;
+    // Wait for the goal list too. Opening on the mission step and correcting
+    // it later would move the wizard out from under someone already typing.
+    if (dashboardCompanyGoals === undefined) return;
+    openOnboarding({
+      companyId: selectedCompanyId,
+      initialStep:
+        selectDefaultCompanyGoalId(dashboardCompanyGoals) !== null
+          ? ONBOARDING_AGENT_STEP
+          : 2,
+    });
+  }, [shouldOpenOnboarding, selectedCompanyId, dashboardCompanyGoals, openOnboarding]);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Dashboard" }]);
