@@ -5,6 +5,7 @@ import {
   isOnboardingWizardActive,
   resolveRouteOnboardingOptions,
   shouldRedirectCompanylessRouteToOnboarding,
+  shouldRouteAgentlessCompanyToOnboarding,
 } from "./onboarding-route";
 
 describe("isOnboardingPath", () => {
@@ -185,5 +186,54 @@ describe("navigating away from a company's onboarding route", () => {
         companies,
       }),
     ).toEqual({ initialStep: 1 });
+  });
+});
+
+describe("shouldRouteAgentlessCompanyToOnboarding", () => {
+  it("sends a company with no agents to onboarding", () => {
+    expect(
+      shouldRouteAgentlessCompanyToOnboarding({
+        pathname: "/PC1/dashboard",
+        agentsLoaded: true,
+        agentCount: 0,
+      }),
+    ).toBe(true);
+  });
+
+  it("leaves a company that has agents alone", () => {
+    expect(
+      shouldRouteAgentlessCompanyToOnboarding({
+        pathname: "/PC1/dashboard",
+        agentsLoaded: true,
+        agentCount: 1,
+      }),
+    ).toBe(false);
+  });
+
+  it("waits for the agent list before deciding", () => {
+    // In flight, the list is undefined and reads exactly like an empty one.
+    // Deciding here would bounce every user through onboarding on each cold
+    // load — the count is zero only because nothing has arrived yet.
+    expect(
+      shouldRouteAgentlessCompanyToOnboarding({
+        pathname: "/PC1/dashboard",
+        agentsLoaded: false,
+        agentCount: 0,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not redirect onto onboarding from onboarding", () => {
+    // The loop: finish the wizard without creating an agent, and a redirect
+    // that ignored the current path would send you straight back in.
+    for (const pathname of ["/onboarding", "/PC1/onboarding"]) {
+      expect(
+        shouldRouteAgentlessCompanyToOnboarding({
+          pathname,
+          agentsLoaded: true,
+          agentCount: 0,
+        }),
+      ).toBe(false);
+    }
   });
 });
