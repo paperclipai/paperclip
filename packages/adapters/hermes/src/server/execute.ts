@@ -291,7 +291,6 @@ function cleanResponse(raw: string): string {
       const t = line.trim();
       if (!t) return true; // keep blank lines for paragraph separation
       if (t.startsWith("[tool]") || t.startsWith("[hermes]") || t.startsWith("[paperclip]")) return false;
-      if (t.startsWith("session_id:")) return false;
       if (/^\[\d{4}-\d{2}-\d{2}T/.test(t)) return false;
       if (/^\[done\]\s*┊/.test(t)) return false;
       if (/^┊\s*[\p{Emoji_Presentation}]/u.test(t) && !/^┊\s*💬/.test(t)) return false;
@@ -312,7 +311,11 @@ function cleanResponse(raw: string): string {
 // Output parsing
 // ---------------------------------------------------------------------------
 
-function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
+function parseHermesOutput(
+  stdout: string,
+  stderr: string,
+  options: { quietMode: boolean },
+): ParsedOutput {
   const combined = stdout + "\n" + stderr;
   const result: ParsedOutput = {};
 
@@ -320,7 +323,9 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   //   <response text>
   //
   //   session_id: <id>
-  const sessionMatch = stdout.match(SESSION_ID_REGEX);
+  const sessionMatch = options.quietMode
+    ? stdout.match(SESSION_ID_REGEX)
+    : null;
   if (sessionMatch?.[1]) {
     result.sessionId = sessionMatch?.[1] ?? null;
     // The response is everything before the session_id line
@@ -591,7 +596,9 @@ export async function execute(
   });
 
   // ── Parse output ───────────────────────────────────────────────────────
-  const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+  const parsed = parseHermesOutput(result.stdout || "", result.stderr || "", {
+    quietMode: useQuiet,
+  });
 
   await ctx.onLog(
     "stdout",
