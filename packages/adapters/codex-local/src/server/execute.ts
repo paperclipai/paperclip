@@ -944,6 +944,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
     }
     env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
+    // Codex CLI splits runtime SQLite state (state_5.sqlite, logs_2.sqlite, etc.)
+    // into CODEX_SQLITE_HOME, separate from CODEX_HOME (config/auth/sessions).
+    // Without this, every codex_local agent on a host silently shares one
+    // SQLite state home instead of its own managed one, and concurrent agents
+    // collide with "failed to initialize sqlite state runtime". See #11398.
+    env.CODEX_SQLITE_HOME = remoteCodexHome ?? effectiveCodexHome;
     if (authToken) {
       env.PAPERCLIP_API_KEY = authToken;
     }
