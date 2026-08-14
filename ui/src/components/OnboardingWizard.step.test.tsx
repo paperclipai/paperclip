@@ -150,10 +150,15 @@ describe("OnboardingWizard — which step it lands on", () => {
     });
   }
 
-  async function settle() {
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+  // React Query resolves through microtasks and React schedules the re-render
+  // after them, so a single tick is not reliably enough under load. Several
+  // ticks cost microseconds and remove the ordering sensitivity.
+  async function settle(ticks = 12) {
+    for (let i = 0; i < ticks; i++) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
   }
 
   beforeEach(() => {
@@ -336,6 +341,84 @@ describe("OnboardingWizard — which step it lands on", () => {
         expect.objectContaining({ title: "Ship the thing", level: "company", status: "active" }),
       );
       expect(currentStep()).toBe("agent");
+    });
+
+    it("does not write a second mission when Enter is pressed twice", async () => {
+      // The buttons are all disabled while a request is in flight; the
+      // keyboard has to be too. A second Enter re-enters the handler before
+      // the first has set the goal id its own guard reads, so both requests
+      // see "no mission yet" and the company ends up with two.
+      let resolveCreate: (goal: { id: string }) => void = () => {};
+      mockGoalsApi.create.mockReturnValue(
+        new Promise<{ id: string }>((resolve) => {
+          resolveCreate = resolve;
+        }),
+      );
+      await openOnMissionStepForExistingCompany();
+
+      const direct = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("I know my mission"),
+      )!;
+      await click(direct);
+      setControlledValue(missionTextarea()!, "Ship the thing");
+      await settle();
+
+      const surface = document.body.querySelector(".fixed.inset-0.z-50.flex")!;
+      const submit = () =>
+        act(async () => {
+          surface.dispatchEvent(
+            new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }),
+          );
+        });
+      await submit();
+      await submit();
+      await act(async () => resolveCreate({ id: "goal-new" }));
+      await settle();
+
+      expect(mockGoalsApi.create).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not carry a mission across a switch to another company", async () => {
+      // Confirming for one company sets the goal id that `handleConfirmMission`
+      // reads as "already written". Carried across a company switch it makes
+      // the next company skip saving its own mission, and the launch path then
+      // links that company's project to the previous company's goal.
+      mockGoalsApi.create.mockResolvedValue({ id: "goal-company-1" });
+      routerState.pathname = "/PC1/onboarding";
+      dialogState.onboardingOpen = false;
+      await render();
+      await settle();
+      expect(currentStep()).toBe("mission");
+
+      const direct = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("I know my mission"),
+      )!;
+      await click(direct);
+      setControlledValue(missionTextarea()!, "Acme's mission");
+      await settle();
+      await click(confirmMissionButton()!);
+      await settle();
+      expect(currentStep()).toBe("agent");
+
+      routerState.pathname = "/PC2/onboarding";
+      await rerender();
+      await settle();
+      expect(currentStep()).toBe("mission");
+
+      const direct2 = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("I know my mission"),
+      )!;
+      await click(direct2);
+      setControlledValue(missionTextarea()!, "Globex's mission");
+      await settle();
+      await click(confirmMissionButton()!);
+      await settle();
+
+      expect(mockGoalsApi.create).toHaveBeenCalledTimes(2);
+      expect(mockGoalsApi.create).toHaveBeenLastCalledWith(
+        "company-2",
+        expect.objectContaining({ title: "Globex's mission" }),
+      );
     });
 
     it("does not write a second mission when the step is confirmed twice", async () => {

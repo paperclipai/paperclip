@@ -297,6 +297,21 @@ export function OnboardingWizard() {
         setCreatedCompanyId(routeCompanyId);
         setCreatedCompanyPrefix(null);
         routeCompanyIdRef.current = routeCompanyId;
+        // Everything else in hand describes the company being left, so it has
+        // to go with it. A goal id kept across the switch is the sharpest
+        // edge: `handleConfirmMission` reads it as "this company's mission is
+        // already written" and skips saving, and the launch path then links
+        // the new company's project to the old company's goal. The name and
+        // the mission text are backfilled again for the new company by the
+        // effects below.
+        setCompanyName("");
+        setCompanyGoal("");
+        setMissionPath(null);
+        setMissionConfirmed(false);
+        setCreatedCompanyGoalId(null);
+        setCreatedProjectId(null);
+        setCreatedIssueRef(null);
+        setCreatedAgentId(null);
       }
       return;
     }
@@ -885,6 +900,11 @@ export function OnboardingWizard() {
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
+      // Every button below is disabled while a request is in flight. The
+      // keyboard has to honour the same rule, or a second Enter re-enters a
+      // handler whose guard is a piece of state the first one has not set
+      // yet — two goals for one mission, two agents for one hire.
+      if (loading) return;
       if (step === 0) return; // front door requires click
       if (step === 1 && companyName.trim()) setStep(2);
       else if (step === 2 && companyName.trim() && companyGoal.trim()) handleConfirmMission();

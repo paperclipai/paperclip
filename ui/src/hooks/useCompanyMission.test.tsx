@@ -53,12 +53,15 @@ describe("useCompanyMission", () => {
     });
   }
 
-  // React Query resolves through microtasks and a scheduler tick, so let the
-  // queue drain before asserting on a settled answer.
+  // React Query resolves through microtasks and React schedules the re-render
+  // after them, so a single tick is not reliably enough under load. Drain
+  // until the hook reports an answer rather than guessing at a tick count.
   async function settle() {
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    for (let i = 0; i < 50 && !captured?.settled; i++) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
   }
 
   beforeEach(() => {
