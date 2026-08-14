@@ -147,6 +147,28 @@ export function OnboardingWizard() {
 
   // Support opening the wizard from a route (e.g. /onboarding or an existing
   // company's "add agent" entry point) in addition to the dialog context.
+  // The company the path names, resolved before the options below so the
+  // mission lookup has something to ask about. Same match the resolver makes.
+  const routeMatchedCompanyId =
+    companyPrefix && !companiesLoading
+      ? companies.find(
+          (company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase(),
+        )?.id ?? null
+      : null;
+
+  // "Has this company already got its mission?" A seeded company does: Cloud
+  // collects the mission at signup and the tenant writes it as a company-level
+  // goal. Reuses the list and the query key the launch path already uses, so
+  // this shares a cache entry rather than adding a fetch.
+  const { data: routeCompanyGoals } = useQuery({
+    queryKey: queryKeys.goals.list(routeMatchedCompanyId ?? ""),
+    queryFn: () => goalsApi.list(routeMatchedCompanyId!),
+    enabled: Boolean(routeMatchedCompanyId),
+  });
+  const routeCompanyHasMission = routeCompanyGoals
+    ? selectDefaultCompanyGoalId(routeCompanyGoals) !== null
+    : undefined;
+
   const routeOnboardingOptions =
     companyPrefix && companiesLoading
       ? null
@@ -154,6 +176,7 @@ export function OnboardingWizard() {
           pathname: location.pathname,
           companyPrefix,
           companies,
+          companyHasMission: routeCompanyHasMission,
         });
   const effectiveOnboardingOpen =
     onboardingOpen || (routeOnboardingOptions !== null && !routeDismissed);

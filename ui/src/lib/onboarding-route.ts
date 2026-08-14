@@ -38,12 +38,30 @@ export function companyPrefixFromOnboardingPath(pathname: string): string | unde
   return segments[0];
 }
 
+/**
+ * The wizard step that asks for the first agent.
+ *
+ * A company that already has its mission has answered steps 1 and 2 — Cloud
+ * collects both at signup and the seed writes the mission as a company-level
+ * goal. Opening such a company on "what is the mission?" asks the customer
+ * something they answered minutes earlier on another origin, which is the
+ * seam the seeded arc exists to remove.
+ */
+export const ONBOARDING_AGENT_STEP = 3;
+
 export function resolveRouteOnboardingOptions(params: {
   pathname: string;
   companyPrefix?: string;
   companies: OnboardingRouteCompany[];
-}): { initialStep: 1 | 2; companyId?: string } | null {
-  const { pathname, companyPrefix, companies } = params;
+  /**
+   * Whether the matched company already has its mission (a company-level
+   * goal). `undefined` means not yet known — the goal query is still in
+   * flight — and is treated as "no", so a slow query costs the mission step
+   * rather than skipping a question that was never answered.
+   */
+  companyHasMission?: boolean;
+}): { initialStep: 1 | 2 | typeof ONBOARDING_AGENT_STEP; companyId?: string } | null {
+  const { pathname, companyPrefix, companies, companyHasMission } = params;
 
   if (!isOnboardingPath(pathname)) return null;
 
@@ -61,7 +79,10 @@ export function resolveRouteOnboardingOptions(params: {
     return { initialStep: 1 };
   }
 
-  return { initialStep: 2, companyId: matchedCompany.id };
+  return {
+    initialStep: companyHasMission === true ? ONBOARDING_AGENT_STEP : 2,
+    companyId: matchedCompany.id,
+  };
 }
 
 /**

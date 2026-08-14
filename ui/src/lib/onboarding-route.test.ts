@@ -6,6 +6,7 @@ import {
   resolveRouteOnboardingOptions,
   shouldRedirectCompanylessRouteToOnboarding,
   shouldRouteAgentlessCompanyToOnboarding,
+  ONBOARDING_AGENT_STEP,
 } from "./onboarding-route";
 
 describe("isOnboardingPath", () => {
@@ -235,5 +236,57 @@ describe("shouldRouteAgentlessCompanyToOnboarding", () => {
         }),
       ).toBe(false);
     }
+  });
+});
+
+describe("resolveRouteOnboardingOptions — the agent step", () => {
+  const companies = [{ id: "c1", issuePrefix: "PC1" }];
+
+  it("opens a company that already has its mission on the agent step", () => {
+    // Cloud collected the mission at signup and the seed wrote it as a
+    // company-level goal. Re-asking it is the seam the seeded arc removes.
+    expect(
+      resolveRouteOnboardingOptions({
+        pathname: "/PC1/onboarding",
+        companyPrefix: "PC1",
+        companies,
+        companyHasMission: true,
+      }),
+    ).toEqual({ initialStep: ONBOARDING_AGENT_STEP, companyId: "c1" });
+  });
+
+  it("still asks for the mission when the company has none", () => {
+    expect(
+      resolveRouteOnboardingOptions({
+        pathname: "/PC1/onboarding",
+        companyPrefix: "PC1",
+        companies,
+        companyHasMission: false,
+      }),
+    ).toEqual({ initialStep: 2, companyId: "c1" });
+  });
+
+  it("treats an unknown mission as absent while the goal query is in flight", () => {
+    // Costing the mission step is recoverable; skipping a question that was
+    // never answered leaves the company without one.
+    expect(
+      resolveRouteOnboardingOptions({
+        pathname: "/PC1/onboarding",
+        companyPrefix: "PC1",
+        companies,
+        companyHasMission: undefined,
+      }),
+    ).toEqual({ initialStep: 2, companyId: "c1" });
+  });
+
+  it("keeps sending an unmatched prefix to company creation", () => {
+    expect(
+      resolveRouteOnboardingOptions({
+        pathname: "/NOPE/onboarding",
+        companyPrefix: "NOPE",
+        companies,
+        companyHasMission: true,
+      }),
+    ).toEqual({ initialStep: 1 });
   });
 });

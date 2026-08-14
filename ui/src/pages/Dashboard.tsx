@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation } from "@/lib/router";
+import { shouldRouteAgentlessCompanyToOnboarding } from "../lib/onboarding-route";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
@@ -41,6 +43,7 @@ function getRecentIssues(issues: Issue[]): Issue[] {
 export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
   const { openOnboarding } = useDialogActions();
+  const location = useLocation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
   const seenActivityIdsRef = useRef<Set<string>>(new Set());
@@ -52,6 +55,28 @@ export function Dashboard() {
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+
+  // A company with no agent cannot do anything — no runs, no tasks, nothing
+  // to show. The banner below already says so and offers a link; this takes
+  // the customer there instead of asking them to notice.
+  //
+  // It also closes the gap a Cloud-provisioned stack falls into. Cloud creates
+  // the company before the tenant boots, so the companyless redirect never
+  // fires and a seeded customer lands here, on an empty dashboard, straight
+  // out of signup.
+  //
+  // Opened as the dialog rather than navigated to: the wizard is already
+  // mounted globally, so there is no route to race and no redirect to loop.
+  // Placed with the other hooks — the early returns below mean anything
+  // further down would be called conditionally.
+  const shouldOpenOnboarding = shouldRouteAgentlessCompanyToOnboarding({
+    pathname: location.pathname,
+    agentsLoaded: agents !== undefined,
+    agentCount: agents?.length ?? 0,
+  });
+  useEffect(() => {
+    if (shouldOpenOnboarding) openOnboarding();
+  }, [shouldOpenOnboarding, openOnboarding]);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Dashboard" }]);
