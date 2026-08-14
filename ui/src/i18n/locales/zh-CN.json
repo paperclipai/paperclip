@@ -1812,7 +1812,11 @@
     "collapseFolder": "收起文件夹",
     "expandFolder": "展开文件夹",
     "searchFolders": "搜索文件夹",
-    "folderPath": "文件夹路径"
+    "folderPath": "文件夹路径",
+    "sourceLabel": "来源",
+    "versionLabel": "版本",
+    "agentsLabel": "代理",
+    "trustLabel": "信任"
   },
   "skillStudio": {
     "addFile": "添加文件",
@@ -4069,7 +4073,8 @@
       "type": "类型",
       "project": "项目",
       "parent": "父用例"
-    }
+    },
+    "sortLabel": "排序"
   },
   "caseDetail": {
     "relationshipsAria": "用例关系",

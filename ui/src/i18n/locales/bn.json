@@ -1812,7 +1812,11 @@
     "collapseFolder": "Collapse folder",
     "expandFolder": "Expand folder",
     "searchFolders": "Search folders",
-    "folderPath": "Folder path"
+    "folderPath": "Folder path",
+    "sourceLabel": "Source",
+    "versionLabel": "Version",
+    "agentsLabel": "Agents",
+    "trustLabel": "Trust"
   },
   "skillStudio": {
     "addFile": "Add file",
@@ -4069,7 +4073,8 @@
       "type": "Type",
       "project": "Project",
       "parent": "Parent case"
-    }
+    },
+    "sortLabel": "Sort"
   },
   "caseDetail": {
     "relationshipsAria": "Case relationships",

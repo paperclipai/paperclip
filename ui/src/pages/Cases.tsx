@@ -688,7 +688,7 @@ function CaseSortPicker({
 }) {
   const { t } = useTranslation();
   return (
-    <CaseToolbarButton icon={ArrowUpDown} title={t("cases.sort")} active={sortField !== "updated" || sortDir !== "desc"}>
+    <CaseToolbarButton icon={ArrowUpDown} title={t("cases.sortLabel")} active={sortField !== "updated" || sortDir !== "desc"}>
       <PopoverContent align="end" className="w-48 p-2">
         {(Object.keys(CASE_SORT_LABELS) as CaseSortField[]).map((field) => (
           <button
