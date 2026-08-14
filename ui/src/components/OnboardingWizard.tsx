@@ -130,29 +130,42 @@ const INCOMPLETE_ONBOARDING_STATE_MESSAGE =
  * clear before computing `saved` and mounting the inner component at all.
  */
 export function OnboardingWizard() {
-  const { companies, loading: companiesLoading } = useCompany();
+  const { companies, loading: companiesLoading, error: companiesError } = useCompany();
 
   // Parsed once (not re-parsed by the cleanup effect below) so the restored
   // value and the "should we wipe the blob" decision always agree.
   const rawBlob = useMemo(() => {
-    const raw = localStorage.getItem(ONBOARDING_STORAGE_KEY);
-    if (!raw) return undefined;
+    // `getItem` is inside the try, not just the parse. It throws outright when
+    // a browser denies storage access - Safari's private mode, a blocked
+    // third-party context - and this runs during render, so an escaping
+    // exception takes the whole app down. Onboarding without a restored draft
+    // is a working wizard; a render that throws is not.
     try {
+      const raw = localStorage.getItem(ONBOARDING_STORAGE_KEY);
+      if (!raw) return undefined;
       return JSON.parse(raw) as unknown;
     } catch {
-      return null; // malformed: treated as stale below, same as before
+      return null; // unreadable or malformed: treated as stale below
     }
   }, []);
+
+  // A failed company query is not an answer. React Query reports it as
+  // `isLoading === false` with `data` defaulted to an empty list, which reads
+  // exactly like "settled, and this account owns nothing" - and that verdict
+  // deletes the draft below. Discarding a customer's onboarding because their
+  // company request timed out is the one outcome here that cannot be undone,
+  // so an errored list is treated like a loading one: not decidable.
+  const companiesUndecided = companiesLoading || companiesError !== null;
 
   const { saved, staleStateDetected } = useMemo(() => {
     if (rawBlob === undefined) return { saved: null, staleStateDetected: false };
     // Companies not settled yet: restoreOnboardingState must not be called
     // (see its CONTRACT). Not stale, just not decidable yet.
-    if (companiesLoading) return { saved: null, staleStateDetected: false };
+    if (companiesUndecided) return { saved: null, staleStateDetected: false };
     if (rawBlob === null) return { saved: null, staleStateDetected: true };
     const restored = restoreOnboardingState(rawBlob, companies);
     return { saved: restored, staleStateDetected: restored === null };
-  }, [rawBlob, companiesLoading, companies]);
+  }, [rawBlob, companiesUndecided, companies]);
 
   // A discarded/malformed state should not sit in storage waiting to confuse
   // the next onboarding attempt (e.g. a different signed-in user).
@@ -164,7 +177,14 @@ export function OnboardingWizard() {
 
   // A saved blob exists but companies haven't settled yet: wait rather than
   // mount the inner wizard with a premature (and unrecoverable) guess.
-  if (rawBlob !== undefined && companiesLoading) {
+  //
+  // Waiting is also what protects the blob while the answer is unknown.
+  // Mounting with `saved: null` would not merely show defaults - the persist
+  // effect inside writes the wizard's state back on every change, so it would
+  // overwrite the draft with those defaults within a render or two. Declining
+  // to mount is the only option here that leaves the draft intact for a later
+  // load that can actually decide.
+  if (rawBlob !== undefined && companiesUndecided) {
     return null;
   }
 

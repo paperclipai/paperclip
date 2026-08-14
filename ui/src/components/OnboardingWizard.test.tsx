@@ -19,6 +19,7 @@ const mockCompany = vi.hoisted(() => ({
   companies: [] as Array<{ id: string; name: string; issuePrefix: string }>,
   setSelectedCompanyId: vi.fn(),
   loading: false,
+  error: null as Error | null,
 }));
 
 const mockCompaniesApi = vi.hoisted(() => ({
@@ -138,6 +139,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockDialog.onboardingRouteDismissed = false;
     mockCompany.companies = [];
     mockCompany.loading = false;
+    mockCompany.error = null;
     mockAdapterRegistry.list = [];
     mockAdapterRegistry.disabled = new Set<string>();
     mockCompaniesApi.create.mockResolvedValue({
@@ -253,6 +255,78 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     // The stale blob must not linger to confuse the next onboarding attempt.
     expect(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)).toBeNull();
 
+    await act(async () => {
+      root.unmount();
+    });
+  });
+  it("keeps a saved draft when the company query fails, instead of discarding it", async () => {
+    // React Query reports a failed list as `isLoading === false` with `data`
+    // defaulted to `[]`, which is indistinguishable from "settled, and this
+    // account owns nothing" — the verdict that wipes the blob. Deleting a
+    // customer's onboarding because their company request timed out is the one
+    // outcome here that cannot be undone.
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 3,
+        companyName: "Saved Co",
+        agentName: "Ops Lead",
+        createdCompanyId: "c1",
+      }),
+    );
+    mockCompany.companies = [];
+    mockCompany.loading = false;
+    mockCompany.error = new Error("company list unavailable");
+
+    const { root, queryClient } = render();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <OnboardingWizard />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    // Nothing mounts, so the persist effect cannot overwrite the draft either.
+    expect(document.body.textContent).toBe("");
+    const stillThere = window.localStorage.getItem(ONBOARDING_STORAGE_KEY);
+    expect(stillThere).not.toBeNull();
+    expect(JSON.parse(stillThere!).createdCompanyId).toBe("c1");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders instead of throwing when the browser denies storage access", async () => {
+    // Safari's private mode and blocked third-party contexts make getItem
+    // throw outright. This runs during render, so an escaping exception takes
+    // the whole app down rather than just losing a draft.
+    const getItem = vi
+      .spyOn(Storage.prototype, "getItem")
+      .mockImplementation(() => {
+        throw new DOMException("The operation is insecure.", "SecurityError");
+      });
+    mockCompany.companies = [{ id: "c1", name: "My Co", issuePrefix: "MC" }];
+    mockCompany.loading = false;
+
+    const { root, queryClient } = render();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <OnboardingWizard />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(getItem).toHaveBeenCalled();
+    // It mounted: the wizard is open with no draft, rather than the render
+    // throwing on the way in.
+    expect(document.body.textContent).not.toBe("");
+
+    getItem.mockRestore();
     await act(async () => {
       root.unmount();
     });
