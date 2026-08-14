@@ -783,6 +783,13 @@ export async function startSandboxCallbackBridgeWorker(input: {
   // handler-owned request (it must not write a competing 503 for an in-flight
   // mutation). The abort turns that stranded request into a prompt error
   // response for a handler that threads the signal into its work.
+  //
+  // A worker abort reaches the handler only after the host operation started, so
+  // the mutation may have committed. The bridge cannot cancel a host operation
+  // that is in flight. So the handler finalizes a worker-aborted request with a
+  // non-retryable 504, not a retryable 502. The caller must not retry a 504, so
+  // it never re-applies a mutation that already committed. A retry-safe 503 comes
+  // only from the recovery path, and only before the host operation starts.
   type RequestFinalizeGuard = {
     claim: "unclaimed" | "handler" | "abandon";
     controller: AbortController;
@@ -872,15 +879,42 @@ export async function startSandboxCallbackBridgeWorker(input: {
         console.warn(
           `[paperclip] sandbox callback bridge handler failed for ${request.id}: ${error instanceof Error ? error.message : String(error)}`,
         );
-        response = {
-          id: request.id,
-          status: 502,
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            error: error instanceof Error ? error.message : String(error),
-          }),
-          completedAt: new Date().toISOString(),
-        };
+        // Tell a worker abort apart from a normal handler failure. The recovery
+        // path aborts `guard.controller` when the per-iteration timeout or the
+        // watchdog fires. The abort reaches this catch only after the handler
+        // claimed the request and started the host operation. The bridge cannot
+        // cancel a host operation that is in flight, so the mutation may have
+        // committed. A 502 (or 503) is a retryable status: the caller retries it
+        // and applies the mutation twice. So return a non-retryable 504 and mark
+        // the outcome indeterminate. The caller must not retry a 504 from the
+        // bridge, unlike the retry-safe 503 that the recovery path writes only
+        // before the host operation starts.
+        if (guard.controller.signal.aborted) {
+          response = {
+            id: request.id,
+            status: 504,
+            headers: {
+              "content-type": "application/json",
+              "x-paperclip-bridge-outcome": "indeterminate",
+            },
+            body: JSON.stringify({
+              error: error instanceof Error ? error.message : String(error),
+              outcome: "indeterminate",
+              retryable: false,
+            }),
+            completedAt: new Date().toISOString(),
+          };
+        } else {
+          response = {
+            id: request.id,
+            status: 502,
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              error: error instanceof Error ? error.message : String(error),
+            }),
+            completedAt: new Date().toISOString(),
+          };
+        }
       }
       await finalize(response);
     } finally {

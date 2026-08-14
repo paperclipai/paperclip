@@ -1659,7 +1659,10 @@ describe("sandbox callback bridge", () => {
     // per-iteration timeout fires. It then finalizes with its own error
     // response, so the request does not strand with no response. The recovery
     // path still writes no 503 for the handler-owned request, so a started
-    // mutation is not applied twice.
+    // mutation is not applied twice. The abort reaches the handler after the host
+    // operation started, so the handler finalizes a non-retryable 504, not a
+    // retryable 502; the caller then does not retry a mutation that may have
+    // committed.
     const waitFor = async (predicate: () => boolean, timeoutMs: number) => {
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
@@ -1735,15 +1738,121 @@ describe("sandbox callback bridge", () => {
 
     expect(handlerAborted).toBe(true);
     expect(workerErrors.some((message) => message.includes("timed out"))).toBe(true);
-    // Exactly one response landed: the handler's 502. The recovery path wrote no
-    // competing 503.
+    // Exactly one response landed: the handler's non-retryable 504. The recovery
+    // path wrote no competing 503, and the aborted handler wrote no retryable 502.
     expect(responseWrites.filter((write) => write.path === responsePath)).toEqual([
-      { path: responsePath, status: 502 },
+      { path: responsePath, status: 504 },
     ]);
     expect(responseWrites.some((write) => write.status === 503)).toBe(false);
+    expect(responseWrites.some((write) => write.status === 502)).toBe(false);
     // The handler removed the request file after it finalized. The recovery path
     // may issue a redundant idempotent remove for the same path when the handler
     // finalized first, so assert the removal happened rather than a fixed count.
+    expect(requestRemovals).toContain(requestPath);
+
+    await worker.stop({ drainTimeoutMs: 10 });
+  });
+
+  it("finalizes a late worker-aborted handler with a non-retryable 504, so the caller does not retry a committed mutation", async () => {
+    // Prove the completion status for a mutating request that the worker aborts.
+    // The per-iteration timeout aborts a handler that already started its host
+    // operation, so the mutation may have committed. The bridge cannot cancel a
+    // host operation that is in flight. The handler completes late, after the
+    // abort. Its response must be a non-retryable 504, never a retryable 502 or
+    // 503; a retry of either would apply the mutation twice.
+    const waitFor = async (predicate: () => boolean, timeoutMs: number) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (predicate()) {
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      throw new Error("waitFor timed out");
+    };
+
+    const queueDir = "/virtual-bridge/queue";
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const requestFile = "req-late-abort.json";
+    const requestPath = path.posix.join(directories.requestsDir, requestFile);
+    const responsePath = path.posix.join(directories.responsesDir, requestFile);
+
+    const requestBodies = new Map<string, string>();
+    requestBodies.set(requestPath, bridgeRequestJson("req-late-abort"));
+    const responseWrites: Array<{ path: string; status: number; body: string }> = [];
+    const requestRemovals: string[] = [];
+
+    const client: SandboxCallbackBridgeQueueClient = {
+      makeDir: async () => {},
+      makeDirs: async () => {},
+      listJsonFiles: async (dir) =>
+        dir === directories.requestsDir
+          ? [...requestBodies.keys()].map((entry) => path.posix.basename(entry)).sort()
+          : [],
+      readTextFile: async (remotePath) => {
+        const body = requestBodies.get(remotePath);
+        if (body === undefined) {
+          throw new Error(`missing request ${remotePath}`);
+        }
+        return body;
+      },
+      writeTextFile: async () => {},
+      writeResponseFile: async (remotePath, body) => {
+        responseWrites.push({ path: remotePath, status: JSON.parse(body.trim()).status, body });
+        return { wrote: true };
+      },
+      rename: async () => {},
+      remove: async (remotePath) => {
+        requestRemovals.push(remotePath);
+        requestBodies.delete(remotePath);
+      },
+    };
+
+    const { runtimeSpan, workerErrors } = createWorkerErrorCapture();
+    let handlerCompletedLate = false;
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      iterationTimeoutMs: 50,
+      watchdogTimeoutMs: 10_000,
+      runtimeSpan,
+      authorizeRequest: async () => null,
+      // The handler mirrors a mutating forward that already committed on the
+      // host. It rejects only after the worker aborts it, so its completion is
+      // late. The mutation stays committed; the abort cannot undo it.
+      handleRequest: (_request, options) =>
+        new Promise<{ status: number; body?: string }>((_resolve, reject) => {
+          options?.signal.addEventListener("abort", () => {
+            handlerCompletedLate = true;
+            reject(new Error("aborted by worker after the mutation committed"));
+          });
+        }),
+    });
+
+    await waitFor(() => responseWrites.some((write) => write.path === responsePath), 3_000);
+
+    expect(handlerCompletedLate).toBe(true);
+    expect(workerErrors.some((message) => message.includes("timed out"))).toBe(true);
+
+    // Exactly one response landed for the request: the non-retryable 504.
+    const requestResponses = responseWrites.filter((write) => write.path === responsePath);
+    expect(requestResponses).toHaveLength(1);
+    expect(requestResponses[0]?.status).toBe(504);
+
+    // The bridge wrote no retryable status for the possibly-committed mutation.
+    expect(responseWrites.some((write) => write.status === 502)).toBe(false);
+    expect(responseWrites.some((write) => write.status === 503)).toBe(false);
+
+    // The response marks the outcome indeterminate and non-retryable, so the
+    // caller does not retry.
+    const parsed = JSON.parse(requestResponses[0]?.body ?? "{}");
+    expect(parsed.status).toBe(504);
+    const responseBody = JSON.parse(parsed.body);
+    expect(responseBody.outcome).toBe("indeterminate");
+    expect(responseBody.retryable).toBe(false);
+    expect(parsed.headers?.["x-paperclip-bridge-outcome"]).toBe("indeterminate");
+
     expect(requestRemovals).toContain(requestPath);
 
     await worker.stop({ drainTimeoutMs: 10 });
