@@ -10,6 +10,7 @@ import {
   normalizeModelProfileWakeContext,
   readActiveForcedModelProfile,
   resolveModelProfileApplication,
+  isAppendOnlyResumeWake,
   isEphemeralStatusOnlyRecoverySession,
   isConfigurationIncompleteFailedRun,
 } from "../services/heartbeat.ts";
@@ -176,6 +177,18 @@ describe("heartbeat model profile application", () => {
       allowDocumentUpdates: false,
       resumeRequiresNormalModel: true,
     })).toBe(false);
+  });
+
+  it("recognizes automatic recovery and continuation wakes as append-only resume deltas", () => {
+    expect(isAppendOnlyResumeWake({
+      wakeReason: "issue_assignment_recovery",
+      retryReason: "assignment_recovery",
+    })).toBe(true);
+    expect(isAppendOnlyResumeWake({
+      wakeReason: "issue_continuation_needed",
+      retryReason: "issue_continuation_needed",
+    })).toBe(true);
+    expect(isAppendOnlyResumeWake({ wakeReason: "issue_assigned" })).toBe(false);
   });
 
   it("treats model resolution failures as non-retryable configuration failures", () => {

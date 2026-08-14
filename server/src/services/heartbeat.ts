@@ -3809,6 +3809,25 @@ export function isEphemeralStatusOnlyRecoverySession(
     && contextSnapshot.resumeRequiresNormalModel === true;
 }
 
+/**
+ * Automatic recovery and continuation wakes are resume deltas, not fresh
+ * assignments. Their useful context is the current state plus the append-only
+ * continuation summary; replaying the full brief can consume a provider run
+ * before work begins.
+ */
+export function isAppendOnlyResumeWake(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+) {
+  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  const retryReason = readNonEmptyString(contextSnapshot?.retryReason);
+  return (
+    wakeReason === "issue_assignment_recovery" ||
+    wakeReason === "issue_continuation_needed" ||
+    retryReason === "assignment_recovery" ||
+    retryReason === "issue_continuation_needed"
+  );
+}
+
 function readAgentRuntimeModelProfile(
   runtimeConfig: unknown,
   key: ModelProfileKey,
@@ -6047,6 +6066,7 @@ export async function buildPaperclipWakePayload(input: {
       }
     | null;
   exposeLowTrustRaw?: boolean;
+  omitIssueDescription?: boolean;
 }) {
   const executionStage = parseObject(input.contextSnapshot.executionStage);
   const commentIds = extractWakeCommentIds(input.contextSnapshot);
@@ -6109,7 +6129,7 @@ export async function buildPaperclipWakePayload(input: {
           );
 
   const commentsById = new Map(commentRows.map((comment) => [comment.id, comment]));
-  const issueDescription = issueSummary?.description ?? null;
+  const issueDescription = input.omitIssueDescription ? null : issueSummary?.description ?? null;
   const issueDescriptionTruncated =
     issueDescription !== null && issueDescription.length > MAX_INLINE_WAKE_ISSUE_DESCRIPTION_CHARS;
   const inlineIssueDescription = issueDescriptionTruncated
@@ -16481,6 +16501,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (recoveryCause) {
       Object.assign(context, withRecoveryModelProfileHint({ recoveryCause }, "status_only"));
     }
+    const appendOnlyResumeWake = isAppendOnlyResumeWake(context);
     const wakeCommentId = deriveCommentId(context, null);
     const wakeCommentContext =
       issueContext && wakeCommentId
@@ -16723,6 +16744,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         : null,
       exposeLowTrustRaw,
+      omitIssueDescription: appendOnlyResumeWake,
     });
     if (paperclipWakePayload) {
       context[PAPERCLIP_WAKE_PAYLOAD_KEY] = paperclipWakePayload;
@@ -16736,10 +16758,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             identifier: issueRef.identifier,
             title: issueRef.title,
             workMode: issueRef.workMode,
-            description: issueRef.description,
+            description: appendOnlyResumeWake ? null : issueRef.description,
           }
         : null,
-      ancestors: issueAncestors,
+      ancestors: appendOnlyResumeWake ? [] : issueAncestors,
       wakeComment: safeWakeCommentContext,
       interaction: {
         kind: readNonEmptyString(context.interactionKind),
@@ -16756,7 +16778,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         id: issueRef.id,
         identifier: issueRef.identifier,
         title: issueRef.title,
-        description: issueRef.description,
+        description: appendOnlyResumeWake ? null : issueRef.description,
         workMode: issueRef.workMode,
       };
     } else {
@@ -20310,7 +20332,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const recoverySource =
         issue.status === "todo" ? "issue.assignment_recovery" : "issue.continuation_recovery";
       const now = new Date();
-      const recoveryContextSnapshot = withRecoveryModelProfileHint({
+      const recoveryContextInput = {
         issueId: issue.id,
         taskId: issue.id,
         taskKey: issue.identifier,
@@ -20318,7 +20340,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         retryReason,
         source: recoverySource,
         retryOfRunId: run.id,
-      }, "normal_model");
+      };
+      const recoveryContextSnapshot = issue.status === "todo"
+        ? withRecoveryModelProfileHint(recoveryContextInput, "status_only")
+        : withRecoveryModelProfileHint(recoveryContextInput, "normal_model");
       const responsibleUserId = await resolveResponsibleUserIdForRunSeed({
         companyId: issue.companyId,
         contextSnapshot: recoveryContextSnapshot,
@@ -20348,7 +20373,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           source: "automation",
           triggerDetail: "system",
           reason: recoveryReason,
-          payload: withRecoveryModelProfileHint({
+          payload: issue.status === "todo" ? withRecoveryModelProfileHint({
+            issueId: issue.id,
+            retryOfRunId: run.id,
+          }, "status_only") : withRecoveryModelProfileHint({
             issueId: issue.id,
             retryOfRunId: run.id,
           }, "normal_model"),

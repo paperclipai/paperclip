@@ -1441,26 +1441,37 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     retryOfRunId?: string | null;
     extraContext?: Record<string, unknown>;
   }) {
+    // TSMC-20822: assignment-recovery re-enqueues are resume deltas — run
+    // them on the status_only profile (cheap, no deliverable work) and let
+    // resumeRequiresNormalModel hand real work back to the normal profile.
+    // Continuations of in-progress work keep the normal profile.
+    const requeuePayload = {
+      issueId: input.issueId,
+      ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
+      ...(input.extraContext ?? {}),
+    };
+    const requeueContext = {
+      issueId: input.issueId,
+      taskId: input.issueId,
+      wakeReason: input.reason,
+      retryReason: input.retryReason,
+      source: input.source,
+      ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
+      ...(input.extraContext ?? {}),
+    };
+    const statusOnlyRequeue = input.retryReason === "assignment_recovery";
     const queued = await deps.enqueueWakeup(input.agentId, {
       source: "automation",
       triggerDetail: "system",
       reason: input.reason,
-      payload: withRecoveryModelProfileHint({
-        issueId: input.issueId,
-        ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
-        ...(input.extraContext ?? {}),
-      }, "normal_model"),
+      payload: statusOnlyRequeue
+        ? withRecoveryModelProfileHint(requeuePayload, "status_only")
+        : withRecoveryModelProfileHint(requeuePayload, "normal_model"),
       requestedByActorType: "system",
       requestedByActorId: null,
-      contextSnapshot: withRecoveryModelProfileHint({
-        issueId: input.issueId,
-        taskId: input.issueId,
-        wakeReason: input.reason,
-        retryReason: input.retryReason,
-        source: input.source,
-        ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
-        ...(input.extraContext ?? {}),
-      }, "normal_model"),
+      contextSnapshot: statusOnlyRequeue
+        ? withRecoveryModelProfileHint(requeueContext, "status_only")
+        : withRecoveryModelProfileHint(requeueContext, "normal_model"),
     });
 
     if (queued && input.retryOfRunId) {

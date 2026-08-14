@@ -5955,7 +5955,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const retryRun = runs.find((row) => row.id !== runId);
     expect(retryRun?.id).toBeTruthy();
     expect((retryRun?.contextSnapshot as Record<string, unknown>)?.retryReason).toBe("assignment_recovery");
-    expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      modelProfile: "cheap",
+      recoveryIntent: "status_only",
+      allowDeliverableWork: false,
+      allowDocumentUpdates: false,
+      resumeRequiresNormalModel: true,
+    });
     if (retryRun) {
       await waitForRunToSettle(heartbeat, retryRun.id);
     }
@@ -6008,8 +6014,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryReason: "assignment_recovery",
       source: "issue.assignment_recovery",
       retryOfRunId: runId,
+      modelProfile: "cheap",
+      recoveryIntent: "status_only",
+      allowDeliverableWork: false,
+      allowDocumentUpdates: false,
+      resumeRequiresNormalModel: true,
     });
-    expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
     if (retryRun) {
       await waitForRunToSettle(heartbeat, retryRun.id);
     }
@@ -7316,7 +7326,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const retryRun = runs.find((row) => row.id !== runId);
     expect((retryRun?.contextSnapshot as Record<string, unknown>)?.retryReason).toBe("assignment_recovery");
-    expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
+    // TSMC-20822: assignment-recovery re-enqueues run on the status_only
+    // profile (same contract as the sibling re-enqueue tests above).
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      modelProfile: "cheap",
+      recoveryIntent: "status_only",
+      resumeRequiresNormalModel: true,
+    });
     if (retryRun) {
       await waitForRunToSettle(heartbeat, retryRun.id);
     }
