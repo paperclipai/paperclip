@@ -5,5 +5,11 @@
       "description": "Bir şirket oluşturarak başlayın.",
       "newCompany": "Yeni Şirket"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Language",
+      "description": "Board UI language. Untranslated screens stay in English."
+    }
   }
 }

@@ -5,5 +5,11 @@
       "description": "ابدأ بإنشاء شركة.",
       "newCompany": "شركة جديدة"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Language",
+      "description": "Board UI language. Untranslated screens stay in English."
+    }
   }
 }

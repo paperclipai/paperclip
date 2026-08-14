@@ -5,5 +5,11 @@
       "description": "Mulakan dengan mencipta syarikat.",
       "newCompany": "Syarikat Baharu"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Language",
+      "description": "Board UI language. Untranslated screens stay in English."
+    }
   }
 }

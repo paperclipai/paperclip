@@ -5,5 +5,11 @@
       "description": "Ξεκινήστε δημιουργώντας μια εταιρεία.",
       "newCompany": "Νέα εταιρεία"
     }
+  },
+  "settings": {
+    "language": {
+      "label": "Language",
+      "description": "Board UI language. Untranslated screens stay in English."
+    }
   }
 }
