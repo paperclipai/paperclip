@@ -250,14 +250,8 @@ export const DEFAULT_SETUP_TOKEN_SESSION_CAPS: SetupTokenSessionCaps = {
   perCompany: 3,
 };
 
-/**
- * The default host timeout for one login session. The budget covers the whole
- * interactive flow: the command-line tool boot, the authorization-URL emit, the
- * manual browser round-trip (open the URL, sign in, copy the browser code, paste
- * the code), and the token exchange. A 5-minute budget was too short, so a normal
- * login overran it and the session went to `timed_out`. The budget is 10 minutes.
- */
-export const DEFAULT_SETUP_TOKEN_SESSION_TTL_MS = 10 * 60_000;
+/** The default host timeout for one login session. */
+export const DEFAULT_SETUP_TOKEN_SESSION_TTL_MS = 5 * 60_000;
 
 /**
  * The default retention window for a completed token. The service releases the

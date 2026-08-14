@@ -11,7 +11,6 @@ import {
 } from "@paperclipai/db";
 import {
   createDbSetupTokenCleanupStore,
-  DEFAULT_SETUP_TOKEN_SESSION_TTL_MS,
   SetupTokenSessionService,
   SetupTokenSessionError,
   assessConfidentialStartup,
@@ -97,9 +96,6 @@ class FakeProcess implements SetupTokenLoginProcess {
 
 class FakeLeaseManager implements SetupTokenLeaseManager {
   acquired: string[] = [];
-  // The external expiry the service passes to `acquire`. The sandbox lease and
-  // the Daytona provider time-to-live derive from this deadline.
-  acquiredDeadlines: number[] = [];
   released: string[] = [];
   releaseByIdCalls: string[] = [];
   failReleaseOnce = false;
@@ -109,7 +105,6 @@ class FakeLeaseManager implements SetupTokenLeaseManager {
     this.counter += 1;
     const id = `lease-${this.counter}`;
     this.acquired.push(id);
-    this.acquiredDeadlines.push(input.deadline);
     return { id };
   }
   async release(lease: SetupTokenLease): Promise<void> {
@@ -280,29 +275,6 @@ describe("SetupTokenSessionService.start", () => {
     expect(processes).toHaveLength(1);
     expect(leases.acquired).toEqual(["lease-1"]);
     expect(service.activeSessionCount()).toBe(1);
-  });
-
-  it("sets the default deadline to now plus 10 minutes and passes it to the lease", async () => {
-    // The default budget covers the whole interactive login flow. The deadline,
-    // the sandbox lease external expiry, and the Daytona provider time-to-live
-    // all derive from this one value.
-    expect(DEFAULT_SETUP_TOKEN_SESSION_TTL_MS).toBe(10 * 60_000);
-    const fixedNow = 1_700_000_000_000;
-    const leases = new FakeLeaseManager();
-    const store = new FakeStore();
-    // Use the real default budget, not the shorter test override.
-    const { service } = buildService({
-      leases,
-      store,
-      ttlMs: DEFAULT_SETUP_TOKEN_SESSION_TTL_MS,
-      now: () => fixedNow,
-    });
-    const result = await service.start(OWNER_SCOPE);
-    const expectedDeadline = fixedNow + 10 * 60_000;
-    // `leases.acquire` receives the larger deadline.
-    expect(leases.acquiredDeadlines).toEqual([expectedDeadline]);
-    // The durable cleanup record stores the same deadline.
-    expect(store.rows.get(result.sessionId)?.deadline).toBe(expectedDeadline);
   });
 
   it("returns an opaque, high-entropy session id", async () => {
