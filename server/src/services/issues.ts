@@ -1195,7 +1195,7 @@ const RUN_LOCK_CONFLICT_HINTS: Record<RunLockConflictReason, string> = {
   actor_run_holds_lock:
     "Your own run already holds this issue's lock, so ownership is not what rejected this call. Re-read the current issue state instead of retrying.",
   stale_lock_pending_reap:
-    "The holding run has ended, so this lock is stale and is reaped automatically on the assignee's next checkout or PATCH. If you are the assignee, retry that same call exactly once rather than forcing or routing around the lock; if you are not, move on — the reap is the assignee's to trigger.",
+    "The holding run has ended, so this lock is stale and is reaped automatically on the assignee's next checkout or PATCH. If you are the assignee, retry that same call exactly once rather than forcing or routing around the lock; if you are not, move on — the reap is the assignee's to trigger. That retry is capped at one: the reap runs before the call is judged, so a second conflict is no longer about the lock — read its conflictReason (it will name the status/assignee guard) and stop retrying.",
   live_sibling_run:
     "A different, still-running run of your own agent is working this issue. Concurrent runs of one agent are normal (maxConcurrentRuns is above 1 for a normal agent), and being the assignee does not make this lock ignorable. Do not retry and do not create a workaround issue — return to the issues in your own wake scope.",
   live_other_agent_run:

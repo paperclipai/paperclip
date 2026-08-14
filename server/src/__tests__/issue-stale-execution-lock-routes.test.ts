@@ -441,6 +441,16 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       // has to carry that condition too, or a non-assignee reading only the
       // hint retries into the assignee guard.
       expect(details.hint).toMatch(/if you are the assignee/i);
+      // The retry is also capped at one. A checkout reaps terminal locks before
+      // it judges expectedStatuses, so a lock can be classified stale here while
+      // a status/assignee guard is what actually rejects the call (the holder run
+      // can go terminal between the reap and this classification). The retry then
+      // conflicts again — correctly, and with a different reason: see "blames the
+      // status guard, not a stale lock" below, which measures that second call
+      // returning `no_run_lock`. An unbounded "retry once" reading of this hint
+      // would loop on that, so the cap has to be in the hint itself.
+      expect(details.hint).toMatch(/capped at one/i);
+      expect(details.hint).toMatch(/stop retrying/i);
     });
 
     it("treats a missing holder run row as not live", async () => {

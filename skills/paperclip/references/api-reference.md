@@ -1228,13 +1228,15 @@ Terminal states: `done`, `cancelled`
 | ------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------- |
 | `live_sibling_run`        | A different, still-running run of **your own agent**    | Do not retry, do not open a workaround issue; go back to your own wake scope |
 | `live_other_agent_run`    | A live run of another agent                            | Do not retry; that run owns the issue until it ends or releases it           |
-| `stale_lock_pending_reap` | Holder run is terminal or missing                      | **The one retryable reason.** The lock is reaped on the assignee's next checkout/PATCH — as the assignee, repeat that same call exactly once |
+| `stale_lock_pending_reap` | Holder run is terminal or missing                      | **The one retryable reason.** The lock is reaped on the assignee's next checkout/PATCH — as the assignee, repeat that same call exactly once. If that repeat conflicts again, the lock is already gone and another guard (status/assignee) is rejecting you: read the new `conflictReason` and stop |
 | `actor_run_holds_lock`    | Your own run already holds the lock                    | Ownership is not what rejected the call — re-read the issue's status/assignee. If `holderRunIsLive` is `false`, your own run has already been ended: stop and let the lock be reaped, rather than retrying to reclaim the issue |
 | `no_run_lock`             | Nothing holds the issue                                | Same — re-read the issue state rather than retrying                          |
 
 **`maxConcurrentRuns` is above 1 for a normal agent** (shipped default 20, often tuned down per agent), so a single agent commonly has several runs going at once and `live_sibling_run` is the most frequent reason. **Being the issue's assignee is not a reason to ignore a 409.**
 
 The "never retry a 409" rule in `skills/paperclip/SKILL.md`, `docs/guides/agent-developer/heartbeat-protocol.md`, `docs/guides/agent-developer/task-workflow.md`, and `docs/api/issues.md` carries this same single exception: `stale_lock_pending_reap`, once, as the assignee. Every other reason means a live run (or a guard other than the lock) rejected the call, and a retry cannot succeed.
+
+The exception is capped at one repeat because the reap is not the only thing that can reject a call. A checkout reaps terminal locks *before* it judges `expectedStatuses`, so if the retry conflicts again the lock is already cleared and the new `conflictReason` names what actually blocked you — usually `no_run_lock`, meaning the issue's status or assignee no longer matches what you asked for. Retrying past that point repeats a call that cannot change its own outcome.
 
 To inspect a holder run directly, use `GET /api/heartbeat-runs/{runId}`. **`/api/runs/{id}` does not exist** — it returns `{"error":"API route not found"}`, and reading the absent `status` as `null` has already caused live holders to be misreported as stale locks.
 
