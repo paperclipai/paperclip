@@ -135,6 +135,27 @@ export function isInlineAttachmentContentType(contentType: string): boolean {
   return matchesContentType(contentType, [...INLINE_ATTACHMENT_TYPES]);
 }
 
+/**
+ * Append `; charset=utf-8` to textual content types (`text/*`, `application/json`,
+ * `*+json`) that don't already declare a charset. Binary/media content types and
+ * content types with an existing charset parameter are returned unchanged.
+ *
+ * Stored attachment/asset bytes are UTF-8; without an explicit charset, browsers
+ * may guess the wrong encoding when rendering text content inline (e.g. CJK
+ * mojibake).
+ */
+export function withUtf8CharsetIfTextual(contentType: string | null | undefined): string {
+  const trimmed = (contentType ?? "").trim();
+  if (!trimmed) return trimmed;
+  const [base, ...params] = trimmed.split(";");
+  const baseType = base.trim().toLowerCase();
+  const hasCharset = params.some((param) => param.trim().toLowerCase().startsWith("charset="));
+  if (hasCharset) return trimmed;
+  const isTextual = baseType.startsWith("text/") || baseType === "application/json" || baseType.endsWith("+json");
+  if (!isTextual) return trimmed;
+  return `${trimmed}; charset=utf-8`;
+}
+
 // ---------- Module-level singletons read once at startup ----------
 
 const allowedPatterns: string[] = parseAllowedTypes(

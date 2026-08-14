@@ -169,6 +169,7 @@ import {
   normalizeContentType,
   normalizeUploadAttachmentContentType,
   SVG_CONTENT_TYPE,
+  withUtf8CharsetIfTextual,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
@@ -12749,7 +12750,7 @@ export function issueRoutes(
       objectContentType: object.contentType,
       originalFilename: attachment.originalFilename,
     });
-    res.setHeader("Content-Type", responseContentType);
+    res.setHeader("Content-Type", withUtf8CharsetIfTextual(responseContentType));
     res.setHeader("Cache-Control", "private, max-age=60");
     res.setHeader("X-Content-Type-Options", "nosniff");
     if (responseContentType === SVG_CONTENT_TYPE) {

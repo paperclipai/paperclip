@@ -6,7 +6,7 @@ import type { Db } from "@paperclipai/db";
 import { createAssetImageMetadataSchema } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
-import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
+import { isAllowedContentType, MAX_ATTACHMENT_BYTES, withUtf8CharsetIfTextual } from "../attachment-types.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 const SVG_CONTENT_TYPE = "image/svg+xml";
 const ALLOWED_COMPANY_LOGO_CONTENT_TYPES = new Set([
@@ -318,7 +318,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
     const object = await storage.getObject(asset.companyId, asset.objectKey);
     const responseContentType = asset.contentType || object.contentType || "application/octet-stream";
-    res.setHeader("Content-Type", responseContentType);
+    res.setHeader("Content-Type", withUtf8CharsetIfTextual(responseContentType));
     res.setHeader("Content-Length", String(asset.byteSize || object.contentLength || 0));
     res.setHeader("Cache-Control", "private, max-age=60");
     res.setHeader("X-Content-Type-Options", "nosniff");

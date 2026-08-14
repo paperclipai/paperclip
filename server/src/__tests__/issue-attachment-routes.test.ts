@@ -515,6 +515,31 @@ describe("issue attachment routes", () => {
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
   });
 
+  it("serves markdown attachments with an explicit utf-8 charset", async () => {
+    const storage = createStorageService();
+    mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("text/markdown", "notes.md"));
+
+    const app = await createApp(storage);
+    const res = await request(app).get("/api/attachments/attachment-1/content");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("text/markdown; charset=utf-8");
+  });
+
+  it("does not add a charset to binary attachment content types", async () => {
+    const storage = createStorageService();
+    mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("application/x-msdownload", "payload.exe"));
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .get("/api/attachments/attachment-1/content")
+      .buffer(true)
+      .parse(parseBinaryResponse);
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("application/x-msdownload");
+  });
+
   it("keeps image attachments inline for previews", async () => {
     const storage = createStorageService();
     mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("image/png", "preview.png"));

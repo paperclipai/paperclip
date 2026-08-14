@@ -8,6 +8,7 @@ import {
   normalizeContentType,
   normalizeUploadAttachmentContentType,
   parseAllowedTypes,
+  withUtf8CharsetIfTextual,
 } from "../attachment-types.js";
 
 describe("parseAllowedTypes", () => {
@@ -197,5 +198,50 @@ describe("isInlineAttachmentContentType", () => {
     expect(INLINE_ATTACHMENT_TYPES).not.toContain("text/html");
     expect(isInlineAttachmentContentType("text/html")).toBe(false);
     expect(isInlineAttachmentContentType("application/zip")).toBe(false);
+  });
+});
+
+describe("withUtf8CharsetIfTextual", () => {
+  it("adds charset=utf-8 to text/* types", () => {
+    expect(withUtf8CharsetIfTextual("text/markdown")).toBe("text/markdown; charset=utf-8");
+    expect(withUtf8CharsetIfTextual("text/plain")).toBe("text/plain; charset=utf-8");
+    expect(withUtf8CharsetIfTextual("text/csv")).toBe("text/csv; charset=utf-8");
+    expect(withUtf8CharsetIfTextual("text/html")).toBe("text/html; charset=utf-8");
+  });
+
+  it("adds charset=utf-8 to application/json and *+json types", () => {
+    expect(withUtf8CharsetIfTextual("application/json")).toBe("application/json; charset=utf-8");
+    expect(withUtf8CharsetIfTextual("application/ld+json")).toBe("application/ld+json; charset=utf-8");
+  });
+
+  it("is case-insensitive when matching the base type", () => {
+    expect(withUtf8CharsetIfTextual("Text/Markdown")).toBe("Text/Markdown; charset=utf-8");
+  });
+
+  it("preserves an existing charset instead of duplicating it", () => {
+    expect(withUtf8CharsetIfTextual("text/plain; charset=iso-8859-1")).toBe(
+      "text/plain; charset=iso-8859-1",
+    );
+    expect(withUtf8CharsetIfTextual("text/markdown; charset=utf-8")).toBe(
+      "text/markdown; charset=utf-8",
+    );
+  });
+
+  it("leaves binary/media content types unchanged", () => {
+    for (const contentType of [
+      "application/pdf",
+      "application/zip",
+      "image/png",
+      "video/mp4",
+      "application/octet-stream",
+    ]) {
+      expect(withUtf8CharsetIfTextual(contentType)).toBe(contentType);
+    }
+  });
+
+  it("handles empty or missing input", () => {
+    expect(withUtf8CharsetIfTextual(undefined)).toBe("");
+    expect(withUtf8CharsetIfTextual(null)).toBe("");
+    expect(withUtf8CharsetIfTextual("")).toBe("");
   });
 });
