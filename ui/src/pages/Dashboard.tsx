@@ -5,6 +5,7 @@ import {
   shouldRouteAgentlessCompanyToOnboarding,
 } from "../lib/onboarding-route";
 import { useCompanyMission } from "../hooks/useCompanyMission";
+import { claimOnboardingOffer } from "../lib/onboarding-auto-open";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
@@ -85,20 +86,18 @@ export function Dashboard() {
     agentsLoaded: agents !== undefined,
     agentCount: agents?.length ?? 0,
   });
-  // Auto-open once per company, and never again for that company. Every input
-  // to the effect sits behind a query, so a refetch re-runs it — and a second
-  // `openOnboarding` call would reopen a wizard the customer had deliberately
-  // closed. Onboarding is an offer here, and an offer that reopens after it is
-  // declined is not one.
-  const autoOpenedForCompanyRef = useRef<string | null>(null);
+  // Auto-open once per company. Every input to the effect sits behind a query,
+  // so a refetch re-runs it, and the customer can also navigate away and come
+  // back — both would otherwise call `openOnboarding` again and reopen a
+  // wizard that was deliberately closed. `claimOnboardingOffer` holds the
+  // companies already offered; see it for why that outlives this component.
   useEffect(() => {
     if (!shouldOpenOnboarding || !selectedCompanyId) return;
     // Wait for the mission lookup to settle before opening: the wizard applies
     // the step it is given once, so a step chosen before the answer is in is
     // the step the customer is left on.
     if (!missionSettled) return;
-    if (autoOpenedForCompanyRef.current === selectedCompanyId) return;
-    autoOpenedForCompanyRef.current = selectedCompanyId;
+    if (!claimOnboardingOffer(selectedCompanyId)) return;
     openOnboarding({
       companyId: selectedCompanyId,
       initialStep: onboardingStepForCompany(companyHasMission),

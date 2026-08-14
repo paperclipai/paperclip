@@ -29,6 +29,7 @@ import {
 const mockGoalsApi = vi.hoisted(() => ({
   list: vi.fn(),
   create: vi.fn(),
+  update: vi.fn(),
 }));
 const mockAdaptersApi = vi.hoisted(() => ({ list: vi.fn() }));
 
@@ -376,6 +377,59 @@ describe("OnboardingWizard — which step it lands on", () => {
       await settle();
 
       expect(mockGoalsApi.create).toHaveBeenCalledTimes(1);
+    });
+
+    it("updates the mission it could not see, rather than adding a second", async () => {
+      // The cost of failing open. The lookup could not answer, so the customer
+      // was asked for a mission the company already had. Adding a goal would
+      // leave two active company-level goals, and the earlier one would keep
+      // winning `selectDefaultCompanyGoalId` outside this wizard — so the
+      // mission the customer just typed would lose. Their answer wins instead.
+      // The dashboard's lookup failed, which is why this company is on the
+      // mission step at all. By the time the customer confirms, the goal list
+      // reads — and it has a mission.
+      mockGoalsApi.list.mockResolvedValue([COMPANY_GOAL]);
+      mockGoalsApi.update.mockResolvedValue({ id: COMPANY_GOAL.id });
+      await openOnMissionStepForExistingCompany();
+
+      const direct = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("I know my mission"),
+      )!;
+      await click(direct);
+      setControlledValue(missionTextarea()!, "The mission they just typed");
+      await settle();
+      await click(confirmMissionButton()!);
+      await settle();
+
+      expect(mockGoalsApi.create).not.toHaveBeenCalled();
+      expect(mockGoalsApi.update).toHaveBeenCalledWith(
+        COMPANY_GOAL.id,
+        expect.objectContaining({ title: "The mission they just typed" }),
+      );
+      expect(currentStep()).toBe("agent");
+    });
+
+    it("still writes the mission when the pre-write read also fails", async () => {
+      // Fail-open all the way down. If it cannot tell whether a mission
+      // exists, an unwritten mission is the worse error.
+      mockGoalsApi.list.mockRejectedValue(new Error("goals unavailable"));
+      mockGoalsApi.create.mockResolvedValue({ id: "goal-new" });
+      await openOnMissionStepForExistingCompany();
+
+      const direct = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("I know my mission"),
+      )!;
+      await click(direct);
+      setControlledValue(missionTextarea()!, "Ship the thing");
+      await settle();
+      await click(confirmMissionButton()!);
+      await settle();
+
+      expect(mockGoalsApi.create).toHaveBeenCalledWith(
+        "company-1",
+        expect.objectContaining({ title: "Ship the thing" }),
+      );
+      expect(currentStep()).toBe("agent");
     });
 
     it("does not carry a mission across a switch to another company", async () => {

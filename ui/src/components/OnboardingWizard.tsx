@@ -692,12 +692,39 @@ export function OnboardingWizard() {
       setError(null);
       try {
         const parsedGoal = parseOnboardingGoalInput(companyGoal);
-        const goal = await goalsApi.create(createdCompanyId, {
+        const payload = {
           title: parsedGoal.title,
-          ...(parsedGoal.description ? { description: parsedGoal.description } : {}),
-          level: "company",
-          status: "active"
-        });
+          ...(parsedGoal.description ? { description: parsedGoal.description } : {})
+        };
+
+        // The company may already have a mission this step could not see.
+        // `useCompanyMission` fails open, so a goal lookup that exhausted its
+        // retries sends a company that has one here anyway. Adding a second
+        // company-level goal would leave two, and the earlier one would keep
+        // winning `selectDefaultCompanyGoalId` everywhere outside this wizard.
+        //
+        // So read once more before writing, and update rather than add. The
+        // customer just answered the question on a step that asked it, so
+        // their answer is the mission. A read that fails still writes: an
+        // unwritten mission is the failure this whole change exists to remove.
+        let existingGoalId: string | null = null;
+        try {
+          const goals = await queryClient.fetchQuery({
+            queryKey: queryKeys.goals.list(createdCompanyId),
+            queryFn: () => goalsApi.list(createdCompanyId)
+          });
+          existingGoalId = selectDefaultCompanyGoalId(goals);
+        } catch {
+          // Still cannot tell. Fall through and write.
+        }
+
+        const goal = existingGoalId
+          ? await goalsApi.update(existingGoalId, payload)
+          : await goalsApi.create(createdCompanyId, {
+              ...payload,
+              level: "company",
+              status: "active"
+            });
         setCreatedCompanyGoalId(goal.id);
         queryClient.invalidateQueries({
           queryKey: queryKeys.goals.list(createdCompanyId)
