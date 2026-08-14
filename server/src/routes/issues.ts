@@ -9006,6 +9006,11 @@ export function issueRoutes(
         ? (await svc.getProposedDependencyReadiness(existing.id, requestedBlockerIds)).unresolvedBlockerCount > 0
         : (await svc.getDependencyReadiness(existing.id)).unresolvedBlockerCount > 0;
       if (hasUnresolvedBlocker) {
+        if (req.body.executionPolicy !== undefined) {
+          throw unprocessable(
+            "executionPolicy cannot be changed while unresolved blockers suspend an active stage",
+          );
+        }
         if (!actorIsActiveStageParticipant && req.actor.type === "agent") {
           const actorWatchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
           allowNonParticipantPendingStageBlock = actorWatchdogScope.kind === "watchdog";

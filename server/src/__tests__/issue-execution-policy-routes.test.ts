@@ -809,6 +809,93 @@ describe("issue execution policy routes", () => {
     });
   });
 
+  it.each([
+    ["policy replacement", {
+      mode: "normal",
+      commentRequired: false,
+      stages: [{
+        id: "11111111-1111-4111-8111-111111111111",
+        type: "review",
+        approvalsNeeded: 1,
+        participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+      }],
+    }],
+    ["null policy", null],
+    ["current-stage removal", {
+      mode: "normal",
+      commentRequired: true,
+      stages: [{
+        id: "22222222-2222-4222-8222-222222222222",
+        type: "approval",
+        approvalsNeeded: 1,
+        participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+      }],
+    }],
+    ["participant drift", {
+      mode: "normal",
+      commentRequired: true,
+      stages: [{
+        id: "11111111-1111-4111-8111-111111111111",
+        type: "review",
+        approvalsNeeded: 1,
+        participants: [{ type: "agent", agentId: "55555555-5555-4555-8555-555555555555" }],
+      }],
+    }],
+  ])("rejects reviewer blocker normalization combined with %s", async (_label, requestedPolicy) => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [{
+        id: "11111111-1111-4111-8111-111111111111",
+        type: "review",
+        participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+      }],
+    })!;
+    const executionState = {
+      status: "pending" as const,
+      currentStageId: "11111111-1111-4111-8111-111111111111",
+      currentStageIndex: 0,
+      currentStageType: "review" as const,
+      currentParticipant: { type: "agent" as const, agentId: "33333333-3333-4333-8333-333333333333" },
+      returnAssignee: { type: "agent" as const, agentId: "44444444-4444-4444-8444-444444444444" },
+      completedStageIds: [],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+    };
+    mockIssueService.getById.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1008",
+      title: "Blocked active review",
+      executionPolicy: policy,
+      executionState,
+    });
+    mockIssueService.getProposedDependencyReadiness.mockResolvedValue({
+      blockerIssueIds: ["77777777-7777-4777-8777-777777777777"],
+      isDependencyReady: false,
+      unresolvedBlockerCount: 1,
+    });
+
+    const reviewerApp = await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    });
+    const res = await request(reviewerApp)
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        blockedByIssueIds: ["77777777-7777-4777-8777-777777777777"],
+        executionPolicy: requestedPolicy,
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("executionPolicy cannot be changed while unresolved blockers suspend an active stage");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("allows a board user to cancel a drifted pending agent review task", async () => {
     const policy = normalizeIssueExecutionPolicy({
       stages: [
