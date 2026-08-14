@@ -23,15 +23,34 @@ describe("OnboardingWizard decorative panel theming", () => {
     "utf8"
   );
 
-  it("does not hardcode a dark decorative panel background", () => {
-    // Both spellings of a hardcoded surface. The bracket form is what this
-    // guard was written against; master has since migrated the codebase to the
-    // CSS-variable form, and a check that knows only the old spelling passes
-    // whether or not the panel is themed - it did exactly that until this
-    // widened it.
-    expect(source).not.toMatch(
-      /bg-(?:\[#[0-9a-fA-F]{3,8}\]|\(--hex-[0-9a-fA-F]{3,8}\))/
+  /**
+   * The className expression on the wrapper around <AsciiArtAnimation />.
+   * Anchoring here keeps both guards on the decorative panel itself - the same
+   * tokens appear elsewhere in the wizard. `[^<>]` stops the match spanning
+   * into other JSX elements.
+   */
+  function panelClassNames(): string | null {
+    return (
+      source.match(/className=\{cn\(([^<>]*)\)\}\s*>\s*<AsciiArtAnimation\s*\/>/)?.[1] ??
+      null
     );
+  }
+
+  it("gives the decorative panel no background but the muted token", () => {
+    // Scoped to the panel, not the file. A file-wide scan would fail this
+    // case for a hardcoded colour anywhere else in the wizard, reporting a
+    // panel regression that had not happened.
+    //
+    // Asserted as the complete set of `bg-` classes rather than a list of
+    // spellings to forbid. The previous version scanned for `bg-[#rrggbb]`
+    // alone, and passed unchanged once master migrated this class to
+    // `bg-(--hex-1d1d1d)` - so it guarded nothing at all for a while. A named
+    // colour like `bg-black` or `bg-zinc-900` would have slipped through the
+    // same way. Naming what is allowed cannot rot like that.
+    const panel = panelClassNames();
+    expect(panel).not.toBeNull();
+    const backgrounds = panel!.match(/\bbg-[^\s"'`,]+/g) ?? [];
+    expect(backgrounds).toEqual(["bg-muted"]);
   });
 
   it("themes the decorative panel with shadcn surface tokens", () => {
