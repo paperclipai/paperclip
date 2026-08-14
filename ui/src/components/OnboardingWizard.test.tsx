@@ -259,7 +259,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       root.unmount();
     });
   });
-  it("keeps a saved draft when the company query fails, instead of discarding it", async () => {
+  it("opens, and keeps the draft, when the initial company query fails", async () => {
     // React Query reports a failed list as `isLoading === false` with `data`
     // defaulted to `[]`, which is indistinguishable from "settled, and this
     // account owns nothing" — the verdict that wipes the blob. Deleting a
@@ -288,11 +288,19 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     });
     await flushReact();
 
-    // Nothing mounts, so the persist effect cannot overwrite the draft either.
-    expect(document.body.textContent).toBe("");
-    const stillThere = window.localStorage.getItem(ONBOARDING_STORAGE_KEY);
-    expect(stillThere).not.toBeNull();
-    expect(JSON.parse(stillThere!).createdCompanyId).toBe("c1");
+    // It mounts: the companies query sets `retry: false`, and with no
+    // companies the dashboard's "Get Started" button opens onboarding — a gate
+    // that rendered nothing here would make that button dead.
+    expect(document.body.textContent).not.toBe("");
+    // The draft is not restored, because ownership cannot be verified...
+    const nameInput = document.body.querySelector(
+      'input[placeholder="Chief of staff"]',
+    ) as HTMLInputElement | null;
+    expect(nameInput?.value ?? "").not.toBe("Ops Lead");
+    // ...and not deleted either. The wizard is open in this harness, so the
+    // persist effect does supersede it - the point is that the ownership check
+    // did not *discard* it. The closed case below is where it survives intact.
+    expect(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)).not.toBeNull();
 
     await act(async () => {
       root.unmount();
@@ -416,6 +424,39 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     getItem.mockRestore();
     removeItem.mockRestore();
     setItem.mockRestore();
+    await act(async () => {
+      root.unmount();
+    });
+  });
+  it("leaves the draft untouched when the company query fails and onboarding is closed", async () => {
+    // Mounting is safe for the draft precisely because the persist effect is
+    // gated on the wizard being open. A closed wizard writes nothing, so the
+    // blob survives for a later load that can actually verify ownership.
+    const draft = JSON.stringify({
+      step: 3,
+      companyName: "Saved Co",
+      agentName: "Ops Lead",
+      createdCompanyId: "c1",
+    });
+    window.localStorage.setItem(ONBOARDING_STORAGE_KEY, draft);
+    mockDialog.onboardingOpen = false;
+    mockDialog.onboardingRouteDismissed = true;
+    mockCompany.companies = [];
+    mockCompany.loading = false;
+    mockCompany.error = new Error("company list unavailable");
+
+    const { root, queryClient } = render();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <OnboardingWizard />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)).toBe(draft);
+
     await act(async () => {
       root.unmount();
     });

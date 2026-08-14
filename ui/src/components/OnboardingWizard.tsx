@@ -196,18 +196,20 @@ export function OnboardingWizard() {
   // refetch failed over a cache that is still good. Blocking on that would
   // fail closed, and onboarding would simply never appear for a customer whose
   // list is fine. Only an error that leaves the list empty is undecidable.
-  const companiesUndecided =
+  // Named for what it governs: whether the *draft* can be judged. It is not
+  // the same question as whether to mount - see the gate below.
+  const ownershipUndecidable =
     companiesLoading || (companiesError !== null && companies.length === 0);
 
   const { saved, staleStateDetected } = useMemo(() => {
     if (rawBlob === undefined) return { saved: null, staleStateDetected: false };
     // Companies not settled yet: restoreOnboardingState must not be called
     // (see its CONTRACT). Not stale, just not decidable yet.
-    if (companiesUndecided) return { saved: null, staleStateDetected: false };
+    if (ownershipUndecidable) return { saved: null, staleStateDetected: false };
     if (rawBlob === null) return { saved: null, staleStateDetected: true };
     const restored = restoreOnboardingState(rawBlob, companies);
     return { saved: restored, staleStateDetected: restored === null };
-  }, [rawBlob, companiesUndecided, companies]);
+  }, [rawBlob, ownershipUndecidable, companies]);
 
   // A discarded/malformed state should not sit in storage waiting to confuse
   // the next onboarding attempt (e.g. a different signed-in user).
@@ -216,16 +218,24 @@ export function OnboardingWizard() {
     onboardingDraftStorage.clear();
   }, [staleStateDetected]);
 
-  // A saved blob exists but companies haven't settled yet: wait rather than
-  // mount the inner wizard with a premature (and unrecoverable) guess.
+  // A saved blob exists and the company list is still in flight: wait rather
+  // than mount the inner wizard with a premature, and unrecoverable, guess at
+  // the draft.
   //
-  // Waiting is also what protects the blob while the answer is unknown.
-  // Mounting with `saved: null` would not merely show defaults - the persist
-  // effect inside writes the wizard's state back on every change, so it would
-  // overwrite the draft with those defaults within a render or two. Declining
-  // to mount is the only option here that leaves the draft intact for a later
-  // load that can actually decide.
-  if (rawBlob !== undefined && companiesUndecided) {
+  // Only while *loading*, not on error. An error with an empty list is still
+  // undecidable - nothing is restored and nothing is cleared, per the memo
+  // above - but withholding the wizard on top of that is a dead end, because
+  // the companies query sets `retry: false`. With no companies the dashboard
+  // offers a "Get Started" button that opens onboarding, and a gate that
+  // returned null here would make that button do nothing at all until a
+  // refetch happened to succeed.
+  //
+  // Mounting does not cost the draft. The persist effect that would overwrite
+  // it is itself gated on `effectiveOnboardingOpen`, so a mounted-but-closed
+  // wizard writes nothing, and the blob survives for a later load that can
+  // decide. If the wizard *is* open the customer is onboarding right now,
+  // which supersedes the draft anyway.
+  if (rawBlob !== undefined && companiesLoading) {
     return null;
   }
 
