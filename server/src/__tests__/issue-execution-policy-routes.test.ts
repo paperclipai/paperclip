@@ -200,7 +200,7 @@ describe("issue execution policy routes", () => {
     }));
     mockIssueService.getDependencyReadiness.mockResolvedValue({
       blockerIssueIds: [],
-      isDependencyReady: false,
+      isDependencyReady: true,
       unresolvedBlockerCount: 0,
     });
     mockIssueService.getProposedDependencyReadiness.mockResolvedValue({
