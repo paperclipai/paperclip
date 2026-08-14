@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   BookOpen,
+  Languages,
   LogOut,
   Megaphone,
   type LucideIcon,
@@ -14,6 +15,7 @@ import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
 import { useSignOut } from "@/hooks/useSignOut";
 import { useSidebar } from "../context/SidebarContext";
+import { i18n, setLocale, t } from "@/i18n";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
@@ -130,10 +132,10 @@ export function SidebarAccountMenu({
 
   const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });
 
-  const displayName = session?.user.name?.trim() || "Board";
+  const displayName = session?.user.name?.trim() || t("sidebar.board");
   const secondaryLabel =
-    session?.user.email?.trim() || (deploymentMode === "authenticated" ? "Signed in" : "Local workspace board");
-  const accountBadge = deploymentMode === "authenticated" ? "Account" : "Local";
+    session?.user.email?.trim() || (deploymentMode === "authenticated" ? t("sidebar.signedIn") : t("sidebar.localWorkspaceBoard"));
+  const accountBadge = deploymentMode === "authenticated" ? t("sidebar.account") : t("sidebar.local");
   const initials = deriveInitials(displayName);
   const profileHref = `/u/${deriveUserSlug(session?.user.name, session?.user.email, session?.user.id)}`;
   const sourceSha = version ? sourceVersionSha(version) : null;
@@ -159,7 +161,7 @@ export function SidebarAccountMenu({
           <button
             type="button"
             className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-(length:--text-compact) font-medium text-foreground/80 transition-colors hover:bg-accent/50 hover:text-foreground"
-            aria-label="Open account menu"
+            aria-label={t("sidebar.openAccountMenu")}
           >
             <Avatar size="sm">
               {session?.user.image ? <AvatarImage src={session.user.image} alt={displayName} /> : null}
@@ -223,36 +225,56 @@ export function SidebarAccountMenu({
 
             <div className="mt-4 space-y-1">
               <MenuAction
-                label="View profile"
-                description="Open your activity, task, and usage ledger."
+                label={t("sidebar.viewProfile")}
+                description={t("sidebar.viewProfileDesc")}
                 icon={UserRound}
                 href={profileHref}
                 onClick={closeNavigationChrome}
               />
               <MenuAction
-                label="Edit profile"
-                description="Update your display name and avatar."
+                label={t("sidebar.editProfile")}
+                description={t("sidebar.editProfileDesc")}
                 icon={UserRoundPen}
                 href={PROFILE_SETTINGS_PATH}
                 onClick={closeNavigationChrome}
               />
               <MenuAction
-                label="Documentation"
-                description="Open Paperclip docs in a new tab."
+                label={t("sidebar.documentation")}
+                description={t("sidebar.documentationDesc")}
                 icon={BookOpen}
                 href={DOCS_URL}
                 external
                 onClick={() => setOpen(false)}
               />
               <MenuAction
-                label="Feedback"
-                description="Share feedback or report an issue."
+                label={t("sidebar.feedback")}
+                description={t("sidebar.feedbackDesc")}
                 icon={Megaphone}
                 href={FEEDBACK_URL}
                 external
                 onClick={() => setOpen(false)}
               />
               <ThemeToggle variant="menu-action" onAfterToggle={() => setOpen(false)} />
+              <button
+                type="button"
+                className="flex w-full items-start gap-3 rounded-xl px-3 py-3 text-left transition-colors hover:bg-accent/60"
+                aria-label={t("sidebar.switchLanguage")}
+                onClick={() => { if (setLocale(i18n.language === "zh-CN" ? "en" : "zh-CN")) window.location.reload(); }}
+              >
+                <span className="mt-0.5 rounded-lg border border-border bg-background/70 p-2 text-muted-foreground">
+                  <Languages className="size-4" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-medium text-foreground">
+                    {t("sidebar.language")}
+                  </span>
+                  <span className="block text-xs text-muted-foreground">
+                    {i18n.language === "zh-CN"
+                      ? t("sidebar.switchToEnglish")
+                      : t("sidebar.switchToChinese")}
+                  </span>
+                </span>
+              </button>
               {deploymentMode === "authenticated" ? (
                 <button
                   type="button"
@@ -268,10 +290,10 @@ export function SidebarAccountMenu({
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block text-sm font-medium text-foreground">
-                      {signOutMutation.isPending ? "Signing out..." : "Sign out"}
+                      {signOutMutation.isPending ? t("sidebar.signingOut") : t("common.signOut")}
                     </span>
                     <span className="block text-xs text-muted-foreground">
-                      End this browser session.
+                      {t("sidebar.signOutDesc")}
                     </span>
                   </span>
                 </button>

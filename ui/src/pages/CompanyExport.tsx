@@ -55,6 +55,7 @@ import {
   FRONTMATTER_FIELD_LABELS,
   FileTree,
 } from "../components/FileTree";
+import { t, useTranslation } from "@/i18n";
 
 /**
  * Extract the set of agent/project/task slugs that are "checked" based on
@@ -509,9 +510,10 @@ function ExportPreviewPane({
   allFiles: Record<string, CompanyPortabilityFileEntry>;
   onSkillClick?: (skill: string) => void;
 }) {
+  const { t } = useTranslation();
   if (!selectedFile || content === null) {
     return (
-      <EmptyState icon={Package} message="Select a file to preview its contents." />
+      <EmptyState icon={Package} message={t("companyExport.selectFileToPreview")} />
     );
   }
 
@@ -557,7 +559,7 @@ function ExportPreviewPane({
           </pre>
         ) : (
           <div className="rounded-lg border border-border bg-accent/10 px-4 py-3 text-sm text-muted-foreground">
-            Binary asset preview is not available for this file type.
+            {t("companyExport.binaryPreviewUnavailable")}
           </div>
         )}
       </div>
@@ -593,6 +595,7 @@ export function CompanyExport() {
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
   const { data: session, isFetched: isSessionFetched } = useQuery({
@@ -689,9 +692,9 @@ export function CompanyExport() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Settings", href: "/company/settings" },
-      { label: "Export" },
+      { label: selectedCompany?.name ?? t("companyExport.breadcrumbCompany"), href: "/dashboard" },
+      { label: t("companyExport.breadcrumbSettings"), href: "/company/settings" },
+      { label: t("companyExport.breadcrumbExport") },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs]);
 
@@ -730,8 +733,8 @@ export function CompanyExport() {
     onError: (err) => {
       pushToast({
         tone: "error",
-        title: "Export failed",
-        body: err instanceof Error ? err.message : "Failed to load export data.",
+        title: t("companyExport.toastExportFailed"),
+        body: err instanceof Error ? err.message : t("companyExport.toastLoadFailed"),
       });
     },
   });
@@ -748,15 +751,18 @@ export function CompanyExport() {
       downloadZip(result, resultCheckedFiles, result.files);
       pushToast({
         tone: "success",
-        title: "Export downloaded",
-        body: `${resultCheckedFiles.size} file${resultCheckedFiles.size === 1 ? "" : "s"} exported as ${result.rootPath}.zip`,
+        title: t("companyExport.toastDownloaded"),
+        body: t(resultCheckedFiles.size === 1 ? "companyExport.toastDownloadedBodyOne" : "companyExport.toastDownloadedBodyMany", {
+          count: resultCheckedFiles.size,
+          name: `${result.rootPath}.zip`,
+        }),
       });
     },
     onError: (err) => {
       pushToast({
         tone: "error",
-        title: "Export failed",
-        body: err instanceof Error ? err.message : "Failed to build export package.",
+        title: t("companyExport.toastExportFailed"),
+        body: err instanceof Error ? err.message : t("companyExport.toastBuildFailed"),
       });
     },
   });
@@ -946,7 +952,7 @@ export function CompanyExport() {
   }
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Package} message="Select a company to export." />;
+    return <EmptyState icon={Package} message={t("companyExport.noCompany")} />;
   }
 
   if (exportPreviewMutation.isPending && !exportData) {
@@ -954,7 +960,7 @@ export function CompanyExport() {
   }
 
   if (!exportData) {
-    return <EmptyState icon={Package} message="Loading export data..." />;
+    return <EmptyState icon={Package} message={t("companyExport.loading")} />;
   }
 
   const previewContent = selectedFile
@@ -970,15 +976,18 @@ export function CompanyExport() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-4 text-sm">
             <span className="font-medium">
-              {selectedCompany?.name ?? "Company"} export
+              {t("companyExport.exportLabel", { name: selectedCompany?.name ?? t("companyExport.breadcrumbCompany") })}
             </span>
             <span className="text-muted-foreground">
-              Exporting {selectedCount.toLocaleString()} of {totalFiles.toLocaleString()} file{totalFiles === 1 ? "" : "s"}
-              {selectedCount > 0 && ` (~${formatBytes(estimatedZipBytes)})`}
+              {t(totalFiles === 1 ? "companyExport.exportingCountOne" : "companyExport.exportingCountMany", {
+                selected: selectedCount.toLocaleString(),
+                total: totalFiles.toLocaleString(),
+              })}
+              {selectedCount > 0 && ` ${t("companyExport.zipSizeSuffix", { size: formatBytes(estimatedZipBytes) })}`}
             </span>
             {warnings.length > 0 && (
               <span className="text-amber-500">
-                {warnings.length} warning{warnings.length === 1 ? "" : "s"}
+                {t(warnings.length === 1 ? "companyExport.warningCountOne" : "companyExport.warningCountMany", { count: warnings.length })}
               </span>
             )}
           </div>
@@ -989,8 +998,8 @@ export function CompanyExport() {
           >
             <Download className="mr-1.5 h-3.5 w-3.5" />
             {downloadMutation.isPending
-              ? "Building export..."
-              : `Export ${selectedCount.toLocaleString()} file${selectedCount === 1 ? "" : "s"}`}
+              ? t("companyExport.building")
+              : t(selectedCount === 1 ? "companyExport.exportButtonOne" : "companyExport.exportButtonMany", { count: selectedCount.toLocaleString() })}
           </Button>
         </div>
       </div>
@@ -1007,7 +1016,7 @@ export function CompanyExport() {
       {/* Export fidelity: data the bundle will not carry */}
       {fidelityReport && fidelityReport.warnings.length > 0 && (
         <div className="mx-5 mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
-          <h3 className="mb-1.5 text-xs font-medium">Not included in this export</h3>
+          <h3 className="mb-1.5 text-xs font-medium">{t("companyExport.notIncluded")}</h3>
           {fidelityReport.warnings.map((warning) => (
             <div
               key={warning.code}
@@ -1026,11 +1035,11 @@ export function CompanyExport() {
       <div className="grid gap-4 xl:h-(--sz-calc-30) xl:grid-cols-(--gtc-25) xl:gap-0">
         <aside className="flex max-h-(--sz-24rem) flex-col overflow-hidden border-b border-border xl:max-h-none xl:border-b-0 xl:border-r">
           <div className="border-b border-border px-4 py-3 shrink-0">
-            <h2 className="text-base font-semibold">Package files</h2>
+            <h2 className="text-base font-semibold">{t("companyExport.packageFiles")}</h2>
           </div>
           <div className="border-b border-border px-4 py-3 shrink-0">
-            <h3 className="mb-2 text-xs font-medium text-muted-foreground">What to include</h3>
-            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5" role="group" aria-label="What to include">
+            <h3 className="mb-2 text-xs font-medium text-muted-foreground">{t("companyExport.whatToInclude")}</h3>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5" role="group" aria-label={t("companyExport.whatToInclude")}>
               {EXPORT_CATEGORY_ORDER.map((key) => {
                 const isAttachments = key === "attachments";
                 const disabled = isAttachments && !isAttachmentsCategoryEnabled(categories);
@@ -1045,7 +1054,7 @@ export function CompanyExport() {
                     )}
                     title={
                       disabled
-                        ? "Attachments travel with tasks and routines; re-enable one of them to include attachments."
+                        ? t("companyExport.attachmentsHint")
                         : undefined
                     }
                   >
@@ -1071,7 +1080,7 @@ export function CompanyExport() {
                 type="text"
                 value={treeSearch}
                 onChange={(e) => handleSearchChange(e.target.value)}
-                placeholder="Search files..."
+                placeholder={t("companyExport.searchPlaceholder")}
                 className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
                 data-page-search-target="true"
               />
@@ -1095,7 +1104,7 @@ export function CompanyExport() {
                   onClick={() => setTaskLimit((prev) => prev + TASKS_PAGE_SIZE)}
                   className="w-full rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent/30 hover:text-foreground transition-colors"
                 >
-                  Show more tasks ({visibleTaskChildren} of {totalTaskChildren})
+                  {t("companyExport.showMoreTasks", { visible: visibleTaskChildren, total: totalTaskChildren })}
                 </button>
               </div>
             )}

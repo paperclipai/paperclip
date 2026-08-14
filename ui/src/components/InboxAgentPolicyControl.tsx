@@ -10,22 +10,23 @@ import { AgentIcon } from "./AgentIconPicker";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { RadioCardGroup, type RadioCardOption } from "@/components/ui/radio-card";
+import { t } from "@/i18n";
 
 const MODE_OPTIONS: RadioCardOption[] = [
   {
     value: "open",
-    title: "Any of my agents",
-    description: "Let any agent you manage archive tasks out of your inbox.",
+    title: t("inboxPolicy.anyAgents"),
+    description: t("inboxPolicy.anyAgentsDesc"),
   },
   {
     value: "allowlist",
-    title: "Only chosen agents",
-    description: "Restrict inbox tidying to the agents you pick below.",
+    title: t("inboxPolicy.chosenAgents"),
+    description: t("inboxPolicy.chosenAgentsDesc"),
   },
   {
     value: "disabled",
-    title: "Off",
-    description: "Agents can never archive tasks from your inbox.",
+    title: t("inboxPolicy.off"),
+    description: t("inboxPolicy.offDesc"),
   },
 ];
 
@@ -100,13 +101,13 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
   if (policyQuery.error) {
     return (
       <div className="text-sm text-destructive">
-        {policyQuery.error instanceof Error ? policyQuery.error.message : "Failed to load inbox agent policy."}
+        {policyQuery.error instanceof Error ? policyQuery.error.message : t("inboxPolicy.failedLoad")}
       </div>
     );
   }
 
   if (policyQuery.isLoading || !draft) {
-    return <div className="text-sm text-muted-foreground">Loading inbox agent policy…</div>;
+    return <div className="text-sm text-muted-foreground">{t("inboxPolicy.loading")}</div>;
   }
 
   const toggleAgent = (agentId: string, checked: boolean) => {
@@ -120,20 +121,19 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
   };
 
   return (
-    <section className="space-y-4" aria-label="Let agents tidy my inbox">
+    <section className="space-y-4" aria-label={t("inboxPolicy.title")}>
       <div className="space-y-1">
         <div className="flex items-center gap-2">
           <Inbox className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-base font-semibold">Let agents tidy my inbox</h2>
+          <h2 className="text-base font-semibold">{t("inboxPolicy.title")}</h2>
         </div>
         <p className="max-w-2xl text-sm text-muted-foreground">
-          Choose whether the agents you manage may archive tasks out of your inbox on your behalf. You can
-          undo any archive, and every agent archive is attributed in the task&apos;s properties.
+          {t("inboxPolicy.description")}
         </p>
       </div>
 
       <RadioCardGroup
-        ariaLabel="Inbox agent archiving policy"
+        ariaLabel={t("inboxPolicy.ariaLabel")}
         value={draft.mode}
         onValueChange={(value) => setDraft((current) => (current ? { ...current, mode: value as InboxAgentPolicyMode } : current))}
         options={MODE_OPTIONS}
@@ -142,9 +142,9 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
 
       {draft.mode === "allowlist" ? (
         <div className="max-w-2xl space-y-2 rounded-md border border-border p-3">
-          <div className="text-sm font-medium">Agents allowed to tidy my inbox</div>
+          <div className="text-sm font-medium">{t("inboxPolicy.allowedAgents")}</div>
           {selectableAgents.length === 0 ? (
-            <p className="text-xs text-muted-foreground">You don&apos;t manage any agents yet.</p>
+            <p className="text-xs text-muted-foreground">{t("inboxPolicy.noAgents")}</p>
           ) : (
             <ul className="space-y-1.5">
               {selectableAgents.map((agent) => {
@@ -155,7 +155,7 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
                       <Checkbox
                         checked={checked}
                         onCheckedChange={(next) => toggleAgent(agent.id, next === true)}
-                        aria-label={`Allow ${agent.name} to tidy my inbox`}
+                        aria-label={t("inboxPolicy.allowAgent", { name: agent.name })}
                       />
                       <AgentIcon icon={agent.icon} className="h-4 w-4 shrink-0 text-muted-foreground" />
                       <span className="min-w-0 truncate text-sm">{agent.name}</span>
@@ -171,13 +171,13 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
 
       {updateMutation.error ? (
         <div className="max-w-2xl rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-          {updateMutation.error instanceof Error ? updateMutation.error.message : "Failed to save inbox agent policy."}
+          {updateMutation.error instanceof Error ? updateMutation.error.message : t("inboxPolicy.failedSave")}
         </div>
       ) : null}
 
       <div className="flex max-w-2xl items-center justify-end gap-3">
         {updateMutation.isSuccess && !isDirty ? (
-          <span className="text-xs text-muted-foreground" role="status">Saved</span>
+          <span className="text-xs text-muted-foreground" role="status">{t("inboxPolicy.saved")}</span>
         ) : null}
         <Button
           type="button"
@@ -185,7 +185,7 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
           onClick={() => draft && updateMutation.mutate(draft)}
         >
           {updateMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Save className="size-4" />}
-          {updateMutation.isPending ? "Saving…" : "Save"}
+          {updateMutation.isPending ? t("inboxPolicy.saving") : t("inboxPolicy.save")}
         </Button>
       </div>
     </section>

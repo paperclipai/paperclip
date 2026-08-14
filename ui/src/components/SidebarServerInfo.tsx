@@ -3,11 +3,12 @@ import { Clock3, FileDiff, GitCommit, type LucideIcon } from "lucide-react";
 import { healthApi, type HealthStatus } from "@/api/health";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { queryKeys } from "@/lib/queryKeys";
+import { t } from "@/i18n";
 
 function formatTimestamp(value: string | null | undefined): string {
-  if (!value) return "Unavailable";
+  if (!value) return t("sidebar.unavailable");
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Unavailable";
+  if (Number.isNaN(date.getTime())) return t("sidebar.unavailable");
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
     timeStyle: "short",
@@ -24,17 +25,17 @@ function restartTimestamp(health: HealthStatus | undefined): string | null {
 
 function commitLabel(health: HealthStatus | undefined): string {
   const git = health?.serverInfo?.git;
-  if (!git?.available) return "Commit unavailable";
+  if (!git?.available) return t("sidebar.commitUnavailable");
   return `${git.shortSha} · ${git.subject}`;
 }
 
 function localChangesLabel(health: HealthStatus | undefined): string {
   const git = health?.serverInfo?.git;
-  if (!git?.available) return "Unavailable";
+  if (!git?.available) return t("sidebar.unavailable");
   const localChanges = git.localChanges;
-  if (!localChanges) return "Change status unavailable";
-  if (!localChanges.available) return "Change status unavailable";
-  if (!localChanges.hasLocalChanges) return "Clean checkout";
+  if (!localChanges) return t("sidebar.changeStatusUnavailable");
+  if (!localChanges.available) return t("sidebar.changeStatusUnavailable");
+  if (!localChanges.hasLocalChanges) return t("sidebar.cleanCheckout");
 
   const parts = [
     [localChanges.stagedFileCount, "staged"],
@@ -44,7 +45,7 @@ function localChangesLabel(health: HealthStatus | undefined): string {
     .filter(([count]) => Number(count) > 0)
     .map(([count, label]) => `${count} ${label}`);
 
-  return parts.length > 0 ? `Local changes present (${parts.join(", ")})` : "Local changes present";
+  return parts.length > 0 ? `${t("sidebar.localChangesPresent")} (${parts.join(", ")})` : t("sidebar.localChangesPresent");
 }
 
 function ServerInfoRow({
@@ -106,17 +107,17 @@ export function SidebarServerInfo() {
   const restartedAt = restartTimestamp(health);
   const restartedAtIsValid = isValidTimestamp(restartedAt);
   const lastRestartedLabel = healthUnavailable
-    ? "Health unavailable"
+    ? t("sidebar.healthUnavailable")
     : isWaitingForHealth
       ? "Loading..."
       : formatTimestamp(restartedAt);
   const commit = healthUnavailable
-    ? "Health unavailable"
+    ? t("sidebar.healthUnavailable")
     : isWaitingForHealth
       ? "Loading..."
       : commitLabel(health);
   const localChanges = healthUnavailable
-    ? "Health unavailable"
+    ? t("sidebar.healthUnavailable")
     : isWaitingForHealth
       ? "Loading..."
       : localChangesLabel(health);
@@ -128,12 +129,12 @@ export function SidebarServerInfo() {
       </p>
       <ServerInfoRow
         icon={Clock3}
-        label="Last restarted"
+        label={t("sidebar.lastRestarted")}
         value={lastRestartedLabel}
         dateTime={!healthUnavailable && !isWaitingForHealth && restartedAtIsValid ? restartedAt : null}
       />
-      <ServerInfoRow icon={GitCommit} label="Running commit" value={commit} />
-      <ServerInfoRow icon={FileDiff} label="Checkout state" value={localChanges} />
+      <ServerInfoRow icon={GitCommit} label={t("sidebar.runningCommit")} value={commit} />
+      <ServerInfoRow icon={FileDiff} label={t("sidebar.checkoutState")} value={localChanges} />
     </div>
   );
 }

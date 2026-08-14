@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { t } from "@/i18n";
 import { KeyRound, Plus, ServerCog, Trash2, Variable } from "lucide-react";
 import type {
   CompanySecret,
@@ -357,7 +358,7 @@ export function AgentSecretAccessEditor({
                           }
                         }}
                         placeholder="ALIAS"
-                        aria-label="Access alias"
+                        aria-label={t("agentSecretAccess.accessAlias")}
                         disabled={disabled}
                         className={cn(
                           "h-9 font-mono text-sm",
@@ -470,7 +471,7 @@ export function AgentSecretAccessEditor({
                       type="button"
                       onClick={() => removeRow(row.id)}
                       disabled={disabled}
-                      aria-label="Remove API access"
+                      aria-label={t("agentSecretAccess.removeApiAccess")}
                       className="mt-1 inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
                     >
                       <Trash2 className="size-3.5" />
@@ -478,10 +479,10 @@ export function AgentSecretAccessEditor({
                   </div>
                   {aliasInvalid ? (
                     <p className="pl-0.5 text-(length:--text-micro) text-destructive">
-                      Invalid alias — use letters, digits and _
+                      {t("agentSecretAccess.invalidAlias")}
                     </p>
                   ) : aliasDuplicate ? (
-                    <p className="pl-0.5 text-(length:--text-micro) text-destructive">Duplicate alias</p>
+                    <p className="pl-0.5 text-(length:--text-micro) text-destructive">{t("agentSecretAccess.duplicateAlias")}</p>
                   ) : null}
                 </div>
               );

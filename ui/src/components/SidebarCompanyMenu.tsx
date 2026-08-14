@@ -38,6 +38,7 @@ import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useCompanyOrder } from "@/hooks/useCompanyOrder";
 import { useSignOut } from "@/hooks/useSignOut";
 import { navigateTopLevel } from "@/lib/browserNavigation";
+import { t } from "@/i18n";
 import { cloudStackCreateUrl, cloudStackEnterUrl } from "@/lib/cloudLinks";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "@/lib/utils";
@@ -366,7 +367,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
               )}
               title={currentName ?? undefined}
             >
-              {currentName ?? (isCloud ? "Select organization" : "Select company")}
+              {currentName ?? (isCloud ? t("sidebar.selectOrganization") : t("sidebar.selectCompany"))}
             </span>
           </span>
           {!rail && <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />}
@@ -375,7 +376,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
       <DropdownMenuContent align="start" sideOffset={8} className="w-64 p-1">
         <div className="flex items-center justify-between gap-2 px-2 py-1.5">
           <DropdownMenuLabel className="p-0 text-(length:--text-micro) font-semibold uppercase text-muted-foreground">
-            {isCloud ? "Switch organization" : "Switch company"}
+            {isCloud ? t("sidebar.switchOrganization") : t("sidebar.switchCompany")}
           </DropdownMenuLabel>
           {/* Stack order is owned by cloud's own portfolio in v1, so the
               drag-to-reorder affordance stays self-hosted-only. */}
@@ -389,7 +390,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
               }}
               className="rounded px-1.5 py-0.5 text-(length:--text-micro) font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             >
-              {isEditingOrder ? "Done" : "Edit"}
+              {isEditingOrder ? t("common.done") : t("common.edit")}
             </button>
           )}
         </div>
@@ -409,8 +410,8 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
                   {stacksQuery.isLoading
                     ? "Loading organizations..."
                     : stacksQuery.isError
-                      ? "Could not load organizations"
-                      : "No organizations"}
+                      ? t("sidebar.couldNotLoadOrganizations")
+                      : t("sidebar.noOrganizations")}
                 </DropdownMenuItem>
               ) : null}
             </>
@@ -437,7 +438,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
                 </SortableContext>
               </DndContext>
               {orderedCompanies.length === 0 ? (
-                <DropdownMenuItem disabled>No companies</DropdownMenuItem>
+                <DropdownMenuItem disabled>{t("sidebar.noCompanies")}</DropdownMenuItem>
               ) : null}
             </>
           )}
@@ -471,7 +472,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
           >
             <UserPlus className="size-4" />
             <span className="truncate">
-              {currentName ? `Invite people to ${currentName}` : "Invite people"}
+              {currentName ? `Invite people to ${currentName}` : t("sidebar.invitePeople")}
             </span>
           </Link>
         </DropdownMenuItem>
@@ -484,7 +485,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
               disabled={isEditingOrder || signOutMutation.isPending}
             >
               <LogOut className="size-4" />
-              <span>{signOutMutation.isPending ? "Signing out..." : "Sign out"}</span>
+              <span>{signOutMutation.isPending ? "Signing out..." : t("common.signOut")}</span>
             </DropdownMenuItem>
           </>
         ) : null}

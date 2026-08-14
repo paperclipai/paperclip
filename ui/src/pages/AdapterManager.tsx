@@ -14,6 +14,7 @@ import type { AdapterInfo } from "@/api/adapters";
 import { getAdapterLabel } from "@/adapters/adapter-display-registry";
 import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
+import { t } from "@/i18n";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
@@ -48,7 +49,7 @@ function AdapterRow({
   toggleTitleEnabled,
   /** Custom tooltip for the power button when adapter is disabled. */
   toggleTitleDisabled,
-  /** Custom label for the disabled badge (defaults to "Hidden from menus"). */
+  /** Custom label for the disabled badge (defaults to t("adapterManager.hiddenFromMenus")). */
   disabledBadgeLabel,
 }: {
   adapter: AdapterInfo;
@@ -80,8 +81,8 @@ function AdapterRow({
             <Badge variant="outline">{adapter.source === "external" ? "External" : "Built-in"}</Badge>
             {adapter.source === "external" && (
               adapter.isLocalPath
-                ? <span title="Installed from local path"><FolderOpen className="h-4 w-4 text-amber-500" /></span>
-                : <span title="Installed from npm"><Package className="h-4 w-4 text-red-500" /></span>
+                ? <span title={t("adapterManager.installedLocal")}><FolderOpen className="h-4 w-4 text-amber-500" /></span>
+                : <span title={t("adapterManager.installedNpm")}><Package className="h-4 w-4 text-red-500" /></span>
             )}
             {adapter.version && (
               <Badge variant="secondary" className="font-mono text-(length:--text-nano)">
@@ -100,7 +101,7 @@ function AdapterRow({
             )}
             {adapter.disabled && (
               <Badge variant="secondary" className="text-amber-600 border-amber-400">
-                {disabledBadgeLabel ?? "Hidden from menus"}
+                {disabledBadgeLabel ?? t("adapterManager.hiddenFromMenus")}
               </Badge>
             )}
           </div>
@@ -118,7 +119,7 @@ function AdapterRow({
               variant="outline"
               size="icon-sm"
               className="h-8 w-8"
-              title="Reinstall adapter (pull latest from npm)"
+              title={t("adapterManager.reinstallTitle")}
               disabled={isReinstalling}
               onClick={() => onReinstall(adapter.type)}
             >
@@ -142,8 +143,8 @@ function AdapterRow({
             size="icon-sm"
             className="h-8 w-8"
             title={adapter.disabled
-              ? (toggleTitleEnabled ?? "Show in agent menus")
-              : (toggleTitleDisabled ?? "Hide from agent menus")}
+              ? (toggleTitleEnabled ?? t("adapterManager.showInMenus"))
+              : (toggleTitleDisabled ?? t("adapterManager.hideFromMenus"))}
             disabled={isToggling}
             onClick={() => onToggle(adapter.type, !adapter.disabled)}
           >
@@ -204,7 +205,7 @@ function ReinstallDialog({
     <Dialog open={open} onOpenChange={(o) => { if (!o) onCancel(); }}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Reinstall Adapter</DialogTitle>
+          <DialogTitle>{t("adapterManager.reinstallAdapter")}</DialogTitle>
           <DialogDescription>
             This will pull the latest version of{" "}
             <strong>{adapter?.packageName}</strong> from npm and hot-swap
@@ -215,20 +216,20 @@ function ReinstallDialog({
 
         <div className="rounded-md border bg-muted/50 px-4 py-3 text-sm space-y-1">
           <div className="flex items-center justify-between">
-            <span className="text-muted-foreground">Package</span>
+            <span className="text-muted-foreground">{t("adapterManager.package")}</span>
             <span className="font-mono">{adapter?.packageName}</span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-muted-foreground">Current</span>
+            <span className="text-muted-foreground">{t("adapterManager.current")}</span>
             <span className="font-mono">
               {adapter?.version ? `v${adapter.version}` : "unknown"}
             </span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-muted-foreground">Latest on npm</span>
+            <span className="text-muted-foreground">{t("adapterManager.latestOnNpm")}</span>
             <span className="font-mono">
               {isFetchingVersion
-                ? "checking..."
+                ? t("adapterManager.checking")
                 : latestVersion
                   ? `v${latestVersion}`
                   : "unavailable"}
@@ -269,10 +270,10 @@ export function AdapterManager() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Settings", href: "/company/settings" },
-      { label: "Instance settings", href: "/company/settings/instance/general" },
-      { label: "Adapters" },
+      { label: selectedCompany?.name ?? t("adapterManager.company"), href: "/dashboard" },
+      { label: t("adapterManager.settings"), href: "/company/settings" },
+      { label: t("adapterManager.instanceSettings"), href: "/company/settings/instance/general" },
+      { label: t("adapterManager.adapters") },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs]);
 
@@ -402,9 +403,9 @@ export function AdapterManager() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Cpu className="h-6 w-6 text-muted-foreground" />
-          <h1 className="text-xl font-semibold">Adapters</h1>
+          <h1 className="text-xl font-semibold">{t("adapterManager.adapters")}</h1>
           <Badge variant="outline" className="text-amber-600 border-amber-400">
-            Alpha
+            {t("adapterManager.alpha")}
           </Badge>
         </div>
 
@@ -519,7 +520,7 @@ export function AdapterManager() {
         <div className="flex items-start gap-3">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
           <div className="space-y-1 text-sm">
-            <p className="font-medium text-foreground">External adapters are alpha.</p>
+            <p className="font-medium text-foreground">{t("adapterManager.alphaNotice")}</p>
             <p className="text-muted-foreground">
               The adapter plugin system is under active development. APIs and storage format may change.
               Use the power icon to hide adapters from agent menus without removing them.
@@ -532,16 +533,16 @@ export function AdapterManager() {
       <section className="space-y-3">
         <div className="flex items-center gap-2">
           <Cpu className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-base font-semibold">External Adapters</h2>
+          <h2 className="text-base font-semibold">{t("adapterManager.externalAdapters")}</h2>
         </div>
 
         {externalAdapters.length === 0 ? (
           <Card className="bg-muted/30">
             <CardContent className="flex flex-col items-center justify-center py-10">
               <Cpu className="h-10 w-10 text-muted-foreground mb-4" />
-              <p className="text-sm font-medium">No external adapters installed</p>
+              <p className="text-sm font-medium">{t("adapterManager.noExternalAdapters")}</p>
               <p className="text-xs text-muted-foreground mt-1">
-                Install an adapter package to extend model support.
+                {t("adapterManager.installHint")}
               </p>
             </CardContent>
           </Card>

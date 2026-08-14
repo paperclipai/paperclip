@@ -6,6 +6,7 @@
  * `getAdapterDisplay()`.
  */
 import type { ComponentType } from "react";
+import { t } from "@/i18n";
 import {
   Bot,
   Code,
@@ -58,85 +59,96 @@ export interface AdapterDisplayInfo {
   hideFromVisualSelection?: boolean;
 }
 
-const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
+interface AdapterDisplayEntry {
+  label: string;
+  descriptionKey: string;
+  icon: ComponentType<{ className?: string }>;
+  recommended?: boolean;
+  comingSoon?: boolean;
+  disabledLabelKey?: string;
+  experimental?: boolean;
+  hideFromVisualSelection?: boolean;
+}
+
+const adapterDisplayMap: Record<string, AdapterDisplayEntry> = {
   acpx_local: {
     label: "ACPX (retired)",
-    description: "Retired standalone ACPX adapter",
+    descriptionKey: "adapterDisplay.acpxRetired",
     icon: Bot,
     comingSoon: true,
-    disabledLabel: "Use Claude Code or Codex with the ACP engine",
+    disabledLabelKey: "adapterDisplay.acpxDisabledLabel",
     hideFromVisualSelection: true,
   },
   claude_local: {
     label: "Claude Code",
-    description: "Claude Code CLI harness",
+    descriptionKey: "adapterDisplay.claudeCodeHarness",
     icon: Sparkles,
     recommended: true,
   },
   codex_local: {
     label: "Codex",
-    description: "Codex CLI harness",
+    descriptionKey: "adapterDisplay.codexHarness",
     icon: Code,
     recommended: true,
   },
   gemini_local: {
     label: "Gemini CLI",
-    description: "Gemini CLI harness",
+    descriptionKey: "adapterDisplay.geminiHarness",
     icon: Gem,
   },
   grok_local: {
     label: "Grok Build",
-    description: "Grok Build harness",
+    descriptionKey: "adapterDisplay.grokHarness",
     icon: Bot,
   },
   hermes_gateway: {
     label: "Hermes Gateway",
-    description: "Remote Hermes API server",
+    descriptionKey: "adapterDisplay.hermesGatewayServer",
     icon: Bot,
     hideFromVisualSelection: true,
   },
   hermes_local: {
     label: "Hermes",
-    description: "Hermes harness",
+    descriptionKey: "adapterDisplay.hermesHarness",
     icon: Bot,
   },
   opencode_local: {
     label: "OpenCode",
-    description: "OpenCode multi-provider harness",
+    descriptionKey: "adapterDisplay.opencodeHarness",
     icon: OpenCodeLogoIcon,
   },
   pi_local: {
     label: "Pi",
-    description: "Pi harness",
+    descriptionKey: "adapterDisplay.piHarness",
     icon: Terminal,
   },
   cursor: {
     label: "Cursor",
-    description: "Cursor CLI harness",
+    descriptionKey: "adapterDisplay.cursorHarness",
     icon: MousePointer2,
   },
   cursor_cloud: {
     label: "Cursor Cloud",
-    description: "Managed remote Cursor agent",
+    descriptionKey: "adapterDisplay.cursorCloudAgent",
     icon: MousePointer2,
   },
   openclaw_gateway: {
     label: "OpenClaw Gateway",
-    description: "External gateway adapter",
+    descriptionKey: "adapterDisplay.externalGateway",
     icon: Bot,
     comingSoon: true,
-    disabledLabel: "Invite external agents from the add-agent modal",
+    disabledLabelKey: "adapterDisplay.gatewayDisabledLabel",
     hideFromVisualSelection: true,
   },
   process: {
     label: "Process",
-    description: "Internal process adapter",
+    descriptionKey: "adapterDisplay.internalProcess",
     icon: Cpu,
     comingSoon: true,
   },
   http: {
     label: "HTTP",
-    description: "Internal HTTP adapter",
+    descriptionKey: "adapterDisplay.internalHttp",
     icon: Cpu,
     comingSoon: true,
   },
@@ -177,13 +189,24 @@ export function getAdapterLabels(): Record<string, string> {
 
 export function getAdapterDisplay(type: string): AdapterDisplayInfo {
   const known = adapterDisplayMap[type];
-  if (known) return known;
+  if (known) {
+    return {
+      label: known.label,
+      description: t(known.descriptionKey),
+      icon: known.icon,
+      recommended: known.recommended,
+      comingSoon: known.comingSoon,
+      experimental: known.experimental,
+      hideFromVisualSelection: known.hideFromVisualSelection,
+      ...(known.disabledLabelKey ? { disabledLabel: t(known.disabledLabelKey) } : {}),
+    };
+  }
 
   const suffix = getTypeSuffix(type);
   const label = withSuffix(humanizeType(type), suffix);
   return {
     label,
-    description: suffix ? `External ${suffix} adapter` : "External adapter",
+    description: suffix ? t("adapterDisplay.externalSuffix", { suffix }) : t("adapterDisplay.external"),
     icon: Cpu,
   };
 }

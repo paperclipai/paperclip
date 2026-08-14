@@ -8,6 +8,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { AgentIcon } from "@/components/AgentIconPicker";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import { formatTaskChatTimestamp } from "./task-chat-adapter";
+import { t } from "@/i18n";
 
 /**
  * Host binding for the description-as-first-bubble (PAP-375): the LIVE issue
@@ -74,7 +75,7 @@ export function TaskChatDescriptionBubble({ brief }: TaskChatDescriptionBubblePr
           onSave={brief.onSave}
           as="p"
           className="text-sm leading-7 text-foreground"
-          placeholder="Add a description..."
+          placeholder={t("taskChat.addDescription")}
           multiline
           defaultEditing
           onEditingChange={(next) => {
@@ -99,7 +100,7 @@ export function TaskChatDescriptionBubble({ brief }: TaskChatDescriptionBubblePr
         data-testid="task-chat-description-ghost"
       >
         <Pencil className="h-3.5 w-3.5 shrink-0" aria-hidden />
-        Add a description...
+        {t("taskChat.addDescription")}
       </button>
     );
   }

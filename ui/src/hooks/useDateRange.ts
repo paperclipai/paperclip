@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { t } from "@/i18n";
 
 export type DatePreset = "mtd" | "7d" | "30d" | "ytd" | "all" | "custom";
 
-export const PRESET_LABELS: Record<DatePreset, string> = {
-  mtd: "Month to Date",
-  "7d": "Last 7 Days",
-  "30d": "Last 30 Days",
-  ytd: "Year to Date",
-  all: "All Time",
-  custom: "Custom",
-};
+export function getPresetLabel(preset: DatePreset): string {
+  switch (preset) {
+    case "mtd": return t("costs.presetMtd");
+    case "7d": return t("costs.preset7d");
+    case "30d": return t("costs.preset30d");
+    case "ytd": return t("costs.presetYtd");
+    case "all": return t("costs.presetAll");
+    case "custom": return t("costs.presetCustom");
+  }
+}
 
 export const PRESET_KEYS: DatePreset[] = ["mtd", "7d", "30d", "ytd", "all", "custom"];
 

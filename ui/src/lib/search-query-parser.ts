@@ -8,6 +8,7 @@ import {
   type IssueStatus,
 } from "@paperclipai/shared";
 import type { CompanySearchParams } from "@/api/search";
+import { t } from "@/i18n";
 
 const SEARCH_FILTER_PARAM_KEYS = [
   "status",
@@ -39,15 +40,17 @@ export interface SearchOperatorSuggestion {
 
 export const SEARCH_OPERATOR_QUICK_FILTERS = ["assignee:me", "is:open", "updated:>7d"] as const;
 
-export const SEARCH_OPERATOR_SUGGESTIONS: SearchOperatorSuggestion[] = [
-  { token: "status:todo", label: "Open todo tasks", description: "Filter by task status" },
-  { token: "status:blocked", label: "Blocked tasks", description: "Find blocked work" },
-  { token: "assignee:me", label: "Assigned to me", description: "Use your current board user" },
-  { token: "project:\"Paperclip App\"", label: "Project name", description: "Quote multi-word project names" },
-  { token: "label:bug", label: "Label", description: "Filter by issue label" },
-  { token: "priority:high", label: "High priority", description: "Filter by priority" },
-  { token: "updated:>7d", label: "Recently updated", description: "Updated in the last 7 days" },
-];
+export function getSearchOperatorSuggestions(): SearchOperatorSuggestion[] {
+  return [
+    { token: "status:todo", label: t("search.suggTodoLabel"), description: t("search.suggTodoDesc") },
+    { token: "status:blocked", label: t("search.suggBlockedLabel"), description: t("search.suggBlockedDesc") },
+    { token: "assignee:me", label: t("search.suggAssigneeLabel"), description: t("search.suggAssigneeDesc") },
+    { token: "project:\"Paperclip App\"", label: t("search.suggProjectLabel"), description: t("search.suggProjectDesc") },
+    { token: "label:bug", label: t("search.suggLabelLabel"), description: t("search.suggLabelDesc") },
+    { token: "priority:high", label: t("search.suggPriorityLabel"), description: t("search.suggPriorityDesc") },
+    { token: "updated:>7d", label: t("search.suggUpdatedLabel"), description: t("search.suggUpdatedDesc") },
+  ];
+}
 
 export interface SearchQueryParserContext {
   currentAgentId?: string | null;
@@ -129,9 +132,10 @@ function currentTokenBounds(input: string): { start: number; end: number; token:
 export function searchOperatorSuggestions(input: string, limit = 5): SearchOperatorSuggestion[] {
   const { token } = currentTokenBounds(input);
   const normalized = token.toLowerCase();
+  const all = getSearchOperatorSuggestions();
   const candidates = normalized.length > 0
-    ? SEARCH_OPERATOR_SUGGESTIONS.filter((suggestion) => suggestion.token.toLowerCase().startsWith(normalized))
-    : SEARCH_OPERATOR_SUGGESTIONS;
+    ? all.filter((suggestion) => suggestion.token.toLowerCase().startsWith(normalized))
+    : all;
   return candidates.slice(0, limit);
 }
 

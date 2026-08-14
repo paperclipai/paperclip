@@ -38,3 +38,10 @@ if (typeof window !== "undefined" && window.localStorage !== globalThis.localSto
 if (typeof Element !== "undefined" && typeof Element.prototype.scrollIntoView !== "function") {
   Element.prototype.scrollIntoView = function scrollIntoView() {};
 }
+
+// UI tests assert on English copy; production default locale is en but the
+// user may have persisted a different preference (e.g. zh-CN) in localStorage.
+// changeLanguage() sets i18n.language synchronously (resources are inlined),
+// so no await is needed and concurrent workers never race on the promise.
+import { i18n } from "./src/i18n";
+void i18n.changeLanguage("en");
