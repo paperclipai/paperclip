@@ -127,13 +127,6 @@ export interface ClaudeOAuthUserSecretResult {
 /** The adapter that owns the fixed Claude Code OAuth token binding. */
 export const CLAUDE_LOCAL_ADAPTER_TYPE = "claude_local";
 
-// The fixed, non-secret error for a removal, a replacement, or a weaker Claude
-// Code OAuth token binding. A normal caller cannot change the managed binding. A
-// controlled internal override (migration or administrator repair) is the only
-// exception. The text echoes no caller input (Control 6).
-export const CLAUDE_OAUTH_BINDING_LOCKED =
-  "The Claude Code OAuth token binding is managed by the Claude login and cannot be removed or replaced.";
-
 // The one fixed, non-secret error for every rejected stored-session claim. The
 // text is byte-identical for a missing, foreign, cross-company, cross-owner,
 // cross-adapter, cross-environment, expired, non-stored, or already-consumed
@@ -167,11 +160,6 @@ export function isFixedClaudeOAuthBinding(binding: unknown): boolean {
   if (typeof binding !== "object" || binding === null) return false;
   const record = binding as Record<string, unknown>;
   return record.type === "user_secret_ref" && record.key === CLAUDE_CODE_OAUTH_TOKEN_KEY;
-}
-
-/** True when the config carries any binding for the fixed OAuth key. */
-function hasClaudeOAuthEnvKey(config: unknown): boolean {
-  return Object.prototype.hasOwnProperty.call(readAdapterEnvRecord(config), CLAUDE_CODE_OAUTH_TOKEN_KEY);
 }
 
 /** True when the config carries the exact fixed OAuth binding. */
@@ -214,58 +202,48 @@ export interface ClaudeOAuthBindingInvariantDecision {
 }
 
 /**
- * The server-enforced Claude OAuth binding invariant. It runs after generic
- * normalization and before every database write on a `claude_local` create,
- * hire, update, approval activation, and configuration rollback path.
+ * The Claude OAuth binding check. It runs after generic normalization and
+ * before every database write on a `claude_local` create, hire, update,
+ * approval activation, and configuration rollback path.
  *
- * The function fails closed for a normal caller in these cases:
- *   * A present but non-fixed OAuth binding (a replacement or a weaker binding).
- *   * A prior fixed binding that the next config drops (a removal).
+ * The `CLAUDE_CODE_OAUTH_TOKEN` binding behaves like a normal environment
+ * variable. A normal write can remove the fixed binding, or re-point it to a
+ * plain value, a company-secret reference, or a different user-secret key. The
+ * function no longer locks a prior fixed binding against removal or replacement.
  *
- * A prior fixed binding keeps the invariant active for the write, independently
- * of the destination adapter type. A caller cannot remove the binding by a move
- * to another adapter type in the same write. A write to a non-claude_local
- * adapter that has no prior fixed binding stays outside the Claude login flow.
+ * A write to a non-claude_local adapter that has no prior fixed binding stays
+ * outside the Claude login flow. A prior fixed binding keeps the function active
+ * for the write, so the function still reports whether the write keeps that
+ * binding, independently of the destination adapter type.
  *
- * A controlled internal override skips the removal and replacement checks for a
- * migration or an administrator repair. The precedence policy runs on every
- * path, with or without the override: the fixed binding together with a
- * non-empty ANTHROPIC_API_KEY is a conflict, and the function rejects it with a
- * generic message that names no token value and no owner configuration.
+ * The precedence policy runs on every path: the fixed binding together with a
+ * non-empty ANTHROPIC_API_KEY is a conflict. The function rejects that conflict
+ * with a generic message that names no token value and no owner configuration.
  *
  * The function returns whether the write introduces the fixed binding or keeps
  * an existing one. The create and hire paths consume a stored-session claim when
  * the write introduces the binding. The update, approval, and rollback paths
  * reject a newly introduced binding, because they carry no claim.
+ *
+ * The function keeps the `allowInternalOverride` parameter for a migration or an
+ * administrator repair. The parameter no longer changes any check, because the
+ * removal and replacement locks are gone and the precedence policy always runs.
  */
 export function assertClaudeOAuthBindingInvariant(
   input: ClaudeOAuthBindingInvariantInput,
 ): ClaudeOAuthBindingInvariantDecision {
   const isClaudeLocal = input.adapterType === CLAUDE_LOCAL_ADAPTER_TYPE;
-  const nextHasKey = hasClaudeOAuthEnvKey(input.nextConfig);
   const nextIsFixed = hasFixedClaudeOAuthBinding(input.nextConfig);
   const priorIsFixed = hasFixedClaudeOAuthBinding(input.priorConfig);
 
   // A write to a non-claude_local adapter that has no prior fixed binding is a
   // normal non-Claude configuration. It stays outside the Claude login flow. A
-  // prior fixed binding always keeps the invariant active, so a write cannot
-  // drop the binding by a move to another adapter type in the same write.
+  // prior fixed binding always keeps the function active, so a write still
+  // reports the binding state after a move to another adapter type.
   if (!isClaudeLocal && !priorIsFixed) {
     return { introducesBinding: false, keepsBinding: false };
   }
 
-  if (!input.allowInternalOverride) {
-    // A prior fixed binding locks the agent. A normal write cannot remove or
-    // replace the binding, independently of the destination adapter type.
-    if (priorIsFixed && !nextIsFixed) {
-      throw new HttpError(409, CLAUDE_OAUTH_BINDING_LOCKED, { code: "claude_oauth_binding_locked" });
-    }
-    // A present but non-fixed OAuth binding on a claude_local write is a
-    // replacement or a weaker binding.
-    if (isClaudeLocal && nextHasKey && !nextIsFixed) {
-      throw new HttpError(409, CLAUDE_OAUTH_BINDING_LOCKED, { code: "claude_oauth_binding_locked" });
-    }
-  }
   if (nextIsFixed && hasAnthropicApiKeyCredential(input.nextConfig)) {
     throw new HttpError(409, CLAUDE_OAUTH_CREDENTIAL_CONFLICT, {
       code: "claude_oauth_credential_conflict",

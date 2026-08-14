@@ -23,7 +23,6 @@ import {
 import { agentService } from "../services/agents.ts";
 import {
   assertClaudeOAuthBindingInvariant,
-  CLAUDE_OAUTH_BINDING_LOCKED,
   CLAUDE_OAUTH_CLAIM_REJECTED,
   CLAUDE_OAUTH_CREDENTIAL_CONFLICT,
   claudeOAuthClaimRejectedError,
@@ -57,47 +56,55 @@ describe("assertClaudeOAuthBindingInvariant", () => {
     expect(decision).toEqual({ introducesBinding: false, keepsBinding: true });
   });
 
-  it("rejects a removal of the fixed binding", () => {
-    expect(() =>
-      assertClaudeOAuthBindingInvariant({
-        adapterType: "claude_local",
-        nextConfig: withEnv({}),
-        priorConfig: withEnv({ CLAUDE_CODE_OAUTH_TOKEN: FIXED_BINDING }),
-      }),
-    ).toThrowError(CLAUDE_OAUTH_BINDING_LOCKED);
+  it("permits a normal removal of the fixed binding", () => {
+    const decision = assertClaudeOAuthBindingInvariant({
+      adapterType: "claude_local",
+      nextConfig: withEnv({}),
+      priorConfig: withEnv({ CLAUDE_CODE_OAUTH_TOKEN: FIXED_BINDING }),
+    });
+    expect(decision).toEqual({ introducesBinding: false, keepsBinding: false });
   });
 
-  it("rejects a plain-value replacement of the fixed binding", () => {
-    expect(() =>
-      assertClaudeOAuthBindingInvariant({
-        adapterType: "claude_local",
-        nextConfig: withEnv({ CLAUDE_CODE_OAUTH_TOKEN: { type: "plain", value: "sk-fake" } }),
-        priorConfig: withEnv({ CLAUDE_CODE_OAUTH_TOKEN: FIXED_BINDING }),
-      }),
-    ).toThrowError(CLAUDE_OAUTH_BINDING_LOCKED);
+  it("permits a normal plain-value replacement of the fixed binding", () => {
+    const decision = assertClaudeOAuthBindingInvariant({
+      adapterType: "claude_local",
+      nextConfig: withEnv({ CLAUDE_CODE_OAUTH_TOKEN: { type: "plain", value: "sk-fake" } }),
+      priorConfig: withEnv({ CLAUDE_CODE_OAUTH_TOKEN: FIXED_BINDING }),
+    });
+    expect(decision).toEqual({ introducesBinding: false, keepsBinding: false });
   });
 
-  it("rejects a different user-secret key for the fixed binding", () => {
-    expect(() =>
-      assertClaudeOAuthBindingInvariant({
-        adapterType: "claude_local",
-        nextConfig: withEnv({ CLAUDE_CODE_OAUTH_TOKEN: { type: "user_secret_ref", key: "OTHER" } }),
-        priorConfig: null,
-      }),
-    ).toThrowError(CLAUDE_OAUTH_BINDING_LOCKED);
+  it("permits a re-point to a different user-secret key", () => {
+    const decision = assertClaudeOAuthBindingInvariant({
+      adapterType: "claude_local",
+      nextConfig: withEnv({ CLAUDE_CODE_OAUTH_TOKEN: { type: "user_secret_ref", key: "OTHER" } }),
+      priorConfig: withEnv({ CLAUDE_CODE_OAUTH_TOKEN: FIXED_BINDING }),
+    });
+    expect(decision).toEqual({ introducesBinding: false, keepsBinding: false });
   });
 
-  it("rejects a removal of the fixed binding by a move to another adapter type", () => {
+  it("permits a re-point to a company-secret reference", () => {
+    const decision = assertClaudeOAuthBindingInvariant({
+      adapterType: "claude_local",
+      nextConfig: withEnv({
+        CLAUDE_CODE_OAUTH_TOKEN: { type: "secret_ref", secretId: randomUUID(), version: "latest" },
+      }),
+      priorConfig: withEnv({ CLAUDE_CODE_OAUTH_TOKEN: FIXED_BINDING }),
+    });
+    expect(decision).toEqual({ introducesBinding: false, keepsBinding: false });
+  });
+
+  it("permits a removal of the fixed binding by a move to another adapter type", () => {
     // The prior config has the fixed binding on claude_local. The write moves
     // the agent to the process adapter and drops the binding in the same write.
-    // The invariant stays active, because a prior fixed binding locks the agent.
-    expect(() =>
-      assertClaudeOAuthBindingInvariant({
-        adapterType: "process",
-        nextConfig: withEnv({}),
-        priorConfig: withEnv({ CLAUDE_CODE_OAUTH_TOKEN: FIXED_BINDING }),
-      }),
-    ).toThrowError(CLAUDE_OAUTH_BINDING_LOCKED);
+    // The binding behaves like a normal environment variable, so the write is
+    // allowed and reports no fixed binding.
+    const decision = assertClaudeOAuthBindingInvariant({
+      adapterType: "process",
+      nextConfig: withEnv({}),
+      priorConfig: withEnv({ CLAUDE_CODE_OAUTH_TOKEN: FIXED_BINDING }),
+    });
+    expect(decision).toEqual({ introducesBinding: false, keepsBinding: false });
   });
 
   it("permits a removal under the controlled internal override", () => {
@@ -525,23 +532,35 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     await lockDb.$client.end();
   });
 
-  it("keeps an existing binding but rejects its removal on update", async () => {
+  it("removes the fixed binding on a normal update", async () => {
     const scope = await seedScope();
     const sessionId = await seedStoredClaim(scope, Date.now() + 60_000);
     const created = await agentService(db).create(scope.companyId, createInput(scope), {
       claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
     });
 
-    await expect(
-      agentService(db).update(created.id, { adapterConfig: { env: {} } }),
-    ).rejects.toMatchObject({ message: CLAUDE_OAUTH_BINDING_LOCKED });
+    const updated = await agentService(db).update(created.id, { adapterConfig: { env: {} } });
 
-    const reloaded = await agentService(db).getById(created.id);
-    const reloadedEnv = (reloaded?.adapterConfig as { env: Record<string, unknown> }).env;
-    expect(reloadedEnv.CLAUDE_CODE_OAUTH_TOKEN).toMatchObject(FIXED_BINDING);
+    const updatedEnv = (updated?.adapterConfig as { env: Record<string, unknown> }).env;
+    expect(updatedEnv.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
   });
 
-  it("rejects a removal of the binding by a move to another adapter type on update", async () => {
+  it("re-points the binding to a plain value on a normal update", async () => {
+    const scope = await seedScope();
+    const sessionId = await seedStoredClaim(scope, Date.now() + 60_000);
+    const created = await agentService(db).create(scope.companyId, createInput(scope), {
+      claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
+    });
+
+    const updated = await agentService(db).update(created.id, {
+      adapterConfig: { env: { CLAUDE_CODE_OAUTH_TOKEN: { type: "plain", value: "sk-fake" } } },
+    });
+
+    const updatedEnv = (updated?.adapterConfig as { env: Record<string, unknown> }).env;
+    expect(updatedEnv.CLAUDE_CODE_OAUTH_TOKEN).toMatchObject({ type: "plain", value: "sk-fake" });
+  });
+
+  it("removes the binding by a move to another adapter type on a normal update", async () => {
     const scope = await seedScope();
     const sessionId = await seedStoredClaim(scope, Date.now() + 60_000);
     const created = await agentService(db).create(scope.companyId, createInput(scope), {
@@ -549,16 +568,16 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     });
 
     // The write moves the agent to the process adapter and drops the binding in
-    // the same PATCH. The invariant must reject it with the fixed 409.
-    await expect(
-      agentService(db).update(created.id, { adapterType: "process", adapterConfig: { env: {} } }),
-    ).rejects.toMatchObject({ message: CLAUDE_OAUTH_BINDING_LOCKED });
+    // the same PATCH. The binding is a normal environment variable, so the write
+    // succeeds and drops both the fixed binding and the claude_local adapter.
+    const updated = await agentService(db).update(created.id, {
+      adapterType: "process",
+      adapterConfig: { env: {} },
+    });
 
-    // Both the adapter type and the fixed binding stay unchanged.
-    const reloaded = await agentService(db).getById(created.id);
-    expect(reloaded?.adapterType).toBe("claude_local");
-    const reloadedEnv = (reloaded?.adapterConfig as { env: Record<string, unknown> }).env;
-    expect(reloadedEnv.CLAUDE_CODE_OAUTH_TOKEN).toMatchObject(FIXED_BINDING);
+    expect(updated?.adapterType).toBe("process");
+    const updatedEnv = (updated?.adapterConfig as { env: Record<string, unknown> }).env;
+    expect(updatedEnv.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
   });
 
   it("keeps an existing binding when the update changes another field", async () => {
