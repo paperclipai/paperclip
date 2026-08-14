@@ -222,11 +222,6 @@ export function parseHermesStdoutLine(
     return [];
   }
 
-  // ── Session info line ────────────────────────────────────────────────
-  if (trimmed.startsWith("session_id:")) {
-    return [{ kind: "system", ts, text: trimmed }];
-  }
-
   // ── Quiet-mode tool/message lines (prefixed with ┊) ────────────────────
   if (trimmed.includes(TOOL_OUTPUT_PREFIX)) {
     // Assistant message: ┊ 💬 {text}

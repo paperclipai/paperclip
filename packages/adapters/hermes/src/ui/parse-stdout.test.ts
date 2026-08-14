@@ -78,4 +78,16 @@ describe("parseHermesStdoutLine — ANSI stripping", () => {
     const result = parseHermesStdoutLine("\x1b[0m", TS);
     expect(result).toHaveLength(0);
   });
+
+  it("keeps session-shaped lines visible as assistant text", () => {
+    expect(
+      parseHermesStdoutLine("session_id: 20260814_144930_03a3ec", TS),
+    ).toEqual([
+      {
+        kind: "assistant",
+        ts: TS,
+        text: "session_id: 20260814_144930_03a3ec",
+      },
+    ]);
+  });
 });
