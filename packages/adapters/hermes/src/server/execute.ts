@@ -472,6 +472,8 @@ export async function execute(
   // sync so agents created before schema values were persisted also get clean,
   // parseable output. Users can still explicitly opt out with quiet=false.
   const useQuiet = cfgBoolean(config.quiet) !== false;
+  const effectiveQuiet = useQuiet ||
+    extraArgs?.some((arg) => arg === "-Q" || arg === "--quiet") === true;
   const args: string[] = ["chat", "-q", prompt];
   if (useQuiet) args.push("-Q");
 
@@ -598,7 +600,7 @@ export async function execute(
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "", {
-    quietMode: useQuiet,
+    quietMode: effectiveQuiet,
   });
 
   if (parsed.sessionId) {
