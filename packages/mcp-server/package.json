@@ -43,13 +43,13 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@paperclipai/shared": "workspace:*",
     "zod": "^3.24.2"
   },
   "devDependencies": {
-    "@types/node": "^22.19.21",
+    "@types/node": "^22.20.1",
     "typescript": "^5.7.3",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.10"
   }
 }

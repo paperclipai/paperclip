@@ -18,6 +18,12 @@ import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
 
 type GlobalToolbarContext = { companyId: string | null; companyPrefix: string | null };
 
+/** Task identifier rendered in gray monospace between the glyph and the title. */
+function CrumbIdentifier({ identifier }: { identifier?: string }) {
+  if (!identifier) return null;
+  return <span className="shrink-0 font-mono text-muted-foreground">{identifier}</span>;
+}
+
 function GlobalToolbar({ context }: { context: GlobalToolbarContext }) {
   const { slots } = usePluginSlots({ slotTypes: ["globalToolbarButton"], companyId: context.companyId });
   const { launchers } = usePluginLaunchers({ placementZones: ["globalToolbarButton"], companyId: context.companyId, enabled: !!context.companyId });
@@ -82,9 +88,12 @@ export function BreadcrumbBar() {
       <div className="border-b border-border px-4 md:px-6 h-12 shrink-0 flex items-center">
         {menuButton}
         <div className="min-w-0 overflow-hidden flex-1">
-          {breadcrumbs[0].leading ? (
+          {breadcrumbs[0].leading || breadcrumbs[0].identifier ? (
             <h1 className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wider">
-              <span className="flex shrink-0 items-center">{breadcrumbs[0].leading}</span>
+              {breadcrumbs[0].leading && (
+                <span className="flex shrink-0 items-center">{breadcrumbs[0].leading}</span>
+              )}
+              <CrumbIdentifier identifier={breadcrumbs[0].identifier} />
               <span className="truncate">{breadcrumbs[0].label}</span>
             </h1>
           ) : (
@@ -112,9 +121,12 @@ export function BreadcrumbBar() {
                   {i > 0 && <BreadcrumbSeparator />}
                   <BreadcrumbItem className={isLast ? "min-w-0" : "shrink-0"}>
                     {isLast || !crumb.href ? (
-                      crumb.leading ? (
+                      crumb.leading || crumb.identifier ? (
                         <BreadcrumbPage className="flex min-w-0 items-center gap-1.5">
-                          <span className="flex shrink-0 items-center">{crumb.leading}</span>
+                          {crumb.leading && (
+                            <span className="flex shrink-0 items-center">{crumb.leading}</span>
+                          )}
+                          <CrumbIdentifier identifier={crumb.identifier} />
                           <span className="truncate">{crumb.label}</span>
                         </BreadcrumbPage>
                       ) : (
@@ -122,9 +134,12 @@ export function BreadcrumbBar() {
                       )
                     ) : (
                       <BreadcrumbLink asChild>
-                        {crumb.leading ? (
+                        {crumb.leading || crumb.identifier ? (
                           <Link to={crumb.href} className="flex items-center gap-1.5">
-                            <span className="flex shrink-0 items-center">{crumb.leading}</span>
+                            {crumb.leading && (
+                              <span className="flex shrink-0 items-center">{crumb.leading}</span>
+                            )}
+                            <CrumbIdentifier identifier={crumb.identifier} />
                             <span className="truncate">{crumb.label}</span>
                           </Link>
                         ) : (

@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
+import { COMPANY_IMPORT_TRANSFERS_ROUTE_PATH } from "@paperclipai/shared/company-import-transfer";
 import { errorHandler } from "../middleware/index.js";
 import { buildOpenApiSpec, openApiRoutes } from "../routes/openapi.js";
 
@@ -21,22 +22,29 @@ const apiPrefixes: Record<string, string> = {
   "auth.ts": "/api/auth",
   "board-chat.ts": "/api",
   "built-in-agents.ts": "/api",
-  "cloud-upstreams.ts": "/api",
+  "cloud.ts": "/api/cloud",
   "companies.ts": "/api/companies",
   "company-skills.ts": "/api",
+  "company-skill-policy.ts": "/api",
   "costs.ts": "/api",
   "dashboard.ts": "/api",
+  "decision-queues.ts": "/api",
+  "decisions.ts": "/api",
+  "decision-training.ts": "/api",
   "environments.ts": "/api",
   "execution-workspaces.ts": "/api",
   "file-resources.ts": "/api",
+  "folders.ts": "/api",
   "goals.ts": "/api",
   "health.ts": "/api/health",
+  "inbox-agent-policy.ts": "/api",
   "inbox-dismissals.ts": "/api",
   "instance-database-backups.ts": "/api",
   "instance-settings.ts": "/api",
   "issues.ts": "/api",
   "issue-tree-control.ts": "/api",
   "llms.ts": "/api",
+  "onboarding-seed.ts": "/api",
   "openapi.ts": "/api",
   "plugin-ui-static.ts": "/api",
   "plugins.ts": "/api",
@@ -46,7 +54,11 @@ const apiPrefixes: Record<string, string> = {
   "secrets.ts": "/api",
   "sidebar-badges.ts": "/api",
   "sidebar-preferences.ts": "/api",
+  "summary-slots.ts": "/api",
+  "status-cards.ts": "/api",
   "teams-catalog.ts": "/api",
+  "tool-access.ts": "/api",
+  "tool-gateway.ts": "/api",
   "user-profiles.ts": "/api",
 };
 
@@ -58,6 +70,8 @@ const explicitOpenApiCoverageExclusions = new Set([
   "pipelines.ts",
   // Case routes are experimental (enableCases flag) and not yet in the public OpenAPI document.
   "cases.ts",
+  // Smoke lab routes are experimental and not yet represented in the public OpenAPI document.
+  "smoke-lab.ts",
 ]);
 
 function createApp() {
@@ -67,14 +81,27 @@ function createApp() {
   return app;
 }
 
+// Route files may compose paths from shared path constants inside template
+// literals; substitute the constants' values before normalizing.
+const routePathConstantSubstitutions: Record<string, string> = {
+  "${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}": COMPANY_IMPORT_TRANSFERS_ROUTE_PATH,
+};
+
 function normalizeExpressPath(routePath: string) {
-  return routePath
+  let substituted = routePath;
+  for (const [placeholder, value] of Object.entries(routePathConstantSubstitutions)) {
+    substituted = substituted.split(placeholder).join(value);
+  }
+  return substituted
     .replace(/\*([A-Za-z0-9_]+)/g, "{$1}")
     .replace(/:([A-Za-z0-9_]+)/g, "{$1}")
     .replace(/\/+/g, "/");
 }
 
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
+  if (file === "tool-gateway.ts" && routePath.startsWith("/mcp/gateways/")) {
+    return routePath;
+  }
   if ((file === "companies.ts" || file === "health.ts") && routePath === "/") {
     return prefix;
   }
@@ -110,6 +137,9 @@ function loadActualRoutes() {
 
     if (file === "companies.ts" && source.includes("router.post(COMPANY_IMPORT_ROUTE_PATH")) {
       routes.add("POST /api/companies/import");
+    }
+    if (file === "companies.ts" && source.includes("router.post(COMPANY_IMPORT_TRANSFERS_ROUTE_PATH")) {
+      routes.add(`POST /api/companies${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}`);
     }
   }
 
@@ -147,6 +177,8 @@ describe("openapi routes", () => {
       AgentBearerAuth: { type: "http", scheme: "bearer" },
     });
     expect(res.body.paths["/api/health"].get.security).toEqual([]);
+    expect(res.body.paths["/mcp/gateways/{gatewayPublicId}"].post.security).toEqual([]);
+    expect(res.body.paths["/api/mcp/gateways/{gatewayPublicId}"]).toBeUndefined();
     expect(res.body.paths["/api/companies"].post.responses["201"]).toBeDefined();
     expect(res.body.paths["/api/companies"].post.requestBody.content["application/json"].schema).toMatchObject({
       type: "object",
@@ -155,12 +187,51 @@ describe("openapi routes", () => {
       },
       required: ["name"],
     });
+    expect(JSON.stringify(res.body.paths["/api/companies"].post.responses)).not.toContain("candidates");
+    expect(res.body.paths["/api/companies/{companyId}/skills/scan-projects"].post.responses["200"].content[
+      "application/json"
+    ].schema).toMatchObject({
+      type: "object",
+      properties: {
+        candidates: { type: "array" },
+      },
+      required: expect.arrayContaining(["candidates"]),
+    });
     expect(res.body.paths["/api/agents/{id}/keys"].post.requestBody.content["application/json"].schema).toMatchObject({
       type: "object",
       properties: {
         name: { type: "string" },
       },
     });
+    expect(res.body.paths["/api/companies/{companyId}/folders"].post.responses["201"]).toBeDefined();
+    expect(
+      res.body.paths["/api/issues/{id}/interactions/{interactionId}/withdraw"].post.summary,
+    ).toBe("Withdraw a pending issue thread interaction");
+    expect(res.body.paths["/api/companies/{companyId}/folders/items/move"].post.summary).toBe(
+      "Move an item into or out of a folder",
+    );
+    const createQueue = res.body.paths["/api/companies/{companyId}/decision-queues"].post;
+    expect(createQueue.security).toContainEqual({ AgentBearerAuth: [] });
+    expect(createQueue.responses["200"]).toBeDefined();
+    expect(createQueue.responses["201"]).toBeDefined();
+    expect(createQueue.requestBody.content["application/json"].schema).toMatchObject({
+      type: "object",
+      properties: {
+        key: { type: "string", minLength: 1, maxLength: 80 },
+        title: { type: "string", minLength: 1, maxLength: 120 },
+      },
+      required: ["key", "title"],
+    });
+    const updateTriage = res.body.paths[
+      "/api/companies/{companyId}/decision-triage/{sourceKind}/{sourceId}"
+    ].put;
+    expect(updateTriage.responses["422"]).toBeDefined();
+    expect(updateTriage.requestBody.content["application/json"].schema.properties).toMatchObject({
+      decideBy: { nullable: true },
+      snoozedUntil: { type: "string", format: "date-time", nullable: true },
+    });
+    expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools"].get)).not.toContain("sessionToken");
+    expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools/call"].post)).not.toContain("sessionToken");
   });
 
   it("covers the mounted server routes exactly", () => {

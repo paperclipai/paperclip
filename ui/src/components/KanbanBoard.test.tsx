@@ -43,6 +43,7 @@ function createIssue(index: number, status: IssueStatus): Issue {
     status,
     workMode: "standard",
     priority: "medium",
+    reviewPolicy: null,
     assigneeAgentId: index === 1 ? "agent-1" : null,
     assigneeUserId: null,
     responsibleUserId: null,

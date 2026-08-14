@@ -42,6 +42,10 @@ export const workspaceFileResourceQuerySchema = z.object({
   params: { code: "invalid_target" },
 });
 
+export const workspaceFileAvailabilityRequestSchema = z.object({
+  queries: z.array(workspaceFileResourceQuerySchema).max(100),
+});
+
 export const workspaceFileListQuerySchema = z.object({
   projectId: z.string().uuid().optional(),
   workspaceId: z.string().uuid().optional(),
@@ -95,6 +99,25 @@ export const resolvedWorkspaceResourceSchema = z.object({
   }),
 });
 
+export const normalizedWorkspaceFileAvailabilityQuerySchema = z.object({
+  projectId: z.string().uuid().nullable(),
+  workspaceId: z.string().uuid().nullable(),
+  path: z.string().min(1),
+  workspace: workspaceFileSelectorSchema,
+});
+
+export const workspaceFileAvailabilityResultSchema = z.object({
+  query: normalizedWorkspaceFileAvailabilityQuerySchema,
+  openable: z.boolean(),
+  unavailableReason: z.string().min(1).nullable().optional(),
+  resource: resolvedWorkspaceResourceSchema.nullable(),
+});
+
+export const workspaceFileAvailabilityResponseSchema = z.object({
+  kind: z.literal("workspace_file_availability"),
+  results: z.array(workspaceFileAvailabilityResultSchema).max(100),
+});
+
 export const workspaceFileContentSchema = z.object({
   resource: resolvedWorkspaceResourceSchema,
   content: z.object({
@@ -105,3 +128,4 @@ export const workspaceFileContentSchema = z.object({
 
 export type WorkspaceFileResourceQuery = z.infer<typeof workspaceFileResourceQuerySchema>;
 export type WorkspaceFileListQuery = z.infer<typeof workspaceFileListQuerySchema>;
+export type WorkspaceFileAvailabilityRequestInput = z.infer<typeof workspaceFileAvailabilityRequestSchema>;

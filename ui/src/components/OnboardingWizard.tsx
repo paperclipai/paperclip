@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
@@ -43,7 +43,11 @@ import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/a
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
-import { resolveRouteOnboardingOptions } from "../lib/onboarding-route";
+import {
+  companyPrefixFromOnboardingPath,
+  resolveRouteOnboardingOptions,
+} from "../lib/onboarding-route";
+import { useCompanyMission } from "../hooks/useCompanyMission";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
 import { AgentCapsule } from "./AgentCapsule";
@@ -82,12 +86,34 @@ function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: s
 }
 
 const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
-const DEFAULT_TASK_TITLE = "Hire your first engineer and create a hiring plan";
-const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the company.
+const DEFAULT_TASK_TITLE = "Paperclip onboarding";
+const DEFAULT_TASK_DESCRIPTION = `You are the Paperclip agent. This is your first task. Your job here is to
+understand what the user wants and turn it into a concrete plan — not to
+start building yet.
 
-- hire a founding engineer
-- write a hiring plan
-- break the roadmap into concrete tasks and start delegating work`;
+A greeting has already been posted to the user on your behalf, so don't
+re-introduce yourself — go straight to the questions.
+
+This is a user-facing chat. Everything you post here is read by the user, so
+keep your messages terse and written for them. Only surface things meant for
+the user: the questions, the plan, the team, next-step options, and short
+status ("Got your answers — here's the plan."). Never narrate how you work.
+Don't post your internal steps or thinking into the chat — no "let me probe
+the schema", "schema learned", "building the questions payload", "orienting
+myself with the API", or similar play-by-play of your API/tool calls. Do that
+work silently and post only the result.
+
+Work in this order:
+
+1. Ask a few focused, clarifying questions. Use an ask_user_questions interaction to settle on one concrete goal to tackle first— scope, priorities, constraints, and what "done" looks like. Don't guess; ask.
+
+2. Propose one plan. Once you understand the goal, write a short approach plan to the \`plan\` document. At the bottom, list the agents you'd hire (with their roles) and any follow-up tasks you'd create. Then present the whole thing as a SINGLE request_checkbox_confirmation that targets the \`plan\` document, with each proposed hire and follow-up task as its own checkable option, checked by default. Give each option a stable id you can act on later. Do NOT use suggest_tasks or a separate request_confirmation — one checkbox card is the plan and its approval. In the card's message keep the summary to a line or two and point the user to the full write-up in the plan on the right sidebar (it opens to the Plan there automatically) — don't paste the whole plan into the card, and never say the write-up is "above" or "in the plan doc above"; it lives in the right sidebar.
+
+3. Wait for approval. Don't hire anyone or create work until the user approves the plan. They can uncheck anything they don't want before approving, and unchecking simply drops it. If they ask for changes, revise the plan document and re-confirm.
+
+4. On approval, execute only what they kept. Create exactly the checked options — hire the checked agents and create + delegate the checked follow-up tasks, each in its own task. Skip anything the user unchecked.
+
+Propose, don't decide. Keep it conversational.`;
 const INCOMPLETE_ONBOARDING_STATE_MESSAGE =
   "Onboarding state is incomplete. Please restart onboarding and try again.";
 
@@ -112,26 +138,49 @@ export function OnboardingWizard() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
-  const { companyPrefix } = useParams<{ companyPrefix?: string }>();
-
-  // Sync disabled adapter types from server so the adapter grid filters them out.
-  const disabledTypes = useDisabledAdaptersSync();
+  const { companyPrefix: matchedCompanyPrefix } = useParams<{ companyPrefix?: string }>();
+  // This component renders beside `<Routes>`, not inside it (`App.tsx`), so it
+  // has no route match and `useParams()` gives nothing. Read the prefix from
+  // the pathname, which `useLocation()` supplies without a match. The param is
+  // kept first so a future move inside the route tree needs no change here.
+  const companyPrefix =
+    matchedCompanyPrefix ?? companyPrefixFromOnboardingPath(location.pathname);
 
   // Support opening the wizard from a route (e.g. /onboarding or an existing
   // company's "add agent" entry point) in addition to the dialog context.
+  // The company the path names, resolved before the mission lookup below so it
+  // has something to ask about. Same match the resolver makes.
+  const routeMatchedCompanyId =
+    companyPrefix && !companiesLoading
+      ? companies.find(
+          (company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase(),
+        )?.id ?? null
+      : null;
+  const { hasMission: routeCompanyHasMission, settled: routeMissionSettled } =
+    useCompanyMission(routeMatchedCompanyId);
+
+  // Hold the options back until the mission lookup settles, exactly as they
+  // are already held back while companies load. The step below is applied once
+  // and not revised, so the wizard must not open before the answer is in.
   const routeOnboardingOptions =
-    companyPrefix && companiesLoading
+    (companyPrefix && companiesLoading) || !routeMissionSettled
       ? null
       : resolveRouteOnboardingOptions({
           pathname: location.pathname,
           companyPrefix,
           companies,
+          companyHasMission: routeCompanyHasMission,
         });
   const effectiveOnboardingOpen =
     onboardingOpen || (routeOnboardingOptions !== null && !routeDismissed);
   const effectiveOnboardingOptions = onboardingOpen
     ? onboardingOptions
     : routeOnboardingOptions ?? {};
+
+  // Sync disabled adapter types only when the wizard is visible. The wizard is
+  // mounted globally, including on /auth, where protected adapter routes are
+  // expected to reject signed-out browsers.
+  const disabledTypes = useDisabledAdaptersSync({ enabled: effectiveOnboardingOpen });
 
   const initialStep = effectiveOnboardingOptions.initialStep ?? 0;
   const existingCompanyId = effectiveOnboardingOptions.companyId;
@@ -197,28 +246,122 @@ export function OnboardingWizard() {
     (saved?.createdIssueRef as string) ?? null
   );
 
+  // The company the *route* last supplied, so a navigation that stops naming
+  // one can drop it without touching a company the wizard created itself.
+  const routeCompanyIdRef = useRef<string | null>(null);
+  // The current company, mirrored so the sync effect can read it without
+  // taking it as a dependency. Depending on it would re-run the effect on
+  // every company change, and the effect also calls setStep - it would drag
+  // the user back to the route's initial step mid-flow.
+  const createdCompanyIdRef = useRef<string | null>(null);
+  createdCompanyIdRef.current = createdCompanyId;
+  // The step the request wants, mirrored for the same reason. `initialStep` is
+  // *derived* - from the company list, and now from the goal list behind
+  // `useCompanyMission` - so its value changes whenever one of those queries
+  // does: a retry, a background refetch, a cache invalidation. An effect that
+  // depended on it would re-run on every such change and call setStep, moving
+  // a customer who is already mid-flow. Reading it through a ref breaks that
+  // dependency, so the effect runs when the wizard *opens* or when the company
+  // changes, and takes whatever the step is at that moment.
+  const initialStepRef = useRef<Step | undefined>(undefined);
+  initialStepRef.current = effectiveOnboardingOptions.initialStep;
+
   // Reset the route-dismissed flag when navigating to a different path.
   useEffect(() => {
     setRouteDismissed(false);
   }, [location.pathname]);
 
+  /**
+   * Forget everything that describes one particular company.
+   *
+   * Called when the wizard stops holding a company - the route replaced it, or
+   * withdrew it. Both are the same event, and clearing only part of it is what
+   * lets the next company skip work it has not done: a kept goal id reads as
+   * "this company's mission is already written", and the launch path would
+   * link the next company's project to the previous company's goal.
+   *
+   * The name and the prefix are cleared here too and backfilled again from the
+   * company list by the effects below, so they always describe the company in
+   * hand rather than the one before it.
+   */
+  function clearCompanyScopedState() {
+    setCreatedCompanyPrefix(null);
+    setCompanyName("");
+    setCompanyGoal("");
+    setMissionPath(null);
+    setMissionConfirmed(false);
+    setCreatedCompanyGoalId(null);
+    setCreatedProjectId(null);
+    setCreatedIssueRef(null);
+    setCreatedAgentId(null);
+  }
+
   // Sync step and company when onboarding opens with explicit options.
   // Only override saved state when explicit options provide values.
+  //
+  // The step belongs to the request that opened the wizard, not to the latest
+  // value of the expression that produced it - see `initialStepRef` above for
+  // why those differ. This effect is therefore keyed on the two things that
+  // make a *new* request: the wizard opening, and the company changing.
+  // Navigating from one company's onboarding path to another re-decides the
+  // step; the same request re-deriving a fresher value does not.
   useEffect(() => {
     if (!effectiveOnboardingOpen) return;
     // If explicit options are provided, they take precedence over saved state
-    if (effectiveOnboardingOptions.initialStep) {
-      setStep(effectiveOnboardingOptions.initialStep);
+    if (initialStepRef.current) {
+      setStep(initialStepRef.current);
     }
-    if (effectiveOnboardingOptions.companyId) {
-      setCreatedCompanyId(effectiveOnboardingOptions.companyId);
-      setCreatedCompanyPrefix(null);
+    const routeCompanyId = effectiveOnboardingOptions.companyId ?? null;
+    if (routeCompanyId) {
+      // Claim ownership only when the route *introduces* a company. A route
+      // that merely names the one already in hand - the wizard created it,
+      // then the user navigated to that company's onboarding path - has not
+      // supplied anything, so it must not take ownership of it. Otherwise
+      // navigating on to `/onboarding` would clear work the wizard did.
+      if (routeCompanyId !== createdCompanyIdRef.current) {
+        setCreatedCompanyId(routeCompanyId);
+        clearCompanyScopedState();
+      }
+      // Ownership is recorded either way, including when the route merely
+      // names the company already in hand. Only the clearing above is
+      // conditional.
+      //
+      // This is a deliberate change to the rule the comment above described.
+      // Not recording ownership there protected wizard-created work from a
+      // later `/onboarding`, but it also meant that company was never
+      // withdrawn: create a company on step 1, visit its own onboarding path,
+      // then go to `/onboarding`, and the wizard shows "create a company"
+      // while still holding the previous one. The next confirmation then
+      // writes that customer's new mission into the old company - which is
+      // exactly the failure the withdrawal branch below was written to
+      // prevent, reached by a path it could not see.
+      //
+      // Losing the step-1 progress on `/onboarding` is the better error:
+      // `/onboarding` is a request to start a company, so honouring it beats
+      // silently writing into a different one.
+      routeCompanyIdRef.current = routeCompanyId;
+      return;
     }
-  }, [
-    effectiveOnboardingOpen,
-    effectiveOnboardingOptions.companyId,
-    effectiveOnboardingOptions.initialStep
-  ]);
+    if (routeCompanyIdRef.current) {
+      // The route named a company and now does not - the user navigated from
+      // an existing company's onboarding to `/onboarding`, or to a prefix that
+      // matches nothing. Drop it. Keeping it leaves the wizard showing step 1,
+      // "create a company", while still holding the previous one, so the next
+      // confirmation writes into that company instead of making a new one.
+      //
+      // Only a company this route supplied is cleared. One the wizard created
+      // itself, or restored from saved state, is left alone: the ref is null
+      // in those cases, and clearing them would discard real progress.
+      //
+      // Withdrawing a company clears the same state that replacing one does.
+      // The two are the same event - this company is no longer the wizard's -
+      // and clearing only half of it leaves ids that make the *next* company
+      // skip work it has not done.
+      setCreatedCompanyId(null);
+      routeCompanyIdRef.current = null;
+      clearCompanyScopedState();
+    }
+  }, [effectiveOnboardingOpen, effectiveOnboardingOptions.companyId]);
 
   // Backfill issue prefix for an existing company once companies are loaded.
   useEffect(() => {
@@ -226,6 +369,21 @@ export function OnboardingWizard() {
     const company = companies.find((c) => c.id === createdCompanyId);
     if (company) setCreatedCompanyPrefix(company.issuePrefix);
   }, [effectiveOnboardingOpen, createdCompanyId, createdCompanyPrefix, companies]);
+
+  // Backfill the name too, for the same company and the same reason.
+  //
+  // `companyName` is otherwise only ever typed on step 1, so a company that
+  // enters the wizard further along has none. That is a dead end rather than a
+  // cosmetic gap: the mission step prints the name in its own copy, and both
+  // ways forward from that step - the button and the Enter key - require
+  // `companyName.trim()`. An existing company opened on the mission step could
+  // not leave it. Nothing reached that state until the dashboard started
+  // opening agentless companies there.
+  useEffect(() => {
+    if (!effectiveOnboardingOpen || !createdCompanyId || companyName) return;
+    const company = companies.find((c) => c.id === createdCompanyId);
+    if (company) setCompanyName(company.name);
+  }, [effectiveOnboardingOpen, createdCompanyId, companyName, companies]);
 
   // Persist wizard state to localStorage on every change
   useEffect(() => {
@@ -404,6 +562,23 @@ export function OnboardingWizard() {
     setRouteDismissed(true);
   }
 
+  /**
+   * Whether the company an async handler started for is still the one in hand.
+   *
+   * A route change can switch companies while a request is in flight, and the
+   * switch clears the created resource ids so the new company starts clean. A
+   * write that lands afterwards would put them back, and hand that company the
+   * previous one's goal, project, issue or agent — which is exactly what the
+   * clearing exists to prevent.
+   *
+   * Every async write below asks this before it attributes anything. It never
+   * cancels the server work, which is done and correct either way; it declines
+   * only to record it against a company it does not belong to.
+   */
+  function stillTheSameCompany(companyIdAtStart: string | null) {
+    return createdCompanyIdRef.current === companyIdAtStart;
+  }
+
   async function handleLaunchToDashboard() {
     if (!createdCompanyId || !createdAgentId) {
       setError(INCOMPLETE_ONBOARDING_STATE_MESSAGE);
@@ -416,7 +591,7 @@ export function OnboardingWizard() {
       if (!goalId) {
         const goals = await goalsApi.list(createdCompanyId);
         goalId = selectDefaultCompanyGoalId(goals);
-        setCreatedCompanyGoalId(goalId);
+        if (stillTheSameCompany(createdCompanyId)) setCreatedCompanyGoalId(goalId);
       }
 
       let projectId = createdProjectId;
@@ -435,10 +610,11 @@ export function OnboardingWizard() {
             queryKey: queryKeys.projects.list(createdCompanyId)
           });
         }
-        setCreatedProjectId(projectId);
+        if (stillTheSameCompany(createdCompanyId)) setCreatedProjectId(projectId);
       }
 
-      if (!createdIssueRef) {
+      let issueRef = createdIssueRef;
+      if (!issueRef) {
         const issue = await issuesApi.create(
           createdCompanyId,
           buildOnboardingIssuePayload({
@@ -449,17 +625,32 @@ export function OnboardingWizard() {
             goalId
           })
         );
-        setCreatedIssueRef(issue.identifier ?? issue.id);
+        issueRef = issue.identifier ?? issue.id;
+        if (stillTheSameCompany(createdCompanyId)) setCreatedIssueRef(issueRef);
         queryClient.invalidateQueries({
           queryKey: queryKeys.issues.list(createdCompanyId)
         });
       }
 
+      // Everything above is server work and stands on its own: the company has
+      // its goal, its onboarding project and its first task. What follows is
+      // this wizard finishing — selecting a company, discarding its own state
+      // and navigating. None of that is right for a customer who has moved to
+      // another company in the meantime: it would take them back, and `reset()`
+      // would discard the progress they had started there.
+      if (!stillTheSameCompany(createdCompanyId)) return;
+
       const prefix = createdCompanyPrefix;
-      setSelectedCompanyId(createdCompanyId);
+      // Select the new company as a route sync, not a manual switch: the
+      // explicit navigate below is the intended destination, so page-memory's
+      // "restore last page" (which falls back to /dashboard) must not fire and
+      // clobber the first-task URL. See PAP-404.
+      setSelectedCompanyId(createdCompanyId, { source: "route_sync" });
       reset();
       closeOnboarding();
-      navigate(prefix ? `/${prefix}/dashboard` : "/dashboard");
+      // Drop the user straight into the first task's detail page (not the
+      // dashboard) so they land on the conversation the agent will start in.
+      navigate(prefix ? `/${prefix}/issues/${issueRef}` : `/issues/${issueRef}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to launch first task");
     } finally {
@@ -539,17 +730,91 @@ export function OnboardingWizard() {
   // mission step (e.g. via Back) doesn't create a duplicate company.
   async function handleConfirmMission() {
     if (createdCompanyId) {
-      setStep(3);
+      // An existing company needs its mission written, not just skipped past.
+      // This branch used to advance without saving anything, which was
+      // harmless while nothing sent an existing company to the mission step -
+      // a company reached step 2 only by creating itself on step 1, one line
+      // below. The dashboard now opens an agentless company here, so the
+      // customer types a mission and presses "Confirm mission". Advancing
+      // without writing it would leave the company with no mission at all,
+      // which is the state this whole change exists to remove.
+      //
+      // Only when the wizard has not already written one. Returning to step 2
+      // and confirming again must not add a second goal.
+      if (createdCompanyGoalId) {
+        setStep(3);
+        return;
+      }
+      setLoading(true);
+      setError(null);
+      try {
+        const parsedGoal = parseOnboardingGoalInput(companyGoal);
+        const payload = {
+          title: parsedGoal.title,
+          ...(parsedGoal.description ? { description: parsedGoal.description } : {})
+        };
+
+        // The company may already have a mission this step could not see.
+        // `useCompanyMission` fails open, so a goal lookup that exhausted its
+        // retries sends a company that has one here anyway. Adding a second
+        // company-level goal would leave two, and the earlier one would keep
+        // winning `selectDefaultCompanyGoalId` everywhere outside this wizard.
+        //
+        // So read once more before writing, and update rather than add. The
+        // customer just answered the question on a step that asked it, so
+        // their answer is the mission. A read that fails still writes: an
+        // unwritten mission is the failure this whole change exists to remove.
+        let existingGoalId: string | null = null;
+        try {
+          const goals = await queryClient.fetchQuery({
+            queryKey: queryKeys.goals.list(createdCompanyId),
+            queryFn: () => goalsApi.list(createdCompanyId)
+          });
+          existingGoalId = selectDefaultCompanyGoalId(goals);
+        } catch {
+          // Still cannot tell. Fall through and write.
+        }
+
+        const goal = existingGoalId
+          ? await goalsApi.update(existingGoalId, payload)
+          : await goalsApi.create(createdCompanyId, {
+              ...payload,
+              level: "company",
+              status: "active"
+            });
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.goals.list(createdCompanyId)
+        });
+        if (!stillTheSameCompany(createdCompanyId)) return;
+        setCreatedCompanyGoalId(goal.id);
+        setStep(3);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to save the mission");
+      } finally {
+        setLoading(false);
+      }
       return;
     }
     setLoading(true);
     setError(null);
     try {
       const company = await companiesApi.create({ name: companyName.trim() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      // Same guard as the others, from the other end: nothing was in hand when
+      // this started, so "unchanged" means still nothing. A route that supplied
+      // a company while the request was open has taken over the wizard, and
+      // adopting the company just created would fight it — and would leave the
+      // customer on a company they never navigated to.
+      if (!stillTheSameCompany(null)) return;
       setCreatedCompanyId(company.id);
+      // Keep the mirror current here rather than waiting for the next render.
+      // The goal write below asks `stillTheSameCompany(company.id)`, and a ref
+      // that still held the pre-create value would answer "no" to the handler
+      // that just did the creating - so the goal would never be attributed and
+      // the wizard would sit on the mission step it had just completed.
+      createdCompanyIdRef.current = company.id;
       setCreatedCompanyPrefix(company.issuePrefix);
       setSelectedCompanyId(company.id);
-      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
 
       const parsedGoal = parseOnboardingGoalInput(companyGoal);
       const goal = await goalsApi.create(company.id, {
@@ -560,10 +825,11 @@ export function OnboardingWizard() {
         level: "company",
         status: "active"
       });
-      setCreatedCompanyGoalId(goal.id);
       queryClient.invalidateQueries({
         queryKey: queryKeys.goals.list(company.id)
       });
+      if (!stillTheSameCompany(company.id)) return;
+      setCreatedCompanyGoalId(goal.id);
 
       setStep(3); // → Create your team lead
     } catch (err) {
@@ -640,14 +906,17 @@ export function OnboardingWizard() {
         });
       }
       const agent = hire.agent;
-      setCreatedAgentId(agent.id);
       queryClient.invalidateQueries({
         queryKey: queryKeys.agents.list(createdCompanyId)
       });
-
       // Seed the CEO's agent instructions file so the agent always has
       // company context + a hiring-plan output format rule. Non-fatal on
       // failure — the agent can still function with adapter defaults.
+      //
+      // Before the ownership check below on purpose. This agent exists now,
+      // and it needs its instructions whatever this wizard goes on to show.
+      // Guarding server work rather than attribution would leave a hired agent
+      // with adapter defaults because the customer changed pages.
       try {
         const bundle = await agentsApi.instructionsBundle(agent.id, createdCompanyId);
         await agentsApi.saveInstructionsFile(
@@ -670,6 +939,8 @@ export function OnboardingWizard() {
         console.warn("Failed to seed CEO instructions:", err);
       }
 
+      if (!stillTheSameCompany(createdCompanyId)) return;
+      setCreatedAgentId(agent.id);
       // Advance to the Review step — the lead is now online. The user drives
       // strategy + hiring from the planning chat after "Get started".
       setStep(5);
@@ -732,6 +1003,11 @@ export function OnboardingWizard() {
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
+      // Every button below is disabled while a request is in flight. The
+      // keyboard has to honour the same rule, or a second Enter re-enters a
+      // handler whose guard is a piece of state the first one has not set
+      // yet — two goals for one mission, two agents for one hire.
+      if (loading) return;
       if (step === 0) return; // front door requires click
       if (step === 1 && companyName.trim()) setStep(2);
       else if (step === 2 && companyName.trim() && companyGoal.trim()) handleConfirmMission();
@@ -818,7 +1094,7 @@ export function OnboardingWizard() {
                   morph reads as one capsule coming to life — dashed slot →
                   solid (configured) → liquid fill + blue glow (online). */}
               {step >= 3 && step <= 5 && (
-                <div className="space-y-4 mb-6">
+                <div className="mb-6 space-y-4">
                   <div className="flex items-center gap-3 mb-1">
                     <div className="bg-muted/50 p-2">
                       {step === 5 ? (
@@ -830,7 +1106,7 @@ export function OnboardingWizard() {
                     <div>
                       <h3 className="font-medium">
                         {step === 3
-                          ? "Create your team lead"
+                          ? "Create your first agent"
                           : step === 4
                             ? "Connect a model"
                             : "Review"}
@@ -838,40 +1114,47 @@ export function OnboardingWizard() {
                       <p className="text-xs text-muted-foreground">
                         {step === 3 ? (
                           <>
-                            Name your lead. They'll help drive{" "}
+                            They'll help drive{" "}
                             <span className="font-medium text-foreground">{companyName}</span>{" "}
                             toward its mission. We default to{" "}
-                            <span className="font-medium text-foreground">Chief of staff</span> —
-                            rename it to anything you like.
+                            <span className="font-medium text-foreground">Chief of staff</span>.
+                            Rename it to anything you like.
                           </>
                         ) : step === 4 ? (
                           <>Pick the adapter and model your lead will run on, then check the environment.</>
                         ) : (
-                          <>Everything's set up — your team lead is online and ready to work.</>
+                          <>Your first agent is online and ready to work.</>
                         )}
                       </p>
                     </div>
                   </div>
 
-                  <div className="flex flex-col items-center gap-1.5 py-1 text-center">
+                  <div
+                    className={cn(
+                      "flex flex-col items-center py-1 text-center",
+                      step === 5 ? "mt-8 gap-2.5" : "gap-1.5"
+                    )}
+                  >
                     <AgentCapsule
                       state={step === 3 ? "slot" : step === 4 ? "configured" : "online"}
                       gradient={5}
                       glow="blue"
                       size="md"
                     />
-                    <p className="text-(length:--text-micro) text-muted-foreground">
-                      {step === 3 ? (
-                        "an empty slot for an agent"
-                      ) : step === 4 ? (
-                        "your team lead, taking shape"
-                      ) : (
-                        <>
-                          <span className="font-medium text-foreground">{agentName}</span>{" "}
-                          is online and ready to work!
-                        </>
-                      )}
-                    </p>
+                    {step !== 3 && (
+                      <p
+                        className={cn(
+                          "text-muted-foreground",
+                          step === 5 ? "text-sm" : "text-(length:--text-micro)"
+                        )}
+                      >
+                        {step === 4 ? (
+                          "your team lead, taking shape"
+                        ) : (
+                          <span className="font-medium text-foreground">{agentName}</span>
+                        )}
+                      </p>
+                    )}
                   </div>
                 </div>
               )}
@@ -971,9 +1254,9 @@ export function OnboardingWizard() {
                       <Building2 className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">Name your company</h3>
+                      <h3 className="font-medium">Name your organization</h3>
                       <p className="text-xs text-muted-foreground">
-                        What should we call your company?
+                        What should we call your team or company?
                       </p>
                     </div>
                   </div>
@@ -986,7 +1269,7 @@ export function OnboardingWizard() {
                           : "text-muted-foreground group-focus-within:text-foreground"
                       )}
                     >
-                      Company name
+                      Name
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
@@ -1028,7 +1311,7 @@ export function OnboardingWizard() {
                   </div>
 
                   {/* Mission path selector */}
-                  <div className="space-y-3">
+                  <div className="space-y-3 pt-3">
                     <label className="text-xs text-foreground block">
                       How would you like to define your mission?
                     </label>
@@ -1200,13 +1483,6 @@ export function OnboardingWizard() {
                       You can always change your mission later in settings.
                     </p>
                   )}
-
-                  <button
-                    className="text-(length:--text-micro) text-muted-foreground hover:text-foreground transition-colors"
-                    onClick={() => setStep(1)}
-                  >
-                    ← Change company name
-                  </button>
                 </div>
               )}
 
@@ -1588,7 +1864,7 @@ export function OnboardingWizard() {
                   {/* Review checklist — everything that's now set up */}
                   <div className="space-y-1.5">
                     {[
-                      { label: "Company name", done: Boolean(companyName.trim()) },
+                      { label: "Organization name", done: Boolean(companyName.trim()) },
                       { label: "Mission", done: Boolean(companyGoal.trim()) },
                       { label: "Agent created", done: Boolean(createdAgentId) },
                       { label: "Model connected", done: Boolean(createdAgentId) },
@@ -1610,15 +1886,6 @@ export function OnboardingWizard() {
                       </div>
                     ))}
                   </div>
-
-                  {companyGoal.trim() && (
-                    <p className="text-sm text-muted-foreground italic text-center">
-                      "{companyGoal}"
-                    </p>
-                  )}
-                  <p className="text-xs text-muted-foreground text-center">
-                    We'll create the first task for {agentName} and take you to the dashboard.
-                  </p>
                 </div>
               )}
 
@@ -1693,7 +1960,7 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Bringing to life..." : "Give it a heartbeat"}
+                      {loading ? "Connecting..." : "Connect"}
                     </Button>
                   )}
                   {step === 5 && (

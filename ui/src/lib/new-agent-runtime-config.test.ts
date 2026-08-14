@@ -58,6 +58,18 @@ describe("buildNewAgentRuntimeConfig", () => {
     expect(config.modelProfiles).toBeUndefined();
   });
 
+  it("persists explicit cheap-profile opt-in when using the adapter default", () => {
+    const config = buildNewAgentRuntimeConfig({
+      cheapModelEnabled: true,
+    });
+    expect(config.modelProfiles).toEqual({
+      cheap: {
+        enabled: true,
+        adapterConfig: {},
+      },
+    });
+  });
+
   it("omits modelProfiles when cheap model is set but explicitly disabled", () => {
     const config = buildNewAgentRuntimeConfig({
       cheapModel: "claude-sonnet-4-6",

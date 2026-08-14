@@ -13,7 +13,10 @@ import {
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { accessService, executionWorkspaceService, heartbeatService, logActivity, workspaceOperationService } from "../services/index.js";
-import { mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
+import {
+  mergeExecutionWorkspaceConfig,
+  readExecutionWorkspaceConfig,
+} from "../services/execution-workspaces.js";
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
 import {
@@ -25,7 +28,7 @@ import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { logger } from "../middleware/logger.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -109,24 +112,16 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
 
   router.get("/execution-workspaces/:id", async (req, res) => {
     const id = req.params.id as string;
-    const workspace = await svc.getById(id);
-    if (!workspace) {
-      res.status(404).json({ error: "Execution workspace not found" });
-      return;
-    }
-    assertCompanyAccess(req, workspace.companyId);
+    const workspace = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!workspace) return;
     if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
     res.json(workspace);
   });
 
   router.get("/execution-workspaces/:id/close-readiness", async (req, res) => {
     const id = req.params.id as string;
-    const workspace = await svc.getById(id);
-    if (!workspace) {
-      res.status(404).json({ error: "Execution workspace not found" });
-      return;
-    }
-    assertCompanyAccess(req, workspace.companyId);
+    const workspace = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!workspace) return;
     if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
     const readiness = await svc.getCloseReadiness(id);
     if (!readiness) {
@@ -138,12 +133,8 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
 
   router.get("/execution-workspaces/:id/workspace-operations", async (req, res) => {
     const id = req.params.id as string;
-    const workspace = await svc.getById(id);
-    if (!workspace) {
-      res.status(404).json({ error: "Execution workspace not found" });
-      return;
-    }
-    assertCompanyAccess(req, workspace.companyId);
+    const workspace = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!workspace) return;
     if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
     const operations = await workspaceOperationsSvc.listForExecutionWorkspace(id);
     res.json(operations);
@@ -157,12 +148,8 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       return;
     }
 
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Execution workspace not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!existing) return;
     if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
 
     await assertCanManageExecutionWorkspaceRuntimeServices(db, req, {
@@ -406,9 +393,16 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
               : null,
             workspace: availableWorkspace,
             executionWorkspaceId: existing.id,
-            config: { workspaceRuntime: effectiveRuntimeConfig },
+            config: {
+              workspaceRuntime: effectiveRuntimeConfig,
+              runtimeProvisionCommand:
+                existing.config?.runtimeProvisionCommand
+                ?? projectPolicy?.workspaceStrategy?.runtimeProvisionCommand
+                ?? null,
+            },
             adapterEnv: {},
             onLog,
+            recorder,
             serviceIndex: selectedServiceIndex,
           });
           runtimeServiceCount = startedServices.length;
@@ -418,7 +412,9 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
 
         const currentDesiredState: WorkspaceRuntimeDesiredState =
           existing.config?.desiredState
-          ?? ((existing.runtimeServices ?? []).some((service) => service.status === "starting" || service.status === "running")
+          ?? ((existing.runtimeServices ?? []).some((service) =>
+            service.status === "provisioning" || service.status === "starting" || service.status === "running"
+          )
             ? "running"
             : "stopped");
         const nextRuntimeState: {
@@ -474,6 +470,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: `execution_workspace.runtime_${action}`,
       entityType: "execution_workspace",
       entityId: existing.id,
@@ -498,12 +495,8 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
 
   router.post("/execution-workspaces/:id/reconcile-branch", validate(reconcileExecutionWorkspaceBranchSchema), async (req, res) => {
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Execution workspace not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!existing) return;
     assertBoard(req);
     if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
 
@@ -525,6 +518,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "execution_workspace.branch_reconciled",
       entityType: "execution_workspace",
       entityId: existing.id,
@@ -590,12 +584,8 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
 
   router.patch("/execution-workspaces/:id", validate(updateExecutionWorkspaceSchema), async (req, res) => {
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Execution workspace not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!existing) return;
     if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
     assertNoAgentHostWorkspaceCommandMutation(
       req,
@@ -647,23 +637,33 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       }
 
       const closedAt = new Date();
-      const archivedWorkspace = await svc.update(id, {
-        ...patch,
-        status: "archived",
+      // Archive under the per-workspace lifecycle lock. The service takes the same
+      // lock as a reopen, raises the lifecycle generation, and clears the
+      // reopen-pending flag. The lock stops a concurrent reopen from publishing an
+      // active row between the status re-check and this archive write, so the
+      // destruction fence below never deletes a worktree that a reopen rebuilt.
+      const archiveResult = await svc.archiveWorkspaceUnderLifecycleLock({
+        id,
+        patch,
         closedAt,
-        cleanupReason: null,
       });
-      if (!archivedWorkspace) {
+      if (!archiveResult) {
         res.status(404).json({ error: "Execution workspace not found" });
         return;
       }
-      workspace = archivedWorkspace;
-
-      await environmentRuntime.destroyReusableSandboxLeases({
-        companyId: existing.companyId,
-        executionWorkspaceId: existing.id,
-        failureReason: "execution_workspace_closed",
-      });
+      if (archiveResult.outcome === "reopen_pending") {
+        // A reopen published this workspace as active while its source issue is
+        // still terminal. A caller will consume the rebuilt worktree. Refuse the
+        // archive and return before any lease teardown, runtime-service stop, or
+        // artifact cleanup, so the archive control never removes the rebuilt
+        // worktree during the reopen consumption window.
+        res.status(409).json({
+          error: "Execution workspace was reopened and cannot be archived right now",
+        });
+        return;
+      }
+      workspace = archiveResult.workspace;
+      const capturedGeneration = archiveResult.capturedGeneration;
 
       if (existing.mode === "shared_workspace") {
         await db
@@ -681,11 +681,6 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       }
 
       try {
-        await stopRuntimeServicesForExecutionWorkspace({
-          db,
-          executionWorkspaceId: existing.id,
-          workspaceCwd: existing.cwd,
-        });
         const projectWorkspace = existing.projectWorkspaceId
           ? await db
               .select({
@@ -710,35 +705,83 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
               .where(and(eq(projects.id, existing.projectId), eq(projects.companyId, existing.companyId)))
               .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy))
           : null;
-        const cleanupResult = await cleanupExecutionWorkspaceArtifacts({
-          workspace: existing,
-          projectWorkspace,
-          teardownCommand: configForCleanup?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,
-          cleanupCommand: configForCleanup?.cleanupCommand ?? null,
-          recorder: workspaceOperationsSvc.createRecorder({
-            companyId: existing.companyId,
-            executionWorkspaceId: existing.id,
-          }),
+        // Destroy under the lifecycle lock. If a resume reopened the workspace in
+        // the meantime, the fence skips destruction and keeps the reopened row.
+        // The reusable sandbox lease teardown runs inside this fence too. A reopen
+        // that races the archive rebuilds the worktree and keeps its leases, so
+        // the fence must skip both the worktree teardown and the lease teardown at
+        // the same generation. If the lease teardown ran before the fence, an
+        // overlapping reopen would lose its reusable leases while the fence still
+        // preserved its rebuilt worktree.
+        const fenced = await svc.fenceClosedWorkspaceDestruction({
+          workspaceId: id,
+          capturedGeneration,
+          destroy: async () => {
+            await environmentRuntime.destroyReusableSandboxLeases({
+              companyId: existing.companyId,
+              executionWorkspaceId: existing.id,
+              failureReason: "execution_workspace_closed",
+            });
+            await stopRuntimeServicesForExecutionWorkspace({
+              db,
+              executionWorkspaceId: existing.id,
+              workspaceCwd: existing.cwd,
+            });
+            return cleanupExecutionWorkspaceArtifacts({
+              workspace: existing,
+              projectWorkspace,
+              teardownCommand: configForCleanup?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,
+              cleanupCommand: configForCleanup?.cleanupCommand ?? null,
+              recorder: workspaceOperationsSvc.createRecorder({
+                companyId: existing.companyId,
+                executionWorkspaceId: existing.id,
+              }),
+            });
+          },
         });
-        cleanupWarnings = cleanupResult.warnings;
-        const cleanupPatch: Record<string, unknown> = {
-          closedAt,
-          cleanupReason: cleanupWarnings.length > 0 ? cleanupWarnings.join(" | ") : null,
-        };
-        if (!cleanupResult.cleaned) {
-          cleanupPatch.status = "cleanup_failed";
-        }
-        if (cleanupResult.warnings.length > 0 || !cleanupResult.cleaned) {
-          workspace = (await svc.update(id, cleanupPatch)) ?? workspace;
+        if (fenced.skippedReopened) {
+          // A resume reopened the workspace. Return the current (active) row.
+          workspace = (await svc.getById(id)) ?? workspace;
+        } else {
+          const cleanupResult = fenced.result;
+          cleanupWarnings = cleanupResult.warnings;
+          if (cleanupResult.warnings.length > 0 || !cleanupResult.cleaned) {
+            // Record the cleanup outcome under the lifecycle lock at the captured
+            // generation. If a resume reopened the workspace after the destruction
+            // fence returned, the guarded write skips the row, so a stale patch
+            // never overwrites the rebuilt worktree's active state.
+            const applied = await svc.applyClosedWorkspaceCleanupOutcome({
+              id,
+              closedAt,
+              capturedGeneration,
+              cleanupReason: cleanupWarnings.length > 0 ? cleanupWarnings.join(" | ") : null,
+              markCleanupFailed: !cleanupResult.cleaned,
+            });
+            if (applied) {
+              workspace = applied;
+            } else {
+              // A resume reopened the workspace. Return the current (active) row.
+              workspace = (await svc.getById(id)) ?? workspace;
+            }
+          }
         }
       } catch (error) {
         const failureReason = error instanceof Error ? error.message : String(error);
-        workspace =
-          (await svc.update(id, {
-            status: "cleanup_failed",
-            closedAt,
-            cleanupReason: failureReason,
-          })) ?? workspace;
+        // Mark cleanup_failed only while the row is still closed at the captured
+        // generation. If a resume reopened the workspace after the cleanup threw,
+        // the row is active again and, after a fresh archive, carries a higher
+        // generation. The generation-fenced write skips the row in both cases, so
+        // a stale cleanup_failed write never overwrites the newer active lifecycle
+        // state, and never buries a newer archive under the first archive's
+        // failure.
+        const marked = await svc.applyClosedWorkspaceCleanupOutcome({
+          id,
+          closedAt,
+          capturedGeneration,
+          cleanupReason: failureReason,
+          markCleanupFailed: true,
+        });
+        if (marked) workspace = marked;
         res.status(500).json({
           error: `Failed to archive execution workspace: ${failureReason}`,
         });
@@ -759,6 +802,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "execution_workspace.updated",
       entityType: "execution_workspace",
       entityId: workspace.id,

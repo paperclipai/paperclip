@@ -31,7 +31,7 @@ import { validate } from "../middleware/validate.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { documentAnnotationService, logActivity } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
 
 type CaseRouteDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 type CaseActor = ReturnType<typeof getActorInfo>;
@@ -206,7 +206,7 @@ function caseLookupCompanyIds(req: Request) {
 
 async function assertCaseAccess(db: Db, req: Request, idOrIdentifier: string) {
   const row = await loadCaseByIdOrIdentifier(db, idOrIdentifier, caseLookupCompanyIds(req));
-  if (!row) throw notFound("Case not found");
+  if (!row || !hasCompanyAccess(req, row.companyId)) throw notFound("Case not found");
   assertCompanyAccess(req, row.companyId);
   return row;
 }
@@ -218,7 +218,7 @@ async function assertCaseAccess(db: Db, req: Request, idOrIdentifier: string) {
 async function resolveSharedPathCase(db: Db, req: Request, idOrIdentifier: string) {
   const companyIds = caseLookupCompanyIds(req);
   const row = await loadCaseByIdOrIdentifier(db, idOrIdentifier, companyIds);
-  if (!row) return null;
+  if (!row || !hasCompanyAccess(req, row.companyId)) return null;
   await assertCasesEnabled(db);
   assertCompanyAccess(req, row.companyId);
   return row;
@@ -837,6 +837,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "case.document_annotation_thread_created",
         entityType: "case",
         entityId: caseRow.id,
@@ -875,6 +876,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "case.document_annotation_comment_added",
         entityType: "case",
         entityId: caseRow.id,
@@ -911,6 +913,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: thread.status === "resolved"
           ? "case.document_annotation_thread_resolved"
           : "case.document_annotation_thread_reopened",
@@ -1422,7 +1425,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
     await assertCasesEnabled(db);
     const issueIdOrIdentifier = (req.params.issueId as string).trim();
     const issue = await loadIssueByIdOrIdentifier(db, issueIdOrIdentifier, caseLookupCompanyIds(req));
-    if (!issue) throw notFound("Issue not found");
+    if (!issue || !hasCompanyAccess(req, issue.companyId)) throw notFound("Issue not found");
     assertCompanyAccess(req, issue.companyId);
     const rows = await db
       .select({ link: caseIssueLinks, caseRow: cases })

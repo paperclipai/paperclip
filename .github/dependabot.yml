@@ -9,10 +9,16 @@ updates:
     open-pull-requests-limit: 10
     labels:
       - "dependencies"
-    ignore:
-      # Ignore major version bumps — review those manually
-      - dependency-name: "*"
-        update-types: ["version-update:semver-major"]
+    groups:
+      # Bundle all major version bumps into a single weekly PR so they
+      # stay visible without flooding the PR list. Minor/patch updates
+      # still get individual PRs.
+      major-updates:
+        applies-to: version-updates
+        update-types:
+          - "major"
+        patterns:
+          - "*"
 
   - package-ecosystem: github-actions
     directory: "/"

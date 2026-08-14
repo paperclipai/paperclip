@@ -178,7 +178,7 @@ describe("adapter routes", () => {
     expect(processAdapter.capabilities).toMatchObject({
       supportsInstructionsBundle: false,
       supportsSkills: false,
-      supportsLocalAgentJwt: false,
+      supportsLocalAgentJwt: true,
       requiresMaterializedRuntimeSkills: false,
       supportsAcp: false,
     });

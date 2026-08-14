@@ -12,14 +12,15 @@ import {
   documentRevisions,
   documents,
   executionWorkspaces,
+  folders,
   heartbeatRuns,
   instanceSettings,
   issueInboxArchives,
-  issueReadStates,
   issues,
   projectWorkspaces,
   projects,
   routineDocuments,
+  routineRevisions,
   routineRuns,
   routines,
   routineTriggers,
@@ -62,12 +63,12 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     }
     await db.delete(activityLog);
     await db.delete(issueInboxArchives);
-    await db.delete(issueReadStates);
     await db.delete(secretAccessEvents);
     await db.delete(companySecretBindings);
     await db.delete(routineRuns);
     await db.delete(routineTriggers);
     await db.delete(routines);
+    await db.delete(folders);
     await db.delete(routineDocuments);
     await db.delete(documents);
     await db.delete(documentRevisions);
@@ -271,6 +272,39 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(allRoutines.map((entry) => entry.id)).toEqual(expect.arrayContaining([routine.id, otherRoutine.id]));
   });
 
+  it("does not reveal folders owned by another company", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other company",
+      issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: randomUUID(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    const [otherFolder] = await db.insert(folders).values({
+      companyId: otherCompanyId,
+      kind: "routine",
+      name: "Private folder",
+      slug: "private-folder",
+      position: 0,
+    }).returning();
+
+    await expect(svc.create(companyId, {
+      projectId,
+      folderId: otherFolder!.id,
+      goalId: null,
+      parentIssueId: null,
+      title: "cross-company folder probe",
+      description: null,
+      assigneeAgentId: agentId,
+      priority: "medium",
+      status: "active",
+      concurrencyPolicy: "coalesce_if_active",
+      catchUpPolicy: "skip_missed",
+    }, {})).rejects.toMatchObject({ status: 404, message: "Folder not found" });
+  });
+
   it("defaults activity gates to always at company scope", async () => {
     const { routine } = await seedFixture();
 
@@ -393,7 +427,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(agentId).not.toBe(otherAgentId);
   });
 
-  it("fires for a human comment and ignores pure-read activity", async () => {
+  it("fires for a human comment and ignores inbox bookkeeping activity", async () => {
     const { companyId, projectId, routine, svc } = await seedFixture();
     const windowStart = new Date(Date.now() - 60_000);
     const now = new Date();
@@ -418,6 +452,15 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         entityType: "issue",
         entityId: issueId,
         createdAt: new Date(windowStart.getTime() + 2_000),
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: "user-1",
+        action: "issue.inbox_touched",
+        entityType: "issue",
+        entityId: issueId,
+        createdAt: new Date(windowStart.getTime() + 3_000),
       },
     ]);
 
@@ -445,6 +488,15 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         entityType: "issue",
         entityId: issueId,
         createdAt: new Date(windowStart.getTime() + 2_000),
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: "user-1",
+        action: "issue.inbox_touched",
+        entityType: "issue",
+        entityId: issueId,
+        createdAt: new Date(windowStart.getTime() + 3_000),
       },
     ]);
 
@@ -560,6 +612,72 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routine.status).toBe("paused");
   });
 
+  it("serializes routine detail with assignee identity but without protected agent configuration", async () => {
+    const { agentId, companyId, routine, svc } = await seedFixture();
+    const sentinelSecret = "routine-assignee-secret-sentinel";
+    await db
+      .update(agents)
+      .set({
+        adapterConfig: {
+          env: {
+            ROUTINE_ASSIGNEE_SECRET: { type: "plain", value: sentinelSecret },
+          },
+        },
+        runtimeConfig: {
+          modelProfiles: {
+            cheap: {
+              adapterConfig: {
+                env: {
+                  ROUTINE_ASSIGNEE_RUNTIME_SECRET: { type: "plain", value: sentinelSecret },
+                },
+              },
+            },
+          },
+        },
+      })
+      .where(eq(agents.id, agentId));
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      label: "Daily",
+      cronExpression: "0 10 * * *",
+      timezone: "UTC",
+    }, {});
+
+    const detail = await svc.getDetail(routine.id);
+
+    expect(detail).toMatchObject({
+      id: routine.id,
+      companyId,
+      title: "ascii frog",
+      assignee: {
+        id: agentId,
+        name: "CodexCoder",
+        role: "engineer",
+        title: null,
+        urlKey: "codexcoder",
+      },
+      triggers: [{
+        id: trigger.id,
+        kind: "schedule",
+        label: "Daily",
+        cronExpression: "0 10 * * *",
+        timezone: "UTC",
+      }],
+    });
+    expect(detail?.assignee).toEqual({
+      id: agentId,
+      name: "CodexCoder",
+      role: "engineer",
+      title: null,
+      urlKey: "codexcoder",
+    });
+
+    const serialized = JSON.stringify(detail);
+    expect(serialized).not.toContain(sentinelSecret);
+    expect(serialized).not.toContain("adapterConfig");
+    expect(serialized).not.toContain("runtimeConfig");
+  });
+
   it("creates revision 1 on routine create and appends revisions for real updates only", async () => {
     const { routine, svc } = await seedFixture();
 
@@ -572,11 +690,15 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       changeSummary: "Created routine",
     });
     expect(initialRevisions[0]?.snapshot.routine.description).toBe("Run the frog routine");
+    expect(initialRevisions[0]?.snapshot.routine.activityGatePolicy).toBe("always");
+    expect(initialRevisions[0]?.snapshot.routine.activityGateScope).toBe("company");
 
     const updated = await svc.update(
       routine.id,
       {
         description: "Run the frog routine with logs",
+        activityGatePolicy: "require_external_activity",
+        activityGateScope: "project",
         baseRevisionId: routine.latestRevisionId,
       },
       {},
@@ -588,6 +710,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       routine.id,
       {
         description: "Run the frog routine with logs",
+        activityGatePolicy: "require_external_activity",
+        activityGateScope: "project",
         baseRevisionId: updated?.latestRevisionId,
       },
       {},
@@ -598,6 +722,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     const revisions = await svc.listRevisions(routine.id);
     expect(revisions.map((revision) => revision.revisionNumber)).toEqual([2, 1]);
     expect(revisions[0]?.snapshot.routine.description).toBe("Run the frog routine with logs");
+    expect(revisions[0]?.snapshot.routine.activityGatePolicy).toBe("require_external_activity");
+    expect(revisions[0]?.snapshot.routine.activityGateScope).toBe("project");
     expect(revisions[1]?.snapshot.routine.description).toBe("Run the frog routine");
   });
 
@@ -704,7 +830,11 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     const { routine, svc } = await seedFixture();
     const revision1Id = routine.latestRevisionId!;
     const run = await svc.runRoutine(routine.id, { source: "manual" });
-    const revision2Routine = await svc.update(routine.id, { description: "revision 2" }, {});
+    const revision2Routine = await svc.update(routine.id, {
+      description: "revision 2",
+      activityGatePolicy: "require_external_activity",
+      activityGateScope: "project",
+    }, {});
 
     const restored = await svc.restoreRevision(routine.id, revision1Id, {});
 
@@ -713,12 +843,35 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(restored.routine.latestRevisionNumber).toBe(3);
     expect(restored.routine.latestRevisionId).not.toBe(revision2Routine?.latestRevisionId);
     expect(restored.routine.description).toBe("Run the frog routine");
+    expect(restored.routine.activityGatePolicy).toBe("always");
+    expect(restored.routine.activityGateScope).toBe("company");
     expect(restored.revision.restoredFromRevisionId).toBe(revision1Id);
     expect(restored.revision.snapshot.routine.description).toBe("Run the frog routine");
 
     const revisions = await svc.listRevisions(routine.id);
     expect(revisions.map((revision) => revision.revisionNumber)).toEqual([3, 2, 1]);
     await expect(db.select().from(routineRuns).where(eq(routineRuns.id, run.id))).resolves.toHaveLength(1);
+  });
+
+  it("defaults activity gates when restoring a legacy routine revision snapshot", async () => {
+    const { routine, svc } = await seedFixture();
+    const revision1Id = routine.latestRevisionId!;
+    const [revision1] = await db.select().from(routineRevisions).where(eq(routineRevisions.id, revision1Id));
+    const legacySnapshot = structuredClone(revision1!.snapshot) as { routine: Record<string, unknown> };
+    delete legacySnapshot.routine.activityGatePolicy;
+    delete legacySnapshot.routine.activityGateScope;
+    await db.update(routineRevisions).set({ snapshot: legacySnapshot }).where(eq(routineRevisions.id, revision1Id));
+    await svc.update(routine.id, {
+      activityGatePolicy: "require_external_activity",
+      activityGateScope: "project",
+    }, {});
+
+    const restored = await svc.restoreRevision(routine.id, revision1Id, {});
+
+    expect(restored.routine.activityGatePolicy).toBe("always");
+    expect(restored.routine.activityGateScope).toBe("company");
+    expect(restored.revision.snapshot.routine.activityGatePolicy).toBe("always");
+    expect(restored.revision.snapshot.routine.activityGateScope).toBe("company");
   });
 
   it("rejects restoring the current latest routine revision", async () => {
@@ -1169,12 +1322,15 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       db.select().from(issueInboxArchives).where(eq(issueInboxArchives.issueId, previousIssue.id)),
     ).resolves.toHaveLength(0);
     await expect(
-      db.select().from(issueReadStates).where(eq(issueReadStates.issueId, previousIssue.id)),
+      db.select().from(activityLog).where(eq(activityLog.entityId, previousIssue.id)),
     ).resolves.toEqual([
       expect.objectContaining({
         companyId,
-        issueId: previousIssue.id,
-        userId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.inbox_touched",
+        entityType: "issue",
+        entityId: previousIssue.id,
       }),
     ]);
 
@@ -1252,12 +1408,15 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       db.select().from(issueInboxArchives).where(eq(issueInboxArchives.issueId, previousIssue.id)),
     ).resolves.toHaveLength(0);
     await expect(
-      db.select().from(issueReadStates).where(eq(issueReadStates.issueId, previousIssue.id)),
+      db.select().from(activityLog).where(eq(activityLog.entityId, previousIssue.id)),
     ).resolves.toEqual([
       expect.objectContaining({
         companyId,
-        issueId: previousIssue.id,
-        userId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.inbox_touched",
+        entityType: "issue",
+        entityId: previousIssue.id,
       }),
     ]);
 
@@ -1853,6 +2012,124 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(run.linkedIssueId).toBeTruthy();
   });
 
+  it("rejects an HMAC webhook replay inside the accepted timestamp window", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger, secretMaterial } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "hmac_sha256",
+        replayWindowSec: 300,
+      },
+      {},
+    );
+
+    const payload = { event: "acceptance" };
+    const rawBody = Buffer.from(JSON.stringify(payload));
+    const timestampSeconds = String(Math.floor(Date.now() / 1000));
+    const signature = `sha256=${createHmac("sha256", secretMaterial!.webhookSecret)
+      .update(`${timestampSeconds}.`)
+      .update(rawBody)
+      .digest("hex")}`;
+    const request = {
+      signatureHeader: signature,
+      timestampHeader: timestampSeconds,
+      rawBody,
+      payload,
+    };
+
+    await expect(svc.firePublicTrigger(trigger.publicId!, request)).resolves.toMatchObject({
+      source: "webhook",
+      status: "issue_created",
+    });
+    await expect(svc.firePublicTrigger(trigger.publicId!, request)).rejects.toThrow(
+      "Webhook replay detected",
+    );
+
+    const runs = await db
+      .select({ id: routineRuns.id })
+      .from(routineRuns)
+      .where(eq(routineRuns.triggerId, trigger.id));
+    expect(runs).toHaveLength(1);
+  });
+
+  it("serializes concurrent HMAC webhook replays", async () => {
+    const { routine, svc } = await seedFixture();
+    const { trigger, secretMaterial } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "hmac_sha256",
+        replayWindowSec: 300,
+      },
+      {},
+    );
+
+    const payload = { event: "concurrent" };
+    const rawBody = Buffer.from(JSON.stringify(payload));
+    const timestampSeconds = String(Math.floor(Date.now() / 1000));
+    const signature = `sha256=${createHmac("sha256", secretMaterial!.webhookSecret)
+      .update(`${timestampSeconds}.`)
+      .update(rawBody)
+      .digest("hex")}`;
+    const request = {
+      signatureHeader: signature,
+      timestampHeader: timestampSeconds,
+      rawBody,
+      payload,
+    };
+
+    const results = await Promise.allSettled([
+      svc.firePublicTrigger(trigger.publicId!, request),
+      svc.firePublicTrigger(trigger.publicId!, request),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(rejected).toMatchObject({ status: "rejected" });
+    expect((rejected as PromiseRejectedResult).reason).toMatchObject({
+      message: "Webhook replay detected",
+    });
+    expect(await db.select().from(routineRuns).where(eq(routineRuns.triggerId, trigger.id))).toHaveLength(1);
+  });
+
+  it("rejects an HMAC webhook replay when automatic execution is suppressed", async () => {
+    const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "yes", PAPERCLIP_INSTANCE_ID: "worktree-routines-test" };
+    const { routine, svc } = await seedFixture({ runtimeEnv });
+    const { trigger, secretMaterial } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "webhook",
+        signingMode: "hmac_sha256",
+        replayWindowSec: 300,
+      },
+      {},
+    );
+
+    const payload = { event: "suppressed" };
+    const rawBody = Buffer.from(JSON.stringify(payload));
+    const timestampSeconds = String(Math.floor(Date.now() / 1000));
+    const signature = `sha256=${createHmac("sha256", secretMaterial!.webhookSecret)
+      .update(`${timestampSeconds}.`)
+      .update(rawBody)
+      .digest("hex")}`;
+    const request = {
+      signatureHeader: signature,
+      timestampHeader: timestampSeconds,
+      rawBody,
+      payload,
+    };
+
+    await expect(svc.firePublicTrigger(trigger.publicId!, request)).resolves.toMatchObject({
+      status: "skipped",
+      failureReason: "worktree_execution_cutoff",
+    });
+    await expect(svc.firePublicTrigger(trigger.publicId!, request)).rejects.toThrow(
+      "Webhook replay detected",
+    );
+    expect(await db.select().from(routineRuns).where(eq(routineRuns.triggerId, trigger.id))).toHaveLength(1);
+  });
+
   it("uses the configured provider for generated webhook trigger secrets", async () => {
     process.env.PAPERCLIP_SECRETS_PROVIDER = "aws_secrets_manager";
     const originalGetSecretProvider = providerRegistry.getSecretProvider;
@@ -2057,6 +2334,100 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(oldRuns).toMatchObject([{ status: "skipped", failureReason: "worktree_execution_cutoff", linkedIssueId: null }]);
     const newRuns = await db.select().from(routineRuns).where(eq(routineRuns.routineId, newRoutine.id));
     expect(newRuns).toMatchObject([{ status: "issue_created" }]);
+  });
+
+  it("coalesces multiple missed sub-hourly ticks into one catch-up run", async () => {
+    const { routine, svc } = await seedFixture();
+    await db.update(routines).set({
+      catchUpPolicy: "enqueue_missed_with_cap",
+    }).where(eq(routines.id, routine.id));
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "*/10 * * * *",
+      timezone: "UTC",
+    }, {});
+    await db.update(routineTriggers).set({
+      nextRunAt: new Date("2026-07-16T00:00:00.000Z"),
+    }).where(eq(routineTriggers.id, trigger.id));
+
+    expect(await svc.tickScheduledTriggers(new Date("2026-07-16T01:05:00.000Z"))).toEqual({ triggered: 1 });
+
+    const runs = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.status).toBe("issue_created");
+    const updatedTrigger = await db.select().from(routineTriggers).where(eq(routineTriggers.id, trigger.id)).then((rows) => rows[0]);
+    expect(updatedTrigger?.nextRunAt).toEqual(new Date("2026-07-16T01:10:00.000Z"));
+  });
+
+  it("continues replaying each missed hourly tick", async () => {
+    const { routine, svc } = await seedFixture();
+    await db.update(routines).set({
+      catchUpPolicy: "enqueue_missed_with_cap",
+    }).where(eq(routines.id, routine.id));
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "0 * * * *",
+      timezone: "UTC",
+    }, {});
+    await db.update(routineTriggers).set({
+      nextRunAt: new Date("2026-07-16T00:00:00.000Z"),
+    }).where(eq(routineTriggers.id, trigger.id));
+
+    expect(await svc.tickScheduledTriggers(new Date("2026-07-16T02:30:00.000Z"))).toEqual({ triggered: 3 });
+
+    const runs = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(runs).toHaveLength(3);
+    expect(runs.filter((run) => run.status === "issue_created")).toHaveLength(1);
+    expect(runs.filter((run) => run.status === "coalesced")).toHaveLength(2);
+    const updatedTrigger = await db.select().from(routineTriggers).where(eq(routineTriggers.id, trigger.id)).then((rows) => rows[0]);
+    expect(updatedTrigger?.nextRunAt).toEqual(new Date("2026-07-16T03:00:00.000Z"));
+  });
+
+  it("continues replaying missed ticks for daily schedules with multiple minute values", async () => {
+    const { routine, svc } = await seedFixture();
+    await db.update(routines).set({
+      catchUpPolicy: "enqueue_missed_with_cap",
+    }).where(eq(routines.id, routine.id));
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "0,30 9 * * *",
+      timezone: "UTC",
+    }, {});
+    await db.update(routineTriggers).set({
+      nextRunAt: new Date("2026-07-14T09:00:00.000Z"),
+    }).where(eq(routineTriggers.id, trigger.id));
+
+    expect(await svc.tickScheduledTriggers(new Date("2026-07-15T10:00:00.000Z"))).toEqual({ triggered: 4 });
+
+    const runs = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(runs).toHaveLength(4);
+    expect(runs.filter((run) => run.status === "issue_created")).toHaveLength(1);
+    expect(runs.filter((run) => run.status === "coalesced")).toHaveLength(3);
+    const updatedTrigger = await db.select().from(routineTriggers).where(eq(routineTriggers.id, trigger.id)).then((rows) => rows[0]);
+    expect(updatedTrigger?.nextRunAt).toEqual(new Date("2026-07-16T09:00:00.000Z"));
+  });
+
+  it("coalesces sub-hourly schedules restricted to weekdays", async () => {
+    const { routine, svc } = await seedFixture();
+    await db.update(routines).set({
+      catchUpPolicy: "enqueue_missed_with_cap",
+    }).where(eq(routines.id, routine.id));
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "*/10 * * * 1-5",
+      timezone: "UTC",
+    }, {});
+    await db.update(routineTriggers).set({
+      nextRunAt: new Date("2026-07-13T00:00:00.000Z"),
+    }).where(eq(routineTriggers.id, trigger.id));
+
+    expect(await svc.tickScheduledTriggers(new Date("2026-07-13T01:05:00.000Z"))).toEqual({ triggered: 1 });
+
+    const runs = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.status).toBe("issue_created");
+    const updatedTrigger = await db.select().from(routineTriggers).where(eq(routineTriggers.id, trigger.id)).then((rows) => rows[0]);
+    expect(updatedTrigger?.nextRunAt).toEqual(new Date("2026-07-13T01:10:00.000Z"));
   });
 
   it("applies the armed cutoff to webhook dispatch but not manual API runs", async () => {

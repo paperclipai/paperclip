@@ -28,6 +28,10 @@ import {
   companyMemberships,
   companySkills,
   documents,
+  routineRuns,
+  routineTriggers,
+  routineRevisions,
+  routines,
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { environmentService } from "./environments.js";
@@ -35,6 +39,8 @@ import { heartbeatService } from "./heartbeat.js";
 import { logActivity } from "./activity-log.js";
 import { builtInAgentService } from "./built-in-agents.js";
 
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export interface CompanyActivityActor {
   actorType: "user" | "agent" | "system" | "plugin";
   actorId: string;
@@ -135,6 +141,7 @@ export function companyService(db: Db) {
     attachmentMaxBytes: companies.attachmentMaxBytes,
     defaultResponsibleUserId: companies.defaultResponsibleUserId,
     requireBoardApprovalForNewAgents: companies.requireBoardApprovalForNewAgents,
+    interactionResolverGovernance: companies.interactionResolverGovernance,
     feedbackDataSharingEnabled: companies.feedbackDataSharingEnabled,
     feedbackDataSharingConsentAt: companies.feedbackDataSharingConsentAt,
     feedbackDataSharingConsentByUserId: companies.feedbackDataSharingConsentByUserId,
@@ -254,6 +261,11 @@ export function companyService(db: Db) {
     },
 
     getById: async (id: string) => {
+      // Non-UUID refs previously reached the uuid-typed query and threw a
+      // DrizzleQueryError ("invalid input syntax for type uuid"), surfacing
+      // as HTTP 500 from GET /api/companies/:companyId. Treat them as
+      // not-found so the route returns 404.
+      if (!UUID_RE.test(id)) return null;
       const row = await getCompanyQuery(db)
         .where(eq(companies.id, id))
         .then((rows) => rows[0] ?? null);
@@ -456,6 +468,10 @@ export function companyService(db: Db) {
         await tx.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, id));
         await tx.delete(companyMemberships).where(eq(companyMemberships.companyId, id));
         await tx.delete(companySkills).where(eq(companySkills.companyId, id));
+        await tx.delete(routineRuns).where(eq(routineRuns.companyId, id));
+        await tx.delete(routineTriggers).where(eq(routineTriggers.companyId, id));
+        await tx.delete(routineRevisions).where(eq(routineRevisions.companyId, id));
+        await tx.delete(routines).where(eq(routines.companyId, id));
         await tx.delete(issueReadStates).where(eq(issueReadStates.companyId, id));
         await tx.delete(documents).where(eq(documents.companyId, id));
         await tx.delete(issues).where(eq(issues.companyId, id));

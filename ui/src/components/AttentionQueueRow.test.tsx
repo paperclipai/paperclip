@@ -30,6 +30,7 @@ vi.mock("../api/issues", () => ({
   issuesApi: {
     acceptInteraction: vi.fn(),
     rejectInteraction: vi.fn(),
+    decideStalledReview: vi.fn(() => Promise.resolve({})),
   },
 }));
 
@@ -113,6 +114,19 @@ function buildItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
     detail: null,
     dismissal: null,
     ...overrides,
+    expiresAt: overrides.expiresAt ?? null,
+    ruleKey: overrides.ruleKey ?? null,
+    originAgentName: overrides.originAgentName ?? null,
+    queues: overrides.queues ?? [],
+    shelf: overrides.shelf ?? false,
+    retentionDays: overrides.retentionDays ?? 30,
+    keep: overrides.keep ?? false,
+    archivedAt: overrides.archivedAt ?? null,
+    retentionVersion: overrides.retentionVersion ?? 1,
+    decideBy: overrides.decideBy ?? null,
+    decideByAttribution: overrides.decideByAttribution ?? null,
+    snoozedUntil: overrides.snoozedUntil ?? null,
+    trainingExampleId: overrides.trainingExampleId ?? null,
   };
 }
 
@@ -136,12 +150,42 @@ describe("AttentionQueueRow", () => {
     expect(el.textContent).not.toContain("Open");
   });
 
-  it("does not inline a review — it deep-links instead", () => {
+  it("inlines a stalled review with the three review verbs (PAP-16080 §4.4)", () => {
     const el = render(
       <AttentionQueueRow
         item={buildItem({
           sourceKind: "review" as AttentionSourceKind,
           inlineResolvable: true,
+          subject: {
+            kind: "issue",
+            id: "issue-1",
+            companyId: "c1",
+            title: "PR ready for review",
+            identifier: null,
+            status: "in_review",
+            href: "/PAP/issues/PAP-1",
+            metadata: { reviewAttentionState: "stalled" },
+          },
+        })}
+        companyId="c1"
+        expanded
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+    // Inline rows resolve in place, not via an "Open" deep-link.
+    expect(el.textContent).not.toContain("Open");
+    expect(el.textContent).toContain("Approve");
+    expect(el.textContent).toContain("Request changes");
+    expect(el.textContent).toContain("Send back to work");
+  });
+
+  it("deep-links a covered review instead of inlining", () => {
+    const el = render(
+      <AttentionQueueRow
+        item={buildItem({
+          sourceKind: "review" as AttentionSourceKind,
+          inlineResolvable: false,
           subject: {
             kind: "issue",
             id: "issue-1",
@@ -160,8 +204,7 @@ describe("AttentionQueueRow", () => {
       />,
     );
     expect(el.textContent).toContain("Open");
-    // No approval buttons should render for a review row.
-    expect(el.textContent).not.toContain("Request revision");
+    expect(el.textContent).not.toContain("Send back to work");
   });
 
   it("fires onDismiss from the row menu action", () => {
@@ -237,7 +280,11 @@ describe("AttentionQueueRow", () => {
     expect(links.some((a) => a.textContent?.includes("Hire agent: Research Analyst"))).toBe(false);
   });
 
-  it("renders project identity once without a filter button", () => {
+  // The eyebrow carries the decision kind and the task key only. Project
+  // identity was removed from the card: the queue is filtered and grouped by
+  // project from the toolbar, so repeating it on every row spent the eyebrow's
+  // width on a fact the operator had usually just chosen.
+  it("keeps project identity off the card", () => {
     render(
       <AttentionQueueRow
         item={buildItem({
@@ -250,13 +297,80 @@ describe("AttentionQueueRow", () => {
       />,
     );
 
-    const projectMeta = container?.querySelector('[data-testid="attention-project-meta"]');
-    expect(projectMeta?.textContent).toBe("Alpha");
-    expect(projectMeta?.querySelector("button")).toBeNull();
-    expect(projectMeta?.getAttribute("class")).not.toContain("border");
-    expect(projectMeta?.getAttribute("class")).not.toContain("bg-");
-    expect(container?.querySelector('button[title="Filter by Alpha"]')).toBeNull();
-    expect(container?.textContent?.match(/Alpha/g)).toHaveLength(1);
+    expect(container?.querySelector('[data-testid="attention-project-meta"]')).toBeNull();
+    expect(container?.textContent).not.toContain("Alpha");
+  });
+
+  it("separates eyebrow facts with a middle dot, not a slash", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          sourceKind: "blocker_attention",
+          subject: {
+            kind: "issue",
+            id: "i1",
+            companyId: "c1",
+            title: "Update primary paperclip instance",
+            identifier: "PAP-23",
+            status: "blocked",
+            href: "/PAP/issues/PAP-23",
+          },
+          relatedIssue: null,
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const eyebrow = container?.querySelector('[data-attention-row] > div');
+    expect(eyebrow?.textContent).toContain("·");
+    expect(eyebrow?.textContent).not.toContain("/");
+  });
+
+  // Regression: the meta breadcrumb used to read only `relatedIssue`, so rows
+  // whose subject IS the task (reviews, blocked dependencies) showed no key at
+  // all — the rows most obviously about a task were the ones missing it.
+  it("shows the task key when the subject is the task itself", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          sourceKind: "blocker_attention",
+          subject: {
+            kind: "issue",
+            id: "i1",
+            companyId: "c1",
+            title: "Update primary paperclip instance",
+            identifier: "PAP-23",
+            status: "blocked",
+            href: "/PAP/issues/PAP-23",
+          },
+          relatedIssue: null,
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const link = Array.from(container?.querySelectorAll("a") ?? []).find((a) => a.textContent === "PAP-23");
+    expect(link).toBeTruthy();
+    expect(link?.getAttribute("href")).toBe("/PAP/issues/PAP-23");
+  });
+
+  it("shows no task key on a row that is not attached to a task", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem({ relatedIssue: null })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+    expect(container?.textContent).not.toMatch(/PAP-\d+/);
   });
 
   it("places the timestamp beside the row menu without a clock icon", () => {
@@ -276,7 +390,10 @@ describe("AttentionQueueRow", () => {
     expect(container?.querySelector("svg.lucide-clock")).toBeNull();
   });
 
-  it("uses square row edges and can show a keyboard selection ring", () => {
+  // Rows became rounded cards when the decision types were flattened: with the
+  // left accent rail gone, the card's own shape carries the separation that the
+  // rail used to, so square edges no longer read as deliberate.
+  it("uses rounded card edges and can show a keyboard selection ring", () => {
     render(
       <AttentionQueueRow
         item={buildItem()}
@@ -289,7 +406,7 @@ describe("AttentionQueueRow", () => {
     );
 
     const row = container?.querySelector("[data-attention-row]");
-    expect(row?.getAttribute("class")).not.toContain("rounded");
+    expect(row?.getAttribute("class")).toContain("rounded-xl");
     expect(row?.getAttribute("class")).toContain("ring-ring");
   });
 
@@ -317,11 +434,12 @@ describe("AttentionQueueRow", () => {
     expect(decisionActions?.textContent).toContain("Approve");
     expect(decisionActions?.textContent).toContain("Reject");
 
-    // The action bar is its own full-width band (mobile-first) that collapses to
-    // a right-aligned pill row once the row's container is wide (container query)
-    // — no longer a stretched right column.
+    // The footer splits the row's last line: disclosure on the left, decision
+    // verbs on the right, so the affirmative verb sits in the same place in
+    // every row whether it is collapsed or expanded.
     const actionArea = decisionActions?.closest('[data-attention-actions="true"]');
-    expect(actionArea?.getAttribute("class")).toContain("@xl:justify-end");
+    expect(actionArea?.getAttribute("class")).toContain("justify-between");
+    expect(decisionActions?.parentElement?.getAttribute("class")).toContain("@xl:justify-end");
 
     const rowMenu = container?.querySelector('[aria-label="Row actions"]');
     expect(rowMenu?.closest('[data-attention-menu="true"]')).toBeTruthy();
@@ -441,7 +559,10 @@ describe("AttentionQueueRow", () => {
     expect(issuesApi.rejectInteraction).not.toHaveBeenCalled();
   });
 
-  it("renders evidence thumbnails in a centered context row below the text stack", () => {
+  // The old context row bundled project identity + thumbnails together; project
+  // identity has since moved up into the meta breadcrumb, so evidence is now a
+  // block of the row's own column rather than a shared strip.
+  it("renders evidence thumbnails as their own block below the text stack", () => {
     render(
       <AttentionQueueRow
         item={buildItem({
@@ -463,7 +584,12 @@ describe("AttentionQueueRow", () => {
 
     const thumbnailStack = image?.parentElement?.parentElement;
     expect(thumbnailStack?.getAttribute("class")).toContain("items-center");
-    expect(thumbnailStack?.parentElement?.getAttribute("class")).toContain("items-center");
+    // The strip is collapsed-only content: it rides the inverse disclosure so
+    // it can fade out as the expanded gallery fades in, rather than popping.
+    const cluster = thumbnailStack?.closest("[data-decision-disclosure]");
+    expect(cluster).toBeTruthy();
+    expect(cluster?.getAttribute("data-state")).toBe("open");
+    expect(cluster?.closest("[data-attention-row]")).toBeTruthy();
   });
 
   it("is memoized — a parent re-render with identical props does not re-render the row", async () => {
@@ -501,5 +627,134 @@ describe("AttentionQueueRow", () => {
       />,
     );
     expect(container?.querySelector('[role="button"][aria-expanded]')).toBeNull();
+  });
+
+  it("makes a non-inline row with images expandable", () => {
+    const onToggleExpand = vi.fn();
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          sourceKind: "review" as AttentionSourceKind,
+          inlineResolvable: false,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: "3 files changed",
+            images: [
+              { assetId: "img-1", alt: "one" },
+              { assetId: "img-2", alt: "two" },
+            ],
+          },
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={onToggleExpand}
+        onDismiss={noop}
+      />,
+    );
+    const header = container?.querySelector('[role="button"][aria-expanded]');
+    expect(header).not.toBeNull();
+    act(() => (header as HTMLElement).click());
+    expect(onToggleExpand).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a larger gallery with an n-more link to the issue when expanded", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          sourceKind: "review" as AttentionSourceKind,
+          inlineResolvable: false,
+          relatedIssue: {
+            kind: "issue",
+            id: "issue-1",
+            companyId: "c1",
+            title: "Ship it",
+            identifier: "PAP-42",
+            status: "in_progress",
+            href: "/PAP/issues/PAP-42",
+            metadata: {},
+          },
+          detail: {
+            kind: "generic",
+            summaryExcerpt: "5 screenshots",
+            images: [
+              { assetId: "img-1", alt: "one" },
+              { assetId: "img-2", alt: "two" },
+              { assetId: "img-3", alt: "three" },
+              { assetId: "img-4", alt: "four" },
+              { assetId: "img-5", alt: "five" },
+            ],
+          },
+        })}
+        companyId="c1"
+        expanded
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+    const gallery = container?.querySelector('[data-attention-expanded-images="true"]');
+    expect(gallery).not.toBeNull();
+    // First three images render at the larger size.
+    expect(gallery?.querySelectorAll("img")).toHaveLength(3);
+    // "n more" link points at the related issue (5 images − 3 shown = 2 more).
+    const moreLink = Array.from(gallery?.querySelectorAll("a") ?? []).find((a) =>
+      a.textContent?.includes("2 more"),
+    );
+    expect(moreLink).toBeDefined();
+    expect(moreLink?.getAttribute("href")).toBe("/PAP/issues/PAP-42");
+  });
+
+  it("shows the remaining image count when no issue link is available", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          sourceKind: "review" as AttentionSourceKind,
+          inlineResolvable: false,
+          subject: {
+            kind: "issue",
+            id: "issue-1",
+            companyId: "c1",
+            title: "Unlinked review",
+            identifier: null,
+            status: "in_review",
+            href: null,
+            metadata: {},
+          },
+          detail: {
+            kind: "generic",
+            summaryExcerpt: "4 screenshots",
+            images: [
+              { assetId: "img-1", alt: "one" },
+              { assetId: "img-2", alt: "two" },
+              { assetId: "img-3", alt: "three" },
+              { assetId: "img-4", alt: "four" },
+            ],
+          },
+        })}
+        companyId="c1"
+        expanded
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const gallery = container?.querySelector('[data-attention-expanded-images="true"]');
+    expect(gallery?.textContent).toContain("1 more");
+    expect(gallery?.querySelectorAll("a")).toHaveLength(0);
+  });
+
+  it("does not surface training state or actions for decisions", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem({ trainingExampleId: "example-1" })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+    expect(container?.textContent).not.toContain("Train");
+    expect(container?.querySelector('[data-testid="attention-trained-badge"]')).toBeNull();
+    expect(container?.querySelector('[data-testid="attention-train-inline"]')).toBeNull();
+    expect(container?.querySelector('[data-testid="attention-train-button"]')).toBeNull();
   });
 });

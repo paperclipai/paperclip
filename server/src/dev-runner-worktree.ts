@@ -56,6 +56,12 @@ export function resolveWorktreeEnvFilePath(rootDir: string): string {
   return path.resolve(rootDir, ".paperclip", ".env");
 }
 
+export function isWorktreeSeedPending(rootDir: string): boolean {
+  const markerDir = path.resolve(rootDir, ".paperclip");
+  return existsSync(path.resolve(markerDir, "seed-pending"))
+    && !existsSync(path.resolve(markerDir, "seed-complete"));
+}
+
 function expandHomePrefix(value: string): string {
   if (value === "~") return os.homedir();
   if (value.startsWith("~/")) return path.resolve(os.homedir(), value.slice(2));

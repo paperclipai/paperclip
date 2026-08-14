@@ -104,7 +104,13 @@ function isoWeekKey(date: Date): string {
 }
 
 function monthKey(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function monthlyRetentionCutoff(nowMs: number, monthlyMonths: number): number {
+  const months = Math.max(1, monthlyMonths);
+  const now = new Date(nowMs);
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - months, 1);
 }
 
 /**
@@ -120,7 +126,7 @@ function pruneOldBackups(backupDir: string, retention: BackupRetentionPolicy, fi
   const now = Date.now();
   const dailyCutoff = now - Math.max(1, retention.dailyDays) * 24 * 60 * 60 * 1000;
   const weeklyCutoff = now - Math.max(1, retention.weeklyWeeks) * 7 * 24 * 60 * 60 * 1000;
-  const monthlyCutoff = now - Math.max(1, retention.monthlyMonths) * 30 * 24 * 60 * 60 * 1000;
+  const monthlyCutoff = monthlyRetentionCutoff(now, retention.monthlyMonths);
 
   type BackupEntry = { name: string; fullPath: string; mtimeMs: number };
   const entries: BackupEntry[] = [];
@@ -985,10 +991,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
 export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promise<void> {
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
+  let psqlRestoreError: unknown = null;
   try {
     await restoreWithPsql(opts, connectTimeout);
     return;
   } catch (error) {
+    psqlRestoreError = error;
     if (!(await hasStatementBreakpoints(opts.backupFile))) {
       throw new Error(
         `Failed to restore ${basename(opts.backupFile)} with psql: ${sanitizeRestoreErrorMessage(error)}`,
@@ -1010,8 +1018,9 @@ export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promi
         .map((line) => line.trim())
         .find((line) => line.length > 0 && !line.startsWith("--"))
       : null;
+    const psqlMessage = psqlRestoreError === null ? "" : `; psql error: ${sanitizeRestoreErrorMessage(psqlRestoreError)}`;
     throw new Error(
-      `Failed to restore ${basename(opts.backupFile)}: ${sanitizeRestoreErrorMessage(error)}${statementPreview ? ` [statement: ${statementPreview.slice(0, 120)}]` : ""}`,
+      `Failed to restore ${basename(opts.backupFile)}: ${sanitizeRestoreErrorMessage(error)}${statementPreview ? ` [statement: ${statementPreview.slice(0, 120)}]` : ""}${psqlMessage}`,
     );
   } finally {
     await sql.end();

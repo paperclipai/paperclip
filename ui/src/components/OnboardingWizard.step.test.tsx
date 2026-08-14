@@ -1,0 +1,705 @@
+// @vitest-environment jsdom
+
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "../lib/queryKeys";
+import {
+  ONBOARDING_AGENT_STEP,
+  ONBOARDING_MISSION_STEP,
+} from "../lib/onboarding-route";
+
+/**
+ * Which step the onboarding wizard *lands on*, and what is allowed to move it
+ * afterwards.
+ *
+ * These are seam tests on purpose. `initialStep` is derived from two queries
+ * and consumed by an effect that calls `setStep`, and every defect this file
+ * guards lived in that seam rather than in either side of it — the pure
+ * helpers in `onboarding-route.test.ts` passed while the wizard was moving a
+ * customer off the step they were typing on. So the real component is rendered
+ * here, with the real route resolver and the real mission hook, and only the
+ * network and the surrounding contexts are stubbed.
+ */
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+const mockGoalsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+  create: vi.fn(),
+  update: vi.fn(),
+}));
+const mockAdaptersApi = vi.hoisted(() => ({ list: vi.fn() }));
+const mockCompaniesApi = vi.hoisted(() => ({ create: vi.fn() }));
+
+const routerState = vi.hoisted(() => ({ pathname: "/" }));
+const dialogState = vi.hoisted(() => ({
+  onboardingOpen: false,
+  onboardingOptions: {} as { initialStep?: number; companyId?: string },
+  onboardingRouteDismissed: false,
+  closeOnboarding: vi.fn(),
+  setOnboardingRouteDismissed: vi.fn(),
+}));
+const companyState = vi.hoisted(() => ({
+  companies: [
+    { id: "company-1", name: "Acme", issuePrefix: "PC1" },
+    { id: "company-2", name: "Globex", issuePrefix: "PC2" },
+  ],
+  loading: false,
+  setSelectedCompanyId: vi.fn(),
+}));
+
+vi.mock("../api/goals", () => ({ goalsApi: mockGoalsApi }));
+vi.mock("@/api/adapters", () => ({ adaptersApi: mockAdaptersApi }));
+vi.mock("../api/companies", () => ({ companiesApi: mockCompaniesApi }));
+vi.mock("../api/agents", () => ({
+  agentsApi: { create: vi.fn(), adapterModels: vi.fn().mockResolvedValue([]) },
+}));
+vi.mock("../api/approvals", () => ({ approvalsApi: { create: vi.fn() } }));
+vi.mock("../api/issues", () => ({ issuesApi: { create: vi.fn() } }));
+vi.mock("../api/projects", () => ({ projectsApi: { list: vi.fn(), create: vi.fn() } }));
+
+vi.mock("@/lib/router", () => ({
+  useLocation: () => ({ pathname: routerState.pathname }),
+  useNavigate: () => vi.fn(),
+  useParams: () => ({}),
+}));
+
+vi.mock("../context/DialogContext", () => ({
+  useDialog: () => dialogState,
+}));
+
+vi.mock("../context/CompanyContext", () => ({
+  useCompany: () => companyState,
+}));
+
+// Canvas/animation leaves — nothing to do with the step machinery.
+vi.mock("./AsciiArtAnimation", () => ({ AsciiArtAnimation: () => null }));
+vi.mock("./AgentCapsule", () => ({ AgentCapsule: () => null }));
+vi.mock("./FrontDoor", () => ({ FrontDoor: () => null }));
+
+const { OnboardingWizard } = await import("./OnboardingWizard");
+
+/** The mission step renders this heading; the agent step renders this input. */
+function currentStep(): "mission" | "agent" | "closed" | "other" {
+  const body = document.body;
+  if (!body.querySelector("[role='dialog'], .fixed.inset-0")) return "closed";
+  const headings = [...body.querySelectorAll("h3")].map((h) => h.textContent);
+  if (headings.includes("Define your mission")) return "mission";
+  if (body.querySelector("input[placeholder='Chief of staff']")) return "agent";
+  return "other";
+}
+
+function confirmMissionButton(): HTMLButtonElement | null {
+  return (
+    [...document.body.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Confirm mission"),
+    ) ?? null
+  );
+}
+
+function missionTextarea(): HTMLTextAreaElement | null {
+  return document.body.querySelector("textarea");
+}
+
+/** Type into a controlled React input without a full user-event dependency. */
+function setControlledValue(el: HTMLTextAreaElement | HTMLInputElement, value: string) {
+  const prototype =
+    el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(el, value);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+const COMPANY_GOAL = {
+  id: "goal-1",
+  companyId: "company-1",
+  title: "Ship the thing",
+  description: null,
+  level: "company",
+  status: "active",
+  parentId: null,
+  ownerAgentId: null,
+  createdAt: new Date("2026-03-02T00:00:00Z"),
+  updatedAt: new Date("2026-03-02T00:00:00Z"),
+};
+
+describe("OnboardingWizard — which step it lands on", () => {
+  let container: HTMLDivElement;
+  let queryClient: QueryClient;
+  let root: Root | null = null;
+
+  async function render() {
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <OnboardingWizard />
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  /** Re-render after mutating the stubbed contexts or the location. */
+  async function rerender() {
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <OnboardingWizard />
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  // React Query resolves through microtasks and React schedules the re-render
+  // after them, so a single tick is not reliably enough under load. Several
+  // ticks cost microseconds and remove the ordering sensitivity.
+  async function settle(ticks = 12) {
+    for (let i = 0; i < ticks; i++) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+  }
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    // The wizard restores its step from localStorage, so a step left behind by
+    // an earlier case would decide the next one.
+    localStorage.clear();
+    routerState.pathname = "/";
+    dialogState.onboardingOpen = false;
+    dialogState.onboardingOptions = {};
+    dialogState.onboardingRouteDismissed = false;
+    mockAdaptersApi.list.mockResolvedValue([]);
+    mockGoalsApi.list.mockResolvedValue([]);
+  });
+
+  afterEach(async () => {
+    await act(async () => root?.unmount());
+    root = null;
+    queryClient.clear();
+    container.remove();
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  it("opens a company that already has its mission on the agent step", async () => {
+    // The point of the change: Cloud collected the mission at signup and the
+    // seed wrote it as a company-level goal, so asking for it again asks a
+    // question the customer answered minutes earlier on another origin.
+    routerState.pathname = "/PC1/onboarding";
+    mockGoalsApi.list.mockResolvedValue([COMPANY_GOAL]);
+    await render();
+    await settle();
+
+    expect(currentStep()).toBe("agent");
+  });
+
+  it("stays closed until the mission lookup settles", async () => {
+    // The step is applied once. Opening before the answer is in would land the
+    // customer on the mission step and leave them there.
+    routerState.pathname = "/PC1/onboarding";
+    mockGoalsApi.list.mockReturnValue(new Promise(() => {}));
+    await render();
+
+    expect(currentStep()).toBe("closed");
+  });
+
+  it("opens on the mission step when the lookup fails, rather than not at all", async () => {
+    // Fail-open. A goals request that exhausts its retries must cost the step,
+    // not the whole flow.
+    routerState.pathname = "/PC1/onboarding";
+    mockGoalsApi.list.mockRejectedValue(new Error("goals unavailable"));
+    await render();
+    await settle();
+
+    expect(currentStep()).toBe("mission");
+  });
+
+  it("does not move an open wizard when a later refetch finds a mission", async () => {
+    // The defect this file exists for. The lookup fails, the wizard opens on
+    // the mission step, the customer starts typing — and a refetch then
+    // succeeds. The derived step flips from 2 to 3. Before the fix, the sync
+    // effect took that as a dependency and moved the customer to the agent
+    // step mid-sentence.
+    routerState.pathname = "/PC1/onboarding";
+    mockGoalsApi.list.mockRejectedValue(new Error("goals unavailable"));
+    await render();
+    await settle();
+    expect(currentStep()).toBe("mission");
+
+    await act(async () => {
+      queryClient.setQueryData(queryKeys.goals.list("company-1"), [COMPANY_GOAL]);
+    });
+    await settle();
+
+    expect(currentStep()).toBe("mission");
+  });
+
+  it("does not move an open wizard when the dialog is re-opened with a new step", async () => {
+    // The dashboard's auto-open sits behind queries too, so a refetch can call
+    // `openOnboarding` again with a different step for the same company. The
+    // wizard belongs to the customer by then.
+    dialogState.onboardingOpen = true;
+    dialogState.onboardingOptions = {
+      companyId: "company-1",
+      initialStep: ONBOARDING_MISSION_STEP,
+    };
+    await render();
+    await settle();
+    expect(currentStep()).toBe("mission");
+
+    dialogState.onboardingOptions = {
+      companyId: "company-1",
+      initialStep: ONBOARDING_AGENT_STEP,
+    };
+    await rerender();
+    await settle();
+
+    expect(currentStep()).toBe("mission");
+  });
+
+  it("re-decides the step when the route names a different company", async () => {
+    // The guard must hold the step against a *stale value settling*, not
+    // against a genuinely new request. Navigating to another company's
+    // onboarding is a new request, and its answer is a different one.
+    routerState.pathname = "/PC1/onboarding";
+    mockGoalsApi.list.mockImplementation((companyId: string) =>
+      companyId === "company-2" ? Promise.resolve([COMPANY_GOAL]) : Promise.resolve([]),
+    );
+    await render();
+    await settle();
+    expect(currentStep()).toBe("mission");
+
+    routerState.pathname = "/PC2/onboarding";
+    await rerender();
+    await settle();
+
+    expect(currentStep()).toBe("agent");
+  });
+
+  describe("the mission step, reached with a company that already exists", () => {
+    // Nothing sent an existing company here until the dashboard started
+    // opening agentless ones on this step. Both defects below were reachable
+    // the moment it did.
+
+    async function openOnMissionStepForExistingCompany() {
+      dialogState.onboardingOpen = true;
+      dialogState.onboardingOptions = {
+        companyId: "company-1",
+        initialStep: ONBOARDING_MISSION_STEP,
+      };
+      await render();
+      await settle();
+      expect(currentStep()).toBe("mission");
+    }
+
+    async function click(el: Element) {
+      await act(async () => {
+        el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+    }
+
+    it("names the company it is asking about, so the step can be completed", async () => {
+      // `companyName` is only ever typed on step 1. Without a backfill it is
+      // empty here, the step's own copy has a blank where the name goes, and
+      // "Confirm mission" stays disabled — a customer sent to this step could
+      // not leave it.
+      await openOnMissionStepForExistingCompany();
+
+      expect(document.body.textContent).toContain("Acme");
+
+      const direct = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("I know my mission"),
+      )!;
+      await click(direct);
+      setControlledValue(missionTextarea()!, "Ship the thing");
+      await settle();
+
+      expect(confirmMissionButton()?.disabled).toBe(false);
+    });
+
+    it("saves the mission it asked for", async () => {
+      // Confirming used to advance to the agent step and write nothing, so the
+      // company kept no mission — the exact state this change exists to remove.
+      mockGoalsApi.create.mockResolvedValue({ id: "goal-new" });
+      await openOnMissionStepForExistingCompany();
+
+      const direct = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("I know my mission"),
+      )!;
+      await click(direct);
+      setControlledValue(missionTextarea()!, "Ship the thing");
+      await settle();
+      await click(confirmMissionButton()!);
+      await settle();
+
+      expect(mockGoalsApi.create).toHaveBeenCalledWith(
+        "company-1",
+        expect.objectContaining({ title: "Ship the thing", level: "company", status: "active" }),
+      );
+      expect(currentStep()).toBe("agent");
+    });
+
+    it("does not write a second mission when Enter is pressed twice", async () => {
+      // The buttons are all disabled while a request is in flight; the
+      // keyboard has to be too. A second Enter re-enters the handler before
+      // the first has set the goal id its own guard reads, so both requests
+      // see "no mission yet" and the company ends up with two.
+      let resolveCreate: (goal: { id: string }) => void = () => {};
+      mockGoalsApi.create.mockReturnValue(
+        new Promise<{ id: string }>((resolve) => {
+          resolveCreate = resolve;
+        }),
+      );
+      await openOnMissionStepForExistingCompany();
+
+      const direct = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("I know my mission"),
+      )!;
+      await click(direct);
+      setControlledValue(missionTextarea()!, "Ship the thing");
+      await settle();
+
+      const surface = document.body.querySelector(".fixed.inset-0.z-50.flex")!;
+      const submit = () =>
+        act(async () => {
+          surface.dispatchEvent(
+            new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }),
+          );
+        });
+      await submit();
+      await submit();
+      await act(async () => resolveCreate({ id: "goal-new" }));
+      await settle();
+
+      expect(mockGoalsApi.create).toHaveBeenCalledTimes(1);
+    });
+
+    it("updates the mission it could not see, rather than adding a second", async () => {
+      // The cost of failing open. The lookup could not answer, so the customer
+      // was asked for a mission the company already had. Adding a goal would
+      // leave two active company-level goals, and the earlier one would keep
+      // winning `selectDefaultCompanyGoalId` outside this wizard — so the
+      // mission the customer just typed would lose. Their answer wins instead.
+      // The dashboard's lookup failed, which is why this company is on the
+      // mission step at all. By the time the customer confirms, the goal list
+      // reads — and it has a mission.
+      mockGoalsApi.list.mockResolvedValue([COMPANY_GOAL]);
+      mockGoalsApi.update.mockResolvedValue({ id: COMPANY_GOAL.id });
+      await openOnMissionStepForExistingCompany();
+
+      const direct = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("I know my mission"),
+      )!;
+      await click(direct);
+      setControlledValue(missionTextarea()!, "The mission they just typed");
+      await settle();
+      await click(confirmMissionButton()!);
+      await settle();
+
+      expect(mockGoalsApi.create).not.toHaveBeenCalled();
+      expect(mockGoalsApi.update).toHaveBeenCalledWith(
+        COMPANY_GOAL.id,
+        expect.objectContaining({ title: "The mission they just typed" }),
+      );
+      expect(currentStep()).toBe("agent");
+    });
+
+    it("still writes the mission when the pre-write read also fails", async () => {
+      // Fail-open all the way down. If it cannot tell whether a mission
+      // exists, an unwritten mission is the worse error.
+      mockGoalsApi.list.mockRejectedValue(new Error("goals unavailable"));
+      mockGoalsApi.create.mockResolvedValue({ id: "goal-new" });
+      await openOnMissionStepForExistingCompany();
+
+      const direct = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("I know my mission"),
+      )!;
+      await click(direct);
+      setControlledValue(missionTextarea()!, "Ship the thing");
+      await settle();
+      await click(confirmMissionButton()!);
+      await settle();
+
+      expect(mockGoalsApi.create).toHaveBeenCalledWith(
+        "company-1",
+        expect.objectContaining({ title: "Ship the thing" }),
+      );
+      expect(currentStep()).toBe("agent");
+    });
+
+    it("does not carry a mission across a switch to another company", async () => {
+      // Confirming for one company sets the goal id that `handleConfirmMission`
+      // reads as "already written". Carried across a company switch it makes
+      // the next company skip saving its own mission, and the launch path then
+      // links that company's project to the previous company's goal.
+      mockGoalsApi.create.mockResolvedValue({ id: "goal-company-1" });
+      routerState.pathname = "/PC1/onboarding";
+      dialogState.onboardingOpen = false;
+      await render();
+      await settle();
+      expect(currentStep()).toBe("mission");
+
+      const direct = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("I know my mission"),
+      )!;
+      await click(direct);
+      setControlledValue(missionTextarea()!, "Acme's mission");
+      await settle();
+      await click(confirmMissionButton()!);
+      await settle();
+      expect(currentStep()).toBe("agent");
+
+      routerState.pathname = "/PC2/onboarding";
+      await rerender();
+      await settle();
+      expect(currentStep()).toBe("mission");
+
+      const direct2 = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("I know my mission"),
+      )!;
+      await click(direct2);
+      setControlledValue(missionTextarea()!, "Globex's mission");
+      await settle();
+      await click(confirmMissionButton()!);
+      await settle();
+
+      expect(mockGoalsApi.create).toHaveBeenCalledTimes(2);
+      expect(mockGoalsApi.create).toHaveBeenLastCalledWith(
+        "company-2",
+        expect.objectContaining({ title: "Globex's mission" }),
+      );
+    });
+
+    it("does not hand a new company the mission written for the old one", async () => {
+      // A route change can switch companies while the write is in flight, and
+      // the switch clears exactly the state the write is about to set. The
+      // goal is written and correct either way — but attributing it to the
+      // company now in hand would undo the clearing and let that company skip
+      // its own mission.
+      let resolveCreate: (goal: { id: string }) => void = () => {};
+      mockGoalsApi.create.mockReturnValue(
+        new Promise<{ id: string }>((resolve) => {
+          resolveCreate = resolve;
+        }),
+      );
+      routerState.pathname = "/PC1/onboarding";
+      await render();
+      await settle();
+      expect(currentStep()).toBe("mission");
+
+      const direct = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("I know my mission"),
+      )!;
+      await click(direct);
+      setControlledValue(missionTextarea()!, "Acme's mission");
+      await settle();
+      await click(confirmMissionButton()!);
+
+      // Switch companies before the write lands, then let it land.
+      routerState.pathname = "/PC2/onboarding";
+      await rerender();
+      await settle();
+      await act(async () => resolveCreate({ id: "goal-company-1" }));
+      await settle();
+
+      // Globex must still be asked, and must write its own mission.
+      expect(currentStep()).toBe("mission");
+      mockGoalsApi.create.mockResolvedValue({ id: "goal-company-2" });
+      const direct2 = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("I know my mission"),
+      )!;
+      await click(direct2);
+      setControlledValue(missionTextarea()!, "Globex's mission");
+      await settle();
+      await click(confirmMissionButton()!);
+      await settle();
+
+      expect(mockGoalsApi.create).toHaveBeenLastCalledWith(
+        "company-2",
+        expect.objectContaining({ title: "Globex's mission" }),
+      );
+    });
+
+    it("does not carry a mission through a route that withdraws the company", async () => {
+      // Withdrawing a company and replacing one are the same event: this
+      // company is no longer the wizard's. Clearing only on replacement leaves
+      // a goal id behind, and the company created next would read it as
+      // "mission already written" and never be asked for one.
+      mockGoalsApi.create.mockResolvedValue({ id: "goal-company-1" });
+      routerState.pathname = "/PC1/onboarding";
+      await render();
+      await settle();
+
+      const direct = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("I know my mission"),
+      )!;
+      await click(direct);
+      setControlledValue(missionTextarea()!, "Acme's mission");
+      await settle();
+      await click(confirmMissionButton()!);
+      await settle();
+      expect(currentStep()).toBe("agent");
+
+      // Navigate to the unprefixed route, which names no company.
+      routerState.pathname = "/onboarding";
+      await rerender();
+      await settle();
+
+      // The wizard is back at company creation with nothing carried over.
+      const nameInput = document.body.querySelector("input") as HTMLInputElement | null;
+      expect(nameInput?.value).toBe("");
+      expect(document.body.textContent).not.toContain("Acme's mission");
+    });
+
+    it("withdraws a company the wizard created once the route stops naming it", async () => {
+      // The route only introduces a company when it names one the wizard is
+      // not already holding, so a company the wizard *created* was never
+      // recorded as route-owned and was never withdrawn. Visiting its own
+      // onboarding path and then `/onboarding` left the wizard showing
+      // "create a company" while still holding it — and the next confirmation
+      // wrote that customer's new mission into the old company.
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-1", issuePrefix: "PC1" });
+      mockGoalsApi.create.mockResolvedValue({ id: "goal-company-1" });
+      routerState.pathname = "/onboarding";
+      await render();
+      await settle();
+
+      const nameInput = document.body.querySelector("input")! as HTMLInputElement;
+      setControlledValue(nameInput, "Acme");
+      await settle();
+      await click(
+        [...document.body.querySelectorAll("button")].find(
+          (b) => b.textContent?.trim() === "Next",
+        )!,
+      );
+      await settle();
+      setControlledValue(missionTextarea()!, "Acme's mission");
+      await settle();
+      await click(confirmMissionButton()!);
+      await settle();
+      expect(mockCompaniesApi.create).toHaveBeenCalled();
+      expect(currentStep()).toBe("agent");
+
+      // Its own onboarding path, then back to the unprefixed one.
+      routerState.pathname = "/PC1/onboarding";
+      await rerender();
+      await settle();
+      routerState.pathname = "/onboarding";
+      await rerender();
+      await settle();
+
+      const nameAfter = document.body.querySelector("input") as HTMLInputElement | null;
+      expect(nameAfter?.value).toBe("");
+      expect(document.body.textContent).not.toContain("Acme's mission");
+    });
+
+    it("does not write a second mission when the step is confirmed twice", async () => {
+      mockGoalsApi.create.mockResolvedValue({ id: "goal-new" });
+      await openOnMissionStepForExistingCompany();
+
+      const direct = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("I know my mission"),
+      )!;
+      await click(direct);
+      setControlledValue(missionTextarea()!, "Ship the thing");
+      await settle();
+      await click(confirmMissionButton()!);
+      await settle();
+
+      // Back to the mission step, then forward again.
+      const back = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("Back"),
+      )!;
+      await click(back);
+      await settle();
+      await click(confirmMissionButton()!);
+      await settle();
+
+      expect(mockGoalsApi.create).toHaveBeenCalledTimes(1);
+      expect(currentStep()).toBe("agent");
+    });
+  });
+
+  it("does not adopt a company it created once a route has supplied one", async () => {
+    // The same guard from the other end. Nothing was in hand when the create
+    // started, so "unchanged" means still nothing. A route that supplied a
+    // company while the request was open has taken over the wizard, and
+    // adopting the new company would fight it — and would leave the customer
+    // on a company they never navigated to.
+    let resolveCreate: (company: { id: string; issuePrefix: string }) => void = () => {};
+    mockCompaniesApi.create.mockReturnValue(
+      new Promise<{ id: string; issuePrefix: string }>((resolve) => {
+        resolveCreate = resolve;
+      }),
+    );
+    routerState.pathname = "/onboarding";
+    await render();
+    await settle();
+
+    // Step 1: name a new company, then confirm the mission to create it.
+    const nameInput = document.body.querySelector("input")! as HTMLInputElement;
+    setControlledValue(nameInput, "Initech");
+    await settle();
+    const next = [...document.body.querySelectorAll("button")].find(
+      (b) => b.textContent?.trim() === "Next",
+    )!;
+    await act(async () => {
+      next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await settle();
+    setControlledValue(missionTextarea()!, "Initech's mission");
+    await settle();
+    await act(async () => {
+      confirmMissionButton()!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // A route supplies an existing company before the create lands.
+    routerState.pathname = "/PC1/onboarding";
+    await rerender();
+    await settle();
+    expect(mockCompaniesApi.create).toHaveBeenCalledWith({ name: "Initech" });
+    await act(async () => resolveCreate({ id: "company-created", issuePrefix: "INI" }));
+    await settle();
+
+    // Adopting the created company would select it globally and take the
+    // customer off the one they navigated to. Asserted on the selection call
+    // rather than on the rendered name: the name reads "Acme" either way,
+    // because the switch reset clears it and the backfill refills it from the
+    // company list, which has no entry for the company just created.
+    expect(companyState.setSelectedCompanyId).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Acme");
+  });
+
+  it("applies the step again when the wizard is re-opened", async () => {
+    // Same guard, from the other side: closing and re-opening is a new
+    // request, so a freeze that outlived the open would be its own defect.
+    dialogState.onboardingOpen = true;
+    dialogState.onboardingOptions = {
+      companyId: "company-1",
+      initialStep: ONBOARDING_MISSION_STEP,
+    };
+    await render();
+    await settle();
+    expect(currentStep()).toBe("mission");
+
+    dialogState.onboardingOpen = false;
+    await rerender();
+    expect(currentStep()).toBe("closed");
+
+    dialogState.onboardingOpen = true;
+    dialogState.onboardingOptions = {
+      companyId: "company-1",
+      initialStep: ONBOARDING_AGENT_STEP,
+    };
+    await rerender();
+    await settle();
+
+    expect(currentStep()).toBe("agent");
+  });
+});

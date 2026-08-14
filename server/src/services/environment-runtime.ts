@@ -7,15 +7,24 @@ import type {
   EnvironmentLease,
   EnvironmentLeaseStatus,
   ExecutionWorkspace,
+  IssueExecutionWorkspaceSettings,
   PluginEnvironmentConfig,
   SandboxEnvironmentConfig,
 } from "@paperclipai/shared";
 import type {
+  PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentExecuteResult,
   PluginEnvironmentLease,
   PluginEnvironmentRealizeWorkspaceResult,
+  PluginEnvironmentSyncResult,
+  PluginSyncOperation,
 } from "@paperclipai/plugin-sdk";
 import { ensureSshWorkspaceReady } from "@paperclipai/adapter-utils/ssh";
+import {
+  getActiveStepContext,
+  runWithRuntimeParent,
+  type StartupSpanContext,
+} from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { environmentService } from "./environments.js";
 import {
   collectEnvironmentSecretRefs,
@@ -39,7 +48,7 @@ import {
   sandboxConfigFromLeaseMetadataLoose,
 } from "./sandbox-provider-runtime.js";
 import { pluginRegistryService } from "./plugin-registry.js";
-import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import type { ExecuteLogSink, PluginWorkerManager } from "./plugin-worker-manager.js";
 import {
   destroyPluginEnvironmentLease,
   executePluginEnvironmentCommand,
@@ -121,6 +130,7 @@ export interface EnvironmentDriverAcquireInput {
   heartbeatRunId: string | null;
   executionWorkspaceId: string | null;
   executionWorkspaceMode: ExecutionWorkspace["mode"] | null;
+  executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
   /**
    * The harness/adapter type for this run (the agent's adapter). Drivers that
    * materialize a per-run sandbox use it to select the runtime image so a single
@@ -183,6 +193,36 @@ export interface EnvironmentDriverExecuteInput extends EnvironmentDriverLeaseInp
   env?: Record<string, string>;
   stdin?: string;
   timeoutMs?: number;
+  /**
+   * Run this command outside the lease's persistent session. The run
+   * orchestrator sets this on the workspace provision command, which runs before
+   * the run opens its trace root. A sandbox provider that opens a persistent
+   * session on the first command must run this command one-shot and keep the
+   * session closed, so the session first opens on an in-run command whose setup
+   * span parents to the run trace. The default keeps the session path.
+   */
+  bypassSession?: boolean;
+  /**
+   * Force the command onto the lease's persistent session even when no run step
+   * is active. The ACP process session bridge sets this so the long-lived agent
+   * command opens the session and streams its output through the session log
+   * stream. `bypassSession: true` still wins, so an explicit bypass is never
+   * overridden. The default keeps the context-based session selection.
+   */
+  forceSession?: boolean;
+  /**
+   * Incremental log sink for one execute call. When set, the plugin worker
+   * delivers each `stdout` and `stderr` chunk to this sink through the
+   * `execute.log` notification while the command runs, before the final result.
+   * The runtime forwards it to the plugin worker manager, which routes each
+   * chunk to this sink by the host-issued invocation id. A driver that does not
+   * stream ignores it and returns only the final result.
+   */
+  onLog?: ExecuteLogSink;
+}
+
+export interface EnvironmentDriverSyncInput extends EnvironmentDriverLeaseInput {
+  operations: PluginSyncOperation[];
 }
 
 export interface EnvironmentRuntimeDriver {
@@ -193,6 +233,16 @@ export interface EnvironmentRuntimeDriver {
   destroyRunLease?(input: EnvironmentDriverLeaseInput): Promise<EnvironmentLease | null>;
   realizeWorkspace?(input: EnvironmentDriverRealizeWorkspaceInput): Promise<PluginEnvironmentRealizeWorkspaceResult>;
   execute?(input: EnvironmentDriverExecuteInput): Promise<PluginEnvironmentExecuteResult>;
+  /**
+   * Optional native inbound/outbound file transfer, delegated to the plugin
+   * worker's `environmentSyncIn`/`environmentSyncOut` verbs. Only present for
+   * plugin-backed sandbox drivers whose worker advertises both verbs; callers
+   * gate on {@link EnvironmentRuntimeDriver.supportsSync}.
+   */
+  syncIn?(input: EnvironmentDriverSyncInput): Promise<PluginEnvironmentSyncResult>;
+  syncOut?(input: EnvironmentDriverSyncInput): Promise<PluginEnvironmentSyncResult>;
+  /** True when the lease's plugin worker advertises both sync verbs. */
+  supportsSync?(input: EnvironmentDriverLeaseInput): boolean;
 }
 
 export interface EnvironmentRuntimeLeaseRecord {
@@ -620,6 +670,31 @@ function createSandboxEnvironmentDriver(
   const pluginWorkerReadyPollMs = options.pluginWorkerReadyPollMs ?? DEFAULT_PLUGIN_SANDBOX_WORKER_READY_POLL_MS;
   const environmentsSvc = environmentService(db);
 
+  // The run-time exec parent context, held per lease id. A plugin sandbox
+  // provider can open a persistent session on the first command and delete it
+  // on lease release. The session open runs inside `execute`, under the run
+  // parent (the same context the `sandbox.exec` span reads). The session delete
+  // runs inside the lease-release RPC, which the run orchestrator calls after
+  // the run, outside that scope. Without a parent the host mints no
+  // `traceparent` and drops the provider `session.teardown` span. So `execute`
+  // records the exec parent here, and the release paths replay it around the
+  // release RPC. The host still mints and validates the `traceparent` itself;
+  // the value only widens which host calls carry a run parent. An entry is
+  // removed on release, so the map holds at most one context per live lease.
+  const runExecParentByLeaseId = new Map<string, StartupSpanContext>();
+
+  // Run a lease-release RPC under the lease's recorded exec parent context, and
+  // then drop the entry — the lease is gone. Under the parent the host mints a
+  // `traceparent`, so a provider `session.teardown` span reaches the span
+  // backend in the run trace. With no recorded context (no command ran, or a
+  // local target with no trace context) the call runs unwrapped, exactly as
+  // before, so the change never fails a release.
+  function runLeaseReleaseWithRunParent<T>(leaseId: string, call: () => Promise<T>): Promise<T> {
+    const runParent = runExecParentByLeaseId.get(leaseId);
+    runExecParentByLeaseId.delete(leaseId);
+    return runParent !== undefined ? runWithRuntimeParent(runParent, call) : call();
+  }
+
   async function resolveSandboxProviderPlugin(input: { provider: string }) {
     const running = await resolvePluginSandboxProviderDriverByKey({
       db,
@@ -720,6 +795,39 @@ function createSandboxEnvironmentDriver(
         failureReason: "lease_fingerprint_mismatch",
       });
     }
+  }
+
+  async function callPluginEnvironmentSync(
+    method: "environmentSyncIn" | "environmentSyncOut",
+    input: EnvironmentDriverSyncInput,
+  ): Promise<PluginEnvironmentSyncResult> {
+    if (!input.lease.metadata?.sandboxProviderPlugin || !pluginWorkerManager) {
+      throw new Error("Sandbox driver does not support native file sync for this lease.");
+    }
+    const pluginId = readString(input.lease.metadata?.pluginId);
+    const providerKey = readString(input.lease.metadata?.provider);
+    if (!pluginId || !providerKey) {
+      throw new Error("Sandbox lease is missing plugin/provider metadata for native file sync.");
+    }
+    const config = await resolvePluginSandboxRuntimeConfig({
+      environment: input.environment,
+      lease: input.lease,
+      provider: providerKey,
+    });
+    const sanitizedConfig = stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig);
+    return await pluginWorkerManager.call(pluginId, method, {
+      driverKey: providerKey,
+      companyId: input.lease.companyId,
+      environmentId: input.environment.id,
+      issueId: input.lease.issueId,
+      config: sanitizedConfig,
+      lease: {
+        providerLeaseId: input.lease.providerLeaseId,
+        metadata: input.lease.metadata ?? undefined,
+        expiresAt: input.lease.expiresAt?.toISOString() ?? null,
+      },
+      operations: input.operations,
+    }, resolvePluginSandboxRpcTimeoutMs(sanitizedConfig));
   }
 
   return {
@@ -1150,7 +1258,14 @@ function createSandboxEnvironmentDriver(
     },
 
     async realizeWorkspace(input) {
-      // Plugin-backed sandbox providers: delegate workspace realization.
+      // Resolve the realized cwd and any provider metadata first, then build ONE
+      // workspace-realization record and wrap it the SAME way for every driver. A
+      // plugin-backed sandbox provider realizes the workspace remotely and returns its
+      // own cwd and metadata. A built-in driver has no plugin call; it uses the lease
+      // `remoteCwd`. Both paths must produce the record through the single build below,
+      // so the record can never drift between two exits.
+      let pluginRealizedCwd: string | null = null;
+      let providerMetadata: Record<string, unknown> | null = null;
       if (input.lease.metadata?.sandboxProviderPlugin && pluginWorkerManager) {
         const pluginId = readString(input.lease.metadata?.pluginId);
         const providerKey =
@@ -1164,7 +1279,7 @@ function createSandboxEnvironmentDriver(
             lease: input.lease,
             provider: providerKey,
           });
-          return await pluginWorkerManager.call(pluginId, "environmentRealizeWorkspace", {
+          const pluginResult = await pluginWorkerManager.call(pluginId, "environmentRealizeWorkspace", {
             driverKey: providerKey,
             companyId: input.lease.companyId,
             environmentId: input.environment.id,
@@ -1177,21 +1292,36 @@ function createSandboxEnvironmentDriver(
             },
             workspace: input.workspace,
           }, resolvePluginSandboxRpcTimeoutMs(stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig)));
+          pluginRealizedCwd =
+            typeof pluginResult.cwd === "string" && pluginResult.cwd.trim().length > 0
+              ? pluginResult.cwd.trim()
+              : null;
+          providerMetadata = pluginResult.metadata ?? null;
         }
       }
 
+      // A plugin realize handler returns only its realized cwd and provider metadata; it
+      // does not build the full workspace-realization record. The server builds that record
+      // from the run request, so the referenced (mentioned) project sources reach the adapter
+      // through `realization.additional`. The adapter reads that field to stage each referenced
+      // tree into the sandbox; without the record the sandbox agent never receives the mentioned
+      // projects. The provider cwd and metadata still drive the remote path when a plugin realizes
+      // the workspace.
       const record = buildWorkspaceRealizationRecordFromDriverInput({
         environment: input.environment,
         lease: input.lease,
         workspace: input.workspace,
         cwd:
-          typeof input.lease.metadata?.remoteCwd === "string" && input.lease.metadata.remoteCwd.trim().length > 0
+          pluginRealizedCwd ??
+          (typeof input.lease.metadata?.remoteCwd === "string" && input.lease.metadata.remoteCwd.trim().length > 0
             ? input.lease.metadata.remoteCwd.trim()
-            : input.workspace.remotePath ?? input.workspace.localPath ?? null,
+            : input.workspace.remotePath ?? input.workspace.localPath ?? null),
+        providerMetadata,
       });
       return {
-        cwd: record.remote.path ?? record.local.path,
+        cwd: pluginRealizedCwd ?? record.remote.path ?? record.local.path,
         metadata: {
+          ...(providerMetadata ?? {}),
           workspaceRealization: record,
         },
       };
@@ -1200,6 +1330,36 @@ function createSandboxEnvironmentDriver(
     async execute(input) {
       // Plugin-backed sandbox providers: delegate command execution.
       if (input.lease.metadata?.sandboxProviderPlugin && pluginWorkerManager) {
+        // Read the active run-parent context once. The host mints the plugin
+        // RPC `traceparent` from this same context, so a provider `session.setup`
+        // span parents to the run trace only when this context is present.
+        const activeStep = getActiveStepContext();
+        // Record the run-time exec parent context for this lease, so a later
+        // lease-release RPC that emits the provider `session.teardown` span can
+        // parent to the same run trace. This is the same context the
+        // `sandbox.exec` span reads. Keep only a defined context; a local or SSH
+        // target with no host trace context yields undefined and stores nothing.
+        const execParentContext = activeStep?.parentContext;
+        if (execParentContext !== undefined) {
+          runExecParentByLeaseId.set(input.lease.id, execParentContext);
+        }
+        // Bypass the persistent session for any command that runs with no active
+        // run-parent context. Such a command runs before the run trace is active:
+        // the workspace provision command, the CLI install command, the
+        // resolvability probe, and the agent process launch all run at the top of
+        // the adapter execute, outside a measured step and outside the run
+        // trace. A session opened on such a command emits a `session.setup` span
+        // with no host-minted parent, and the span backend drops it. So run the
+        // command one-shot and keep the session closed; the session then opens on
+        // the first in-run command that carries a run parent (an agent tool
+        // command runs under the run trace), whose setup span parents to the run
+        // trace. A command that sets `bypassSession` explicitly always bypasses.
+        // A command that sets `forceSession` keeps the session even with no
+        // active step: the ACP process session bridge runs the long-lived agent
+        // command this way, so the session opens and streams its output through
+        // the session log stream. An explicit `bypassSession` still wins.
+        const bypassSession =
+          input.bypassSession === true || (activeStep === null && input.forceSession !== true);
         const pluginId = readString(input.lease.metadata?.pluginId);
         const providerKey = readString(input.lease.metadata?.provider);
         if (pluginId && providerKey) {
@@ -1226,13 +1386,55 @@ function createSandboxEnvironmentDriver(
             env: input.env,
             stdin: input.stdin,
             timeoutMs: input.timeoutMs,
+            // Forward the effective session-bypass flag so a provider that opens
+            // a persistent session skips it for a pre-run or context-less command
+            // (the workspace provision command, the CLI install command, the
+            // resolvability probe, the agent process launch). The session then
+            // opens on the first in-run command that carries a run parent, whose
+            // setup span parents to the run trace.
+            bypassSession,
           }, resolvePluginExecuteRpcTimeoutMs({
             requestedTimeoutMs: input.timeoutMs,
             config: sanitizedConfig,
-          }));
+          }), input.onLog);
         }
       }
       throw new Error("Sandbox driver does not support direct command execution for built-in providers.");
+    },
+
+    supportsSync(input) {
+      if (!input.lease.metadata?.sandboxProviderPlugin || !pluginWorkerManager) return false;
+      const pluginId = readString(input.lease.metadata?.pluginId);
+      if (!pluginId) return false;
+      const advertised = pluginWorkerManager.getWorker(pluginId)?.supportedMethods ?? [];
+      if (!advertised.includes("environmentSyncIn") || !advertised.includes("environmentSyncOut")) {
+        return false;
+      }
+      // A worker advertises the sync verbs process-wide, but an individual lease
+      // may run on a backend that has no data channel for the native transport
+      // (e.g. a batch/job backend whose sync hook rejects immediately). The
+      // provider flags such leases so they keep the byte-identical base64
+      // fallback instead of being routed to a hook that would only error.
+      //
+      // Also fall back for any lease persisted with `backend: "job"` directly:
+      // job leases created before `nativeFileSyncUnsupported` existed carry the
+      // backend field but not the flag, and the `job` backend has no pod-exec
+      // channel, so routing them to the native hook would only reject.
+      if (
+        input.lease.metadata?.nativeFileSyncUnsupported === true ||
+        input.lease.metadata?.backend === "job"
+      ) {
+        return false;
+      }
+      return true;
+    },
+
+    async syncIn(input) {
+      return await callPluginEnvironmentSync("environmentSyncIn", input);
+    },
+
+    async syncOut(input) {
+      return await callPluginEnvironmentSync("environmentSyncOut", input);
     },
 
     async destroyRunLease(input) {
@@ -1259,15 +1461,17 @@ function createSandboxEnvironmentDriver(
           lease: input.lease,
           provider: providerKey,
         });
-        await pluginWorkerManager.call(pluginId, "environmentReleaseLease", {
-          driverKey: providerKey,
-          companyId: input.lease.companyId,
-          environmentId: input.environment.id,
-          issueId: input.lease.issueId,
-          config: stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig),
-          providerLeaseId: input.lease.providerLeaseId,
-          leaseMetadata: metadata,
-        }, resolvePluginSandboxRpcTimeoutMs(stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig)));
+        await runLeaseReleaseWithRunParent(input.lease.id, () =>
+          pluginWorkerManager.call(pluginId, "environmentReleaseLease", {
+            driverKey: providerKey,
+            companyId: input.lease.companyId,
+            environmentId: input.environment.id,
+            issueId: input.lease.issueId,
+            config: stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig),
+            providerLeaseId: input.lease.providerLeaseId,
+            leaseMetadata: metadata,
+          }, resolvePluginSandboxRpcTimeoutMs(stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig))),
+        );
       } catch {
         cleanupStatus = "failed";
       }
@@ -1305,15 +1509,17 @@ function createSandboxEnvironmentDriver(
             lease: input.lease,
             provider: providerKey,
           });
-          await pluginWorkerManager.call(pluginId, "environmentDestroyLease", {
-            driverKey: providerKey,
-            companyId: input.lease.companyId,
-            environmentId: input.environment.id,
-            issueId: input.lease.issueId,
-            config: stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig),
-            providerLeaseId: input.lease.providerLeaseId,
-            leaseMetadata: metadata,
-          }, resolvePluginSandboxRpcTimeoutMs(stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig)));
+          await runLeaseReleaseWithRunParent(input.lease.id, () =>
+            pluginWorkerManager.call(pluginId, "environmentDestroyLease", {
+              driverKey: providerKey,
+              companyId: input.lease.companyId,
+              environmentId: input.environment.id,
+              issueId: input.lease.issueId,
+              config: stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig),
+              providerLeaseId: input.lease.providerLeaseId,
+              leaseMetadata: metadata,
+            }, resolvePluginSandboxRpcTimeoutMs(stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig))),
+          );
         }
       } else {
         const metadataConfig = sandboxConfigFromLeaseMetadata(input.lease);
@@ -1501,7 +1707,8 @@ function createPluginEnvironmentDriver(
         agentId: input.agentId ?? undefined,
         executionWorkspaceId: input.executionWorkspaceId ?? undefined,
         adapterType: input.adapterType ?? undefined,
-      });
+        executionWorkspaceSettings: input.executionWorkspaceSettings,
+      } as PluginEnvironmentAcquireLeaseParams);
 
       return await environmentsSvc.acquireLease({
         companyId: input.companyId,
@@ -1720,6 +1927,7 @@ export function environmentRuntimeService(
       /** Null for ad-hoc invocations (e.g. operator-initiated `Test` probes). */
       heartbeatRunId: string | null;
       persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
+      executionWorkspaceSettings?: IssueExecutionWorkspaceSettings | null;
       /** The agent's adapter type for this run (mixed-harness environments). */
       adapterType?: string | null;
       /**
@@ -1745,6 +1953,7 @@ export function environmentRuntimeService(
         heartbeatRunId: input.heartbeatRunId,
         executionWorkspaceId: leaseContext.executionWorkspaceId,
         executionWorkspaceMode: leaseContext.executionWorkspaceMode,
+        executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
         adapterType: input.adapterType ?? null,
         applyCustomImageTemplate: input.applyCustomImageTemplate ?? false,
       });
@@ -1889,6 +2098,27 @@ export function environmentRuntimeService(
         throw new Error(`Environment driver "${driver.driver}" does not support command execution.`);
       }
       return await driver.execute(input);
+    },
+
+    supportsSync(input: EnvironmentDriverLeaseInput): boolean {
+      const driver = getDriver(getLeaseDriverKey(input.lease, input.environment));
+      return driver?.supportsSync?.(input) ?? false;
+    },
+
+    async syncIn(input: EnvironmentDriverSyncInput): Promise<PluginEnvironmentSyncResult> {
+      const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
+      if (!driver.syncIn) {
+        throw new Error(`Environment driver "${driver.driver}" does not support native file sync.`);
+      }
+      return await driver.syncIn(input);
+    },
+
+    async syncOut(input: EnvironmentDriverSyncInput): Promise<PluginEnvironmentSyncResult> {
+      const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
+      if (!driver.syncOut) {
+        throw new Error(`Environment driver "${driver.driver}" does not support native file sync.`);
+      }
+      return await driver.syncOut(input);
     },
   };
 }
