@@ -33,6 +33,16 @@ const DEFAULT_BRIDGE_ITERATION_TIMEOUT_MS = 10_000;
 // calls). It is larger than one iteration timeout, so a single slow iteration
 // never trips it, and it stays under the in-sandbox 30s response deadline.
 const DEFAULT_BRIDGE_WATCHDOG_TIMEOUT_MS = 20_000;
+// Grace period the recovery path gives an aborted in-flight handler to finalize
+// its own response. The recovery path aborts the handler, then waits this long.
+// A cooperating handler threads the abort signal into its work, rejects, and
+// writes its own response inside the grace, so its accurate result wins. A
+// handler that ignores the signal and never settles does not write inside the
+// grace; the recovery path then writes a non-retryable 504 backstop, so the
+// request never strands with no response. The grace is well under the in-sandbox
+// 30s response deadline, so the backstop lands before the in-sandbox client
+// gives up.
+const DEFAULT_BRIDGE_ABORTED_HANDLER_GRACE_MS = 5_000;
 const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
 const SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT = "paperclip-bridge-server.mjs";
 const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
@@ -691,6 +701,10 @@ export async function startSandboxCallbackBridgeWorker(input: {
   // time, the watchdog runs `failPendingRequests` and surfaces a run-level error
   // through `runtimeSpan`. Defaults to DEFAULT_BRIDGE_WATCHDOG_TIMEOUT_MS.
   watchdogTimeoutMs?: number | null;
+  // Grace the recovery path gives an aborted in-flight handler to finalize its
+  // own response before the recovery path writes a non-retryable 504 backstop.
+  // Defaults to DEFAULT_BRIDGE_ABORTED_HANDLER_GRACE_MS.
+  abortedHandlerGraceMs?: number | null;
   authorizeRequest?: (request: SandboxCallbackBridgeRequest) => string | null | Promise<string | null>;
   // Handle one bridge request. The worker passes an `AbortSignal` through
   // `options.signal`. The per-iteration timeout, the watchdog, and worker
@@ -724,6 +738,10 @@ export async function startSandboxCallbackBridgeWorker(input: {
   const pollIntervalMs = normalizeTimeoutMs(input.pollIntervalMs, DEFAULT_BRIDGE_POLL_INTERVAL_MS);
   const iterationTimeoutMs = normalizeTimeoutMs(input.iterationTimeoutMs, DEFAULT_BRIDGE_ITERATION_TIMEOUT_MS);
   const watchdogTimeoutMs = normalizeTimeoutMs(input.watchdogTimeoutMs, DEFAULT_BRIDGE_WATCHDOG_TIMEOUT_MS);
+  const abortedHandlerGraceMs = normalizeTimeoutMs(
+    input.abortedHandlerGraceMs,
+    DEFAULT_BRIDGE_ABORTED_HANDLER_GRACE_MS,
+  );
   const maxBodyBytes = normalizeTimeoutMs(input.maxBodyBytes, DEFAULT_BRIDGE_MAX_BODY_BYTES);
   const directories = sandboxCallbackBridgeDirectories(input.queueDir);
   const queueDirectories = [
@@ -778,11 +796,8 @@ export async function startSandboxCallbackBridgeWorker(input: {
   //
   // Each guard also holds an `AbortController`. The recovery path aborts it, so a
   // handler that already started (claim `handler`) stops its work and finalizes
-  // with its own error response. Without this, a handler that never settles keeps
-  // the request without a response, because the recovery path skips a
-  // handler-owned request (it must not write a competing 503 for an in-flight
-  // mutation). The abort turns that stranded request into a prompt error
-  // response for a handler that threads the signal into its work.
+  // with its own error response. The abort turns a stranded request into a prompt
+  // error response for a handler that threads the signal into its work.
   //
   // A worker abort reaches the handler only after the host operation started, so
   // the mutation may have committed. The bridge cannot cancel a host operation
@@ -790,16 +805,38 @@ export async function startSandboxCallbackBridgeWorker(input: {
   // non-retryable 504, not a retryable 502. The caller must not retry a 504, so
   // it never re-applies a mutation that already committed. A retry-safe 503 comes
   // only from the recovery path, and only before the host operation starts.
+  //
+  // A handler that ignores the abort signal and never settles would still keep
+  // the request without a response, because the recovery path must not write a
+  // competing 503 for an in-flight mutation. So the recovery path also arms a
+  // backstop timer for each handler-owned request. It aborts the handler, then
+  // waits `abortedHandlerGraceMs`. A cooperating handler finalizes inside the
+  // grace, so its own response wins and `finalize` clears the timer. A handler
+  // that never settles does not finalize inside the grace; the timer then writes
+  // a non-retryable 504 backstop, so the request never strands. The backstop is
+  // non-retryable for the same reason the handler's own 504 is: the recovery
+  // cannot cancel a committed mutation, so the caller must not retry.
+  //
+  // The `finalized` flag is the single-writer fence between the handler's own
+  // `finalize` and the backstop timer. Node runs one event loop, so the
+  // synchronous check-and-set is atomic. The first path to set it writes the
+  // terminal response; the other bails.
   type RequestFinalizeGuard = {
     claim: "unclaimed" | "handler" | "abandon";
     controller: AbortController;
+    finalized: boolean;
+    backstopTimer?: ReturnType<typeof setTimeout>;
   };
   const inFlightRequestGuards = new Map<string, RequestFinalizeGuard>();
 
   const processRequestFile = async (fileName: string) => {
     const requestPath = path.posix.join(directories.requestsDir, fileName);
     const responsePath = path.posix.join(directories.responsesDir, fileName);
-    const guard: RequestFinalizeGuard = { claim: "unclaimed", controller: new AbortController() };
+    const guard: RequestFinalizeGuard = {
+      claim: "unclaimed",
+      controller: new AbortController(),
+      finalized: false,
+    };
     inFlightRequestGuards.set(fileName, guard);
     // Claim the request for the handler. Return `false` when the recovery path
     // already claimed it; the caller must then not run the mutation and must not
@@ -814,9 +851,21 @@ export async function startSandboxCallbackBridgeWorker(input: {
     };
     // Finalize the request exactly once. Claim it for the handler first. When the
     // recovery path already won the claim, skip both the write and the remove.
+    // The `finalized` fence stops a double write when the backstop timer already
+    // wrote a 504 for a handler the recovery path aborted. The handler wins when
+    // it settles inside the grace; the backstop wins when the handler never
+    // settles.
     const finalize = async (response: SandboxCallbackBridgeResponse) => {
       if (!claimForHandler()) {
         return;
+      }
+      if (guard.finalized) {
+        return;
+      }
+      guard.finalized = true;
+      if (guard.backstopTimer !== undefined) {
+        clearTimeout(guard.backstopTimer);
+        guard.backstopTimer = undefined;
       }
       await writeBridgeResponse(input.client, requestPath, responsePath, response);
       await input.client.remove(requestPath);
@@ -927,6 +976,70 @@ export async function startSandboxCallbackBridgeWorker(input: {
     }
   };
 
+  // Write the non-retryable 504 backstop for an aborted handler that did not
+  // finalize inside the grace. The `finalized` fence makes this a no-op when the
+  // handler already wrote its own response. The request file name is the request
+  // id plus `.json`, so derive the id from it without another client read that
+  // could hang on the same dead channel.
+  const writeAbortedHandlerBackstop = async (
+    fileName: string,
+    guard: RequestFinalizeGuard,
+    message: string,
+  ) => {
+    guard.backstopTimer = undefined;
+    if (guard.finalized) {
+      return;
+    }
+    guard.finalized = true;
+    const requestPath = path.posix.join(directories.requestsDir, fileName);
+    const responsePath = path.posix.join(directories.responsesDir, fileName);
+    const requestId = fileName.replace(/\.json$/i, "") || randomUUID();
+    try {
+      await withTimeout(
+        writeBridgeResponse(input.client, requestPath, responsePath, {
+          id: requestId,
+          status: 504,
+          headers: {
+            "content-type": "application/json",
+            "x-paperclip-bridge-outcome": "indeterminate",
+          },
+          body: JSON.stringify({ error: message, outcome: "indeterminate", retryable: false }),
+          completedAt: new Date().toISOString(),
+        }, {
+          requireRequestPath: false,
+        }),
+        iterationTimeoutMs,
+        `Sandbox callback bridge write 504 backstop for ${requestId}`,
+      );
+    } catch (error) {
+      console.warn(
+        `[paperclip] sandbox callback bridge failed to write 504 backstop for ${requestId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      await input.client.remove(requestPath).catch(() => undefined);
+    }
+  };
+
+  // Arm the backstop timer for a handler the recovery path just aborted. It is
+  // idempotent: a second recovery pass (the watchdog and the loop catch both run
+  // `failPendingRequests`) does not re-arm a live timer or one that already
+  // finalized.
+  const scheduleAbortedHandlerBackstop = (
+    fileName: string,
+    guard: RequestFinalizeGuard,
+    message: string,
+  ) => {
+    if (guard.finalized || guard.backstopTimer !== undefined) {
+      return;
+    }
+    guard.backstopTimer = setTimeout(() => {
+      void writeAbortedHandlerBackstop(fileName, guard, message);
+    }, abortedHandlerGraceMs);
+    if (typeof guard.backstopTimer.unref === "function") {
+      guard.backstopTimer.unref();
+    }
+  };
+
   // Abort every queued request with a 503. The `abandonInFlight` option controls
   // the completion fence for a request a `processRequestFile` attempt still owns.
   // The timeout and watchdog recovery pass `true`: the loop already gave up on
@@ -942,17 +1055,20 @@ export async function startSandboxCallbackBridgeWorker(input: {
     options: { abandonInFlight?: boolean } = {},
   ) => {
     if (options.abandonInFlight) {
-      // Abort every in-flight handler first. The loop already gave up on the
-      // request. A handler that threads the signal into its work stops and
-      // rejects, then finalizes with its own error response, so the request does
-      // not strand with no response. This reads the guard map directly, so it
-      // runs even when the request listing below fails on the same dead channel.
-      // It never writes a 503 for a handler-owned request: the recovery path
-      // cannot cancel a committed host mutation, so a 503 there could apply the
-      // mutation twice.
-      for (const guard of inFlightRequestGuards.values()) {
+      // Abort every in-flight handler first, then arm its 504 backstop. The loop
+      // already gave up on the request. A handler that threads the signal into
+      // its work stops, rejects, and finalizes with its own error response inside
+      // the grace, so the request does not strand. A handler that ignores the
+      // signal and never settles does not finalize inside the grace; the backstop
+      // timer then writes a non-retryable 504, so the request still never
+      // strands. This reads the guard map directly, so it runs even when the
+      // request listing below fails on the same dead channel. It never writes a
+      // 503 for a handler-owned request: the recovery cannot cancel a committed
+      // host mutation, so a retryable status there could apply the mutation twice.
+      for (const [fileName, guard] of inFlightRequestGuards.entries()) {
         if (guard.claim === "handler") {
           guard.controller.abort(new Error(message));
+          scheduleAbortedHandlerBackstop(fileName, guard, message);
         }
       }
     }
@@ -974,9 +1090,10 @@ export async function startSandboxCallbackBridgeWorker(input: {
             // already finalized the request. The timeout and watchdog cannot
             // cancel a host operation that is in flight. A competing 503 here
             // makes the caller retry while the original mutation still completes,
-            // so the mutation applies twice. The abort above already signalled
-            // the handler; leave the request for the handler to finalize with its
-            // own response.
+            // so the mutation applies twice. The abort loop above already
+            // signalled the handler and armed the 504 backstop; leave the request
+            // for the handler to finalize, or for the backstop to finalize when
+            // the handler never settles.
             continue;
           }
           // The handler did not start the host operation yet. Claim the request,

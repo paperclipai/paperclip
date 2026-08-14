@@ -1753,6 +1753,104 @@ describe("sandbox callback bridge", () => {
     await worker.stop({ drainTimeoutMs: 10 });
   });
 
+  it("finalizes an aborted handler that ignores the signal and never settles with a non-retryable 504 backstop", async () => {
+    // A handler that does not thread the worker signal into its work and never
+    // settles must not strand the request. The recovery path aborts the handler,
+    // waits the grace, then writes a non-retryable 504 backstop, so the request
+    // gets a terminal response even when the handler ignores the abort. The 504
+    // is non-retryable, so the caller does not retry a mutation that may have
+    // committed.
+    const waitFor = async (predicate: () => boolean, timeoutMs: number) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (predicate()) {
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      throw new Error("waitFor timed out");
+    };
+
+    const queueDir = "/virtual-bridge/queue";
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const requestFile = "req-stuck.json";
+    const requestPath = path.posix.join(directories.requestsDir, requestFile);
+    const responsePath = path.posix.join(directories.responsesDir, requestFile);
+
+    const requestBodies = new Map<string, string>();
+    requestBodies.set(requestPath, bridgeRequestJson("req-stuck"));
+    const responseWrites: Array<{ path: string; status: number; body: string }> = [];
+    const requestRemovals: string[] = [];
+
+    const client: SandboxCallbackBridgeQueueClient = {
+      makeDir: async () => {},
+      makeDirs: async () => {},
+      listJsonFiles: async (dir) =>
+        dir === directories.requestsDir
+          ? [...requestBodies.keys()].map((entry) => path.posix.basename(entry)).sort()
+          : [],
+      readTextFile: async (remotePath) => {
+        const body = requestBodies.get(remotePath);
+        if (body === undefined) {
+          throw new Error(`missing request ${remotePath}`);
+        }
+        return body;
+      },
+      writeTextFile: async () => {},
+      writeResponseFile: async (remotePath, body) => {
+        responseWrites.push({ path: remotePath, status: JSON.parse(body.trim()).status, body });
+        return { wrote: true };
+      },
+      rename: async () => {},
+      remove: async (remotePath) => {
+        requestRemovals.push(remotePath);
+        requestBodies.delete(remotePath);
+      },
+    };
+
+    const { runtimeSpan, workerErrors } = createWorkerErrorCapture();
+    let handlerStarted = false;
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      iterationTimeoutMs: 50,
+      watchdogTimeoutMs: 10_000,
+      // A short grace, so the backstop fires quickly after the abort.
+      abortedHandlerGraceMs: 30,
+      runtimeSpan,
+      authorizeRequest: async () => null,
+      // The handler ignores the worker signal and never settles. Without the
+      // backstop, the request would stay without a response forever.
+      handleRequest: () => {
+        handlerStarted = true;
+        return new Promise<{ status: number; body?: string }>(() => {});
+      },
+    });
+
+    // The backstop writes the terminal response after the grace.
+    await waitFor(() => responseWrites.some((write) => write.path === responsePath), 3_000);
+
+    expect(handlerStarted).toBe(true);
+    expect(workerErrors.some((message) => message.includes("timed out"))).toBe(true);
+    // Exactly one response landed: the non-retryable 504 backstop. The recovery
+    // path wrote no retryable 503 or 502 for the handler-owned request.
+    const requestResponses = responseWrites.filter((write) => write.path === responsePath);
+    expect(requestResponses).toHaveLength(1);
+    expect(requestResponses[0]?.status).toBe(504);
+    const parsed = JSON.parse(requestResponses[0]!.body.trim());
+    const responseBody = JSON.parse(parsed.body);
+    expect(responseBody.outcome).toBe("indeterminate");
+    expect(responseBody.retryable).toBe(false);
+    expect(parsed.headers?.["x-paperclip-bridge-outcome"]).toBe("indeterminate");
+    expect(responseWrites.some((write) => write.status === 503)).toBe(false);
+    expect(responseWrites.some((write) => write.status === 502)).toBe(false);
+    // The backstop removed the request file, so it does not strand in the queue.
+    expect(requestRemovals).toContain(requestPath);
+
+    await worker.stop({ drainTimeoutMs: 10 });
+  });
+
   it("finalizes a late worker-aborted handler with a non-retryable 504, so the caller does not retry a committed mutation", async () => {
     // Prove the completion status for a mutating request that the worker aborts.
     // The per-iteration timeout aborts a handler that already started its host
