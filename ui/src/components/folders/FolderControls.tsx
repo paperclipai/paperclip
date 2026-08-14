@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import type { FolderKind, FolderListItem, FolderListResult } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
+import { t } from "@/i18n";
 import {
   Dialog,
   DialogContent,
@@ -120,7 +121,7 @@ function selectionLabel({
   allLabel: string;
 }) {
   if (selection === "all") return allLabel;
-  if (selection === "unfiled") return "Unfiled";
+  if (selection === "unfiled") return t("companySkills.unfiled");
   return folders.find((folder) => folder.id === selection)?.name ?? allLabel;
 }
 
@@ -225,7 +226,7 @@ export function FolderRail({
     <nav aria-label={`${itemLabelPlural} folders`} className="hidden w-(--sz-folder-rail) shrink-0 border-r border-border pr-3 md:block">
       <div className="mb-2 flex items-center justify-between gap-2">
         <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">Folders</div>
-        <Button variant="ghost" size="icon-sm" title="New folder" onClick={onCreate}>
+        <Button variant="ghost" size="icon-sm" title={t("companySkills.newFolder")} onClick={onCreate}>
           <Plus className="h-3.5 w-3.5" />
         </Button>
       </div>
@@ -257,7 +258,7 @@ export function FolderRail({
           <div className="px-2 pb-1 pt-3 text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
             System
           </div>
-          {renderVirtualRow("unfiled", "Unfiled", result?.unfiledCount ?? 0, <FolderSwatch color={null} className="mt-0.5" />)}
+          {renderVirtualRow("unfiled", t("companySkills.unfiled"), result?.unfiledCount ?? 0, <FolderSwatch color={null} className="mt-0.5" />)}
         </div>
       )}
     </nav>
@@ -470,14 +471,14 @@ export function MobileFolderSheet({
               </div>
               {model.company.map((node) => renderBranch(node))}
               {model.projects ? renderBranch(model.projects, "Projects") : null}
-              {model.bundled ? renderBranch(model.bundled, "Bundled") : null}
+              {model.bundled ? renderBranch(model.bundled, t("companySkills.bundled")) : null}
             </>
           ) : (
             model.roots.map((node) => renderBranch(node, reservedRootLabel(node.folder)))
           )}
           <MobileFolderRow
             id="unfiled"
-            label="Unfiled"
+            label={t("companySkills.unfiled")}
             count={result?.unfiledCount ?? 0}
             selected={selection === "unfiled"}
             onSelect={select}

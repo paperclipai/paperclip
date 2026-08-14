@@ -15,6 +15,7 @@ import {
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
 import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
+import { t } from "@/i18n";
 import { ProjectTile } from "./ProjectTile";
 import { StarToggle } from "./StarToggle";
 import { Button } from "@/components/ui/button";
@@ -104,7 +105,7 @@ export function SidebarStarredProjects() {
   }
 
   return (
-    <div className="flex flex-col gap-0.5" aria-label="Starred projects">
+    <div className="flex flex-col gap-0.5" aria-label={t("sidebar.starredProjects")}>
       {starredProjects.map((project) => {
         const routeRef = projectRouteRef(project);
         const isActive = activeProjectRef === routeRef || activeProjectRef === project.id;
@@ -131,7 +132,7 @@ export function SidebarStarredProjects() {
             <ProjectTile color={project.color ?? null} icon={project.icon ?? null} size="xs" />
             <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "flex-1 truncate"}>{project.name}</span>
             {!rail && project.pauseReason === "budget" ? (
-              <BudgetSidebarMarker title="Project paused by budget" />
+              <BudgetSidebarMarker title={t("sidebar.projectPausedByBudget")} />
             ) : null}
           </NavLink>
         );
@@ -190,7 +191,7 @@ export function SidebarStarredProjects() {
                     ) : (
                       <Star className="size-4 fill-amber-500 text-amber-500" />
                     )}
-                    <span>Remove from starred</span>
+                    <span>{t("sidebar.removeFromStarred")}</span>
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
@@ -205,7 +206,7 @@ export function SidebarStarredProjects() {
                     ) : (
                       <LogOut className="size-4" />
                     )}
-                    <span>Leave project</span>
+                    <span>{t("sidebar.leaveProject")}</span>
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>

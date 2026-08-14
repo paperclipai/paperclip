@@ -25,32 +25,33 @@ import { agentsApi } from "@/api/agents";
 import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
 import { useToastActions } from "@/context/ToastContext";
+import { t } from "@/i18n";
 
 const PAGE_SIZE = 50;
 const ALL = "__all";
 
 /** Action-domain prefixes offered in the filter (server does a prefix match). */
 const ACTION_DOMAINS: { value: string; label: string }[] = [
-  { value: ALL, label: "All actions" },
-  { value: "issue.", label: "Tasks" },
-  { value: "agent.", label: "Agents" },
-  { value: "heartbeat.", label: "Runs" },
-  { value: "approval.", label: "Approvals" },
-  { value: "project.", label: "Projects" },
-  { value: "goal.", label: "Goals" },
-  { value: "tool_gateway.", label: "Tools" },
-  { value: "cost.", label: "Costs" },
-  { value: "company.", label: "Company" },
+  { value: ALL, label: t("auditFeed.allActions") },
+  { value: "issue.", label: t("auditFeed.tasks") },
+  { value: "agent.", label: t("auditFeed.agents") },
+  { value: "heartbeat.", label: t("auditFeed.runs") },
+  { value: "approval.", label: t("auditFeed.approvals") },
+  { value: "project.", label: t("auditFeed.projects") },
+  { value: "goal.", label: t("auditFeed.goals") },
+  { value: "tool_gateway.", label: t("auditFeed.tools") },
+  { value: "cost.", label: t("auditFeed.costs") },
+  { value: "company.", label: t("auditFeed.company") },
 ];
 
 /** Entity types offered in the filter (server does an exact match). */
 const ENTITY_TYPES: { value: string; label: string }[] = [
-  { value: ALL, label: "All entities" },
-  { value: "issue", label: "Task" },
-  { value: "agent", label: "Agent" },
-  { value: "project", label: "Project" },
-  { value: "goal", label: "Goal" },
-  { value: "company", label: "Company" },
+  { value: ALL, label: t("auditFeed.allEntities") },
+  { value: "issue", label: t("auditFeed.entityTask") },
+  { value: "agent", label: t("auditFeed.entityAgent") },
+  { value: "project", label: t("auditFeed.entityProject") },
+  { value: "goal", label: t("auditFeed.entityGoal") },
+  { value: "company", label: t("auditFeed.entityCompany") },
 ];
 
 /**
@@ -465,11 +466,11 @@ export function AuditFeed({
       {!hideHeader ? (
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h1 className="text-lg font-semibold text-foreground">Activity</h1>
+            <h1 className="text-lg font-semibold text-foreground">{t("auditFeed.title")}</h1>
             <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
               {resolvedMode === "agents"
-                ? "Every recorded agent action, newest first — with the responsible person and run behind each one."
-                : "Everything happening in your company, newest first — people, agents, and the system. Each line is one recorded action."}
+                ? t("auditFeed.agentDescription")
+                : t("auditFeed.allDescription")}
             </p>
           </div>
         </div>
@@ -477,9 +478,9 @@ export function AuditFeed({
 
       {showModeToggle ? (
         <Tabs value={resolvedMode} onValueChange={(value) => onModeChange?.(value as AuditFeedMode)}>
-          <TabsList aria-label="Activity scope">
-            <TabsTrigger value="all">All activity</TabsTrigger>
-            <TabsTrigger value="agents">Agent actions</TabsTrigger>
+          <TabsList aria-label={t("auditFeed.scopeAria")}>
+            <TabsTrigger value="all">{t("auditFeed.allActivity")}</TabsTrigger>
+            <TabsTrigger value="agents">{t("auditFeed.agentActions")}</TabsTrigger>
           </TabsList>
         </Tabs>
       ) : null}
@@ -489,10 +490,10 @@ export function AuditFeed({
           {!lockedAgentId ? (
             <Select value={agent} onValueChange={setAgent}>
               <SelectTrigger className="w-40">
-                <SelectValue placeholder="Agent" />
+                <SelectValue placeholder={t("auditFeed.agent")} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value={ALL}>All agents</SelectItem>
+                <SelectItem value={ALL}>{t("auditFeed.allAgents")}</SelectItem>
                 {(agents.data ?? []).map((a) => (
                   <SelectItem key={a.id} value={a.id}>
                     {a.name}
@@ -504,10 +505,10 @@ export function AuditFeed({
           <Select value={responsibleUser} onValueChange={setResponsibleUser}>
             {/* Wide enough for "All responsible users" — w-44 truncated it. */}
             <SelectTrigger className="w-52">
-              <SelectValue placeholder="Responsible user" />
+              <SelectValue placeholder={t("auditFeed.responsibleUser")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value={ALL}>All responsible users</SelectItem>
+              <SelectItem value={ALL}>{t("auditFeed.allResponsibleUsers")}</SelectItem>
               {(userDirectory.data?.users ?? []).map((u) => (
                 <SelectItem key={u.principalId} value={u.principalId}>
                   {u.user?.name ?? u.user?.email ?? u.principalId.slice(0, 8)}
@@ -517,7 +518,7 @@ export function AuditFeed({
           </Select>
           <Select value={actionDomain} onValueChange={setActionDomain}>
             <SelectTrigger className="w-36">
-              <SelectValue placeholder="Action" />
+              <SelectValue placeholder={t("auditFeed.action")} />
             </SelectTrigger>
             <SelectContent>
               {ACTION_DOMAINS.map((d) => (
@@ -529,7 +530,7 @@ export function AuditFeed({
           </Select>
           <Select value={entityType} onValueChange={setEntityType}>
             <SelectTrigger className="w-36">
-              <SelectValue placeholder="Entity" />
+              <SelectValue placeholder={t("auditFeed.entity")} />
             </SelectTrigger>
             <SelectContent>
               {ENTITY_TYPES.map((e) => (
@@ -541,7 +542,7 @@ export function AuditFeed({
           </Select>
           <Input
             type="date"
-            aria-label="From date"
+            aria-label={t("auditFeed.fromDate")}
             value={dateFrom}
             max={dateTo || undefined}
             onChange={(e) => setDateFrom(e.target.value)}
@@ -549,7 +550,7 @@ export function AuditFeed({
           />
           <Input
             type="date"
-            aria-label="To date"
+            aria-label={t("auditFeed.toDate")}
             value={dateTo}
             min={dateFrom || undefined}
             onChange={(e) => setDateTo(e.target.value)}
@@ -568,7 +569,7 @@ export function AuditFeed({
             disabled={exporting || feed.isLoading || items.length === 0}
           >
             <Download className="mr-1.5 h-4 w-4" />
-            {exporting ? "Exporting…" : "Export CSV"}
+            {exporting ? t("auditFeed.exporting") : t("auditFeed.exportCsv")}
           </Button>
         </div>
       ) : null}
@@ -648,7 +649,7 @@ export function AuditFeed({
       ) : null}
 
       <p className="text-xs text-muted-foreground">
-        Recorded by Paperclip — entries can't be edited. Sensitive values are never stored.
+        {t("auditFeed.footerNote")}
       </p>
     </div>
   );

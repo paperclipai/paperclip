@@ -5,6 +5,7 @@ import { useCompany } from "../../context/CompanyContext";
 import { useBreadcrumbs } from "../../context/BreadcrumbContext";
 import { EmptyState } from "../../components/EmptyState";
 import { AuditFeed, type AuditFeedMode } from "./AuditFeed";
+import { t } from "@/i18n";
 
 /**
  * Company activity page — the single merged surface for `/:company/activity`
@@ -21,7 +22,7 @@ export function CompanyActivity() {
   const mode: AuditFeedMode = searchParams.get("mode") === "agents" ? "agents" : "all";
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Activity" }]);
+    setBreadcrumbs([{ label: t("auditFeed.title") }]);
   }, [setBreadcrumbs]);
 
   const handleModeChange = useCallback(

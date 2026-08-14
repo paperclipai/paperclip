@@ -34,6 +34,7 @@ import {
   Search,
 } from "lucide-react";
 import { Identity } from "./Identity";
+import { t } from "@/i18n";
 import { agentUrl, projectUrl } from "../lib/utils";
 import {
   SEARCH_OPERATOR_QUICK_FILTERS,
@@ -222,7 +223,7 @@ export function CommandPalette() {
         if (v && isMobile) setSidebarOpen(false);
       }}>
       <CommandInput
-        placeholder="Search tasks, agents, projects..."
+        placeholder={t("command.searchTasks")}
         value={query}
         onValueChange={setQuery}
         onKeyDown={(event) => {
@@ -251,7 +252,7 @@ export function CommandPalette() {
         </CommandEmpty>
 
         {showSearchAll ? (
-          <CommandGroup heading="Search">
+          <CommandGroup heading={t("command.searchGroup")}>
             <CommandItem
               value={`${SEARCH_ALL_VALUE} ${searchQuery}`}
               onSelect={goFullSearch}

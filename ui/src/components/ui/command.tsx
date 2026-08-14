@@ -6,6 +6,7 @@ import { SearchIcon, XIcon } from "lucide-react"
 import { Dialog as DialogPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import { t } from "@/i18n"
 import {
   Dialog,
   DialogContent,
@@ -31,8 +32,8 @@ function Command({
 }
 
 function CommandDialog({
-  title = "Command Palette",
-  description = "Search for a command to run...",
+  title = t("command.title"),
+  description = t("command.searchPlaceholder"),
   children,
   className,
   showCloseButton = true,

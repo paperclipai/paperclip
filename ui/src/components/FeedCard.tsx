@@ -2,6 +2,7 @@ import { Link } from "@/lib/router";
 import { AgentIcon } from "./AgentIconPicker";
 import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
+import { t } from "@/i18n";
 import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai/shared";
 import { issueStatusIcon, issueStatusIconDefault } from "../lib/status-colors";
 import {
@@ -43,85 +44,85 @@ function formatVerb(
 ): string {
   switch (action) {
     case "issue.created":
-      return "opened";
+      return t("activity.opened");
     case "issue.updated": {
       const status = details?.status;
-      if (typeof status === "string") return `moved to ${humanize(status)}`;
+      if (typeof status === "string") return t("activity.movedTo", { status: humanize(status) });
       const priority = details?.priority;
-      if (typeof priority === "string") return `set priority to ${humanize(priority)} on`;
-      return "updated";
+      if (typeof priority === "string") return t("activity.setPriorityTo", { priority: humanize(priority) });
+      return t("activity.updated");
     }
     case "issue.document_created":
-      return "wrote doc on";
+      return t("activity.wroteDocOn");
     case "issue.document_updated":
-      return "edited doc on";
+      return t("activity.editedDocOn");
     case "issue.document_deleted":
-      return "deleted doc from";
+      return t("activity.deletedDocFrom");
     case "issue.work_product_created":
-      return "delivered work on";
+      return t("activity.deliveredWorkOn");
     case "issue.work_product_updated":
-      return "updated work on";
+      return t("activity.updatedWorkOn");
     case "issue.work_product_deleted":
-      return "removed work from";
+      return t("activity.removedWorkFrom");
     case "issue.checked_out":
-      return "picked up";
+      return t("activity.pickedUp");
     case "issue.released":
-      return "released";
+      return t("activity.released");
     case "issue.commented":
     case "issue.comment_added":
-      return "commented on";
+      return t("activity.commentedOn");
     case "issue.attachment_added":
-      return "attached a file to";
+      return t("activity.attachedFileTo");
     case "issue.attachment_removed":
-      return "removed attachment from";
+      return t("activity.removedAttachmentFrom");
     case "issue.deleted":
-      return "deleted";
+      return t("activity.deleted");
 
     case "approval.created":
-      return context === "pinned" ? "needs approval on" : "requested approval on";
+      return context === "pinned" ? t("activity.needsApprovalOn") : t("activity.requestedApprovalOn");
     case "approval.approved":
-      return "approved";
+      return t("activity.approved");
     case "approval.rejected":
-      return "rejected";
+      return t("activity.rejected");
     case "approval.revision_requested":
-      return "requested changes on";
+      return t("activity.requestedChangesOn");
 
     case "agent.created":
-      return context === "pinned" ? "wants to hire" : "hired";
+      return context === "pinned" ? t("activity.wantsToHire") : t("activity.hired");
     case "agent.paused":
-      return "paused";
+      return t("activity.paused");
     case "agent.resumed":
-      return "resumed";
+      return t("activity.resumed");
     case "agent.updated":
-      return "updated";
+      return t("activity.updated");
     case "agent.terminated":
-      return "terminated";
+      return t("activity.terminated");
 
     case "heartbeat.invoked":
-      return "started a run on";
+      return t("activity.startedRunOn");
     case "heartbeat.cancelled":
-      return "cancelled a run on";
+      return t("activity.cancelledRunOn");
 
     case "project.created":
-      return "created project";
+      return t("activity.createdProject");
     case "project.updated":
-      return "updated project";
+      return t("activity.updatedProject");
     case "project.deleted":
-      return "deleted project";
+      return t("activity.deletedProject");
     case "goal.created":
-      return "created goal";
+      return t("activity.createdGoal");
     case "goal.updated":
-      return "updated goal";
+      return t("activity.updatedGoal");
     case "goal.deleted":
-      return "deleted goal";
+      return t("activity.deletedGoal");
     case "company.created":
-      return "created company";
+      return t("activity.createdCompany");
     case "company.updated":
-      return "updated company";
+      return t("activity.updatedCompany");
     case "company.archived":
-      return "archived company";
+      return t("activity.archivedCompany");
     case "company.budget_updated":
-      return "updated company budget";
+      return t("activity.updatedCompanyBudget");
 
     default:
       return action.replace(/[._]/g, " ");

@@ -4,6 +4,26 @@ import { assertValidLocaleMessages } from "./locale-validation";
 
 export const DEFAULT_LOCALE = "en" as const;
 
+export const LOCALE_STORAGE_KEY = "paperclip.locale";
+
+/** Resolve the user's preferred locale from localStorage, falling back to the
+ *  server-provided default (`VITE_DEFAULT_LOCALE`) and finally the app default.
+ *  The user's explicit choice persists across sessions and takes precedence so
+ *  e.g. zh-CN users keep their preference after upgrade. */
+export function resolveInitialLocale(): string {
+  if (typeof localStorage !== "undefined") {
+    const stored = localStorage.getItem(LOCALE_STORAGE_KEY);
+    if (stored && stored in localeMessages) {
+      return stored;
+    }
+  }
+  const envDefault = import.meta.env.VITE_DEFAULT_LOCALE;
+  if (typeof envDefault === "string" && envDefault && envDefault in localeMessages) {
+    return envDefault;
+  }
+  return DEFAULT_LOCALE;
+}
+
 const localeModules = import.meta.glob("./locales/*.json", {
   eager: true,
   import: "default",
