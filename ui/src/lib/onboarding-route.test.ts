@@ -3,10 +3,12 @@ import {
   companyPrefixFromOnboardingPath,
   isOnboardingPath,
   isOnboardingWizardActive,
+  onboardingStepForCompany,
   resolveRouteOnboardingOptions,
   shouldRedirectCompanylessRouteToOnboarding,
   shouldRouteAgentlessCompanyToOnboarding,
   ONBOARDING_AGENT_STEP,
+  ONBOARDING_MISSION_STEP,
 } from "./onboarding-route";
 
 describe("isOnboardingPath", () => {
@@ -288,5 +290,23 @@ describe("resolveRouteOnboardingOptions — the agent step", () => {
         companyHasMission: true,
       }),
     ).toEqual({ initialStep: 1 });
+  });
+});
+
+describe("onboardingStepForCompany", () => {
+  it("skips the mission question for a company that has one", () => {
+    expect(onboardingStepForCompany(true)).toBe(ONBOARDING_AGENT_STEP);
+  });
+
+  it("asks for the mission when the company has none", () => {
+    expect(onboardingStepForCompany(false)).toBe(ONBOARDING_MISSION_STEP);
+  });
+
+  it("asks for the mission when the lookup has not answered", () => {
+    // Both an in-flight and a failed lookup arrive here as `undefined`.
+    // Costing the mission step is recoverable — the customer answers it. The
+    // opposite error skips a question nobody answered and leaves the company
+    // without a mission.
+    expect(onboardingStepForCompany(undefined)).toBe(ONBOARDING_MISSION_STEP);
   });
 });

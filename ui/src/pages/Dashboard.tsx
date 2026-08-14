@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "@/lib/router";
 import {
-  ONBOARDING_AGENT_STEP,
+  onboardingStepForCompany,
   shouldRouteAgentlessCompanyToOnboarding,
 } from "../lib/onboarding-route";
-import { selectDefaultCompanyGoalId } from "../lib/onboarding-launch";
-import { goalsApi } from "../api/goals";
+import { useCompanyMission } from "../hooks/useCompanyMission";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
@@ -74,40 +73,37 @@ export function Dashboard() {
   // mounted globally, so there is no route to race and no redirect to loop.
   // Placed with the other hooks — the early returns below mean anything
   // further down would be called conditionally.
-  // Which company, and which step. Opening with empty options would start the
-  // wizard at the front door with no company, and the new-company path there
-  // would create a *second* company instead of giving this one an agent.
   //
-  // Same goal list and query key the wizard and the launch path use, so this
-  // is a shared cache entry rather than another request.
-  const { data: dashboardCompanyGoals, isPending: dashboardGoalsPending } = useQuery({
-    queryKey: queryKeys.goals.list(selectedCompanyId!),
-    queryFn: () => goalsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
+  // The company and the step are both passed. Opening with empty options would
+  // start the wizard at the front door with no company, and the new-company
+  // path there would create a *second* company instead of giving this one an
+  // agent.
+  const { hasMission: companyHasMission, settled: missionSettled } =
+    useCompanyMission(selectedCompanyId);
   const shouldOpenOnboarding = shouldRouteAgentlessCompanyToOnboarding({
     pathname: location.pathname,
     agentsLoaded: agents !== undefined,
     agentCount: agents?.length ?? 0,
   });
+  // Auto-open once per company, and never again for that company. Every input
+  // to the effect sits behind a query, so a refetch re-runs it — and a second
+  // `openOnboarding` call would reopen a wizard the customer had deliberately
+  // closed. Onboarding is an offer here, and an offer that reopens after it is
+  // declined is not one.
+  const autoOpenedForCompanyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!shouldOpenOnboarding || !selectedCompanyId) return;
-    // Wait for the goal list to *settle*, not to arrive. Opening on the
-    // mission step and correcting it later would move the wizard out from
-    // under someone already typing — but waiting on the data itself fails
-    // closed, and a goals request that exhausts its retries would then leave
-    // an agentless company with no onboarding at all. On failure the mission
-    // reads as absent and the customer answers it again, which is recoverable.
-    if (dashboardGoalsPending) return;
+    // Wait for the mission lookup to settle before opening: the wizard applies
+    // the step it is given once, so a step chosen before the answer is in is
+    // the step the customer is left on.
+    if (!missionSettled) return;
+    if (autoOpenedForCompanyRef.current === selectedCompanyId) return;
+    autoOpenedForCompanyRef.current = selectedCompanyId;
     openOnboarding({
       companyId: selectedCompanyId,
-      initialStep:
-        dashboardCompanyGoals !== undefined &&
-        selectDefaultCompanyGoalId(dashboardCompanyGoals) !== null
-          ? ONBOARDING_AGENT_STEP
-          : 2,
+      initialStep: onboardingStepForCompany(companyHasMission),
     });
-  }, [shouldOpenOnboarding, selectedCompanyId, dashboardGoalsPending, dashboardCompanyGoals, openOnboarding]);
+  }, [shouldOpenOnboarding, selectedCompanyId, missionSettled, companyHasMission, openOnboarding]);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Dashboard" }]);

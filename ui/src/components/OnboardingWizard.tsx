@@ -47,6 +47,7 @@ import {
   companyPrefixFromOnboardingPath,
   resolveRouteOnboardingOptions,
 } from "../lib/onboarding-route";
+import { useCompanyMission } from "../hooks/useCompanyMission";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
 import { AgentCapsule } from "./AgentCapsule";
@@ -147,43 +148,22 @@ export function OnboardingWizard() {
 
   // Support opening the wizard from a route (e.g. /onboarding or an existing
   // company's "add agent" entry point) in addition to the dialog context.
-  // The company the path names, resolved before the options below so the
-  // mission lookup has something to ask about. Same match the resolver makes.
+  // The company the path names, resolved before the mission lookup below so it
+  // has something to ask about. Same match the resolver makes.
   const routeMatchedCompanyId =
     companyPrefix && !companiesLoading
       ? companies.find(
           (company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase(),
         )?.id ?? null
       : null;
+  const { hasMission: routeCompanyHasMission, settled: routeMissionSettled } =
+    useCompanyMission(routeMatchedCompanyId);
 
-  // "Has this company already got its mission?" A seeded company does: Cloud
-  // collects the mission at signup and the tenant writes it as a company-level
-  // goal. Reuses the list and the query key the launch path already uses, so
-  // this shares a cache entry rather than adding a fetch.
-  const { data: routeCompanyGoals, isPending: routeGoalsPending } = useQuery({
-    queryKey: queryKeys.goals.list(routeMatchedCompanyId ?? ""),
-    queryFn: () => goalsApi.list(routeMatchedCompanyId!),
-    enabled: Boolean(routeMatchedCompanyId),
-  });
-  const routeCompanyHasMission = routeCompanyGoals
-    ? selectDefaultCompanyGoalId(routeCompanyGoals) !== null
-    : undefined;
-
-  // Hold the options back until the mission is known, exactly as they are held
-  // back while companies load. Resolving early and correcting later would let
-  // a late goal result flip `initialStep` from 2 to 3 under someone already
-  // typing their mission, and the sync effect would move them off it.
-  //
-  // Settling first means the step is decided once and never changes for an
-  // open wizard.
-  // Settled, not answered. Gating on the data alone fails *closed*: a goals
-  // request that exhausts its retries leaves the value undefined forever and
-  // onboarding never opens at all. A lookup that cannot say whether the
-  // mission exists must cost the mission step, not the whole flow.
-  const routeMissionPending = routeMatchedCompanyId !== null && routeGoalsPending;
-
+  // Hold the options back until the mission lookup settles, exactly as they
+  // are already held back while companies load. The step below is applied once
+  // and not revised, so the wizard must not open before the answer is in.
   const routeOnboardingOptions =
-    (companyPrefix && companiesLoading) || routeMissionPending
+    (companyPrefix && companiesLoading) || !routeMissionSettled
       ? null
       : resolveRouteOnboardingOptions({
           pathname: location.pathname,
@@ -275,6 +255,16 @@ export function OnboardingWizard() {
   // the user back to the route's initial step mid-flow.
   const createdCompanyIdRef = useRef<string | null>(null);
   createdCompanyIdRef.current = createdCompanyId;
+  // The step the request wants, mirrored for the same reason. `initialStep` is
+  // *derived* - from the company list, and now from the goal list behind
+  // `useCompanyMission` - so its value changes whenever one of those queries
+  // does: a retry, a background refetch, a cache invalidation. An effect that
+  // depended on it would re-run on every such change and call setStep, moving
+  // a customer who is already mid-flow. Reading it through a ref breaks that
+  // dependency, so the effect runs when the wizard *opens* or when the company
+  // changes, and takes whatever the step is at that moment.
+  const initialStepRef = useRef<Step | undefined>(undefined);
+  initialStepRef.current = effectiveOnboardingOptions.initialStep;
 
   // Reset the route-dismissed flag when navigating to a different path.
   useEffect(() => {
@@ -283,11 +273,18 @@ export function OnboardingWizard() {
 
   // Sync step and company when onboarding opens with explicit options.
   // Only override saved state when explicit options provide values.
+  //
+  // The step belongs to the request that opened the wizard, not to the latest
+  // value of the expression that produced it - see `initialStepRef` above for
+  // why those differ. This effect is therefore keyed on the two things that
+  // make a *new* request: the wizard opening, and the company changing.
+  // Navigating from one company's onboarding path to another re-decides the
+  // step; the same request re-deriving a fresher value does not.
   useEffect(() => {
     if (!effectiveOnboardingOpen) return;
     // If explicit options are provided, they take precedence over saved state
-    if (effectiveOnboardingOptions.initialStep) {
-      setStep(effectiveOnboardingOptions.initialStep);
+    if (initialStepRef.current) {
+      setStep(initialStepRef.current);
     }
     const routeCompanyId = effectiveOnboardingOptions.companyId ?? null;
     if (routeCompanyId) {
@@ -317,11 +314,7 @@ export function OnboardingWizard() {
       setCreatedCompanyPrefix(null);
       routeCompanyIdRef.current = null;
     }
-  }, [
-    effectiveOnboardingOpen,
-    effectiveOnboardingOptions.companyId,
-    effectiveOnboardingOptions.initialStep
-  ]);
+  }, [effectiveOnboardingOpen, effectiveOnboardingOptions.companyId]);
 
   // Backfill issue prefix for an existing company once companies are loaded.
   useEffect(() => {

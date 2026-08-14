@@ -38,6 +38,9 @@ export function companyPrefixFromOnboardingPath(pathname: string): string | unde
   return segments[0];
 }
 
+/** The wizard step that asks for the company's mission. */
+export const ONBOARDING_MISSION_STEP = 2;
+
 /**
  * The wizard step that asks for the first agent.
  *
@@ -49,18 +52,34 @@ export function companyPrefixFromOnboardingPath(pathname: string): string | unde
  */
 export const ONBOARDING_AGENT_STEP = 3;
 
+export type ExistingCompanyOnboardingStep =
+  | typeof ONBOARDING_MISSION_STEP
+  | typeof ONBOARDING_AGENT_STEP;
+
+/**
+ * The step a company that already exists belongs on.
+ *
+ * `undefined` means the mission is not known: the goal lookup has not answered
+ * yet, or it failed. Both read as "no mission". That direction of error costs
+ * the customer the mission step, which they can answer; the opposite would
+ * skip a question nobody answered and leave the company without a mission.
+ */
+export function onboardingStepForCompany(
+  companyHasMission: boolean | undefined,
+): ExistingCompanyOnboardingStep {
+  return companyHasMission === true ? ONBOARDING_AGENT_STEP : ONBOARDING_MISSION_STEP;
+}
+
 export function resolveRouteOnboardingOptions(params: {
   pathname: string;
   companyPrefix?: string;
   companies: OnboardingRouteCompany[];
   /**
    * Whether the matched company already has its mission (a company-level
-   * goal). `undefined` means not yet known — the goal query is still in
-   * flight — and is treated as "no", so a slow query costs the mission step
-   * rather than skipping a question that was never answered.
+   * goal). See {@link onboardingStepForCompany} for what `undefined` means.
    */
   companyHasMission?: boolean;
-}): { initialStep: 1 | 2 | typeof ONBOARDING_AGENT_STEP; companyId?: string } | null {
+}): { initialStep: 1 | ExistingCompanyOnboardingStep; companyId?: string } | null {
   const { pathname, companyPrefix, companies, companyHasMission } = params;
 
   if (!isOnboardingPath(pathname)) return null;
@@ -80,7 +99,7 @@ export function resolveRouteOnboardingOptions(params: {
   }
 
   return {
-    initialStep: companyHasMission === true ? ONBOARDING_AGENT_STEP : 2,
+    initialStep: onboardingStepForCompany(companyHasMission),
     companyId: matchedCompany.id,
   };
 }

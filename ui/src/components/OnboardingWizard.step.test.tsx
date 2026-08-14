@@ -1,0 +1,284 @@
+// @vitest-environment jsdom
+
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "../lib/queryKeys";
+import {
+  ONBOARDING_AGENT_STEP,
+  ONBOARDING_MISSION_STEP,
+} from "../lib/onboarding-route";
+
+/**
+ * Which step the onboarding wizard *lands on*, and what is allowed to move it
+ * afterwards.
+ *
+ * These are seam tests on purpose. `initialStep` is derived from two queries
+ * and consumed by an effect that calls `setStep`, and every defect this file
+ * guards lived in that seam rather than in either side of it — the pure
+ * helpers in `onboarding-route.test.ts` passed while the wizard was moving a
+ * customer off the step they were typing on. So the real component is rendered
+ * here, with the real route resolver and the real mission hook, and only the
+ * network and the surrounding contexts are stubbed.
+ */
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+const mockGoalsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+  create: vi.fn(),
+}));
+const mockAdaptersApi = vi.hoisted(() => ({ list: vi.fn() }));
+
+const routerState = vi.hoisted(() => ({ pathname: "/" }));
+const dialogState = vi.hoisted(() => ({
+  onboardingOpen: false,
+  onboardingOptions: {} as { initialStep?: number; companyId?: string },
+  onboardingRouteDismissed: false,
+  closeOnboarding: vi.fn(),
+  setOnboardingRouteDismissed: vi.fn(),
+}));
+const companyState = vi.hoisted(() => ({
+  companies: [
+    { id: "company-1", name: "Acme", issuePrefix: "PC1" },
+    { id: "company-2", name: "Globex", issuePrefix: "PC2" },
+  ],
+  loading: false,
+  setSelectedCompanyId: vi.fn(),
+}));
+
+vi.mock("../api/goals", () => ({ goalsApi: mockGoalsApi }));
+vi.mock("@/api/adapters", () => ({ adaptersApi: mockAdaptersApi }));
+vi.mock("../api/companies", () => ({ companiesApi: { create: vi.fn() } }));
+vi.mock("../api/agents", () => ({
+  agentsApi: { create: vi.fn(), adapterModels: vi.fn().mockResolvedValue([]) },
+}));
+vi.mock("../api/approvals", () => ({ approvalsApi: { create: vi.fn() } }));
+vi.mock("../api/issues", () => ({ issuesApi: { create: vi.fn() } }));
+vi.mock("../api/projects", () => ({ projectsApi: { list: vi.fn(), create: vi.fn() } }));
+
+vi.mock("@/lib/router", () => ({
+  useLocation: () => ({ pathname: routerState.pathname }),
+  useNavigate: () => vi.fn(),
+  useParams: () => ({}),
+}));
+
+vi.mock("../context/DialogContext", () => ({
+  useDialog: () => dialogState,
+}));
+
+vi.mock("../context/CompanyContext", () => ({
+  useCompany: () => companyState,
+}));
+
+// Canvas/animation leaves — nothing to do with the step machinery.
+vi.mock("./AsciiArtAnimation", () => ({ AsciiArtAnimation: () => null }));
+vi.mock("./AgentCapsule", () => ({ AgentCapsule: () => null }));
+vi.mock("./FrontDoor", () => ({ FrontDoor: () => null }));
+
+const { OnboardingWizard } = await import("./OnboardingWizard");
+
+/** The mission step renders this heading; the agent step renders this input. */
+function currentStep(): "mission" | "agent" | "closed" | "other" {
+  const body = document.body;
+  if (!body.querySelector("[role='dialog'], .fixed.inset-0")) return "closed";
+  const headings = [...body.querySelectorAll("h3")].map((h) => h.textContent);
+  if (headings.includes("Define your mission")) return "mission";
+  if (body.querySelector("input[placeholder='Chief of staff']")) return "agent";
+  return "other";
+}
+
+const COMPANY_GOAL = {
+  id: "goal-1",
+  companyId: "company-1",
+  title: "Ship the thing",
+  description: null,
+  level: "company",
+  status: "active",
+  parentId: null,
+  ownerAgentId: null,
+  createdAt: new Date("2026-03-02T00:00:00Z"),
+  updatedAt: new Date("2026-03-02T00:00:00Z"),
+};
+
+describe("OnboardingWizard — which step it lands on", () => {
+  let container: HTMLDivElement;
+  let queryClient: QueryClient;
+  let root: Root | null = null;
+
+  async function render() {
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <OnboardingWizard />
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  /** Re-render after mutating the stubbed contexts or the location. */
+  async function rerender() {
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <OnboardingWizard />
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  async function settle() {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    // The wizard restores its step from localStorage, so a step left behind by
+    // an earlier case would decide the next one.
+    localStorage.clear();
+    routerState.pathname = "/";
+    dialogState.onboardingOpen = false;
+    dialogState.onboardingOptions = {};
+    dialogState.onboardingRouteDismissed = false;
+    mockAdaptersApi.list.mockResolvedValue([]);
+    mockGoalsApi.list.mockResolvedValue([]);
+  });
+
+  afterEach(async () => {
+    await act(async () => root?.unmount());
+    root = null;
+    queryClient.clear();
+    container.remove();
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  it("opens a company that already has its mission on the agent step", async () => {
+    // The point of the change: Cloud collected the mission at signup and the
+    // seed wrote it as a company-level goal, so asking for it again asks a
+    // question the customer answered minutes earlier on another origin.
+    routerState.pathname = "/PC1/onboarding";
+    mockGoalsApi.list.mockResolvedValue([COMPANY_GOAL]);
+    await render();
+    await settle();
+
+    expect(currentStep()).toBe("agent");
+  });
+
+  it("stays closed until the mission lookup settles", async () => {
+    // The step is applied once. Opening before the answer is in would land the
+    // customer on the mission step and leave them there.
+    routerState.pathname = "/PC1/onboarding";
+    mockGoalsApi.list.mockReturnValue(new Promise(() => {}));
+    await render();
+
+    expect(currentStep()).toBe("closed");
+  });
+
+  it("opens on the mission step when the lookup fails, rather than not at all", async () => {
+    // Fail-open. A goals request that exhausts its retries must cost the step,
+    // not the whole flow.
+    routerState.pathname = "/PC1/onboarding";
+    mockGoalsApi.list.mockRejectedValue(new Error("goals unavailable"));
+    await render();
+    await settle();
+
+    expect(currentStep()).toBe("mission");
+  });
+
+  it("does not move an open wizard when a later refetch finds a mission", async () => {
+    // The defect this file exists for. The lookup fails, the wizard opens on
+    // the mission step, the customer starts typing — and a refetch then
+    // succeeds. The derived step flips from 2 to 3. Before the fix, the sync
+    // effect took that as a dependency and moved the customer to the agent
+    // step mid-sentence.
+    routerState.pathname = "/PC1/onboarding";
+    mockGoalsApi.list.mockRejectedValue(new Error("goals unavailable"));
+    await render();
+    await settle();
+    expect(currentStep()).toBe("mission");
+
+    await act(async () => {
+      queryClient.setQueryData(queryKeys.goals.list("company-1"), [COMPANY_GOAL]);
+    });
+    await settle();
+
+    expect(currentStep()).toBe("mission");
+  });
+
+  it("does not move an open wizard when the dialog is re-opened with a new step", async () => {
+    // The dashboard's auto-open sits behind queries too, so a refetch can call
+    // `openOnboarding` again with a different step for the same company. The
+    // wizard belongs to the customer by then.
+    dialogState.onboardingOpen = true;
+    dialogState.onboardingOptions = {
+      companyId: "company-1",
+      initialStep: ONBOARDING_MISSION_STEP,
+    };
+    await render();
+    await settle();
+    expect(currentStep()).toBe("mission");
+
+    dialogState.onboardingOptions = {
+      companyId: "company-1",
+      initialStep: ONBOARDING_AGENT_STEP,
+    };
+    await rerender();
+    await settle();
+
+    expect(currentStep()).toBe("mission");
+  });
+
+  it("re-decides the step when the route names a different company", async () => {
+    // The guard must hold the step against a *stale value settling*, not
+    // against a genuinely new request. Navigating to another company's
+    // onboarding is a new request, and its answer is a different one.
+    routerState.pathname = "/PC1/onboarding";
+    mockGoalsApi.list.mockImplementation((companyId: string) =>
+      companyId === "company-2" ? Promise.resolve([COMPANY_GOAL]) : Promise.resolve([]),
+    );
+    await render();
+    await settle();
+    expect(currentStep()).toBe("mission");
+
+    routerState.pathname = "/PC2/onboarding";
+    await rerender();
+    await settle();
+
+    expect(currentStep()).toBe("agent");
+  });
+
+  it("applies the step again when the wizard is re-opened", async () => {
+    // Same guard, from the other side: closing and re-opening is a new
+    // request, so a freeze that outlived the open would be its own defect.
+    dialogState.onboardingOpen = true;
+    dialogState.onboardingOptions = {
+      companyId: "company-1",
+      initialStep: ONBOARDING_MISSION_STEP,
+    };
+    await render();
+    await settle();
+    expect(currentStep()).toBe("mission");
+
+    dialogState.onboardingOpen = false;
+    await rerender();
+    expect(currentStep()).toBe("closed");
+
+    dialogState.onboardingOpen = true;
+    dialogState.onboardingOptions = {
+      companyId: "company-1",
+      initialStep: ONBOARDING_AGENT_STEP,
+    };
+    await rerender();
+    await settle();
+
+    expect(currentStep()).toBe("agent");
+  });
+});
