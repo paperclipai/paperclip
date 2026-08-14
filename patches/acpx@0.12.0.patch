@@ -97,3 +97,66 @@ index 9d37f377fb6a0828e0d2bc5a48754f3aa71509a4..680bc080fc5d6ffd266ed1b27d3d5056
    sessionOptions?: {
      model?: string;
      allowedTools?: string[];
+diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
+index 243c9d13bcba520923b63adfddad75cf2d94362d..336a1699b80b9e99416f9da4346ca73ee2ad1626 100644
+--- a/dist/live-checkpoint-ClPCSdrW.js
++++ b/dist/live-checkpoint-ClPCSdrW.js
+@@ -2963,6 +2963,7 @@ function buildAgentSpawnOptions(cwd, authCredentials, sessionEnv) {
+ 			"pipe",
+ 			"pipe"
+ 		],
++		detached: process.platform !== "win32",
+ 		windowsHide: true
+ 	};
+ }
+@@ -4435,3 +4435,50 @@
+ 	async terminateAgentProcess(child) {
+ 		const stdinCloseGraceMs = resolveAgentCloseAfterStdinEndMs(this.options.agentCommand);
++		if (child.pid) {
++			const descendants = await listDescendantPids(child.pid);
++			if (descendants.length === 0 && process.platform !== "win32") {
++				const childrenByParent = /* @__PURE__ */ new Map();
++				try {
++					for (const entry of fs.readdirSync("/proc")) {
++						if (!/^\d+$/.test(entry)) continue;
++						try {
++							const stat = fs.readFileSync(`/proc/${entry}/stat`, "utf8");
++							const marker = stat.lastIndexOf(") ");
++							if (marker < 0) continue;
++							const parentPid = Number(stat.slice(marker + 2).trim().split(/\s+/)[1]);
++							if (!Number.isInteger(parentPid) || parentPid <= 0) continue;
++							const children = childrenByParent.get(parentPid);
++							if (children) children.push(Number(entry));
++							else childrenByParent.set(parentPid, [Number(entry)]);
++						} catch {}
++					}
++				} catch {}
++				const queue = [...childrenByParent.get(child.pid) ?? []];
++				for (let index = 0; index < queue.length; index += 1) {
++					const pid = queue[index];
++					descendants.push(pid);
++					queue.push(...childrenByParent.get(pid) ?? []);
++				}
++			}
++			for (const pid of descendants) sendSignal(pid, "SIGTERM");
++			const deadline = Date.now() + AGENT_CLOSE_TERM_GRACE_MS;
++			while (descendants.length > 0 && Date.now() < deadline) {
++				if (descendants.every((pid) => {
++					try {
++						process.kill(pid, 0);
++						return false;
++					} catch {
++						return true;
++					}
++				})) break;
++				await new Promise((resolve) => setTimeout(resolve, 25));
++			}
++			for (const pid of descendants) sendSignal(pid, "SIGKILL");
++			await new Promise((resolve) => setTimeout(resolve, 100));
++			if (process.platform !== "win32" && child.pid) {
++				try {
++					process.kill(-child.pid, "SIGKILL");
++				} catch {}
++			}
++		}
+ 		this.endAgentStdin(child);
