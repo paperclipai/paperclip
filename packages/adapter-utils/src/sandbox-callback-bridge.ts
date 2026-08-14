@@ -1041,12 +1041,21 @@ export async function startSandboxCallbackBridgeWorker(input: {
       }
     }
     // Every backstop write failed. Keep the request file and clear the fence, so a
-    // late handler can still finalize its own 504, and a later recovery pass can
-    // re-arm the backstop. The guard stays in the map, so the poll loop skips the
-    // file and does not re-run the mutation. A removed file plus a set fence would
-    // strand the caller until its own deadline and give it a generic 502 instead
-    // of the terminal 504.
+    // late handler can still finalize its own 504. The guard stays in the map, so
+    // the poll loop skips the file and does not re-run the mutation. A removed
+    // file plus a set fence would strand the caller until its own deadline and
+    // give it a generic 502 instead of the terminal 504.
+    //
+    // Re-arm the backstop directly. A stuck handler never settles, so its
+    // `processRequestFile` never runs the `finally` that drops the guard. The
+    // poll loop then skips the file on each iteration, so every iteration
+    // succeeds and the watchdog never trips again. No later recovery pass runs,
+    // so a re-arm here is the only path that retries the 504 write. Clear the
+    // fence before the re-arm, because `scheduleAbortedHandlerBackstop` bails on
+    // a set fence. The re-arm only re-writes the 504 response; it never re-runs
+    // the mutation, so a retry cannot apply the mutation twice.
     guard.finalized = false;
+    scheduleAbortedHandlerBackstop(fileName, guard, message);
   };
 
   // Arm the backstop timer for a handler the recovery path just aborted. It is
