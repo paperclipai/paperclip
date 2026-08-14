@@ -158,9 +158,12 @@ describeEmbeddedPostgres("issue generation pre-dispatch admission", () => {
     });
   });
 
-  it("rejects an issue at one million aggregate input tokens including cache", async () => {
+  it("rejects an issue at one million weighted aggregate input tokens (cache reads at 0.1)", async () => {
     executeAdapter.mockClear();
     const target = await seedScopedTarget(2);
+    // 250K fresh + 7.5M cached * 0.1 = 1,000,000 weighted. Cache reads are
+    // budget-weighted (K36 / TSMC-20864): resident context re-read across
+    // resumes must not exhaust a ceiling that bounds real burn.
     await db.insert(costEvents).values({
       companyId: target.companyId,
       agentId: target.agentId,
@@ -170,7 +173,7 @@ describeEmbeddedPostgres("issue generation pre-dispatch admission", () => {
       billingType: "subscription",
       model: "test-model",
       inputTokens: 250_000,
-      cachedInputTokens: 750_000,
+      cachedInputTokens: 7_500_000,
       outputTokens: 0,
       costCents: 0,
       occurredAt: new Date(),
@@ -188,6 +191,32 @@ describeEmbeddedPostgres("issue generation pre-dispatch admission", () => {
         modelDispatched: false,
       },
     });
+  });
+
+  it("admits a cache-heavy issue whose weighted aggregate is under the ceiling", async () => {
+    executeAdapter.mockClear();
+    const target = await seedScopedTarget(4);
+    // The TSM-6044 shape: raw aggregate far past 1M, but almost all cache.
+    // 40K fresh + 6M cached * 0.1 = 640,000 weighted — must dispatch.
+    await db.insert(costEvents).values({
+      companyId: target.companyId,
+      agentId: target.agentId,
+      issueId: target.issueId,
+      provider: "test",
+      biller: "test",
+      billingType: "subscription",
+      model: "test-model",
+      inputTokens: 40_000,
+      cachedInputTokens: 6_000_000,
+      outputTokens: 0,
+      costCents: 0,
+      occurredAt: new Date(),
+    });
+
+    const admitted = await invokeAndRead(target.agentId, target.issueId);
+
+    expect(executeAdapter).toHaveBeenCalledTimes(1);
+    expect(admitted?.status).toBe("succeeded");
   });
 
   it("persists one native tool ledger row with run and issue attribution", async () => {

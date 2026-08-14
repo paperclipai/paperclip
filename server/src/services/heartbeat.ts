@@ -300,6 +300,7 @@ import {
 } from "../log-redaction.js";
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
 import {
+  CACHED_INPUT_BUDGET_WEIGHT,
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
   type RuntimeStatusUpdate,
@@ -10035,10 +10036,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // Cost events are written immediately before this guard runs. Aggregate
     // fresh input and cache reads across the whole issue, rather than checking
     // only this run's fresh-input field (the old check contradicted its own UI
-    // copy and allowed cached continuation burn through the ceiling).
+    // copy and allowed cached continuation burn through the ceiling). Cache
+    // reads are weighted per the shared budget formula so a long-lived issue's
+    // resident context re-read across many resumes does not exhaust a ceiling
+    // meant to bound real burn.
     const [aggregateRow] = await db
       .select({
-        inputTokens: sql<number>`coalesce(sum(coalesce(${costEvents.inputTokens}, 0) + coalesce(${costEvents.cachedInputTokens}, 0)), 0)::bigint`,
+        inputTokens: sql<number>`coalesce(sum(coalesce(${costEvents.inputTokens}, 0) + floor(coalesce(${costEvents.cachedInputTokens}, 0) * ${sql.raw(String(CACHED_INPUT_BUDGET_WEIGHT))})), 0)::bigint`,
         runCount: sql<number>`count(distinct ${costEvents.heartbeatRunId})::int`,
       })
       .from(costEvents)
@@ -16269,7 +16273,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const [tokenRow, runRow, exceptionRow] = await Promise.all([
       db
         .select({
-          aggregateInputTokens: sql<number>`coalesce(sum(coalesce(${costEvents.inputTokens}, 0) + coalesce(${costEvents.cachedInputTokens}, 0)), 0)::bigint`,
+          aggregateInputTokens: sql<number>`coalesce(sum(coalesce(${costEvents.inputTokens}, 0) + floor(coalesce(${costEvents.cachedInputTokens}, 0) * ${sql.raw(String(CACHED_INPUT_BUDGET_WEIGHT))})), 0)::bigint`,
         })
         .from(costEvents)
         .where(and(
