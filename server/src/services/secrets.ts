@@ -804,7 +804,9 @@ function secretResolutionErrorCode(error: unknown): SecretResolutionErrorCode {
     if (error.message === "Responsible user is required for user secret resolution") {
       return "responsible_user_missing";
     }
-    if (error.message === "User secret definition not found") return "user_secret_definition_missing";
+    if (error.message.startsWith("User secret definition not found")) {
+      return "user_secret_definition_missing";
+    }
     if (error.message === "User secret definition is not active") return "user_secret_definition_inactive";
     if (error.message === "User-scoped secrets must be resolved through user secret declarations") {
       return "secret_scope_invalid";
@@ -860,6 +862,47 @@ function missingUserSecretDefinitionRuntimeBinding(
     responsibleUserId: context.responsibleUserId ?? null,
     errorCode,
   };
+}
+
+// A direct-resolution path (Test or save) resolves one user-secret binding at a
+// time. When the definition is gone, this builder names the environment
+// variable, the consumer, and the unresolved definition so the actor can find
+// the dangling binding. The message keeps the exact "User secret definition not
+// found" prefix so `secretResolutionErrorCode` still maps it to
+// `user_secret_definition_missing`. It never includes a secret value.
+type UserSecretDefinitionResolutionContext = {
+  envKey?: string | null;
+  configPath?: string | null;
+  consumerType?: string | null;
+  consumerId?: string | null;
+};
+
+function envKeyFromConfigPath(configPath?: string | null): string | null {
+  if (!configPath) return null;
+  const separatorIndex = configPath.lastIndexOf(".");
+  const key = separatorIndex >= 0 ? configPath.slice(separatorIndex + 1) : configPath;
+  return key.length > 0 ? key : null;
+}
+
+const BASE_USER_SECRET_DEFINITION_NOT_FOUND_MESSAGE = "User secret definition not found";
+
+function userSecretDefinitionNotFoundMessage(
+  input: { definitionId?: string | null; definitionKey?: string | null },
+  context?: UserSecretDefinitionResolutionContext,
+): string {
+  const parts: string[] = [];
+  const envKey = context?.envKey ?? envKeyFromConfigPath(context?.configPath);
+  if (envKey) parts.push(`environment variable "${envKey}"`);
+  if (context?.consumerId) {
+    parts.push(`${context.consumerType ?? "consumer"} ${context.consumerId}`);
+  }
+  if (input.definitionKey) {
+    parts.push(`definition key "${input.definitionKey}"`);
+  } else if (input.definitionId) {
+    parts.push(`definition id "${input.definitionId}"`);
+  }
+  if (parts.length === 0) return BASE_USER_SECRET_DEFINITION_NOT_FOUND_MESSAGE;
+  return `${BASE_USER_SECRET_DEFINITION_NOT_FOUND_MESSAGE} for ${parts.join(", ")}`;
 }
 
 function assertSelectableProviderConfig(config: {
@@ -959,6 +1002,7 @@ export function secretService(db: Db) {
     companyId: string,
     input: { definitionId?: string | null; definitionKey?: string | null },
     source: Pick<Db | DbTransaction, "select"> = db,
+    context?: UserSecretDefinitionResolutionContext,
   ) {
     const definition = input.definitionId
       ? await getUserSecretDefinitionById(companyId, input.definitionId, source)
@@ -966,7 +1010,7 @@ export function secretService(db: Db) {
         ? await getUserSecretDefinitionByKey(companyId, input.definitionKey, source)
         : null;
     if (!definition || definition.deletedAt || definition.status === "deleted") {
-      throw notFound("User secret definition not found");
+      throw notFound(userSecretDefinitionNotFoundMessage(input, context));
     }
     if (definition.companyId !== companyId) {
       throw unprocessable("User secret definition must belong to same company");
@@ -3327,6 +3371,12 @@ export function secretService(db: Db) {
           companyId,
           { definitionKey: ref.definitionKey },
           targetDb,
+          {
+            envKey: ref.envKey,
+            configPath: ref.configPath,
+            consumerType: target.targetType,
+            consumerId: target.targetId,
+          },
         );
         normalizedRefs.push({
           definitionId: definition.id,
@@ -3400,7 +3450,11 @@ export function secretService(db: Db) {
       const optionalBinding = input.allowMissingOverride || input.required === false;
       let definition: typeof userSecretDefinitions.$inferSelect;
       try {
-        definition = await resolveUserSecretDefinition(companyId, input);
+        definition = await resolveUserSecretDefinition(companyId, input, db, {
+          configPath: context?.configPath ?? null,
+          consumerType: context?.consumerType ?? null,
+          consumerId: context?.consumerId ?? null,
+        });
       } catch (error) {
         if (optionalBinding && error instanceof HttpError && error.status === 404) return null;
         throw error;
@@ -4652,7 +4706,12 @@ export function secretService(db: Db) {
         if (!parsed.success) continue;
         const binding = canonicalizeBinding(parsed.data as EnvBinding);
         if (binding.type === "user_secret_ref") {
-          await resolveUserSecretDefinition(companyId, { definitionKey: binding.key }, bindingDb);
+          await resolveUserSecretDefinition(companyId, { definitionKey: binding.key }, bindingDb, {
+            envKey: key,
+            configPath: `${pathPrefix}.${key}`,
+            consumerType: target.targetType,
+            consumerId: target.targetId,
+          });
           userRefs.push({
             definitionKey: binding.key,
             configPath: `${pathPrefix}.${key}`,
@@ -4722,7 +4781,17 @@ export function secretService(db: Db) {
         if (userRefs.length === 0) return;
         const definitions = new Map<string, string>();
         for (const ref of userRefs) {
-          const definition = await resolveUserSecretDefinition(companyId, { definitionKey: ref.definitionKey }, targetDb);
+          const definition = await resolveUserSecretDefinition(
+            companyId,
+            { definitionKey: ref.definitionKey },
+            targetDb,
+            {
+              envKey: ref.envKey,
+              configPath: ref.configPath,
+              consumerType: target.targetType,
+              consumerId: target.targetId,
+            },
+          );
           definitions.set(ref.definitionKey, definition.id);
         }
         await targetDb.insert(userSecretDeclarations).values(
