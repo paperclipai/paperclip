@@ -190,4 +190,41 @@ describe("cross-issue influence limit rollout", () => {
     });
     expect(fake.inserted).toEqual([]);
   });
+
+  it("allows a scope-less run to write to the issue it is assigned to", async () => {
+    // A cold heartbeat (woken with no scoped source issue) must still be able
+    // to update or comment on its own assigned work, otherwise finished work
+    // is stranded and the issue sits blocked forever.
+    const fake = counterDb(0, { contextSnapshot: {} });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      targetAssigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      kind: "update",
+    })).resolves.toBeNull();
+    // Own-issue writes are not cross-issue, so nothing is counted.
+    expect(fake.inserted).toEqual([]);
+  });
+
+  it("still fails closed for a scope-less run writing to another agent's issue", async () => {
+    // The ownership bypass is narrow: it only exempts the run's own assigned
+    // issue, never a foreign one.
+    const fake = counterDb(0, { contextSnapshot: {} });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      targetAssigneeAgentId: "99999999-9999-4999-8999-999999999999",
+      kind: "update",
+    })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_influence_run_context_required" },
+    });
+    expect(fake.inserted).toEqual([]);
+  });
 });

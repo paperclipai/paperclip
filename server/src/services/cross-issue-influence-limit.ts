@@ -70,6 +70,7 @@ export async function observeCrossIssueInfluence(
     responsibleUserId?: string | null;
     targetIssueId: string;
     targetIssueIdentifier?: string | null;
+    targetAssigneeAgentId?: string | null;
     kind: CrossIssueInfluenceKind;
     now?: Date;
   },
@@ -101,6 +102,15 @@ export async function observeCrossIssueInfluence(
       run.agentId !== input.agentId
     ) {
       throw crossIssueInfluenceRunContextError();
+    }
+
+    // A run writing to the issue it is assigned to is never "cross-issue",
+    // regardless of whether the run carries a scoped source issue. This is
+    // checked before the run-context requirement so that a cold run (woken
+    // with no scoped source, e.g. an inbox heartbeat) can still update or
+    // comment on its own work instead of being rejected and stranding it.
+    if (input.targetAssigneeAgentId && input.agentId === input.targetAssigneeAgentId) {
+      return null;
     }
 
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
