@@ -4,6 +4,8 @@ import {
   INLINE_ATTACHMENT_TYPES,
   inferOfficeAttachmentContentTypeFromFilename,
   isInlineAttachmentContentType,
+  isTextualAttachmentContentType,
+  isValidUtf8Buffer,
   matchesContentType,
   normalizeContentType,
   normalizeUploadAttachmentContentType,
@@ -243,5 +245,53 @@ describe("withUtf8CharsetIfTextual", () => {
     expect(withUtf8CharsetIfTextual(undefined)).toBe("");
     expect(withUtf8CharsetIfTextual(null)).toBe("");
     expect(withUtf8CharsetIfTextual("")).toBe("");
+  });
+
+  it("leaves textual content types unlabeled when the bytes are not confirmed UTF-8", () => {
+    expect(withUtf8CharsetIfTextual("text/plain", { validatedUtf8: false })).toBe("text/plain");
+    expect(withUtf8CharsetIfTextual("application/json", { validatedUtf8: false })).toBe("application/json");
+  });
+
+  it("still leaves binary content types unchanged regardless of validatedUtf8", () => {
+    expect(withUtf8CharsetIfTextual("application/pdf", { validatedUtf8: false })).toBe("application/pdf");
+    expect(withUtf8CharsetIfTextual("image/png", { validatedUtf8: true })).toBe("image/png");
+  });
+});
+
+describe("isTextualAttachmentContentType", () => {
+  it("identifies text/*, application/json, and *+json as textual", () => {
+    expect(isTextualAttachmentContentType("text/plain")).toBe(true);
+    expect(isTextualAttachmentContentType("text/markdown; charset=utf-8")).toBe(true);
+    expect(isTextualAttachmentContentType("application/json")).toBe(true);
+    expect(isTextualAttachmentContentType("application/ld+json")).toBe(true);
+  });
+
+  it("does not treat binary/media types as textual", () => {
+    for (const contentType of ["application/pdf", "application/zip", "image/png", "video/mp4"]) {
+      expect(isTextualAttachmentContentType(contentType)).toBe(false);
+    }
+  });
+
+  it("handles empty or missing input", () => {
+    expect(isTextualAttachmentContentType(undefined)).toBe(false);
+    expect(isTextualAttachmentContentType(null)).toBe(false);
+    expect(isTextualAttachmentContentType("")).toBe(false);
+  });
+});
+
+describe("isValidUtf8Buffer", () => {
+  it("accepts valid UTF-8 including multi-byte characters", () => {
+    expect(isValidUtf8Buffer(Buffer.from("hello world"))).toBe(true);
+    expect(isValidUtf8Buffer(Buffer.from("café 日本語", "utf8"))).toBe(true);
+  });
+
+  it("rejects bytes that are not well-formed UTF-8", () => {
+    // 0xE9 is "é" in Latin-1/Windows-1252 but is an invalid standalone UTF-8 byte.
+    const latin1Bytes = Buffer.from([0x63, 0x61, 0x66, 0xe9]);
+    expect(isValidUtf8Buffer(latin1Bytes)).toBe(false);
+  });
+
+  it("treats an empty buffer as valid", () => {
+    expect(isValidUtf8Buffer(Buffer.alloc(0))).toBe(true);
   });
 });

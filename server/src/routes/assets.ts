@@ -6,7 +6,13 @@ import type { Db } from "@paperclipai/db";
 import { createAssetImageMetadataSchema } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
-import { isAllowedContentType, MAX_ATTACHMENT_BYTES, withUtf8CharsetIfTextual } from "../attachment-types.js";
+import {
+  isAllowedContentType,
+  isTextualAttachmentContentType,
+  isValidUtf8Buffer,
+  MAX_ATTACHMENT_BYTES,
+  withUtf8CharsetIfTextual,
+} from "../attachment-types.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 const SVG_CONTENT_TYPE = "image/svg+xml";
 const ALLOWED_COMPANY_LOGO_CONTENT_TYPES = new Set([
@@ -318,8 +324,32 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
     const object = await storage.getObject(asset.companyId, asset.objectKey);
     const responseContentType = asset.contentType || object.contentType || "application/octet-stream";
-    res.setHeader("Content-Type", withUtf8CharsetIfTextual(responseContentType));
-    res.setHeader("Content-Length", String(asset.byteSize || object.contentLength || 0));
+
+    // Storage accepts arbitrary bytes for textual content types (upload never
+    // validates encoding), so only assert charset=utf-8 once the full body is
+    // confirmed to actually be valid UTF-8.
+    let bufferedBody: Buffer | null = null;
+    let responseHeaderContentType = responseContentType;
+    if (isTextualAttachmentContentType(responseContentType)) {
+      try {
+        const chunks: Buffer[] = [];
+        for await (const chunk of object.stream) {
+          chunks.push(chunk as Buffer);
+        }
+        bufferedBody = Buffer.concat(chunks);
+      } catch (err) {
+        next(err);
+        return;
+      }
+      responseHeaderContentType = withUtf8CharsetIfTextual(responseContentType, {
+        validatedUtf8: isValidUtf8Buffer(bufferedBody),
+      });
+    } else {
+      responseHeaderContentType = withUtf8CharsetIfTextual(responseContentType);
+    }
+
+    res.setHeader("Content-Type", responseHeaderContentType);
+    res.setHeader("Content-Length", String(bufferedBody ? bufferedBody.length : asset.byteSize || object.contentLength || 0));
     res.setHeader("Cache-Control", "private, max-age=60");
     res.setHeader("X-Content-Type-Options", "nosniff");
     if (responseContentType === SVG_CONTENT_TYPE) {
@@ -328,10 +358,14 @@ export function assetRoutes(db: Db, storage: StorageService) {
     const filename = asset.originalFilename ?? "asset";
     res.setHeader("Content-Disposition", `inline; filename=\"${filename.replaceAll("\"", "")}\"`);
 
-    object.stream.on("error", (err) => {
-      next(err);
-    });
-    object.stream.pipe(res);
+    if (bufferedBody) {
+      res.end(bufferedBody);
+    } else {
+      object.stream.on("error", (err) => {
+        next(err);
+      });
+      object.stream.pipe(res);
+    }
   });
 
   return router;

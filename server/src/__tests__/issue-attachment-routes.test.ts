@@ -540,6 +540,39 @@ describe("issue attachment routes", () => {
     expect(res.headers["content-type"]).toBe("application/x-msdownload");
   });
 
+  it("does not label a legacy-encoded (non-UTF-8) text attachment as charset=utf-8", async () => {
+    // 0xE9 is "é" in Latin-1/Windows-1252, an invalid standalone byte in UTF-8.
+    const latin1Body = Buffer.from([0x63, 0x61, 0x66, 0xe9]);
+    const storage = createStorageService(latin1Body);
+    mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("text/plain", "legacy.txt"));
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .get("/api/attachments/attachment-1/content")
+      .buffer(true)
+      .parse(parseBinaryResponse);
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("text/plain");
+    expect(Buffer.compare(res.body as Buffer, latin1Body)).toBe(0);
+  });
+
+  it("still labels valid UTF-8 text attachments as charset=utf-8", async () => {
+    const utf8Body = Buffer.from("café 日本語", "utf8");
+    const storage = createStorageService(utf8Body);
+    mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("text/plain", "notes.txt"));
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .get("/api/attachments/attachment-1/content")
+      .buffer(true)
+      .parse(parseBinaryResponse);
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("text/plain; charset=utf-8");
+    expect(Buffer.compare(res.body as Buffer, utf8Body)).toBe(0);
+  });
+
   it("keeps image attachments inline for previews", async () => {
     const storage = createStorageService();
     mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("image/png", "preview.png"));

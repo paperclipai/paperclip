@@ -136,15 +136,46 @@ export function isInlineAttachmentContentType(contentType: string): boolean {
 }
 
 /**
+ * Whether `contentType` is one of the textual MIME families (`text/*`,
+ * `application/json`, `*+json`) that `withUtf8CharsetIfTextual` may label as
+ * UTF-8.
+ */
+export function isTextualAttachmentContentType(contentType: string | null | undefined): boolean {
+  const baseType = (contentType ?? "").split(";")[0]!.trim().toLowerCase();
+  return baseType.startsWith("text/") || baseType === "application/json" || baseType.endsWith("+json");
+}
+
+/**
+ * Whether `buffer` decodes as well-formed UTF-8. Upload/storage paths accept
+ * arbitrary bytes for textual MIME types (no encoding is enforced at write
+ * time), so callers must confirm the actual bytes are UTF-8 before asserting
+ * `charset=utf-8` on a response - otherwise a legacy-encoded upload (e.g.
+ * Latin-1, Shift-JIS) would be mislabeled and mis-rendered by browsers.
+ */
+export function isValidUtf8Buffer(buffer: Buffer): boolean {
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Append `; charset=utf-8` to textual content types (`text/*`, `application/json`,
  * `*+json`) that don't already declare a charset. Binary/media content types and
  * content types with an existing charset parameter are returned unchanged.
  *
- * Stored attachment/asset bytes are UTF-8; without an explicit charset, browsers
- * may guess the wrong encoding when rendering text content inline (e.g. CJK
- * mojibake).
+ * Pass `validatedUtf8: false` when the underlying bytes have not been (or
+ * cannot be) confirmed as valid UTF-8 - e.g. a partial range read, or a
+ * buffer that failed `isValidUtf8Buffer` - to keep the content type unlabeled
+ * so browsers fall back to their own encoding guess, same as before this
+ * charset behavior existed.
  */
-export function withUtf8CharsetIfTextual(contentType: string | null | undefined): string {
+export function withUtf8CharsetIfTextual(
+  contentType: string | null | undefined,
+  options?: { validatedUtf8?: boolean },
+): string {
   const trimmed = (contentType ?? "").trim();
   if (!trimmed) return trimmed;
   const [base, ...params] = trimmed.split(";");
@@ -153,6 +184,7 @@ export function withUtf8CharsetIfTextual(contentType: string | null | undefined)
   if (hasCharset) return trimmed;
   const isTextual = baseType.startsWith("text/") || baseType === "application/json" || baseType.endsWith("+json");
   if (!isTextual) return trimmed;
+  if (options?.validatedUtf8 === false) return trimmed;
   return `${trimmed}; charset=utf-8`;
 }
 
