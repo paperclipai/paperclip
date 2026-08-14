@@ -25,6 +25,23 @@ describe("buildHermesConfig", () => {
       provider: "openrouter",
       quiet: true,
       persistSession: false,
+      maxTurnsPerRun: 12,
+      timeoutSec: 1800,
+    });
+  });
+
+  it("keeps the legacy run-limit fallback when schema values are unavailable", () => {
+    const config = buildHermesConfig({
+      model: "",
+      cwd: "",
+      command: "",
+      extraArgs: "",
+      thinkingEffort: "",
+      promptTemplate: "",
+      maxTurnsPerRun: 1000,
+    } as any);
+
+    expect(config).toMatchObject({
       maxTurnsPerRun: 1000,
       timeoutSec: 20000,
     });

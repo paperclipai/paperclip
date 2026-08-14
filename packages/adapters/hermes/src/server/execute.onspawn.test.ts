@@ -118,7 +118,7 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     expect(noisyArgs).not.toContain("-Q");
   });
 
-  it("captures the Hermes 0.20 non-quiet session footer", async () => {
+  it("does not trust the Hermes 0.20 non-quiet footer as session metadata", async () => {
     vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
       exitCode: 0,
       signal: null,
@@ -138,10 +138,15 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     const { ctx } = makeCtx({ quiet: false });
     const result = await execute(ctx as any);
 
-    expect(result.sessionParams).toEqual({ sessionId: "20260814_144930_03a3ec" });
+    expect(result.sessionParams).toBeUndefined();
     expect(result.resultJson).toMatchObject({
-      result: "Answer text",
-      session_id: "20260814_144930_03a3ec",
+      result: [
+        "Answer text",
+        "",
+        "Resume this session with:",
+        "hermes --resume 20260814_144930_03a3ec",
+        "Session: 20260814_144930_03a3ec",
+      ].join("\n"),
     });
   });
 

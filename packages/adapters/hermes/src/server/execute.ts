@@ -268,14 +268,6 @@ const SESSION_ID_REGEX = /^session_id:\s*(\S+)/m;
 const SESSION_ID_REGEX_LEGACY =
   /^session[_ ](?:id|saved):\s*([a-zA-Z0-9_-]+)/im;
 
-/**
- * Hermes 0.20+ non-quiet footer. Require the complete terminal block and the
- * same id on both lines so answer prose that mentions Session or --resume is
- * never interpreted as resumable metadata.
- */
-const SESSION_FOOTER_REGEX =
-  /(?:^|\n)(?:[ \t]*\n)*[ \t]*Resume this session with:[ \t]*\n[ \t]*hermes[ \t]+--resume[ \t]+([a-zA-Z0-9_-]+)[ \t]*\n[ \t]*Session:[ \t]*\1[ \t]*(?:\n[ \t]*)*$/i;
-
 /** Regex to extract token usage from Hermes output. */
 const TOKEN_USAGE_REGEX =
   /tokens?[:\s]+(\d+)\s*(?:input|in)\b.*?(\d+)\s*(?:output|out)\b/i;
@@ -342,18 +334,13 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
     }
   } else {
     // Legacy format (non-quiet mode)
-    const footerMatch = stdout.match(SESSION_FOOTER_REGEX);
     const legacyMatch = combined.match(SESSION_ID_REGEX_LEGACY);
-    const sessionMatch = footerMatch ?? legacyMatch;
-    if (sessionMatch?.[1]) {
-      result.sessionId = sessionMatch[1];
+    if (legacyMatch?.[1]) {
+      result.sessionId = legacyMatch[1];
     }
     // In non-quiet mode, extract clean response from stdout by
     // filtering out tool lines, system messages, and noise
-    const responseText = footerMatch?.index == null
-      ? stdout
-      : stdout.slice(0, footerMatch.index);
-    const cleaned = cleanResponse(responseText);
+    const cleaned = cleanResponse(stdout);
     if (cleaned.length > 0) {
       result.response = cleaned;
     }
