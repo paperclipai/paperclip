@@ -765,7 +765,10 @@ describe("issue execution policy routes", () => {
     const blockerIssueId = "77777777-7777-4777-8777-777777777777";
     const blockerAdded = await request(reviewerApp)
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-      .send({ blockedByIssueIds: [blockerIssueId] });
+      .send({
+        blockedByIssueIds: [blockerIssueId],
+        assigneeAgentId: "55555555-5555-4555-8555-555555555555",
+      });
 
     expect(blockerAdded.status, JSON.stringify(blockerAdded.body)).toBe(200);
     expect(blockerAdded.body).toMatchObject({
@@ -778,6 +781,8 @@ describe("issue execution policy routes", () => {
     expect(blockerPatch).toMatchObject({
       status: "blocked",
       blockedByIssueIds: [blockerIssueId],
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
     });
     expect(blockerPatch).not.toHaveProperty("executionPolicy");
     expect(blockerPatch).not.toHaveProperty("executionState");
@@ -798,8 +803,10 @@ describe("issue execution policy routes", () => {
     expect(dispositionPatch).toMatchObject({ status: "blocked" });
     expect(dispositionPatch).not.toHaveProperty("executionPolicy");
     expect(dispositionPatch).not.toHaveProperty("executionState");
-    expect(dispositionPatch).not.toHaveProperty("assigneeAgentId");
-    expect(dispositionPatch).not.toHaveProperty("assigneeUserId");
+    expect(dispositionPatch).toMatchObject({
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+    });
   });
 
   it("allows a board user to cancel a drifted pending agent review task", async () => {

@@ -727,6 +727,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         throw unprocessable("Only the active reviewer or approver can advance the current execution stage");
       }
       patch.status = "blocked";
+      Object.assign(patch, patchForPrincipal(currentParticipant));
       return { patch };
     }
 

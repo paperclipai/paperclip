@@ -596,7 +596,11 @@ describe("issue execution policy transitions", () => {
         allowNonParticipantPendingStageBlock: true,
       });
 
-      expect(suspended.patch).toEqual({ status: "blocked" });
+      expect(suspended.patch).toEqual({
+        status: "blocked",
+        assigneeAgentId: qaAgentId,
+        assigneeUserId: null,
+      });
       expect(suspended.decision).toBeUndefined();
 
       expect(() => applyIssueExecutionPolicyTransition({

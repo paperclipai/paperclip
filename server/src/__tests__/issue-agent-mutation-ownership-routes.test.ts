@@ -1985,8 +1985,10 @@ describe("agent issue mutation checkout ownership", () => {
       expect(updatePatch).toMatchObject({ status: "blocked", actorAgentId: peerAgentId });
       expect(updatePatch).not.toHaveProperty("executionPolicy");
       expect(updatePatch).not.toHaveProperty("executionState");
-      expect(updatePatch).not.toHaveProperty("assigneeAgentId");
-      expect(updatePatch).not.toHaveProperty("assigneeUserId");
+      expect(updatePatch).toMatchObject({
+        assigneeAgentId: ownerAgentId,
+        assigneeUserId: null,
+      });
     });
 
     it("lets a watchdog run transition a watched issue to in_review with a live review path", async () => {
