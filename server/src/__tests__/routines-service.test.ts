@@ -2152,6 +2152,32 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(newRuns).toMatchObject([{ status: "issue_created" }]);
   });
 
+  it("fires a once trigger a single time and then retires it", async () => {
+    const { routine, svc } = await seedFixture();
+    const runAt = new Date("2026-07-16T00:00:00.000Z");
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "once",
+      runAt: runAt.toISOString(),
+    }, {});
+    expect(trigger.nextRunAt).toEqual(runAt);
+
+    // Before the scheduled instant nothing fires.
+    expect(await svc.tickScheduledTriggers(new Date("2026-07-15T23:59:00.000Z"))).toEqual({ triggered: 0 });
+
+    // At/after the instant it fires exactly once and clears nextRunAt.
+    expect(await svc.tickScheduledTriggers(new Date("2026-07-16T00:01:00.000Z"))).toEqual({ triggered: 1 });
+    const runs = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.status).toBe("issue_created");
+    const updated = await db.select().from(routineTriggers).where(eq(routineTriggers.id, trigger.id)).then((rows) => rows[0]);
+    expect(updated?.nextRunAt).toBeNull();
+
+    // A later tick must not re-fire the spent one-shot.
+    expect(await svc.tickScheduledTriggers(new Date("2026-07-16T02:00:00.000Z"))).toEqual({ triggered: 0 });
+    const runsAfter = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(runsAfter).toHaveLength(1);
+  });
+
   it("coalesces multiple missed sub-hourly ticks into one catch-up run", async () => {
     const { routine, svc } = await seedFixture();
     await db.update(routines).set({

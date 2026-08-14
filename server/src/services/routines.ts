@@ -2343,6 +2343,15 @@ export function routineService(
         nextRunAt = nextCronTickInTimeZone(input.cronExpression, timeZone, new Date());
       }
 
+      if (input.kind === "once") {
+        // One-shot triggers fire unattended, so they carry the same variable
+        // constraints as scheduled ones (no required variables without defaults).
+        assertScheduleCompatibleVariables(routine.variables ?? []);
+        const runAtDate = new Date(input.runAt);
+        if (Number.isNaN(runAtDate.getTime())) throw unprocessable("Invalid runAt");
+        nextRunAt = runAtDate;
+      }
+
       if (input.kind === "webhook") {
         publicId = crypto.randomBytes(12).toString("hex");
         const created = await createWebhookSecret(routine.companyId, routine.id, actor);
@@ -2966,7 +2975,7 @@ export function routineService(
         .leftJoin(projects, eq(routines.projectId, projects.id))
         .where(
           and(
-            eq(routineTriggers.kind, "schedule"),
+            inArray(routineTriggers.kind, ["schedule", "once"]),
             eq(routineTriggers.enabled, true),
             eq(routines.status, "active"),
             isNotNull(routineTriggers.nextRunAt),
@@ -2977,7 +2986,9 @@ export function routineService(
 
       let triggered = 0;
       for (const row of due) {
-        if (!row.trigger.nextRunAt || !row.trigger.cronExpression || !row.trigger.timezone) continue;
+        if (!row.trigger.nextRunAt) continue;
+        const isOnce = row.trigger.kind === "once";
+        if (!isOnce && (!row.trigger.cronExpression || !row.trigger.timezone)) continue;
 
         // Suppress scheduled firings while the routine's project is paused. The tick is still
         // claimed and advanced to the next single cron tick (no backfill), so resume continues
@@ -2987,19 +2998,32 @@ export function routineService(
         const automaticEligibility = await getAutomaticRoutineDispatchEligibility(row.routine, worktreeActivation);
         const worktreeSuppressed = !automaticEligibility.eligible;
 
-        let runCount = 1;
-        let claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
+        // A one-shot trigger has a single firing to spend: if it is suppressed right now,
+        // leave nextRunAt untouched so a later tick fires it once the block clears, rather
+        // than consuming it into a skipped run the way a recurring schedule does.
+        if (isOnce && (projectPaused || worktreeSuppressed)) continue;
 
-        if (!projectPaused && !worktreeSuppressed && row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
-          if (isSubHourlyCronExpression(row.trigger.cronExpression, row.trigger.timezone, now)) {
-            claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
-          } else {
-            let cursor: Date | null = row.trigger.nextRunAt;
-            runCount = 0;
-            while (cursor && cursor <= now && runCount < MAX_CATCH_UP_RUNS) {
-              runCount += 1;
-              claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, cursor);
-              cursor = claimedNextRunAt;
+        let runCount = 1;
+        let claimedNextRunAt: Date | null;
+        if (isOnce) {
+          // One-shot: fire exactly once, then retire the trigger (nextRunAt -> null).
+          claimedNextRunAt = null;
+        } else {
+          const cronExpression = row.trigger.cronExpression!;
+          const timezone = row.trigger.timezone!;
+          claimedNextRunAt = nextCronTickInTimeZone(cronExpression, timezone, now);
+
+          if (!projectPaused && !worktreeSuppressed && row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
+            if (isSubHourlyCronExpression(cronExpression, timezone, now)) {
+              claimedNextRunAt = nextCronTickInTimeZone(cronExpression, timezone, now);
+            } else {
+              let cursor: Date | null = row.trigger.nextRunAt;
+              runCount = 0;
+              while (cursor && cursor <= now && runCount < MAX_CATCH_UP_RUNS) {
+                runCount += 1;
+                claimedNextRunAt = nextCronTickInTimeZone(cronExpression, timezone, cursor);
+                cursor = claimedNextRunAt;
+              }
             }
           }
         }
@@ -3032,7 +3056,7 @@ export function routineService(
           continue;
         }
 
-        const activityGate = row.routine.activityGatePolicy === "require_external_activity"
+        const activityGate = (!isOnce && row.routine.activityGatePolicy === "require_external_activity")
           ? await evaluateActivityGate(row.routine, now)
           : null;
         if (activityGate && !activityGate.fire) {

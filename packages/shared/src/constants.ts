@@ -581,7 +581,7 @@ export type RoutineActivityGatePolicy = (typeof ROUTINE_ACTIVITY_GATE_POLICIES)[
 export const ROUTINE_ACTIVITY_GATE_SCOPES = ["company", "project"] as const;
 export type RoutineActivityGateScope = (typeof ROUTINE_ACTIVITY_GATE_SCOPES)[number];
 
-export const ROUTINE_TRIGGER_KINDS = ["schedule", "webhook", "api"] as const;
+export const ROUTINE_TRIGGER_KINDS = ["schedule", "once", "webhook", "api"] as const;
 export type RoutineTriggerKind = (typeof ROUTINE_TRIGGER_KINDS)[number];
 
 export const ROUTINE_TRIGGER_SIGNING_MODES = ["bearer", "hmac_sha256", "github_hmac", "none"] as const;

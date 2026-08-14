@@ -141,6 +141,10 @@ export const createRoutineTriggerSchema = z.discriminatedUnion("kind", [
     timezone: z.string().trim().min(1).default("UTC"),
   }),
   baseTriggerSchema.extend({
+    kind: z.literal("once"),
+    runAt: z.string().datetime({ offset: true }),
+  }),
+  baseTriggerSchema.extend({
     kind: z.literal("webhook"),
     signingMode: z.enum(ROUTINE_TRIGGER_SIGNING_MODES).optional().default("bearer"),
     replayWindowSec: z.number().int().min(30).max(86_400).optional().default(300),

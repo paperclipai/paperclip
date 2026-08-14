@@ -18,6 +18,31 @@ interface JsonOptions extends CompanyOptions {
   limit?: string;
 }
 
+interface OnceTriggerOptions extends BaseClientOptions {
+  at?: string;
+  in?: string;
+  label?: string;
+}
+
+const DURATION_UNIT_MS: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+
+export function parseDurationMs(input: string): number {
+  const match = /^(\d+)(s|m|h|d)?$/.exec(input.trim());
+  if (!match) throw new Error(`Invalid duration "${input}" (use e.g. 90s, 15m, 2h, 1d)`);
+  return Number(match[1]) * DURATION_UNIT_MS[match[2] ?? "s"];
+}
+
+function resolveOnceRunAt(opts: OnceTriggerOptions): string {
+  if (opts.at && opts.in) throw new Error("Use only one of --at or --in");
+  if (opts.at) {
+    const at = new Date(opts.at);
+    if (Number.isNaN(at.getTime())) throw new Error(`Invalid --at time "${opts.at}"`);
+    return at.toISOString();
+  }
+  if (opts.in) return new Date(Date.now() + parseDurationMs(opts.in)).toISOString();
+  throw new Error("Provide --at <iso> or --in <duration>");
+}
+
 export function registerRoutineApiCommands(program: Command): void {
   const routine = program.command("routine").description("Routine API operations");
   addCommonClientOptions(
@@ -74,6 +99,25 @@ export function registerRoutineApiCommands(program: Command): void {
   );
   addIdPost(routine, "run", "Run a routine", "routines", "run");
   addIdPost(routine, "trigger:create", "Create a routine trigger", "routines", "triggers");
+  addCommonClientOptions(
+    routine
+      .command("trigger:once")
+      .description("Create a one-shot trigger that fires the routine once at a given time")
+      .argument("<routineId>", "Routine ID")
+      .option("--at <iso>", "Absolute ISO-8601 time to fire (e.g. 2026-08-14T18:00:00Z)")
+      .option("--in <duration>", "Relative delay from now (e.g. 90s, 15m, 2h, 1d)")
+      .option("--label <label>", "Optional trigger label")
+      .action(async (routineId: string, opts: OnceTriggerOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          const body: Record<string, unknown> = { kind: "once", runAt: resolveOnceRunAt(opts) };
+          if (opts.label) body.label = opts.label;
+          printOutput(await ctx.api.post(apiPath`/api/routines/${routineId}/triggers`, body), { json: ctx.json });
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+  );
   addIdPatch(routine, "trigger:update", "Update a routine trigger", "routine-triggers");
   addIdDelete(routine, "trigger:delete", "Delete a routine trigger", "routine-triggers");
   addIdPost(routine, "trigger:rotate-secret", "Rotate a routine trigger secret", "routine-triggers", "rotate-secret");
