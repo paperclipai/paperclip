@@ -205,10 +205,15 @@ export function OnboardingWizard() {
   // trusts "not loading, no error" finds the old company id in them and hands
   // one account's onboarding draft to the next.
   //
-  // Sign-out does not help: `useSignOut` never clears the company cache, and
-  // on the self-hosted path there is no document reload to clear it either.
-  // Even once that is fixed, an account change can skip the button entirely -
-  // a session lapsing server-side, a second account signing in on a warm tab.
+  // Sign-out is no longer the hole it was: `useSignOut` now resets every
+  // account-scoped cache entry rather than invalidating two of them, so the
+  // ordinary A-signs-out-then-B-signs-in path does not leave A's companies in
+  // hand.
+  //
+  // That covers the button, not the question. An account can change without
+  // it - a session lapsing server-side, a second account signing in on a warm
+  // tab, a caller supplying the company context from somewhere else - so this
+  // gate stays independent of that fix rather than deferring to it.
   //
   // So this asks for a list fetched *for this mount*, rather than reading the
   // one in hand. `isFetchedAfterMount` is the part that matters; `staleTime: 0`

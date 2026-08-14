@@ -496,11 +496,15 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
   });
   it("does not hand one account's draft to the next when a refetch fails after a switch", async () => {
     // The attack path in full. Account A onboards and leaves a draft naming
-    // its company. A signs out — which does not clear the companies cache,
-    // because `useSignOut` invalidates only the session and health queries.
-    // B signs in and the companies refetch fails, so A's list is still in
+    // its company. The account then changes without this component's company
+    // cache being cleared, and the refetch fails, so A's list is still in
     // hand. A list that still contains A's company must not be read as proof
     // that B owns it.
+    //
+    // `useSignOut` now resets account-scoped caches, which closes the
+    // sign-out-button route into this state (see its own regression test). The
+    // gate is asserted here independently of that: it must hold for any route
+    // that leaves a stale list behind, not only the one that has been fixed.
     window.localStorage.setItem(
       ONBOARDING_STORAGE_KEY,
       JSON.stringify({
