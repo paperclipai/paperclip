@@ -1,5 +1,6 @@
 import { Command } from "commander";
-import type { HeartbeatRun, HeartbeatRunEvent, Issue, WorkspaceOperation } from "@paperclipai/shared";
+import WebSocket from "ws";
+import type { HeartbeatRun, HeartbeatRunEvent, Issue, LiveEvent, WorkspaceOperation } from "@paperclipai/shared";
 import {
   addCommonClientOptions,
   apiPath,
@@ -8,6 +9,7 @@ import {
   printOutput,
   resolveCommandContext,
   type BaseClientOptions,
+  type ResolvedClientContext,
 } from "./common.js";
 
 interface RunListOptions extends BaseClientOptions {
@@ -29,6 +31,12 @@ interface RunLogOptions extends BaseClientOptions {
   offset?: string;
   limitBytes?: string;
   text?: boolean;
+}
+
+interface RunWatchOptions extends BaseClientOptions {
+  afterSeq?: string;
+  includeLog?: boolean;
+  timeout?: string;
 }
 
 interface RunWatchdogOptions extends BaseClientOptions {
@@ -183,6 +191,26 @@ export function registerRunCommands(command: Command): void {
 
   addCommonClientOptions(
     command
+      .command("watch")
+      .description("Follow a heartbeat run live over the events websocket until it finishes")
+      .argument("<runId>", "Heartbeat run ID")
+      .option("-C, --company-id <id>", "Company ID (defaults to the run's company)")
+      .option("--after-seq <n>", "Replay run events after this sequence before going live", "0")
+      .option("--include-log", "Also stream raw log chunks (noisier)")
+      .option("--timeout <seconds>", "Stop watching after this many seconds if the run has not finished")
+      .action(async (runId: string, opts: RunWatchOptions) => {
+        try {
+          const ctx = resolveCommandContext(opts);
+          process.exitCode = await watchRun(ctx, runId, opts);
+        } catch (err) {
+          handleCommandError(err);
+        }
+      }),
+    { includeCompany: false },
+  );
+
+  addCommonClientOptions(
+    command
       .command("issues")
       .description("List issues associated with a heartbeat run")
       .argument("<runId>", "Heartbeat run ID")
@@ -318,4 +346,211 @@ function printLogResult(result: unknown, opts: { json: boolean; text?: boolean }
   }
 
   printOutput(result, { json: false });
+}
+
+// Terminal heartbeat-run statuses (mirrors HEARTBEAT_RUN_TERMINAL_STATUSES in
+// server/src/services/heartbeat.ts — kept local so the CLI does not import server code).
+const TERMINAL_RUN_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]);
+
+async function watchRun(ctx: ResolvedClientContext, runId: string, opts: RunWatchOptions): Promise<number> {
+  const run = await ctx.api.get<HeartbeatRun>(apiPath`/api/heartbeat-runs/${runId}`);
+  if (!run) {
+    console.error(`Run ${runId} not found.`);
+    return 1;
+  }
+
+  const companyId = opts.companyId?.trim() || run.companyId || ctx.companyId;
+  if (!companyId) {
+    console.error("Could not determine the company for this run; pass --company-id.");
+    return 1;
+  }
+
+  if (!ctx.json) {
+    console.log(formatInlineRecord({ id: run.id, status: run.status, agentId: run.agentId }));
+  }
+
+  const afterSeqStart = Number.parseInt(opts.afterSeq ?? "0", 10) || 0;
+  let lastSeq = afterSeqStart;
+
+  const catchUp = async (): Promise<void> => {
+    const backlog = (await ctx.api.get<HeartbeatRunEvent[]>(
+      `${apiPath`/api/heartbeat-runs/${runId}/events`}?afterSeq=${afterSeqStart}&limit=1000`,
+    )) ?? [];
+    for (const event of backlog) {
+      printCaughtUpEvent(event, ctx.json);
+      if (typeof event.seq === "number" && event.seq > lastSeq) lastSeq = event.seq;
+    }
+  };
+
+  // Already finished: replay its events and stop — no live socket needed.
+  if (TERMINAL_RUN_STATUSES.has(run.status)) {
+    await catchUp();
+    if (!ctx.json) {
+      console.log(formatInlineRecord({ event: "status", status: run.status, note: "already finished" }));
+    }
+    return 0;
+  }
+
+  const wsUrl = buildLiveEventsWsUrl(ctx.api.apiBase, companyId);
+  const headers = ctx.api.apiKey ? { Authorization: `Bearer ${ctx.api.apiKey}` } : undefined;
+
+  return await new Promise<number>((resolve) => {
+    const socket = new WebSocket(wsUrl, { headers });
+    let settled = false;
+    let caughtUp = false;
+    const pending: LiveEvent[] = [];
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+
+    const finish = (code: number): void => {
+      if (settled) return;
+      settled = true;
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      process.off("SIGINT", onSigint);
+      try {
+        socket.close();
+      } catch {
+        /* already closing */
+      }
+      resolve(code);
+    };
+
+    function onSigint(): void {
+      if (!ctx.json) console.error("\nStopped watching (the run continues on the server).");
+      finish(0);
+    }
+    process.on("SIGINT", onSigint);
+
+    const timeoutSeconds = Number.parseInt(opts.timeout ?? "", 10);
+    if (Number.isFinite(timeoutSeconds) && timeoutSeconds > 0) {
+      timeoutHandle = setTimeout(() => {
+        if (!ctx.json) {
+          console.error(
+            `Timed out after ${timeoutSeconds}s; run ${runId} has not finished. Resume with: paperclipai run watch ${runId} --after-seq ${lastSeq}`,
+          );
+        }
+        finish(0);
+      }, timeoutSeconds * 1000);
+    }
+
+    const processEvent = (event: LiveEvent): void => {
+      if (typeof event.type !== "string" || !event.type.startsWith("heartbeat.run.")) return;
+      const payload = (event.payload ?? {}) as Record<string, unknown>;
+      if (payload.runId !== runId) return;
+
+      const seq = typeof payload.seq === "number" ? payload.seq : undefined;
+      if (event.type === "heartbeat.run.event" && seq !== undefined) {
+        if (seq <= lastSeq) return; // already shown during catch-up
+        lastSeq = seq;
+      }
+      if (event.type === "heartbeat.run.log" && !opts.includeLog) return;
+
+      if (ctx.json) {
+        console.log(JSON.stringify(event));
+      } else {
+        const line = formatLiveRunEvent(event.type, payload);
+        if (line) console.log(line);
+      }
+
+      if (
+        event.type === "heartbeat.run.status" &&
+        typeof payload.status === "string" &&
+        TERMINAL_RUN_STATUSES.has(payload.status)
+      ) {
+        finish(payload.status === "succeeded" ? 0 : 1);
+      }
+    };
+
+    // Subscribe-then-replay: attach the socket before the REST catch-up so no
+    // events emitted during the replay are lost (the live bus does not buffer).
+    // Events arriving mid-replay queue in `pending` and flush once caught up.
+    socket.on("open", () => {
+      void catchUp()
+        .then(() => {
+          caughtUp = true;
+          for (const event of pending) processEvent(event);
+          pending.length = 0;
+        })
+        .catch((err: unknown) => {
+          if (!ctx.json) {
+            console.error(`Failed to load run history: ${err instanceof Error ? err.message : String(err)}`);
+          }
+          finish(1);
+        });
+    });
+
+    socket.on("message", (data: WebSocket.RawData) => {
+      let event: LiveEvent;
+      try {
+        event = JSON.parse(data.toString()) as LiveEvent;
+      } catch {
+        return;
+      }
+      if (!caughtUp) {
+        pending.push(event);
+        return;
+      }
+      processEvent(event);
+    });
+
+    socket.on("error", (err: Error) => {
+      if (!ctx.json) {
+        const forbidden = /\b(401|403)\b/.test(err.message);
+        console.error(
+          forbidden
+            ? `Live websocket rejected (${err.message}). It accepts local_trusted mode or an agent API key (--api-key), not board tokens. Fall back to: paperclipai run events ${runId} --after-seq ${lastSeq}`
+            : `Live websocket error: ${err.message}. Fall back to: paperclipai run events ${runId} --after-seq ${lastSeq}`,
+        );
+      }
+      finish(1);
+    });
+
+    socket.on("close", (code: number) => {
+      if (settled) return;
+      if (!ctx.json) {
+        console.error(
+          `Live websocket closed (${code}) before run ${runId} finished. Resume with: paperclipai run watch ${runId} --after-seq ${lastSeq}`,
+        );
+      }
+      finish(1);
+    });
+  });
+}
+
+function printCaughtUpEvent(event: HeartbeatRunEvent, json: boolean): void {
+  if (json) {
+    console.log(JSON.stringify(event));
+    return;
+  }
+  console.log(
+    formatInlineRecord({
+      seq: event.seq,
+      eventType: event.eventType,
+      stream: event.stream,
+      level: event.level,
+      message: event.message,
+    }),
+  );
+}
+
+function formatLiveRunEvent(type: string, payload: Record<string, unknown>): string | null {
+  switch (type) {
+    case "heartbeat.run.queued":
+      return formatInlineRecord({ event: "queued", agentId: payload.agentId });
+    case "heartbeat.run.status":
+      return formatInlineRecord({ event: "status", status: payload.status, error: payload.error, finalText: payload.finalText });
+    case "heartbeat.run.progress":
+      return formatInlineRecord({ event: "progress", phase: payload.phase, tool: payload.currentToolName, message: payload.message });
+    case "heartbeat.run.event":
+      return formatInlineRecord({ seq: payload.seq, eventType: payload.eventType, stream: payload.stream, level: payload.level, message: payload.message });
+    case "heartbeat.run.log":
+      return formatInlineRecord({ event: "log", stream: payload.stream, chunk: payload.chunk });
+    default:
+      return null;
+  }
+}
+
+function buildLiveEventsWsUrl(apiBase: string, companyId: string): string {
+  const url = new URL(apiPath`/api/companies/${companyId}/events/ws`, `${apiBase.replace(/\/+$/, "")}/`);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
 }
