@@ -2348,6 +2348,144 @@ export function sanitizeInheritedPaperclipEnv(baseEnv: NodeJS.ProcessEnv): NodeJ
   return env;
 }
 
+// Environment keys that a spawned agent process needs to find its toolchain,
+// write temporary files, reach the network, and render text correctly. These
+// carry no account identity, so they are safe to inherit from the server.
+const AGENT_ENV_INHERIT_ALLOWLIST = new Set([
+  // Process and user identity
+  "PATH",
+  "HOME",
+  "PWD",
+  "SHELL",
+  "USER",
+  "LOGNAME",
+  "TERM",
+  "TZ",
+  // Temporary directories
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  // Language and locale
+  "LANG",
+  "LANGUAGE",
+  // Node.js and package manager toolchains
+  "NODE_EXTRA_CA_CERTS",
+  "NVM_DIR",
+  "NVM_BIN",
+  "NVM_INC",
+  "VOLTA_HOME",
+  "FNM_DIR",
+  "ASDF_DIR",
+  "ASDF_DATA_DIR",
+  // TLS trust stores
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "REQUESTS_CA_BUNDLE",
+  "CURL_CA_BUNDLE",
+  // Windows platform keys
+  "SYSTEMROOT",
+  "SYSTEMDRIVE",
+  "WINDIR",
+  "COMSPEC",
+  "PATHEXT",
+  "USERPROFILE",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "PROGRAMFILES",
+  "PROGRAMFILES(X86)",
+  "PROGRAMDATA",
+  "NUMBER_OF_PROCESSORS",
+  "PROCESSOR_ARCHITECTURE",
+]);
+
+// Key prefixes that follow the same rule as the list above.
+const AGENT_ENV_INHERIT_ALLOWLIST_PREFIXES = ["LC_", "XDG_"];
+
+function matchesAllowPattern(normalizedKey: string, pattern: string): boolean {
+  const normalizedPattern = pattern.trim().toUpperCase();
+  if (!normalizedPattern) return false;
+  if (normalizedPattern.endsWith("*")) {
+    return normalizedKey.startsWith(normalizedPattern.slice(0, -1));
+  }
+  return normalizedKey === normalizedPattern;
+}
+
+function readAgentEnvAllowExtras(baseEnv: NodeJS.ProcessEnv): string[] {
+  return (baseEnv.PAPERCLIP_AGENT_ENV_ALLOW ?? "")
+    .split(/[,\s]+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+export function isInheritableAgentEnvKey(key: string, baseEnv: NodeJS.ProcessEnv = process.env): boolean {
+  const normalizedKey = key.toUpperCase();
+  // Proxy settings are conventionally lowercase, so compare case-insensitively.
+  if (/^(HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|FTP_PROXY)$/.test(normalizedKey)) return true;
+  if (AGENT_ENV_INHERIT_ALLOWLIST.has(normalizedKey)) return true;
+  if (AGENT_ENV_INHERIT_ALLOWLIST_PREFIXES.some((prefix) => normalizedKey.startsWith(prefix))) return true;
+  // PAPERCLIP_* keys keep their own rules in sanitizeInheritedPaperclipEnv.
+  if (normalizedKey.startsWith("PAPERCLIP_")) return true;
+  return readAgentEnvAllowExtras(baseEnv).some((pattern) => matchesAllowPattern(normalizedKey, pattern));
+}
+
+export type AgentEnvInheritMode = "all" | "allowlist";
+
+export function resolveAgentEnvInheritMode(baseEnv: NodeJS.ProcessEnv = process.env): AgentEnvInheritMode {
+  return (baseEnv.PAPERCLIP_AGENT_ENV_INHERIT ?? "").trim().toLowerCase() === "allowlist" ? "allowlist" : "all";
+}
+
+/**
+ * Build the environment that a spawned agent process inherits from the server
+ * process.
+ *
+ * The server process holds configuration that agents must not read, for
+ * example `BETTER_AUTH_SECRET` and database credentials. The documented
+ * quickstart puts those values in the same container environment as the LLM
+ * provider keys, so an unfiltered copy gives every agent the server's secrets.
+ *
+ * Set `PAPERCLIP_AGENT_ENV_INHERIT=allowlist` to inherit only the keys that an
+ * agent process needs. Add deployment-specific keys with
+ * `PAPERCLIP_AGENT_ENV_ALLOW`, which accepts a comma-separated list and a
+ * trailing `*` wildcard, for example `ANTHROPIC_API_KEY,AWS_*`.
+ *
+ * The default stays `all` to keep current deployments working. Adapter and
+ * agent config env always applies after this function, so an explicitly
+ * configured variable is never removed here.
+ */
+export function buildInheritedAgentEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const sanitized = sanitizeInheritedPaperclipEnv(baseEnv);
+  if (resolveAgentEnvInheritMode(baseEnv) !== "allowlist") return sanitized;
+
+  const allowed: NodeJS.ProcessEnv = {};
+  const dropped: string[] = [];
+  for (const [key, value] of Object.entries(sanitized)) {
+    if (isInheritableAgentEnvKey(key, baseEnv)) {
+      allowed[key] = value;
+      continue;
+    }
+    dropped.push(key);
+  }
+  warnAboutDroppedAgentEnvKeys(dropped);
+  return allowed;
+}
+
+let droppedAgentEnvKeysWarned = false;
+
+function warnAboutDroppedAgentEnvKeys(dropped: string[]): void {
+  if (droppedAgentEnvKeysWarned || dropped.length === 0) return;
+  droppedAgentEnvKeysWarned = true;
+  // Names only. Values stay out of the log.
+  console.warn(
+    `[paperclip] PAPERCLIP_AGENT_ENV_INHERIT=allowlist removed ${dropped.length} inherited variable(s) from agent processes: ` +
+      `${dropped.slice().sort().join(", ")}. Add any variable an agent needs to PAPERCLIP_AGENT_ENV_ALLOW.`,
+  );
+}
+
+/** Test-only. Lets a test observe the one-time warning again. */
+export function resetDroppedAgentEnvKeysWarningForTests(): void {
+  droppedAgentEnvKeysWarned = false;
+}
+
 export function defaultPathForPlatform() {
   if (process.platform === "win32") {
     return "C:\\Windows\\System32;C:\\Windows;C:\\Windows\\System32\\Wbem";
@@ -3306,7 +3444,7 @@ export async function runChildProcess(
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
   return new Promise<RunProcessResult>((resolve, reject) => {
     const rawMerged: NodeJS.ProcessEnv = {
-      ...sanitizeInheritedPaperclipEnv(process.env),
+      ...buildInheritedAgentEnv(process.env),
       ...opts.env,
     };
 
