@@ -5,6 +5,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { signalProcessTree } from "@paperclipai/adapter-utils/server-utils";
 
 const execFileAsync = promisify(execFile);
 
@@ -368,22 +369,23 @@ export async function terminateLocalService(
 ) {
   const signal = opts?.signal ?? "SIGTERM";
   const targetProcessGroup = process.platform !== "win32" && record.processGroupId && record.processGroupId > 0;
-  try {
-    if (targetProcessGroup) {
-      process.kill(-record.processGroupId!, signal);
-    } else {
-      process.kill(record.pid, signal);
-    }
-  } catch {
-    return;
-  }
+  const retainedDescendantPids = new Set<number>();
+  signalProcessTree(
+    {
+      pid: record.pid,
+      processGroupId: record.processGroupId,
+      retainedDescendantPids,
+    },
+    signal,
+  );
 
   const deadline = Date.now() + (opts?.forceAfterMs ?? 2_000);
   while (Date.now() < deadline) {
     const targetAlive = targetProcessGroup
       ? isProcessGroupAlive(record.processGroupId)
       : isPidAlive(record.pid);
-    if (!targetAlive) {
+    const descendantAlive = Array.from(retainedDescendantPids).some(isPidAlive);
+    if (!targetAlive && !descendantAlive) {
       return;
     }
     await delay(100);
@@ -392,16 +394,16 @@ export async function terminateLocalService(
   const stillAlive = targetProcessGroup
     ? isProcessGroupAlive(record.processGroupId)
     : isPidAlive(record.pid);
-  if (!stillAlive) return;
-  try {
-    if (targetProcessGroup) {
-      process.kill(-record.processGroupId!, "SIGKILL");
-    } else {
-      process.kill(record.pid, "SIGKILL");
-    }
-  } catch {
-    // Ignore cleanup races.
-  }
+  const descendantStillAlive = Array.from(retainedDescendantPids).some(isPidAlive);
+  if (!stillAlive && !descendantStillAlive) return;
+  signalProcessTree(
+    {
+      pid: record.pid,
+      processGroupId: record.processGroupId,
+      retainedDescendantPids,
+    },
+    "SIGKILL",
+  );
 }
 
 export async function readLocalServicePortOwner(port: number) {

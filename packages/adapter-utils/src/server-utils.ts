@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import os from "node:os";
@@ -55,6 +55,7 @@ interface RunningProcess {
   child: ChildProcess;
   graceSec: number;
   processGroupId: number | null;
+  retainedDescendantPids?: Set<number>;
 }
 
 interface SpawnTarget {
@@ -84,18 +85,105 @@ function resolveProcessGroupId(child: ChildProcess) {
   return typeof child.pid === "number" && child.pid > 0 ? child.pid : null;
 }
 
-// Exported so the direct-child fallback branch can be unit-tested directly.
-export function signalRunningProcess(
-  running: Pick<RunningProcess, "child" | "processGroupId">,
+function collectDescendantProcessIds(rootPid: number, retained: Set<number>) {
+  if (process.platform === "win32" || !Number.isInteger(rootPid) || rootPid <= 0) return;
+  let output = "";
+  try {
+    output = execFileSync("ps", ["-axo", "pid=,ppid="], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch {
+    return;
+  }
+
+  const childrenByParent = new Map<number, number[]>();
+  for (const line of output.split("\n")) {
+    const [pidText, parentPidText] = line.trim().split(/\s+/);
+    const pid = Number.parseInt(pidText ?? "", 10);
+    const parentPid = Number.parseInt(parentPidText ?? "", 10);
+    if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(parentPid) || parentPid < 0) continue;
+    const children = childrenByParent.get(parentPid) ?? [];
+    children.push(pid);
+    childrenByParent.set(parentPid, children);
+  }
+
+  const pending = [rootPid, ...retained];
+  const visited = new Set<number>();
+  while (pending.length > 0) {
+    const parentPid = pending.pop()!;
+    if (visited.has(parentPid)) continue;
+    visited.add(parentPid);
+    for (const childPid of childrenByParent.get(parentPid) ?? []) {
+      if (childPid === process.pid) continue;
+      retained.add(childPid);
+      pending.push(childPid);
+    }
+  }
+}
+
+export function signalProcessTree(
+  input: {
+    pid: number | null | undefined;
+    processGroupId: number | null | undefined;
+    retainedDescendantPids?: Set<number>;
+  },
   signal: NodeJS.Signals,
 ) {
-  if (process.platform !== "win32" && running.processGroupId && running.processGroupId > 0) {
+  const pid = input.pid ?? null;
+  const retained = input.retainedDescendantPids ?? new Set<number>();
+  if (pid === process.pid || input.processGroupId === process.pid) return retained;
+  if (typeof pid === "number" && pid > 0) collectDescendantProcessIds(pid, retained);
+
+  let groupSignaled = false;
+  if (
+    process.platform !== "win32" &&
+    typeof input.processGroupId === "number" &&
+    input.processGroupId > 0
+  ) {
     try {
-      process.kill(-running.processGroupId, signal);
-      return;
+      process.kill(-input.processGroupId, signal);
+      groupSignaled = true;
     } catch {
-      // Fall back to the direct child signal if group signaling fails.
+      // Fall back to direct PID signaling below.
     }
+  }
+
+  for (const descendantPid of Array.from(retained).reverse()) {
+    if (descendantPid === process.pid) continue;
+    try {
+      process.kill(descendantPid, signal);
+    } catch {
+      retained.delete(descendantPid);
+    }
+  }
+
+  if (!groupSignaled && typeof pid === "number" && pid > 0 && pid !== process.pid) {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      // Ignore cleanup races.
+    }
+  }
+  return retained;
+}
+
+// Exported so the direct-child fallback branch can be unit-tested directly.
+export function signalRunningProcess(
+  running: Pick<RunningProcess, "child" | "processGroupId" | "retainedDescendantPids">,
+  signal: NodeJS.Signals,
+) {
+  const pid = running.child.pid ?? null;
+  if (pid || running.processGroupId) {
+    signalProcessTree(
+      {
+        pid,
+        processGroupId: running.processGroupId,
+        retainedDescendantPids: running.retainedDescendantPids,
+      },
+      signal,
+    );
+    if (running.processGroupId) return;
   }
   // Gate on real liveness: `child.killed` only means a signal was sent, not that
   // the process exited, so escalating on it would suppress a follow-up SIGKILL.
@@ -3356,7 +3444,13 @@ export async function runChildProcess(
             })
             : Promise.resolve();
 
-        runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId });
+        const retainedDescendantPids = new Set<number>();
+        runningProcesses.set(runId, {
+          child,
+          graceSec: opts.graceSec,
+          processGroupId,
+          retainedDescendantPids,
+        });
 
         let timedOut = false;
         let stdout = "";
@@ -3406,12 +3500,12 @@ export async function runChildProcess(
             if (terminalCleanupStarted || timedOut) return;
             terminalCleanupStarted = true;
             terminalCleanupSignal = "SIGTERM";
-            signalRunningProcess({ child, processGroupId }, "SIGTERM");
+            signalRunningProcess({ child, processGroupId, retainedDescendantPids }, "SIGTERM");
             terminalCleanupKillTimer = setTimeout(() => {
               terminalCleanupKillTimer = null;
               terminalCleanupSignal = "SIGKILL";
               terminalCleanupForceKilled = true;
-              signalRunningProcess({ child, processGroupId }, "SIGKILL");
+              signalRunningProcess({ child, processGroupId, retainedDescendantPids }, "SIGKILL");
             }, Math.max(1, opts.graceSec) * 1000);
           }, graceMs);
         };
@@ -3421,9 +3515,9 @@ export async function runChildProcess(
             ? setTimeout(() => {
                 timedOut = true;
                 clearTerminalCleanupTimers();
-                signalRunningProcess({ child, processGroupId }, "SIGTERM");
+                signalRunningProcess({ child, processGroupId, retainedDescendantPids }, "SIGTERM");
                 setTimeout(() => {
-                  signalRunningProcess({ child, processGroupId }, "SIGKILL");
+                  signalRunningProcess({ child, processGroupId, retainedDescendantPids }, "SIGKILL");
                 }, Math.max(1, opts.graceSec) * 1000);
               }, opts.timeoutSec * 1000)
             : null;
