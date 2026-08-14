@@ -642,6 +642,126 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     expect(checkoutActivity).toHaveLength(0);
   });
 
+  it("reclaims an in_progress issue from a dead holder even when expectedStatuses omits in_progress", async () => {
+    // Review question on this PR: if the assignee checks out an in_progress issue
+    // whose previous holder is terminal but omits "in_progress" from
+    // expectedStatuses, does the status guard produce a `stale_lock_pending_reap`
+    // 409 whose "retry that same call once" hint can never succeed?
+    //
+    // It does not, and this pins why: clearCheckoutRunIfTerminal reaps the dead
+    // lock before the guard runs, and the assignee re-adoption branch then takes
+    // the issue on its own `status = in_progress` predicate rather than on
+    // expectedStatuses. The call succeeds outright — there is no 409 to misread.
+    const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Dead holder on an in_progress issue",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: failedRunId,
+      executionRunId: failedRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId,
+        // Deliberately omits "in_progress".
+        expectedStatuses: ["todo", "backlog", "blocked", "in_review"],
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: currentRunId,
+      executionRunId: currentRunId,
+    });
+  });
+
+  it("blames the status guard, not a stale lock, when the reaped issue no longer matches expectedStatuses", async () => {
+    // The companion to the case above: same dead holder, but the caller is not
+    // the assignee, so the re-adoption branch cannot fire and the status/assignee
+    // guard is what actually rejects the call. The reap has already cleared both
+    // lock columns by then, so the 409 must report `no_run_lock` — "re-read the
+    // issue state" — and must never hand back the stale-lock retry advice.
+    const { companyId, agentId, failedRunId } = await seedCompanyAgentAndRuns();
+    const otherAgentId = randomUUID();
+    const otherRunId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "OtherAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: otherRunId,
+      companyId,
+      agentId: otherAgentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+    const targetIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: targetIssueId,
+      companyId,
+      title: "Dead holder, non-assignee caller",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: failedRunId,
+      executionRunId: failedRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, otherAgentId, otherRunId)))
+      .post(`/api/issues/${targetIssueId}/checkout`)
+      .send({
+        agentId: otherAgentId,
+        expectedStatuses: ["todo", "backlog", "blocked", "in_review"],
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body).toMatchObject({
+      error: "Issue checkout conflict",
+      details: {
+        status: "in_progress",
+        assigneeAgentId: agentId,
+        checkoutRunId: null,
+        executionRunId: null,
+        holderRunId: null,
+        holderRunStatus: null,
+        holderRunIsLive: false,
+        conflictReason: "no_run_lock",
+      },
+    });
+    expect(res.body?.details?.hint).toMatch(/status\/assignee guard/i);
+    expect(res.body?.details?.hint).not.toMatch(/retry that same call/i);
+  });
+
   it("restricts admin force-release to board users with company access and writes an audit event", async () => {
     const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
     const issueId = randomUUID();
