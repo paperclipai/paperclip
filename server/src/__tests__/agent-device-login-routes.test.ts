@@ -61,6 +61,9 @@ const mockSecretService = vi.hoisted(() => ({
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
   releaseLease: vi.fn(),
+  // The login guard reads the companies that own the environment. An empty
+  // list marks an instance-global environment, so the guard stays open.
+  listBoundCompanyIds: vi.fn(async () => [] as string[]),
 }));
 
 const mockEnvironmentRuntime = vi.hoisted(() => ({
