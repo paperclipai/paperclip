@@ -1991,42 +1991,6 @@ describe("AgentConfigForm create-mode Claude OAuth binding", () => {
     ).toBe(false);
   });
 
-  it("shows a generic precedence warning with no token value or source", async () => {
-    const result = await renderCreateClaudeSandbox({
-      claudeStoredSessionId: "stored-session-1",
-      envBindings: { CLAUDE_CODE_OAUTH_TOKEN: FIXED_CLAUDE_OAUTH_BINDING },
-    });
-    roots.push(result.root);
-
-    const text = result.container.textContent ?? "";
-    expect(text).toContain("Remove the higher-priority credential to use subscription login");
-    // The warning is generic. It names no token value, no specific credential
-    // source, and no other user's configuration.
-    expect(text).not.toContain("sk-ant");
-    expect(text).not.toContain("ANTHROPIC_API_KEY");
-    expect(text).not.toContain("stored-session-1");
-  });
-
-  it("keeps the fixed binding out of the editable environment-variables editor", async () => {
-    const result = await renderCreateClaudeSandbox({
-      claudeStoredSessionId: "stored-session-1",
-      envBindings: {
-        CLAUDE_CODE_OAUTH_TOKEN: FIXED_CLAUDE_OAUTH_BINDING,
-        OTHER_VAR: { type: "plain", value: "shown" },
-      },
-    });
-    roots.push(result.root);
-
-    // The fixed binding appears only in the read-only note, never as an editable
-    // name input.
-    const note = result.container.querySelector('[role="note"]');
-    expect(note?.textContent).toContain("CLAUDE_CODE_OAUTH_TOKEN");
-    const editableNames = Array.from(
-      result.container.querySelectorAll<HTMLInputElement>("input"),
-    ).map((input) => input.value);
-    expect(editableNames).toContain("OTHER_VAR");
-    expect(editableNames).not.toContain("CLAUDE_CODE_OAUTH_TOKEN");
-  });
 });
 
 // Render the edit-mode form for an existing Claude agent in a sandbox
@@ -2174,25 +2138,4 @@ describe("AgentConfigForm edit-mode Claude OAuth binding", () => {
     expect(bindings.CLAUDE_CODE_OAUTH_TOKEN).toEqual(FIXED_CLAUDE_OAUTH_BINDING);
   });
 
-  it("keeps a saved fixed binding out of the editable environment-variables editor", async () => {
-    const result = await renderEditClaudeSandbox({
-      adapterConfig: {
-        env: {
-          CLAUDE_CODE_OAUTH_TOKEN: FIXED_CLAUDE_OAUTH_BINDING,
-          OTHER_VAR: { type: "plain", value: "shown" },
-        },
-      },
-    });
-    roots.push(result.root);
-
-    // The saved fixed binding shows only in the read-only note. It never appears
-    // as an editable name input, and the unrelated variable stays editable.
-    const note = result.container.querySelector('[role="note"]');
-    expect(note?.textContent).toContain("CLAUDE_CODE_OAUTH_TOKEN");
-    const editableNames = Array.from(
-      result.container.querySelectorAll<HTMLInputElement>("input"),
-    ).map((input) => input.value);
-    expect(editableNames).toContain("OTHER_VAR");
-    expect(editableNames).not.toContain("CLAUDE_CODE_OAUTH_TOKEN");
-  });
 });
