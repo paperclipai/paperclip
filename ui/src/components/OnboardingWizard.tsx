@@ -160,7 +160,7 @@ export function OnboardingWizard() {
   // collects the mission at signup and the tenant writes it as a company-level
   // goal. Reuses the list and the query key the launch path already uses, so
   // this shares a cache entry rather than adding a fetch.
-  const { data: routeCompanyGoals } = useQuery({
+  const { data: routeCompanyGoals, isPending: routeGoalsPending } = useQuery({
     queryKey: queryKeys.goals.list(routeMatchedCompanyId ?? ""),
     queryFn: () => goalsApi.list(routeMatchedCompanyId!),
     enabled: Boolean(routeMatchedCompanyId),
@@ -176,8 +176,11 @@ export function OnboardingWizard() {
   //
   // Settling first means the step is decided once and never changes for an
   // open wizard.
-  const routeMissionPending =
-    routeMatchedCompanyId !== null && routeCompanyHasMission === undefined;
+  // Settled, not answered. Gating on the data alone fails *closed*: a goals
+  // request that exhausts its retries leaves the value undefined forever and
+  // onboarding never opens at all. A lookup that cannot say whether the
+  // mission exists must cost the mission step, not the whole flow.
+  const routeMissionPending = routeMatchedCompanyId !== null && routeGoalsPending;
 
   const routeOnboardingOptions =
     (companyPrefix && companiesLoading) || routeMissionPending

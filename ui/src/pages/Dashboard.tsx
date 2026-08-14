@@ -80,7 +80,7 @@ export function Dashboard() {
   //
   // Same goal list and query key the wizard and the launch path use, so this
   // is a shared cache entry rather than another request.
-  const { data: dashboardCompanyGoals } = useQuery({
+  const { data: dashboardCompanyGoals, isPending: dashboardGoalsPending } = useQuery({
     queryKey: queryKeys.goals.list(selectedCompanyId!),
     queryFn: () => goalsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -92,17 +92,22 @@ export function Dashboard() {
   });
   useEffect(() => {
     if (!shouldOpenOnboarding || !selectedCompanyId) return;
-    // Wait for the goal list too. Opening on the mission step and correcting
-    // it later would move the wizard out from under someone already typing.
-    if (dashboardCompanyGoals === undefined) return;
+    // Wait for the goal list to *settle*, not to arrive. Opening on the
+    // mission step and correcting it later would move the wizard out from
+    // under someone already typing — but waiting on the data itself fails
+    // closed, and a goals request that exhausts its retries would then leave
+    // an agentless company with no onboarding at all. On failure the mission
+    // reads as absent and the customer answers it again, which is recoverable.
+    if (dashboardGoalsPending) return;
     openOnboarding({
       companyId: selectedCompanyId,
       initialStep:
+        dashboardCompanyGoals !== undefined &&
         selectDefaultCompanyGoalId(dashboardCompanyGoals) !== null
           ? ONBOARDING_AGENT_STEP
           : 2,
     });
-  }, [shouldOpenOnboarding, selectedCompanyId, dashboardCompanyGoals, openOnboarding]);
+  }, [shouldOpenOnboarding, selectedCompanyId, dashboardGoalsPending, dashboardCompanyGoals, openOnboarding]);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Dashboard" }]);
