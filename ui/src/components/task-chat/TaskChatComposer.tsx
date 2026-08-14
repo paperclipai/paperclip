@@ -371,7 +371,7 @@ export function TaskChatComposer({
   return (
     <div
       className={cn(
-        "rounded-xl border border-input bg-card p-(--sz-18px) shadow-(--shadow-extract-7) transition-[border-color,box-shadow] focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/15",
+        "paperclip-task-chat-composer rounded-xl border border-input bg-card p-(--sz-18px) shadow-(--shadow-extract-7) transition-[border-color,box-shadow] focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/15",
       )}
       onKeyDownCapture={(e) => {
         // Shift+Tab cycles the pending mode; captured on the wrapper so it
@@ -400,7 +400,7 @@ export function TaskChatComposer({
           className={cn(disabled && "opacity-60")}
           contentClassName={
             mobile
-              ? "max-h-(--sz-28dvh) min-h-(--sz-48px) overflow-y-auto px-1 py-1 text-base scrollbar-auto-hide"
+              ? "max-h-(--sz-28dvh) min-h-(--sz-72px) overflow-y-auto px-1 py-1 text-base scrollbar-auto-hide"
               : "max-h-(--sz-28dvh) min-h-(--sz-48px) overflow-y-auto px-1 py-1 text-sm scrollbar-auto-hide"
           }
         />

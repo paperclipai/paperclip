@@ -26,7 +26,7 @@ import {
 import { getUIAdapter } from "../adapters";
 import { listUIAdapters } from "../adapters";
 import { isVisualAdapterChoice } from "../adapters/metadata";
-import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
+import { useDisabledAdaptersSync, useAdapterRegistryLoaded } from "../adapters/use-disabled-adapters";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { defaultCreateValues } from "./agent-config-defaults";
@@ -301,6 +301,7 @@ function OnboardingWizardInner({
   // mounted globally, including on /auth, where protected adapter routes are
   // expected to reject signed-out browsers.
   const disabledTypes = useDisabledAdaptersSync({ enabled: effectiveOnboardingOpen });
+  const adapterRegistryLoaded = useAdapterRegistryLoaded({ enabled: effectiveOnboardingOpen });
 
   const initialStep = effectiveOnboardingOptions.initialStep ?? 0;
   const existingCompanyId = effectiveOnboardingOptions.companyId;
@@ -568,6 +569,39 @@ function OnboardingWizardInner({
       moreAdapters: all.filter((a) => !a.recommended),
     };
   }, [disabledTypes]);
+
+  // The default (or a saved) adapterType can name an adapter the server has
+  // since disabled — e.g. a cloud sandbox registry without claude_local. The
+  // grid hides it, so without this snap the wizard would silently keep an
+  // invisible selection and create an agent that can never acquire a lease.
+  useEffect(() => {
+    // Not until the registry has loaded. External adapter types are only
+    // registered once the adapters query resolves, so before that a saved
+    // external adapter is indistinguishable from a disabled one - and snapping
+    // would replace the customer's choice with a built-in and persist it.
+    if (!adapterRegistryLoaded) return;
+    const visible = [...recommendedAdapters, ...moreAdapters].filter(
+      (a) => !a.comingSoon,
+    );
+    if (visible.length === 0) return;
+    if (visible.some((a) => a.type === adapterType)) return;
+    const next = visible[0].type as AdapterType;
+    setAdapterType(next);
+    if (next === "codex_local") return;
+    if (next === "opencode_local") {
+      setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
+      return;
+    }
+    if (next === "gemini_local") {
+      setModel(DEFAULT_GEMINI_LOCAL_MODEL);
+      return;
+    }
+    if (next === "cursor") {
+      setModel(DEFAULT_CURSOR_LOCAL_MODEL);
+      return;
+    }
+    setModel("");
+  }, [adapterRegistryLoaded, recommendedAdapters, moreAdapters, adapterType]);
 
   const COMMAND_PLACEHOLDERS: Record<string, string> = {
     claude_local: "claude",

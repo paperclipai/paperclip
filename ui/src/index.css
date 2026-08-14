@@ -596,8 +596,8 @@
   to { opacity: 1; transform: none; }
 }
 @keyframes tc-approval-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 hsl(var(--primary) / 0.0); }
-  50% { box-shadow: 0 0 0 3px hsl(var(--primary) / 0.18); }
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 0%, transparent); }
+  50% { box-shadow: 0 0 0 3px color-mix(in oklab, var(--primary) 18%, transparent); }
 }
 @keyframes tc-cursor-blink {
   0%, 45% { opacity: 1; }
@@ -703,7 +703,7 @@
   /* The pill keyframes carry the X-centering; with animation:none restore it. */
   .tc-scroll-pill-in,
   .tc-scroll-pill-out { transform: translate(-50%, 0); }
-  .tc-approval { animation: none; box-shadow: 0 0 0 2px hsl(var(--primary) / 0.18); }
+  .tc-approval { animation: none; box-shadow: 0 0 0 2px color-mix(in oklab, var(--primary) 18%, transparent); }
   .tc-cursor { animation: none; opacity: 1; }
 }
 
@@ -1231,6 +1231,16 @@
   font-size: inherit;
   line-height: 1.5;
   color: var(--muted-foreground);
+}
+
+/* MDXEditor defaults placeholders to a single clipped line. The task-chat
+   composer uses longer, assignee-aware copy, so keep it inside the editor by
+   giving the absolutely positioned placeholder a wrapping inline size. */
+.paperclip-task-chat-composer .paperclip-mdxeditor [class*="_placeholder_"] {
+  display: block;
+  width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .paperclip-mdxeditor-content {
@@ -2222,12 +2232,12 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --shadow-extract-4: 0 -12px 28px rgba(15,23,42,0.08); /* Extracted from ui/src/components/ChatComposer.test.tsx (shadow-[0_-12px_28px_rgba(15,23,42,0.08)]). */
   --shadow-extract-5: 0 -12px 28px rgba(0,0,0,0.28); /* Extracted from ui/src/components/ChatComposer.test.tsx (shadow-[0_-12px_28px_rgba(0,0,0,0.28)]). */
   --shadow-extract-6: 0 0 0 1px var(--color-background); /* Extracted from ui/src/components/DocumentAnnotationLayer.tsx (shadow-[0_0_0_1px_var(--color-background)]). */
-  --shadow-extract-7: 0 -12px 28px rgba(15,23,42,0.08),0 0 0 1px hsl(var(--primary)/0.16); /* Extracted from ui/src/components/IssueChatThread.tsx (shadow-[0_-12px_28px_rgba(15,23,42,0.08),0_0_0_1px_hsl(var(--primary)/0.16)]). */
+  --shadow-extract-7: 0 -12px 28px rgba(15,23,42,0.08),0 0 0 1px color-mix(in oklab, var(--primary) 16%, transparent); /* Extracted from ui/src/components/IssueChatThread.tsx; corrected for full-color semantic tokens. */
   --shadow-extract-8: 0 1px 0 rgba(15,23,42,0.02); /* Extracted from ui/src/components/IssueRecoveryActionCard.tsx (shadow-[0_1px_0_rgba(15,23,42,0.02)]). */
   --shadow-extract-9: 0 18px 42px rgba(15,23,42,0.06); /* Extracted from ui/src/components/IssueThreadInteractionCard.tsx (shadow-[0_18px_42px_rgba(15,23,42,0.06)]). */
-  --shadow-extract-10: 0 1px 0 1px hsl(var(--border)); /* Extracted from ui/src/components/KeyboardShortcutsCheatsheet.tsx (shadow-[0_1px_0_1px_hsl(var(--border))]). */
+  --shadow-extract-10: 0 1px 0 1px var(--border); /* Extracted from ui/src/components/KeyboardShortcutsCheatsheet.tsx; corrected for full-color semantic tokens. */
   --shadow-extract-11: 0 18px 50px rgba(37,99,235,0.08); /* LiveRunWidget.tsx glow. Gallery feedback r2: liveness glow recolored cyan->status blue (value edit, site unchanged; originally extracted as rgba(6,182,212,0.08)). */
-  --shadow-extract-12: 0 0 0 2px hsl(var(--background)); /* Extracted from ui/src/components/SidebarNavItem.tsx (shadow-[0_0_0_2px_hsl(var(--background))]). */
+  --shadow-extract-12: 0 0 0 2px var(--background); /* Extracted from ui/src/components/SidebarNavItem.tsx; corrected for full-color semantic tokens. */
   --shadow-extract-13: 0 0 0 3px rgba(245,158,11,0.18); /* Extracted from ui/src/components/environment-variables-editor/index.tsx (shadow-[0_0_0_3px_rgba(245,158,11,0.18)]). */
   --shadow-extract-14: 0 0 12px rgba(37,99,235,0.08); /* AgentDetail.tsx live-card glow. Gallery feedback r2: liveness glow recolored cyan->status blue (value edit, site unchanged; originally extracted as rgba(6,182,212,0.08)). */
   --shadow-extract-18: 0 18px 44px -28px rgba(0,0,0,0.45); /* Extracted from ui/src/pages/ProfileSettings.tsx (shadow-[0_18px_44px_-28px_rgba(0,0,0,0.45)]). */
@@ -2376,8 +2386,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --code-highlight-bg-resolved: var(--paperclip-code-highlight-bg); /* Extracted from ui/src/components/FileViewerSheet.tsx; fallback dropped in A5 now that --paperclip-code-highlight-bg is a real token (was var(--paperclip-code-highlight-bg, rgba(250,204,21,0.12))). */
   --code-gutter-fg-resolved: var(--paperclip-code-gutter-fg, var(--muted-foreground)); /* Extracted from ui/src/components/FileViewerSheet.tsx (text-[var(--paperclip-code-gutter-fg,theme(colors.muted.foreground))]). */
   --code-highlight-border-resolved: var(--paperclip-code-highlight-border); /* Extracted from ui/src/components/FileViewerSheet.tsx; fallback dropped in A5 now that --paperclip-code-highlight-border is a real token (was var(--paperclip-code-highlight-border, rgb(234,179,8))). */
-  --gradient-extract-25: linear-gradient(135deg,hsl(var(--primary)) 0%,hsl(var(--accent)) 55%,hsl(var(--muted)) 100%); /* Extracted from ui/src/components/SidebarAccountMenu.tsx (bg-[linear-gradient(135deg,hsl(var(--primary))_0%,hsl(var(--accent))_55%,hsl(var(--muted))_100%)]). */
-  --gradient-extract-26: linear-gradient(135deg,hsl(var(--primary)) 0%,hsl(var(--accent)) 58%,color-mix(in oklab,hsl(var(--background)) 76%,white 24%) 100%); /* Extracted from ui/src/pages/ProfileSettings.tsx (bg-[linear-gradient(135deg,hsl(var(--primary))_0%,hsl(var(--accent))_58%,color-mix(in_oklab,hsl(var(--background))_76%,white_24%)_100%)]). */
+  --gradient-extract-25: linear-gradient(135deg,var(--primary) 0%,var(--accent) 55%,var(--muted) 100%); /* Extracted from ui/src/components/SidebarAccountMenu.tsx; corrected for full-color semantic tokens. */
+  --gradient-extract-26: linear-gradient(135deg,var(--primary) 0%,var(--accent) 58%,color-mix(in oklab,var(--background) 76%,white 24%) 100%); /* Extracted from ui/src/pages/ProfileSettings.tsx; corrected for full-color semantic tokens. */
 }
 
 /* ── ALLOWLIST (Phase 2, design/token-extraction) ──────────────────────────

@@ -43,10 +43,12 @@ vi.mock("@mdxeditor/editor", async () => {
       markdown,
       onChange,
       readOnly,
+      contentEditableClassName,
     }: {
       markdown: string;
       onChange?: (value: string) => void;
       readOnly?: boolean;
+      contentEditableClassName?: string;
     },
     forwardedRef: React.ForwardedRef<MockHandle | null>,
   ) {
@@ -84,6 +86,7 @@ vi.mock("@mdxeditor/editor", async () => {
       <div
         ref={editableRef}
         data-testid="mdx-editor"
+        data-content-class-name={contentEditableClassName}
         contentEditable={!readOnly}
         suppressContentEditableWarning
         onInput={(e) => {
@@ -253,6 +256,18 @@ describe("TaskChatComposer", () => {
 
     expect(composer?.className).toContain("p-(--sz-18px)");
     expect(composer?.className).not.toContain("p-2");
+  });
+
+  it("scopes the wrapping placeholder override to the task-chat composer", () => {
+    render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" />);
+
+    expect(container.firstElementChild?.classList).toContain("paperclip-task-chat-composer");
+  });
+
+  it("reserves enough mobile editor height for a wrapped two-line placeholder", () => {
+    render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" mobile />);
+
+    expect(editable().dataset.contentClassName).toContain("min-h-(--sz-72px)");
   });
 
   it("submits the trimmed body on Cmd+Enter and clears the draft", async () => {

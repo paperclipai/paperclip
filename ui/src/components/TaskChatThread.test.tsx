@@ -54,6 +54,19 @@ function render(ui: ReactElement) {
 }
 
 describe("TaskChatThread draft pass-through", () => {
+  it("keeps the composer dock aligned with the thread's horizontal padding", () => {
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+      />,
+    );
+
+    const dock = container.querySelector('[data-testid="task-chat-composer-dock"]');
+    expect(dock?.classList).toContain("px-4");
+    expect(dock?.classList).not.toContain("px-1");
+  });
+
   it("forwards draftKey so the composer restores a task's saved draft", () => {
     localStorage.setItem("task-chat-draft:issue-1", "half-written thought");
 
@@ -71,15 +84,15 @@ describe("TaskChatThread draft pass-through", () => {
 });
 
 describe("TaskChatThread composer alignment (PAP-498)", () => {
-  it("keeps the composer dock at 80% of the thread width", () => {
+  it("matches the thread width on mobile and stays narrower on larger screens", () => {
     render(<TaskChatThread comments={[]} onAdd={async () => {}} />);
 
     const dock = container
       .querySelector('[data-testid="mock-editor"]')
       ?.closest("div.sticky") as HTMLElement | null;
 
-    expect(dock?.className).toContain("w-(--pct-80)");
-    expect(dock?.className).not.toContain("w-full");
+    expect(dock?.className).toContain("w-full");
+    expect(dock?.className).toContain("md:w-(--pct-80)");
   });
 });
 
