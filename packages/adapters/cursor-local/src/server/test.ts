@@ -9,6 +9,7 @@ import {
   asStringArray,
   parseObject,
   ensurePathInEnv,
+  buildInheritedAgentEnv,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
@@ -171,7 +172,7 @@ export async function testEnvironment(
   });
   command = finalSandboxCommand.command;
   env = finalSandboxCommand.env;
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const runtimeEnv = ensurePathInEnv({ ...buildInheritedAgentEnv(process.env), ...env });
   try {
     await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
     checks.push({

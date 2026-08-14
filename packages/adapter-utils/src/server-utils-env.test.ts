@@ -1,3 +1,6 @@
+import { readFileSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildInheritedAgentEnv,
@@ -102,6 +105,89 @@ describe("buildInheritedAgentEnv", () => {
     expect(isInheritableAgentEnvKey("BETTER_AUTH_SECRET", {})).toBe(false);
     expect(isInheritableAgentEnvKey("aws_region", { PAPERCLIP_AGENT_ENV_ALLOW: "aws_*" })).toBe(true);
     expect(isInheritableAgentEnvKey("BETTER_AUTH_SECRET", { PAPERCLIP_AGENT_ENV_ALLOW: "" })).toBe(false);
+  });
+
+  it("inherits a proxy address but not credentials embedded in it", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const env = buildInheritedAgentEnv({
+      ...QUICKSTART_SERVER_ENV,
+      PAPERCLIP_AGENT_ENV_INHERIT: "allowlist",
+      https_proxy: "http://proxy-user:proxy-password@proxy.internal:3128",
+      no_proxy: "localhost,127.0.0.1",
+    });
+    expect(env.https_proxy).toBeUndefined();
+    expect(env.no_proxy).toBe("localhost,127.0.0.1");
+  });
+
+  it("inherits a credentialed proxy only when it is named explicitly", () => {
+    const credentialed = "http://proxy-user:proxy-password@proxy.internal:3128";
+    expect(isInheritableAgentEnvKey("HTTPS_PROXY", {}, credentialed)).toBe(false);
+    expect(
+      isInheritableAgentEnvKey("HTTPS_PROXY", { PAPERCLIP_AGENT_ENV_ALLOW: "HTTPS_PROXY" }, credentialed),
+    ).toBe(true);
+    expect(isInheritableAgentEnvKey("HTTPS_PROXY", {}, "http://proxy.internal:3128")).toBe(true);
+    // A bare host:port has no authority delimiter and carries no credentials.
+    expect(isInheritableAgentEnvKey("HTTPS_PROXY", {}, "proxy.internal:3128")).toBe(true);
+  });
+});
+
+describe("adapter runtime env construction", () => {
+  afterEach(() => {
+    resetDroppedAgentEnvKeysWarningForTests();
+    vi.restoreAllMocks();
+  });
+
+  // Local adapters build a runtime env by spreading the server environment and
+  // then the explicitly configured agent env on top. Spreading process.env
+  // directly would put every filtered secret back, so the adapters spread the
+  // filtered environment instead. This test binds that contract.
+  it("does not restore filtered server secrets when adapter config is merged on top", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const serverEnv: NodeJS.ProcessEnv = {
+      ...QUICKSTART_SERVER_ENV,
+      PAPERCLIP_AGENT_ENV_INHERIT: "allowlist",
+    };
+    const adapterConfigEnv: NodeJS.ProcessEnv = { ANTHROPIC_API_KEY: "sk-ant-from-agent-config" };
+
+    const runtimeEnv: NodeJS.ProcessEnv = { ...buildInheritedAgentEnv(serverEnv), ...adapterConfigEnv };
+
+    expect(runtimeEnv.BETTER_AUTH_SECRET).toBeUndefined();
+    expect(runtimeEnv.POSTGRES_PASSWORD).toBeUndefined();
+    expect(runtimeEnv.DATABASE_URL).toBeUndefined();
+    // Explicit configuration still wins, which is the documented behaviour.
+    expect(runtimeEnv.ANTHROPIC_API_KEY).toBe("sk-ant-from-agent-config");
+    expect(runtimeEnv.PATH).toBe("/usr/bin");
+  });
+});
+
+// The filter only holds if every adapter that materialises the server
+// environment for a child process goes through buildInheritedAgentEnv. A raw
+// `...process.env` spread reintroduces the secrets one merge later, which is
+// invisible in a unit test of the helper itself. This guard fails on the
+// source instead.
+describe("adapter sources do not spread process.env directly", () => {
+  const adaptersDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "adapters");
+
+  function collectServerSources(dir: string): string[] {
+    const found: string[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "node_modules" || entry.name === "dist") continue;
+        found.push(...collectServerSources(full));
+        continue;
+      }
+      if (!entry.name.endsWith(".ts") || entry.name.endsWith(".test.ts")) continue;
+      found.push(full);
+    }
+    return found;
+  }
+
+  it("routes inherited server env through buildInheritedAgentEnv", () => {
+    const offenders = collectServerSources(adaptersDir).filter((file) =>
+      readFileSync(file, "utf8").includes("...process.env"),
+    );
+    expect(offenders).toEqual([]);
   });
 });
 

@@ -47,6 +47,10 @@ In `allowlist` mode Paperclip inherits `PATH`, `HOME`, `PWD`, `SHELL`, `USER`,
 Windows platform keys. It removes all other inherited keys and writes their
 names, not their values, to the server log one time.
 
+The proxy keys are inherited as routing information. If a proxy address embeds
+credentials, as in `HTTPS_PROXY=http://user:password@proxy.internal:3128`, that
+value is removed unless you name the key in `PAPERCLIP_AGENT_ENV_ALLOW`.
+
 Adapter and agent config env is not affected. A variable that an agent declares
 in its own config always reaches the agent process. If your deployment gives
 provider keys to agents through the server environment, list those keys in

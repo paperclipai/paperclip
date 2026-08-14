@@ -7,6 +7,7 @@ import {
   asString,
   parseObject,
   ensurePathInEnv,
+  buildInheritedAgentEnv,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
@@ -258,7 +259,7 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const runtimeEnv = ensurePathInEnv({ ...buildInheritedAgentEnv(process.env), ...env });
   const installCheck = await maybeRunSandboxInstallCommand({
     runId,
     target,

@@ -2417,15 +2417,55 @@ function readAgentEnvAllowExtras(baseEnv: NodeJS.ProcessEnv): string[] {
     .filter(Boolean);
 }
 
-export function isInheritableAgentEnvKey(key: string, baseEnv: NodeJS.ProcessEnv = process.env): boolean {
+const PROXY_ENV_KEY_PATTERN = /^(HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|FTP_PROXY)$/;
+
+/**
+ * True when a proxy value carries an embedded username or password, as in
+ * `http://user:password@proxy.internal:3128`.
+ *
+ * A proxy address on its own is routing information, so the allowlist grants
+ * it without asking. Credentials in that address are not routing information,
+ * so they follow the same rule as any other secret and need an explicit entry
+ * in `PAPERCLIP_AGENT_ENV_ALLOW`.
+ */
+function proxyValueCarriesCredentials(value: string | undefined): boolean {
+  if (!value) return false;
+  for (const candidate of value.split(",")) {
+    const trimmed = candidate.trim();
+    if (!trimmed) continue;
+    // A bare `host:port` has no authority section, so give it one to parse.
+    const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+    try {
+      const parsed = new URL(withScheme);
+      if (parsed.username || parsed.password) return true;
+    } catch {
+      // Unparseable values are treated conservatively: an `@` before the first
+      // `/` is the shape of an authority section that holds credentials.
+      const authority = trimmed.split("/")[0] ?? "";
+      if (authority.includes("@")) return true;
+    }
+  }
+  return false;
+}
+
+export function isInheritableAgentEnvKey(
+  key: string,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+  value?: string,
+): boolean {
   const normalizedKey = key.toUpperCase();
+  const explicitlyAllowed = readAgentEnvAllowExtras(baseEnv).some((pattern) =>
+    matchesAllowPattern(normalizedKey, pattern),
+  );
+  if (explicitlyAllowed) return true;
   // Proxy settings are conventionally lowercase, so compare case-insensitively.
-  if (/^(HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|FTP_PROXY)$/.test(normalizedKey)) return true;
+  // The address is inherited, credentials embedded in it are not.
+  if (PROXY_ENV_KEY_PATTERN.test(normalizedKey)) return !proxyValueCarriesCredentials(value);
   if (AGENT_ENV_INHERIT_ALLOWLIST.has(normalizedKey)) return true;
   if (AGENT_ENV_INHERIT_ALLOWLIST_PREFIXES.some((prefix) => normalizedKey.startsWith(prefix))) return true;
   // PAPERCLIP_* keys keep their own rules in sanitizeInheritedPaperclipEnv.
   if (normalizedKey.startsWith("PAPERCLIP_")) return true;
-  return readAgentEnvAllowExtras(baseEnv).some((pattern) => matchesAllowPattern(normalizedKey, pattern));
+  return false;
 }
 
 export type AgentEnvInheritMode = "all" | "allowlist";
@@ -2459,7 +2499,7 @@ export function buildInheritedAgentEnv(baseEnv: NodeJS.ProcessEnv = process.env)
   const allowed: NodeJS.ProcessEnv = {};
   const dropped: string[] = [];
   for (const [key, value] of Object.entries(sanitized)) {
-    if (isInheritableAgentEnvKey(key, baseEnv)) {
+    if (isInheritableAgentEnvKey(key, baseEnv, value)) {
       allowed[key] = value;
       continue;
     }
