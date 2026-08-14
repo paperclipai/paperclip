@@ -1455,18 +1455,28 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.textContent).not.toContain("Could not cancel the login.");
   });
 
-  it("stops both polls and shows the timed-out state after the client timeout", async () => {
+  it("stops both polls and shows the timed-out state at the server deadline", async () => {
     vi.useFakeTimers();
+    // Pin the clock to a known base. The panel arms the timed-out timer from the
+    // status `expiresAt`, so the test clock and the server deadline share one
+    // base time.
+    const baseNowMs = 1_700_000_000_000;
+    vi.setSystemTime(baseNowMs);
+    // The server deadline for this session. It is far longer than the old fixed
+    // 60-second cutoff, so the test proves the panel now tracks `expiresAt`.
+    const serverDeadlineMs = 5 * 60_000;
+    const expiresAtIso = new Date(baseNowMs + serverDeadlineMs).toISOString();
     try {
       mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
       // The status never reaches a terminal state, and the prompt route returns
-      // 404 forever, so the authorization URL never surfaces. Without the client
+      // 404 forever, so the authorization URL never surfaces. The status route
+      // carries `expiresAt`, which drives the client cutoff. Without the client
       // cap the panel would poll both routes forever.
       mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
         sessionId: "claude-session-1",
         environmentId: "sandbox-1",
         status: "waiting_for_user",
-        expiresAt: null,
+        expiresAt: expiresAtIso,
         failure: null,
       });
       mockAgentsApi.getClaudeSetupTokenLoginPrompt.mockRejectedValue(
@@ -1559,8 +1569,16 @@ describe("AgentConfigForm environment selector", () => {
       );
       expect(container.textContent).not.toContain("The login timed out");
 
-      // Advance past the sixty-second cap. The panel enters the timed-out state.
+      // Advance past the old fixed sixty-second cutoff. The panel does NOT time
+      // out now, because the cutoff comes from the server `expiresAt`, which is
+      // far longer than sixty seconds. This proves the fixed 60-second cap is
+      // gone.
       await advanceFake(60_000);
+      expect(container.textContent).not.toContain("The login timed out");
+
+      // Advance past the server deadline. The panel enters the timed-out state.
+      // Total elapsed after this step is 1 second past `serverDeadlineMs`.
+      await advanceFake(serverDeadlineMs - 66_000 + 1_000);
       expect(container.textContent).toContain("The login timed out");
       // The Log in button is available again, and the Cancel button is gone.
       expect(findButton(container, "Log in")?.disabled).toBe(false);

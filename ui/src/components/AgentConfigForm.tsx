@@ -2100,7 +2100,13 @@ const CLAUDE_LOGIN_FAILED_MESSAGE = "The login did not finish. Start the login a
 // short of a terminal status, and the prompt route returns 404 until the URL is
 // ready. Without a cap, the panel polls forever. When this cap passes, the panel
 // stops both polls and shows the timed-out state, so the user can start again.
-const CLAUDE_LOGIN_TIMEOUT_MS = 60_000;
+// A generous client failsafe for a live login whose server deadline has not
+// arrived yet. The server `expiresAt` is the real cutoff; the panel drives the
+// timer from it. This failsafe only bounds a stuck poll while the status route
+// has not yet returned `expiresAt`, so a login can never poll forever. The
+// value is far longer than the server budget, so it never cuts a normal login
+// short (the earlier fixed 60-second cutoff did, which drove this fix).
+const CLAUDE_LOGIN_FAILSAFE_TIMEOUT_MS = 15 * 60_000;
 
 // The fixed, non-secret message for a timed-out Claude login. The panel shows
 // this text, stops both polls, and returns to its start state.
@@ -2252,6 +2258,10 @@ function SubmittedBrowserCodeLoginPanel({
   });
 
   const status = statusQuery.data?.status ?? startLogin.data?.status ?? null;
+  // The server deadline for the active session (ISO string). The status route
+  // and the start response both carry it. The panel drives the client cutoff
+  // from this value, so the client and the server share one deadline.
+  const expiresAt = statusQuery.data?.expiresAt ?? startLogin.data?.expiresAt ?? null;
 
   // Complete the login once the server authenticates the session. The completion
   // read returns the non-secret stored-session claim. Fire it once per session.
@@ -2271,16 +2281,26 @@ function SubmittedBrowserCodeLoginPanel({
   const isActive = Boolean(sessionId) && !isStored && !isFailure && !timedOut;
   const startDisabled = startLogin.isPending || isActive;
 
-  // Cap the active login at a wall-clock deadline. The timer arms when the login
+  // Cap the active login at the server deadline. The timer arms when the login
   // becomes active and clears when the login leaves the active state (a terminal
-  // status, a stored success, or a new login). When it fires, the panel enters
-  // the timed-out state. The `isActive` guard already excludes `timedOut`, so
-  // the timer does not re-arm after it fires.
+  // status, a stored success, or a new login). It re-arms when `expiresAt`
+  // arrives or changes. When it fires, the panel enters the timed-out state. The
+  // `isActive` guard already excludes `timedOut`, so the timer does not re-arm
+  // after it fires.
+  //
+  // The delay comes from the server `expiresAt`, so the client cutoff matches
+  // the server session budget instead of a fixed short window. While `expiresAt`
+  // has not arrived for the live session, the panel uses a generous failsafe, so
+  // a stuck poll still stops.
   useEffect(() => {
     if (!isActive) return;
-    const timer = setTimeout(() => setTimedOut(true), CLAUDE_LOGIN_TIMEOUT_MS);
+    const deadlineMs = expiresAt !== null ? new Date(expiresAt).getTime() : Number.NaN;
+    const remainingMs = Number.isFinite(deadlineMs)
+      ? Math.max(0, deadlineMs - Date.now())
+      : CLAUDE_LOGIN_FAILSAFE_TIMEOUT_MS;
+    const timer = setTimeout(() => setTimedOut(true), remainingMs);
     return () => clearTimeout(timer);
-  }, [isActive]);
+  }, [isActive, expiresAt]);
 
   const trimmedCode = browserCode.trim();
   const canSubmit =
