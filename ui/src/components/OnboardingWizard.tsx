@@ -1107,17 +1107,17 @@ export function OnboardingWizard() {
                     <div>
                       <h3 className="font-medium">
                         {step === 3
-                          ? "Create your first agent"
+                          ? t("onboardingWizard.createFirstAgent")
                           : step === 4
-                            ? "Connect a model"
-                            : "Review"}
+                            ? t("onboardingWizard.connectAModel")
+                            : t("onboardingWizard.review")}
                       </h3>
                       <p className="text-xs text-muted-foreground">
                         {step === 3 ? (
                           <>
-                            They'll help drive{" "}
+                            {t("onboardingWizard.theyHelpDrive")}{" "}
                             <span className="font-medium text-foreground">{companyName}</span>{" "}
-                            toward its mission. We default to{" "}
+                            {t("onboardingWizard.towardMissionDefaultTo")}{" "}
                             <span className="font-medium text-foreground">{t("onboardingWizard.chiefOfStaff")}</span>.
                             {t("onboardingWizard.renameHint")}
                           </>
@@ -1150,7 +1150,7 @@ export function OnboardingWizard() {
                         )}
                       >
                         {step === 4 ? (
-                          "your team lead, taking shape"
+                          t("onboardingWizard.teamLeadTakingShape")
                         ) : (
                           <span className="font-medium text-foreground">{agentName}</span>
                         )}
@@ -1727,7 +1727,6 @@ export function OnboardingWizard() {
                           </p>
                           <p className="text-(length:--text-micro) text-muted-foreground">
                             {t("onboardingWizard.adapterEnvCheckDesc")}
-                            respond with hello.
                           </p>
                         </div>
                         <Button
@@ -1737,7 +1736,7 @@ export function OnboardingWizard() {
                           disabled={adapterEnvLoading}
                           onClick={() => void runAdapterEnvironmentTest()}
                         >
-                          {adapterEnvLoading ? "Testing..." : "Test now"}
+                          {adapterEnvLoading ? t("onboardingWizard.testing") : t("onboardingWizard.testNow")}
                         </Button>
                       </div>
 

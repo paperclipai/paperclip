@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { t } from "@/i18n";
 import type { CSSProperties } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { Issue, IssueDocument, IssueWorkProduct } from "@paperclipai/shared";
@@ -209,7 +210,7 @@ export function IssuePropertiesArtifactsTab({ issue }: IssuePropertiesArtifactsT
     <div className="flex flex-col gap-2 py-2">
       {workProductRows.length > 0 ? (
         <>
-          <SectionHeading>Work products</SectionHeading>
+          <SectionHeading>{t("issuePropertiesArtifactsTab.workProducts")}</SectionHeading>
           <ul className="flex flex-col gap-1">
             {workProductRows.map((wp) => (
               <li key={wp.id}>

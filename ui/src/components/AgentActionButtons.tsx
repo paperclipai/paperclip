@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState, type ReactNode } from "react";
+import { t } from "@/i18n";
 import { useNavigate } from "@/lib/router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -113,10 +114,10 @@ export function ClearErrorButton({
       onClick={onClick}
       disabled={disabled}
       className="border-destructive/60 text-destructive hover:bg-destructive/10 hover:text-destructive dark:border-destructive/50"
-      aria-label="Clear error and return agent to idle"
+      aria-label={t("agentActionButtons.clearErrorAria")}
     >
       <CheckCircle2 className="h-3.5 w-3.5 sm:mr-1" />
-      <span className="hidden sm:inline">Clear error</span>
+      <span className="hidden sm:inline">{t("agentActionButtons.clearError")}</span>
     </Button>
   );
 }
