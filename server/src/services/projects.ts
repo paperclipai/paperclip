@@ -32,6 +32,7 @@ import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runt
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { folderService } from "./folders.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -825,6 +826,15 @@ export function projectService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
       if (!row) return null;
+
+      if (row.name !== existingProject.name) {
+        // Best effort — a folder resync problem must not fail the rename itself.
+        try {
+          await folderService(db).renameProjectFolder(row.companyId, row.id, row.name);
+        } catch (error) {
+          console.warn(`Could not resync the skill folder of project ${row.id}:`, error);
+        }
+      }
 
       if (ids !== undefined) {
         await syncGoalLinks(db, id, row.companyId, ids);

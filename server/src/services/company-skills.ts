@@ -5987,12 +5987,15 @@ export function companySkillService(db: Db) {
         : null;
       const projectId = asString(incomingMeta.projectId);
       const projectName = asString(incomingMeta.projectName);
-      const projectFolder = !existing && incomingKind === "project_scan" && projectId && projectName
+      // Always resolve the project folder (not just for new skills) so a rescan
+      // of an already-imported project resyncs its folder on a rename.
+      // existing?.folderId still wins below, preserving manual folder moves.
+      const projectFolder = incomingKind === "project_scan" && projectId && projectName
         ? await folderSvc.ensureProjectFolder(companyId, projectId, projectName)
         : null;
       const values: ImportedSkillPersistValues = {
         companyId,
-        folderId: bundledFolder?.id ?? projectFolder?.id ?? existing?.folderId ?? null,
+        folderId: bundledFolder?.id ?? (existing ? existing.folderId ?? null : projectFolder?.id ?? null),
         key: skill.key,
         slug: skill.slug,
         name: skill.name,
