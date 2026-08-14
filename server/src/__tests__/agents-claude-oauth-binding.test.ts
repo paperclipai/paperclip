@@ -14,6 +14,7 @@ import {
   companySecrets,
   createDb,
   environments,
+  userSecretDeclarations,
   userSecretDefinitions,
 } from "@paperclipai/db";
 import {
@@ -27,6 +28,7 @@ import {
   CLAUDE_OAUTH_CREDENTIAL_CONFLICT,
   claudeOAuthClaimRejectedError,
   isFixedClaudeOAuthBinding,
+  secretService,
 } from "../services/secrets.js";
 import { createDbSetupTokenCleanupStore } from "../services/setup-token-session.js";
 
@@ -251,6 +253,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
     await db.delete(companySecretProviderConfigs);
+    await db.delete(userSecretDeclarations);
     await db.delete(userSecretDefinitions);
     await db.delete(claudeSetupTokenSessions);
     await db.delete(agents);
@@ -335,6 +338,32 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
 
   async function countAgents(companyId: string): Promise<number> {
     const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    return rows.length;
+  }
+
+  // Seed one stored owner value for the fixed Claude OAuth definition. The
+  // apply-existing path binds the fixed reference only when this value exists.
+  async function seedStoredOwnerValue(scope: Scope, value = "sk-owner-token"): Promise<void> {
+    await secretService(db).completeClaudeOAuthUserSecret(scope.companyId, scope.ownerUserId, {
+      sessionId: randomUUID(),
+      mode: "first_write",
+      value,
+    });
+  }
+
+  async function countUserSecretDefinitions(companyId: string): Promise<number> {
+    const rows = await db
+      .select()
+      .from(userSecretDefinitions)
+      .where(eq(userSecretDefinitions.companyId, companyId));
+    return rows.length;
+  }
+
+  async function countDeclarationsForAgent(agentId: string): Promise<number> {
+    const rows = await db
+      .select()
+      .from(userSecretDeclarations)
+      .where(eq(userSecretDeclarations.targetId, agentId));
     return rows.length;
   }
 
@@ -617,5 +646,182 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     const reloaded = await agentService(db).getById(created.id);
     const reloadedEnv = (reloaded?.adapterConfig as { env: Record<string, unknown> }).env;
     expect(reloadedEnv.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  });
+
+  // --- The user-actor apply-existing path (no login round trip) --------------
+
+  it("binds the fixed reference from a stored owner value with no claim", async () => {
+    const scope = await seedScope();
+    await seedStoredOwnerValue(scope);
+
+    const created = await agentService(db).create(scope.companyId, createInput(scope), {
+      claudeLogin: { ownerUserId: scope.ownerUserId, applyExistingWithoutClaim: true },
+    });
+
+    const persisted = created.adapterConfig as { env: Record<string, unknown> };
+    expect(persisted.env.CLAUDE_CODE_OAUTH_TOKEN).toMatchObject({
+      type: "user_secret_ref",
+      key: "CLAUDE_CODE_OAUTH_TOKEN",
+    });
+    // The response carries the reference only. It carries no token value.
+    expect(JSON.stringify(created)).not.toContain("sk-owner-token");
+    expect(await countAgents(scope.companyId)).toBe(1);
+    // The path consumes no setup-token claim, so it needs no login round trip.
+    const claims = await db.select().from(claudeSetupTokenSessions);
+    expect(claims).toHaveLength(0);
+  });
+
+  it("binds on a hire-shaped create that needs board approval", async () => {
+    const scope = await seedScope();
+    await seedStoredOwnerValue(scope);
+
+    const created = await agentService(
+      db,
+    ).create(scope.companyId, { ...createInput(scope), status: "pending_approval" }, {
+      claudeLogin: { ownerUserId: scope.ownerUserId, applyExistingWithoutClaim: true },
+    });
+
+    expect(created.status).toBe("pending_approval");
+    const persisted = created.adapterConfig as { env: Record<string, unknown> };
+    expect(persisted.env.CLAUDE_CODE_OAUTH_TOKEN).toMatchObject(FIXED_BINDING);
+  });
+
+  it("binds the fixed reference on an update from a stored owner value with no claim", async () => {
+    const scope = await seedScope();
+    await seedStoredOwnerValue(scope);
+    const created = await agentService(db).create(scope.companyId, {
+      name: "Claude Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "claude_local",
+      defaultEnvironmentId: scope.environmentId,
+      adapterConfig: { env: {} },
+      runtimeConfig: {},
+      spentMonthlyCents: 0,
+      lastHeartbeatAt: null,
+    });
+
+    const updated = await agentService(db).update(
+      created.id,
+      { adapterConfig: { env: { CLAUDE_CODE_OAUTH_TOKEN: { ...FIXED_BINDING } } } },
+      { claudeLogin: { ownerUserId: scope.ownerUserId, applyExistingWithoutClaim: true } },
+    );
+
+    const env = (updated?.adapterConfig as { env: Record<string, unknown> }).env;
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toMatchObject(FIXED_BINDING);
+  });
+
+  it("rejects apply-existing when the owner has no stored value and binds nothing", async () => {
+    const scope = await seedScope();
+
+    await expect(
+      agentService(db).create(scope.companyId, createInput(scope), {
+        claudeLogin: { ownerUserId: scope.ownerUserId, applyExistingWithoutClaim: true },
+      }),
+    ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
+
+    // A rejected bind creates neither the agent nor the fixed definition.
+    expect(await countAgents(scope.companyId)).toBe(0);
+    expect(await countUserSecretDefinitions(scope.companyId)).toBe(0);
+  });
+
+  it("rejects apply-existing when no owner is derived (an agent actor)", async () => {
+    const scope = await seedScope();
+    await seedStoredOwnerValue(scope);
+
+    // The route sets no owner for an agent actor. The gate rejects the no-claim
+    // bind, so an agent actor never binds the fixed reference.
+    await expect(
+      agentService(db).create(scope.companyId, createInput(scope), {
+        claudeLogin: { ownerUserId: null, applyExistingWithoutClaim: true },
+      }),
+    ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
+    expect(await countAgents(scope.companyId)).toBe(0);
+  });
+
+  it("rejects apply-existing when the stored value belongs to another company", async () => {
+    const ownerScope = await seedScope();
+    await seedStoredOwnerValue(ownerScope);
+    // The same owner, a different company. The owner value is company-scoped, so
+    // the status read finds nothing for the foreign company.
+    const foreignScope = await seedScope();
+    foreignScope.ownerUserId = ownerScope.ownerUserId;
+
+    await expect(
+      agentService(db).create(foreignScope.companyId, createInput(foreignScope), {
+        claudeLogin: { ownerUserId: foreignScope.ownerUserId, applyExistingWithoutClaim: true },
+      }),
+    ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
+    expect(await countAgents(foreignScope.companyId)).toBe(0);
+  });
+
+  it("binds nothing from the flag alone when the config carries no fixed binding", async () => {
+    const scope = await seedScope();
+    await seedStoredOwnerValue(scope);
+
+    // The apply-existing flag is set, but the config carries no fixed binding. The
+    // gate mints the fixed reference only when the client presents the exact fixed
+    // binding, so the flag alone binds nothing and creates no fixed definition.
+    const created = await agentService(db).create(
+      scope.companyId,
+      {
+        name: "Plain Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "claude_local",
+        defaultEnvironmentId: scope.environmentId,
+        adapterConfig: { env: {} },
+        runtimeConfig: {},
+        spentMonthlyCents: 0,
+        lastHeartbeatAt: null,
+      },
+      { claudeLogin: { ownerUserId: scope.ownerUserId, applyExistingWithoutClaim: true } },
+    );
+
+    const env = (created.adapterConfig as { env: Record<string, unknown> }).env;
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    expect(await countDeclarationsForAgent(created.id)).toBe(0);
+  });
+
+  it("derives the persisted binding shape, so a client secret selector never rides through", async () => {
+    const scope = await seedScope();
+    await seedStoredOwnerValue(scope);
+
+    // A client adds a secret id and a foreign owner to the binding. The persist
+    // normalization keeps only the fixed reference fields, so the extra selectors
+    // never reach the stored binding. The runtime derives the owner from context.
+    const created = await agentService(db).create(
+      scope.companyId,
+      createInput(scope, {
+        CLAUDE_CODE_OAUTH_TOKEN: {
+          type: "user_secret_ref",
+          key: "CLAUDE_CODE_OAUTH_TOKEN",
+          secretId: "attacker-secret",
+          ownerUserId: "intruder",
+        },
+      }),
+      { claudeLogin: { ownerUserId: scope.ownerUserId, applyExistingWithoutClaim: true } },
+    );
+
+    const binding = (created.adapterConfig as { env: Record<string, Record<string, unknown>> }).env
+      .CLAUDE_CODE_OAUTH_TOKEN;
+    expect(binding).toMatchObject({ type: "user_secret_ref", key: "CLAUDE_CODE_OAUTH_TOKEN" });
+    expect(binding.secretId).toBeUndefined();
+    expect(binding.ownerUserId).toBeUndefined();
+  });
+
+  it("resolves the bound reference to the stored value without leaking it in a log", async () => {
+    const scope = await seedScope();
+    await seedStoredOwnerValue(scope, "sk-secret-resolve");
+    const created = await agentService(db).create(scope.companyId, createInput(scope), {
+      claudeLogin: { ownerUserId: scope.ownerUserId, applyExistingWithoutClaim: true },
+    });
+
+    // The successful bind writes a declaration for the agent, so the fixed
+    // reference resolves at runtime. The declaration and the definition carry no
+    // token value.
+    expect(await countDeclarationsForAgent(created.id)).toBe(1);
+    const definitions = await db.select().from(userSecretDefinitions);
+    expect(JSON.stringify(definitions)).not.toContain("sk-secret-resolve");
   });
 });

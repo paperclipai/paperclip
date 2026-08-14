@@ -88,6 +88,11 @@ export const createAgentSchema = z.object({
   // is the non-secret `storedSessionId`; it carries no token. The agent-create
   // transaction consumes it as the one-time stored-session claim.
   storedSessionId: z.string().min(1).max(256).optional(),
+  // The optional apply-existing flag. When true, the caller binds the fixed
+  // Claude OAuth token reference to the owner stored value with no new login
+  // round trip. The server permits the no-claim bind only for a user actor and
+  // only when that owner already has a stored value. It carries no token.
+  applyStoredClaudeLogin: z.boolean().optional(),
 });
 
 export type CreateAgent = z.infer<typeof createAgentSchema>;

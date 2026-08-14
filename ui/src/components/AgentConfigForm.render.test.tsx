@@ -27,6 +27,7 @@ const mockAgentsApi = vi.hoisted(() => ({
   submitClaudeSetupTokenBrowserCode: vi.fn(),
   completeClaudeSetupTokenLogin: vi.fn(),
   cancelClaudeSetupTokenLogin: vi.fn(),
+  getClaudeOAuthTokenStatus: vi.fn(),
 }));
 
 const mockClipboard = vi.hoisted(() => ({
@@ -501,6 +502,9 @@ describe("AgentConfigForm environment selector", () => {
       storedSessionId: "stored-session-1",
     });
     mockAgentsApi.cancelClaudeSetupTokenLogin.mockResolvedValue(undefined);
+    // Default: the owner has no stored Claude login. A test that needs a stored
+    // value overrides this with a status body.
+    mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue(null);
   });
 
   afterEach(async () => {
@@ -1342,6 +1346,85 @@ describe("AgentConfigForm environment selector", () => {
     expect(onStored).toHaveBeenCalledWith("stored-session-1");
   });
 
+  it("offers an apply-existing affordance when the status route reports a stored value", async () => {
+    mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue({
+      secretId: "secret-1",
+      latestVersion: 3,
+    });
+    const onApplyStored = vi.fn();
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AdapterLoginPanel
+                companyId="company-1"
+                adapterType="claude_local"
+                environmentId="sandbox-1"
+                onApplyStored={onApplyStored}
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushUntil(() => Boolean(findButton(container, "Use saved login")));
+
+    await clickByText(container, "Use saved login");
+
+    expect(onApplyStored).toHaveBeenCalledTimes(1);
+    // The panel shows the applied confirmation and hides the apply affordance.
+    await flushUntil(() =>
+      (container.textContent ?? "").includes("The saved Claude login is bound to this agent now."),
+    );
+    expect(findButton(container, "Use saved login")).toBeUndefined();
+    // The apply-existing path never starts a login round trip.
+    expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+  });
+
+  it("does not offer the apply-existing affordance when there is no stored value", async () => {
+    mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue(null);
+    const onApplyStored = vi.fn();
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AdapterLoginPanel
+                companyId="company-1"
+                adapterType="claude_local"
+                environmentId="sandbox-1"
+                onApplyStored={onApplyStored}
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushUntil(() => Boolean(findButton(container, "Log in")));
+
+    expect(findButton(container, "Use saved login")).toBeUndefined();
+    expect(onApplyStored).not.toHaveBeenCalled();
+  });
+
   it("returns to its start state with a fixed message on a server failed state", async () => {
     mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
     mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
@@ -1798,6 +1881,9 @@ describe("AgentConfigForm create-mode Claude OAuth binding", () => {
       storedSessionId: "stored-session-1",
     });
     mockAgentsApi.cancelClaudeSetupTokenLogin.mockResolvedValue(undefined);
+    // Default: the owner has no stored Claude login. A test that needs a stored
+    // value overrides this with a status body.
+    mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue(null);
   });
 
   afterEach(async () => {
@@ -2029,6 +2115,9 @@ describe("AgentConfigForm edit-mode Claude OAuth binding", () => {
       storedSessionId: "stored-session-1",
     });
     mockAgentsApi.cancelClaudeSetupTokenLogin.mockResolvedValue(undefined);
+    // Default: the owner has no stored Claude login. A test that needs a stored
+    // value overrides this with a status body.
+    mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue(null);
   });
 
   afterEach(async () => {

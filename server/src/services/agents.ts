@@ -82,11 +82,18 @@ interface RevisionMetadata {
  * non-secret `storedSessionId` claim from a completed Claude login session. A
  * controlled internal override permits a migration or an administrator repair to
  * bind or unbind the fixed OAuth token without a claim.
+ *
+ * The `applyExistingWithoutClaim` field is the user-actor apply-existing path.
+ * The route sets it only for an authenticated user actor and derives the owner
+ * from that actor. The path binds the fixed reference to the owner stored value
+ * with no login round trip. It is distinct from `allowInternalBindingOverride`,
+ * which does no ownership check.
  */
 interface ClaudeLoginContext {
   storedSessionId?: string | null;
   ownerUserId?: string | null;
   allowInternalBindingOverride?: boolean;
+  applyExistingWithoutClaim?: boolean;
 }
 
 interface UpdateAgentOptions {
@@ -484,6 +491,14 @@ export function agentService(db: Db) {
    *   * An update, approval, or rollback path (`consume: false`) carries no
    *     claim, so it raises the same fixed claim error at once.
    *
+   * The user-actor apply-existing path (`applyExistingWithoutClaim`) binds the
+   * fixed reference with no login round trip. The route sets the flag only for
+   * an authenticated user actor and derives the owner from that actor. The gate
+   * permits the no-claim bind only when the owner already has a stored value for
+   * the company. It reads the owner value status; it reads no token. A missing
+   * owner or a missing stored value raises the same fixed claim error, so the
+   * caller cannot tell the reasons apart.
+   *
    * A controlled internal override skips the claim for a migration or an
    * administrator repair. The function creates the fixed user-secret definition
    * before the caller runs the declaration synchronization, so the synchronized
@@ -501,18 +516,33 @@ export function agentService(db: Db) {
   ): Promise<void> {
     const ownerUserId = input.claudeLogin?.ownerUserId ?? null;
     if (input.decision.introducesBinding && !input.claudeLogin?.allowInternalBindingOverride) {
-      if (!input.consume) {
+      if (input.claudeLogin?.applyExistingWithoutClaim) {
+        // The user-actor apply-existing path. The route derived the owner from
+        // the authenticated user actor. The gate binds the fixed reference only
+        // when that owner already has a stored value. It reads no token.
+        if (!ownerUserId) {
+          throw claudeOAuthClaimRejectedError();
+        }
+        const stored = await secretService(txDb).readClaudeOAuthUserSecretStatus(
+          input.companyId,
+          ownerUserId,
+        );
+        if (!stored) {
+          throw claudeOAuthClaimRejectedError();
+        }
+      } else if (!input.consume) {
         throw claudeOAuthClaimRejectedError();
-      }
-      const consumed = await createDbSetupTokenCleanupStore(txDb).consumeStoredClaim({
-        sessionId: input.claudeLogin?.storedSessionId ?? "",
-        companyId: input.companyId,
-        ownerUserId: ownerUserId ?? "",
-        adapterType: CLAUDE_LOCAL_ADAPTER_TYPE,
-        environmentId: input.environmentId ?? "",
-      });
-      if (!consumed) {
-        throw claudeOAuthClaimRejectedError();
+      } else {
+        const consumed = await createDbSetupTokenCleanupStore(txDb).consumeStoredClaim({
+          sessionId: input.claudeLogin?.storedSessionId ?? "",
+          companyId: input.companyId,
+          ownerUserId: ownerUserId ?? "",
+          adapterType: CLAUDE_LOCAL_ADAPTER_TYPE,
+          environmentId: input.environmentId ?? "",
+        });
+        if (!consumed) {
+          throw claudeOAuthClaimRejectedError();
+        }
       }
     }
     if (input.decision.introducesBinding || input.decision.keepsBinding) {

@@ -505,6 +505,41 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     await props.onSave(buildAgentUpdatePatch(props.agent, nextOverlay));
   };
 
+  // Create mode: bind the fixed reference to an existing stored login with no new
+  // login round trip. Add the fixed binding and set the apply-existing flag. The
+  // create request sends the flag; the server binds the token only for a user
+  // actor and only when a stored value exists. Keep every unrelated binding.
+  const handleApplyStoredClaudeLogin = () => {
+    if (!isCreate || !set) return;
+    const existingBindings = (val!.envBindings ?? {}) as Record<string, EnvBinding>;
+    set({
+      envBindings: { ...existingBindings, ...buildFixedClaudeOAuthBinding() },
+      claudeApplyStoredLogin: true,
+    });
+  };
+
+  // Edit mode: bind the fixed reference to an existing stored login with no new
+  // login round trip, then persist it at once. Add the fixed binding to the
+  // existing agent and save the patch with the apply-existing flag. Flush any
+  // pending editor draft first and keep every unrelated binding.
+  const handleApplyStoredClaudeLoginEdit = async () => {
+    if (isCreate) return;
+    const flushedEnv = flushEnvironmentDraft();
+    const baseEnv =
+      flushedEnv ??
+      (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
+    const nextEnv = { ...baseEnv, ...buildFixedClaudeOAuthBinding() };
+    const nextOverlay: AgentConfigOverlay = {
+      ...overlay,
+      adapterConfig: { ...overlay.adapterConfig, env: nextEnv },
+    };
+    setOverlay(nextOverlay);
+    await props.onSave({
+      ...buildAgentUpdatePatch(props.agent, nextOverlay),
+      applyStoredClaudeLogin: true,
+    });
+  };
+
   // The fixed binding is not editable in the environment-variables editor. Strip
   // it from the editor value, and merge it back on every editor change, so a user
   // edit to an unrelated variable never drops the fixed binding.
@@ -1427,6 +1462,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               adapterType={adapterType}
               environmentId={effectiveLoginEnvironmentId!}
               onStored={isCreate ? handleClaudeLoginStored : handleClaudeLoginStoredEdit}
+              onApplyStored={
+                isCreate ? handleApplyStoredClaudeLogin : handleApplyStoredClaudeLoginEdit
+              }
             />
           )}
 
@@ -1952,8 +1990,12 @@ export type AdapterLoginDescriptor = {
 // The panel props. `onStored` reports the non-secret `storedSessionId` claim from
 // a Claude login that reaches the server `stored` state. The create-mode form
 // holds that claim for the fixed binding; the callback never carries a token.
+// `onApplyStored` binds the fixed reference to an existing stored login with no
+// new login round trip. The panel shows the apply-existing affordance only when
+// the status route reports a stored value.
 export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
   onStored?: (storedSessionId: string) => void;
+  onApplyStored?: () => void;
 };
 
 // The login panel dispatcher. It picks the panel mode from the adapter. The
@@ -2164,6 +2206,7 @@ function SubmittedBrowserCodeLoginPanel({
   companyId,
   environmentId,
   onStored,
+  onApplyStored,
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
@@ -2192,6 +2235,10 @@ function SubmittedBrowserCodeLoginPanel({
   const [statusGone, setStatusGone] = useState(false);
   // Guards the one completion read per session.
   const completionStartedRef = useRef(false);
+  // True after the owner applies an existing stored login in this panel. The
+  // apply-existing path binds the fixed reference with no new login round trip,
+  // so the panel shows the applied confirmation and hides the apply affordance.
+  const [appliedStored, setAppliedStored] = useState(false);
 
   const resetLocalState = () => {
     setStartError(null);
@@ -2490,6 +2537,23 @@ function SubmittedBrowserCodeLoginPanel({
               Cancel
             </Button>
           )}
+          {/* Apply the existing stored login with no new login round trip. The
+              affordance shows only when the status route reports a stored value
+              and no active or completed login runs in this panel. */}
+          {onApplyStored && storedToken && !isActive && !isStored && !appliedStored && (
+            <Button
+              type="button"
+              variant="default"
+              size="sm"
+              className="h-7 px-2.5 text-xs"
+              onClick={() => {
+                onApplyStored();
+                setAppliedStored(true);
+              }}
+            >
+              Use saved login
+            </Button>
+          )}
           <Button
             type="button"
             variant="outline"
@@ -2504,11 +2568,19 @@ function SubmittedBrowserCodeLoginPanel({
       </div>
 
       {/* When the owner already has a stored Claude login, the panel applies it
-          first and does not force a fresh login. A replacement login rotates the
-          stored token under the captured version. */}
-      {storedToken && !isActive && !isStored && (
+          first and does not force a fresh login. Use saved login binds the stored
+          token; a replacement login rotates it under the captured version. */}
+      {storedToken && !isActive && !isStored && !appliedStored && (
         <div className="text-(length:--text-micro) text-muted-foreground">
-          You have a saved Claude login. Log in again only to replace the stored token.
+          You have a saved Claude login. Use it to bind this agent, or log in again to replace the
+          stored token.
+        </div>
+      )}
+
+      {appliedStored && (
+        <div className="flex items-center gap-2 text-(length:--text-micro) text-foreground">
+          <Check className="size-3 shrink-0" />
+          <span>The saved Claude login is bound to this agent now.</span>
         </div>
       )}
 
