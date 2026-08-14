@@ -10,8 +10,13 @@ import type {
   AdapterBillingType,
   AdapterExecutionContext,
   AdapterExecutionResult,
+  AdapterInstructionsReadFailure,
   UsageSummary,
 } from "@paperclipai/adapter-utils";
+import {
+  instructionsReadFailureCommandNote,
+  readAdapterInstructionsFile,
+} from "@paperclipai/adapter-utils/agent-instructions-file";
 import {
   adapterExecutionTargetSessionIdentity,
   describeAdapterExecutionTarget,
@@ -2357,32 +2362,31 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
   prompt: string;
   promptMetrics: Record<string, number>;
   commandNotes: string[];
+  instructionsReadFailure: AdapterInstructionsReadFailure | null;
 }> {
   const { agent, runId, config, context, onLog } = ctx;
   const promptTemplate = asString(config.promptTemplate, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
-  const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
-  const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
+  const instructionsFile = await readAdapterInstructionsFile({
+    instructionsFilePath: config.instructionsFilePath,
+    onLog,
+    logStream: "stderr",
+  });
+  const instructionsFilePath = instructionsFile.resolvedPath;
+  const instructionsDir = instructionsFile.directory;
+  const instructionsReadFailure = instructionsFile.failure;
   let instructionsPrefix = "";
   const commandNotes: string[] = [];
-  if (instructionsFilePath) {
-    try {
-      const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
-      instructionsPrefix =
-        `${instructionsContents}\n\n` +
-        `The above agent instructions were loaded from ${instructionsFilePath}. ` +
-        `Resolve any relative file references from ${instructionsDir}.\n\n`;
-      commandNotes.push(
-        `Loaded agent instructions from ${instructionsFilePath}`,
-        `Prepended instructions + path directive to the ACPX prompt (relative references from ${instructionsDir}).`,
-      );
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      await onLog(
-        "stderr",
-        `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
-      );
-      commandNotes.push(`Configured instructionsFilePath ${instructionsFilePath}, but file could not be read.`);
-    }
+  if (instructionsFile.contents !== null) {
+    instructionsPrefix =
+      `${instructionsFile.contents}\n\n` +
+      `The above agent instructions were loaded from ${instructionsFilePath}. ` +
+      `Resolve any relative file references from ${instructionsDir}.\n\n`;
+    commandNotes.push(
+      `Loaded agent instructions from ${instructionsFilePath}`,
+      `Prepended instructions + path directive to the ACPX prompt (relative references from ${instructionsDir}).`,
+    );
+  } else if (instructionsReadFailure) {
+    commandNotes.push(instructionsReadFailureCommandNote(instructionsReadFailure));
   }
 
   const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
@@ -2426,6 +2430,7 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
   return {
     prompt,
     commandNotes,
+    instructionsReadFailure,
     promptMetrics: {
       promptChars: prompt.length,
       instructionsChars: promptInstructionsPrefix.length,
@@ -3815,6 +3820,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // active turn, and `turnFinalize` reads all three. `activeTurn` is the run-
       // scoped hoisted local, so the settlement `endSession` step can cancel it.
       let runPrompt = "";
+      let instructionsReadFailure: AdapterInstructionsReadFailure | null = null;
       let preTurnStatus: AcpRuntimeStatus | null = null;
       // Phase-timing markers for the prepare_turn and turn phases. The prepare
       // phase covers the prompt build and the pre-turn usage snapshot; the turn
@@ -3835,7 +3841,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // boundary. A failure here returns an error result with phase
         // `prepare_turn`.
         preparePhaseStart = now();
-        const { prompt, promptMetrics, commandNotes } = await buildPrompt(ctx, resumedSession, prepared.env);
+        const buildResult = await buildPrompt(ctx, resumedSession, prepared.env);
+        const { prompt, promptMetrics, commandNotes } = buildResult;
+        instructionsReadFailure = buildResult.instructionsReadFailure;
         runPrompt = joinPromptSections([prepared.skillPromptInstructions, prompt]);
         await emitAcpxLog(ctx, {
           type: "acpx.session",
@@ -3981,6 +3989,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
           ...billingFields,
           ...referencedProjectStagingFailuresField,
+          instructionsReadFailure,
           model: prepared.requestedModel || null,
           ...(turnUsage.usage ? { usage: turnUsage.usage, usageBasis: "per_run" as const } : {}),
           costUsd: turnUsage.costUsd,
@@ -4088,6 +4097,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           errorMeta: emitted?.classified.errorMeta,
           ...billingFields,
           ...referencedProjectStagingFailuresField,
+          instructionsReadFailure,
           model: prepared.requestedModel || null,
           clearSession: clearSession || timedOut,
           resultJson: { phase },

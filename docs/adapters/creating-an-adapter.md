@@ -240,6 +240,26 @@ With these flags set, the Paperclip UI will automatically show the instructions 
 
 If capability flags are not set, the server falls back to legacy hardcoded lists for built-in adapter types. External adapters that omit the flags will default to `false` for all capabilities.
 
+## Instructions File Reads
+
+Do not read the configured instructions file yourself. Use `readAdapterInstructionsFile` from `@paperclipai/adapter-utils`:
+
+```ts
+const instructionsFile = await readAdapterInstructionsFile({
+  instructionsFilePath: config.instructionsFilePath,
+  cwd, // omit when your adapter uses the configured path as-is
+  onLog,
+});
+```
+
+The helper reads the file, logs one warning line when the read fails, and returns a structured `failure`. Your adapter must put that value on every `AdapterExecutionResult` it returns:
+
+```ts
+return { ...result, instructionsReadFailure: instructionsFile.failure };
+```
+
+A failed read is not a run failure. The run continues on the generic prompt template, because one miss can be a transient filesystem error. The server records the failure on the run's `resultJson.instructionsReadFailure` so it is visible on the run record instead of only a stdout line. If your adapter drops `instructionsReadFailure`, a mistyped or moved instructions path degrades the agent silently and forever.
+
 ## Skills Injection
 
 Make Paperclip skills discoverable to your agent runtime without writing to the agent's working directory:

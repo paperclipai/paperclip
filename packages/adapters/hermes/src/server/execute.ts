@@ -27,6 +27,8 @@ import type {
   UsageSummary,
 } from "@paperclipai/adapter-utils";
 
+import { readAdapterInstructionsFile } from "@paperclipai/adapter-utils";
+
 import {
   runChildProcess,
   buildPaperclipEnv,
@@ -385,27 +387,25 @@ export async function execute(
   // Paperclip can materialize managed instructions into instructionsFilePath;
   // when present, inject that bundle into the Hermes prompt.
   const instructionsFilePath = cfgString(config.instructionsFilePath);
+  const instructionsFile = await readAdapterInstructionsFile({
+    instructionsFilePath,
+    onLog: ctx.onLog,
+    // Non-fatal: log to stdout with an explicit "Warning:" prefix so the
+    // Paperclip UI doesn't render this as a red error (stderr output is
+    // surfaced as an error signal even when execution continues).
+    logStream: "stdout",
+    logPrefix: "[hermes]",
+  });
+  const instructionsReadFailure = instructionsFile.failure;
   let agentInstructions = "";
-  if (instructionsFilePath) {
-    try {
-      agentInstructions = await fs.readFile(instructionsFilePath, "utf-8");
-      const loadedInstructionsLength = agentInstructions.length;
-      const instructionsFileDir = path.dirname(instructionsFilePath);
-      agentInstructions += `\nThe above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsFileDir}/.`;
-      await ctx.onLog(
-        "stdout",
-        `[hermes] Loaded agent instructions from ${instructionsFilePath} (${loadedInstructionsLength} chars)\n`,
-      );
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      // Non-fatal: log to stdout with an explicit "Warning:" prefix so the
-      // Paperclip UI doesn't render this as a red error (stderr output is
-      // surfaced as an error signal even when execution continues).
-      await ctx.onLog(
-        "stdout",
-        `[hermes] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
-      );
-    }
+  if (instructionsFile.contents !== null) {
+    agentInstructions =
+      instructionsFile.contents +
+      `\nThe above agent instructions were loaded from ${instructionsFile.resolvedPath}. Resolve any relative file references from ${instructionsFile.directory}.`;
+    await ctx.onLog(
+      "stdout",
+      `[hermes] Loaded agent instructions from ${instructionsFile.resolvedPath} (${instructionsFile.contents.length} chars)\n`,
+    );
   }
 
   // ── Build prompt ───────────────────────────────────────────────────────
@@ -559,6 +559,7 @@ export async function execute(
     timedOut: result.timedOut,
     provider: resolvedProvider,
     model,
+    instructionsReadFailure,
   };
 
   if (parsed.errorMessage) {

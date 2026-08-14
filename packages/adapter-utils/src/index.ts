@@ -5,6 +5,7 @@ export type {
   AdapterBillingType,
   AdapterRuntimeServiceReport,
   AdapterExecutionResult,
+  AdapterInstructionsReadFailure,
   AdapterInvocationMeta,
   AdapterRuntimeEvent,
   AdapterRuntimeMcpServer,
@@ -40,6 +41,14 @@ export type {
   CLIAdapterModule,
   CreateConfigValues,
 } from "./types.js";
+export type {
+  AdapterInstructionsFile,
+  ReadAdapterInstructionsFileOptions,
+} from "./agent-instructions-file.js";
+export {
+  readAdapterInstructionsFile,
+  instructionsReadFailureCommandNote,
+} from "./agent-instructions-file.js";
 export type {
   SessionCompactionPolicy,
   NativeContextManagement,

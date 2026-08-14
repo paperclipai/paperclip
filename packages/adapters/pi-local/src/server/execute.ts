@@ -2,7 +2,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import {
+  inferOpenAiCompatibleBiller,
+  readAdapterInstructionsFile,
+  instructionsReadFailureCommandNote,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+} from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -558,33 +564,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     // Handle instructions file and build system prompt extension
-    const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
-    const resolvedInstructionsFilePath = instructionsFilePath
-      ? path.resolve(cwd, instructionsFilePath)
-      : "";
-    const instructionsFileDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
+    const instructionsFile = await readAdapterInstructionsFile({
+      instructionsFilePath: config.instructionsFilePath,
+      cwd,
+      onLog,
+    });
+    const resolvedInstructionsFilePath = instructionsFile.resolvedPath;
+    const instructionsFileDir = instructionsFile.directory;
+    const instructionsReadFailure = instructionsFile.failure;
 
     let systemPromptExtension = "";
-    let instructionsReadFailed = false;
-    if (resolvedInstructionsFilePath) {
-      try {
-        const instructionsContents = await fs.readFile(resolvedInstructionsFilePath, "utf8");
-        systemPromptExtension =
-          `${instructionsContents}\n\n` +
-          `The above agent instructions were loaded from ${resolvedInstructionsFilePath}. ` +
-          `Resolve any relative file references from ${instructionsFileDir}.\n\n` +
-          DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE;
-      } catch (err) {
-        instructionsReadFailed = true;
-        const reason = err instanceof Error ? err.message : String(err);
-        await onLog(
-          "stdout",
-          `[paperclip] Warning: could not read agent instructions file "${resolvedInstructionsFilePath}": ${reason}\n`,
-        );
-        // Fall back to base prompt template
-        systemPromptExtension = promptTemplate;
-      }
+    if (instructionsFile.contents !== null) {
+      systemPromptExtension =
+        `${instructionsFile.contents}\n\n` +
+        `The above agent instructions were loaded from ${resolvedInstructionsFilePath}. ` +
+        `Resolve any relative file references from ${instructionsFileDir}.\n\n` +
+        DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE;
     } else {
+      // Fall back to base prompt template. When an instructions file was configured
+      // but unreadable, `instructionsReadFailure` carries that back to the server.
       systemPromptExtension = promptTemplate;
     }
 
@@ -627,10 +625,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const commandNotes = (() => {
       const notes = [...preparedRuntimeConfig.notes];
       if (!resolvedInstructionsFilePath) return notes;
-      if (instructionsReadFailed) {
-        notes.push(
-          `Configured instructionsFilePath ${resolvedInstructionsFilePath}, but file could not be read; continuing without injected instructions.`,
-        );
+      if (instructionsReadFailure) {
+        notes.push(instructionsReadFailureCommandNote(instructionsReadFailure));
         return notes;
       }
       notes.push(`Loaded agent instructions from ${resolvedInstructionsFilePath}`);
@@ -743,6 +739,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           timedOut: true,
           errorMessage: `Timed out after ${timeoutSec}s`,
           clearSession: clearSessionOnMissingSession,
+          instructionsReadFailure,
         };
       }
 
@@ -792,6 +789,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         },
         summary: attempt.parsed.finalMessage ?? attempt.parsed.messages.join("\n\n").trim(),
         clearSession: Boolean(clearSessionOnMissingSession),
+        instructionsReadFailure,
       };
     };
 

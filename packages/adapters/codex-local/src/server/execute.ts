@@ -1,7 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import {
+  inferOpenAiCompatibleBiller,
+  readAdapterInstructionsFile,
+  instructionsReadFailureCommandNote,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+} from "@paperclipai/adapter-utils";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import {
@@ -1058,26 +1064,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Codex session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".\n`,
       );
     }
-    const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
-    const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
-    let instructionsPrefix = "";
-    let instructionsChars = 0;
-    if (instructionsFilePath) {
-      try {
-        const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
-        instructionsPrefix =
-          `${instructionsContents}\n\n` +
-          `The above agent instructions were loaded from ${instructionsFilePath}. ` +
-          `Resolve any relative file references from ${instructionsDir}.\n\n`;
-        instructionsChars = instructionsPrefix.length;
-      } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err);
-        await onLog(
-          "stdout",
-          `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
-        );
-      }
-    }
+    const instructionsFile = await readAdapterInstructionsFile({
+      instructionsFilePath: config.instructionsFilePath,
+      onLog,
+    });
+    const instructionsFilePath = instructionsFile.resolvedPath;
+    const instructionsDir = instructionsFile.directory;
+    const instructionsReadFailure = instructionsFile.failure;
+    const instructionsPrefix = instructionsFile.contents === null
+      ? ""
+      : `${instructionsFile.contents}\n\n` +
+        `The above agent instructions were loaded from ${instructionsFilePath}. ` +
+        `Resolve any relative file references from ${instructionsDir}.\n\n`;
     const repoAgentsNote =
       "Codex exec automatically applies repo-scoped AGENTS.md instructions from the current workspace; Paperclip does not currently suppress that discovery.";
     const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
@@ -1097,7 +1095,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
     const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
     const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
-    instructionsChars = promptInstructionsPrefix.length;
+    const instructionsChars = promptInstructionsPrefix.length;
     const continuationSummary = parseObject(context.paperclipContinuationSummary);
     const continuationSummaryBody = asString(continuationSummary.body, "").trim() || null;
     const codexFallbackHandoffNote =
@@ -1148,7 +1146,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         return notes;
       }
       const notes = [
-        `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
+        instructionsReadFailure
+          ? instructionsReadFailureCommandNote(instructionsReadFailure)
+          : `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
         repoAgentsNote,
       ];
       if (forceSaferInvocation) {
@@ -1383,6 +1383,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           },
           summary: attempt.parsed.summary,
           clearSession: clearSessionOnMissingSession,
+          instructionsReadFailure,
         };
       }
       if (attempt.proc.timedOut) {
@@ -1392,6 +1393,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           timedOut: true,
           errorMessage: `Timed out after ${timeoutSec}s`,
           clearSession: clearSessionOnMissingSession,
+          instructionsReadFailure,
         };
       }
 
@@ -1505,6 +1507,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         },
         summary: attempt.parsed.summary,
         clearSession: Boolean((clearSessionOnMissingSession || forceFreshSession) && !resolvedSessionId),
+        instructionsReadFailure,
       };
     };
 
