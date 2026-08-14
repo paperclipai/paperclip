@@ -2205,8 +2205,47 @@ function SubmittedBrowserCodeLoginPanel({
     completionStartedRef.current = false;
   };
 
+  // Read the stored Claude OAuth token status when the panel mounts. A 200 body
+  // carries the secret id and the version of the owner value; a 404 means the
+  // owner has no stored value. The panel applies the stored token first: when a
+  // value exists, a replacement login rotates it under the captured version
+  // instead of a blind first write. The server rejects a stale capture, so a
+  // change by another process after the capture fails the overwrite.
+  const storedTokenQuery = useQuery({
+    queryKey: ["claude-oauth-token-status", companyId],
+    queryFn: async () => {
+      try {
+        return await agentsApi.getClaudeOAuthTokenStatus(companyId);
+      } catch (error) {
+        // A 404 means the owner has no stored value (indistinguishable from a
+        // foreign value). The panel treats it as "no stored token".
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+    retry: (failureCount, error) => {
+      if (error instanceof ApiError && error.status === 404) return false;
+      return failureCount < 2;
+    },
+  });
+  const storedToken = storedTokenQuery.data ?? null;
+
   const startLogin = useMutation({
-    mutationFn: () => agentsApi.startClaudeSetupTokenLogin(companyId, { environmentId }),
+    mutationFn: () =>
+      agentsApi.startClaudeSetupTokenLogin(companyId, {
+        environmentId,
+        // When the owner already has a stored token, the login rotates it under
+        // the captured version, so a replacement login never conflicts with an
+        // existing value. Without a stored token the login is a first write.
+        ...(storedToken
+          ? {
+              overwrite: {
+                expectedSecretId: storedToken.secretId,
+                expectedLatestVersion: storedToken.latestVersion,
+              },
+            }
+          : {}),
+      }),
     onSuccess: (session) => {
       resetLocalState();
       setSessionId(session.sessionId);
@@ -2459,10 +2498,19 @@ function SubmittedBrowserCodeLoginPanel({
             disabled={startDisabled}
             onClick={() => startLogin.mutate()}
           >
-            Log in
+            {storedToken && !isActive && !isStored ? "Log in to replace" : "Log in"}
           </Button>
         </div>
       </div>
+
+      {/* When the owner already has a stored Claude login, the panel applies it
+          first and does not force a fresh login. A replacement login rotates the
+          stored token under the captured version. */}
+      {storedToken && !isActive && !isStored && (
+        <div className="text-(length:--text-micro) text-muted-foreground">
+          You have a saved Claude login. Log in again only to replace the stored token.
+        </div>
+      )}
 
       {startError && (
         <div role="alert" className="text-(length:--text-micro) text-destructive">

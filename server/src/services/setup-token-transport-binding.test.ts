@@ -859,7 +859,13 @@ function createRecordingSecrets(options?: { rejectWith?: Error }) {
   const calls: Array<{
     companyId: string;
     ownerUserId: string;
-    input: { sessionId: string; mode: string; value: string };
+    input: {
+      sessionId: string;
+      mode: string;
+      value: string;
+      expectedSecretId?: string | null;
+      expectedLatestVersion?: number | null;
+    };
     actor: { userId?: string | null; agentId?: string | null } | undefined;
   }> = [];
   const secrets: SetupTokenSecretCompletion = {
@@ -929,6 +935,34 @@ describe("production setup-token secret writer", () => {
         companyId: SCOPE.companyId,
         ownerUserId: SCOPE.ownerUserId,
         input: { sessionId: "session-7", mode: "first_write", value: SYNTH_TOKEN },
+        actor: { userId: SCOPE.ownerUserId },
+      },
+    ]);
+  });
+
+  it("rotates with the captured version when the scope carries the overwrite", async () => {
+    const { secrets, calls } = createRecordingSecrets();
+    const writer = createSetupTokenSecretWriter({ secrets });
+
+    const overwriteScope: SetupTokenSessionScope = {
+      ...SCOPE,
+      confirmedOverwrite: { expectedSecretId: "secret-9", expectedLatestVersion: 4 },
+    };
+    await writer({ scope: overwriteScope, sessionId: "session-8", token: SYNTH_TOKEN });
+
+    // The writer selected the confirmed rotation and forwarded the captured
+    // expected secret id and version. The owner still comes from the scope.
+    expect(calls).toEqual([
+      {
+        companyId: SCOPE.companyId,
+        ownerUserId: SCOPE.ownerUserId,
+        input: {
+          sessionId: "session-8",
+          mode: "confirmed_rotation",
+          value: SYNTH_TOKEN,
+          expectedSecretId: "secret-9",
+          expectedLatestVersion: 4,
+        },
         actor: { userId: SCOPE.ownerUserId },
       },
     ]);

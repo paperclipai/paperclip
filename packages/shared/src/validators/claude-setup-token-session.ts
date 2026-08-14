@@ -15,10 +15,28 @@ export const setupTokenTransportAdvisorySchema = z.object({
 }).strict();
 export type SetupTokenTransportAdvisory = z.infer<typeof setupTokenTransportAdvisorySchema>;
 
+// The confirmed-overwrite capture for a replacement login. The client reads the
+// stored value metadata from the status route and passes it back when it starts
+// a replacement login. The server maps it to the owner-bound compare-and-set: it
+// rotates the value only when the captured version still matches. The server
+// still derives the owner and the definition; this body carries no owner. A
+// missing capture starts a first-write login instead.
+export const claudeSetupTokenOverwriteSchema = z.object({
+  expectedSecretId: z.string().uuid(),
+  expectedLatestVersion: z.number().int().min(1),
+}).strict();
+export type ClaudeSetupTokenOverwrite =
+  z.infer<typeof claudeSetupTokenOverwriteSchema>;
+
 // The start request for a company-and-environment Claude login session. The
 // company and the owner user come from the authenticated caller, not from this
 // body. The body names the adapter and the environment of the login. It reuses
 // the adapter login-session request fields; every field has the same meaning.
+//
+// The optional `overwrite` capture turns the login into a confirmed replacement.
+// The client sends it only after a stored token fails the agent test. The server
+// rotates the stored value under the captured version, so a concurrent change
+// fails closed with a stale conflict.
 //
 // `.strict()` rejects an extra field, so an agent id never validates. The scope
 // carries no agent id: a hire flow with no agent still starts one session.
@@ -26,6 +44,7 @@ export const startClaudeSetupTokenSessionRequestSchema = z.object({
   environmentId: z.string().uuid(),
   adapterType: z.enum(AGENT_ADAPTER_TYPES),
   ttlSeconds: z.number().int().min(60).max(24 * 60 * 60).optional(),
+  overwrite: claudeSetupTokenOverwriteSchema.optional(),
 }).strict();
 export type StartClaudeSetupTokenSessionRequest =
   z.infer<typeof startClaudeSetupTokenSessionRequestSchema>;
@@ -136,3 +155,15 @@ export const claudeSetupTokenCompletionResponseSchema = z.object({
 }).strict();
 export type ClaudeSetupTokenCompletionResponse =
   z.infer<typeof claudeSetupTokenCompletionResponseSchema>;
+
+// The stored Claude OAuth token status response schema. It carries only the
+// secret id and the latest version of the owner value; it carries no token.
+// `.strict()` rejects an extra field, so a token never validates. The status
+// route returns a fixed 404 for a missing or a foreign value, so a 200 body
+// always describes a present owner value.
+export const claudeOAuthTokenStatusResponseSchema = z.object({
+  secretId: z.string().uuid(),
+  latestVersion: z.number().int().min(1),
+}).strict();
+export type ClaudeOAuthTokenStatusResponse =
+  z.infer<typeof claudeOAuthTokenStatusResponseSchema>;

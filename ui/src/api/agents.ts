@@ -14,6 +14,8 @@ import type {
   ClaudeSetupTokenSessionOwnerResponse,
   ClaudeSetupTokenSessionPrompt,
   ClaudeSetupTokenCompletionResponse,
+  ClaudeSetupTokenOverwrite,
+  ClaudeOAuthTokenStatusResponse,
   SubmitBrowserCodeRequest,
   AgentKeyCreated,
   AgentRuntimeState,
@@ -267,9 +269,18 @@ export const agentsApi = {
   // response carries the panel mode; the authorization URL rides only through the
   // guarded prompt read. The completion response carries a non-secret
   // `storedSessionId` claim and no token.
+  // Reads the stored Claude OAuth token status for the authenticated owner. A
+  // 200 carries only the secret id and the latest version; a 404 means the owner
+  // has no stored value (indistinguishable from a foreign value). The client
+  // applies the stored token first and captures the version for a later
+  // version-checked overwrite.
+  getClaudeOAuthTokenStatus: (companyId: string) =>
+    api.get<ClaudeOAuthTokenStatusResponse>(
+      `/companies/${encodeURIComponent(companyId)}/claude-oauth-token-status`,
+    ),
   startClaudeSetupTokenLogin: (
     companyId: string,
-    data: { environmentId: string; ttlSeconds?: number },
+    data: { environmentId: string; ttlSeconds?: number; overwrite?: ClaudeSetupTokenOverwrite },
   ) =>
     api.post<ClaudeSetupTokenSessionOwnerResponse>(
       `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions`,

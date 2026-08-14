@@ -119,13 +119,17 @@ export interface SetupTokenSecretCompletion {
 /**
  * Builds the production owner-bound secret writer for the login session. It adapts
  * the session writer input `{ scope, sessionId, token }` to the secrets service
- * compare-and-set. It always writes with `mode: "first_write"`, so the login
- * creates the first owner value only. The confirm-replacement flow owns
- * `confirmed_rotation`; that flow supplies the expected version after the owner
- * confirms the replacement, so the session writer never rotates.
+ * compare-and-set. The session scope selects the mode. A scope with no overwrite
+ * capture writes with `mode: "first_write"`, so the login creates the first owner
+ * value only. A scope that carries the confirmed-overwrite capture writes with
+ * `mode: "confirmed_rotation"`, so the login rotates the stored value under the
+ * captured `expectedSecretId` and `expectedLatestVersion`. A concurrent change
+ * fails the compare-and-set with the fixed stale conflict, so the write leaves no
+ * partial state (Control 1).
  *
  * It reads the company and the owner only from the immutable session scope, so a
- * request cannot redirect the write to another owner (Control 4). It never logs
+ * request cannot redirect the write to another owner (Control 4). The overwrite
+ * capture carries no owner; the owner still comes from the scope. It never logs
  * the token and never puts the token in an error; it lets the secrets service
  * error propagate unchanged, and the session maps a rejection to the fixed,
  * non-secret storage error (Control 1).
@@ -134,10 +138,20 @@ export function createSetupTokenSecretWriter(deps: {
   secrets: SetupTokenSecretCompletion;
 }): SetupTokenSecretWriter {
   return async ({ scope, sessionId, token }) => {
+    const overwrite = scope.confirmedOverwrite ?? null;
+    const input = overwrite
+      ? {
+          sessionId,
+          mode: "confirmed_rotation" as const,
+          value: token,
+          expectedSecretId: overwrite.expectedSecretId,
+          expectedLatestVersion: overwrite.expectedLatestVersion,
+        }
+      : { sessionId, mode: "first_write" as const, value: token };
     await deps.secrets.completeClaudeOAuthUserSecret(
       scope.companyId,
       scope.ownerUserId,
-      { sessionId, mode: "first_write", value: token },
+      input,
       { userId: scope.ownerUserId },
     );
   };

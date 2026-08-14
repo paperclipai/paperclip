@@ -19,6 +19,7 @@ const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   hire: vi.fn(),
   testEnvironment: vi.fn(),
+  getClaudeOAuthTokenStatus: vi.fn(),
   startClaudeSetupTokenLogin: vi.fn(),
   getClaudeSetupTokenLoginStatus: vi.fn(),
   getClaudeSetupTokenLoginPrompt: vi.fn(),
@@ -204,6 +205,10 @@ describe("NewAgent Claude subscription login", () => {
     mockAgentsApi.list.mockResolvedValue([]);
     mockAgentsApi.hire.mockResolvedValue({ agent: { id: "agent-1", name: "CEO" } });
     mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    // The default owner has no stored Claude token, so the login is a first
+    // write. A test overrides this to prove the panel applies a stored token
+    // first and passes the captured version as a version-checked overwrite.
+    mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue(null);
     mockAgentsApi.startClaudeSetupTokenLogin.mockResolvedValue({
       sessionId: "claude-session-1",
       environmentId: "sandbox-1",
@@ -330,5 +335,34 @@ describe("NewAgent Claude subscription login", () => {
     // carries a token value.
     expect(result.container.textContent ?? "").not.toContain("sk-ant");
     expect(JSON.stringify(payload)).not.toContain("sk-ant");
+  });
+
+  it("applies a stored token first and starts a replacement login with the captured version", async () => {
+    // The owner already has a stored Claude token. The panel reads the status,
+    // applies the stored token first, and shows a replace action. A replacement
+    // login carries the captured secret id and version, so the server rotates the
+    // stored value under a version-checked overwrite instead of a first write.
+    mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue({
+      secretId: "44444444-4444-4444-8444-444444444444",
+      latestVersion: 3,
+    });
+
+    const result = await renderNewAgent();
+    roots.push(result.root);
+
+    await clickByText(result.container, "Test Agent");
+    // The panel shows the replace action only after it reads the stored-token
+    // status, so the button label proves the panel captured the version.
+    await flushUntil(() => Boolean(findButton(result.container, "Log in to replace")));
+    await clickByText(result.container, "Log in to replace");
+    await flushUntil(() => mockAgentsApi.startClaudeSetupTokenLogin.mock.calls.length > 0);
+
+    expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledWith("company-1", {
+      environmentId: "sandbox-1",
+      overwrite: {
+        expectedSecretId: "44444444-4444-4444-8444-444444444444",
+        expectedLatestVersion: 3,
+      },
+    });
   });
 });

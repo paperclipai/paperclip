@@ -87,6 +87,12 @@ export interface SetupTokenSessionScope {
   // flow with no agent id still resolves one record.
   adapterType: string;
   environmentId: string;
+  // The optional confirmed-overwrite capture. The client sends it when a stored
+  // token fails the agent test. The secret writer reads it and rotates the
+  // stored value under the captured version instead of a first write. It is not
+  // part of the session identity: the non-start routes rebuild the scope without
+  // it, so the full-scope match ignores it (see `resolveOwned`).
+  confirmedOverwrite?: { expectedSecretId: string; expectedLatestVersion: number } | null;
 }
 
 /** The terminal outcome of the live login process. */

@@ -2613,6 +2613,28 @@ export function secretService(db: Db) {
     return toClaudeOAuthResult(stamped);
   }
 
+  /**
+   * Reads the stored Claude Code OAuth value metadata for one owner. It returns
+   * only the secret id and the latest version, never the token. The client uses
+   * the version as the expected version of a later confirmed rotation.
+   *
+   * The reader derives no definition, no owner, and no secret id from a caller.
+   * It reads the fixed definition by the company and the fixed key. It reads the
+   * value by the company, the owner, and that definition. It returns null when no
+   * definition or no owner value exists, so a foreign value and a missing value
+   * look the same to the caller (Control 1). It never creates the definition.
+   */
+  async function readClaudeOAuthUserSecretStatusInternal(
+    companyId: string,
+    ownerUserId: string,
+  ): Promise<{ secretId: string; latestVersion: number } | null> {
+    const definition = await getUserSecretDefinitionByKey(companyId, CLAUDE_CODE_OAUTH_DEFINITION.key);
+    if (!definition || !isCompatibleClaudeOAuthDefinition(definition)) return null;
+    const existing = await getUserSecretValue({ companyId, ownerUserId, definitionId: definition.id });
+    if (!existing) return null;
+    return { secretId: existing.id, latestVersion: existing.latestVersion };
+  }
+
   async function removeSecretInternal(secretId: string) {
     const secret = await getById(secretId);
     if (!secret) return null;
@@ -3203,6 +3225,12 @@ export function secretService(db: Db) {
     // first value or rotates after a confirmed expected version. The session id
     // is the idempotency key for one completion.
     completeClaudeOAuthUserSecret: completeClaudeOAuthUserSecretInternal,
+
+    // The owner-bound Claude Code OAuth status read (Control 1). It returns only
+    // the secret id and the latest version for the owner value, or null. It never
+    // returns the token and never creates the definition. The status route reads
+    // the expected version from it before it captures the confirmed rotation.
+    readClaudeOAuthUserSecretStatus: readClaudeOAuthUserSecretStatusInternal,
 
     rotateCurrentUserSecretValue: async (
       companyId: string,

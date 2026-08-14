@@ -30,6 +30,7 @@ import {
   supportedEnvironmentDriversForAdapter,
   LOW_TRUST_REVIEW_PRESET,
   isValidBrowserCode,
+  claudeSetupTokenOverwriteSchema,
 } from "@paperclipai/shared";
 import {
   isForbiddenConfigEnvKey,
@@ -124,6 +125,8 @@ import type {
   ClaudeSetupTokenSessionOwnerResponse,
   ClaudeSetupTokenSessionPrompt,
   ClaudeSetupTokenCompletionResponse,
+  ClaudeOAuthTokenStatusResponse,
+  ClaudeSetupTokenOverwrite,
   SetupTokenTransportAdvisory,
 } from "@paperclipai/shared";
 import { SETUP_TOKEN_TRANSPORT_ADVISORY_CODE } from "@paperclipai/shared";
@@ -4651,6 +4654,33 @@ export function agentRoutes(
     adapterType: CLAUDE_SETUP_TOKEN_ADAPTER_TYPE,
   });
 
+  // The stored Claude OAuth token status read (Control 1, Control 2). It returns
+  // only the secret id and the latest version of the owner value; it returns no
+  // token. The client reads the version, applies the stored token first, and
+  // captures the version for a later confirmed overwrite. The route derives the
+  // owner only from the authenticated actor and reads the fixed Claude
+  // definition; it accepts no owner, no definition, and no secret id as input.
+  //
+  // The route returns the same fixed 404 for a missing owner value as the
+  // company gate returns for a non-member, so it discloses no existence
+  // distinction across owners or companies. It sets `Cache-Control: no-store`,
+  // so no cache holds the metadata.
+  router.get("/companies/:companyId/claude-oauth-token-status", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const ownerUserId = resolveCompanySessionOwner(req, companyId, res);
+    if (ownerUserId === null) return;
+    res.setHeader("Cache-Control", "no-store");
+    const status = await secretsSvc.readClaudeOAuthUserSecretStatus(companyId, ownerUserId);
+    if (!status) {
+      // A missing owner value returns the same fixed not-found as the non-member
+      // gate, so a member without a value and a non-member look the same.
+      res.status(404).json({ error: SETUP_TOKEN_SESSION_NOT_FOUND });
+      return;
+    }
+    const body: ClaudeOAuthTokenStatusResponse = status;
+    res.json(body);
+  });
+
   router.post("/companies/:companyId/setup-token-login-sessions", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -4670,6 +4700,22 @@ export function agentRoutes(
     if (!environmentId) {
       res.status(400).json({ error: "A sandbox environment is required to start a Claude login." });
       return;
+    }
+
+    // The optional confirmed-overwrite capture. The client sends it only after a
+    // stored token fails the agent test. The server binds it to the immutable
+    // session scope, so the final secret write rotates the stored value under the
+    // captured version instead of a first write. A concurrent change fails the
+    // compare-and-set and ends the login as a failure with no partial write. A
+    // malformed capture gets a fixed 400.
+    let confirmedOverwrite: ClaudeSetupTokenOverwrite | null = null;
+    if (req.body?.overwrite !== undefined && req.body?.overwrite !== null) {
+      const parsedOverwrite = claudeSetupTokenOverwriteSchema.safeParse(req.body.overwrite);
+      if (!parsedOverwrite.success) {
+        res.status(400).json({ error: "The Claude login overwrite capture is invalid." });
+        return;
+      }
+      confirmedOverwrite = parsedOverwrite.data;
     }
 
     res.setHeader("Cache-Control", "no-store");
@@ -4696,6 +4742,7 @@ export function agentRoutes(
       targetAgentId: null,
       adapterType,
       environmentId,
+      confirmedOverwrite,
     };
     try {
       const started = await setupTokenLoginService.start(scope);

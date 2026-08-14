@@ -230,6 +230,7 @@ import {
   claudeSetupTokenSessionPromptSchema,
   claudeSetupTokenSessionOwnerResponseSchema,
   claudeSetupTokenCompletionResponseSchema,
+  claudeOAuthTokenStatusResponseSchema,
 } from "@paperclipai/shared";
 import {
   COMPANY_IMPORT_TRANSFERS_API_PATH,
@@ -4609,6 +4610,25 @@ registry.registerPath({
 // confidential transport; the guard returns 403 when the transport is not
 // confidential. No response carries a token; the completion returns the
 // non-secret `storedSessionId` claim.
+//
+// The stored-token status read returns only the secret id and the latest version
+// of the owner value; it returns no token. The server derives the owner from the
+// authenticated actor. A missing or a foreign value returns the same fixed 404,
+// so the read discloses no existence distinction. The response is `no-store`.
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/claude-oauth-token-status",
+  tags: ["companies"],
+  summary: "Read the stored Claude OAuth token status for the authenticated owner",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: {
+    200: r.ok(claudeOAuthTokenStatusResponseSchema),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
 registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/setup-token-login-sessions",

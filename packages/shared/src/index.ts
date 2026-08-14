@@ -1475,7 +1475,11 @@ export {
   BROWSER_CODE_DISALLOWED_CHAR,
   storedSessionIdSchema,
   claudeSetupTokenCompletionResponseSchema,
+  claudeSetupTokenOverwriteSchema,
+  claudeOAuthTokenStatusResponseSchema,
   type StartClaudeSetupTokenSessionRequest,
+  type ClaudeSetupTokenOverwrite,
+  type ClaudeOAuthTokenStatusResponse,
   type BrowserCode,
 } from "./validators/claude-setup-token-session.js";
 export {

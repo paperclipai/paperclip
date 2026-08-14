@@ -517,6 +517,73 @@ describeEmbeddedPostgres("secretService Claude Code OAuth helper and compare-and
     ).rejects.toBeInstanceOf(HttpError);
   });
 
+  it("readClaudeOAuthUserSecretStatus returns the secret id and the version for the owner value", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1");
+    const svc = secretService(db);
+
+    const first = await svc.completeClaudeOAuthUserSecret(companyId, "user-1", {
+      sessionId: "session-a",
+      mode: "first_write",
+      value: "oauth-token-value",
+    });
+    const rotated = await svc.completeClaudeOAuthUserSecret(companyId, "user-1", {
+      sessionId: "session-b",
+      mode: "confirmed_rotation",
+      value: "rotated-token-value",
+      expectedSecretId: first.secretId,
+      expectedLatestVersion: 1,
+    });
+
+    const status = await svc.readClaudeOAuthUserSecretStatus(companyId, "user-1");
+    expect(status).toEqual({ secretId: first.secretId, latestVersion: rotated.latestVersion });
+    // The status carries no token value.
+    expect(JSON.stringify(status)).not.toContain("oauth-token-value");
+    expect(JSON.stringify(status)).not.toContain("rotated-token-value");
+  });
+
+  it("readClaudeOAuthUserSecretStatus returns null when the owner has no value", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1");
+    await seedCompanyMember(companyId, "user-2");
+    const svc = secretService(db);
+
+    // user-1 has a value; user-2 does not. The reader is owner-scoped, so it
+    // returns null for user-2 and the metadata for user-1.
+    await svc.completeClaudeOAuthUserSecret(companyId, "user-1", {
+      sessionId: "session-a",
+      mode: "first_write",
+      value: "oauth-token-value",
+    });
+
+    expect(await svc.readClaudeOAuthUserSecretStatus(companyId, "user-2")).toBeNull();
+    // No definition-only or empty company also returns null (the reader never
+    // creates the definition).
+    const emptyCompany = await seedCompany("Globex");
+    await seedCompanyMember(emptyCompany, "user-1");
+    expect(await svc.readClaudeOAuthUserSecretStatus(emptyCompany, "user-1")).toBeNull();
+  });
+
+  it("readClaudeOAuthUserSecretStatus is owner-scoped and company-scoped", async () => {
+    const companyA = await seedCompany("Acme");
+    const companyB = await seedCompany("Globex");
+    await seedCompanyMember(companyA, "user-1");
+    await seedCompanyMember(companyB, "user-1");
+    const svc = secretService(db);
+
+    await svc.completeClaudeOAuthUserSecret(companyA, "user-1", {
+      sessionId: "session-a",
+      mode: "first_write",
+      value: "oauth-token-value",
+    });
+
+    // The same user in another company has no value there.
+    expect(await svc.readClaudeOAuthUserSecretStatus(companyB, "user-1")).toBeNull();
+    // Another owner in the same company has no value.
+    await seedCompanyMember(companyA, "user-2");
+    expect(await svc.readClaudeOAuthUserSecretStatus(companyA, "user-2")).toBeNull();
+  });
+
   it("keeps the token out of every activity detail", async () => {
     const companyId = await seedCompany();
     await seedCompanyMember(companyId, "user-1");

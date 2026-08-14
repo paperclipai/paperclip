@@ -94,9 +94,21 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 const mockRunSecretRedactionRegistry = vi.hoisted(() => ({
   redactForRun: vi.fn(async (_companyId: string, _runId: string, value: unknown) => value),
 }));
+// The narrow secrets service the status route calls. The route reads only
+// `readClaudeOAuthUserSecretStatus`; a test drives its result to prove the route
+// derives the owner from the actor and discloses no existence distinction.
+const mockSecretService = vi.hoisted(() => ({
+  readClaudeOAuthUserSecretStatus: vi.fn(),
+}));
 
 function registerModuleMocks(): void {
   vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
+  vi.doMock("../services/secrets.js", async () => {
+    const actual = await vi.importActual<typeof import("../services/secrets.js")>(
+      "../services/secrets.js",
+    );
+    return { ...actual, secretService: () => mockSecretService };
+  });
   vi.doMock("../services/agents.js", () => ({ agentService: () => mockAgentService }));
   vi.doMock("../services/environments.js", () => ({
     environmentService: () => mockEnvironmentService,
@@ -184,6 +196,12 @@ interface TransportHandle {
   completeCredential: SetupTokenSecretWriter;
   submittedCodes: string[];
   secretWrites: string[];
+  // The overwrite capture the session scope carried on each secret write. A
+  // first-write login records null; a confirmed-overwrite login records the
+  // captured expected secret id and version.
+  overwriteCaptures: Array<
+    { expectedSecretId: string; expectedLatestVersion: number } | null
+  >;
   // Every cleanup record the store persisted. A test asserts the route writes no
   // empty environment scope, so a rejected environment never reaches the store.
   records: SetupTokenCleanupRecord[];
@@ -199,10 +217,16 @@ function buildTransport(opts: { onSubmit?: "complete" | "throw" | "pending" } = 
   const mode = opts.onSubmit ?? "complete";
   const submittedCodes: string[] = [];
   // The owner-bound secret writer records only the token it received in memory,
-  // so a test can prove the write ran without a durable secret sink.
+  // so a test can prove the write ran without a durable secret sink. It also
+  // records the overwrite capture from the session scope, so a test proves the
+  // start route threads the capture into the immutable scope.
   const secretWrites: string[] = [];
+  const overwriteCaptures: Array<
+    { expectedSecretId: string; expectedLatestVersion: number } | null
+  > = [];
   const completeCredential: SetupTokenSecretWriter = async (input) => {
     secretWrites.push(input.token);
+    overwriteCaptures.push(input.scope.confirmedOverwrite ?? null);
   };
   const rows = new Map<string, SetupTokenCleanupRecord>();
   const records: SetupTokenCleanupRecord[] = [];
@@ -263,7 +287,16 @@ function buildTransport(opts: { onSubmit?: "complete" | "throw" | "pending" } = 
       stop() {},
     };
   };
-  return { factory, leases, store, completeCredential, submittedCodes, secretWrites, records };
+  return {
+    factory,
+    leases,
+    store,
+    completeCredential,
+    submittedCodes,
+    secretWrites,
+    overwriteCaptures,
+    records,
+  };
 }
 
 // --- App builder with a capturing request logger -----------------------------
@@ -377,6 +410,9 @@ beforeEach(() => {
   registerModuleMocks();
   vi.clearAllMocks();
   useOwner();
+  // The default owner has no stored Claude value. A test overrides this to prove
+  // the status route returns the metadata for a present owner value.
+  mockSecretService.readClaudeOAuthUserSecretStatus.mockResolvedValue(null);
   mockAgentService.getById.mockResolvedValue({
     id: AGENT_ID,
     companyId: COMPANY_ID,
@@ -983,5 +1019,138 @@ describe("company-and-environment setup-token route — advisory transport", () 
     expect(codeRes.body.transportAdvisory).toEqual({ code: SETUP_TOKEN_TRANSPORT_ADVISORY_CODE });
     expect(transport.submittedCodes).toEqual([BROWSER_CODE]);
     expectNoSecret(JSON.stringify(codeRes.body));
+  });
+});
+
+// The stored-token status route and the overwrite capture are the two deltas of
+// the apply-stored-token-first flow. The status route derives the owner from the
+// actor and discloses no existence distinction. The start route threads the
+// confirmed-overwrite capture into the immutable session scope, so the final
+// secret write rotates the stored value instead of a first write.
+
+const STATUS_BASE = `/api/companies/${COMPANY_ID}/claude-oauth-token-status`;
+const STORED_SECRET_ID = "44444444-4444-4444-8444-444444444444";
+
+describe("company-and-environment stored-token status route", () => {
+  it("returns the owner metadata with no token and no-store, and never a token", async () => {
+    mockSecretService.readClaudeOAuthUserSecretStatus.mockResolvedValue({
+      secretId: STORED_SECRET_ID,
+      latestVersion: 3,
+    });
+    const { app } = await createApp({});
+
+    const res = await request(app).get(STATUS_BASE).send();
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ secretId: STORED_SECRET_ID, latestVersion: 3 });
+    expect(res.headers["cache-control"]).toBe("no-store");
+    // The owner comes from the actor, never from the request.
+    expect(mockSecretService.readClaudeOAuthUserSecretStatus).toHaveBeenCalledWith(
+      COMPANY_ID,
+      OWNER_USER_ID,
+    );
+    // The response carries no token.
+    expectNoSecret(JSON.stringify(res.body));
+  });
+
+  it("returns the fixed not-found for an owner with no value", async () => {
+    mockSecretService.readClaudeOAuthUserSecretStatus.mockResolvedValue(null);
+    const { app } = await createApp({});
+
+    const res = await request(app).get(STATUS_BASE).send();
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe(SETUP_TOKEN_SESSION_NOT_FOUND);
+    expect(res.headers["cache-control"]).toBe("no-store");
+  });
+
+  it("gives a same-company other user no existence distinction", async () => {
+    // The route derives the owner from the actor. The service returns the value
+    // only for the real owner, so a same-company other user gets the same fixed
+    // not-found as an owner with no value.
+    mockSecretService.readClaudeOAuthUserSecretStatus.mockImplementation(
+      async (_companyId: string, ownerUserId: string) =>
+        ownerUserId === OWNER_USER_ID ? { secretId: STORED_SECRET_ID, latestVersion: 1 } : null,
+    );
+    const { app } = await createApp({});
+
+    const ownerRes = await request(app).get(STATUS_BASE).send();
+    expect(ownerRes.status).toBe(200);
+
+    // A different same-company user reads the same path. The route derives the
+    // owner as that user and gets the fixed not-found.
+    useOwner(OTHER_USER_ID);
+    const otherRes = await request(app).get(STATUS_BASE).send();
+    expect(otherRes.status).toBe(404);
+    expect(otherRes.body.error).toBe(SETUP_TOKEN_SESSION_NOT_FOUND);
+    expect(otherRes.headers["cache-control"]).toBe("no-store");
+  });
+
+  it("gives a cross-company caller the fixed not-found and never reads the value", async () => {
+    // A signed-in board user who is not a member of the company. The company
+    // gate returns the fixed not-found before any owner-value read runs.
+    useCompanyMember(OWNER_USER_ID, [OTHER_COMPANY_ID]);
+    const { app } = await createApp({});
+
+    const res = await request(app).get(STATUS_BASE).send();
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe(SETUP_TOKEN_SESSION_NOT_FOUND);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    // The route never reads the owner value for a non-member.
+    expect(mockSecretService.readClaudeOAuthUserSecretStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe("company-and-environment login overwrite capture", () => {
+  it("threads the confirmed-overwrite capture into the session scope", async () => {
+    const transport = buildTransport({ onSubmit: "complete" });
+    const { app } = await createApp({ transport });
+
+    const startRes = await startCompanySession(app, {
+      environmentId: ENVIRONMENT_ID,
+      adapterType: "claude_local",
+      overwrite: { expectedSecretId: STORED_SECRET_ID, expectedLatestVersion: 2 },
+    });
+    expect(startRes.status, JSON.stringify(startRes.body)).toBe(201);
+    const sessionId = startRes.body.sessionId as string;
+
+    await request(app)
+      .post(`${COMPANY_BASE}/${sessionId}/code`)
+      .send({ browserCode: BROWSER_CODE });
+    await settle();
+
+    // The secret write ran with the overwrite capture from the session scope, so
+    // the writer selects a confirmed rotation instead of a first write.
+    expect(transport.secretWrites).toEqual([MINTED_TOKEN]);
+    expect(transport.overwriteCaptures).toEqual([
+      { expectedSecretId: STORED_SECRET_ID, expectedLatestVersion: 2 },
+    ]);
+  });
+
+  it("carries no overwrite capture for a plain first-write login", async () => {
+    const transport = buildTransport({ onSubmit: "complete" });
+    const { app } = await createApp({ transport });
+
+    const startRes = await startCompanySession(app);
+    const sessionId = startRes.body.sessionId as string;
+    await request(app)
+      .post(`${COMPANY_BASE}/${sessionId}/code`)
+      .send({ browserCode: BROWSER_CODE });
+    await settle();
+
+    expect(transport.overwriteCaptures).toEqual([null]);
+  });
+
+  it("rejects a malformed overwrite capture with a fixed 400", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+
+    const res = await startCompanySession(app, {
+      environmentId: ENVIRONMENT_ID,
+      adapterType: "claude_local",
+      overwrite: { expectedSecretId: "not-a-uuid", expectedLatestVersion: 0 },
+    });
+    expect(res.status).toBe(400);
+    // The malformed-capture 400 is a request-validation error like the adapter
+    // and the environment checks; it carries no secret in the response body.
+    expectNoSecret(JSON.stringify(res.body));
   });
 });
