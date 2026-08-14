@@ -4703,7 +4703,7 @@ export function shouldDeferFollowupWakeForSameIssue(input: {
   return false;
 }
 
-export function shouldSupersedeQueuedContinuationWakeForIssueAssignment(input: {
+function shouldSupersedeQueuedContinuationWakeForIssueAssignment(input: {
   activeExecutionRun: { status: string; contextSnapshot: unknown } | null;
   incomingContextSnapshot: Record<string, unknown> | null | undefined;
   issueStatus: string | null | undefined;
@@ -4712,20 +4712,11 @@ export function shouldSupersedeQueuedContinuationWakeForIssueAssignment(input: {
   if (input.issueStatus !== "todo") return false;
 
   const incomingWakeReason = readNonEmptyString(input.incomingContextSnapshot?.wakeReason);
-  const activeContext = parseObject(input.activeExecutionRun.contextSnapshot);
-  const isFreshBoardUnblockWake =
-    incomingWakeReason === "issue_status_changed" &&
-    isEphemeralStatusOnlyRecoverySession(activeContext);
-  if (incomingWakeReason !== "issue_assigned" && !isFreshBoardUnblockWake) return false;
+  if (incomingWakeReason !== "issue_assigned") return false;
 
+  const activeContext = parseObject(input.activeExecutionRun.contextSnapshot);
   const activeWakeReason = readNonEmptyString(activeContext.wakeReason);
   const activeRetryReason = readNonEmptyString(activeContext.retryReason);
-
-  // A board unblock is an explicit, newer decision than a cheap status-only
-  // recovery's stale narrative.  Retire that queued recovery before admitting
-  // the normal assignee wake, otherwise the recovery can reclaim the issue and
-  // immediately write the old block back.
-  if (isFreshBoardUnblockWake) return true;
 
   if (activeWakeReason === "issue_assigned") return false;
 
@@ -4739,22 +4730,17 @@ export function shouldSupersedeQueuedContinuationWakeForIssueAssignment(input: {
   );
 }
 
-export function shouldSupersedeQueuedRunForFreshIssueAssignment(input: {
+function shouldSupersedeQueuedRunForFreshIssueAssignment(input: {
   incomingWakeReason: string | null | undefined;
   issueStatus: string | null | undefined;
   queuedRun: Pick<typeof heartbeatRuns.$inferSelect, "status" | "contextSnapshot"> | null;
 }) {
+  if (input.incomingWakeReason !== "issue_assigned") return false;
   if (input.issueStatus !== "todo") return false;
   if (!input.queuedRun || input.queuedRun.status !== "queued") return false;
 
   const queuedContext = parseObject(input.queuedRun.contextSnapshot);
-  const isFreshBoardUnblockWake =
-    input.incomingWakeReason === "issue_status_changed" &&
-    isEphemeralStatusOnlyRecoverySession(queuedContext);
-  if (input.incomingWakeReason !== "issue_assigned" && !isFreshBoardUnblockWake) return false;
   if (deriveCommentId(queuedContext, null)) return false;
-
-  if (isFreshBoardUnblockWake) return true;
 
   const queuedWakeReason = readNonEmptyString(queuedContext.wakeReason);
   return queuedWakeReason !== "issue_assigned";
@@ -22122,10 +22108,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     if (issueId && sameScopeQueuedRun) {
       const incomingWakeReason = readNonEmptyString(enrichedContextSnapshot.wakeReason);
-      // A board unblock carries `issue_status_changed`, not `issue_assigned`.
-      // Let the same predicate inspect it so an ephemeral status-only recovery
-      // cannot survive this coalescing path and restore its stale block.
-      if (incomingWakeReason === "issue_assigned" || incomingWakeReason === "issue_status_changed") {
+      if (incomingWakeReason === "issue_assigned") {
         const issueStatus = await db
           .select({ status: issues.status })
           .from(issues)
@@ -22141,12 +22124,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ) {
           const staleQueuedContext = parseObject(sameScopeQueuedRun.contextSnapshot);
           const staleQueuedWakeReason = readNonEmptyString(staleQueuedContext.wakeReason);
-          const supersedingWakeLabel = incomingWakeReason === "issue_status_changed"
-            ? "board unblock wake"
-            : "fresh issue_assigned wake";
           await cancelRunInternal(
             sameScopeQueuedRun.id,
-            `Cancelled because a ${supersedingWakeLabel} superseded an older queued same-issue wake`,
+            "Cancelled because a fresh issue_assigned wake superseded an older queued same-issue wake",
             {
               errorCode: "superseded_by_fresh_issue_assignment",
               resultJson: {
@@ -22154,7 +22134,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 supersededRunWakeReason: staleQueuedWakeReason,
                 currentIssueStatus: issueStatus,
               },
-              eventMessage: `queued same-issue wake superseded by ${supersedingWakeLabel}`,
+              eventMessage: "queued same-issue wake superseded by fresh issue assignment",
               eventPayload: {
                 issueId,
                 currentIssueStatus: issueStatus,
