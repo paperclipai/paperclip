@@ -8801,7 +8801,12 @@ export function issueRoutes(
       req.actor.type === "agent" &&
       typeof updateFields.status === "string" &&
       updateFields.status !== existing.status &&
-      (isBlocked || (isClosed && !isClosedIssueStatus(updateFields.status)));
+      // Terminal dispositions close work; they do not resume it. The ordinary
+      // issue-mutation boundary above remains the authority check for these
+      // transitions, while only moves back into a live state need follow-up
+      // authority.
+      ((isBlocked && !isClosedIssueStatus(updateFields.status)) ||
+        (isClosed && !isClosedIssueStatus(updateFields.status)));
     if (resumeRequested !== true && req.actor.type === "agent" && reopenRequested === true) {
       if (!(await assertExplicitResumeIntentAllowed(req, res, existing))) return;
     }
