@@ -8788,7 +8788,10 @@ export function issueRoutes(
     if (
       (reopenRequested === true ||
         resumeRequested === true ||
-        Array.isArray(req.body.blockedByIssueIds)) &&
+        Array.isArray(req.body.blockedByIssueIds) ||
+        (req.actor.type === "agent" &&
+          typeof req.body.status === "string" &&
+          req.body.status !== existing.status)) &&
       await assertLowTrustControlPlaneDenied(req, res, existing.companyId, existing)
     ) {
       return;

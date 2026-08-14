@@ -1635,6 +1635,52 @@ describe("agent issue mutation checkout ownership", () => {
     },
   );
 
+  it.each(["done", "cancelled"] as const)(
+    "denies an in-boundary low-trust agent from applying a blocked %s disposition",
+    async (status) => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }));
+      mockAgentService.getById.mockImplementation(async (id: string) => {
+        if (id === peerAgentId) {
+          return makeAgent(peerAgentId, {
+            permissions: {
+              trustPreset: "low_trust_review",
+              authorizationPolicy: {
+                managedBy: "core-trust-preset",
+                trustBoundary: { mode: "low_trust_review", companyId, issueIds: [issueId] },
+              },
+            },
+          });
+        }
+        return id === ownerAgentId ? makeAgent(ownerAgentId) : null;
+      });
+
+      const res = await request(await createApp(peerActor()))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status, comment: `Low-trust terminal disposition attempt: ${status}.` });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe("Low-trust actors cannot use this control-plane surface");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["todo", "in_progress"] as const)(
+    "keeps a blocked-to-%s transition behind explicit follow-up authority",
+    async (status) => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }));
+
+      const res = await request(await createApp(peerActor()))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe("Agent cannot request follow-up for another agent's issue");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    },
+  );
+
   it("keeps an unrelated agent denied from applying a terminal disposition", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }));
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
