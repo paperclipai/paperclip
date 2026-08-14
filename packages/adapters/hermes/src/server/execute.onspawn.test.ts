@@ -157,6 +157,8 @@ describe("hermes-local adapter onSpawn forwarding", () => {
       timedOut: false,
       stdout: [
         "Session: planning",
+        "session id: planning",
+        "session saved: example",
         "Resume this session with:",
         "hermes --resume example",
         "This is ordinary answer content.",
@@ -173,6 +175,8 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     expect(result.resultJson).toMatchObject({
       result: [
         "Session: planning",
+        "session id: planning",
+        "session saved: example",
         "Resume this session with:",
         "hermes --resume example",
         "This is ordinary answer content.",

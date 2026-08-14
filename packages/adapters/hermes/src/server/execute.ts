@@ -264,10 +264,6 @@ export function buildPrompt(
 /** Regex to extract session ID from Hermes quiet-mode output: "session_id: <id>" */
 const SESSION_ID_REGEX = /^session_id:\s*(\S+)/m;
 
-/** Regex for legacy session output format */
-const SESSION_ID_REGEX_LEGACY =
-  /^session[_ ](?:id|saved):\s*([a-zA-Z0-9_-]+)/im;
-
 /** Regex to extract token usage from Hermes output. */
 const TOKEN_USAGE_REGEX =
   /tokens?[:\s]+(\d+)\s*(?:input|in)\b.*?(\d+)\s*(?:output|out)\b/i;
@@ -333,13 +329,9 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
       result.response = cleanResponse(stdout.slice(0, sessionLineIdx));
     }
   } else {
-    // Legacy format (non-quiet mode)
-    const legacyMatch = combined.match(SESSION_ID_REGEX_LEGACY);
-    if (legacyMatch?.[1]) {
-      result.sessionId = legacyMatch[1];
-    }
-    // In non-quiet mode, extract clean response from stdout by
-    // filtering out tool lines, system messages, and noise
+    // Non-quiet session-looking text is ambiguous because it can be ordinary
+    // answer prose. Preserve the response, but never persist a session id from
+    // this lane; resumable metadata is trusted only from quiet-mode output.
     const cleaned = cleanResponse(stdout);
     if (cleaned.length > 0) {
       result.response = cleaned;
