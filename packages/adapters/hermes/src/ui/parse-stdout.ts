@@ -224,9 +224,7 @@ export function parseHermesStdoutLine(
 
   // ── Session info line ────────────────────────────────────────────────
   if (
-    trimmed.startsWith("session_id:") ||
-    /^session:\s+\d{8}_\d{6}_[a-z0-9]+$/i.test(trimmed) ||
-    /^hermes\s+--resume\s+\d{8}_\d{6}_[a-z0-9]+$/i.test(trimmed)
+    trimmed.startsWith("session_id:")
   ) {
     return [{ kind: "system", ts, text: trimmed }];
   }

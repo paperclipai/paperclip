@@ -79,13 +79,13 @@ describe("parseHermesStdoutLine — ANSI stripping", () => {
     expect(result).toHaveLength(0);
   });
 
-  it("renders Hermes 0.20 resume footer lines as system metadata", () => {
+  it("keeps Hermes 0.20 non-quiet footer lines in assistant output", () => {
     for (const line of [
       "hermes --resume 20260814_144930_03a3ec",
       "Session: 20260814_144930_03a3ec",
     ]) {
       expect(parseHermesStdoutLine(line, TS)).toEqual([
-        { kind: "system", ts: TS, text: line },
+        { kind: "assistant", ts: TS, text: line },
       ]);
     }
   });

@@ -13,6 +13,7 @@
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 
 import {
+  DEFAULT_MAX_TURNS_PER_RUN,
   DEFAULT_TIMEOUT_SEC,
 } from "../shared/constants.js";
 
@@ -47,11 +48,14 @@ export function buildHermesConfig(
   // default is normally hidden. Retain this fallback only for callers that do
   // not provide schema values (for example, older onboarding integrations).
   ac.timeoutSec = DEFAULT_TIMEOUT_SEC;
-  if (!v.adapterSchemaValues && v.maxTurnsPerRun > 0) {
-    ac.maxTurnsPerRun = v.maxTurnsPerRun;
+  if (!v.adapterSchemaValues) {
+    const maxTurnsPerRun = v.maxTurnsPerRun > 0
+      ? v.maxTurnsPerRun
+      : DEFAULT_MAX_TURNS_PER_RUN;
+    ac.maxTurnsPerRun = maxTurnsPerRun;
     // Scale timeout to match: ~20s per tool turn is generous headroom.
     // Never go below the default (1800s / 30 min).
-    ac.timeoutSec = Math.max(DEFAULT_TIMEOUT_SEC, v.maxTurnsPerRun * 20);
+    ac.timeoutSec = Math.max(DEFAULT_TIMEOUT_SEC, maxTurnsPerRun * 20);
   }
 
   // Session persistence (default: on)
