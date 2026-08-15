@@ -134,6 +134,12 @@ export const updateAgentSchema = createAgentSchema
 
 export type UpdateAgent = z.infer<typeof updateAgentSchema>;
 
+export const acquireAgentExecutionFenceSchema = z.object({
+  reason: z.string().trim().min(1).max(500),
+}).strict();
+
+export type AcquireAgentExecutionFence = z.infer<typeof acquireAgentExecutionFenceSchema>;
+
 export const updateAgentInstructionsPathSchema = z.object({
   path: z.string().trim().min(1).nullable(),
   adapterConfigKey: z.string().trim().min(1).optional(),

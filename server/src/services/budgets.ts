@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, lt, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -217,12 +217,33 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       await db
         .update(agents)
         .set({
+          executionFenceRestoreStatus: "paused",
+          executionFencePriorPauseReason: sql`case
+            when ${agents.executionFencePriorStatus} = 'paused' then ${agents.executionFencePriorPauseReason}
+            else 'budget'
+          end`,
+          executionFencePriorPausedAt: sql`case
+            when ${agents.executionFencePriorStatus} = 'paused' then ${agents.executionFencePriorPausedAt}
+            else ${now.toISOString()}::timestamptz
+          end`,
+          updatedAt: now,
+        })
+        .where(and(eq(agents.id, policy.scopeId), isNotNull(agents.executionFenceId)));
+      await db
+        .update(agents)
+        .set({
           status: "paused",
           pauseReason: "budget",
           pausedAt: now,
           updatedAt: now,
         })
-        .where(and(eq(agents.id, policy.scopeId), inArray(agents.status, ["active", "idle", "running", "error"])));
+        .where(
+          and(
+            eq(agents.id, policy.scopeId),
+            isNull(agents.executionFenceId),
+            inArray(agents.status, ["active", "idle", "running", "error"]),
+          ),
+        );
       return;
     }
 
@@ -264,12 +285,36 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       await db
         .update(agents)
         .set({
+          executionFenceRestoreStatus: sql`case
+            when ${agents.executionFencePriorStatus} = 'running' then 'idle'
+            else ${agents.executionFencePriorStatus}
+          end`,
+          executionFencePriorPauseReason: null,
+          executionFencePriorPausedAt: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(agents.id, policy.scopeId),
+            isNotNull(agents.executionFenceId),
+            eq(agents.executionFencePriorPauseReason, "budget"),
+          ),
+        );
+      await db
+        .update(agents)
+        .set({
           status: "idle",
           pauseReason: null,
           pausedAt: null,
           updatedAt: now,
         })
-        .where(and(eq(agents.id, policy.scopeId), eq(agents.pauseReason, "budget")));
+        .where(
+          and(
+            eq(agents.id, policy.scopeId),
+            isNull(agents.executionFenceId),
+            eq(agents.pauseReason, "budget"),
+          ),
+        );
       return;
     }
 

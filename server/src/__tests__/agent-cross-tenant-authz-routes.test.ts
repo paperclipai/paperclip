@@ -8,6 +8,7 @@ vi.unmock("node:http");
 const agentId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
 const keyId = "33333333-3333-4333-8333-333333333333";
+const fenceId = "55555555-5555-4555-8555-555555555555";
 
 const baseAgent = {
   id: agentId,
@@ -27,6 +28,12 @@ const baseAgent = {
   spentMonthlyCents: 0,
   pauseReason: null,
   pausedAt: null,
+  executionFenceId: null,
+  executionFencePriorStatus: null,
+  executionFenceRestoreStatus: null,
+  executionFenceReason: null,
+  executionFenceActorUserId: null,
+  executionFenceAcquiredAt: null,
   permissions: { canCreateAgents: false },
   lastHeartbeatAt: null,
   metadata: null,
@@ -80,6 +87,12 @@ const mockBudgetService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   cancelActiveForAgent: vi.fn(),
+}));
+
+const mockAgentExecutionFenceService = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  get: vi.fn(),
+  release: vi.fn(),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({
@@ -203,6 +216,7 @@ vi.mock("../routes/authz.js", async () => {
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
+  agentExecutionFenceService: () => mockAgentExecutionFenceService,
   agentInstructionsService: () => mockAgentInstructionsService,
   accessService: () => mockAccessService,
   approvalService: () => mockApprovalService,
@@ -289,6 +303,7 @@ function resetMockDefaults() {
   for (const mock of Object.values(mockApprovalService)) mock.mockReset();
   for (const mock of Object.values(mockBudgetService)) mock.mockReset();
   for (const mock of Object.values(mockHeartbeatService)) mock.mockReset();
+  for (const mock of Object.values(mockAgentExecutionFenceService)) mock.mockReset();
   for (const mock of Object.values(mockIssueApprovalService)) mock.mockReset();
   for (const mock of Object.values(mockIssueService)) mock.mockReset();
   for (const mock of Object.values(mockSecretService)) mock.mockReset();
@@ -338,6 +353,42 @@ function resetMockDefaults() {
   mockAccessService.ensureMembership.mockImplementation(async () => undefined);
   mockAccessService.setPrincipalPermission.mockImplementation(async () => undefined);
   mockHeartbeatService.cancelActiveForAgent.mockImplementation(async () => undefined);
+  mockAgentExecutionFenceService.acquire.mockImplementation(async (input: {
+    agentId: string;
+    companyId: string;
+    reason: string;
+  }) => ({
+    fenceId,
+    agentId: input.agentId,
+    companyId: input.companyId,
+    priorStatus: "idle",
+    restoreStatus: "idle",
+    acquiredAt: new Date("2026-04-11T00:10:00.000Z"),
+    reason: input.reason,
+    drained: true,
+    queuedRunIds: [],
+    runningRunIds: [],
+    pendingRunIds: [],
+    queuedWakeupIds: [],
+  }));
+  mockAgentExecutionFenceService.get.mockImplementation(async () => ({
+    fenceId,
+    agentId,
+    companyId,
+    priorStatus: "idle",
+    restoreStatus: "idle",
+    acquiredAt: new Date("2026-04-11T00:10:00.000Z"),
+    reason: "maintenance",
+    drained: true,
+    queuedRunIds: [],
+    runningRunIds: [],
+    pendingRunIds: [],
+    queuedWakeupIds: [],
+  }));
+  mockAgentExecutionFenceService.release.mockImplementation(async () => ({
+    ...baseAgent,
+    status: "idle",
+  }));
   mockLogActivity.mockImplementation(async () => undefined);
 }
 
@@ -435,6 +486,78 @@ describe.sequential("agent cross-tenant route authorization", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Board access required");
     expect(mockAgentService.clearError).not.toHaveBeenCalled();
+  });
+
+  it("requires board access before acquiring an execution fence", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post(`/api/agents/${agentId}/execution-fence`)
+        .send({ reason: "maintenance" }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Board access required");
+    expect(mockAgentExecutionFenceService.acquire).not.toHaveBeenCalled();
+  });
+
+  it("enforces company access before acquiring an execution fence", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "cross-company-user",
+      companyIds: [],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post(`/api/agents/${agentId}/execution-fence`)
+        .send({ reason: "maintenance" }),
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Agent not found");
+    expect(mockAgentExecutionFenceService.acquire).not.toHaveBeenCalled();
+  });
+
+  it("acquires and releases an exact execution fence as the board actor", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: [companyId],
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const acquired = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post(`/api/agents/${agentId}/execution-fence`)
+        .send({ reason: "maintenance" }),
+    );
+
+    expect(acquired.status).toBe(201);
+    expect(acquired.body).toMatchObject({ fenceId, agentId, companyId, drained: true });
+    expect(mockAgentExecutionFenceService.acquire).toHaveBeenCalledWith({
+      agentId,
+      companyId,
+      actorUserId: "board-user",
+      reason: "maintenance",
+    });
+    const released = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/execution-fence/${fenceId}/release`).send({}),
+    );
+
+    expect(released.status).toBe(200);
+    expect(mockAgentExecutionFenceService.release).toHaveBeenCalledWith(agentId, fenceId, {
+      actorUserId: "board-user",
+    });
   });
 
   it("clears error agents and records a distinct audit action", async () => {

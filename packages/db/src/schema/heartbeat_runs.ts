@@ -16,6 +16,7 @@ export const heartbeatRuns = pgTable(
     responsibleUserId: text("responsible_user_id"),
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
+    executionFinalizedAt: timestamp("execution_finalized_at", { withTimezone: true }),
     error: text("error"),
     wakeupRequestId: uuid("wakeup_request_id").references(() => agentWakeupRequests.id),
     exitCode: integer("exit_code"),

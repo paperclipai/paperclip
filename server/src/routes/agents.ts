@@ -7,6 +7,7 @@ import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
   agentMineInboxQuerySchema,
+  acquireAgentExecutionFenceSchema,
   ADAPTER_AGNOSTIC_KEYS,
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   createAgentKeySchema,
@@ -43,6 +44,7 @@ import { trackAgentCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import {
   agentService,
+  agentExecutionFenceService,
   agentInstructionsService,
   accessService,
   approvalService,
@@ -308,6 +310,7 @@ export function agentRoutes(
 
   const router = Router();
   const svc = agentService(db);
+  const executionFences = agentExecutionFenceService(db);
   const access = accessService(db);
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
@@ -3916,6 +3919,51 @@ export function agentRoutes(
     });
 
     res.json(agent);
+  });
+
+  router.post(
+    "/agents/:id/execution-fence",
+    validate(acquireAgentExecutionFenceSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const id = req.params.id as string;
+      const agent = await getAccessibleAgent(req, res, id);
+      if (!agent) return;
+
+      const fence = await executionFences.acquire({
+        agentId: agent.id,
+        companyId: agent.companyId,
+        actorUserId: req.actor.userId ?? null,
+        reason: req.body.reason,
+      });
+
+      res.status(201).json(fence);
+    },
+  );
+
+  router.get("/agents/:id/execution-fence/:fenceId", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const fenceId = req.params.fenceId as string;
+    if (!isUuidLike(fenceId)) throw badRequest("Invalid execution fence id");
+    const agent = await getAccessibleAgent(req, res, id);
+    if (!agent) return;
+    res.json(await executionFences.get(agent.id, fenceId));
+  });
+
+  router.post("/agents/:id/execution-fence/:fenceId/release", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const fenceId = req.params.fenceId as string;
+    if (!isUuidLike(fenceId)) throw badRequest("Invalid execution fence id");
+    const agent = await getAccessibleAgent(req, res, id);
+    if (!agent) return;
+
+    const released = await executionFences.release(agent.id, fenceId, {
+      actorUserId: req.actor.userId ?? null,
+    });
+
+    res.json(released);
   });
 
   router.post("/agents/:id/pause", async (req, res) => {
