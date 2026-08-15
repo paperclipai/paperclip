@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyCodexAuthRefreshFailure,
+  classifyCodexUnsupportedModelError,
   extractCodexRetryNotBefore,
   isCodexHarnessCrash,
   isCodexProviderQuotaError,
@@ -219,6 +220,42 @@ describe("isCodexTransientUpstreamError", () => {
     expect(isCodexProviderQuotaError({ errorMessage })).toBe(true);
     expect(isCodexTransientUpstreamError({ errorMessage })).toBe(false);
     expect(extractCodexRetryNotBefore({ errorMessage })).toBeNull();
+  });
+
+  it("classifies a rejected model id as a permanent configuration error and names it", () => {
+    // The exact provider message that failed 12 identical runs of one task.
+    const errorMessage =
+      "The 'gpt-5.3-codex-spark' model is not supported when using Codex with a ChatGPT plan (HTTP 400)";
+
+    expect(classifyCodexUnsupportedModelError({ errorMessage })).toEqual({
+      modelId: "gpt-5.3-codex-spark",
+    });
+    expect(isCodexProviderQuotaError({ errorMessage })).toBe(false);
+    expect(isCodexTransientUpstreamError({ errorMessage })).toBe(false);
+  });
+
+  it.each([
+    "model_not_found: the requested model does not exist",
+    "Unknown model: gpt-9-imaginary",
+    "unsupported model requested by the client",
+  ])("classifies other rejected-model phrasings as permanent: %s", (errorMessage) => {
+    expect(classifyCodexUnsupportedModelError({ errorMessage })).not.toBeNull();
+  });
+
+  // Capacity is transient and also names a model; misfiring here would block an
+  // issue for a human over an outage that clears by itself.
+  it("does not classify model-capacity messages as an unsupported model", () => {
+    expect(
+      classifyCodexUnsupportedModelError({
+        errorMessage: "The requested model is at capacity. Please try again later.",
+      }),
+    ).toBeNull();
+    expect(
+      classifyCodexUnsupportedModelError({
+        errorMessage:
+          "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at 11:31 PM.",
+      }),
+    ).toBeNull();
   });
 
   it("parses explicit timezone hints on usage-limit retry windows", () => {

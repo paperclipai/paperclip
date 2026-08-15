@@ -60,6 +60,7 @@ import {
 import {
   parseCodexJsonl,
   classifyCodexAuthRefreshFailure,
+  classifyCodexUnsupportedModelError,
   extractCodexRetryNotBefore,
   isCodexHarnessCrash,
   isCodexProviderQuotaError,
@@ -1465,10 +1466,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           stderr: attempt.proc.stderr,
           errorMessage: fallbackErrorMessage,
         });
+      // Permanent: the provider rejected the configured model id. Checked
+      // before the harness-crash heuristic because a 400 can also abort the
+      // protocol stream mid-turn, which would otherwise look like a crash and
+      // be retried forever against the same bad config.
+      const unsupportedModel =
+        (attempt.proc.exitCode ?? 0) !== 0 &&
+        !authRefreshFailure &&
+        !providerQuota &&
+        !transientUpstream
+          ? classifyCodexUnsupportedModelError({
+              stdout: attempt.proc.stdout,
+              stderr: attempt.proc.stderr,
+              errorMessage: fallbackErrorMessage,
+            })
+          : null;
       const harnessCrash =
         !authRefreshFailure &&
         !providerQuota &&
         !transientUpstream &&
+        !unsupportedModel &&
         isCodexHarnessCrash({
           exitCode: attempt.proc.exitCode,
           sawProtocolEvent: attempt.parsed.sawProtocolEvent,
@@ -1476,7 +1493,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       const errorFamily =
         authRefreshFailure ??
-        (providerQuota ? "provider_quota" : transientUpstream || harnessCrash ? "transient_upstream" : null);
+        (providerQuota
+          ? "provider_quota"
+          : unsupportedModel
+          ? "configuration_incomplete"
+          : transientUpstream || harnessCrash
+          ? "transient_upstream"
+          : null);
 
       return {
         exitCode: attempt.proc.exitCode,
@@ -1496,6 +1519,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             ? authRefreshFailure
             : providerQuota
             ? "provider_quota"
+            : unsupportedModel
+            ? "model_not_found"
             : transientUpstream
             ? "codex_transient_upstream"
             : harnessCrash
@@ -1517,6 +1542,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
           ...(errorFamily ? { errorFamily } : {}),
+          ...(unsupportedModel
+            ? {
+                unsupportedModel: {
+                  configuredModel: model,
+                  rejectedModel: unsupportedModel.modelId ?? model,
+                },
+              }
+            : {}),
           ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
           ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
           ...(providerQuota && transientRetryNotBefore ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),

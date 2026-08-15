@@ -12,6 +12,18 @@ const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
 const CODEX_PROVIDER_QUOTA_RE =
   /(?:you(?:'|’)ve hit your usage limit|usage limit|model (?:is )?at capacity|at capacity for this model|capacity limit)/i;
+// A rejected model id is a *permanent* configuration failure: the same
+// adapterConfig.model will be rejected identically on every retry, so the run
+// must fail once and route to a human instead of re-incarnating. Anchored on
+// the model being the rejected subject ("model ... is not supported", "unknown
+// model", model_not_found) so it never matches capacity/quota text, which is
+// transient and is checked first by the caller.
+const CODEX_UNSUPPORTED_MODEL_RE =
+  /(?:model_not_found|\bmodel\b[^\n]{0,120}?\bis not supported\b|\bis not supported\b[^\n]{0,120}?\bmodel\b|(?:requested |the )?model\s+[^\n]{0,120}?(?:does not exist|not found|is invalid|is unknown)|unknown model|invalid model|unsupported model|model\s+[^\n]{0,80}?\bis not available\b)/i;
+// Pull the offending id out of the provider message so the blocked-issue notice
+// can name the exact adapterConfig.model value an operator has to change.
+const CODEX_UNSUPPORTED_MODEL_ID_RE =
+  /['"`]([A-Za-z0-9._:\/-]{2,120})['"`]|\bmodel\s+([A-Za-z0-9._:\/-]{2,120})\b/i;
 const CODEX_REFRESH_TOKEN_REUSED_RE =
   /(?:refresh[_\s-]?token[_\s-]?reused|refresh token (?:has )?already been used|token reuse detected)/i;
 const CODEX_REFRESH_TOKEN_EXPIRED_RE =
@@ -325,4 +337,34 @@ export function isCodexProviderQuotaError(input: {
 }): boolean {
   const haystack = buildCodexErrorHaystack(input);
   return CODEX_PROVIDER_QUOTA_RE.test(haystack) || extractCodexRetryNotBefore(input) != null;
+}
+
+/**
+ * A model the provider refuses to serve (HTTP 400 unsupported/unknown model) is
+ * a permanent configuration failure, not a transient upstream one. Retrying
+ * re-sends the same rejected `adapterConfig.model` and burns a full run's
+ * tokens per attempt for no possible progress, so the classification exists to
+ * stop the retry loop at the first failure.
+ *
+ * Quota/capacity text wins over this check in the caller: "model is at
+ * capacity" also names a model but clears on its own, so it must stay
+ * transient.
+ */
+export function classifyCodexUnsupportedModelError(input: {
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): { modelId: string | null } | null {
+  if (isCodexProviderQuotaError(input)) return null;
+  const haystack = buildCodexErrorHaystack(input);
+  const match = haystack.match(CODEX_UNSUPPORTED_MODEL_RE);
+  if (!match) return null;
+
+  // Scope id extraction to the matched sentence so an unrelated quoted string
+  // elsewhere in stdout is not reported as the offending model.
+  const sentenceStart = haystack.lastIndexOf("\n", match.index ?? 0) + 1;
+  const sentenceEnd = haystack.indexOf("\n", (match.index ?? 0) + match[0].length);
+  const sentence = haystack.slice(sentenceStart, sentenceEnd === -1 ? undefined : sentenceEnd);
+  const idMatch = sentence.match(CODEX_UNSUPPORTED_MODEL_ID_RE);
+  return { modelId: idMatch?.[1] ?? idMatch?.[2] ?? null };
 }
