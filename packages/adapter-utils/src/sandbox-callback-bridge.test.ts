@@ -1460,4 +1460,103 @@ describe("sandbox callback bridge", () => {
     expect(script).toContain("/workspace/b");
     expect(script).toContain("/workspace/c");
   });
+
+  it("emits a schtasks-based launch script for MSYS/Cygwin/Windows targets", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-runtime-"));
+    cleanupDirs.push(rootDir);
+
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+
+    const runner = createExecRunner();
+    const capturedScripts: string[] = [];
+    const capturingRunner = {
+      execute: async (input: {
+        command: string;
+        args?: string[];
+        cwd?: string;
+        env?: Record<string, string>;
+        stdin?: string;
+        timeoutMs?: number;
+      }): Promise<RunProcessResult> => {
+        if ((input.command === "sh" || input.command === "bash") && typeof input.args?.[1] === "string") {
+          capturedScripts.push(input.args[1]);
+        }
+        return runner.execute(input);
+      },
+    };
+
+    const bridgeAsset = await createSandboxCallbackBridgeAsset();
+    cleanupFns.push(bridgeAsset.cleanup);
+
+    const prepared = await prepareCommandManagedRuntime({
+      runner,
+      spec: {
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+      },
+      adapterKey: "bridge-test",
+      workspaceLocalDir: remoteWorkspaceDir,
+      assets: [
+        {
+          key: "bridge",
+          localDir: bridgeAsset.localDir,
+        },
+      ],
+    });
+
+    const queueDir = path.posix.join(prepared.runtimeRootDir, "paperclip-bridge");
+    const bridgeToken = createSandboxCallbackBridgeToken();
+
+    const bridge = await startSandboxCallbackBridgeServer({
+      runner: capturingRunner,
+      remoteCwd: remoteWorkspaceDir,
+      assetRemoteDir: prepared.assetDirs.bridge,
+      queueDir,
+      bridgeToken,
+      timeoutMs: 30_000,
+    });
+    cleanupFns.push(async () => {
+      await bridge.stop();
+    });
+
+    const startScript = capturedScripts.join("\n");
+    if (process.env.PAPERCLIP_DUMP_START_SCRIPT) {
+      // eslint-disable-next-line no-console
+      console.log(`\n===DUMP_START_SCRIPT_BEGIN===\n${startScript}\n===DUMP_START_SCRIPT_END===`);
+    }
+    // Windows (MSYS/git bash) detection gate (uname -s matched case-insensitively).
+    expect(startScript).toContain("mingw|msys|cygwin|^nt");
+    // Wrapper .cmd generation: crlf header, env baking, PowerShell Start-Process
+    // (writes the real Windows PID so teardown can taskkill it), and a persisted
+    // task name so stop() can end/delete the scheduled task.
+    expect(startScript).toContain("printf '@echo off");
+    expect(startScript).toContain("PAPERCLIP_BRIDGE_QUEUE_DIR");
+    expect(startScript).toContain("Start-Process");
+    expect(startScript).toContain("-PassThru");
+    expect(startScript).toContain("task-name.txt");
+    // The PowerShell command line is assembled in a bash variable with
+    // escaped double quotes (\"$NODE_WIN\"), so paths with spaces survive
+    // cmd.exe's pass-through to PowerShell.
+    expect(startScript).toContain("PSCMD=");
+    expect(startScript).toContain('\\"$NODE_WIN\\"');
+    expect(startScript).toContain('\\"$ENTRY_WIN\\"');
+    expect(startScript).toContain('powershell -NoProfile -ExecutionPolicy Bypass -Command "%s"');
+    // schtasks one-shot registration + run (detaches the process from the SSH session).
+    expect(startScript).toContain("schtasks /create");
+    expect(startScript).toContain("schtasks /run");
+    // POSIX fallback is preserved for non-Windows targets.
+    expect(startScript).toContain("nohup");
+
+    // Tear down explicitly so the Windows stop branch runs and is captured
+    // (afterEach would otherwise stop the bridge after the assertions).
+    await bridge.stop();
+
+    const stopScript = capturedScripts.join("\n");
+    // stop() must tear down the Windows bridge via schtasks /end + /delete and
+    // taskkill (git bash kill cannot address Windows PIDs).
+    expect(stopScript).toContain("schtasks /end");
+    expect(stopScript).toContain("schtasks /delete");
+    expect(stopScript).toContain("taskkill /PID");
+  });
 });

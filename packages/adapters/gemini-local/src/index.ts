@@ -53,7 +53,8 @@ Core fields:
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): Gemini model id. Defaults to auto.
 - engine (string, optional): leave unset/auto to use ACP when prerequisites pass and fall back to the Gemini CLI with diagnostics. Use "cli" to pin the CLI lane or "acp" to require ACP.
-- sandbox (boolean, optional): run in sandbox mode (default: false, passes --sandbox=none)
+- cliCompat (string, optional): "gemini" (default) or "agy" to drive the Google Antigravity CLI. In agy mode the CLI lane emits --dangerously-skip-permissions instead of --approval-mode yolo, drops --sandbox=none (agy uses a plain --sandbox bool flag), maps session resume to --conversation, and parses agy's stream-json event schema.
+- sandbox (boolean, optional): run in sandbox mode (default: false, passes --sandbox=none; ignored in agy mode)
 - command (string, optional): defaults to "gemini"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
