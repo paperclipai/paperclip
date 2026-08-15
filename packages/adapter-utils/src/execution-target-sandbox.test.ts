@@ -15,6 +15,7 @@ import {
   ensureAdapterExecutionTargetCommandResolvable,
   formatAdapterExecutionTimeoutErrorMessage,
   formatAdapterExecutionTimeoutStartLogLine,
+  postedIssueCommentLogMarker,
   resolveAdapterExecutionTargetTimeout,
   resolveAdapterExecutionTargetTimeoutSec,
   runAdapterExecutionTargetProcess,
@@ -74,6 +75,13 @@ function createRecordingTraceContext(): {
 
 describe("sandbox adapter execution targets", () => {
   const cleanupDirs: string[] = [];
+
+  it("records successful issue comment ids for attribution recovery", () => {
+    expect(postedIssueCommentLogMarker("POST", "/api/issues/issue-1/comments", 201, '{"id":"comment-1"}'))
+      .toBe("comment id: comment-1\n");
+    expect(postedIssueCommentLogMarker("POST", "/api/issues/issue-1/comments", 401, '{"id":"comment-1"}'))
+      .toBeNull();
+  });
 
   afterEach(async () => {
     vi.unstubAllEnvs();

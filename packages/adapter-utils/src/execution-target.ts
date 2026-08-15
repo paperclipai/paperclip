@@ -56,6 +56,18 @@ import type { LocalProcessSandboxOptions } from "./local-process-sandbox.js";
 
 export type { RuntimeProgressSink } from "./runtime-progress.js";
 
+export function postedIssueCommentLogMarker(method: string, requestPath: string, status: number, body: string) {
+  if (method !== "POST" || !/^\/api\/issues\/[^/]+\/comments$/.test(requestPath) || status < 200 || status >= 300) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(body) as { id?: unknown };
+    return typeof parsed.id === "string" && parsed.id.length > 0 ? `comment id: ${parsed.id}\n` : null;
+  } catch {
+    return null;
+  }
+}
+
 export type AdapterWorkspaceRealizationMode = "copy" | "in_place";
 
 export interface AdapterWorkspacePathAlias {
@@ -2303,10 +2315,13 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
             `[paperclip] Bridge proxy response ${response.status} for ${method} ${request.path}${request.query ? `?${request.query}` : ""}\n`,
           );
         }
+        const responseBody = await readBridgeForwardResponseBody(response, maxBodyBytes);
+        const commentMarker = postedIssueCommentLogMarker(method, request.path, response.status, responseBody);
+        if (commentMarker) await onLog("stdout", commentMarker);
         return {
           status: response.status,
           headers: buildBridgeResponseHeaders(response),
-          body: await readBridgeForwardResponseBody(response, maxBodyBytes),
+          body: responseBody,
         };
       },
     });
