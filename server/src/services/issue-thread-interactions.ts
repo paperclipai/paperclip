@@ -226,6 +226,7 @@ type ResolvedInteractionResult = {
 
 type IssueThreadInteractionRow = typeof issueThreadInteractions.$inferSelect;
 type IssueTouchDb = Pick<Db, "update">;
+type IssueStatusReadDb = Pick<Db, "select">;
 
 const DEFAULT_RESOLVER_POLICY_BY_KIND: Record<IssueThreadInteractionKind, IssueThreadInteractionResolverPolicy> = {
   suggest_tasks: "board_only",
@@ -490,6 +491,40 @@ async function touchIssue(db: IssueTouchDb, issueId: string) {
 
 function isTerminalIssueStatus(status: string) {
   return status === "done" || status === "cancelled";
+}
+
+/**
+ * A resolution on a closed issue must not look like it worked.
+ *
+ * `queueResolvedInteractionContinuationWakeup` (`server/src/routes/issues.ts`)
+ * drops the continuation wakeup when the issue is `done`/`cancelled`, so an
+ * accept/reject/answer there sets the card to a resolved status, writes the
+ * activity entry, returns 200 — and wakes nobody. The card reads as answerable
+ * in the UI, someone answers it in good faith, and nothing happens: no error,
+ * no hint.
+ *
+ * Closing an issue expires its pending cards, so in the normal case the
+ * resolution routes already fail on the `status !== "pending"` check. This guard
+ * covers what that leaves: rows filed before auto-expiry-on-close shipped, and
+ * any path that put an issue into a terminal status without going through it.
+ *
+ * Deliberately not applied to the administrative resolutions (withdraw, cancel):
+ * retiring a stale card on a closed issue is exactly the cleanup those exist for.
+ */
+async function assertIssueOpenForInteractionResolution(
+  db: IssueStatusReadDb,
+  issue: { id: string; companyId: string },
+) {
+  const [row] = await db
+    .select({ status: issues.status })
+    .from(issues)
+    .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
+  if (!row || !isTerminalIssueStatus(row.status)) return;
+  throw conflict(
+    "Cannot resolve an interaction on a closed issue: the answer would not resume any work. "
+      + "Reopen the issue first, or withdraw the interaction.",
+    { issueId: issue.id, issueStatus: row.status },
+  );
 }
 
 function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
@@ -1349,6 +1384,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     if (current.status !== "pending") {
       throw conflict("Interaction has already been resolved");
     }
+    await assertIssueOpenForInteractionResolution(db, args.issue);
     return current;
   }
 
@@ -2388,6 +2424,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           }
           throw conflict("Interaction has already been resolved");
         }
+        await assertIssueOpenForInteractionResolution(tx, issue);
 
         const expired = await expireStaleRequestConfirmationTarget(tx, {
           row: current,
@@ -2933,6 +2970,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       if (current.status !== "pending") {
         throw conflict("Interaction has already been resolved");
       }
+      await assertIssueOpenForInteractionResolution(db, issue);
 
       const interaction = hydrateInteraction(current) as AskUserQuestionsInteraction;
       const normalizedAnswers = normalizeQuestionAnswers({

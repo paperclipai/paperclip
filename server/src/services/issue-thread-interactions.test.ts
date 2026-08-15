@@ -11,18 +11,22 @@ vi.mock("./issues.js", () => ({
 
 type SelectRow = Record<string, unknown>;
 
+function createWhereChain(rows: SelectRow[]) {
+  return {
+    where() {
+      return {
+        then(callback: (rows: SelectRow[]) => unknown) {
+          return Promise.resolve(callback(rows));
+        },
+      };
+    },
+  };
+}
+
 function createSelectChain(rows: SelectRow[]) {
   return {
     from() {
-      return {
-        where() {
-          return {
-            then(callback: (rows: SelectRow[]) => unknown) {
-              return Promise.resolve(callback(rows));
-            },
-          };
-        },
-      };
+      return createWhereChain(rows);
     },
   };
 }
@@ -30,6 +34,12 @@ function createSelectChain(rows: SelectRow[]) {
 function createFakeDb(args: {
   interactionRow: Record<string, unknown>;
   parentRows?: SelectRow[];
+  /**
+   * Rows the `issues` table answers with. Only consulted when set, so the
+   * call-ordered defaults above stay untouched for the tests that do not care
+   * about the issue's status.
+   */
+  issueRows?: SelectRow[];
 }) {
   let interactionRow = { ...args.interactionRow };
   const issueTouches: Array<Record<string, unknown>> = [];
@@ -38,10 +48,15 @@ function createFakeDb(args: {
   let selectCallCount = 0;
 
   const db: any = {
-    select: vi.fn(() => {
-      selectCallCount += 1;
-      return createSelectChain(selectCallCount === 1 ? [interactionRow] : (args.parentRows ?? []));
-    }),
+    select: vi.fn(() => ({
+      from(table: unknown) {
+        if (args.issueRows && getTableName(table as never) === "issues") {
+          return createWhereChain(args.issueRows);
+        }
+        selectCallCount += 1;
+        return createWhereChain(selectCallCount === 1 ? [interactionRow] : (args.parentRows ?? []));
+      },
+    })),
     update: vi.fn((table: unknown) => ({
       set(values: Record<string, unknown>) {
         return {
@@ -363,5 +378,113 @@ describe("issueThreadInteractionService", () => {
     expect(expired[0]?.result).toMatchObject({ version: 1, outcome: "issue_closed" });
     expect(state.toolActionRequestUpdates).toHaveLength(1);
     expect(state.toolActionRequestUpdates[0]).toMatchObject({ status: "expired", resolvedByUserId: "local-board" });
+  });
+
+  describe("resolving a card whose issue is already closed", () => {
+    const ISSUE_ID = "11111111-1111-4111-8111-111111111111";
+
+    function confirmationRow(overrides: Record<string, unknown> = {}) {
+      return {
+        id: "interaction-closed-carrier", companyId: "company-1", issueId: ISSUE_ID,
+        kind: "request_confirmation", status: "pending", continuationPolicy: "wake_assignee",
+        sourceCommentId: null, sourceRunId: null, title: null, summary: null,
+        createdByAgentId: "agent-1", createdByUserId: null, resolvedByAgentId: null, resolvedByUserId: null,
+        payload: { version: 1, prompt: "Proceed?" }, result: null, resolvedAt: null,
+        createdAt: new Date("2026-07-25T10:00:00.000Z"), updatedAt: new Date("2026-07-25T10:00:00.000Z"),
+        ...overrides,
+      };
+    }
+
+    function questionsRow() {
+      return confirmationRow({
+        id: "interaction-closed-questions",
+        kind: "ask_user_questions",
+        payload: {
+          version: 1,
+          questions: [{
+            id: "scope", prompt: "Pick one", selectionMode: "single",
+            options: [{ id: "a", label: "A" }],
+          }],
+        },
+      });
+    }
+
+    for (const issueStatus of ["done", "cancelled"] as const) {
+      it(`refuses to accept a confirmation on a ${issueStatus} issue`, async () => {
+        const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+        const state = createFakeDb({ interactionRow: confirmationRow(), issueRows: [{ status: issueStatus }] });
+        const svc = issueThreadInteractionService(state.db as never);
+
+        await expect(svc.acceptInteraction(
+          { id: ISSUE_ID, companyId: "company-1", projectId: null, goalId: null },
+          "interaction-closed-carrier",
+          {},
+          { userId: "local-board" },
+        )).rejects.toMatchObject({ status: 409 });
+        // The silent failure this guards against is exactly a card that flips to
+        // "accepted" while no continuation wakeup fires, so the card must not move.
+        expect(state.interactionUpdates).toHaveLength(0);
+        expect(state.getInteractionRow().status).toBe("pending");
+      });
+    }
+
+    it("refuses to reject a confirmation on a closed issue", async () => {
+      const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+      const state = createFakeDb({ interactionRow: confirmationRow(), issueRows: [{ status: "done" }] });
+      const svc = issueThreadInteractionService(state.db as never);
+
+      await expect(svc.rejectInteraction(
+        { id: ISSUE_ID, companyId: "company-1" },
+        "interaction-closed-carrier",
+        { reason: "No" },
+        { userId: "local-board" },
+      )).rejects.toMatchObject({ status: 409 });
+      expect(state.interactionUpdates).toHaveLength(0);
+    });
+
+    it("refuses to answer questions on a closed issue", async () => {
+      const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+      const state = createFakeDb({ interactionRow: questionsRow(), issueRows: [{ status: "cancelled" }] });
+      const svc = issueThreadInteractionService(state.db as never);
+
+      await expect(svc.answerQuestions(
+        { id: ISSUE_ID, companyId: "company-1" },
+        "interaction-closed-questions",
+        { answers: [{ questionId: "scope", optionIds: ["a"] }] },
+        { userId: "local-board" },
+      )).rejects.toMatchObject({ status: 409 });
+      expect(state.interactionUpdates).toHaveLength(0);
+    });
+
+    it("still lets the creator withdraw a card whose issue is closed", async () => {
+      const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+      const state = createFakeDb({ interactionRow: confirmationRow(), issueRows: [{ status: "done" }] });
+      const svc = issueThreadInteractionService(state.db as never);
+
+      const withdrawn = await svc.withdrawInteraction(
+        { id: ISSUE_ID, companyId: "company-1" },
+        "interaction-closed-carrier",
+        { reason: "Superseded" },
+        { agentId: "agent-1" },
+      );
+
+      expect(withdrawn.status).toBe("cancelled");
+    });
+
+    it("keeps reporting an already-resolved card as resolved rather than as a closed issue", async () => {
+      const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+      const state = createFakeDb({
+        interactionRow: confirmationRow({ status: "expired" }),
+        issueRows: [{ status: "done" }],
+      });
+      const svc = issueThreadInteractionService(state.db as never);
+
+      await expect(svc.acceptInteraction(
+        { id: ISSUE_ID, companyId: "company-1", projectId: null, goalId: null },
+        "interaction-closed-carrier",
+        {},
+        { userId: "local-board" },
+      )).rejects.toMatchObject({ status: 409, message: "Interaction has already been resolved" });
+    });
   });
 });
