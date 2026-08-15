@@ -1457,6 +1457,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ? false
         : null;
     }
+    if (running.child.exitCode !== null || running.child.signalCode !== null) return false;
     const processPid = running.child.pid;
     const processGroupId = running.processGroupId;
     if (typeof processPid !== "number" && typeof processGroupId !== "number") return null;
