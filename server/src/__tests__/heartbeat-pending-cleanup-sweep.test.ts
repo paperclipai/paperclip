@@ -301,6 +301,113 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     expect(metadata?.status).toBe("pending_cleanup");
   });
 
+  // Read the current retry attempt count from a lease's metadata.
+  async function readAttempts(leaseId: string): Promise<number> {
+    const metadata = await db
+      .select({ metadata: environmentLeases.metadata })
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, leaseId))
+      .then((rows) => rows[0]?.metadata as Record<string, unknown> | null);
+    const value = metadata?.[ATTEMPTS_KEY];
+    return typeof value === "number" ? value : 0;
+  }
+
+  // Run two sweeps at the same time on two separate database clients, so they
+  // truly overlap. A single client serializes the queries on one connection and
+  // hides the race. The second client connects to the same embedded database.
+  // The caller reuses the returned destroy spy to count the real destroys.
+  async function runOverlappingSweeps(
+    destroyRunLease: HeartbeatEnvironmentRuntime["destroyRunLease"],
+    backoffMs: number,
+  ): Promise<void> {
+    const dbB = createDb(tempDb!.connectionString);
+    try {
+      // Warm up the second connection first. A cold connection would add setup
+      // latency and let the first sweep finish before the second sweep reads.
+      await dbB.select({ id: environmentLeases.id }).from(environmentLeases).limit(1);
+
+      const heartbeatA = heartbeatService(db, {
+        environmentRuntime: fakeRuntime(destroyRunLease),
+      });
+      const heartbeatB = heartbeatService(dbB, {
+        environmentRuntime: fakeRuntime(destroyRunLease),
+      });
+
+      await Promise.all([
+        heartbeatA.sweepPendingCleanupLeases({ backoffMs }),
+        heartbeatB.sweepPendingCleanupLeases({ backoffMs }),
+      ]);
+    } finally {
+      await (dbB as unknown as { $client: { end: () => Promise<void> } }).$client.end();
+    }
+  }
+
+  // Two overlapping sweeps read the same pending_cleanup lease. The atomic claim
+  // must let only one sweep destroy the sandbox. This test runs the two sweeps
+  // on two clients, then asserts a single destroy and a single attempt
+  // increment.
+  it("test_concurrent_sweeps_destroy_a_lease_at_most_once", async () => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+    const leaseId = await insertPendingCleanupLease({
+      companyId,
+      environmentId,
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    // The destroy fails, so the lease stays in pending_cleanup and the test can
+    // read the final attempt count.
+    const destroyRunLease = vi.fn(async () => null);
+
+    await runOverlappingSweeps(
+      destroyRunLease as HeartbeatEnvironmentRuntime["destroyRunLease"],
+      5 * 60 * 1000,
+    );
+
+    // Only one sweep wins the claim, so the destroy runs once and the attempt
+    // count advances by one.
+    expect(destroyRunLease).toHaveBeenCalledTimes(1);
+    expect(await readAttempts(leaseId)).toBe(1);
+  });
+
+  // A lost increment lets the real attempt count pass the cap: two destroys run
+  // but the counter advances by one. The atomic claim prevents the lost
+  // increment. This test starts a lease at cap - 1, overlaps two sweeps, then
+  // asserts one destroy, one increment to the cap, and at most one cap warning.
+  it("test_concurrent_sweeps_never_exceed_attempt_cap", async () => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+    const leaseId = await insertPendingCleanupLease({
+      companyId,
+      environmentId,
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+      metadata: { [ATTEMPTS_KEY]: ATTEMPT_CAP - 1 },
+    });
+
+    // The destroy fails, so the lease stays in pending_cleanup and the test can
+    // read the final attempt count.
+    const destroyRunLease = vi.fn(async () => null);
+
+    await runOverlappingSweeps(
+      destroyRunLease as HeartbeatEnvironmentRuntime["destroyRunLease"],
+      5 * 60 * 1000,
+    );
+
+    // One real retry ran, so the count advances by one to the cap and never
+    // passes it.
+    expect(destroyRunLease).toHaveBeenCalledTimes(1);
+    const attempts = await readAttempts(leaseId);
+    expect(attempts).toBe(ATTEMPT_CAP);
+    expect(attempts).toBeLessThanOrEqual(ATTEMPT_CAP);
+
+    // The cap warning logs at most once across the overlap.
+    const capWarnings = vi
+      .mocked(logger.warn)
+      .mock.calls.filter(
+        (call) =>
+          call[1] === "environment lease reached the pending_cleanup retry cap; left for manual cleanup",
+      );
+    expect(capWarnings.length).toBeLessThanOrEqual(1);
+  });
+
   // A provider or plugin destroy rejection can carry a bearer credential in its
   // message. The per-lease retry log must never serialize that raw error.
   it("test_pending_cleanup_retry_log_omits_error_secrets", async () => {
