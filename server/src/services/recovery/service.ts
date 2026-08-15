@@ -5124,6 +5124,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     let lastCapabilityError: unknown = null;
     let preservedCurrentAssignee = false;
 
+    // TSMC-20885's law applied one level up (live 2026-08-15: TSR-5488 was
+    // frozen two seconds after a SILENT corrective run): when an exhausted
+    // missing-disposition recovery's only blocker would be its own recovery
+    // issue, the card must stay ACTIONABLE. Silence earns the loud exhausted
+    // notice below — it never manufactures a wait state. Real blockers
+    // (independent blocker issues) still take the blocked path.
+    const onlySelfReferentialBlockers = blockerIds.every((id) => id === recoveryAction.recoveryIssueId);
+    if (
+      recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON &&
+      onlySelfReferentialBlockers &&
+      !requiresDeterministicManualRepair
+    ) {
+      updated = await issuesSvc.update(input.issue.id, {
+        status: "todo",
+        assigneeAgentId: input.issue.assigneeAgentId,
+      });
+      if (updated) {
+        selectedAssigneeAgentId = input.issue.assigneeAgentId ?? null;
+        preservedCurrentAssignee = true;
+      }
+    }
+
     if (requiresDeterministicManualRepair) {
       updated = await issuesSvc.update(input.issue.id, {
         status: "blocked",
@@ -5135,7 +5157,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       preservedCurrentAssignee = true;
     }
 
-    while (!requiresDeterministicManualRepair && queuedAssigneeIds.length > 0) {
+    while (!requiresDeterministicManualRepair && !updated && queuedAssigneeIds.length > 0) {
       const nextAssigneeAgentId = queuedAssigneeIds.shift() ?? null;
       if (!nextAssigneeAgentId) continue;
       attemptedAssigneeIds.add(nextAssigneeAgentId);
