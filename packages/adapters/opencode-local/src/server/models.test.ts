@@ -1,5 +1,9 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  discoverOpenCodeModels,
   ensureOpenCodeModelConfiguredAndAvailable,
   listOpenCodeModels,
   requireOpenCodeModelId,
@@ -17,6 +21,24 @@ describe("openCode models", () => {
     process.env.PAPERCLIP_OPENCODE_COMMAND = "__paperclip_missing_opencode_command__";
     await expect(listOpenCodeModels()).resolves.toEqual([]);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "allows a model catalog cold start longer than 20 seconds",
+    async () => {
+      const fixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-models-"));
+      const command = path.join(fixtureDir, "slow-opencode");
+      await fs.writeFile(command, "#!/bin/sh\nsleep 21\nprintf 'openai/test-model\\n'\n", { mode: 0o755 });
+
+      try {
+        await expect(discoverOpenCodeModels({ command, cwd: fixtureDir })).resolves.toEqual([
+          { id: "openai/test-model", label: "openai/test-model" },
+        ]);
+      } finally {
+        await fs.rm(fixtureDir, { recursive: true, force: true });
+      }
+    },
+    70_000,
+  );
 
   it("rejects when model is missing", async () => {
     await expect(
