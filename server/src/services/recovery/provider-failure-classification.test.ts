@@ -126,6 +126,34 @@ describe("classifyAdapterFailureForRecovery", () => {
     })).toMatchObject({ kind: "transient_infra", attempt: 1, exhausted: false });
   });
 
+  // Regression: the HTTP adapter throws a bare `HTTP invoke failed with status 5xx`
+  // (server/src/adapters/http/execute.ts) with no reason phrase, so the classifier must
+  // match the status code on its own.
+  it.each([
+    "HTTP invoke failed with status 502",
+    "HTTP invoke failed with status 503",
+    "HTTP invoke failed with status 504",
+  ])("classifies a bare HTTP 5xx status without a reason phrase: %s", (error) => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "adapter_failed",
+      error,
+      resultJson: null,
+    })).toMatchObject({ kind: "transient_infra", attempt: 1, exhausted: false });
+  });
+
+  it.each([
+    "HTTP invoke failed with status 500",
+    "HTTP invoke failed with status 400",
+    "adapter exited after 5024ms with no output",
+    "run 1502 produced no result",
+  ])("does not classify non-transient statuses or unrelated numbers: %s", (error) => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "adapter_failed",
+      error,
+      resultJson: null,
+    })).toBeNull();
+  });
+
   it("keeps configuration_incomplete winning over transient network text", () => {
     expect(classifyAdapterFailureForRecovery({
       errorCode: "adapter_failed",

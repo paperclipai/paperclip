@@ -398,8 +398,12 @@ const CONFIGURATION_INCOMPLETE_ERROR_RE =
 // Deliberately narrow: only network/transport-shaped adapter failures. Anything that
 // smells like bad configuration must keep matching CONFIGURATION_INCOMPLETE_ERROR_RE
 // first (checked before this one) so a dead credential is not retried forever.
+// The 502/503/504 statuses match with or without a reason phrase: the HTTP adapter
+// throws a bare `HTTP invoke failed with status 502` (server/src/adapters/http/execute.ts),
+// so requiring "502 bad gateway" would miss the exact transport fault we want to retry.
+// Word boundaries keep unrelated numbers (`5024ms`, `run 1502`) from matching.
 const TRANSIENT_INFRA_ERROR_RE =
-  /(?:oauth (?:token )?refresh failed|token refresh failed|fetch failed|econnreset|econnrefused|econnaborted|etimedout|enotfound|eai_again|epipe|socket hang up|network (?:error|timeout)|tls (?:handshake|connection) (?:error|failed)|request timed out|502 bad gateway|503 service unavailable|504 gateway timeout)/i;
+  /(?:oauth (?:token )?refresh failed|token refresh failed|fetch failed|econnreset|econnrefused|econnaborted|etimedout|enotfound|eai_again|epipe|socket hang up|network (?:error|timeout)|tls (?:handshake|connection) (?:error|failed)|request timed out|\b(?:502|503|504)\b)/i;
 
 export type AdapterFailureRecoveryClassification =
   | { kind: "provider_quota"; retryAt: Date; parsedResetTime: boolean }
