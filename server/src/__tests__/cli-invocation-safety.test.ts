@@ -107,25 +107,80 @@ const DOC_PHRASES = new Set<string>([
 
 // ── Command extraction ────────────────────────────────────────────────────
 //
-// Extract the command string that starts at a `pnpm paperclipai` occurrence.
-// The command runs to the first boundary: a backtick (Markdown inline-code
-// close), a quote, a closing parenthesis (command-substitution close), or a
-// ` #` comment. The scan collapses internal whitespace, so a backslash-continued
-// command compares as one normalized string.
+// Extract the full logical command that a reader runs from a `pnpm paperclipai`
+// occurrence. The guard compares the whole runnable command against the
+// allowlist, never a prefix. A quote, a backtick, or a parenthesis is a shell
+// metacharacter, not a safe extraction boundary. The guard must not truncate
+// the command at one of them and then match the shorter prefix. If it did, a
+// line such as `pnpm paperclipai run "$(cat secret)"` would truncate to the
+// allowlisted `pnpm paperclipai run` and pass, while the copied command still
+// runs the shell substitution.
+//
+// The scan reads Markdown and source files. A `pnpm paperclipai` occurrence
+// sits in one of two places, and only a real terminator ends the command:
+//  - Inside a balanced string span. A backtick opens a Markdown inline-code
+//    span or a JavaScript template literal. A double quote opens a source
+//    string literal. When such a delimiter opens before the marker, the next
+//    matching delimiter closes the span. That close is a real, safely parsed
+//    boundary. The command is the text from the marker to the close.
+//  - Outside a span, in a fenced code block or in plain text. The command runs
+//    to the end of the logical line, or to a ` #` comment. A backtick, a quote,
+//    or a parenthesis here is a shell metacharacter, so it stays in the
+//    extracted command. The command then fails the allowlist match and the
+//    guard reports it. This is the key rule: a quote or a backtick that follows
+//    the command is never a truncation boundary, so a line such as
+//    `pnpm paperclipai run "$(cat secret)"` keeps its dangerous suffix and the
+//    guard rejects it.
+//
+// The scan collapses internal whitespace, so a backslash-continued command
+// compares as one normalized string.
 
-const BOUNDARY = /[`"')]|\s#/;
-
-function extractCommand(tail: string): string {
-  const boundary = tail.search(BOUNDARY);
-  const raw = boundary < 0 ? tail : tail.slice(0, boundary);
+function normalizeCommand(raw: string): string {
   return raw.replace(/\s+/g, " ").trim();
 }
 
+// Return the string delimiter that is still open at the end of `before`, or
+// null when no span is open. The scan reads one delimiter at a time: a backtick
+// or a double quote. It opens a span on the first delimiter and closes it on
+// the next matching delimiter. A different delimiter inside an open span is
+// literal content, so the scan ignores it.
+function openDelimiter(before: string): string | null {
+  let open: string | null = null;
+  for (const char of before) {
+    if (char !== "`" && char !== '"') continue;
+    if (open === null) {
+      open = char;
+    } else if (open === char) {
+      open = null;
+    }
+  }
+  return open;
+}
+
+function extractCommand(text: string, at: number): string {
+  const before = text.slice(0, at);
+  const tail = text.slice(at);
+  const open = openDelimiter(before);
+  if (open !== null) {
+    // The marker sits inside a balanced span. The matching close delimiter is
+    // the only real terminator here.
+    const close = tail.indexOf(open);
+    const raw = close < 0 ? tail : tail.slice(0, close);
+    return normalizeCommand(raw);
+  }
+  // Outside a span the command runs to a ` #` comment or the line end. A quote,
+  // a backtick, or a parenthesis stays inside the extracted command.
+  const comment = tail.search(/\s#/);
+  const raw = comment < 0 ? tail : tail.slice(0, comment);
+  return normalizeCommand(raw);
+}
+
 // A `pnpm paperclipai` occurrence is an offender when it is wrapped in a
-// command-substitution span, or when its command string is neither an allowlist
-// entry nor a documentation phrase. The command-substitution check catches
-// `$(pnpm paperclipai ...)`, which normalizes the dangerous habit of running the
-// CLI inside a shell substitution even when the inner command is literal.
+// command-substitution span, or when its full command string is neither an
+// allowlist entry nor a documentation phrase. The command-substitution check
+// catches `$(pnpm paperclipai ...)`, which normalizes the dangerous habit of
+// running the CLI inside a shell substitution even when the inner command is
+// literal.
 
 function findOffenders(text: string): string[] {
   const offenders: string[] = [];
@@ -137,7 +192,7 @@ function findOffenders(text: string): string[] {
     from = at + marker.length;
     const before = text.slice(0, at);
     const wrapped = /\$\(\s*$/.test(before);
-    const command = extractCommand(text.slice(at));
+    const command = extractCommand(text, at);
     if (wrapped) {
       offenders.push(command);
       continue;
@@ -357,6 +412,31 @@ describe("paperclipai CLI invocation safety", () => {
     expect(scanText("doc/E.md", "pnpm paperclipai run --instance $INSTANCE")).toHaveLength(1);
     // A literal command wrapped in $( ) is still an offender.
     expect(scanText("doc/E.md", 'eval "$(pnpm paperclipai worktree env)"')).toHaveLength(1);
+  });
+
+  it("flags an allowlisted prefix followed by a quoted or backtick suffix", () => {
+    // The full runnable command is not the allowlisted prefix. The guard must
+    // match the whole command, not the prefix truncated at the quote or the
+    // backtick. A reader who copies the line runs the shell-expanded suffix.
+    // (a) A double-quoted value that carries shell-expanded content.
+    expect(scanText("doc/E.md", 'pnpm paperclipai run "$(cat /etc/passwd)"')).toHaveLength(1);
+    expect(scanText("doc/E.md", 'pnpm paperclipai doctor "$HOME/scratch.json"')).toHaveLength(1);
+    // (b) A backtick-delimited suffix after the allowlisted command.
+    expect(scanText("doc/E.md", "pnpm paperclipai run `hostname`")).toHaveLength(1);
+    // A single-quoted suffix is also part of the full command.
+    expect(scanText("doc/E.md", "pnpm paperclipai onboard 'extra value'")).toHaveLength(1);
+  });
+
+  it("flags an allowlisted prefix with a backtick suffix on a continued line", () => {
+    // The parser joins backslash-continued lines into one logical command. An
+    // allowlisted first line does not make the whole command safe. The suffix on
+    // the continued line still reaches a shell.
+    const quoted = ["pnpm paperclipai doctor \\", '  --config "$(cat secret)"'].join("\n");
+    expect(scanText("doc/EXAMPLE.md", quoted)).toHaveLength(1);
+    const backtick = ["pnpm paperclipai run \\", "  `hostname`"].join("\n");
+    const offenders = scanText("doc/EXAMPLE.md", backtick);
+    expect(offenders).toHaveLength(1);
+    expect(offenders[0]).toContain("doc/EXAMPLE.md:1:");
   });
 
   it("allows an exact allowlist entry and a bare documentation mention", () => {
