@@ -52,6 +52,7 @@
 
 Workflow: `.github/workflows/deflector-docker-smoke.yml`
 
-- Builds the repo Dockerfile
+- Builds the repo Dockerfile (`node:lts-trixie-slim`)
+- Installs native build tools (`make`, `g++`) so `better-sqlite3` can compile when no prebuild exists for that Node ABI
 - Runs `better-sqlite3` open/insert/select inside the image
 - Resolves `better-sqlite3` from `packages/adapters/deflector`
