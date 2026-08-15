@@ -10768,19 +10768,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const isDispositionOnlyHandoff = context.handoffRequired === true ||
       context.wakeReason === FINISH_SUCCESSFUL_RUN_HANDOFF_REASON;
     const hasVerifiedExistingBlocker = Boolean(explicitBlocker) || hasExplicitBlockedExternalWait(issue.description);
+    // `todo` is included: a board-unstranded (or freshly assigned) card that a
+    // disposition-only pass touches without evidence must STAY actionable —
+    // proven live 2026-08-15 15:46 (TSR-5434, post-deploy): the in_progress-only
+    // guard let a todo card fall through to the corrective block.
     if (
-      issue.status === "in_progress" &&
+      (issue.status === "in_progress" || issue.status === "todo") &&
       issue.assigneeAgentId === run.agentId &&
       !issue.assigneeUserId &&
       isDispositionOnlyHandoff &&
       !hasVerifiedExistingBlocker &&
       (!statedStatus || (statedStatus === "blocked" && !statedVerifiedBlocker))
     ) {
-      const restored = await issuesSvc.update(issue.id, {
-        status: "todo",
-        actorAgentId: run.agentId,
-        actorUserId: null,
-      });
+      const restored = issue.status === "todo"
+        ? issue
+        : await issuesSvc.update(issue.id, {
+            status: "todo",
+            actorAgentId: run.agentId,
+            actorUserId: null,
+          });
       if (restored) {
         await logActivity(db, {
           companyId: issue.companyId,
@@ -10792,9 +10798,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           entityType: "issue",
           entityId: issue.id,
           details: {
-            label: "Disposition-only pass returned an unblocked issue to todo",
+            label: "Disposition-only pass left an unblocked issue actionable",
             sourceRunId: run.id,
             statedStatus,
+            priorStatus: issue.status,
           },
         });
         return;

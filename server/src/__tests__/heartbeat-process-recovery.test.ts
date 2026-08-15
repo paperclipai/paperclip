@@ -4229,6 +4229,47 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }));
   });
 
+  it("keeps a todo card actionable when a disposition-only handoff is silent (strangled-at-birth guard)", async () => {
+    const { agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    // Board-unstranded shape: the card sits in todo (proven live 2026-08-15
+    // 15:46, TSR-5434 — the in_progress-only guard let this fall through to
+    // the corrective block).
+    await db.update(issues).set({ status: "todo", startedAt: null }).where(eq(issues.id, issueId));
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "finish_successful_run_handoff",
+        handoffRequired: true,
+        handoffReason: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      },
+    }).where(eq(heartbeatRuns.id, runId));
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Recorded no further disposition.",
+      provider: "test",
+      model: "test-model",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const issue = await waitForValue(async () => {
+      const current = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+      return current?.status === "todo" ? current : null;
+    }, 5_000);
+    expect(issue?.status).toBe("todo");
+    const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+    expect(activity).toContainEqual(expect.objectContaining({
+      action: "issue.disposition_only_returned_to_todo",
+    }));
+  });
+
   it("does not let a disposition-only handoff strand an issue on an unverified named blocker", async () => {
     const { runId, issueId } = await seedQueuedIssueRunFixture();
     await db.update(heartbeatRuns).set({
