@@ -658,16 +658,20 @@ const DIAGNOSTIC_ALLOWLIST = new Set<string>([
 const TOKEN_SENTINEL = "sk-ant-oat01-SENTINELTOKENAAAAAAAAAAAA";
 const BROWSER_CODE_SENTINEL = "SENTINEL-BROWSER-CODE";
 const URL_CLIENT_SENTINEL = "sentinelurlclient";
+// Each query value satisfies the shape contract the parser enforces: a 43-to-128
+// character `code_challenge`, a 16-to-256 character `state`, and the one pinned
+// `redirect_uri`. The `client_id` stays the sentinel, so the leak checks still
+// prove the client id never reaches a log line.
 const AUTHORIZATION_URL_SENTINEL =
   "https://claude.com/cai/oauth/authorize" +
   `?client_id=${URL_CLIENT_SENTINEL}` +
   "&code=redacted" +
-  "&code_challenge=chal-000" +
+  "&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM" +
   "&code_challenge_method=S256" +
-  "&redirect_uri=https%3A%2F%2Fclaude.com%2Fcallback" +
+  "&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback" +
   "&response_type=code" +
   "&scope=user%3Ainference" +
-  "&state=state-000";
+  "&state=Xy7Kd2Pq9Rn4Vb8Lf1Mw6Zc3Hj0Tg5Us";
 
 // A complete sign-in prompt block. The parser binds the authorization URL to
 // the preamble and the prompt line after it.

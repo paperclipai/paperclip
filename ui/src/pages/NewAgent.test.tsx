@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getEnvironmentCapabilities } from "@paperclipai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastProvider } from "../context/ToastContext";
 import { NewAgent } from "./NewAgent";
@@ -28,7 +29,7 @@ const mockAgentsApi = vi.hoisted(() => ({
   cancelClaudeSetupTokenLogin: vi.fn(),
 }));
 
-const mockEnvironmentsApi = vi.hoisted(() => ({ list: vi.fn() }));
+const mockEnvironmentsApi = vi.hoisted(() => ({ list: vi.fn(), capabilities: vi.fn() }));
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   get: vi.fn(),
   getExperimental: vi.fn(),
@@ -158,6 +159,16 @@ const CLAUDE_AUTH_MISSING_RESULT = {
   testedAt: new Date(0).toISOString(),
 };
 
+// The provider capabilities the form fetches. Daytona advertises the
+// setup-token login capability; E2B does not. The Claude login panel shows only
+// for a provider with the capability, so the sandbox environment uses Daytona.
+const SANDBOX_CAPABILITIES = getEnvironmentCapabilities(["claude_local", "codex_local"], {
+  sandboxProviders: {
+    daytona: { supportsSetupTokenLogin: true, displayName: "Daytona" },
+    e2b: { supportsSetupTokenLogin: false, displayName: "E2B" },
+  },
+});
+
 async function renderNewAgent() {
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -244,11 +255,12 @@ describe("NewAgent Claude subscription login", () => {
       { id: "local-1", name: "Local", driver: "local", config: {} },
       {
         id: "sandbox-1",
-        name: "E2B",
+        name: "Daytona",
         driver: "sandbox",
-        config: { provider: "e2b" },
+        config: { provider: "daytona" },
       },
     ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
     // The instance default is the sandbox, so the effective login environment
     // resolves to it without the user touching the override selector.
     mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: "sandbox-1" });
