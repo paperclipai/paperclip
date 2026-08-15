@@ -236,4 +236,113 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     expect(destroyRunLease).not.toHaveBeenCalled();
     expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
   });
+
+  // A provider or plugin destroy rejection can carry a bearer credential in its
+  // message. The per-lease retry log must never serialize that raw error.
+  it("test_pending_cleanup_retry_log_omits_error_secrets", async () => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+    const leaseId = await insertPendingCleanupLease({
+      companyId,
+      environmentId,
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    // The destroy rejects with a credential-shaped sentinel in the message.
+    const sentinel = "Bearer sk-SENTINEL-a1b2c3";
+    const rejection = new Error(`provider destroy failed: ${sentinel}`);
+    rejection.name = "ProviderDestroyError";
+    (rejection as { code?: string }).code = "EPROVIDER";
+    const destroyRunLease = vi.fn(async () => {
+      throw rejection;
+    });
+    const heartbeat = heartbeatService(db, {
+      environmentRuntime: fakeRuntime(
+        destroyRunLease as unknown as HeartbeatEnvironmentRuntime["destroyRunLease"],
+      ),
+    });
+
+    const result = await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 });
+    expect(result).toEqual({ swept: 1, destroyed: 0, capped: 0 });
+    expect(destroyRunLease).toHaveBeenCalledTimes(1);
+
+    const retryCall = vi
+      .mocked(logger.warn)
+      .mock.calls.find((call) => call[1] === "pending_cleanup lease retry failed");
+    expect(retryCall).toBeDefined();
+    const record = retryCall?.[0] as Record<string, unknown>;
+
+    // The record omits the raw error. It never contains the sentinel.
+    expect(JSON.stringify(record)).not.toContain(sentinel);
+    expect(record).not.toHaveProperty("err");
+    expect(record).not.toHaveProperty("message");
+    expect(record).not.toHaveProperty("stack");
+    expect(record).not.toHaveProperty("cause");
+
+    // The record still carries the stable, non-sensitive fields.
+    expect(record).toMatchObject({
+      leaseId,
+      environmentId,
+      attempts: 1,
+      errorName: "ProviderDestroyError",
+      errorCode: "EPROVIDER",
+    });
+  });
+
+  // The outer sweep catch logs a failure of the sweep itself. It must log only
+  // the allowlisted error identity, never the raw error.
+  it("test_pending_cleanup_sweep_failure_log_omits_error_secrets", async () => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+    await insertPendingCleanupLease({
+      companyId,
+      environmentId,
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    // Make the sweep itself throw. The lease query rejects with a
+    // credential-shaped sentinel in the message. The reaper's own queries pass
+    // through, so only the sweep fails.
+    const sentinel = "Bearer sk-SENTINEL-d4e5f6";
+    const realSelect = db.select.bind(db);
+    const selectSpy = vi
+      .spyOn(db, "select")
+      .mockImplementation((...args: Parameters<typeof db.select>) => {
+        const builder = realSelect(...args);
+        const realFrom = builder.from.bind(builder);
+        (builder as { from: unknown }).from = (table: unknown) => {
+          if (table === environmentLeases) {
+            const failure = new Error(`sweep query failed: ${sentinel}`);
+            failure.name = "SweepQueryError";
+            throw failure;
+          }
+          return realFrom(table as Parameters<typeof realFrom>[0]);
+        };
+        return builder;
+      });
+
+    try {
+      const destroyRunLease = vi.fn(async () => null);
+      const heartbeat = heartbeatService(db, {
+        environmentRuntime: fakeRuntime(
+          destroyRunLease as unknown as HeartbeatEnvironmentRuntime["destroyRunLease"],
+        ),
+      });
+
+      // The reaper isolates the sweep, so the reaper itself resolves.
+      await expect(heartbeat.reapOrphanedRuns({ staleThresholdMs: 0 })).resolves.toBeDefined();
+
+      const sweepCall = vi
+        .mocked(logger.error)
+        .mock.calls.find((call) => call[1] === "pending_cleanup lease sweep failed");
+      expect(sweepCall).toBeDefined();
+      const record = sweepCall?.[0] as Record<string, unknown>;
+
+      expect(JSON.stringify(record)).not.toContain(sentinel);
+      expect(record).not.toHaveProperty("err");
+      expect(record).not.toHaveProperty("message");
+      expect(record).not.toHaveProperty("stack");
+      expect(record).toMatchObject({ errorName: "SweepQueryError" });
+    } finally {
+      selectSpy.mockRestore();
+    }
+  });
 });

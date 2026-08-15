@@ -364,6 +364,29 @@ const PENDING_CLEANUP_SWEEP_ATTEMPT_CAP = 5;
 // The reaper stores its retry state under these keys in the lease metadata.
 const PENDING_CLEANUP_ATTEMPTS_METADATA_KEY = "pendingCleanupRetryAttempts";
 const PENDING_CLEANUP_CAP_WARNED_METADATA_KEY = "pendingCleanupRetryCapWarned";
+
+// A provider or plugin destroy rejection can carry a bearer credential, a
+// signed URL, or provider response detail in its message, cause, or stack. Pino
+// redaction covers only the allowlisted HTTP paths, not an arbitrary Error. This
+// helper returns only the allowlisted, non-sensitive error identity, so the
+// pending_cleanup sweep logs never serialize the raw error. It reads the error
+// constructor name and, when present, a string `code` property. It never reads
+// the message, the cause, or the stack.
+function describePendingCleanupError(
+  err: unknown,
+): { errorName: string; errorCode?: string } {
+  if (typeof err !== "object" || err === null) {
+    return { errorName: typeof err };
+  }
+  const errorName =
+    typeof (err as { name?: unknown }).name === "string"
+      ? ((err as { name: string }).name)
+      : err.constructor?.name ?? "Error";
+  const code = (err as { code?: unknown }).code;
+  return typeof code === "string"
+    ? { errorName, errorCode: code }
+    : { errorName };
+}
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
@@ -13208,7 +13231,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       } catch (err) {
         logger.warn(
-          { err, leaseId: row.id, environmentId: row.environmentId },
+          {
+            ...describePendingCleanupError(err),
+            leaseId: row.id,
+            environmentId: row.environmentId,
+            attempts: attempts + 1,
+          },
           "pending_cleanup lease retry failed",
         );
       }
@@ -13423,7 +13451,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
       }
     } catch (err) {
-      logger.error({ err }, "pending_cleanup lease sweep failed");
+      logger.error(
+        describePendingCleanupError(err),
+        "pending_cleanup lease sweep failed",
+      );
     }
 
     return { reaped: reaped.length, runIds: reaped };
