@@ -4274,7 +4274,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("records a disposition-only blocker only when the adapter verifies and names it", async () => {
-    const { runId, issueId } = await seedQueuedIssueRunFixture();
+    const { companyId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId, name: "Paperclip App", status: "in_progress" });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      sourceType: "local_path",
+      cwd: process.cwd(),
+      isPrimary: true,
+    });
+    await db.update(issues).set({ projectId, projectWorkspaceId }).where(eq(issues.id, issueId));
     await db.update(heartbeatRuns).set({
       contextSnapshot: {
         issueId,
@@ -4302,7 +4315,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await waitForRunToSettle(heartbeat, runId, 5_000);
     await waitForHeartbeatIdle(db, 5_000);
 
-    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    const issue = await waitForValue(async () =>
+      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
+        const row = rows[0] ?? null;
+        return row?.status === "blocked" ? row : null;
+      }),
+    );
     expect(issue?.status).toBe("blocked");
     await expect(sourceBlockerIssueIds(issue!.companyId, issueId)).resolves.toHaveLength(1);
   });
