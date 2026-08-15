@@ -4271,11 +4271,14 @@ export function issueRoutes(
     });
   }
 
-  async function assertIssueThreadInteractionWithdrawalAllowed(
+  async function assertIssueThreadInteractionAgentControlAllowed(
     req: Request,
     res: Response,
     issue: Parameters<typeof assertAgentIssueMutationAllowed>[2],
     interaction: { createdByAgentId?: string | null },
+    options: {
+      actionInfinitive: string;
+    },
   ) {
     if (req.actor.type !== "agent") {
       assertBoard(req);
@@ -4286,7 +4289,7 @@ export function issueRoutes(
 
     const watchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
     if (watchdogScope.kind !== "none") {
-      res.status(403).json({ error: "Task-watchdog runs cannot withdraw issue-thread interactions" });
+      res.status(403).json({ error: `Task-watchdog runs cannot ${options.actionInfinitive} issue-thread interactions` });
       return false;
     }
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
@@ -4299,7 +4302,9 @@ export function issueRoutes(
     const isCreator = interaction.createdByAgentId === actorAgentId;
     const isAssignee = issue.assigneeAgentId === actorAgentId;
     if (!isCreator && !isAssignee) {
-      res.status(403).json({ error: "Only the interaction creator, current issue assignee, or a board user may withdraw it" });
+      res.status(403).json({
+        error: `Only the interaction creator, current issue assignee, or a board user may ${options.actionInfinitive} it`,
+      });
       return false;
     }
     if (isAssignee) return assertAgentIssueMutationAllowed(req, res, issue);
@@ -11028,7 +11033,9 @@ export function issueRoutes(
 
       const interactionSvc = issueThreadInteractionService(db);
       const current = await interactionSvc.getForIssue(issue, interactionId);
-      if (!(await assertIssueThreadInteractionWithdrawalAllowed(req, res, issue, current))) return;
+      if (!(await assertIssueThreadInteractionAgentControlAllowed(req, res, issue, current, {
+        actionInfinitive: "withdraw",
+      }))) return;
       await assertPendingReviewInteractionVerdictAllowed(req, issue, current);
 
       const actor = getActorInfo(req);
@@ -11076,14 +11083,16 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      if (req.actor.type === "agent") {
-        res.status(403).json({ error: "Agent actors cannot cancel issue-thread interactions through this board-only route" });
-        return;
-      }
-      assertBoard(req);
+
+      const interactionSvc = issueThreadInteractionService(db);
+      const current = await interactionSvc.getForIssue(issue, interactionId);
+      if (!(await assertIssueThreadInteractionAgentControlAllowed(req, res, issue, current, {
+        actionInfinitive: "cancel",
+      }))) return;
+      await assertPendingReviewInteractionVerdictAllowed(req, issue, current);
 
       const actor = getActorInfo(req);
-      const interaction = await issueThreadInteractionService(db).cancelQuestions(issue, interactionId, req.body, {
+      const interaction = await interactionSvc.cancelQuestions(issue, interactionId, req.body, {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
@@ -11109,14 +11118,16 @@ export function issueRoutes(
         },
       });
 
-      await queueResolvedInteractionContinuationWakeup({
-        db,
-        heartbeat,
-        issue,
-        interaction,
-        actor,
-        source: "issue.interaction.cancel",
-      });
+      if (actor.agentId !== issue.assigneeAgentId) {
+        await queueResolvedInteractionContinuationWakeup({
+          db,
+          heartbeat,
+          issue,
+          interaction,
+          actor,
+          source: "issue.interaction.cancel",
+        });
+      }
 
       res.json(interaction);
     },
