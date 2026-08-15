@@ -6,6 +6,7 @@ import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, Environment } from "@paperclipai/shared";
+import { getEnvironmentCapabilities } from "@paperclipai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastProvider } from "../context/ToastContext";
 import { AgentConfigForm, AdapterLoginPanel, type AdapterLoginDescriptor } from "./AgentConfigForm";
@@ -36,6 +37,7 @@ const mockClipboard = vi.hoisted(() => ({
 
 const mockEnvironmentsApi = vi.hoisted(() => ({
   list: vi.fn(),
+  capabilities: vi.fn(),
 }));
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
@@ -332,6 +334,16 @@ const CLAUDE_AUTH_MISSING_RESULT = {
   testedAt: new Date(0).toISOString(),
 };
 
+// The provider capabilities the form fetches. Daytona advertises the
+// setup-token login capability; E2B does not. The Claude login panel shows only
+// for a provider with the capability.
+const SANDBOX_CAPABILITIES = getEnvironmentCapabilities(["claude_local", "codex_local"], {
+  sandboxProviders: {
+    daytona: { supportsSetupTokenLogin: true, displayName: "Daytona" },
+    e2b: { supportsSetupTokenLogin: false, displayName: "E2B" },
+  },
+});
+
 function findButton(container: HTMLElement, label: string) {
   return Array.from(container.querySelectorAll("button")).find(
     (button) => button.textContent?.trim() === label,
@@ -364,9 +376,9 @@ async function renderClaudeSandbox(agentOverrides: Partial<Agent> = {}) {
       makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
       makeEnvironment({
         id: "sandbox-1",
-        name: "E2B",
+        name: "Daytona",
         driver: "sandbox",
-        config: { provider: "e2b" },
+        config: { provider: "daytona" },
       }),
     ],
     { adapterType: "claude_local", defaultEnvironmentId: "sandbox-1", ...agentOverrides },
@@ -382,9 +394,9 @@ async function renderCreateClaudeSandbox(
       makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
       makeEnvironment({
         id: "sandbox-1",
-        name: "E2B",
+        name: "Daytona",
         driver: "sandbox",
-        config: { provider: "e2b" },
+        config: { provider: "daytona" },
       }),
     ],
     { adapterType: "claude_local", defaultEnvironmentId: "sandbox-1", ...valueOverrides },
@@ -446,6 +458,7 @@ describe("AgentConfigForm environment selector", () => {
     mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
     mockSecretsApi.list.mockResolvedValue([]);
     mockSecretsApi.listProposals.mockResolvedValue([]);
     mockAgentsApi.startAdapterAuthLogin.mockResolvedValue({
@@ -863,6 +876,30 @@ describe("AgentConfigForm environment selector", () => {
     await runTest(result.container);
 
     expect(findButton(result.container, "Log in")).toBeTruthy();
+  });
+
+  it("hides the Login button for a Claude sandbox whose provider lacks the setup-token login capability", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderForm(
+      [
+        makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+        makeEnvironment({
+          id: "sandbox-1",
+          name: "E2B",
+          driver: "sandbox",
+          config: { provider: "e2b" },
+        }),
+      ],
+      { adapterType: "claude_local", defaultEnvironmentId: "sandbox-1" },
+      { showAdapterTestEnvironmentButton: true },
+    );
+    roots.push(result.root);
+
+    await runTest(result.container);
+
+    // E2B does not advertise the setup-token login capability, so the panel
+    // stays hidden even after the auth-missing check.
+    expect(findButton(result.container, "Log in")).toBeFalsy();
   });
 
   it("shows the Login button when a parent lifts the test feedback and renders the panel from the descriptor", async () => {
@@ -1681,9 +1718,9 @@ describe("AgentConfigForm environment selector", () => {
         makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
         makeEnvironment({
           id: "sandbox-1",
-          name: "E2B",
+          name: "Daytona",
           driver: "sandbox",
-          config: { provider: "e2b" },
+          config: { provider: "daytona" },
         }),
       ]);
 
@@ -1855,6 +1892,7 @@ describe("AgentConfigForm create-mode Claude OAuth binding", () => {
     mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
     mockSecretsApi.list.mockResolvedValue([]);
     mockSecretsApi.listProposals.mockResolvedValue([]);
     mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
@@ -2001,9 +2039,9 @@ async function renderEditClaudeSandbox(agentOverrides: Partial<Agent> = {}) {
     makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
     makeEnvironment({
       id: "sandbox-1",
-      name: "E2B",
+      name: "Daytona",
       driver: "sandbox",
-      config: { provider: "e2b" },
+      config: { provider: "daytona" },
     }),
   ]);
 
@@ -2053,6 +2091,7 @@ describe("AgentConfigForm edit-mode Claude OAuth binding", () => {
     mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
     mockSecretsApi.list.mockResolvedValue([]);
     mockSecretsApi.listProposals.mockResolvedValue([]);
     mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);

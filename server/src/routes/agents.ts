@@ -69,6 +69,7 @@ import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
 import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
+import { resolvePluginSandboxProviderDriverByKey } from "../services/plugin-environment-driver.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type {
   AdapterEnvironmentCheck,
@@ -106,6 +107,8 @@ import {
   evaluateConfidentialTransport,
   SETUP_TOKEN_START_FAILED,
   SETUP_TOKEN_SESSION_NOT_FOUND,
+  SETUP_TOKEN_PROVIDER_UNSUPPORTED,
+  SETUP_TOKEN_PROVIDER_UNSUPPORTED_CODE,
   type ConfidentialTransportConfig,
   type SetupTokenCleanupRecord,
   type SetupTokenCleanupStore,
@@ -422,7 +425,9 @@ export function agentRoutes(
   // insert, so a bind that lands during the provider call still holds no lease.
   const guardedSetupTokenLeaseManager: SetupTokenLeaseManager = {
     async acquire(input): Promise<SetupTokenLease> {
-      await assertSandboxLoginEnvironment(input.scope.companyId, input.scope.environmentId);
+      await assertSandboxLoginEnvironment(input.scope.companyId, input.scope.environmentId, {
+        requireSetupTokenLoginProvider: true,
+      });
       return setupTokenLeaseManager.acquire(input);
     },
     release: (lease) => setupTokenLeaseManager.release(lease),
@@ -1173,6 +1178,7 @@ export function agentRoutes(
   async function assertSandboxLoginEnvironment(
     companyId: string,
     environmentId: string,
+    options?: { requireSetupTokenLoginProvider?: boolean },
   ): Promise<void> {
     await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
       allowedDrivers: ["sandbox"],
@@ -1187,6 +1193,41 @@ export function agentRoutes(
     if (boundCompanyIds.length > 0 && !boundCompanyIds.includes(companyId)) {
       throw forbidden("The selected environment belongs to another company.", {
         code: "environment_company_mismatch",
+      });
+    }
+    // Gate the Claude setup-token login on the provider capability. Only a
+    // sandbox provider that advertises the setup-token login capability
+    // implements the setup-token pseudo-terminal methods. The setup-token start
+    // routes pass this option, so an unsupported provider fails closed here
+    // before the session starts. The lease guard passes it too, so a
+    // reconciliation that rebinds the environment to an unsupported provider
+    // still fails closed before the lease and the pseudo-terminal.
+    if (options?.requireSetupTokenLoginProvider) {
+      await assertSetupTokenLoginProviderCapability(environmentId);
+    }
+  }
+
+  /**
+   * Fails closed when the environment provider does not advertise the Claude
+   * setup-token login capability. It resolves the effective provider from the
+   * environment config, then reads the static capability from the provider
+   * plugin manifest. It never checks the provider by name. A missing plugin, a
+   * non-plugin provider, and a provider without the flag all fail closed with
+   * the fixed, typed error, so no session row, lease, or pseudo-terminal starts.
+   */
+  async function assertSetupTokenLoginProviderCapability(environmentId: string): Promise<void> {
+    const environment = await environmentsSvc.getById(environmentId);
+    const config =
+      environment?.config && typeof environment.config === "object"
+        ? (environment.config as Record<string, unknown>)
+        : {};
+    const provider = typeof config.provider === "string" ? config.provider : "";
+    const resolved = provider
+      ? await resolvePluginSandboxProviderDriverByKey({ db, driverKey: provider })
+      : null;
+    if (!resolved?.driver.supportsSetupTokenLogin) {
+      throw unprocessable(SETUP_TOKEN_PROVIDER_UNSUPPORTED, {
+        code: SETUP_TOKEN_PROVIDER_UNSUPPORTED_CODE,
       });
     }
   }
@@ -4530,8 +4571,12 @@ export function agentRoutes(
     // The guard rejects a missing, an archived, a local, an SSH, or a
     // fake-provider environment. It does not compare the environment against the
     // caller company; the catalog is instance-scoped, and the acquired lease
-    // records the caller company.
-    await assertSandboxLoginEnvironment(agent.companyId, scope.environmentId);
+    // records the caller company. It also fails closed when the provider does not
+    // advertise the setup-token login capability, so an unsupported provider
+    // never reaches a session row, a lease, or a pseudo-terminal.
+    await assertSandboxLoginEnvironment(agent.companyId, scope.environmentId, {
+      requireSetupTokenLoginProvider: true,
+    });
     if (!SETUP_TOKEN_LOGIN_TRANSPORT_READY) {
       // The live login transport binds at a later call site. Fail closed with the
       // fixed no-secret error until then.
@@ -4786,8 +4831,12 @@ export function agentRoutes(
     // before the session starts, so no store holds a rejected environment. It
     // also rejects an environment that another company owns (see
     // `assertSandboxLoginEnvironment`), so a login never runs in a foreign
-    // company sandbox.
-    await assertSandboxLoginEnvironment(companyId, environmentId);
+    // company sandbox. It also fails closed when the provider does not advertise
+    // the setup-token login capability, so an unsupported provider never reaches
+    // a session row, a lease, or a pseudo-terminal.
+    await assertSandboxLoginEnvironment(companyId, environmentId, {
+      requireSetupTokenLoginProvider: true,
+    });
 
     const scope: SetupTokenSessionScope = {
       companyId,

@@ -24,6 +24,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SETUP_TOKEN_SESSION_NOT_FOUND,
   SETUP_TOKEN_SUBMIT_CONFLICT,
+  SETUP_TOKEN_PROVIDER_UNSUPPORTED,
   type SetupTokenCleanupRecord,
   type SetupTokenCleanupStore,
   type SetupTokenLeaseManager,
@@ -82,6 +83,11 @@ const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
   listBoundCompanyIds: vi.fn(),
 }));
+// The provider-capability resolver the setup-token routes call to gate the login
+// on the provider setup-token capability. The default resolves "daytona" as a
+// capable provider. A test overrides it to prove an unsupported provider fails
+// closed before a session row, a lease, or a pseudo-terminal.
+const mockResolvePluginSandboxProviderDriverByKey = vi.hoisted(() => vi.fn());
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockHeartbeatService = vi.hoisted(() => ({ wakeup: vi.fn() }));
 const mockIssueService = vi.hoisted(() => ({ getById: vi.fn(), getByIdentifier: vi.fn() }));
@@ -113,6 +119,15 @@ function registerModuleMocks(): void {
   vi.doMock("../services/environments.js", () => ({
     environmentService: () => mockEnvironmentService,
   }));
+  vi.doMock("../services/plugin-environment-driver.js", async () => {
+    const actual = await vi.importActual<typeof import("../services/plugin-environment-driver.js")>(
+      "../services/plugin-environment-driver.js",
+    );
+    return {
+      ...actual,
+      resolvePluginSandboxProviderDriverByKey: mockResolvePluginSandboxProviderDriverByKey,
+    };
+  });
   vi.doMock("../services/heartbeat.js", () => ({ heartbeatService: () => mockHeartbeatService }));
   vi.doMock("../services/instance-settings.js", () => ({
     instanceSettingsService: () => mockInstanceSettingsService,
@@ -205,6 +220,9 @@ interface TransportHandle {
   // Every cleanup record the store persisted. A test asserts the route writes no
   // empty environment scope, so a rejected environment never reaches the store.
   records: SetupTokenCleanupRecord[];
+  // The count of login-process (pseudo-terminal) starts. A test asserts an
+  // unsupported provider starts no pseudo-terminal.
+  factoryInvocations: { count: number };
 }
 
 /**
@@ -261,7 +279,9 @@ function buildTransport(opts: { onSubmit?: "complete" | "throw" | "pending" } = 
     async release() {},
     async releaseById() {},
   };
+  const factoryInvocations = { count: 0 };
   const factory: SetupTokenLoginProcessFactory = ({ onPrompt, onCredential }) => {
+    factoryInvocations.count += 1;
     onPrompt({ url: FULL_LOGIN_URL });
     let resolveDone!: (outcome: SetupTokenLoginOutcome) => void;
     const done = new Promise<SetupTokenLoginOutcome>((resolve) => {
@@ -296,6 +316,7 @@ function buildTransport(opts: { onSubmit?: "complete" | "throw" | "pending" } = 
     secretWrites,
     overwriteCaptures,
     records,
+    factoryInvocations,
   };
 }
 
@@ -420,19 +441,28 @@ beforeEach(() => {
     adapterType: "claude_local",
     defaultEnvironmentId: ENVIRONMENT_ID,
   });
-  // The default resolved environment is an active sandbox with a real provider,
-  // so the company-and-environment start route passes the fail-closed guard. A
-  // test overrides this to prove the guard rejects an invalid environment.
+  // The default resolved environment is an active sandbox on a provider that
+  // supports the setup-token login, so the start routes pass the fail-closed
+  // guard. A test overrides this to prove the guard rejects an invalid
+  // environment or an unsupported provider.
   mockEnvironmentService.getById.mockResolvedValue({
     id: ENVIRONMENT_ID,
     driver: "sandbox",
     status: "active",
-    config: { provider: "kubernetes" },
+    config: { provider: "daytona" },
   });
   // The default environment has no company binding, so it is instance-global
   // and open to every member. A test overrides this to prove the guard rejects
   // an environment that another company owns.
   mockEnvironmentService.listBoundCompanyIds.mockResolvedValue([]);
+  // The default provider advertises the setup-token login capability. A test
+  // overrides this to prove an unsupported provider fails closed.
+  mockResolvePluginSandboxProviderDriverByKey.mockImplementation(
+    async ({ driverKey }: { driverKey: string }) =>
+      driverKey === "daytona"
+        ? { plugin: { id: "plugin-daytona" }, driver: { supportsSetupTokenLogin: true } }
+        : null,
+  );
 });
 
 describe("setup-token login route — full path", () => {
@@ -554,6 +584,29 @@ describe("setup-token login route — fail-closed environment (agent-scoped)", (
     expect(res.status).toBe(403);
     // The route rejected the environment before it started a session.
     expect(transport.records).toEqual([]);
+  });
+
+  it("rejects a provider without the setup-token login capability and starts no session", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+    // The agent default environment runs on a provider that does not advertise
+    // the setup-token login capability. The guard fails closed before a session
+    // row, a lease, or a pseudo-terminal.
+    mockEnvironmentService.getById.mockResolvedValue({
+      id: ENVIRONMENT_ID,
+      driver: "sandbox",
+      status: "active",
+      config: { provider: "e2b" },
+    });
+
+    const res = await request(app).post(BASE).send({});
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toBe(SETUP_TOKEN_PROVIDER_UNSUPPORTED);
+    // No session row, no lease, and no pseudo-terminal started.
+    expect(transport.records).toEqual([]);
+    expect(transport.factoryInvocations.count).toBe(0);
+    expect(transport.submittedCodes).toEqual([]);
+    expect(transport.secretWrites).toEqual([]);
   });
 
   it("accepts an instance-global agent default environment with no company binding", async () => {
@@ -1017,6 +1070,29 @@ describe("company-and-environment setup-token route — fail-closed environment"
 
     const res = await startCompanySession(app);
     expect(res.status).toBe(201);
+  });
+
+  it("rejects a provider without the setup-token login capability and starts no session", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+    // The resolved environment runs on a provider that does not advertise the
+    // setup-token login capability. The guard fails closed before a session row,
+    // a lease, or a pseudo-terminal.
+    mockEnvironmentService.getById.mockResolvedValue({
+      id: ENVIRONMENT_ID,
+      driver: "sandbox",
+      status: "active",
+      config: { provider: "e2b" },
+    });
+
+    const res = await startCompanySession(app);
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toBe(SETUP_TOKEN_PROVIDER_UNSUPPORTED);
+    // No session row, no lease, and no pseudo-terminal started.
+    expect(transport.records).toEqual([]);
+    expect(transport.factoryInvocations.count).toBe(0);
+    expect(transport.submittedCodes).toEqual([]);
+    expect(transport.secretWrites).toEqual([]);
   });
 });
 

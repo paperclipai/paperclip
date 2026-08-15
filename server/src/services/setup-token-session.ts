@@ -278,6 +278,14 @@ export const SETUP_TOKEN_CAP_EXCEEDED = "Too many active setup-token login sessi
 // `completed` with a stored secret yet. It leaks no session state.
 export const SETUP_TOKEN_TOKEN_UNAVAILABLE = "The setup-token is not available for this session.";
 export const SETUP_TOKEN_START_FAILED = "The setup-token login session could not start.";
+// The fixed error for a sandbox provider that does not advertise the setup-token
+// login capability. Only a provider that implements the setup-token
+// pseudo-terminal methods can host the login. The route returns this specific,
+// typed error and starts no session, so an unsupported provider never reaches a
+// session row, a lease, or a pseudo-terminal.
+export const SETUP_TOKEN_PROVIDER_UNSUPPORTED =
+  "The sandbox provider does not support the Claude setup-token login.";
+export const SETUP_TOKEN_PROVIDER_UNSUPPORTED_CODE = "setup_token_provider_unsupported";
 // The fixed error for a failed owner-bound secret write. It carries no token and
 // no storage detail, so it leaks no secret (Control 1).
 export const SETUP_TOKEN_STORAGE_FAILED = "The setup-token login could not store the credential.";

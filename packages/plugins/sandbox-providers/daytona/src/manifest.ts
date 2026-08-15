@@ -34,6 +34,10 @@ const manifest: PaperclipPluginManifestV1 = {
       },
       templateIdentityPaths: ["apiUrl"],
       supportsTemplateDelete: true,
+      // Daytona hosts the Claude setup-token login on a real pseudo-terminal.
+      // It is the only bundled provider that implements the setup-token
+      // pseudo-terminal methods, so it advertises the capability.
+      supportsSetupTokenLogin: true,
       configSchema: {
         type: "object",
         properties: {

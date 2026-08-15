@@ -570,6 +570,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     () => environments.find((environment) => environment.id === effectiveLoginEnvironmentId) ?? null,
     [environments, effectiveLoginEnvironmentId],
   );
+  // Load the sandbox provider capabilities. The Claude setup-token login runs on
+  // a real pseudo-terminal, so it needs a provider that advertises the
+  // setup-token login capability. The login panel gate reads this to hide the
+  // panel for a provider without the capability. The gate is advisory; the
+  // server resolves the capability again and fails closed.
+  const { data: environmentCapabilities } = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.environments.capabilities(selectedCompanyId)
+      : ["environment-capabilities", "none"],
+    queryFn: () => environmentsApi.capabilities(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId) && adapterType === "claude_local",
+  });
 
   // When the instance forces Kubernetes execution, new agents must default to the
   // managed Kubernetes sandbox environment (never the implicit local default).
@@ -893,12 +905,24 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     testEnvironment.data?.adapterType === "claude_local"
       ? testEnvironment.data.checks.find((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE) ?? null
       : null;
+  // The Claude login runs on a real pseudo-terminal, so it needs a provider that
+  // advertises the setup-token login capability. Read the capability for the
+  // effective environment provider. The codex login uses a different flow and
+  // does not gate on this capability, so the requirement applies to Claude only.
+  const effectiveLoginProvider =
+    typeof effectiveLoginEnvironment?.config?.provider === "string"
+      ? effectiveLoginEnvironment.config.provider
+      : null;
+  const providerSupportsSetupTokenLogin =
+    effectiveLoginProvider != null &&
+    environmentCapabilities?.sandboxProviders?.[effectiveLoginProvider]?.supportsSetupTokenLogin === true;
   const showAdapterLogin =
     adapterSupportsSandboxLogin &&
     effectiveLoginEnvironment?.driver === "sandbox" &&
     Boolean(effectiveLoginEnvironmentId) &&
     Boolean(selectedCompanyId) &&
-    Boolean(authMissingCheck);
+    Boolean(authMissingCheck) &&
+    (adapterType !== "claude_local" || providerSupportsSetupTokenLogin);
   const runEnvironmentTest = useCallback(async () => {
     if (!selectedCompanyId) {
       throw new Error("Select a company to test adapter environment");
