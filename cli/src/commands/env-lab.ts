@@ -124,27 +124,62 @@ function shellQuoteArgument(value: string): string {
   return "'" + value.replace(/'/g, "'\\''") + "'";
 }
 
-// Resolve the root of the `cli` package from the module location. The env-lab
-// fixture runs from a source checkout. A contributor can run `env-lab doctor`
-// from any subdirectory of the checkout. A path relative to the caller's working
-// directory would break outside the repository root. This function resolves an
-// absolute root from `import.meta.url`, so the command works from any directory.
-function resolveEnvLabCliRoot(): string {
-  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-  return path.resolve(moduleDir, "..", "..");
+// Describe how to re-run the env-lab CLI to stop the fixture. The bundled build
+// emits one `dist/index.js` file, so node runs that file directly and `tsxBin`
+// is `null`. A source checkout runs `src/index.ts` through the checked-out tsx
+// runner, because the entry is TypeScript.
+interface EnvLabCliInvocation {
+  entry: string;
+  tsxBin: string | null;
 }
 
-// Build the env-lab cleanup hint as a command with absolute paths. The env-lab
-// fixture runs from a source checkout, so the hint must run the checked-out CLI,
-// not the published binary. The command runs the local `cli/src` through tsx and
-// passes an inert `argv` value, so no shell reads the argument. Both paths pass
-// through `shellQuoteArgument`, so a metacharacter in the checkout path stays
-// inert when a contributor pastes the command. The `cliRoot` parameter is a test
-// seam; production callers use the resolved checkout root.
-export function buildEnvLabCleanupCommand(cliRoot: string = resolveEnvLabCliRoot()): string {
-  const tsxBin = path.join(cliRoot, "node_modules", "tsx", "dist", "cli.mjs");
-  const entry = path.join(cliRoot, "src", "index.ts");
-  return `node ${shellQuoteArgument(tsxBin)} ${shellQuoteArgument(entry)} env-lab down`;
+// Resolve how to re-run the CLI from the running module location. The cleanup
+// hint must run the same CLI that prints it, so it stops the correct version.
+// `import.meta.url` gives the running module. The bundled build runs this module
+// from `<cli>/dist/index.js`, so the hint runs that exact file with node. The
+// published package ships no `src` directory and no tsx runner. A source
+// checkout runs this module from `<cli>/src/commands/env-lab.ts`, so the hint
+// runs `<cli>/src/index.ts` through the checked-out tsx runner. This resolver
+// reads an absolute path from the module location, so the hint works from any
+// working directory. The `modulePath` parameter is a test seam; production
+// callers use the running module path.
+export function resolveEnvLabCliInvocation(
+  modulePath: string = fileURLToPath(import.meta.url),
+): EnvLabCliInvocation {
+  const moduleDir = path.dirname(modulePath);
+  const isSourceCheckout =
+    path.basename(moduleDir) === "commands" && path.basename(path.dirname(moduleDir)) === "src";
+  if (isSourceCheckout) {
+    const cliRoot = path.resolve(moduleDir, "..", "..");
+    return {
+      entry: path.join(cliRoot, "src", "index.ts"),
+      tsxBin: path.join(cliRoot, "node_modules", "tsx", "dist", "cli.mjs"),
+    };
+  }
+  return { entry: modulePath, tsxBin: null };
+}
+
+// Build the env-lab cleanup hint as a copyable shell command. The hint stops the
+// fixture that `env-lab doctor` inspected. It runs the same CLI that prints it,
+// so it stops the correct version, and it forwards the inspected instance, so it
+// stops the correct instance. It passes an inert `argv` value, so no shell reads
+// the argument. Each path and the instance id pass through `shellQuoteArgument`,
+// so a shell metacharacter stays inert when a contributor pastes the command.
+// The `invocation` parameter is a test seam; production callers use the resolved
+// running-module invocation.
+export function buildEnvLabCleanupCommand(
+  opts: { instance?: string; invocation?: EnvLabCliInvocation } = {},
+): string {
+  const invocation = opts.invocation ?? resolveEnvLabCliInvocation();
+  const parts = ["node"];
+  if (invocation.tsxBin !== null) {
+    parts.push(shellQuoteArgument(invocation.tsxBin));
+  }
+  parts.push(shellQuoteArgument(invocation.entry), "env-lab down");
+  if (opts.instance !== undefined) {
+    parts.push("--instance", shellQuoteArgument(opts.instance));
+  }
+  return parts.join(" ");
 }
 
 export async function envLabDoctorCommand(opts: { instance?: string; json?: boolean }) {
@@ -174,13 +209,14 @@ export async function envLabDoctorCommand(opts: { instance?: string; json?: bool
     p.log.message(`State: ${pc.dim(status.statePath)}`);
   }
 
-  // The env-lab fixture runs from a source checkout, so the cleanup hint must
-  // invoke the checked-out CLI, not the published binary. `npx paperclipai`
-  // resolves the installed package, so it can stop a different version. The
-  // command uses absolute paths, so it works from any subdirectory of the
-  // checkout. It runs the local `cli/src` and passes an inert `argv` value, so
-  // no shell reads the argument. See `doc/CLI.md`, "safe invocation".
-  p.log.message(`Cleanup: ${pc.dim(buildEnvLabCleanupCommand())}`);
+  // The cleanup hint runs the same CLI that prints it, so it stops the correct
+  // version. The bundled build runs `dist/index.js`; a source checkout runs
+  // `src/index.ts` through the checked-out tsx runner. The hint uses absolute
+  // paths, so it works from any working directory. It forwards the inspected
+  // instance, so it stops the fixture this command diagnosed. It passes an inert
+  // `argv` value, so no shell reads the argument. See `doc/CLI.md`, "safe
+  // invocation".
+  p.log.message(`Cleanup: ${pc.dim(buildEnvLabCleanupCommand({ instance: opts.instance }))}`);
 }
 
 export function registerEnvLabCommands(program: Command) {

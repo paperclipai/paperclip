@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   buildEnvLabCleanupCommand,
   collectEnvLabDoctorStatus,
+  resolveEnvLabCliInvocation,
   resolveEnvLabSshStatePath,
 } from "../commands/env-lab.js";
 
@@ -33,6 +34,20 @@ describe("env-lab cleanup command hint", () => {
   afterEach(() => {
     process.chdir(originalCwd);
   });
+
+  // Resolve a source-checkout invocation for a fabricated checkout root. A source
+  // checkout runs this module from `<root>/src/commands/env-lab.ts`, so the
+  // resolver reads that layout and returns the tsx runner and source entry.
+  function sourceInvocation(root: string) {
+    return resolveEnvLabCliInvocation(path.join(root, "src", "commands", "env-lab.ts"));
+  }
+
+  // Resolve a bundled-build invocation for a fabricated package root. The bundled
+  // build runs this module from `<root>/dist/index.js`, so the resolver returns
+  // that file as the entry with no tsx runner.
+  function bundledInvocation(root: string) {
+    return resolveEnvLabCliInvocation(path.join(root, "dist", "index.js"));
+  }
 
   // Split a command that uses POSIX single-quoting into its argument tokens. The
   // parser reads a single-quoted span verbatim and reads `\'` outside a span as a
@@ -137,7 +152,7 @@ describe("env-lab cleanup command hint", () => {
 
   for (const { label, root } of dangerousRoots) {
     it(`keeps a checkout path with ${label} inert in the cleanup hint`, () => {
-      const command = buildEnvLabCleanupCommand(root);
+      const command = buildEnvLabCleanupCommand({ invocation: sourceInvocation(root) });
       const tokens = tokenizePosix(command);
       const tsxBin = path.join(root, "node_modules", "tsx", "dist", "cli.mjs");
       const entry = path.join(root, "src", "index.ts");
@@ -152,4 +167,63 @@ describe("env-lab cleanup command hint", () => {
       expect(command).not.toContain(`"${entry}"`);
     });
   }
+
+  it("forwards the inspected instance to the cleanup hint", () => {
+    const command = buildEnvLabCleanupCommand({
+      instance: "fixture-test",
+      invocation: sourceInvocation("/tmp/checkout"),
+    });
+    const tokens = tokenizePosix(command);
+
+    // The hint ends with `--instance <id>`, so it stops the fixture the doctor
+    // command diagnosed, not the default instance.
+    expect(tokens.slice(-2)).toEqual(["--instance", "fixture-test"]);
+  });
+
+  it("omits the instance flag when the doctor command uses the default instance", () => {
+    const command = buildEnvLabCleanupCommand({ invocation: sourceInvocation("/tmp/checkout") });
+
+    // Without a selected instance, `env-lab down` resolves the same default
+    // instance the doctor command inspected. Do not add an empty flag.
+    expect(command).not.toContain("--instance");
+    expect(command.endsWith("env-lab down")).toBe(true);
+  });
+
+  it("keeps an instance id with shell metacharacters inert", () => {
+    const command = buildEnvLabCleanupCommand({
+      instance: "$(touch pwned)",
+      invocation: sourceInvocation("/tmp/checkout"),
+    });
+    const tokens = tokenizePosix(command);
+
+    // The shell reads the instance id as one literal token and runs no embedded
+    // command.
+    expect(tokens.slice(-2)).toEqual(["--instance", "$(touch pwned)"]);
+    expect(command).not.toContain('"$(touch pwned)"');
+  });
+
+  it("runs the bundled dist entry directly, without the tsx runner", () => {
+    const command = buildEnvLabCleanupCommand({
+      invocation: bundledInvocation("/opt/pkg"),
+    });
+    const tokens = tokenizePosix(command);
+
+    // The published package ships one `dist/index.js` file and no tsx runner, so
+    // node runs that file directly.
+    expect(tokens).toEqual(["node", path.join("/opt/pkg", "dist", "index.js"), "env-lab", "down"]);
+    expect(command).not.toContain("tsx");
+    expect(command).not.toContain(path.join("src", "index.ts"));
+  });
+
+  it("keeps a bundled package path with shell metacharacters inert", () => {
+    const root = "/opt/$(touch pwned)/pkg";
+    const command = buildEnvLabCleanupCommand({ invocation: bundledInvocation(root) });
+    const tokens = tokenizePosix(command);
+    const entry = path.join(root, "dist", "index.js");
+
+    // The shell reads the exact bundled path as one token and runs no embedded
+    // command.
+    expect(tokens).toEqual(["node", entry, "env-lab", "down"]);
+    expect(command).not.toContain(`"${entry}"`);
+  });
 });
