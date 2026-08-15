@@ -89,7 +89,7 @@ const SECRET_VERSION_STALE_CONFLICT = "The secret version is stale. Reload and c
 
 // The fixed Claude Code OAuth user-secret definition. The Claude login flow owns
 // only this compile-time key and these fixed properties. A caller never selects
-// the key, the name, the provider, the mode, or the status (Control 5).
+// the key, the name, the provider, the mode, or the status.
 const CLAUDE_CODE_OAUTH_TOKEN_KEY = "CLAUDE_CODE_OAUTH_TOKEN";
 const CLAUDE_CODE_OAUTH_DEFINITION = {
   key: CLAUDE_CODE_OAUTH_TOKEN_KEY,
@@ -100,19 +100,19 @@ const CLAUDE_CODE_OAUTH_DEFINITION = {
 } as const;
 // The fixed, non-secret conflict text. The helper returns it when a stored
 // definition for the fixed key does not match the fixed shape. The text echoes
-// no caller input (Control 5).
+// no caller input.
 const CLAUDE_OAUTH_DEFINITION_CONFLICT =
   "A conflicting Claude Code OAuth token definition already exists.";
 // The fixed, non-secret text for a stale confirmed rotation. The text is the
-// same for every stale reason, so it discloses no owner-value state (Control 1).
+// same for every stale reason, so it discloses no owner-value state.
 const CLAUDE_OAUTH_STALE_CONFIRMATION =
   "The Claude login confirmation is stale. Reload the page and confirm again.";
 // The fixed, non-secret text for a first write that finds an existing value. The
-// caller must confirm a replacement to rotate it (Control 1).
+// caller must confirm a replacement to rotate it.
 const CLAUDE_OAUTH_VALUE_EXISTS =
   "A Claude login value already exists. Confirm a replacement to rotate it.";
 // The metadata field that records the setup-token session id on the owner value.
-// It is the idempotency key for one completion. It is not a secret (Control 1).
+// It is the idempotency key for one completion. It is not a secret.
 const CLAUDE_OAUTH_SESSION_METADATA_FIELD = "claudeSetupTokenSessionId";
 
 /** The stored result of one owner-bound Claude OAuth completion. It holds no secret. */
@@ -122,7 +122,7 @@ export interface ClaudeOAuthUserSecretResult {
   definitionId: string;
 }
 
-// --- Control 6: the server-enforced Claude OAuth binding invariant ------------
+// --- The server-enforced Claude OAuth binding invariant ------------
 
 /** The adapter that owns the fixed Claude Code OAuth token binding. */
 export const CLAUDE_LOCAL_ADAPTER_TYPE = "claude_local";
@@ -130,13 +130,13 @@ export const CLAUDE_LOCAL_ADAPTER_TYPE = "claude_local";
 // The one fixed, non-secret error for every rejected stored-session claim. The
 // text is byte-identical for a missing, foreign, cross-company, cross-owner,
 // cross-adapter, cross-environment, expired, non-stored, or already-consumed
-// claim, so a caller cannot tell the reasons apart (Control 6).
+// claim, so a caller cannot tell the reasons apart.
 export const CLAUDE_OAUTH_CLAIM_REJECTED =
   "The Claude login binding requires a valid stored-session claim.";
 
 // The generic credential-conflict text. It names no token value and no owner
 // configuration. It tells the caller only that a higher-priority credential is
-// configured together with the Claude login token (Control 6).
+// configured together with the Claude login token.
 export const CLAUDE_OAUTH_CREDENTIAL_CONFLICT =
   "A higher-priority Claude credential is configured. Remove it to use the Claude login token.";
 
@@ -154,7 +154,7 @@ function readAdapterEnvRecord(config: unknown): Record<string, unknown> {
  * Returns true when a binding is the exact fixed Claude Code OAuth user-secret
  * reference. The fixed binding is a `user_secret_ref` whose key is the fixed
  * key. Any other shape (a plain value, a company secret reference, or a
- * different user-secret key) is a replacement or a weaker binding (Control 6).
+ * different user-secret key) is a replacement or a weaker binding.
  */
 export function isFixedClaudeOAuthBinding(binding: unknown): boolean {
   if (typeof binding !== "object" || binding === null) return false;
@@ -190,8 +190,6 @@ export interface ClaudeOAuthBindingInvariantInput {
   nextConfig: unknown;
   /** The stored adapter config before the write. Null on a create. */
   priorConfig?: unknown;
-  /** A controlled internal override for migration or administrator repair. */
-  allowInternalOverride?: boolean;
 }
 
 export interface ClaudeOAuthBindingInvariantDecision {
@@ -224,10 +222,6 @@ export interface ClaudeOAuthBindingInvariantDecision {
  * an existing one. The create and hire paths consume a stored-session claim when
  * the write introduces the binding. The update, approval, and rollback paths
  * reject a newly introduced binding, because they carry no claim.
- *
- * The function keeps the `allowInternalOverride` parameter for a migration or an
- * administrator repair. The parameter no longer changes any check, because the
- * removal and replacement locks are gone and the precedence policy always runs.
  */
 export function assertClaudeOAuthBindingInvariant(
   input: ClaudeOAuthBindingInvariantInput,
@@ -2522,7 +2516,7 @@ export function secretService(db: Db) {
    * reads the existing definition by the company and the fixed key. It returns an
    * exact compatible definition. It rejects a conflicting definition with 409 and
    * does not mutate it. After a uniqueness conflict it re-reads the row and
-   * compares the fixed fields before it returns (Control 5).
+   * compares the fixed fields before it returns.
    */
   async function ensureClaudeOAuthUserSecretDefinitionInternal(
     companyId: string,
@@ -2573,7 +2567,7 @@ export function secretService(db: Db) {
    * `confirmed_rotation` rotates only after confirmation with the expected secret
    * id and the expected latest version. The session id is the idempotency key: a
    * repeated successful completion returns the stored result and creates no new
-   * version (Control 1).
+   * version.
    */
   async function completeClaudeOAuthUserSecretInternal(
     companyId: string,
@@ -2666,7 +2660,7 @@ export function secretService(db: Db) {
    * It reads the fixed definition by the company and the fixed key. It reads the
    * value by the company, the owner, and that definition. It returns null when no
    * definition or no owner value exists, so a foreign value and a missing value
-   * look the same to the caller (Control 1). It never creates the definition.
+   * look the same to the caller. It never creates the definition.
    */
   async function readClaudeOAuthUserSecretStatusInternal(
     companyId: string,
@@ -3257,7 +3251,7 @@ export function secretService(db: Db) {
 
     createCurrentUserSecretValue: createUserSecretValueInternal,
 
-    // The narrow Claude Code OAuth definition helper (Control 5). A caller passes
+    // The narrow Claude Code OAuth definition helper. A caller passes
     // no key, name, provider, mode, or status. The route calls it only after the
     // authenticated board-user, company, and sandbox checks pass.
     ensureClaudeOAuthUserSecretDefinition: (
@@ -3265,12 +3259,12 @@ export function secretService(db: Db) {
       actor?: { userId?: string | null; agentId?: string | null },
     ) => ensureClaudeOAuthUserSecretDefinitionInternal(companyId, actor),
 
-    // The owner-bound Claude Code OAuth compare-and-set (Control 1). It creates a
+    // The owner-bound Claude Code OAuth compare-and-set. It creates a
     // first value or rotates after a confirmed expected version. The session id
     // is the idempotency key for one completion.
     completeClaudeOAuthUserSecret: completeClaudeOAuthUserSecretInternal,
 
-    // The owner-bound Claude Code OAuth status read (Control 1). It returns only
+    // The owner-bound Claude Code OAuth status read. It returns only
     // the secret id and the latest version for the owner value, or null. It never
     // returns the token and never creates the definition. The status route reads
     // the expected version from it before it captures the confirmed rotation.

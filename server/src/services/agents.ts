@@ -641,7 +641,6 @@ export function agentService(db: Db) {
           adapterType: (normalizedPatch.adapterType ?? existing.adapterType) as string,
           nextConfig: normalizedPatch.adapterConfig,
           priorConfig: existing.adapterConfig,
-          allowInternalOverride: options?.claudeLogin?.allowInternalBindingOverride,
         })
       : null;
 
@@ -745,7 +744,6 @@ export function agentService(db: Db) {
         adapterType,
         nextConfig: adapterConfig,
         priorConfig: null,
-        allowInternalOverride: options?.claudeLogin?.allowInternalBindingOverride,
       });
       return db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;

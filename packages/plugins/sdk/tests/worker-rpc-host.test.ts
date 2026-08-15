@@ -758,7 +758,7 @@ describe("worker execute.log emitter", () => {
   });
 });
 
-describe("worker setup-token pseudo-terminal dispatch (Control 7)", () => {
+describe("worker setup-token pseudo-terminal dispatch", () => {
   it("dispatches open, input, stop, and close, and streams output and exit as notifications", async () => {
     const hostToWorker = new PassThrough();
     const workerToHost = new PassThrough();

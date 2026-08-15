@@ -141,7 +141,7 @@ export type SetupTokenCredentialSink = (token: string) => Promise<void>;
  * successful commit. It rejects and rolls back the whole transaction on a
  * zero-row transition or on a storage failure, so neither the secret nor the
  * claim commits. The service holds the token only for this call; it never stores
- * it (Control 1).
+ * it.
  */
 export type SetupTokenSecretWriter = (input: {
   scope: SetupTokenSessionScope;
@@ -183,7 +183,7 @@ export interface SetupTokenLeaseManager {
 /**
  * The non-secret cleanup record. It holds only ids, the deadline, the claim
  * marker, and the state. It never holds a URL, a code, a token, or a raw process
- * chunk (SR-4). The service persists it at start so a restart can reap the
+ * chunk. The service persists it at start so a restart can reap the
  * lease. The record keys on the company, the owner, the adapter, and the
  * environment, not the agent id, so a hire flow with no agent still resolves it.
  */
@@ -223,13 +223,13 @@ export interface SetupTokenCleanupStore {
   record(record: SetupTokenCleanupRecord): Promise<void>;
   /**
    * Marks the state only when the full owner scope and the session id match. The
-   * write never updates a row by the session id alone (SR-3).
+   * write never updates a row by the session id alone.
    */
   markState(identity: SetupTokenCleanupIdentity, state: SetupTokenSessionState): Promise<void>;
   /**
    * Deletes the record only when the full owner scope and the session id match.
    * The delete never removes a row by the session id alone, so a cross-scope
-   * caller cannot delete a foreign row (SR-3).
+   * caller cannot delete a foreign row.
    */
   remove(identity: SetupTokenCleanupIdentity): Promise<void>;
   /**
@@ -297,7 +297,7 @@ export const SETUP_TOKEN_PROVIDER_UNSUPPORTED =
   "The sandbox provider does not support the Claude setup-token login.";
 export const SETUP_TOKEN_PROVIDER_UNSUPPORTED_CODE = "setup_token_provider_unsupported";
 // The fixed error for a failed owner-bound secret write. It carries no token and
-// no storage detail, so it leaks no secret (Control 1).
+// no storage detail, so it leaks no secret.
 export const SETUP_TOKEN_STORAGE_FAILED = "The setup-token login could not store the credential.";
 
 /** A typed error the route maps to a fixed status and the fixed text above. */
@@ -518,7 +518,7 @@ interface StoredSession {
   loginUrl: string | null;
   // True after the owner-bound secret write succeeds. The service never holds the
   // token: the credential sink writes it to the secret store and the service
-  // records only this non-secret marker (Control 1).
+  // records only this non-secret marker.
   secretStored: boolean;
   timer: ReturnType<typeof setTimeout> | null;
   // The retention timer for a completed, stored session. The service arms it
@@ -557,13 +557,13 @@ export interface SetupTokenSessionDescriptor {
   environmentId: string;
   /** The session deadline in epoch milliseconds. */
   deadline: number;
-  /** The full login URL, present only after the prompt surfaces (SR-5). */
+  /** The full login URL, present only after the prompt surfaces. */
   loginUrl: string | null;
 }
 
 /**
  * The completion contract for the authorized owner. It carries the non-secret
- * `storedSessionId` claim and no token (Control 1). The `storedSessionId` is the
+ * `storedSessionId` claim and no token. The `storedSessionId` is the
  * durable session id; the agent-create transaction consumes it as the one-time
  * stored-session claim.
  */
@@ -577,8 +577,8 @@ export interface SetupTokenSessionServiceOptions {
   store: SetupTokenCleanupStore;
   /**
    * The owner-bound secret writer. The service awaits it one time when the login
-   * binds the token. It performs the Phase 3 compare-and-set. The service fails
-   * closed on a rejection (Control 1).
+   * binds the token. It performs the compare-and-set. The service fails
+   * closed on a rejection.
    */
   completeCredential: SetupTokenSecretWriter;
   rateLimiter: SetupTokenRateLimiter;
@@ -639,7 +639,7 @@ export class SetupTokenSessionService {
   /**
    * Builds the durable-record identity for a session. The store matches every
    * write on the full owner scope and the session id, so no write updates a row
-   * by the session id alone (SR-3).
+   * by the session id alone.
    */
   private identityOf(session: StoredSession): SetupTokenCleanupIdentity {
     return {
@@ -874,9 +874,9 @@ export class SetupTokenSessionService {
 
   /**
    * Receives the minted token from the login process and writes it to the
-   * owner-bound secret. The service awaits the Phase 3 compare-and-set. The
+   * owner-bound secret. The service awaits the compare-and-set. The
    * service never stores the token: it passes the token to the writer, then it
-   * drops the reference (Control 1, SR-1).
+   * drops the reference.
    *
    * The service runs the whole sink under the per-session lock, so a cancel or an
    * expiry cannot interleave with the write. A cancel or an expiry that wins the
@@ -934,7 +934,7 @@ export class SetupTokenSessionService {
    * id exists and the stored scope equals the caller scope in all five fields:
    * the company, the owner, the agent, the adapter, and the environment. A
    * missing session and a cross-scope session both throw the same not-found
-   * error, so a caller cannot tell them apart (SR-3). The full-scope match makes
+   * error, so a caller cannot tell them apart. The full-scope match makes
    * a cross-adapter and a cross-environment session return the same not-found
    * error as a missing session.
    */
@@ -965,7 +965,7 @@ export class SetupTokenSessionService {
    * completion. The environment is intrinsic to the session, so a foreign
    * environment cannot address the session. A missing session and a
    * cross-company, cross-owner, or cross-adapter session all throw the same
-   * not-found error (SR-3, Control 2). The agentless marker rejects an
+   * not-found error. The agentless marker rejects an
    * agent-scoped session, so a company route never resolves an agent session.
    */
   resolveCompanyScope(
@@ -988,7 +988,7 @@ export class SetupTokenSessionService {
   /**
    * Returns the owner descriptor for a session. The company-and-environment
    * routes read it to build the response contract. The scope check runs first,
-   * so a cross-scope caller gets the same not-found error (SR-3). The route
+   * so a cross-scope caller gets the same not-found error. The route
    * projects the descriptor: the public status response drops the login URL; the
    * owner prompt response returns the login URL behind the transport guard.
    */
@@ -1066,7 +1066,7 @@ export class SetupTokenSessionService {
   /**
    * Returns the completion contract for the authorized owner. It returns the
    * non-secret `storedSessionId` claim only from a completed session whose
-   * owner-bound secret write succeeded. It returns no token (Control 1). It
+   * owner-bound secret write succeeded. It returns no token. It
    * returns the fixed unavailable error when the session is not completed with a
    * stored secret. The scope check runs first, so a cross-scope caller gets the
    * same not-found error, not the unavailable error.
@@ -1088,7 +1088,7 @@ export class SetupTokenSessionService {
    * per-session lock. The lock serializes the terminal transition against the
    * owner-bound secret write, so a cancel or an expiry never interleaves with the
    * write (complete mediation). The order stops the child before the lease
-   * release on every terminal path (SR-4).
+   * release on every terminal path.
    */
   private async terminate(session: StoredSession, state: SetupTokenSessionState): Promise<void> {
     await this.withSessionLock(session, () => this.terminateLocked(session, state));
@@ -1152,7 +1152,7 @@ export class SetupTokenSessionService {
    * not remove the row. The agent-create transaction consumes the claim, or the
    * reaper removes the row after the deadline. The cleanup still releases the
    * sandbox lease at once. It retains the in-memory session for the retention
-   * window, so the owner can read the completion once (Control 1, SR-4).
+   * window, so the owner can read the completion once.
    */
   private async runCleanup(session: StoredSession, state: SetupTokenSessionState): Promise<void> {
     if (session.cleanupDone) return;
@@ -1194,7 +1194,7 @@ export class SetupTokenSessionService {
   /**
    * Purges a retained completed session from memory. It clears the retention
    * timer and drops the in-memory session. The durable stored-session claim
-   * stays in the store for the create flow or the reaper (SR-4).
+   * stays in the store for the create flow or the reaper.
    */
   private purgeRetained(sessionId: string): void {
     const session = this.sessions.get(sessionId);
@@ -1283,7 +1283,7 @@ function toCleanupRecord(row: ClaudeSetupTokenSessionRow): SetupTokenCleanupReco
 
 /**
  * The database scope predicate. It matches the full owner scope and the session
- * id, so no write ever addresses a row by the session id alone (SR-3).
+ * id, so no write ever addresses a row by the session id alone.
  */
 function setupTokenScopeMatch(identity: SetupTokenCleanupIdentity) {
   return and(
@@ -1316,8 +1316,8 @@ export const SETUP_TOKEN_STORED_PREDECESSOR_STATES: readonly SetupTokenSessionSt
  * The atomic claim writer runs this update on the same transaction handle as the
  * secret write, so the commit establishes the `stored` claim and the encrypted
  * secret together. A zero-row result rolls back the whole transaction, so a
- * stale, expired, terminal, foreign-scope, or already-bound row writes no secret
- * (SR-3).
+ * stale, expired, terminal, foreign-scope, or already-bound row writes no
+ * secret.
  */
 export async function transitionSetupTokenSessionToStored(
   executor: Db,
@@ -1341,7 +1341,7 @@ export async function transitionSetupTokenSessionToStored(
 /**
  * Builds the durable, database-backed cleanup store. It persists only the
  * non-secret record. Every write matches the full owner scope and the session
- * id, so no write updates a row by the session id alone (SR-3, SR-4). The
+ * id, so no write updates a row by the session id alone. The
  * claim-consumption write folds the state check, the deadline check, and the
  * consumption into one conditional write.
  */

@@ -972,7 +972,7 @@ export interface PluginRenderCloseEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Setup-token login pseudo-terminal (PTY) worker methods (Control 7).
+// Setup-token login pseudo-terminal (PTY) worker methods.
 // ---------------------------------------------------------------------------
 // The host drives one live Claude `setup-token` login pseudo-terminal inside a
 // sandbox provider worker. The host owns the route. It mints an opaque host
@@ -1186,7 +1186,7 @@ export interface HostToWorkerMethods {
     params: PluginEnvironmentDeleteTemplateParams,
     result: PluginEnvironmentDeleteTemplateResult,
   ];
-  /** Open one live login pseudo-terminal keyed by a host-owned route identifier (Control 7). */
+  /** Open one live login pseudo-terminal keyed by a host-owned route identifier. */
   setupTokenPtyOpen: [
     params: PluginSetupTokenPtyOpenParams,
     result: PluginSetupTokenPtyOpenResult,

@@ -8,14 +8,14 @@
 // `app.ts` binds it one time at startup.
 //
 // The binding passes only the fixed command `CLAUDE_SETUP_TOKEN_COMMAND` to the
-// login runner (Control 4). It never accepts a command from a route, a request
+// login runner. It never accepts a command from a route, a request
 // body, or an adapter configuration.
 //
 // The live pseudo-terminal opener is a separate seam. The Daytona sandbox
 // provider runs as a plugin worker, so the server process does not hold the raw
 // sandbox process. The real opener binds inside the worker; this module accepts
 // it through `openLivePtySession`. A test injects a fake sandbox opener to drive
-// the full session path. The live opener lands with the Phase 11 characterization
+// the full session path. The live opener lands with the characterization
 // test against a real sandbox.
 
 import {
@@ -169,13 +169,13 @@ export function buildClaudeOAuthWriteInput(
  * marks the login failed. A storage failure rejects and rolls back the whole
  * transaction, so neither the secret nor the claim commits. A concurrent change
  * fails the compare-and-set with the fixed stale conflict, so the write leaves no
- * partial state (Control 1).
+ * partial state.
  *
  * It reads the company and the owner only from the immutable session scope, so a
- * request cannot redirect the write to another owner (Control 4). It never logs
+ * request cannot redirect the write to another owner. It never logs
  * the token and never puts the token in an error; it lets the secrets service
  * error propagate unchanged, and the session maps a rejection to the fixed,
- * non-secret storage error (Control 1).
+ * non-secret storage error.
  */
 export function createSetupTokenSecretWriter(deps: {
   db: Db;
@@ -236,7 +236,7 @@ export function buildSetupTokenLoginTransport(
 ): SetupTokenLoginTransportBinding {
   // The binding fixes the login command. It never reads a command from a route, a
   // request body, an adapter configuration, or the dependency object, so a
-  // runtime-supplied value cannot change the pseudo-terminal command (Control 4).
+  // runtime-supplied value cannot change the pseudo-terminal command.
   const command = CLAUDE_SETUP_TOKEN_COMMAND;
   const log = deps.log ?? (() => {});
 
@@ -349,7 +349,7 @@ export interface ProductionSetupTokenSandboxProviderDeps {
    * Opens the live pseudo-terminal for the acquired lease. The Daytona provider
    * runs as a plugin worker, so the real opener binds `sandbox.process` inside
    * the worker. When a caller omits it, the provider fails closed before it
-   * acquires a lease, and the live path lands with the Phase 11 characterization
+   * acquires a lease, and the live path lands with the characterization
    * test.
    */
   openLivePtySession?: (input: {
@@ -400,7 +400,7 @@ export function createProductionSetupTokenSandboxProvider(
       if (!deps.openLivePtySession) {
         // The live sandbox pseudo-terminal opener is not bound yet. Fail closed
         // before the acquire, so the login holds no lease. The live opener lands
-        // with the Phase 11 characterization test against a real sandbox.
+        // with the characterization test against a real sandbox.
         log(
           "[paperclip] Setup-token login: the live sandbox pseudo-terminal transport is not bound.",
         );
@@ -527,7 +527,7 @@ export function createProductionSetupTokenCleanupStore(db: Db): SetupTokenCleanu
 
 /**
  * The narrow plugin worker manager surface the live opener needs. The manager
- * owns the host route gate (Control 7): it mints the host route identifier,
+ * owns the host route gate: it mints the host route identifier,
  * reserves one route per worker, drives the open, binds the worker session
  * identifier one time, routes output, and terminalizes the route.
  */

@@ -440,7 +440,7 @@ export interface PluginDefinition {
   ): Promise<PluginEnvironmentDeleteTemplateResult>;
 
   /**
-   * Called to open one live Claude `setup-token` login pseudo-terminal (Control 7).
+   * Called to open one live Claude `setup-token` login pseudo-terminal.
    * The worker registers the terminal under the host route identifier and returns a
    * worker session identifier for the output notification binding only. The worker
    * streams output and the exit through `ctx.setupTokenPty`, never as a reply.

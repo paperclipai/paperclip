@@ -1057,7 +1057,7 @@ describe("plugin worker manager execute.log route", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Host-owned setup-token login pseudo-terminal route gate (Control 7)
+// Host-owned setup-token login pseudo-terminal route gate
 // ---------------------------------------------------------------------------
 
 const SETUP_TOKEN_PTY_WORKER_ENTRYPOINT = path.join(

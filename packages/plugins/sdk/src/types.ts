@@ -2010,7 +2010,7 @@ export interface PluginExecutionClient {
 
 /**
  * `ctx.setupTokenPty` — stream one live login pseudo-terminal's output and exit
- * from a sandbox provider worker to the host (Control 7).
+ * from a sandbox provider worker to the host.
  *
  * The worker opener registers the output listener on the session and forwards
  * each raw chunk through `output(workerSessionId, chunk)`. It forwards the child
@@ -2152,8 +2152,8 @@ export interface PluginContext {
    * stream. */
   execution: PluginExecutionClient;
 
-  /** Stream one live login pseudo-terminal's output and exit to the host
-   * (Control 7). The default is a no-op for a provider that opens no login
+  /** Stream one live login pseudo-terminal's output and exit to the host.
+   * The default is a no-op for a provider that opens no login
    * pseudo-terminal. */
   setupTokenPty: PluginSetupTokenPtyClient;
 

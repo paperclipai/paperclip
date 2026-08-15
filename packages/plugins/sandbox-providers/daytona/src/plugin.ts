@@ -1269,7 +1269,7 @@ const sandboxHandleCache = (() => {
     entries.clear();
   }
 
-  // Resolve a cached sandbox by its provider lease id alone (Control 7). The
+  // Resolve a cached sandbox by its provider lease id alone. The
   // login pseudo-terminal open carries only the provider lease id, not the full
   // scope, so this scans the cached handles for the one whose `sandbox.id`
   // matches. The lease was cached on acquire in the same worker, so the scan is
@@ -1895,7 +1895,7 @@ async function executeInSession(
   }
 }
 
-// The worker-side registry of live login pseudo-terminal sessions (Control 7).
+// The worker-side registry of live login pseudo-terminal sessions.
 // The worker registers each terminal under the host-owned route identifier at
 // create time, so the host closes the exact terminal by that identifier even
 // when the open reply was lost. It also indexes by the worker session identifier
@@ -2683,7 +2683,7 @@ const plugin = definePlugin({
     });
   },
 
-  // Open one live Claude `setup-token` login pseudo-terminal (Control 7). Resolve
+  // Open one live Claude `setup-token` login pseudo-terminal. Resolve
   // the cached sandbox by the provider lease id, run the fixed login command on a
   // real pseudo-terminal, and register the session under the host route id. Stream
   // the raw output and the exit through `ctx.setupTokenPty`, bound to the returned

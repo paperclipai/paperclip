@@ -1,5 +1,5 @@
 // Test worker fixture for the host-owned setup-token login pseudo-terminal route
-// gate (Control 7). The fixture drives the manager route state machine through
+// gate. The fixture drives the manager route state machine through
 // the four typed methods (open, input, stop, close) and the output and exit
 // notifications.
 //

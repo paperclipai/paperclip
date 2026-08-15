@@ -12,7 +12,7 @@
 //     metadata, or a non-owner response. The owner read-prompt response carries
 //     the full URL with `Cache-Control: no-store`; every other response carries
 //     the sanitized URL form only.
-//   * SR-6 and SR-7: the route does not force TLS. On a non-confidential
+//   * The route does not force TLS. On a non-confidential
 //     transport it proceeds and attaches a non-blocking advisory to the
 //     response, so the login completes and the client shows a disclaimer.
 
@@ -684,7 +684,7 @@ describe("setup-token login route — SR-1 and SR-5 (no secret in a sink)", () =
   });
 });
 
-describe("setup-token login route — SR-6 and SR-7 (advisory, non-blocking transport)", () => {
+describe("setup-token login route — advisory, non-blocking transport", () => {
   it("proceeds on a non-confidential transport and attaches the advisory", async () => {
     // Authenticated mode with no proxy allowlist: a loopback HTTP peer is not a
     // confidential transport. The product owner set a non-negotiable requirement:
@@ -752,7 +752,7 @@ describe("setup-token login route — SR-6 and SR-7 (advisory, non-blocking tran
 // These tests drive the agentless Claude login. The scope binds one login to one
 // company, one owner, one adapter, and one environment. The route carries no
 // agent id, resolves the environment server-side, and returns the same not-found
-// error for a foreign session as for a missing session (Control 2).
+// error for a foreign session as for a missing session.
 
 const COMPANY_BASE = `/api/companies/${COMPANY_ID}/setup-token-login-sessions`;
 

@@ -11,6 +11,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastProvider } from "../context/ToastContext";
 import { AgentConfigForm, AdapterLoginPanel, type AdapterLoginDescriptor } from "./AgentConfigForm";
 import { defaultCreateValues } from "./agent-config-defaults";
+import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import { ApiError } from "../api/client";
 
 const mockAgentsApi = vi.hoisted(() => ({
@@ -402,6 +403,73 @@ async function renderCreateClaudeSandbox(
     { adapterType: "claude_local", defaultEnvironmentId: "sandbox-1", ...valueOverrides },
     { showAdapterTestEnvironmentButton: true },
   );
+}
+
+// A create-mode harness that holds the form values in React state. A value
+// patch from the form (a login claim, an environment change) updates the props,
+// so the form re-runs its effects against the new state. The fixed-values
+// `renderCreateForm` harness cannot show the environment-change reset, because
+// its `values` prop never changes. `valuesRef` exposes the current merged
+// values to the test.
+async function renderStatefulCreateClaudeSandbox(environments: Environment[]) {
+  mockEnvironmentsApi.list.mockResolvedValue(environments);
+
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+
+  const valuesRef: { current: typeof defaultCreateValues } = {
+    current: {
+      ...defaultCreateValues,
+      adapterType: "claude_local",
+      defaultEnvironmentId: "sandbox-1",
+    },
+  };
+
+  function Harness() {
+    const [values, setValues] = useState(valuesRef.current);
+    valuesRef.current = values;
+    return (
+      <AgentConfigForm
+        mode="create"
+        values={values}
+        onChange={(patch) => setValues((prev) => ({ ...prev, ...patch }))}
+        hidePromptTemplate
+        showAdapterTypeField={false}
+        showAdapterTestEnvironmentButton
+      />
+    );
+  }
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <TooltipProvider>
+            <Harness />
+          </TooltipProvider>
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+  });
+
+  await flushReact();
+  return { container, root, valuesRef };
+}
+
+async function selectEnvironment(container: HTMLElement, environmentId: string) {
+  const select = container.querySelector("select");
+  await act(async () => {
+    if (select) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+      setter?.call(select, environmentId);
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  });
+  await flushReact();
 }
 
 async function clickByText(container: HTMLElement, label: string) {
@@ -1340,6 +1408,60 @@ describe("AgentConfigForm environment selector", () => {
       "claude-session-1",
     );
     expect(result.container.textContent).toContain("Authenticated");
+  });
+
+  it("clears the stored-session claim and the fixed binding when the effective environment changes", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+    });
+    const result = await renderStatefulCreateClaudeSandbox([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+      makeEnvironment({
+        id: "sandbox-1",
+        name: "Daytona One",
+        driver: "sandbox",
+        config: { provider: "daytona" },
+      }),
+      makeEnvironment({
+        id: "sandbox-2",
+        name: "Daytona Two",
+        driver: "sandbox",
+        config: { provider: "daytona" },
+      }),
+    ]);
+    roots.push(result.root);
+
+    // Log in on the first sandbox. The stored state adds the fixed
+    // `CLAUDE_CODE_OAUTH_TOKEN` binding and the non-secret claim to the form.
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() => result.valuesRef.current.claudeStoredSessionId != null);
+
+    expect(result.valuesRef.current.claudeStoredSessionId).toBe("stored-session-1");
+    expect("CLAUDE_CODE_OAUTH_TOKEN" in (result.valuesRef.current.envBindings ?? {})).toBe(true);
+
+    // Change the effective environment. The reset drops the claim and the
+    // binding, so the create request cannot send a claim for the old target.
+    await selectEnvironment(result.container, "sandbox-2");
+
+    const values = result.valuesRef.current;
+    expect(values.claudeStoredSessionId ?? null).toBeNull();
+    expect(values.claudeApplyStoredLogin ?? false).toBe(false);
+    expect("CLAUDE_CODE_OAUTH_TOKEN" in (values.envBindings ?? {})).toBe(false);
+
+    // The create request body carries no stale claim.
+    const payload = buildNewAgentHirePayload({
+      name: "Cody",
+      effectiveRole: "Engineer",
+      configValues: values,
+      adapterConfig: {},
+    });
+    expect("storedSessionId" in payload).toBe(false);
   });
 
   it("reports the non-secret stored-session claim to the parent on success", async () => {

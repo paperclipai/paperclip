@@ -438,14 +438,14 @@ export async function createApp(
   // Bind the production setup-token login transport. It carries the live lease
   // manager, the login-process factory over the sandbox pseudo-terminal, and the
   // durable cleanup store. The factory passes only the fixed command
-  // `CLAUDE_SETUP_TOKEN_COMMAND` (Control 4); it never reads a command from a
+  // `CLAUDE_SETUP_TOKEN_COMMAND`; it never reads a command from a
   // route, a request body, or an adapter configuration. The durable store and the
-  // startup reaper are live now, so a restart reaps a leftover lease (SR-4).
+  // startup reaper are live now, so a restart reaps a leftover lease.
   //
   // The live sandbox pseudo-terminal opener binds inside the sandbox provider
   // worker, so the server process does not hold the raw sandbox process. The
-  // opener drives the worker through the plugin worker manager route gate
-  // (Control 7). The manager mints a host-owned route identifier, permits one
+  // opener drives the worker through the plugin worker manager route gate.
+  // The manager mints a host-owned route identifier, permits one
   // active credential pseudo-terminal per worker, binds the worker session
   // identifier one time for output only, and terminalizes the route on every open
   // failure path. With the opener supplied, the provider acquires a lease and the
@@ -928,7 +928,7 @@ export async function createApp(
       hostServiceCleanup.teardown();
       // Cancel every live setup-token login session and AWAIT the cancellation,
       // so each direct child stops and the server releases each lease before the
-      // caller stops the database and the provider (SR-4). A lease release that
+      // caller stops the database and the provider. A lease release that
       // fails stays a durable record for the startup reaper.
       await setupTokenLoginService?.shutdown();
     })();

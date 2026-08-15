@@ -113,26 +113,6 @@ describe("assertClaudeOAuthBindingInvariant", () => {
     expect(decision).toEqual({ introducesBinding: false, keepsBinding: false });
   });
 
-  it("permits a removal under the controlled internal override", () => {
-    const decision = assertClaudeOAuthBindingInvariant({
-      adapterType: "claude_local",
-      nextConfig: withEnv({}),
-      priorConfig: withEnv({ CLAUDE_CODE_OAUTH_TOKEN: FIXED_BINDING }),
-      allowInternalOverride: true,
-    });
-    expect(decision).toEqual({ introducesBinding: false, keepsBinding: false });
-  });
-
-  it("permits an adapter-type move that drops the binding under the internal override", () => {
-    const decision = assertClaudeOAuthBindingInvariant({
-      adapterType: "process",
-      nextConfig: withEnv({}),
-      priorConfig: withEnv({ CLAUDE_CODE_OAUTH_TOKEN: FIXED_BINDING }),
-      allowInternalOverride: true,
-    });
-    expect(decision).toEqual({ introducesBinding: false, keepsBinding: false });
-  });
-
   it("does nothing for a non-claude_local create with no prior fixed binding", () => {
     const decision = assertClaudeOAuthBindingInvariant({
       adapterType: "process",
@@ -170,20 +150,6 @@ describe("assertClaudeOAuthBindingInvariant", () => {
           ANTHROPIC_API_KEY: { type: "secret_ref", secretId: randomUUID(), version: "latest" },
         }),
         priorConfig: null,
-      }),
-    ).toThrowError(CLAUDE_OAUTH_CREDENTIAL_CONFLICT);
-  });
-
-  it("runs the precedence policy even under the internal override", () => {
-    expect(() =>
-      assertClaudeOAuthBindingInvariant({
-        adapterType: "claude_local",
-        nextConfig: withEnv({
-          CLAUDE_CODE_OAUTH_TOKEN: FIXED_BINDING,
-          ANTHROPIC_API_KEY: { type: "plain", value: "sk" },
-        }),
-        priorConfig: null,
-        allowInternalOverride: true,
       }),
     ).toThrowError(CLAUDE_OAUTH_CREDENTIAL_CONFLICT);
   });

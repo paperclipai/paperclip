@@ -58,7 +58,7 @@ import {
   EnvironmentVariablesEditor,
   type EnvironmentVariablesEditorHandle,
 } from "./environment-variables-editor";
-import { buildFixedClaudeOAuthBinding } from "./environment-variables-editor/model";
+import { buildFixedClaudeOAuthBinding, CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
 import { AgentSecretAccessEditor } from "./AgentSecretAccessEditor";
 import { useProposalReview } from "../pages/secrets/proposal-review";
 import { AGENT_ACCESS_CONFIG_PATH_PREFIX } from "../lib/secret-delivery";
@@ -889,9 +889,37 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // re-run on every render (the mutation object has a new identity each render).
   const resetTestEnvironmentRef = useRef(testEnvironment.reset);
   resetTestEnvironmentRef.current = testEnvironment.reset;
+
+  // Clear a stale Claude login claim when the adapter type or the effective
+  // environment changes. A login binds `CLAUDE_CODE_OAUTH_TOKEN` to one specific
+  // environment. After the environment changes, the held claim and the fixed
+  // binding no longer match the new target. The create request would still send
+  // the claim, and the server would reject it. So drop the claim, the
+  // apply-existing flag, and the fixed binding, and return the login panel to
+  // its initial state. Only create mode holds this form state; edit mode saves
+  // the binding at login time. Hold the clear in a ref so the effect does not
+  // re-run on every render (`set` and `val` have a new identity each render).
+  const clearClaudeLoginClaimRef = useRef<() => void>(() => {});
+  clearClaudeLoginClaimRef.current = () => {
+    if (!isCreate || !set) return;
+    const bindings = (val!.envBindings ?? {}) as Record<string, EnvBinding>;
+    const hasClaim =
+      val!.claudeStoredSessionId != null || val!.claudeApplyStoredLogin === true;
+    const hasBinding = CLAUDE_OAUTH_TOKEN_ENV_KEY in bindings;
+    if (!hasClaim && !hasBinding) return;
+    const nextBindings = { ...bindings };
+    delete nextBindings[CLAUDE_OAUTH_TOKEN_ENV_KEY];
+    set({
+      envBindings: nextBindings,
+      claudeStoredSessionId: null,
+      claudeApplyStoredLogin: false,
+    });
+  };
+
   useEffect(() => {
     resetTestEnvironmentRef.current();
     setTestActionError(null);
+    clearClaudeLoginClaimRef.current();
   }, [adapterType, effectiveLoginEnvironmentId]);
 
   // Show the login affordance only for a current `codex_local` or `claude_local`

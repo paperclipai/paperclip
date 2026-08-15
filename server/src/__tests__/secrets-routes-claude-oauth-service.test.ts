@@ -109,7 +109,7 @@ describeEmbeddedPostgres("secretService Claude Code OAuth helper and compare-and
     return rows.length;
   }
 
-  // --- Control 5: the narrow secret-definition helper ------------------------
+  // --- the narrow secret-definition helper ------------------------
 
   it("creates the fixed Claude OAuth definition with the compile-time key and fixed properties", async () => {
     const companyId = await seedCompany();
@@ -164,7 +164,7 @@ describeEmbeddedPostgres("secretService Claude Code OAuth helper and compare-and
     expect(row?.name).toBe("Some other Claude token");
   });
 
-  // --- Control 1: the owner-bound compare-and-set ----------------------------
+  // --- the owner-bound compare-and-set ----------------------------
 
   it("first_write creates the owner value and stores the session id", async () => {
     const companyId = await seedCompany();

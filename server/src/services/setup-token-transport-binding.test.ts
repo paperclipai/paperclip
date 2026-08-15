@@ -258,7 +258,7 @@ describe("setup-token production transport binding", () => {
     // A caller forces an alternate command through the dependency object. The
     // dependency type carries no command field, so this cast simulates a
     // runtime-supplied value from a route, a body, or a configuration. The
-    // binding must ignore it and open only the fixed command (Control 4).
+    // binding must ignore it and open only the fixed command.
     const deps = {
       sandbox: sandbox.provider,
       store: store.store,
@@ -378,7 +378,7 @@ describe("production sandbox provider", () => {
         acquireRunLease,
         getDriver: () => null,
       },
-      // No `openLivePtySession`: the live path lands with the Phase 11
+      // No `openLivePtySession`: the live path lands with the
       // characterization test.
     });
 

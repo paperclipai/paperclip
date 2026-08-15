@@ -136,9 +136,9 @@ const MAX_WORKER_MESSAGE_CHARS = 128 * 1024 * 1024;
  */
 const MAX_EXECUTE_LOG_TOTAL_CHARS = 128 * 1024 * 1024;
 
-/** Maximum characters for one live login pseudo-terminal output notification (Control 7). */
+/** Maximum characters for one live login pseudo-terminal output notification. */
 const MAX_SETUP_TOKEN_PTY_CHUNK_CHARS = 1_000_000;
-/** Maximum cumulative output characters for one login pseudo-terminal route (Control 7). */
+/** Maximum cumulative output characters for one login pseudo-terminal route. */
 const MAX_SETUP_TOKEN_PTY_TOTAL_CHARS = 8 * 1024 * 1024;
 /** The default open timeout for one login pseudo-terminal route, in milliseconds. */
 const SETUP_TOKEN_PTY_OPEN_TIMEOUT_MS = 30_000;
@@ -307,7 +307,7 @@ export interface WorkerStartOptions {
   };
 
   /**
-   * Bounds and timeouts for the login pseudo-terminal route (Control 7). The
+   * Bounds and timeouts for the login pseudo-terminal route. The
    * defaults bound one output notification, the cumulative output per route, and
    * the open and the close timeouts. A test overrides them to exercise the
    * terminalize paths without huge inputs or long waits.
@@ -364,7 +364,7 @@ export type ExecuteLogSink = (
 
 /**
  * The input the manager needs to open one live login pseudo-terminal route
- * (Control 7). The manager mints the host route identifier; the caller supplies
+ * The manager mints the host route identifier; the caller supplies
  * only the sandbox scope, the provider lease id, and the fixed command.
  */
 export interface SetupTokenPtyOpenInput {
@@ -377,7 +377,7 @@ export interface SetupTokenPtyOpenInput {
 
 /**
  * One live login pseudo-terminal session the manager hands to the login
- * transport (Control 7). The shape matches the sandbox provider setup-token
+ * transport. The shape matches the sandbox provider setup-token
  * pseudo-terminal session, so the transport consumes it with no adapter.
  */
 export interface SetupTokenPtyHostSession {
@@ -475,7 +475,7 @@ export interface PluginWorkerHandle {
   notify(method: string, params: unknown): void;
 
   /**
-   * Open one live login pseudo-terminal route on this worker (Control 7). The
+   * Open one live login pseudo-terminal route on this worker. The
    * manager mints the host route identifier, reserves the route, drives the open,
    * binds the worker session identifier one time, and returns a session the login
    * transport drives. It permits one active credential pseudo-terminal per worker.
@@ -590,7 +590,7 @@ export interface PluginWorkerManager {
 
   /**
    * Open one live login pseudo-terminal route on a specific plugin worker
-   * (Control 7). See {@link PluginWorkerHandle.openSetupTokenPtySession}.
+   * See {@link PluginWorkerHandle.openSetupTokenPtySession}.
    *
    * @throws if the worker is not registered.
    */
@@ -656,7 +656,7 @@ export function createPluginWorkerHandle(
   const maxExecuteLogTotalChars =
     options.executeLogLimits?.maxTotalCharsPerExecute ?? MAX_EXECUTE_LOG_TOTAL_CHARS;
 
-  // Bounds and timeouts for the login pseudo-terminal route (Control 7). A caller
+  // Bounds and timeouts for the login pseudo-terminal route. A caller
   // (a test) can lower them to exercise the terminalize paths.
   const maxSetupTokenPtyChunkChars =
     options.setupTokenPtyLimits?.maxChunkChars ?? MAX_SETUP_TOKEN_PTY_CHUNK_CHARS;
@@ -1024,7 +1024,7 @@ export function createPluginWorkerHandle(
   }
 
   // -----------------------------------------------------------------------
-  // Host-owned setup-token login pseudo-terminal route gate (Control 7)
+  // Host-owned setup-token login pseudo-terminal route gate
   // -----------------------------------------------------------------------
   // The manager owns one live login pseudo-terminal route per worker. It mints a
   // host-owned opaque route identifier, carries it in the open call, and keys the
@@ -1161,7 +1161,7 @@ export function createPluginWorkerHandle(
     settleSetupTokenPtyWait(route, { exitCode: null });
   }
 
-  // Open one live login pseudo-terminal route (Control 7). Reserve the route
+  // Open one live login pseudo-terminal route. Reserve the route
   // before the open call, bind the worker session identifier one time on the
   // first successful open reply, and return a session the login transport drives.
   // Terminalize the route on every open failure path.
@@ -1428,7 +1428,7 @@ export function createPluginWorkerHandle(
       return;
     }
 
-    // Setup-token login pseudo-terminal notifications (Control 7): deliver output
+    // Setup-token login pseudo-terminal notifications: deliver output
     // and the exit to the one host-owned login route, bound by the worker session
     // identifier while the route is open.
     if (notification.method === SETUP_TOKEN_PTY_OUTPUT_NOTIFICATION) {
@@ -1586,7 +1586,7 @@ export function createPluginWorkerHandle(
     );
 
     // Close the one login pseudo-terminal route with a fixed non-secret exit and
-    // clear the route one time (Control 7). The pending pseudo-terminal calls
+    // clear the route one time. The pending pseudo-terminal calls
     // already rejected through `rejectAllPending`.
     closeSetupTokenPtyRouteOnWorkerExit();
 
