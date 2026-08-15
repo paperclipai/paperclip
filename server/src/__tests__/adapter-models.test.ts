@@ -70,6 +70,15 @@ describe("adapter model listing", () => {
     expect(models.some((model) => model.id === "claude-mythos-5")).toBe(true);
     // Opus 5 is a current GA flagship and must be offered even when live discovery is unavailable.
     expect(models.some((model) => model.id === "claude-opus-5")).toBe(true);
+    expect(models).toEqual(expect.arrayContaining([
+      { id: "claude-fable-5[1m]", label: "Claude Fable 5 (1M context)" },
+      { id: "claude-sonnet-5[1m]", label: "Claude Sonnet 5 (1M context)" },
+      { id: "claude-opus-5[1m]", label: "Claude Opus 5 (1M context)" },
+      { id: "claude-opus-4-8[1m]", label: "Claude Opus 4.8 (1M context)" },
+      { id: "claude-opus-4-7[1m]", label: "Claude Opus 4.7 (1M context)" },
+      { id: "claude-opus-4-6[1m]", label: "Claude Opus 4.6 (1M context)" },
+      { id: "claude-sonnet-4-6[1m]", label: "Claude Sonnet 4.6 (1M context)" },
+    ]));
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
