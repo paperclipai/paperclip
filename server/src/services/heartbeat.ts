@@ -16671,7 +16671,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // Suppress reopen only when every referenced comment came from this run;
         // mixed batches must still reopen because they contain a real follow-up.
         let deferredCommentWakeIsSelfAuthored = false;
-        if (deferredCommentIds.length > 0) {
+        const deferredWakeIsCommentFollowUp =
+          deferredWakeReason === "issue_commented" ||
+          deferredWakeReason === "issue_reopened_via_comment";
+        if (deferredWakeIsCommentFollowUp && deferredCommentIds.length > 0) {
           const deferredComments = await tx
             .select({
               id: issueComments.id,
