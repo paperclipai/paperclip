@@ -25,7 +25,7 @@
       "defaults": {
         "serverUrl": "https://mcp.speko.ai/mcp"
       },
-      "guidanceMd": "Create a Speko API key at https://platform.speko.ai/api-keys, then paste it here. Keep approvals on: calls cost money and reach real people.",
+      "guidanceMd": "Create a Speko API key at https://platform.speko.ai/api-keys, then paste it here. A Speko key belongs to one Speko organization, so the key is the boundary: use a key from an organization that holds only the agents and phone numbers these agents may reach. Keep approvals on, because calls cost money and reach real people.",
       "riskTier": "S4",
       "credentialFields": [
         {
