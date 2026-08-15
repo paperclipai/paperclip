@@ -12,6 +12,7 @@ import {
 } from "@paperclipai/adapter-utils/ssh";
 import {
   agents,
+  builtInManagedResources,
   companies,
   companySecretVersions,
   companySecrets,
@@ -28,7 +29,12 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { resolveEnvironmentDriverConfigForRuntime } from "../services/environment-config.ts";
-import { SANDBOX_CAPABILITY_KEYS, environmentRuntimeService, findReusableSandboxLeaseId } from "../services/environment-runtime.ts";
+import {
+  SANDBOX_CAPABILITY_KEYS,
+  environmentRuntimeService,
+  findReusableSandboxLeaseId,
+} from "../services/environment-runtime.ts";
+import * as sandboxProviderRuntime from "../services/sandbox-provider-runtime.ts";
 import { environmentService } from "../services/environments.ts";
 import { secretService } from "../services/secrets.ts";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.ts";
@@ -574,6 +580,75 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(released).toHaveLength(1);
     expect(released[0]?.environment.driver).toBe("sandbox");
     expect(released[0]?.lease.status).toBe("released");
+  });
+
+  it("releases the remote sandbox when the lease insert rejects a foreign-company binding", async () => {
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Foreign-bound Fake Sandbox",
+      config: {
+        provider: "fake",
+        image: "ubuntu:24.04",
+        reuseLease: false,
+      },
+    });
+
+    // A managed reconciliation binds the environment to another company after the
+    // route guard read an empty binding list. The lease insert then rejects the
+    // foreign-company binding with the 403 `environment_company_mismatch`.
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other Co",
+      issuePrefix: "OTA",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(builtInManagedResources).values({
+      companyId: otherCompanyId,
+      bundleKey: "managed-environment",
+      resourceKind: "environment",
+      resourceKey: "managed-sandbox",
+      resourceId: environment.id,
+      stockVersion: "1",
+      stockHash: "hash",
+    });
+
+    const destroySpy = vi.spyOn(sandboxProviderRuntime, "destroySandboxProviderLease");
+    try {
+      await expect(
+        runtime.acquireRunLease({
+          companyId,
+          environment,
+          issueId: null,
+          heartbeatRunId: runId,
+          persistedExecutionWorkspace: null,
+          assertCompanyBinding: true,
+        }),
+      ).rejects.toMatchObject({
+        status: 403,
+        details: { code: "environment_company_mismatch" },
+      });
+
+      // The rejected insert leaves no lease row.
+      const leaseRows = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.environmentId, environment.id));
+      expect(leaseRows).toHaveLength(0);
+
+      // The acquire already provisioned the remote sandbox, so it releases the
+      // sandbox on the rejection. Without this teardown the rejected insert leaks
+      // a live sandbox that no lease row tracks. The teardown carries the
+      // provisioned provider lease id.
+      expect(destroySpy).toHaveBeenCalledTimes(1);
+      expect(destroySpy.mock.calls[0]?.[0]?.providerLeaseId).toMatch(
+        new RegExp(`^sandbox://fake/${runId}/[0-9a-f-]{36}$`),
+      );
+    } finally {
+      destroySpy.mockRestore();
+    }
   });
 
   it("uses plugin-backed sandbox config for execute and release", async () => {

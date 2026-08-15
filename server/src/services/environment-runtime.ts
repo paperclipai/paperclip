@@ -1440,28 +1440,50 @@ function createSandboxEnvironmentDriver(
           })
         : null;
 
-      return await environmentsSvc.acquireLease({
-        companyId: input.companyId,
-        environmentId: input.environment.id,
-        executionWorkspaceId: input.executionWorkspaceId,
-        issueId: input.issueId,
-        heartbeatRunId: input.heartbeatRunId,
-        assertCompanyBinding: input.assertCompanyBinding,
-        leasePolicy: resolvedLeasePolicy,
-        provider: parsed.config.provider,
-        providerLeaseId: providerLease.providerLeaseId,
-        expiresAt: providerAttestedLeaseExpiry(
-          input.requestedExpiresAt,
-          providerLease.expiresAt ? new Date(providerLease.expiresAt) : undefined,
-        ),
-        metadata: {
-          ...(input.agentId ? { agentId: input.agentId } : {}),
-          driver: input.environment.driver,
-          executionWorkspaceMode: input.executionWorkspaceMode,
-          ...providerLease.metadata,
-          ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
-        },
-      });
+      try {
+        return await environmentsSvc.acquireLease({
+          companyId: input.companyId,
+          environmentId: input.environment.id,
+          executionWorkspaceId: input.executionWorkspaceId,
+          issueId: input.issueId,
+          heartbeatRunId: input.heartbeatRunId,
+          assertCompanyBinding: input.assertCompanyBinding,
+          leasePolicy: resolvedLeasePolicy,
+          provider: parsed.config.provider,
+          providerLeaseId: providerLease.providerLeaseId,
+          expiresAt: providerAttestedLeaseExpiry(
+            input.requestedExpiresAt,
+            providerLease.expiresAt ? new Date(providerLease.expiresAt) : undefined,
+          ),
+          metadata: {
+            ...(input.agentId ? { agentId: input.agentId } : {}),
+            driver: input.environment.driver,
+            executionWorkspaceMode: input.executionWorkspaceMode,
+            ...providerLease.metadata,
+            ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
+          },
+        });
+      } catch (error) {
+        // The conditional lease insert rejected, so no lease row exists. A managed
+        // reconciliation can bind the environment to another company between the
+        // route guard and this insert, so the insert fails closed with
+        // `environment_company_mismatch`. This call already provisioned the remote
+        // sandbox above, so release it now. Without this teardown the rejected
+        // insert leaks a live sandbox that no lease row tracks. Do not tear down a
+        // reused sandbox that an earlier lease still owns.
+        if (!reusableLease || providerLease.providerLeaseId !== reusableLease.providerLeaseId) {
+          try {
+            await destroySandboxProviderLease({
+              config: parsed.config,
+              providerLeaseId: providerLease.providerLeaseId,
+            });
+          } catch {
+            // The remote teardown failed. Keep the original insert rejection as the
+            // thrown error, so the caller sees the real cause.
+          }
+        }
+        throw error;
+      }
     },
 
     async releaseRunLease(input) {
