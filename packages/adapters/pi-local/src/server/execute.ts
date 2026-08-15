@@ -47,7 +47,7 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
-import { resolvePiBiller, resolvePiBillingType } from "./billing.js";
+import { readPiAuthCredentialKinds, resolvePiBiller, resolvePiBillingType } from "./billing.js";
 import { isPiUnknownSessionError, parsePiJsonl } from "./parse.js";
 import { ensurePiModelConfiguredAndAvailable } from "./models.js";
 import { preparePiRuntimeConfig } from "./runtime-config.js";
@@ -663,6 +663,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       return args;
     };
 
+    // Credential kinds pi stored locally, used to tell a metered API key apart
+    // from an OAuth subscription for providers that support both. The auth file
+    // lives on the machine that runs pi, so it is only readable for local
+    // execution targets; remote runs fall back to the environment heuristic.
+    const piAuthCredentialKinds = executionTargetIsRemote
+      ? {}
+      : await readPiAuthCredentialKinds(runtimeEnv.HOME ?? null);
+
     const runAttempt = async (sessionFile: string) => {
       const args = buildArgs(sessionFile);
       if (onMeta) {
@@ -781,7 +789,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         provider: provider,
         biller: resolvePiBiller(runtimeEnv, provider),
         model: model,
-        billingType: resolvePiBillingType(runtimeEnv, provider),
+        billingType: resolvePiBillingType(runtimeEnv, provider, piAuthCredentialKinds),
         costUsd: attempt.parsed.usage.costUsd,
         resultJson: {
           stdout: attempt.proc.stdout,
