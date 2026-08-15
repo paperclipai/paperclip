@@ -18,7 +18,7 @@ import { promisify } from "node:util";
 import { HERMES_CLI, DEFAULT_MODEL, ADAPTER_TYPE, VALID_PROVIDERS } from "../shared/constants.js";
 import { detectModel, resolveProvider, inferProviderFromModel } from "./detect-model.js";
 import { buildHermesChildEnv, resolveHermesCommand } from "./execute.js";
-import { readEnvironmentValue, resolveHermesConfigPath } from "./environment.js";
+import { readEnvironmentValue, resolveHermesConfigPath, resolveHermesEnvPath } from "./environment.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -143,7 +143,8 @@ async function checkApiKeys(
   childEnv: Record<string, string>,
 ): Promise<AdapterEnvironmentCheck | null> {
   // The server resolves secret refs into config.env before calling testEnvironment,
-  // so we check the isolated child environment first, then ~/.hermes/.env.
+  // so we check the isolated child environment first, then the .env file from
+  // the child's effective Hermes home.
   // Server-only provider keys are intentionally excluded because execution
   // cannot inherit them unless the agent config explicitly opts them in.
   const envConfig = (config.env ?? {}) as Record<string, unknown>;
@@ -152,26 +153,24 @@ async function checkApiKeys(
     if (typeof value === "string" && value.length > 0) resolvedEnv[key] = value;
   }
 
-  // Also read ~/.hermes/.env — Hermes stores API keys there by default and does
+  // Also read the .env file from the effective Hermes home — Hermes stores API keys there by default and does
   // not export them to the parent process, so Paperclip's process.env won't
   // contain them.  Parsing this file ensures the environment test reports
   // accurate results for keys that Hermes already knows about.
   const hermesEnvKeys: Record<string, string> = {};
   try {
-    const homeDir =
-      readEnvironmentValue(childEnv, "HOME") ||
-      readEnvironmentValue(childEnv, "USERPROFILE") ||
-      "/root";
-    const hermesEnvPath = `${homeDir}/.hermes/.env`;
-    const content = readFileSync(hermesEnvPath, "utf-8");
-    for (const line of content.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      const eqIdx = trimmed.indexOf("=");
-      if (eqIdx > 0) {
-        const key = trimmed.substring(0, eqIdx).trim();
-        const value = trimmed.substring(eqIdx + 1).trim();
-        if (value.length > 0) hermesEnvKeys[key] = value;
+    const hermesEnvPath = resolveHermesEnvPath(childEnv);
+    if (hermesEnvPath !== null && hermesEnvPath !== undefined) {
+      const content = readFileSync(hermesEnvPath, "utf-8");
+      for (const line of content.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const eqIdx = trimmed.indexOf("=");
+        if (eqIdx > 0) {
+          const key = trimmed.substring(0, eqIdx).trim();
+          const value = trimmed.substring(eqIdx + 1).trim();
+          if (value.length > 0) hermesEnvKeys[key] = value;
+        }
       }
     }
   } catch {

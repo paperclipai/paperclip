@@ -283,6 +283,89 @@ test("testEnvironment does not fall back to the server home when child HOME is e
   });
 });
 
+test("testEnvironment resolves config.yaml and .env from explicit child HERMES_HOME", async () => {
+  const hermesHome = await mkdtemp(join(tmpdir(), "hermes-paperclip-explicit-home-"));
+
+  try {
+    await writeFile(
+      join(hermesHome, "config.yaml"),
+      [
+        "model:",
+        "  default: explicit-hermes-home-model",
+        "  provider: openai",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await writeFile(join(hermesHome, ".env"), "OPENAI_API_KEY=explicit-home-key\n", "utf8");
+
+    const result = await testEnvironment({
+      companyId: "company-test",
+      adapterType: "hermes_local",
+      config: {
+        hermesCommand: "python3",
+        model: "explicit-hermes-home-model",
+        env: {
+          HERMES_HOME: hermesHome,
+          HOME: "",
+          USERPROFILE: "",
+        },
+      },
+    });
+
+    expect(result.checks.some((check) => check.code === "hermes_api_keys_found")).toBe(true);
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      code: "hermes_provider_unsupported",
+    }));
+  } finally {
+    await rm(hermesHome, { recursive: true, force: true });
+  }
+});
+
+test("testEnvironment resolves native Windows LOCALAPPDATA/hermes config.yaml and .env", async () => {
+  const originalPlatform = process.platform;
+  const localAppData = await mkdtemp(join(tmpdir(), "hermes-paperclip-localappdata-"));
+  const hermesHome = join(localAppData, "hermes");
+  Object.defineProperty(process, "platform", { value: "win32" });
+
+  try {
+    await mkdir(hermesHome, { recursive: true });
+    await writeFile(
+      join(hermesHome, "config.yaml"),
+      [
+        "model:",
+        "  default: windows-localappdata-model",
+        "  provider: openai",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await writeFile(join(hermesHome, ".env"), "OpenAI_Api_Key=windows-localappdata-key\n", "utf8");
+
+    const result = await testEnvironment({
+      companyId: "company-test",
+      adapterType: "hermes_local",
+      config: {
+        hermesCommand: "python3",
+        model: "windows-localappdata-model",
+        env: {
+          LOCALAPPDATA: localAppData,
+          HOME: "",
+          USERPROFILE: "",
+        },
+      },
+    });
+
+    expect(result.checks.some((check) => check.code === "hermes_api_keys_found")).toBe(true);
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      code: "hermes_provider_unsupported",
+    }));
+  } finally {
+    Object.defineProperty(process, "platform", { value: originalPlatform });
+    await rm(localAppData, { recursive: true, force: true });
+  }
+});
+
 test("testEnvironment describes provider-omitted runtime config without inventing provider auto", async () => {
   await withHermesHomeConfig([
     "model:",
