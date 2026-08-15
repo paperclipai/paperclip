@@ -2000,45 +2000,33 @@ export function routineService(
       originRunId: issues.originRunId,
     };
 
-    const liveExecutionIssue = await executor
-      .select({
-        ...selectShape,
-      })
-      .from(issues)
-      .innerJoin(
-        heartbeatRuns,
-        and(
-          eq(heartbeatRuns.id, issues.executionRunId),
-          inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
-        ),
-      )
-      .where(baseConditions)
-      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
-    if (liveExecutionIssue) return liveExecutionIssue;
-
-    // TSMC-17398: a non-terminal routine_execution issue with no live heartbeat
-    // behind it is stranded work, not an active execution anchor. Preserve the
-    // legacy contextSnapshot fallback for older queued/running runs that were
-    // never backfilled onto executionRunId.
+    // A routine's open execution card remains its concurrency anchor even
+    // after the originating heartbeat ends. In particular, a blocked/todo/
+    // in_review card represents work that needs resolution, not permission to
+    // mint another scheduled sibling (TSMC-20875).
     return executor
       .select({
         ...selectShape,
       })
       .from(issues)
-      .innerJoin(
-        heartbeatRuns,
-        and(
-          eq(heartbeatRuns.companyId, issues.companyId),
-          inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
-          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = cast(${issues.id} as text)`,
-        ),
-      )
-      .where(and(baseConditions, isNull(issues.executionRunId)))
+      .where(baseConditions)
       .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function addScheduledCoalesceNote(input: {
+    routine: typeof routines.$inferSelect;
+    issue: { id: string; identifier: string | null; status: string; updatedAt: Date; };
+    triggeredAt: Date;
+    executor?: Db;
+  }) {
+    const issueLabel = input.issue.identifier ?? input.issue.id;
+    await (input.executor ?? db).insert(issueComments).values({
+      companyId: input.routine.companyId,
+      issueId: input.issue.id,
+      body: `Routine beat skipped at ${input.triggeredAt.toISOString()}: ${issueLabel} remains ${input.issue.status} (last updated ${input.issue.updatedAt.toISOString()}). The existing open instance remains the routine's concurrency anchor.`,
+    });
   }
 
   async function findReusableTerminalExecutionIssue(
@@ -2850,6 +2838,9 @@ export function routineService(
               touchedAt: triggeredAt,
             });
           }
+          if (input.source === "schedule") {
+            await addScheduledCoalesceNote({ routine: input.routine, issue: activeIssue, triggeredAt, executor: txDb });
+          }
           const updated = await finalizeRun(createdRun.id, {
             status,
             linkedIssueId: activeIssue.id,
@@ -3025,6 +3016,9 @@ export function routineService(
                 userId: manualRunnerUserId,
                 touchedAt: triggeredAt,
               });
+            }
+            if (input.source === "schedule") {
+              await addScheduledCoalesceNote({ routine: input.routine, issue: existingIssue, triggeredAt, executor: txDb });
             }
             const updated = await finalizeRun(createdRun.id, {
               status,
