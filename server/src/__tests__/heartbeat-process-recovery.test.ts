@@ -113,6 +113,7 @@ import {
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   heartbeatService,
   inferIntendedDoneDispositionFromFinalReport,
+  inferTerminalDispositionFromStreamedText,
   isTokenBudgetExhaustedRun,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
   redactSuccessfulRunHandoffEvidence,
@@ -4304,6 +4305,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("blocked");
     await expect(sourceBlockerIssueIds(issue!.companyId, issueId)).resolves.toHaveLength(1);
+  });
+
+  it("recovers a complete final disposition from the persisted streamed tail", () => {
+    expect(inferTerminalDispositionFromStreamedText([
+      "Completed the focused check.",
+      "PAPERCLIP_DISPOSITION: {\"status\":\"in_review\",\"hasBlocker\":false,\"reviewer\":\"CTO\"}",
+    ].join("\n"))).toEqual({
+      status: "in_review",
+      hasBlocker: false,
+      reviewer: "CTO",
+    });
+    expect(inferTerminalDispositionFromStreamedText(
+      "PAPERCLIP_DISPOSITION: {\"status\":\"done\"",
+    )).toBeNull();
   });
 
   it("applies a narrow intended-done control-plane outage receipt without a second generation run", async () => {

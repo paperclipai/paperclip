@@ -3443,6 +3443,79 @@ export function inferIntendedDoneDispositionFromFinalReport(
   return { status: "done", hasBlocker: false } as const;
 }
 
+type TerminalTextDisposition = {
+  status: "done" | "cancelled" | "in_review" | "blocked";
+  hasBlocker: boolean;
+  blocker?: string;
+  reviewer?: string;
+};
+
+// Keep this intentionally independent of individual adapter parsers. A run can
+// be stopped after output streaming but before its adapter has a chance to turn
+// the final line into resultJson. The persisted stdout tail is therefore an
+// equally authoritative source for the narrow, machine-readable contract.
+const TERMINAL_TEXT_DISPOSITION_RE = /(?:^|(?<=[\s`*_]))`?PAPERCLIP_DISPOSITION\s*:?\s*(\{[^\n]*\})`?\s*(?=$|\n)/g;
+const TERMINAL_TEXT_DISPOSITION_STATUSES = new Set<TerminalTextDisposition["status"]>([
+  "done",
+  "cancelled",
+  "in_review",
+  "blocked",
+]);
+
+export function inferTerminalDispositionFromStreamedText(text: string | null | undefined): TerminalTextDisposition | null {
+  if (!text) return null;
+  let match: RegExpExecArray | null;
+  let last: TerminalTextDisposition | null = null;
+  TERMINAL_TEXT_DISPOSITION_RE.lastIndex = 0;
+  while ((match = TERMINAL_TEXT_DISPOSITION_RE.exec(text)) !== null) {
+    try {
+      const record = JSON.parse(match[1] ?? "null") as Record<string, unknown> | null;
+      const status = typeof record?.status === "string" ? record.status.trim() : "";
+      if (!TERMINAL_TEXT_DISPOSITION_STATUSES.has(status as TerminalTextDisposition["status"])) continue;
+      const blocker = typeof record?.blocker === "string" && record.blocker.trim()
+        ? record.blocker.trim()
+        : undefined;
+      const reviewer = typeof record?.reviewer === "string" && record.reviewer.trim()
+        ? record.reviewer.trim()
+        : undefined;
+      last = {
+        status: status as TerminalTextDisposition["status"],
+        hasBlocker: record?.hasBlocker === true || status === "blocked",
+        ...(blocker ? { blocker } : {}),
+        ...(reviewer ? { reviewer } : {}),
+      };
+    } catch {
+      // A partial final line is durable evidence, but never lifecycle data.
+    }
+  }
+  return last;
+}
+
+function synthesizePlatformTerminalDisposition(input: {
+  status: string;
+  errorCode?: string | null;
+  resultJson?: Record<string, unknown> | null;
+}) {
+  const resultJson = input.resultJson ?? {};
+  if (parseObject(resultJson.disposition).status) return resultJson;
+  const stopReason = readNonEmptyString(resultJson.stopReason) ?? input.errorCode ?? input.status;
+  if (stopReason === "superseded_by_fresh_issue_assignment") {
+    return {
+      ...resultJson,
+      disposition: { status: "cancelled", hasBlocker: false },
+      platformDisposition: { source: "platform_stop", stopReason, summary: "Superseded by a fresh issue assignment." },
+    };
+  }
+  if (["max_turns_exhausted", "turn_limit_exhausted", "process_lost"].includes(stopReason)) {
+    return {
+      ...resultJson,
+      disposition: { status: "in_review", hasBlocker: false },
+      platformDisposition: { source: "platform_stop", stopReason, summary: "Run stopped at a platform wall; retry or review is queued by the platform." },
+    };
+  }
+  return resultJson;
+}
+
 function sanitizeAgentSessionMessageText(value: unknown): string | null {
   const text = readNonEmptyString(value);
   if (!text) return null;
@@ -14924,6 +14997,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           processGroupId: run.processGroupId ?? null,
         }
         : null;
+      const terminalStdoutTail = await readRunStdoutTailForUsageRecovery(run);
+      const streamedTerminalDisposition = inferTerminalDispositionFromStreamedText(terminalStdoutTail);
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
         error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
@@ -14939,14 +15014,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
             },
           );
-          return unmanagedBackgroundTaskEvidence
+          const stoppedResult = unmanagedBackgroundTaskEvidence
             ? {
               ...result,
               stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
               unmanagedBackgroundTask: unmanagedBackgroundTaskEvidence,
             }
             : result;
+          return synthesizePlatformTerminalDisposition({
+            status: "failed",
+            errorCode: "process_lost",
+            resultJson: {
+              ...stoppedResult,
+              ...(!parseObject(stoppedResult.disposition).status && streamedTerminalDisposition
+                ? { disposition: streamedTerminalDisposition, dispositionSource: "streamed_terminal_tail" }
+                : {}),
+            },
+          });
         })(),
+        ...(terminalStdoutTail ? { stdoutExcerpt: terminalStdoutTail } : {}),
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
@@ -18930,13 +19016,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             } as Record<string, unknown>)
           : null;
 
+      // The adapter parser normally extracts this token. When a process is
+      // interrupted while it is emitting its final response, however, the
+      // streamed tail is all that survives. Preserve and parse that tail before
+      // terminalizing so stop reason cannot erase an otherwise valid decision.
+      const streamedTerminalDisposition = inferTerminalDispositionFromStreamedText(stdoutExcerpt);
+      const adapterResultJson = parseObject(adapterResult.resultJson);
       const persistedResultJson = mergeHeartbeatRunResultJson(
         mergeRunStopMetadataForAgent(agent, outcome, {
           effectiveAdapterConfig: runtimeConfig,
           resultJson: mergeModelProfileRunMetadata(
             mergeAdapterRecoveryMetadata({
               resultJson: {
-                ...parseObject(adapterResult.resultJson),
+                ...adapterResultJson,
+                ...(!parseObject(adapterResultJson.disposition).status && streamedTerminalDisposition
+                  ? { disposition: streamedTerminalDisposition, dispositionSource: "streamed_terminal_tail" }
+                  : {}),
                 configFreshness: configFreshnessResultMetadata,
                 declaredModel: servedModelProvenance.declaredModel,
                 servedModel: servedModelProvenance.servedModel,
@@ -21355,13 +21450,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               finishedAt: now,
               error: reason,
               errorCode: "superseded_by_fresh_issue_assignment",
-              resultJson: {
+              resultJson: synthesizePlatformTerminalDisposition({
+                status: "cancelled",
+                errorCode: "superseded_by_fresh_issue_assignment",
+                resultJson: {
                 ...parseObject(queuedRun.resultJson),
                 stopReason: "superseded_by_fresh_issue_assignment",
                 supersededByWakeReason: "issue_assigned",
                 supersededRunWakeReason: queuedWakeReason,
                 currentIssueStatus: issue.status,
-              },
+                },
+              }),
               updatedAt: now,
             })
             .where(and(eq(heartbeatRuns.id, queuedRun.id), eq(heartbeatRuns.status, "queued")))
@@ -21700,13 +21799,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               finishedAt: now,
               error: "Cancelled because a fresh issue_assigned wake superseded an older queued same-issue wake",
               errorCode: "superseded_by_fresh_issue_assignment",
-              resultJson: {
+              resultJson: synthesizePlatformTerminalDisposition({
+                status: "cancelled",
+                errorCode: "superseded_by_fresh_issue_assignment",
+                resultJson: {
                 ...parseObject(activeExecutionRun.resultJson),
                 stopReason: "superseded_by_fresh_issue_assignment",
                 supersededByWakeReason: "issue_assigned",
                 supersededRunWakeReason: staleQueuedWakeReason,
                 currentIssueStatus: issue.status,
-              },
+                },
+              }),
               updatedAt: now,
             })
             .where(
@@ -22510,7 +22613,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (!CANCELLABLE_HEARTBEAT_RUN_STATUSES.includes(run.status as (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number])) return run;
     const agent = await getAgent(run.agentId);
     const errorCode = options.errorCode ?? "cancelled";
-    const resultJson = agent
+    // A cancellation races the adapter's normal finalizer. Read the durable
+    // stream before terminating the child so an already-written final line is
+    // retained even when no adapter result is returned.
+    const terminalStdoutTail = await readRunStdoutTailForUsageRecovery(run);
+    const streamedTerminalDisposition = inferTerminalDispositionFromStreamedText(terminalStdoutTail);
+    const resultJson = synthesizePlatformTerminalDisposition({
+      status: "cancelled",
+      errorCode,
+      resultJson: agent
       ? {
           ...mergeRunStopMetadataForAgent(agent, "cancelled", {
             resultJson: parseObject(run.resultJson),
@@ -22518,8 +22629,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             errorMessage: reason,
           }),
           ...(options.resultJson ?? {}),
+          ...(!parseObject(options.resultJson).disposition && streamedTerminalDisposition
+            ? { disposition: streamedTerminalDisposition, dispositionSource: "streamed_terminal_tail" }
+            : {}),
         }
-      : options.resultJson;
+      : {
+          ...(options.resultJson ?? {}),
+          ...(!parseObject(options.resultJson).disposition && streamedTerminalDisposition
+            ? { disposition: streamedTerminalDisposition, dispositionSource: "streamed_terminal_tail" }
+            : {}),
+        },
+    });
 
     const running = runningProcesses.get(run.id);
     try {
@@ -22546,6 +22666,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       errorCode,
       ...(resultJson ? { resultJson } : {}),
       ...(options.usageJson ? { usageJson: options.usageJson } : {}),
+      ...(terminalStdoutTail ? { stdoutExcerpt: terminalStdoutTail } : {}),
     });
 
     await setWakeupStatus(run.wakeupRequestId, "cancelled", {
@@ -22579,17 +22700,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES])));
 
     for (const run of runs) {
+      const terminalStdoutTail = await readRunStdoutTailForUsageRecovery(run);
+      const streamedTerminalDisposition = inferTerminalDispositionFromStreamedText(terminalStdoutTail);
       await setRunStatus(run.id, "cancelled", {
         finishedAt: new Date(),
         error: reason,
         errorCode,
         ...(agent ? {
-          resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
-            resultJson: parseObject(run.resultJson),
+          resultJson: synthesizePlatformTerminalDisposition({
+            status: "cancelled",
             errorCode,
-            errorMessage: reason,
+            resultJson: {
+              ...mergeRunStopMetadataForAgent(agent, "cancelled", {
+                resultJson: parseObject(run.resultJson),
+                errorCode,
+                errorMessage: reason,
+              }),
+              ...(!parseObject(run.resultJson).disposition && streamedTerminalDisposition
+                ? { disposition: streamedTerminalDisposition, dispositionSource: "streamed_terminal_tail" }
+                : {}),
+            },
           }),
         } : {}),
+        ...(terminalStdoutTail ? { stdoutExcerpt: terminalStdoutTail } : {}),
       });
 
       await setWakeupStatus(run.wakeupRequestId, "cancelled", {
