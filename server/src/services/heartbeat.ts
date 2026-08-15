@@ -10891,14 +10891,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             if (applied) appliedStatus = "blocked";
           }
         } else if (statedStatus === "in_review") {
+          // TSMC-19788 (12 recorded instances, incl. a paused lane receiving
+          // the critical delivery card): a reviewer must be INVOKABLE. A named
+          // reviewer or reporting-chain manager that is paused/terminated/
+          // errored/manual-only never receives live work; walk up to two
+          // reporting hops for an invokable one, else park the review with
+          // the current assignee so the board sees it.
           let reviewerAgentId: string | null = null;
           if (statedReviewer) {
             const named = await getAgent(statedReviewer).catch(() => null);
-            if (named && named.companyId === issue.companyId) reviewerAgentId = named.id;
+            if (
+              named &&
+              named.companyId === issue.companyId &&
+              (await evaluateAgentInvokabilityFromDb(db, named)).invokable
+            ) {
+              reviewerAgentId = named.id;
+            }
           }
           if (!reviewerAgentId) {
             const actor = await getAgent(run.agentId).catch(() => null);
-            reviewerAgentId = actor?.reportsTo ?? null;
+            let candidateId: string | null = actor?.reportsTo ?? null;
+            for (let hop = 0; hop < 2 && candidateId; hop++) {
+              const candidate = await getAgent(candidateId).catch(() => null);
+              if (!candidate || candidate.companyId !== issue.companyId) break;
+              if ((await evaluateAgentInvokabilityFromDb(db, candidate)).invokable) {
+                reviewerAgentId = candidate.id;
+                break;
+              }
+              candidateId = candidate.reportsTo ?? null;
+            }
           }
           if (reviewerAgentId && reviewerAgentId !== run.agentId) {
             const applied = await issuesSvc.update(issue.id, {
@@ -10911,6 +10932,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               appliedStatus = "in_review";
               reviewerAssigned = reviewerAgentId;
             }
+          } else {
+            const applied = await issuesSvc.update(issue.id, {
+              status: "in_review",
+              actorAgentId: run.agentId,
+              actorUserId: null,
+            });
+            if (applied) appliedStatus = "in_review";
           }
         }
         if (appliedStatus) {
