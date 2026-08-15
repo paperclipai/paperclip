@@ -217,6 +217,7 @@ describe("AuthPage", () => {
 
   it("invalidates anonymous health metadata after sign-in", async () => {
     const { root, queryClient } = await mount();
+    const invalidateQueriesSpy = vi.spyOn(queryClient, "invalidateQueries");
     queryClient.setQueryData(queryKeys.health, {
       status: "ok",
       deploymentMode: "authenticated",
@@ -247,7 +248,7 @@ describe("AuthPage", () => {
       email: "jane@example.com",
       password: "supersecret",
     });
-    expect(queryClient.getQueryState(queryKeys.health)?.isInvalidated).toBe(true);
+    expect(invalidateQueriesSpy).toHaveBeenCalledWith({ queryKey: queryKeys.health });
 
     await act(async () => {
       root.unmount();
