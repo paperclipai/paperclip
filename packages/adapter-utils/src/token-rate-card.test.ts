@@ -108,6 +108,31 @@ describe("token rate card", () => {
     ).toBeCloseTo(10, 10);
   });
 
+  it("drops an empty or provider-only multiplier key instead of matching every model", () => {
+    const env = {
+      [TOKEN_RATE_CARD_ENV_KEY]: JSON.stringify({
+        "github-copilot": {
+          usdPerThousandTokens: 0.01,
+          billingType: "credits",
+          // "", " ", and "provider/" all normalize to an empty key. Stored as
+          // a multiplier, an empty prefix would match every model id.
+          modelMultipliers: { "": 5, " ": 5, "provider/": 5, "claude-opus": 2 },
+        },
+      }),
+    };
+    const usage = { inputTokens: 500_000, cachedInputTokens: 500_000, outputTokens: 0 };
+
+    // Unrelated model: no multiplier should apply (would be 50 if the empty
+    // key matched).
+    expect(
+      applyTokenRateCard({ biller: "github-copilot", model: "gpt-5.4", usage, env }).costUsd,
+    ).toBeCloseTo(10, 10);
+    // The real "claude-opus" multiplier still applies normally.
+    expect(
+      applyTokenRateCard({ biller: "github-copilot", model: "claude-opus-4.5", usage, env }).costUsd,
+    ).toBeCloseTo(20, 10);
+  });
+
   it("lets an operator zero-price a lane that is not actually billed", () => {
     const env = {
       [TOKEN_RATE_CARD_ENV_KEY]: JSON.stringify({

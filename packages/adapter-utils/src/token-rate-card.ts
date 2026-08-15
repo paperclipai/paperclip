@@ -104,7 +104,11 @@ function parseEntry(value: unknown): TokenRateCardEntry | null {
   const multipliers: Record<string, number> = {};
   if (raw.modelMultipliers && typeof raw.modelMultipliers === "object") {
     for (const [model, multiplier] of Object.entries(raw.modelMultipliers as Record<string, unknown>)) {
-      if (isFiniteNonNegative(multiplier)) multipliers[normalizeModelKey(model)] = multiplier;
+      // An empty, whitespace-only, or provider-only key (e.g. "provider/")
+      // normalizes to "", and every model id starts with "" -- storing it
+      // would silently apply the multiplier to every model for this biller.
+      const key = normalizeModelKey(model);
+      if (key && isFiniteNonNegative(multiplier)) multipliers[key] = multiplier;
     }
   }
   return {
