@@ -83,7 +83,6 @@ const PNPM_ALLOWLIST = new Set<string>([
   "pnpm paperclipai feedback report",
   "pnpm paperclipai feedback report --payloads",
   "pnpm paperclipai feedback export",
-  "pnpm paperclipai board setup",
   "pnpm paperclipai instance settings:experimental",
   "pnpm paperclipai worktree ensure-seeded",
   "pnpm paperclipai worktree repair",
@@ -421,17 +420,19 @@ describe("paperclipai CLI invocation safety", () => {
 
   // ── Runtime surfaces and their fixed literal lifecycle hints ─────────────
   //
-  // The onboard, bootstrap, and board-setup hints are fully literal lifecycle
-  // commands. They carry no substitutable value, so the `pnpm` form is safe and
-  // on the allowlist. Each runs the checked-out CLI, which is the CLI the reader
-  // of these source-checkout surfaces has. The client connection-error hint
+  // The server startup banner, the UI bootstrap fallback, and the board skill
+  // emit the onboard, bootstrap, and board-setup hints. These three surfaces
+  // reach readers on the published install, who have no monorepo checkout. The
+  // `pnpm paperclipai` script resolves only inside a checkout, so each surface
+  // must pin the `npx paperclipai` form. The client connection-error hint also
   // reaches a reader who may run an installed package, so it keeps `npx`. The
   // env-lab cleanup hint runs from a source checkout and must work from any
   // subdirectory, so it uses the module-resolved direct-exec form (see below).
 
   it("emits the onboard hint from the server startup banner", () => {
     const source = read("server/src/startup-banner.ts");
-    expect(source).toContain("pnpm paperclipai onboard");
+    expect(source).toContain("npx paperclipai onboard");
+    expect(source).not.toContain("pnpm paperclipai onboard");
     expect(source).not.toContain("pnpm exec paperclipai onboard");
   });
 
@@ -465,13 +466,15 @@ describe("paperclipai CLI invocation safety", () => {
 
   it("emits the bootstrap fallback command from the UI", () => {
     const source = read("ui/src/bootstrapSetup.ts");
-    expect(source).toContain("pnpm paperclipai auth bootstrap-ceo");
+    expect(source).toContain("npx paperclipai auth bootstrap-ceo");
+    expect(source).not.toContain("pnpm paperclipai auth bootstrap-ceo");
     expect(source).not.toContain("pnpm exec paperclipai auth bootstrap-ceo");
   });
 
   it("emits the setup form from the board skill", () => {
     const source = read("skills/paperclip-board/SKILL.md");
-    expect(source).toContain("pnpm paperclipai board setup");
+    expect(source).toContain("npx paperclipai board setup");
+    expect(source).not.toContain("pnpm paperclipai board setup");
     expect(source).not.toContain("pnpm exec paperclipai board setup");
   });
 
