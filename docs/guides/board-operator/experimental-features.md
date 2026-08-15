@@ -22,7 +22,7 @@ Board operators enable or disable experiments from **Instance Settings > Experim
 The CLI exposes the same surface:
 
 ```sh
-npx paperclipai instance settings:experimental
+pnpm paperclipai instance settings:experimental
 npx paperclipai instance settings:experimental:update --payload-json '{...}'
 ```
 

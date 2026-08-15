@@ -29,7 +29,7 @@ Company-scoped commands also accept `--company-id <id>`.
 For clean local instances, pass `--data-dir` on the command you run:
 
 ```sh
-pnpm paperclipai run --data-dir ./tmp/paperclip-dev
+npx paperclipai run --data-dir ./tmp/paperclip-dev
 ```
 
 ## Context Profiles
@@ -47,7 +47,7 @@ pnpm paperclipai context show
 pnpm paperclipai context list
 
 # Switch profile
-pnpm paperclipai context use default
+npx paperclipai context use default
 ```
 
 To avoid storing secrets in context, use an env var:

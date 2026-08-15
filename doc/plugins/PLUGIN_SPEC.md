@@ -244,7 +244,7 @@ This on-disk model is the reason the current implementation expects a persistent
 
 Paperclip should add CLI commands:
 
-- `npx paperclipai plugin list`
+- `pnpm paperclipai plugin list`
 - `npx paperclipai plugin install <package[@version]>`
 - `npx paperclipai plugin uninstall <plugin-id>`
 - `npx paperclipai plugin upgrade <plugin-id> [version]`

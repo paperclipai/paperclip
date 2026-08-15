@@ -22,7 +22,7 @@ Does:
 Choose a specific instance:
 
 ```sh
-pnpm paperclipai run --instance dev
+npx paperclipai run --instance dev
 ```
 
 ## `paperclipai onboard`
@@ -126,6 +126,6 @@ PAPERCLIP_HOME=/custom/home PAPERCLIP_INSTANCE_ID=dev pnpm paperclipai run
 Or pass `--data-dir` directly on any command:
 
 ```sh
-pnpm paperclipai run --data-dir ./tmp/paperclip-dev
-pnpm paperclipai doctor --data-dir ./tmp/paperclip-dev
+npx paperclipai run --data-dir ./tmp/paperclip-dev
+npx paperclipai doctor --data-dir ./tmp/paperclip-dev
 ```

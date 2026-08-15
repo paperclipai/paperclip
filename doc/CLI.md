@@ -56,18 +56,36 @@ Static placeholders only: a document must show a static placeholder such as
 own shell expands such a span on paste, before any CLI or `npx` receives argv, so
 a direct-exec form does not stop it.
 
-`pnpm paperclipai` stays acceptable only for local lifecycle and setup commands
-that take fixed, trusted arguments (for example `run`, `onboard`, `doctor`,
-`configure --section <name>`, `connect`, `env-lab up`, `worktree ensure-seeded`).
-A command is content-bearing, and needs `npx paperclipai`, when it takes a
-non-fixed value: a hostname (`allowed-hostname`), an import URL or folder
-(`company import`), an identifier or secret (`--company-id`, `--agent-id`,
-`--claim-secret`), a payload (`--payload-json`), or free text (`--body`,
-`--title`, `--comment`). A runtime value counts as non-fixed even when it looks
-safe: the private-hostname guard builds `allowed-hostname <value>` from the
-request Host header, so it must use `npx paperclipai`. The `pnpm --filter
-@paperclipai/*` build and test commands are not CLI invocation. They do not
-change.
+`pnpm paperclipai` stays acceptable only for a fully literal local lifecycle or
+setup command. A fully literal command carries no substitutable value. It has no
+placeholder, no example value the reader replaces, no interpolation, no path, no
+ref, no id, and no name. It holds the subcommand and, at most, flags that take no
+value.
+
+The allowlist of literal commands lives in one place:
+`server/src/__tests__/cli-invocation-safety.test.ts`. A guard test enforces it
+fail-closed. Any `pnpm paperclipai` line whose command string is not an exact
+allowlist entry is an offender. The allowlist holds commands such as `run`,
+`onboard`, `onboard --yes`, `doctor`, `configure --section <name>`, `connect`,
+`env-lab up`, `env-lab down`, `context show`, `context list`,
+`worktree ensure-seeded`, and `worktree env`.
+
+Every invocation that carries a positional value or an option value uses
+`npx paperclipai` instead. This covers a hostname (`allowed-hostname`), an import
+URL or folder (`company import`), an identifier or secret (`--company-id`,
+`--agent-id`, `--claim-secret`), a payload (`--payload-json`), free text
+(`--body`, `--title`, `--comment`), a data directory (`--data-dir`), an instance
+(`--instance`), a bind preset (`--bind`), a context-profile name, and every
+worktree path, ref, id, or name option. A runtime value counts as non-fixed even
+when it looks safe. The private-hostname guard builds `allowed-hostname <value>`
+from the request Host header, so it uses `npx paperclipai`.
+
+For a command that must run the local checked-out source with a value, use the
+direct-exec form: `node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts
+<command> <args>`.
+
+The `pnpm --filter @paperclipai/*` build and test commands are not CLI
+invocation. They do not change.
 
 ### Offline and air-gapped use
 
@@ -133,7 +151,7 @@ pnpm paperclipai run
 Choose local instance:
 
 ```sh
-pnpm paperclipai run --instance dev
+npx paperclipai run --instance dev
 ```
 
 ## Install, Update, And Uninstall
@@ -256,8 +274,8 @@ Profiles store token env-var names, not plaintext tokens. The wizard prints shel
 Use `--data-dir` on any CLI command to isolate all default local state (config/context/db/logs/storage/secrets) away from `~/.paperclip`:
 
 ```sh
-pnpm paperclipai run --data-dir ./tmp/paperclip-dev
-pnpm paperclipai issue list --data-dir ./tmp/paperclip-dev
+npx paperclipai run --data-dir ./tmp/paperclip-dev
+npx paperclipai issue list --data-dir ./tmp/paperclip-dev
 ```
 
 ## Context Profiles
@@ -269,7 +287,7 @@ npx paperclipai context set --api-base http://localhost:3100 --company-id <compa
 npx paperclipai context set --persona agent --agent-id <agent-id> --api-key-env-var-name PAPERCLIP_API_KEY
 pnpm paperclipai context show
 pnpm paperclipai context list
-pnpm paperclipai context use default
+npx paperclipai context use default
 ```
 
 To avoid storing secrets in context, set `apiKeyEnvVarName` and keep the key in env:

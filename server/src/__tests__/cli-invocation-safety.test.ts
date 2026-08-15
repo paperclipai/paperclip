@@ -18,10 +18,14 @@ import { generateReadme } from "../services/company-export-readme.js";
 // `node_modules/.bin`. The command fails with `Command "paperclipai" not found`,
 // even after a build. The guard bans it from the guidance surfaces.
 //
-// This guard has three parts. First, it scans the guidance surfaces for any
-// content-bearing `pnpm paperclipai` example. Second, it bans the broken
-// `pnpm exec paperclipai` form from every recommendation. Third, it asserts that
-// the runtime surfaces and the notes emit the safe `npx paperclipai` form.
+// This guard is fail-closed against an exact allowlist. A `pnpm paperclipai`
+// line is allowed only when its full command string matches an exact entry in
+// `PNPM_ALLOWLIST`. Each allowlist entry is a fully literal local lifecycle or
+// setup command. A fully literal command carries no substitutable value: no
+// placeholder, no example value the reader replaces, no interpolation, no path,
+// no ref, no id, and no name. It holds the subcommand and, at most, flags that
+// take no value. Every other `pnpm paperclipai` line is an offender and must use
+// `npx paperclipai` (or the direct-exec form for local source).
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../../..");
@@ -43,94 +47,107 @@ function extractOfflineSubsection(cli: string): string {
   return marker + (nextHeading < 0 ? rest : rest.slice(0, nextHeading));
 }
 
-// ── Content-bearing detection ─────────────────────────────────────────────
+// ── The exact allowlist ───────────────────────────────────────────────────
 //
-// A `pnpm paperclipai` line is content-bearing when it carries an argument that
-// an agent or operator can fill from untrusted or semi-trusted content: an
-// issue body, a comment, Markdown, a pasted snippet, model output, a hostname
-// from a request header, an import URL, an identifier, or a secret reference.
+// Each entry is a fully literal command string. A `pnpm paperclipai` line is
+// allowed only when its extracted command string equals one of these entries.
+// Add a new entry only for a command that carries no substitutable value.
 
-// Flags that carry free text, an identifier, a payload, a file, or a secret.
-const CONTENT_FLAGS = [
-  "--body",
-  "--body-file",
-  "--title",
-  "--comment",
-  "--message",
-  "--description",
-  "--reason",
-  "--goal",
-  "--alt",
-  "--color",
-  "--content",
-  "--content-file",
-  "--summary",
-  "--note",
-  "--text",
-  "--name",
-  "--slug",
-  "--payload",
-  "--payload-json",
-  "--env-json",
-  "--company-id",
-  "--agent-id",
-  "--claim-secret",
-  "--api-key-env-var-name",
-  "--out",
-  "--file",
-];
+const PNPM_ALLOWLIST = new Set<string>([
+  "pnpm paperclipai --help",
+  "pnpm paperclipai run",
+  "pnpm paperclipai onboard",
+  "pnpm paperclipai onboard --yes",
+  "pnpm paperclipai onboard --run",
+  "pnpm paperclipai onboard --yes --run",
+  "pnpm paperclipai doctor",
+  "pnpm paperclipai doctor --repair",
+  "pnpm paperclipai auth bootstrap-ceo",
+  "pnpm paperclipai connect",
+  "pnpm paperclipai migrate",
+  "pnpm paperclipai db:backup",
+  "pnpm paperclipai configure --section server",
+  "pnpm paperclipai configure --section secrets",
+  "pnpm paperclipai configure --section storage",
+  "pnpm paperclipai configure --section database",
+  "pnpm paperclipai env",
+  "pnpm paperclipai env-lab up",
+  "pnpm paperclipai env-lab doctor",
+  "pnpm paperclipai env-lab status --json",
+  "pnpm paperclipai env-lab down",
+  "pnpm paperclipai context show",
+  "pnpm paperclipai context list",
+  "pnpm paperclipai issue list",
+  "pnpm paperclipai dashboard get",
+  "pnpm paperclipai plugin list",
+  "pnpm paperclipai feedback report",
+  "pnpm paperclipai feedback report --payloads",
+  "pnpm paperclipai feedback export",
+  "pnpm paperclipai board setup",
+  "pnpm paperclipai instance settings:experimental",
+  "pnpm paperclipai worktree ensure-seeded",
+  "pnpm paperclipai worktree repair",
+  "pnpm paperclipai worktree env",
+  "pnpm paperclipai worktree env --json",
+]);
 
-// Subcommands whose value is a hostname or an import source. A request header or
-// an external URL can supply that value, so it is never fixed.
-const CONTENT_SUBCOMMANDS = ["allowed-hostname", "company import"];
+// ── Documentation phrases ─────────────────────────────────────────────────
+//
+// A policy or warning sentence names `pnpm paperclipai` on purpose to tell the
+// reader not to use it, or to describe the abstract command form. These phrases
+// are not runnable commands, so they are exempt. The set is narrow and exact: a
+// mixed safe/unsafe example does not match, because its command string carries a
+// real subcommand and arguments.
 
-// Placeholders that name an untrusted value type. A bare local placeholder such
-// as `<name>` or `<plugin-id>` on a local lifecycle command is not listed here.
-const UNTRUSTED_PLACEHOLDERS = [
-  "<token>",
-  "<secret>",
-  "<request-id>",
-  "this-github-url-or-folder",
-];
+const DOC_PHRASES = new Set<string>([
+  // A bare mention such as `` `pnpm paperclipai` `` inside prose.
+  "pnpm paperclipai",
+  // The abstract command form the policy section discusses.
+  "pnpm paperclipai <command> <args>",
+]);
 
-// A note or warning line names the unsafe form on purpose. Skip it so the
-// security note itself does not trip the scan.
-function isNoteLine(line: string): boolean {
-  const lower = line.toLowerCase();
-  return (
-    line.includes("npx paperclipai") ||
-    lower.includes("do not use") ||
-    lower.includes("acceptable only")
-  );
+// ── Command extraction ────────────────────────────────────────────────────
+//
+// Extract the command string that starts at a `pnpm paperclipai` occurrence.
+// The command runs to the first boundary: a backtick (Markdown inline-code
+// close), a quote, a closing parenthesis (command-substitution close), or a
+// ` #` comment. The scan collapses internal whitespace, so a backslash-continued
+// command compares as one normalized string.
+
+const BOUNDARY = /[`"')]|\s#/;
+
+function extractCommand(tail: string): string {
+  const boundary = tail.search(BOUNDARY);
+  const raw = boundary < 0 ? tail : tail.slice(0, boundary);
+  return raw.replace(/\s+/g, " ").trim();
 }
 
-function isContentBearing(line: string): boolean {
-  const commandStart = line.indexOf("pnpm paperclipai");
-  if (commandStart < 0) return false;
-  if (isNoteLine(line)) return false;
-  // Inspect only the command tail. Wrapping code before the command, such as a
-  // `${pc.dim(...)}` template call in TypeScript, is not part of the argument.
-  const command = line.slice(commandStart);
-  if (command.includes("${")) return true;
-  if (command.includes("url-or-folder>") || command.toLowerCase().includes("<url")) return true;
-  if (UNTRUSTED_PLACEHOLDERS.some((token) => command.includes(token))) return true;
-  if (CONTENT_SUBCOMMANDS.some((sub) => command.includes(sub))) return true;
-  return CONTENT_FLAGS.some(
-    (flag) => command.includes(`${flag} `) || command.includes(`${flag}=`),
-  );
-}
+// A `pnpm paperclipai` occurrence is an offender when it is wrapped in a
+// command-substitution span, or when its command string is neither an allowlist
+// entry nor a documentation phrase. The command-substitution check catches
+// `$(pnpm paperclipai ...)`, which normalizes the dangerous habit of running the
+// CLI inside a shell substitution even when the inner command is literal.
 
-// A line that recommends the broken `pnpm exec paperclipai` form. A warning line
-// names the broken form on purpose to tell the reader not to use it. Skip such a
-// line, so the note itself does not trip the ban.
-function recommendsBrokenExecForm(line: string): boolean {
-  if (!line.includes("pnpm exec paperclipai")) return false;
-  const lower = line.toLowerCase();
-  const warns =
-    lower.includes("broken") ||
-    lower.includes("not found") ||
-    lower.includes("do not use");
-  return !warns;
+function findOffenders(text: string): string[] {
+  const offenders: string[] = [];
+  const marker = "pnpm paperclipai";
+  let from = 0;
+  for (;;) {
+    const at = text.indexOf(marker, from);
+    if (at < 0) break;
+    from = at + marker.length;
+    const before = text.slice(0, at);
+    const wrapped = /\$\(\s*$/.test(before);
+    const command = extractCommand(text.slice(at));
+    if (wrapped) {
+      offenders.push(command);
+      continue;
+    }
+    if (PNPM_ALLOWLIST.has(command)) continue;
+    if (DOC_PHRASES.has(command)) continue;
+    offenders.push(command);
+  }
+  return offenders;
 }
 
 // ── Repository walk ───────────────────────────────────────────────────────
@@ -241,8 +258,8 @@ function toLogicalLines(source: string): LogicalLine[] {
 function scanText(relPath: string, source: string): string[] {
   const offenders: string[] = [];
   for (const { text, lineNumber } of toLogicalLines(source)) {
-    if (isContentBearing(text)) {
-      offenders.push(`${relPath}:${lineNumber}: ${text.trim()}`);
+    for (const command of findOffenders(text)) {
+      offenders.push(`${relPath}:${lineNumber}: ${command}`);
     }
   }
   return offenders;
@@ -254,6 +271,19 @@ function scanForOffenders(): string[] {
     offenders.push(...scanText(relPath, read(relPath)));
   }
   return offenders;
+}
+
+// A line that recommends the broken `pnpm exec paperclipai` form. A warning line
+// names the broken form on purpose to tell the reader not to use it. Skip such a
+// line, so the note itself does not trip the ban.
+function recommendsBrokenExecForm(line: string): boolean {
+  if (!line.includes("pnpm exec paperclipai")) return false;
+  const lower = line.toLowerCase();
+  const warns =
+    lower.includes("broken") ||
+    lower.includes("not found") ||
+    lower.includes("do not use");
+  return !warns;
 }
 
 function scanForBrokenExecForm(): string[] {
@@ -271,11 +301,12 @@ function scanForBrokenExecForm(): string[] {
 }
 
 describe("paperclipai CLI invocation safety", () => {
-  it("keeps content-bearing pnpm paperclipai examples out of every guidance surface", () => {
+  it("allows only exact-allowlist pnpm paperclipai commands on every guidance surface", () => {
     const offenders = scanForOffenders();
     expect(
       offenders,
-      `Use \`npx paperclipai\` for content-bearing arguments:\n${offenders.join("\n")}`,
+      `Each pnpm paperclipai line must match an exact allowlist entry, else use ` +
+        `npx paperclipai (or the direct-exec form for local source):\n${offenders.join("\n")}`,
     ).toEqual([]);
   });
 
@@ -285,6 +316,57 @@ describe("paperclipai CLI invocation safety", () => {
       offenders,
       `\`pnpm exec paperclipai\` does not resolve the CLI binary; use \`npx paperclipai\`:\n${offenders.join("\n")}`,
     ).toEqual([]);
+  });
+
+  // ── The extraction and allowlist logic, in isolation ─────────────────────
+  //
+  // Each case fails before this change and passes after it. Before, the guard
+  // recognized only a limited flag set and skipped any line that mentioned
+  // `npx paperclipai`. So it missed `--config`, `--data-dir`, `--instance`,
+  // `--bind`, a context-profile value, and worktree path/ref/id/name options,
+  // and a mixed safe/unsafe line hid behind its `npx` mention.
+
+  it("flags a value-bearing option that the old flag list omitted", () => {
+    // --config, --data-dir, --instance, and --bind each carry a value.
+    expect(scanText("doc/E.md", "pnpm paperclipai doctor --config ./scratch.json")).toHaveLength(1);
+    expect(scanText("doc/E.md", "pnpm paperclipai run --data-dir ./tmp/dev")).toHaveLength(1);
+    expect(scanText("doc/E.md", "pnpm paperclipai run --instance dev")).toHaveLength(1);
+    expect(scanText("doc/E.md", "pnpm paperclipai run --bind tailnet")).toHaveLength(1);
+    expect(scanText("doc/E.md", "pnpm paperclipai onboard --yes --bind lan")).toHaveLength(1);
+  });
+
+  it("flags a context-profile value and every worktree path/ref/id/name option", () => {
+    expect(scanText("doc/E.md", "pnpm paperclipai context use default")).toHaveLength(1);
+    // Path, ref, id, and name options on worktree commands.
+    expect(scanText("doc/E.md", "pnpm paperclipai worktree repair --branch PAP-1-x")).toHaveLength(1);
+    expect(scanText("doc/E.md", "pnpm paperclipai worktree:make my-feature --start-point origin/main")).toHaveLength(1);
+    expect(scanText("doc/E.md", "pnpm paperclipai worktree init --from-config ~/.paperclip/config.json")).toHaveLength(1);
+    expect(scanText("doc/E.md", "pnpm paperclipai worktree reseed --to PAP-1-x")).toHaveLength(1);
+  });
+
+  it("does not let an npx mention on the same line suppress detection", () => {
+    // A mixed line names the safe form but still shows the unsafe command.
+    const mixed = "Prefer npx paperclipai, but pnpm paperclipai issue create --title x also works.";
+    expect(scanText("doc/E.md", mixed)).toHaveLength(1);
+  });
+
+  it("rejects a command-substitution or variable span in a recommended command", () => {
+    // Backtick command substitution, $( ) command substitution, and $NAME
+    // variable expansion each reach a shell before the CLI starts.
+    expect(scanText("doc/E.md", "pnpm paperclipai allowed-hostname `hostname`")).toHaveLength(1);
+    expect(scanText("doc/E.md", "pnpm paperclipai issue create --title $(cat /etc/passwd)")).toHaveLength(1);
+    expect(scanText("doc/E.md", "pnpm paperclipai run --instance $INSTANCE")).toHaveLength(1);
+    // A literal command wrapped in $( ) is still an offender.
+    expect(scanText("doc/E.md", 'eval "$(pnpm paperclipai worktree env)"')).toHaveLength(1);
+  });
+
+  it("allows an exact allowlist entry and a bare documentation mention", () => {
+    expect(scanText("doc/E.md", "pnpm paperclipai run")).toEqual([]);
+    expect(scanText("doc/E.md", "pnpm paperclipai worktree env --json")).toEqual([]);
+    expect(scanText("doc/E.md", "pnpm paperclipai configure --section server")).toEqual([]);
+    // A prose mention inside backticks is not a runnable command.
+    expect(scanText("doc/E.md", "Do not use `pnpm paperclipai` for a content-bearing argument.")).toEqual([]);
+    expect(scanText("doc/E.md", "The `pnpm paperclipai <command> <args>` form is unsafe.")).toEqual([]);
   });
 
   // ── Direct assertions on the runtime-generated instruction surfaces ──────
@@ -337,24 +419,20 @@ describe("paperclipai CLI invocation safety", () => {
     expect(source).toContain("npx paperclipai company import");
   });
 
-  // ── Runtime surfaces that a reader outside the monorepo also sees ─────────
+  // ── Runtime surfaces and their fixed literal lifecycle hints ─────────────
   //
-  // `pnpm paperclipai` runs a root `package.json` script. It resolves only
-  // inside a checkout of this repository. A reader who installs the published
-  // `paperclipai` package has no such script, so the command fails for them.
-  // The runtime surfaces below reach that installed reader: the server startup
-  // banner, the client connection-error hint, the UI bootstrap fallback command,
-  // and the board skill. Each must emit the `npx paperclipai` form, which
-  // resolves the installed binary and the in-repo binary alike.
-  //
-  // The env-lab cleanup hint is different. The env-lab fixture runs only from a
-  // source checkout, so its reader has the repository. That hint must invoke the
-  // checked-out CLI, not the published binary. See the env-lab test below.
+  // The onboard, bootstrap, and board-setup hints are fully literal lifecycle
+  // commands. They carry no substitutable value, so the `pnpm` form is safe and
+  // on the allowlist. Each runs the checked-out CLI, which is the CLI the reader
+  // of these source-checkout surfaces has. The client connection-error hint
+  // reaches a reader who may run an installed package, so it keeps `npx`. The
+  // env-lab cleanup hint runs from a source checkout and must work from any
+  // subdirectory, so it uses the module-resolved direct-exec form (see below).
 
-  it("emits the safe onboard form from the server startup banner", () => {
+  it("emits the onboard hint from the server startup banner", () => {
     const source = read("server/src/startup-banner.ts");
-    expect(source).toContain("npx paperclipai onboard");
-    expect(source).not.toContain("pnpm paperclipai onboard");
+    expect(source).toContain("pnpm paperclipai onboard");
+    expect(source).not.toContain("pnpm exec paperclipai onboard");
   });
 
   it("emits the safe run form from the client connection-error hint", () => {
@@ -385,16 +463,16 @@ describe("paperclipai CLI invocation safety", () => {
     );
   });
 
-  it("emits the safe bootstrap fallback command from the UI", () => {
+  it("emits the bootstrap fallback command from the UI", () => {
     const source = read("ui/src/bootstrapSetup.ts");
-    expect(source).toContain("npx paperclipai auth bootstrap-ceo");
-    expect(source).not.toContain("pnpm paperclipai auth bootstrap-ceo");
+    expect(source).toContain("pnpm paperclipai auth bootstrap-ceo");
+    expect(source).not.toContain("pnpm exec paperclipai auth bootstrap-ceo");
   });
 
-  it("emits the safe setup form from the board skill", () => {
+  it("emits the setup form from the board skill", () => {
     const source = read("skills/paperclip-board/SKILL.md");
-    expect(source).not.toContain("pnpm paperclipai board setup");
-    expect(source).toContain("npx paperclipai board setup");
+    expect(source).toContain("pnpm paperclipai board setup");
+    expect(source).not.toContain("pnpm exec paperclipai board setup");
   });
 
   // ── The safe-invocation note ─────────────────────────────────────────────
@@ -404,6 +482,8 @@ describe("paperclipai CLI invocation safety", () => {
     expect(cli).toContain("Security: safe invocation for content-bearing arguments");
     expect(cli).toContain("npx paperclipai");
     expect(cli).toContain("inert `argv`");
+    // The policy section states the exact-allowlist rule.
+    expect(cli).toContain("allowlist entry is an offender");
   });
 
   it("documents offline and air-gapped use with a safe cache-only form", () => {
@@ -444,7 +524,6 @@ describe("paperclipai CLI invocation safety", () => {
     expect(offenders).toHaveLength(1);
     // The report points to the first physical line of the command.
     expect(offenders[0]).toContain("doc/EXAMPLE.md:2:");
-    expect(offenders[0]).toContain("--title");
   });
 
   it("flags a continued command whose only content-bearing flag sits on the last line", () => {
@@ -468,11 +547,11 @@ describe("paperclipai CLI invocation safety", () => {
     expect(scanText("doc/EXAMPLE.md", source)).toEqual([]);
   });
 
-  it("does not flag a continued pnpm paperclipai command without content-bearing arguments", () => {
+  it("does not flag a continued pnpm paperclipai command that stays on the allowlist", () => {
     const source = [
-      "pnpm paperclipai worktree reseed \\",
-      "  --from current \\",
-      "  --seed-mode full",
+      "pnpm paperclipai env-lab \\",
+      "  status \\",
+      "  --json",
     ].join("\n");
     expect(scanText("doc/EXAMPLE.md", source)).toEqual([]);
   });

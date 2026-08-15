@@ -26,7 +26,7 @@ When a vote is marked for sharing, Paperclip immediately tries to upload the tra
 ### Quick report (terminal)
 
 ```bash
-npx paperclipai feedback report
+pnpm paperclipai feedback report
 ```
 
 Shows a color-coded summary: vote counts, per-trace details with reasons, and export statuses.
@@ -39,7 +39,7 @@ paperclipai feedback report
 npx paperclipai feedback report --api-base http://127.0.0.1:3000 --company-id <company-id>
 
 # Include raw payload dumps in the report
-npx paperclipai feedback report --payloads
+pnpm paperclipai feedback report --payloads
 ```
 
 ### API endpoints
@@ -89,7 +89,7 @@ The trace endpoints accept query parameters:
 ### Export to files + zip
 
 ```bash
-npx paperclipai feedback export
+pnpm paperclipai feedback export
 ```
 
 Creates a timestamped directory with:
