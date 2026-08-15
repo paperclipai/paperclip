@@ -9029,15 +9029,20 @@ export function issueRoutes(
       updateFields.executionPolicy !== undefined
         ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
         : previousExecutionPolicy;
+    const workflowStartRequested = updateFields.status === "done" || updateFields.status === "in_review";
+    const existingExecutionState = parseIssueExecutionState(existing.executionState);
+    const workflowStartsWithThisPatch = existingExecutionState === null && workflowStartRequested;
+    const workflowRestartsWithThisPatch =
+      existingExecutionState?.status === "changes_requested" && workflowStartRequested;
     const policyEligibilityInputsChanged =
       req.body.executionPolicy !== undefined ||
       normalizedAssigneeAgentId !== undefined ||
       req.body.assigneeUserId !== undefined ||
-      req.body.status !== undefined;
+      workflowStartsWithThisPatch ||
+      workflowRestartsWithThisPatch;
+    const policyEligibilityMayNeedLockedValidation =
+      policyEligibilityInputsChanged || workflowStartRequested;
     if (policyEligibilityInputsChanged) {
-      const existingExecutionState = parseIssueExecutionState(existing.executionState);
-      const workflowStartsWithThisPatch = existingExecutionState === null
-        && (updateFields.status === "done" || updateFields.status === "in_review");
       const plannedAssignee = assigneePrincipal({
         assigneeAgentId:
           normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId,
@@ -9283,6 +9288,51 @@ export function issueRoutes(
       }
       return true;
     };
+    const assertLockedExecutionPolicyApprovalEligibility = async (
+      tx: Parameters<typeof svc.update>[2],
+    ) => {
+      const lockedExisting = await svc.getByIdForUpdate(id, tx);
+      if (!lockedExisting) return false;
+      const lockedExecutionState = parseIssueExecutionState(lockedExisting.executionState);
+      const lockedWorkflowStartsWithThisPatch = lockedExecutionState === null && workflowStartRequested;
+      const lockedWorkflowRestartsWithThisPatch =
+        lockedExecutionState?.status === "changes_requested" && workflowStartRequested;
+      const lockedPolicyEligibilityInputsChanged =
+        req.body.executionPolicy !== undefined ||
+        normalizedAssigneeAgentId !== undefined ||
+        req.body.assigneeUserId !== undefined ||
+        lockedWorkflowStartsWithThisPatch ||
+        lockedWorkflowRestartsWithThisPatch;
+      if (lockedPolicyEligibilityInputsChanged) {
+        const lockedNextExecutionPolicy = req.body.executionPolicy !== undefined
+          ? nextExecutionPolicy
+          : normalizeIssueExecutionPolicy(lockedExisting.executionPolicy ?? null);
+        const lockedPlannedAssignee = assigneePrincipal({
+          assigneeAgentId:
+            normalizedAssigneeAgentId === undefined ? lockedExisting.assigneeAgentId : normalizedAssigneeAgentId,
+          assigneeUserId:
+            req.body.assigneeUserId === undefined
+              ? lockedExisting.assigneeUserId
+              : (req.body.assigneeUserId as string | null),
+        });
+        assertExecutionPolicyApprovalEligibility(
+          lockedNextExecutionPolicy,
+          lockedExecutionState
+            ? lockedExecutionState.returnAssignee
+            : (lockedWorkflowStartsWithThisPatch ? assigneePrincipal(lockedExisting) : lockedPlannedAssignee),
+        );
+      }
+      const executionInputsChanged =
+        lockedExisting.status !== existing.status ||
+        lockedExisting.assigneeAgentId !== existing.assigneeAgentId ||
+        lockedExisting.assigneeUserId !== existing.assigneeUserId ||
+        JSON.stringify(lockedExisting.executionPolicy ?? null) !== JSON.stringify(existing.executionPolicy ?? null) ||
+        JSON.stringify(lockedExisting.executionState ?? null) !== JSON.stringify(existing.executionState ?? null);
+      if (executionInputsChanged) {
+        throw conflict("Issue execution inputs changed before the update could be applied; retry the update");
+      }
+      return true;
+    };
     const persistReviewTransitionActivity = async (
       tx: Parameters<typeof svc.update>[2],
       updated: NonNullable<Awaited<ReturnType<typeof svc.update>>>,
@@ -9358,10 +9408,15 @@ export function issueRoutes(
       Boolean(decision)
       || shouldRelayStop
       || persistReviewActivityTransactionally
-      || reviewPolicySensitiveMutationRequested;
+      || reviewPolicySensitiveMutationRequested
+      || policyEligibilityMayNeedLockedValidation;
     try {
       if (shouldUseTransactionalIssueUpdate) {
         issue = await db.transaction(async (tx) => {
+          if (
+            policyEligibilityMayNeedLockedValidation
+            && !(await assertLockedExecutionPolicyApprovalEligibility(tx))
+          ) return null;
           if (
             reviewPolicySensitiveMutationRequested
             && !(await assertLockedReviewPolicyAllowsMutation(tx))
