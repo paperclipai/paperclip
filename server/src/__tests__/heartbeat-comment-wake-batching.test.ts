@@ -1176,8 +1176,9 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
-  it("does not promote a same-agent deferred comment wake that is self-authored by the closing run", async () => {
-    const gateway = await createControlledGatewayServer();
+  for (const wakeReason of ["issue_commented", "issue_comment_mentioned"] as const) {
+    it(`does not promote a same-agent deferred ${wakeReason} wake that is self-authored by the closing run`, async () => {
+      const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -1269,14 +1270,14 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       const deferredRun = await heartbeat.wakeup(agentId, {
         source: "automation",
         triggerDetail: "system",
-        reason: "issue_commented",
+        reason: wakeReason,
         payload: { issueId, commentId: selfComment.id },
         contextSnapshot: {
           issueId,
           taskId: issueId,
           commentId: selfComment.id,
           wakeCommentId: selfComment.id,
-          wakeReason: "issue_commented",
+          wakeReason,
         },
         requestedByActorType: "user",
         requestedByActorId: "local-cli-user",
@@ -1364,7 +1365,8 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
       await gateway.close();
     }
-  }, 120_000);
+    }, 120_000);
+  }
 
   it("promotes an approval follow-up coalesced with a self-authored deferred comment wake", async () => {
     const gateway = await createControlledGatewayServer();
@@ -1561,6 +1563,14 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         commentIds: [selfComment.id],
         latestCommentId: selfComment.id,
       });
+
+      const issueAfterFollowUp = await db
+        .select({ status: issues.status, completedAt: issues.completedAt })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issueAfterFollowUp).toMatchObject({ status: "done" });
+      expect(issueAfterFollowUp?.completedAt).not.toBeNull();
 
       const completedDeferredWake = await db
         .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })

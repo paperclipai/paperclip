@@ -16673,7 +16673,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         let deferredCommentWakeIsSelfAuthored = false;
         const deferredWakeIsCommentFollowUp =
           deferredWakeReason === "issue_commented" ||
-          deferredWakeReason === "issue_reopened_via_comment";
+          deferredWakeReason === "issue_reopened_via_comment" ||
+          deferredWakeReason === "issue_comment_mentioned";
         if (deferredWakeIsCommentFollowUp && deferredCommentIds.length > 0) {
           const deferredComments = await tx
             .select({
@@ -16712,6 +16713,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // Only human/comment-reopen interactions should revive completed issues;
         // system follow-ups such as retry or cleanup wakes must not reopen closed work.
         const shouldReopenDeferredCommentWake =
+          deferredWakeIsCommentFollowUp &&
           deferredCommentIds.length > 0 &&
           !deferredCommentWakeIsSelfAuthored &&
           (issue.status === "done" || issue.status === "cancelled") &&
