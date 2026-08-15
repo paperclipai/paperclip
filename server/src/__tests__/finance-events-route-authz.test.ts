@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const companyId = "22222222-2222-4222-8222-222222222222";
 const otherCompanyId = "44444444-4444-4444-8444-444444444444";
 const agentId = "11111111-1111-4111-8111-111111111111";
+const responsibleUserId = "user-responsible-1";
 
 const mockFinanceService = vi.hoisted(() => ({
   createEvent: vi.fn(),
@@ -45,16 +46,32 @@ const boardActor: TestActor = {
   isInstanceAdmin: false,
 };
 
+/**
+ * Mirrors what the agent-key middleware attaches in production: the agent's own
+ * company plus the responsible user's memberships, which `assertCompanyAccess`
+ * also checks on write methods.
+ */
 const agentActor: TestActor = {
   type: "agent",
   agentId,
   companyId,
+  onBehalfOfUserId: responsibleUserId,
+  onBehalfOfMemberships: [{ companyId, membershipRole: "member", status: "active" }],
 };
 
 const foreignAgentActor: TestActor = {
-  type: "agent",
-  agentId,
+  ...agentActor,
   companyId: otherCompanyId,
+};
+
+const viewerResponsibleUserAgentActor: TestActor = {
+  ...agentActor,
+  onBehalfOfMemberships: [{ companyId, membershipRole: "viewer", status: "active" }],
+};
+
+const inactiveResponsibleUserAgentActor: TestActor = {
+  ...agentActor,
+  onBehalfOfMemberships: [{ companyId, membershipRole: "member", status: "archived" }],
 };
 
 const validBody = {
@@ -130,6 +147,28 @@ describe.sequential("POST /api/companies/:companyId/finance-events authorization
 
     expect(res.status).toBe(403);
     expect(res.body.error).toBe("Agent key cannot access another company");
+    expect(mockFinanceService.createEvent).not.toHaveBeenCalled();
+  });
+
+  it("rejects an agent whose responsible user only has viewer access", async () => {
+    const app = await createApp(viewerResponsibleUserAgentActor);
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/finance-events`)
+      .send(validBody);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Responsible user is not authorized for write access");
+    expect(mockFinanceService.createEvent).not.toHaveBeenCalled();
+  });
+
+  it("rejects an agent whose responsible user has no active membership", async () => {
+    const app = await createApp(inactiveResponsibleUserAgentActor);
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/finance-events`)
+      .send(validBody);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Responsible user is unavailable for this company");
     expect(mockFinanceService.createEvent).not.toHaveBeenCalled();
   });
 
