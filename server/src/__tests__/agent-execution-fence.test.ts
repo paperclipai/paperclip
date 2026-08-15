@@ -13,6 +13,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issues,
+  workspaceRuntimeServices,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -39,6 +40,7 @@ describePostgres("agent execution fence", () => {
   afterEach(async () => {
     await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
+    await db.delete(workspaceRuntimeServices);
     await db.delete(issues);
     await db.delete(environmentLeases);
     await db.delete(heartbeatRuns);
@@ -810,7 +812,7 @@ describePostgres("agent execution fence", () => {
     });
   });
 
-  it("does not certify a bare terminal row during orphan reconciliation", async () => {
+  it("explicitly reconciles a terminal row instead of synthesizing migration proof", async () => {
     const { company, agent } = await seedAgent("idle");
     const run = await db
       .insert(heartbeatRuns)
@@ -832,16 +834,10 @@ describePostgres("agent execution fence", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, run.id))
       .then((rows) => rows[0]!);
-    expect(reconciled.executionFinalizedAt).toBeNull();
-
-    await agentExecutionFenceService(db).markRunFinalizerCompleted(run.id);
-    await heartbeatService(db, { runtimeEnv: {} }).reapOrphanedRuns();
-    const certified = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, run.id))
-      .then((rows) => rows[0]!);
-    expect(certified.executionFinalizedAt).toEqual(expect.any(Date));
+    expect(reconciled).toMatchObject({
+      executionFinalizerCompletedAt: expect.any(Date),
+      executionFinalizedAt: expect.any(Date),
+    });
   });
 
   it("refuses durable finalizer completion while a run still owns an issue or active lease", async () => {
@@ -936,6 +932,122 @@ describePostgres("agent execution fence", () => {
     await expect(agentExecutionFenceService(db).markRunFinalizerCompleted(run.id)).resolves.toMatchObject({
       executionFinalizerCompletedAt: expect.any(Date),
     });
+  });
+
+  it("rejects execution resource attachment after durable finalizer completion", async () => {
+    const { company, agent } = await seedAgent("idle");
+    const run = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: company.id,
+        agentId: agent.id,
+        status: "failed",
+        startedAt: new Date(Date.now() - 60_000),
+        finishedAt: new Date(Date.now() - 30_000),
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const environment = await db
+      .insert(environments)
+      .values({
+        name: `Fence Attachment ${randomUUID()}`,
+        driver: `test-${randomUUID()}`,
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+
+    await agentExecutionFenceService(db).markRunFinalizerCompleted(run.id);
+
+    await expect(
+      db.insert(environmentLeases).values({
+        companyId: company.id,
+        environmentId: environment.id,
+        heartbeatRunId: run.id,
+        status: "active",
+      }),
+    ).rejects.toBeDefined();
+    await expect(
+      db.insert(issues).values({
+        companyId: company.id,
+        title: "Late execution owner",
+        executionRunId: run.id,
+      }),
+    ).rejects.toBeDefined();
+    await expect(
+      db.insert(workspaceRuntimeServices).values({
+        id: randomUUID(),
+        companyId: company.id,
+        scopeType: "run",
+        serviceName: "late-ephemeral-service",
+        status: "running",
+        lifecycle: "ephemeral",
+        provider: "local",
+        startedByRunId: run.id,
+      }),
+    ).rejects.toBeDefined();
+  });
+
+  it("refuses durable finalizer completion while the execution process group is alive", async () => {
+    const { company, agent } = await seedAgent("idle");
+    const run = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: company.id,
+        agentId: agent.id,
+        status: "failed",
+        startedAt: new Date(Date.now() - 60_000),
+        finishedAt: new Date(Date.now() - 30_000),
+        processGroupId: 4242,
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+
+    const service = agentExecutionFenceService(db, {
+      isProcessGroupAlive: () => true,
+    });
+    await expect(service.markRunFinalizerCompleted(run.id)).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("suppresses an orphan retry rejected by an acquired fence and still drains", async () => {
+    const { company, agent } = await seedAgent("running");
+    await db
+      .update(agents)
+      .set({ adapterType: "claude_local" })
+      .where(eq(agents.id, agent.id));
+    const run = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: company.id,
+        agentId: agent.id,
+        status: "running",
+        startedAt: new Date(Date.now() - 60_000),
+        updatedAt: new Date(Date.now() - 60_000),
+        processPid: 2_147_483_647,
+        contextSnapshot: { responsibleUserId: "board-user" },
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const fences = agentExecutionFenceService(db);
+    let acquired: Awaited<ReturnType<typeof fences.acquire>> | null = null;
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: {},
+      beforeProcessLossRetryEnqueue: async () => {
+        acquired = await fences.acquire({
+          agentId: agent.id,
+          companyId: company.id,
+          actorUserId: "board-user",
+          reason: "orphan retry race",
+        });
+      },
+    });
+
+    await expect(heartbeat.reapOrphanedRuns()).resolves.toMatchObject({
+      reaped: 1,
+      runIds: [run.id],
+    });
+    expect(acquired).not.toBeNull();
+    await expect(fences.get(agent.id, acquired!.fenceId)).resolves.toMatchObject({ drained: true });
+    await expect(fences.release(agent.id, acquired!.fenceId)).resolves.toBeDefined();
   });
 
   it("allows terminal wakeup finalization but rejects requeue for pre-fence running work", async () => {

@@ -11,6 +11,8 @@ import {
 } from "@paperclipai/db";
 import { conflict, notFound } from "../errors.js";
 import { logActivity } from "./activity-log.js";
+import { isProcessGroupAlive as defaultIsProcessGroupAlive } from "./local-service-supervisor.js";
+import { reconcileHeartbeatRunScratch } from "./run-scratch.js";
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type FenceDb = Db | DbTransaction;
@@ -105,7 +107,13 @@ async function readFenceCensus(
   };
 }
 
-export function agentExecutionFenceService(db: Db) {
+export function agentExecutionFenceService(
+  db: Db,
+  options: {
+    isProcessGroupAlive?: (processGroupId: number | null | undefined) => boolean;
+  } = {},
+) {
+  const isProcessGroupAlive = options.isProcessGroupAlive ?? defaultIsProcessGroupAlive;
   async function getLockedAgent(
     tx: DbTransaction,
     agentId: string,
@@ -278,11 +286,29 @@ export function agentExecutionFenceService(db: Db) {
           .for("update")
           .then((rows) => rows[0] ?? null);
         if (!current) throw notFound("Heartbeat run not found");
-        if (current.executionFinalizerCompletedAt) return current;
         if (UNFINALIZED_RUN_STATUSES.includes(current.status as (typeof UNFINALIZED_RUN_STATUSES)[number])) {
           throw conflict("Cannot complete the finalizer before the run is terminal", {
             runId,
             status: current.status,
+          });
+        }
+        const scratchReconciliation = await reconcileHeartbeatRunScratch({
+          companyId: current.companyId,
+          agentId: current.agentId,
+          runId: current.id,
+          processGroupId: current.processGroupId,
+          isProcessGroupAlive,
+        });
+        if (scratchReconciliation.processGroupAlive) {
+          throw conflict("Cannot complete the finalizer while the execution process group is alive", {
+            runId,
+            processGroupId: current.processGroupId,
+          });
+        }
+        if (scratchReconciliation.remainingDirs.length > 0) {
+          throw conflict("Cannot complete the finalizer while execution scratch remains", {
+            runId,
+            remainingScratchDirs: scratchReconciliation.remainingDirs,
           });
         }
 
@@ -359,6 +385,7 @@ export function agentExecutionFenceService(db: Db) {
             activeEphemeralRuntimeServiceId: activeEphemeralService?.id ?? null,
           });
         }
+        if (current.executionFinalizerCompletedAt) return current;
 
         const now = new Date();
         return tx
@@ -392,6 +419,12 @@ export function agentExecutionFenceService(db: Db) {
         if (!current.executionFinalizerCompletedAt) {
           throw conflict("Cannot acknowledge finalization before the complete finalizer is durable", {
             runId,
+          });
+        }
+        if (current.processGroupId && isProcessGroupAlive(current.processGroupId)) {
+          throw conflict("Cannot acknowledge finalization while the execution process group is alive", {
+            runId,
+            processGroupId: current.processGroupId,
           });
         }
 

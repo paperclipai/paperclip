@@ -28,28 +28,6 @@ ALTER TABLE "agents" ADD CONSTRAINT "agents_execution_fence_state_check" CHECK (
         and "agents"."execution_fence_reason" is not null
         and "agents"."execution_fence_acquired_at" is not null
       ));--> statement-breakpoint
-UPDATE "heartbeat_runs"
-SET "execution_finalizer_completed_at" = coalesce("finished_at", "updated_at", now()),
-    "execution_finalized_at" = coalesce("finished_at", "updated_at", now())
-WHERE "execution_finalized_at" is null
-  AND "started_at" is not null
-  AND "status" NOT IN ('queued', 'running', 'scheduled_retry')
-  AND NOT EXISTS (
-    SELECT 1 FROM "environment_leases" lease
-    WHERE lease."heartbeat_run_id" = "heartbeat_runs"."id"
-      AND lease."status" = 'active'
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM "issues" issue
-    WHERE issue."checkout_run_id" = "heartbeat_runs"."id"
-       OR issue."execution_run_id" = "heartbeat_runs"."id"
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM "workspace_runtime_services" runtime_service
-    WHERE runtime_service."started_by_run_id" = "heartbeat_runs"."id"
-      AND runtime_service."lifecycle" = 'ephemeral'
-      AND runtime_service."status" IN ('provisioning', 'starting', 'running')
-  );--> statement-breakpoint
 CREATE OR REPLACE FUNCTION "guard_agent_heartbeat_execution_fence"()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -186,6 +164,102 @@ CREATE TRIGGER "agent_wakeup_requests_execution_fence_guard"
 BEFORE INSERT OR UPDATE OF "agent_id", "status", "payload", "run_id" ON "agent_wakeup_requests"
 FOR EACH ROW
 EXECUTE FUNCTION "guard_agent_wakeup_execution_fence"();--> statement-breakpoint
+CREATE OR REPLACE FUNCTION "guard_finalized_run_environment_lease_attachment"()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  finalizer_completed_at timestamp with time zone;
+BEGIN
+  IF NEW."heartbeat_run_id" is null OR NEW."status" <> 'active' THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT run."execution_finalizer_completed_at"
+  INTO finalizer_completed_at
+  FROM "heartbeat_runs" run
+  WHERE run."id" = NEW."heartbeat_run_id"
+  FOR UPDATE;
+
+  IF finalizer_completed_at is not null THEN
+    RAISE EXCEPTION 'Heartbeat run % already completed its finalizer', NEW."heartbeat_run_id"
+      USING ERRCODE = '55000',
+            HINT = 'Execution resources cannot be attached after durable finalizer completion.';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;--> statement-breakpoint
+DROP TRIGGER IF EXISTS "environment_leases_finalized_run_guard" ON "environment_leases";--> statement-breakpoint
+CREATE TRIGGER "environment_leases_finalized_run_guard"
+BEFORE INSERT OR UPDATE OF "heartbeat_run_id", "status" ON "environment_leases"
+FOR EACH ROW
+EXECUTE FUNCTION "guard_finalized_run_environment_lease_attachment"();--> statement-breakpoint
+CREATE OR REPLACE FUNCTION "guard_finalized_run_issue_attachment"()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  finalizer_completed_at timestamp with time zone;
+BEGIN
+  IF NEW."execution_run_id" is null THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT run."execution_finalizer_completed_at"
+  INTO finalizer_completed_at
+  FROM "heartbeat_runs" run
+  WHERE run."id" = NEW."execution_run_id"
+  FOR UPDATE;
+
+  IF finalizer_completed_at is not null THEN
+    RAISE EXCEPTION 'Heartbeat run % already completed its finalizer', NEW."execution_run_id"
+      USING ERRCODE = '55000',
+            HINT = 'Execution resources cannot be attached after durable finalizer completion.';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;--> statement-breakpoint
+DROP TRIGGER IF EXISTS "issues_finalized_run_guard" ON "issues";--> statement-breakpoint
+CREATE TRIGGER "issues_finalized_run_guard"
+BEFORE INSERT OR UPDATE OF "execution_run_id" ON "issues"
+FOR EACH ROW
+EXECUTE FUNCTION "guard_finalized_run_issue_attachment"();--> statement-breakpoint
+CREATE OR REPLACE FUNCTION "guard_finalized_run_runtime_service_attachment"()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  finalizer_completed_at timestamp with time zone;
+BEGIN
+  IF NEW."started_by_run_id" is null
+    OR NEW."lifecycle" <> 'ephemeral'
+    OR NEW."status" NOT IN ('provisioning', 'starting', 'running')
+  THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT run."execution_finalizer_completed_at"
+  INTO finalizer_completed_at
+  FROM "heartbeat_runs" run
+  WHERE run."id" = NEW."started_by_run_id"
+  FOR UPDATE;
+
+  IF finalizer_completed_at is not null THEN
+    RAISE EXCEPTION 'Heartbeat run % already completed its finalizer', NEW."started_by_run_id"
+      USING ERRCODE = '55000',
+            HINT = 'Execution resources cannot be attached after durable finalizer completion.';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;--> statement-breakpoint
+DROP TRIGGER IF EXISTS "workspace_runtime_services_finalized_run_guard" ON "workspace_runtime_services";--> statement-breakpoint
+CREATE TRIGGER "workspace_runtime_services_finalized_run_guard"
+BEFORE INSERT OR UPDATE OF "started_by_run_id", "lifecycle", "status" ON "workspace_runtime_services"
+FOR EACH ROW
+EXECUTE FUNCTION "guard_finalized_run_runtime_service_attachment"();--> statement-breakpoint
 CREATE OR REPLACE FUNCTION "guard_fenced_agent_delete"()
 RETURNS trigger
 LANGUAGE plpgsql

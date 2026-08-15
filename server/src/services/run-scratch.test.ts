@@ -7,6 +7,7 @@ import {
   buildHeartbeatRunScratchEnv,
   cleanupHeartbeatRunScratch,
   prepareHeartbeatRunScratch,
+  reconcileHeartbeatRunScratch,
   type HeartbeatRunScratch,
 } from "./run-scratch.js";
 
@@ -102,6 +103,42 @@ describe("heartbeat run scratch cleanup", () => {
 
     expect(result).toEqual({ removed: false, dir: scratch.dir, reason: "process_group_alive" });
     await expect(fs.stat(scratch.dir)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
+  });
+
+  it("reconciles every marked scratch directory owned by the terminal run", async () => {
+    const owned = await Promise.all([
+      trackScratch(await prepareHeartbeatRunScratch({
+        companyId: "company-1",
+        agentId: "agent-1",
+        runId: "run-1",
+      })),
+      trackScratch(await prepareHeartbeatRunScratch({
+        companyId: "company-1",
+        agentId: "agent-1",
+        runId: "run-1",
+      })),
+    ]);
+    const other = await trackScratch(await prepareHeartbeatRunScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "run-2",
+    }));
+
+    const result = await reconcileHeartbeatRunScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "run-1",
+      processGroupId: 123,
+      isProcessGroupAlive: () => false,
+    });
+
+    expect(result).toEqual({
+      processGroupAlive: false,
+      removedDirs: expect.arrayContaining(owned.map((scratch) => scratch.dir)),
+      remainingDirs: [],
+    });
+    await Promise.all(owned.map((scratch) => expect(fs.stat(scratch.dir)).rejects.toMatchObject({ code: "ENOENT" })));
+    await expect(fs.stat(other.dir)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
   });
 
   it("builds explicit scratch env without clobbering configured temp dirs", async () => {

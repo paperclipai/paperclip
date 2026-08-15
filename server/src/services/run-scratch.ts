@@ -29,6 +29,12 @@ export type HeartbeatRunScratchCleanupResult =
   | { removed: true; dir: string }
   | { removed: false; dir: string; reason: "missing" | "unmarked" | "owner_mismatch" | "process_group_alive" };
 
+export interface HeartbeatRunScratchReconciliationResult {
+  processGroupAlive: boolean;
+  removedDirs: string[];
+  remainingDirs: string[];
+}
+
 const TEMP_ENV_KEYS = ["TMPDIR", "TEMP", "TMP"] as const;
 const ISSUE_SEGMENT_MAX_CHARS = 32;
 
@@ -154,4 +160,44 @@ export async function cleanupHeartbeatRunScratch(input: {
 
   await fs.rm(dir, { recursive: true, force: true });
   return { removed: true, dir };
+}
+
+export async function reconcileHeartbeatRunScratch(input: {
+  companyId: string;
+  agentId: string;
+  runId: string;
+  processGroupId?: number | null;
+  isProcessGroupAlive?: (processGroupId: number | null | undefined) => boolean;
+}): Promise<HeartbeatRunScratchReconciliationResult> {
+  if (input.isProcessGroupAlive?.(input.processGroupId) === true) {
+    return { processGroupAlive: true, removedDirs: [], remainingDirs: [] };
+  }
+
+  const tmpRoot = path.resolve(os.tmpdir());
+  const entries = await fs.readdir(tmpRoot, { withFileTypes: true });
+  const removedDirs: string[] = [];
+  const remainingDirs: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith("paperclip-run-")) continue;
+    const dir = path.join(tmpRoot, entry.name);
+    const markerPath = path.join(dir, HEARTBEAT_RUN_SCRATCH_MARKER);
+    const metadata = await readMarker(markerPath);
+    if (
+      !metadata ||
+      metadata.companyId !== input.companyId ||
+      metadata.agentId !== input.agentId ||
+      metadata.runId !== input.runId
+    ) {
+      continue;
+    }
+    const result = await cleanupHeartbeatRunScratch({
+      scratch: { dir, markerPath, metadata },
+      processGroupId: input.processGroupId,
+      isProcessGroupAlive: input.isProcessGroupAlive,
+    });
+    if (result.removed || result.reason === "missing") removedDirs.push(dir);
+    else remainingDirs.push(dir);
+  }
+
+  return { processGroupAlive: false, removedDirs, remainingDirs };
 }

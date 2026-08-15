@@ -6609,6 +6609,7 @@ export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
   runtimeEnv?: Record<string, string | undefined>;
+  beforeProcessLossRetryEnqueue?: (runId: string) => Promise<void> | void;
 }
 
 type WorkspaceReadyCommentWriter = {
@@ -13533,7 +13534,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(
         and(
           isNotNull(heartbeatRuns.startedAt),
-          isNotNull(heartbeatRuns.executionFinalizerCompletedAt),
           isNull(heartbeatRuns.executionFinalizedAt),
           notInArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
         ),
@@ -13700,7 +13700,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const retryAgent = await getAgent(run.agentId);
       if (shouldRetry) {
         if (retryAgent) {
-          retriedRun = await enqueueProcessLossRetry(finalizedRun, retryAgent, now);
+          await options.beforeProcessLossRetryEnqueue?.(finalizedRun.id);
+          try {
+            retriedRun = await enqueueProcessLossRetry(finalizedRun, retryAgent, now);
+          } catch (error) {
+            if (!isAgentExecutionFenceError(error)) throw error;
+            logger.info(
+              { runId: finalizedRun.id, agentId: finalizedRun.agentId },
+              "process-loss retry suppressed because execution fence was acquired",
+            );
+          }
         }
       } else if (retryAgent) {
         const scheduled = await scheduleInteractionContinuationInfrastructureRetryIfEligible(finalizedRun, retryAgent);

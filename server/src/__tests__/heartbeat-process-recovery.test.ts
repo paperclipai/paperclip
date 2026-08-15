@@ -2291,7 +2291,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("does not enqueue duplicate restart recovery for the same interrupted run", async () => {
-    const { agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
+    const { agentId, runId, wakeupRequestId } = await seedRunFixture({
       agentStatus: "running",
     });
     const heartbeat = heartbeatService(db);
@@ -2306,17 +2306,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     await db
       .update(heartbeatRuns)
-      .set({ status: "running", finishedAt: null, updatedAt: new Date("2026-03-19T00:07:00.000Z") })
+      .set({
+        status: "running",
+        finishedAt: null,
+        executionFinalizerCompletedAt: null,
+        executionFinalizedAt: null,
+        updatedAt: new Date("2026-03-19T00:07:00.000Z"),
+      })
       .where(eq(heartbeatRuns.id, runId));
     await db
       .update(agentWakeupRequests)
       .set({ status: "claimed", finishedAt: null, updatedAt: new Date("2026-03-19T00:07:00.000Z") })
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
-    await db
-      .update(issues)
-      .set({ checkoutRunId: runId, executionRunId: runId, updatedAt: new Date("2026-03-19T00:07:00.000Z") })
-      .where(eq(issues.id, issueId));
-
     const secondDrain = await heartbeat.drainRunningRunsForShutdown(
       "SIGTERM",
       new Date("2026-03-19T00:08:00.000Z"),
