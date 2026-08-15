@@ -875,34 +875,38 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(result.escalationsCreated).toBe(0);
   });
 
-  it("gives a reassigned in-progress executor a full routing grace period", async () => {
-    await enableAutoRecovery();
-    const { companyId, managerId, coderId, blockerIssueId } = await seedBlockedChain({
+  it("resets a stale executor routing clock only when an in-progress executor is reassigned", async () => {
+    const { managerId, blockerIssueId } = await seedBlockedChain({
       blockerStatus: "in_progress",
       blockerAssigneeAgentId: "coder",
     });
+    const staleRoutingStartedAt = new Date(Date.now() - 16 * 60 * 1000);
     await db
       .update(issues)
-      .set({ startedAt: new Date(Date.now() - 16 * 60 * 1000) })
+      .set({
+        startedAt: staleRoutingStartedAt,
+        executorRoutingStartedAt: staleRoutingStartedAt,
+      })
       .where(eq(issues.id, blockerIssueId));
-    await db.insert(heartbeatRuns).values({
-      id: randomUUID(),
-      companyId,
-      agentId: coderId,
-      status: "running",
-      contextSnapshot: { issueId: blockerIssueId },
-    });
+
+    const staleFinding = await heartbeatService(db).reconcileIssueGraphLiveness();
+    expect(staleFinding).toMatchObject({ findings: 1, skippedAutoRecoveryDisabled: 1 });
+
+    await issueService(db).addComment(blockerIssueId, "Unrelated progress note", { userId: "local-board" });
+    const [afterComment] = await db
+      .select({ executorRoutingStartedAt: issues.executorRoutingStartedAt })
+      .from(issues)
+      .where(eq(issues.id, blockerIssueId));
+    expect(afterComment?.executorRoutingStartedAt).toEqual(staleRoutingStartedAt);
+    await expect(heartbeatService(db).reconcileIssueGraphLiveness()).resolves.toMatchObject({ findings: 1 });
 
     await issueService(db).update(blockerIssueId, { assigneeAgentId: managerId });
-    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
-
-    expect(result.findings).toBe(0);
-    expect(result.escalationsCreated).toBe(0);
-    await expect(db
-      .select()
+    const [afterReassignment] = await db
+      .select({ executorRoutingStartedAt: issues.executorRoutingStartedAt })
       .from(issues)
-      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation"))))
-      .resolves.toHaveLength(0);
+      .where(eq(issues.id, blockerIssueId));
+    expect(afterReassignment?.executorRoutingStartedAt?.getTime()).toBeGreaterThan(staleRoutingStartedAt.getTime());
+    await expect(heartbeatService(db).reconcileIssueGraphLiveness()).resolves.toMatchObject({ findings: 0 });
   });
 
   it("escalates an assigned in-progress blocker when only its manager has an active run", async () => {

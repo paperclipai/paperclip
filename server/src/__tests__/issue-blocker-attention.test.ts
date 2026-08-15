@@ -764,12 +764,14 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       monitorNotes: null,
       monitorScheduledBy: null,
     }]);
+    const routingStartedAt = new Date(Date.now() - 16 * 60 * 1000);
+    const freshUpdatedAt = new Date();
     await db
       .update(issues)
       .set({
-        executorRoutingStartedAt: new Date(Date.now() - 16 * 60 * 1000),
+        executorRoutingStartedAt: routingStartedAt,
         // Comments update issue recency, not the executor-routing grace clock.
-        updatedAt: new Date(),
+        updatedAt: freshUpdatedAt,
       })
       .where(eq(issues.id, importedIssueId));
 
@@ -779,10 +781,12 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       state: "needs_attention",
       reason: "in_progress_without_execution_path",
       severity: "high",
+      stoppedSinceAt: routingStartedAt.toISOString(),
       owner: { type: "agent", agentId },
       action: { label: "Resume executor routing" },
       recoveryIssue: { id: importedIssueId },
     });
+    expect(row?.blockedInboxAttention?.stoppedSinceAt).not.toBe(freshUpdatedAt.toISOString());
   });
 
   it("classifies assigned backlog and invalid review leaves for blocked inbox attention", async () => {

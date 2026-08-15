@@ -4061,7 +4061,9 @@ async function listIssueBlockedInboxAttentionMap(
           || finding.state === "in_progress_without_execution_path"
           ? "high"
           : finding.severity === "critical" ? "critical" : "high",
-        stoppedSinceAt: leaf?.updatedAt ?? row.updatedAt,
+        stoppedSinceAt: finding.state === "in_progress_without_execution_path"
+          ? leaf?.executorRoutingStartedAt ?? leaf?.startedAt ?? new Date()
+          : leaf?.updatedAt ?? row.updatedAt,
         owner: {
           type: ownerAgentId ? "agent" : leaf?.assigneeUserId ? "user" : "unknown",
           agentId: ownerAgentId,
