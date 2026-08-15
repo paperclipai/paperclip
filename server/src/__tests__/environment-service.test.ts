@@ -1389,4 +1389,104 @@ describeEmbeddedPostgres("environmentService leases", () => {
     const rows = await db.select().from(environments);
     expect(rows.filter((row) => row.driver === "ssh")).toHaveLength(2);
   });
+
+  describe("acquireLease company-binding guard", () => {
+    async function seedSandboxEnvironment(name = "Managed Sandbox") {
+      const companyId = randomUUID();
+      const environmentId = randomUUID();
+      await db.insert(companies).values({
+        id: companyId,
+        name,
+        status: "active",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      await db.insert(environments).values({
+        id: environmentId,
+        name,
+        driver: "sandbox",
+        status: "active",
+        config: { provider: "daytona" },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      return { companyId, environmentId };
+    }
+
+    async function bindEnvironmentToCompany(environmentId: string, companyId: string) {
+      await db.insert(builtInManagedResources).values({
+        companyId,
+        bundleKey: "managed-environment",
+        resourceKind: "environment",
+        resourceKey: "managed-sandbox",
+        resourceId: environmentId,
+        stockVersion: "1",
+        stockHash: "hash",
+      });
+    }
+
+    it("rejects an acquire when a bind lands after the route check", async () => {
+      const { companyId, environmentId } = await seedSandboxEnvironment();
+      // The other company owns a managed binding that a reconciliation committed
+      // after the route guard read an empty binding list.
+      const otherCompanyId = randomUUID();
+      await db.insert(companies).values({
+        id: otherCompanyId,
+        name: "Other Co",
+        issuePrefix: "OTA",
+        status: "active",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      await bindEnvironmentToCompany(environmentId, otherCompanyId);
+
+      await expect(
+        svc.acquireLease({ companyId, environmentId, assertCompanyBinding: true }),
+      ).rejects.toMatchObject({
+        status: 403,
+        details: { code: "environment_company_mismatch" },
+      });
+      // The insert never ran, so the caller holds no lease.
+      const leaseRows = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.environmentId, environmentId));
+      expect(leaseRows).toHaveLength(0);
+    });
+
+    it("acquires when the environment is unbound (instance-global)", async () => {
+      const { companyId, environmentId } = await seedSandboxEnvironment("Unbound Sandbox");
+
+      const lease = await svc.acquireLease({ companyId, environmentId, assertCompanyBinding: true });
+      expect(lease.status).toBe("active");
+      expect(lease.companyId).toBe(companyId);
+    });
+
+    it("acquires when the environment is bound to the caller company", async () => {
+      const { companyId, environmentId } = await seedSandboxEnvironment("Own Sandbox");
+      await bindEnvironmentToCompany(environmentId, companyId);
+
+      const lease = await svc.acquireLease({ companyId, environmentId, assertCompanyBinding: true });
+      expect(lease.status).toBe("active");
+    });
+
+    it("does not check the binding for callers that omit the flag", async () => {
+      const { companyId, environmentId } = await seedSandboxEnvironment("Legacy Path Sandbox");
+      const otherCompanyId = randomUUID();
+      await db.insert(companies).values({
+        id: otherCompanyId,
+        name: "Other Co 2",
+        issuePrefix: "OTB",
+        status: "active",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      await bindEnvironmentToCompany(environmentId, otherCompanyId);
+
+      // The heartbeat run path does not set the flag, so the binding check does
+      // not run and the lease acquires as before.
+      const lease = await svc.acquireLease({ companyId, environmentId });
+      expect(lease.status).toBe("active");
+    });
+  });
 });

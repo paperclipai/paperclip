@@ -412,9 +412,26 @@ export function agentRoutes(
   const setupTokenSecretWriter =
     options.setupTokenLogin?.completeCredential ?? deferredSetupTokenSecretWriter;
 
+  // Re-check the environment company binding at lease acquisition. The start
+  // route runs `assertSandboxLoginEnvironment` before the session begins, but
+  // managed-environment reconciliation can bind the sandbox to another company
+  // between that guard and the lease acquire. This wrapper re-runs the same
+  // guard at acquire time and fails closed with the 403
+  // `environment_company_mismatch` before the transport provisions a sandbox.
+  // The lease insert transaction re-checks the binding once more inside the
+  // insert, so a bind that lands during the provider call still holds no lease.
+  const guardedSetupTokenLeaseManager: SetupTokenLeaseManager = {
+    async acquire(input): Promise<SetupTokenLease> {
+      await assertSandboxLoginEnvironment(input.scope.companyId, input.scope.environmentId);
+      return setupTokenLeaseManager.acquire(input);
+    },
+    release: (lease) => setupTokenLeaseManager.release(lease),
+    releaseById: (leaseId) => setupTokenLeaseManager.releaseById(leaseId),
+  };
+
   const setupTokenLoginService = new SetupTokenSessionService({
     factory: setupTokenLoginFactory,
-    leases: setupTokenLeaseManager,
+    leases: guardedSetupTokenLeaseManager,
     store: setupTokenCleanupStore,
     completeCredential: setupTokenSecretWriter,
     rateLimiter: setupTokenRateLimiter,

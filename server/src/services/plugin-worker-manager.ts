@@ -55,6 +55,7 @@ import type {
   InitializeParams,
 } from "@paperclipai/plugin-sdk";
 import { getActiveStepContext } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
+import { CLAUDE_SETUP_TOKEN_COMMAND } from "@paperclipai/adapter-claude-local/server";
 import { logger } from "../middleware/logger.js";
 import { traceparentFromContextToken } from "../instrumentation.js";
 
@@ -143,6 +144,13 @@ const MAX_SETUP_TOKEN_PTY_TOTAL_CHARS = 8 * 1024 * 1024;
 const SETUP_TOKEN_PTY_OPEN_TIMEOUT_MS = 30_000;
 /** The default close timeout for one login pseudo-terminal route, in milliseconds. */
 const SETUP_TOKEN_PTY_CLOSE_TIMEOUT_MS = 10_000;
+/**
+ * The fixed non-secret error a disallowed login command returns. The manager
+ * forwards only the compile-time `CLAUDE_SETUP_TOKEN_COMMAND` to the worker
+ * pseudo-terminal. It rejects any other command before the worker call, so a
+ * future caller cannot spawn an arbitrary process in the sandbox.
+ */
+const SETUP_TOKEN_PTY_COMMAND_NOT_ALLOWED = "SETUP_TOKEN_PTY_COMMAND_NOT_ALLOWED";
 /** The fixed non-secret error a rejected second credential open returns. */
 const SETUP_TOKEN_PTY_ROUTE_BUSY = "SETUP_TOKEN_PTY_ROUTE_BUSY";
 /** The fixed non-secret error a failed open returns. */
@@ -1160,6 +1168,13 @@ export function createPluginWorkerHandle(
   async function openSetupTokenPtySession(
     input: SetupTokenPtyOpenInput,
   ): Promise<SetupTokenPtyHostSession> {
+    if (input.command !== CLAUDE_SETUP_TOKEN_COMMAND) {
+      // Allowlist the login command. Only the fixed `CLAUDE_SETUP_TOKEN_COMMAND`
+      // may run in the sandbox pseudo-terminal. Reject any other command with one
+      // fixed non-secret error before the worker call, so a caller cannot spawn
+      // an arbitrary process in the sandbox pseudo-terminal.
+      throw new Error(SETUP_TOKEN_PTY_COMMAND_NOT_ALLOWED);
+    }
     if (setupTokenPtyRoute) {
       // A route for this worker is not yet closed and confirmed. Reject the
       // second open with one fixed non-secret error before it reaches the worker.

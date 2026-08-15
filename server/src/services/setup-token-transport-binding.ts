@@ -358,6 +358,12 @@ export function createProductionSetupTokenSandboxProvider(
         // Apply the active custom-image template, so the sandbox binds to the
         // trusted image and runtime identity.
         applyCustomImageTemplate: true,
+        // Re-check the environment company binding inside the lease insert
+        // transaction. The route guard ran earlier, so a managed reconciliation
+        // can bind this sandbox to another company between the guard and this
+        // acquire. The lease insert then rejects a foreign-company environment
+        // with the 403 `environment_company_mismatch` and holds no lease.
+        assertCompanyBinding: true,
         // Bound the lease expiry to the session deadline. The runtime records
         // the earlier of this deadline and the provider expiry on the lease row.
         requestedExpiresAt: new Date(deadline),

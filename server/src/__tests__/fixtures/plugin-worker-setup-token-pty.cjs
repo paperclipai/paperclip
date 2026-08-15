@@ -3,8 +3,9 @@
 // the four typed methods (open, input, stop, close) and the output and exit
 // notifications.
 //
-// The manager passes a fixed `command`. The test encodes a JSON directive in the
-// `command`, so one fixture serves every route-gate case:
+// The manager allowlists `command` to the fixed `CLAUDE_SETUP_TOKEN_COMMAND`. The
+// test encodes a JSON directive in the forwarded `providerLeaseId`, so one fixture
+// serves every route-gate case:
 //   - `mode`: "normal" | "malformed-open" | "no-open-reply" | "duplicate-open-reply"
 //   - `workerSessionId`: the worker session id the open reply returns (default "ws-1")
 //   - `outputs`: an array of `{ chunk, sid? }`. The fixture emits each as an output
@@ -25,9 +26,9 @@ function send(message) {
 // bound worker session id and the close directive.
 const routes = new Map();
 
-function parseDirective(command) {
+function parseDirective(raw) {
   try {
-    const parsed = JSON.parse(command);
+    const parsed = JSON.parse(raw);
     return parsed && typeof parsed === "object" ? parsed : {};
   } catch {
     return {};
@@ -60,7 +61,7 @@ rl.on("line", (line) => {
   }
 
   if (method === "setupTokenPtyOpen") {
-    const directive = parseDirective(params.command);
+    const directive = parseDirective(params.providerLeaseId);
     const mode = directive.mode ?? "normal";
     const workerSessionId = directive.workerSessionId ?? "ws-1";
     const closeMode = directive.closeMode ?? "ack";

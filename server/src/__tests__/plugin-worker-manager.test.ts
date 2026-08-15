@@ -9,6 +9,7 @@ import {
   type HostServices,
   type HostToWorkerMethods,
 } from "@paperclipai/plugin-sdk";
+import { CLAUDE_SETUP_TOKEN_COMMAND } from "@paperclipai/adapter-claude-local/server";
 import {
   appendStderrExcerpt,
   createPluginWorkerHandle,
@@ -1076,17 +1077,49 @@ function makeSetupTokenPtyHandle(extra?: Record<string, unknown>) {
   });
 }
 
-function ptyOpenInput(command: unknown) {
+function ptyOpenInput(directive: unknown) {
   return {
     driverKey: "daytona",
     companyId: "company-1",
     environmentId: "env-1",
-    providerLeaseId: "lease-1",
-    command: JSON.stringify(command),
+    // The test directive rides in `providerLeaseId`, an opaque field the manager
+    // forwards to the worker unchanged. The manager allowlists `command`, so the
+    // command stays the fixed `CLAUDE_SETUP_TOKEN_COMMAND` for every route-gate
+    // case.
+    providerLeaseId: JSON.stringify(directive),
+    command: CLAUDE_SETUP_TOKEN_COMMAND,
   };
 }
 
 describe("plugin worker manager setup-token pty route gate", () => {
+  it("rejects a command that is not the allowlisted setup-token command before the worker call", async () => {
+    const handle = makeSetupTokenPtyHandle();
+    try {
+      await handle.start();
+      // A caller passes a command other than the fixed `CLAUDE_SETUP_TOKEN_COMMAND`.
+      // The manager rejects it with one fixed non-secret error before the worker
+      // call, so no arbitrary process spawns in the sandbox pseudo-terminal.
+      await expect(
+        handle.openSetupTokenPtySession({
+          driverKey: "daytona",
+          companyId: "company-1",
+          environmentId: "env-1",
+          providerLeaseId: JSON.stringify({ mode: "normal" }),
+          command: "rm -rf /",
+        }),
+      ).rejects.toThrow("SETUP_TOKEN_PTY_COMMAND_NOT_ALLOWED");
+      // The rejected open never consumed the single route, so a later open with
+      // the allowlisted command still succeeds.
+      const session = await handle.openSetupTokenPtySession(
+        ptyOpenInput({ mode: "normal" }),
+      );
+      expect(session).toBeDefined();
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("permits one active credential pseudo-terminal per worker", async () => {
     const handle = makeSetupTokenPtyHandle();
     try {
