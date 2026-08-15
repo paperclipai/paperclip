@@ -64,6 +64,67 @@ import {
 // Config helpers
 // ---------------------------------------------------------------------------
 
+// Hermes was the only LLM adapter with NO final-text disposition extraction:
+// it relied solely on in-run Paperclip bridge writes, so any run that ended
+// without completing that write (turn wall, budget wall, disconnect) lost an
+// otherwise valid lifecycle decision. Mirror the ACPX contract: parse the
+// final response for the strict single-line PAPERCLIP_DISPOSITION record,
+// tolerant of Markdown-concatenated markers (`**Final**PAPERCLIP_...`).
+const PAPERCLIP_DISPOSITION_RE = /(?:^|(?<=[\s`*_]))`?PAPERCLIP_DISPOSITION\s*:?\s*(\{[^\n]*\})`?\s*(?=$|\n)/g;
+const PAPERCLIP_DISPOSITION_STATUSES = new Set(["done", "cancelled", "in_review", "blocked"]);
+
+type ParsedHermesDisposition = {
+  status: string;
+  hasBlocker: boolean;
+  blocker?: string;
+  reviewer?: string;
+};
+
+function parseDispositionRecord(value: unknown): ParsedHermesDisposition | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const status = typeof record.status === "string" ? record.status.trim() : "";
+  if (!PAPERCLIP_DISPOSITION_STATUSES.has(status)) return null;
+  const blocker = [record.blocker, record.reason, record.statusReason]
+    .find((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0)
+    ?.trim();
+  const reviewer = typeof record.reviewer === "string" && record.reviewer.trim()
+    ? record.reviewer.trim()
+    : undefined;
+  return {
+    status,
+    hasBlocker: record.hasBlocker === true || status === "blocked",
+    ...(blocker ? { blocker } : {}),
+    ...(reviewer ? { reviewer } : {}),
+  };
+}
+
+function extractPaperclipDisposition(text: string): {
+  disposition: ParsedHermesDisposition | null;
+  cleanedText: string;
+} {
+  let match: RegExpExecArray | null = null;
+  let lastValid: { disposition: ParsedHermesDisposition; index: number; fullMatch: string } | null = null;
+  while ((match = PAPERCLIP_DISPOSITION_RE.exec(text)) !== null) {
+    try {
+      const disposition = parseDispositionRecord(JSON.parse(match[1] ?? "null"));
+      if (!disposition) continue;
+      lastValid = { disposition, index: match.index, fullMatch: match[0] };
+    } catch {
+      // Only the exact JSON contract is lifecycle data; ignore malformed prose.
+    }
+  }
+  if (!lastValid) {
+    return { disposition: null, cleanedText: text.trim() };
+  }
+  return {
+    disposition: lastValid.disposition,
+    cleanedText: `${text.slice(0, lastValid.index)}${text.slice(lastValid.index + lastValid.fullMatch.length)}`
+      .replace(/\n{3,}/g, "\n\n")
+      .trim(),
+  };
+}
+
 function cfgString(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined;
 }
@@ -815,13 +876,21 @@ export async function execute(
     model,
   };
 
+  // Lift the final-line disposition out of the response BEFORE the error
+  // branches: a walled run that still delivered its lifecycle decision must
+  // not be reported as having recorded none.
+  const { disposition: extractedDisposition, cleanedText: cleanedResponse } =
+    extractPaperclipDisposition(parsed.response || "");
+
   if (parsed.errorMessage) {
     executionResult.errorMessage = parsed.errorMessage;
   }
 
   if (parsed.stopReason === "max_turns_exhausted") {
     executionResult.errorCode = "max_turns_exhausted";
-    executionResult.errorMessage = "Hermes reached its configured maximum tool turns before recording a terminal Paperclip disposition.";
+    executionResult.errorMessage = extractedDisposition
+      ? `Hermes reached its configured maximum tool turns; the run's final-line disposition (${extractedDisposition.status}) was captured.`
+      : "Hermes reached its configured maximum tool turns before recording a terminal Paperclip disposition.";
   }
 
   if (tokenBudgetExceeded) {
@@ -842,17 +911,19 @@ export async function execute(
     executionResult.costUsd = parsed.costUsd;
   }
 
-  // Summary from agent response
+  // Summary from agent response, with the disposition line removed (it is
+  // lifecycle data for resultJson, not prose for the thread).
   if (parsed.response) {
-    executionResult.summary = parsed.response.slice(0, 2000);
+    executionResult.summary = (extractedDisposition ? cleanedResponse : parsed.response).slice(0, 2000);
   }
 
   // Set resultJson so Paperclip can persist run metadata (used for UI display + auto-comments)
   executionResult.resultJson = {
-    result: parsed.response || "",
+    result: extractedDisposition ? cleanedResponse : (parsed.response || ""),
     session_id: resolvedSessionId || null,
     usage: sessionUsage ?? parsed.usage ?? null,
     cost_usd: parsed.costUsd ?? null,
+    ...(extractedDisposition ? { disposition: extractedDisposition } : {}),
     ...(tokenBudgetExceeded
       ? { stopReason: "token_budget_exhausted", maxTokensPerRun, observedTokens: tokenBudgetObserved }
       : parsed.stopReason

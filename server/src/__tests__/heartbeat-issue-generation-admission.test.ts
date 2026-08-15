@@ -8,6 +8,7 @@ import {
   costEvents,
   createDb,
   heartbeatRuns,
+  issueComments,
   issues,
   toolCallEvents,
 } from "@paperclipai/db";
@@ -156,6 +157,50 @@ describeEmbeddedPostgres("issue generation pre-dispatch admission", () => {
         modelDispatched: false,
       },
     });
+  });
+
+  it("admits past the run ceiling after a board/user comment (TSMC-20820: supervision resets the counter)", async () => {
+    executeAdapter.mockClear();
+    const target = await seedScopedTarget(5);
+    const runStarted = new Date(Date.now() - 60_000);
+    const priorAgentIds = Array.from({ length: 12 }, () => randomUUID());
+    await db.insert(agents).values(priorAgentIds.map((id, index) => ({
+      id,
+      companyId: target.companyId,
+      name: `Churned generation agent ${index + 1}`,
+      role: "engineer",
+      status: "idle" as const,
+      adapterType: ADAPTER_TYPE,
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    })));
+    await db.insert(heartbeatRuns).values(
+      priorAgentIds.map((agentId) => ({
+        companyId: target.companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "succeeded" as const,
+        startedAt: runStarted,
+        finishedAt: runStarted,
+        contextSnapshot: { issueId: target.issueId, taskId: target.issueId },
+      })),
+    );
+    // The supervision event the deny message demands: a board/user comment
+    // NEWER than the churned runs must reset the ceiling counter.
+    await db.insert(issueComments).values({
+      companyId: target.companyId,
+      issueId: target.issueId,
+      authorType: "user",
+      authorUserId: "local-board",
+      body: "Board: verified state; continue the work.",
+      createdAt: new Date(),
+    });
+
+    const admitted = await invokeAndRead(target.agentId, target.issueId);
+
+    expect(executeAdapter).toHaveBeenCalledTimes(1);
+    expect(admitted?.status).toBe("succeeded");
   });
 
   it("rejects an issue at one million weighted aggregate input tokens (cache reads at 0.1)", async () => {

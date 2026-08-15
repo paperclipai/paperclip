@@ -16355,6 +16355,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
             sql`${heartbeatRuns.contextSnapshot} ->> 'taskId' = ${input.issueId}`,
           ),
+          // TSMC-20820: the run ceiling exists to force a supervision event
+          // every N runs — it must not be a lifetime cap (delivery cards have
+          // died here with most of their budget consumed by recovery churn).
+          // A board/user comment IS the supervision event the deny message
+          // demands, so only runs started after the most recent one count.
+          sql`${heartbeatRuns.startedAt} > coalesce((
+            select max(c.created_at) from issue_comments c
+            where c.issue_id = ${input.issueId}
+              and c.author_type = 'user'
+              and c.deleted_at is null
+          ), '-infinity'::timestamptz)`,
         ))
         .then((rows) => rows[0] ?? null),
       db
@@ -16466,8 +16477,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       : null;
     if (issueGenerationAdmission?.decision === "deny") {
       const reasonLabel = issueGenerationAdmission.reason === "aggregate_input_ceiling"
-        ? `the issue already recorded ${issueGenerationAdmission.aggregateInputTokens.toLocaleString("en-US")} aggregate input tokens (including cache)`
-        : `the issue already used ${issueGenerationAdmission.priorGenerationRuns} generation runs`;
+        ? `the issue already recorded ${issueGenerationAdmission.aggregateInputTokens.toLocaleString("en-US")} weighted aggregate input tokens (cache reads at 0.1)`
+        : `the issue already used ${issueGenerationAdmission.priorGenerationRuns} generation runs since the last board/user comment (a fresh board comment resets this counter)`;
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
         eventType: "lifecycle",
         stream: "system",

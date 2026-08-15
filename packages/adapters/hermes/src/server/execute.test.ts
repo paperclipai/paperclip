@@ -426,6 +426,79 @@ describe("hermes execute", () => {
     expect(result.errorMessage).toContain("maximum tool turns");
   });
 
+  it("lifts a final-line PAPERCLIP_DISPOSITION out of the response into resultJson", async () => {
+    const root = await makeHermesHome(["model:", "  default: grok-4.5", "  provider: xai-oauth"]);
+    runChildProcessMock.mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: [
+        "session_id: sess-disposition",
+        "Delivered the pack and recorded evidence.",
+        '**Final check**PAPERCLIP_DISPOSITION {"status":"in_review","hasBlocker":false,"reviewer":"board"}',
+      ].join("\n"),
+      stderr: "",
+    });
+
+    const result = await execute({
+      runId: "run-disposition",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Hermes Agent",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { cwd: root, model: "grok-4.5" },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    });
+
+    expect(result.resultJson).toMatchObject({
+      disposition: { status: "in_review", hasBlocker: false, reviewer: "board" },
+    });
+    expect(String((result.resultJson as Record<string, unknown>).result)).not.toContain("PAPERCLIP_DISPOSITION");
+    expect(result.summary).not.toContain("PAPERCLIP_DISPOSITION");
+  });
+
+  it("keeps a walled run's captured disposition and says so in the error message", async () => {
+    const root = await makeHermesHome(["model:", "  default: grok-4.5", "  provider: xai-oauth"]);
+    runChildProcessMock.mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: [
+        "session_id: sess-walled-disposition",
+        'Partial pass complete.\nPAPERCLIP_DISPOSITION {"status":"blocked","reason":"waiting on QA gate"}',
+      ].join("\n"),
+      stderr: "paperclip_stop_reason: max_turns_exhausted\n",
+    });
+
+    const result = await execute({
+      runId: "run-walled-disposition",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Hermes Agent",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { cwd: root, model: "grok-4.5" },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    });
+
+    expect(result.errorCode).toBe("max_turns_exhausted");
+    expect(result.errorMessage).toContain("was captured");
+    expect(result.resultJson).toMatchObject({
+      disposition: { status: "blocked", hasBlocker: true, blocker: "waiting on QA gate" },
+    });
+  });
+
   it("stops a live Hermes run from its run-scoped usage ledger at the configured cap", async () => {
     const root = await makeHermesHome(["model:", "  default: grok-4.5", "  provider: xai-oauth"]);
     const stateDbPath = path.join(root, ".hermes", "state.db");
