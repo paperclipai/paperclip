@@ -3621,6 +3621,32 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await tempDb?.cleanup();
   });
 
+  it("binds a parentless create to the company primary project", async () => {
+    const companyId = randomUUID();
+    const primaryProjectId = randomUUID();
+    const secondaryProjectId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values([
+      { id: primaryProjectId, companyId, name: "Primary project", status: "in_progress" },
+      { id: secondaryProjectId, companyId, name: "Secondary project", status: "in_progress" },
+    ]);
+    await db.insert(issues).values([
+      { companyId, projectId: primaryProjectId, title: "Bound issue one", status: "todo", priority: "medium" },
+      { companyId, projectId: primaryProjectId, title: "Bound issue two", status: "todo", priority: "medium" },
+      { companyId, projectId: secondaryProjectId, title: "Other project issue", status: "todo", priority: "medium" },
+    ]);
+
+    const created = await svc.create(companyId, { title: "Parentless system issue" });
+
+    expect(created.parentId).toBeNull();
+    expect(created.projectId).toBe(primaryProjectId);
+  });
+
   it("inherits the parent issue workspace linkage when child workspace fields are omitted", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();

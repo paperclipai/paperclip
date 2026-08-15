@@ -71,6 +71,7 @@ import {
 import { resolvePaperclipInstanceRoot } from "@paperclipai/shared/home-paths";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import { resolveCompanyPrimaryProjectId } from "./company-primary-project.js";
 import { parseObject } from "../adapters/utils.js";
 import {
   hydrateSuccessfulRunHandoffLiveness,
@@ -7618,6 +7619,12 @@ export function issueService(db: Db) {
         if (issueData.projectId == null && executionWorkspaceId) {
           const workspace = await assertValidExecutionWorkspace(companyId, null, executionWorkspaceId, tx);
           issueData.projectId = workspace.projectId;
+        }
+        // Parentless creators (REST and internal callers alike) must not mint
+        // unbound issues: agent lanes reject them before launch. Parented
+        // creates above retain their inherited project instead.
+        if (issueData.projectId == null && issueData.parentId == null) {
+          issueData.projectId = await resolveCompanyPrimaryProjectId(companyId, tx as unknown as Db);
         }
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         // Cache the project policy lookup for this insert so the default

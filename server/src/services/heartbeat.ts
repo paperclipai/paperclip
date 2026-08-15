@@ -75,6 +75,7 @@ import {
 import { conflict, HttpError, notFound } from "../errors.js";
 import { getStartupTraceContext } from "../instrumentation.js";
 import { logger } from "../middleware/logger.js";
+import { resolveCompanyPrimaryProjectId } from "./company-primary-project.js";
 import { publishLiveEvent } from "./live-events.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
 import { validateControlledAgentSkillScope } from "./controlled-agent-admission.js";
@@ -7886,19 +7887,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   // family). Default home for parentless system creators: the company's
   // most-populated project (TSMC-20847/20849/TSR-5447 were minted unbound by
   // the equivalent-failure circuit on 2026-08-14 and errored their lanes).
-  async function resolveCompanyPrimaryProjectId(companyId: string, reader: ReadExecutor = db) {
-    const primary = await reader
-      .select({ projectId: projects.id, issueCount: sql<number>`count(${issues.id})` })
-      .from(projects)
-      .leftJoin(issues, eq(issues.projectId, projects.id))
-      .where(eq(projects.companyId, companyId))
-      .groupBy(projects.id)
-      .orderBy(sql`count(${issues.id}) desc`)
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
-    return primary?.projectId ?? null;
-  }
-
   async function resolveParentIssueResponsibleUserId(
     companyId: string,
     parentId: string | null | undefined,
@@ -22874,7 +22862,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // Bind the card or triage lanes cannot launch it (TSMC-20821 family):
     // inherit the source issue's project, else the company primary.
     const circuitProjectId = sourceIssue?.projectId
-      ?? await resolveCompanyPrimaryProjectId(run.companyId);
+      ?? await resolveCompanyPrimaryProjectId(run.companyId, db);
     const incidentKey = `equivalent_failure_circuit:${run.companyId}:${scope.type}:${scope.id}`;
     await issuesSvc.create(run.companyId, {
       title: `BOARD ACTION REQUIRED: Equivalent failure circuit open — ${scope.type}`,

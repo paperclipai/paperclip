@@ -62,6 +62,7 @@ import {
 import { trackRoutineRun } from "@paperclipai/shared/telemetry";
 import { conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import { resolveCompanyPrimaryProjectId } from "./company-primary-project.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { issueService } from "./issues.js";
@@ -3376,7 +3377,18 @@ export function routineService(
     getDescriptionDocument: async (routineId: string) => getRoutineDescriptionDocument(routineId),
 
     create: async (companyId: string, input: CreateRoutine, actor: Actor): Promise<Routine> => {
-      await assertProject(companyId, input.projectId ?? null);
+      const parentProjectId = input.projectId == null && input.parentIssueId
+        ? await db
+          .select({ projectId: issues.projectId })
+          .from(issues)
+          .where(and(eq(issues.companyId, companyId), eq(issues.id, input.parentIssueId)))
+          .then((rows) => rows[0]?.projectId ?? null)
+        : null;
+      const projectId = input.projectId ?? parentProjectId ?? await resolveCompanyPrimaryProjectId(companyId, db);
+      if (!projectId) {
+        throw unprocessable("Routine requires a project; create an active project before creating a routine");
+      }
+      await assertProject(companyId, projectId);
       await assertRoutineFolder(companyId, input.folderId ?? null);
       await assertRoutineAssignableAgent(companyId, input.assigneeAgentId ?? null);
       if (input.goalId) await assertGoal(companyId, input.goalId);
@@ -3403,7 +3415,7 @@ export function routineService(
           .insert(routines)
           .values({
             companyId,
-            projectId: input.projectId ?? null,
+            projectId,
             folderId: input.folderId ?? null,
             goalId: input.goalId ?? null,
             parentIssueId: input.parentIssueId ?? null,

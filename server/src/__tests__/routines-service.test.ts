@@ -742,8 +742,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(notes.every((note) => note.body.includes(`remains ${status}`))).toBe(true);
   });
 
-  it("creates draft routines without a project or default assignee", async () => {
-    const { companyId, svc } = await seedFixture();
+  it("derives the company primary project for a routine created without a project", async () => {
+    const { companyId, projectId, svc } = await seedFixture();
 
     const routine = await svc.create(
       companyId,
@@ -762,7 +762,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       {},
     );
 
-    expect(routine.projectId).toBeNull();
+    expect(routine.projectId).toBe(projectId);
     expect(routine.assigneeAgentId).toBeNull();
     expect(routine.status).toBe("paused");
   });
