@@ -279,6 +279,8 @@ describe("GET /health", () => {
   it("surfaces redacted database backup warnings for anonymous authenticated probes", async () => {
     const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-redacted-backups-"));
     const backupFile = path.join(backupDir, "paperclip-20260705-031702.sql.gz");
+    const snapshotMarkerDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-redacted-snapshots-"));
+    fs.writeFileSync(path.join(snapshotMarkerDir, "state-snapshot.failure"), "failed reading /srv/paperclip/tenant-secret/state.json from https://backend.internal\n");
     fs.writeFileSync(backupFile, "backup");
     fs.utimesSync(
       backupFile,
@@ -313,6 +315,11 @@ describe("GET /health", () => {
           maxAgeHours: 26,
           now: new Date("2026-07-06T13:00:00.000Z"),
         },
+        stateSnapshotHealth: {
+          enabled: true,
+          markerDir: snapshotMarkerDir,
+          maxAgeHours: 48,
+        },
       }),
     );
 
@@ -336,11 +343,21 @@ describe("GET /health", () => {
           },
         ],
       },
+      stateSnapshot: {
+        enabled: true,
+        status: "warning",
+        warnings: [
+          { code: "instance_state_snapshot_missing", message: "No recent instance-state snapshot was found." },
+          { code: "instance_state_snapshot_last_failure", message: "Instance-state snapshot failure marker is present." },
+        ],
+      },
       warnings: [
         {
           code: "database_backup_stale",
           message: "Latest database backup is stale.",
         },
+        { code: "instance_state_snapshot_missing", message: "No recent instance-state snapshot was found." },
+        { code: "instance_state_snapshot_last_failure", message: "Instance-state snapshot failure marker is present." },
       ],
     });
   });

@@ -21,6 +21,8 @@ import { healthRoutes } from "./routes/health.js";
 import { cloudRoutes } from "./routes/cloud.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
+import { stateRepoRoutes } from "./routes/state-repo.js";
+import type { StateRepoService } from "./services/state-repo.js";
 import { companySkillPolicyRoutes } from "./routes/company-skill-policy.js";
 import { inboxAgentPolicyRoutes } from "./routes/inbox-agent-policy.js";
 import { builtInAgentRoutes } from "./routes/built-in-agents.js";
@@ -65,6 +67,7 @@ import {
   instanceDatabaseBackupRoutes,
   type InstanceDatabaseBackupService,
 } from "./routes/instance-database-backups.js";
+import { instanceStateSnapshotRoutes, type InstanceStateSnapshotService } from "./routes/instance-state-snapshots.js";
 import { llmRoutes } from "./routes/llms.js";
 import { authRoutes } from "./routes/auth.js";
 import { assetRoutes } from "./routes/assets.js";
@@ -256,7 +259,11 @@ export async function createApp(
       }): Promise<unknown>;
     };
     databaseBackupService?: InstanceDatabaseBackupService;
+    stateSnapshotService?: InstanceStateSnapshotService;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
+    stateSnapshotHealth?: { markerDir: string; enabled: boolean; maxAgeHours: number };
+    stateRepoService?: StateRepoService;
+    stateRepoMarkerDir?: string;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
     allowedHostnames: string[];
@@ -373,6 +380,7 @@ export async function createApp(
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
       databaseBackupHealth: opts.databaseBackupHealth,
+      stateSnapshotHealth: opts.stateSnapshotHealth,
     }),
   );
   api.use(openApiRoutes());
@@ -380,7 +388,7 @@ export async function createApp(
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));
   api.use(folderRoutes(db));
-  api.use(companySkillRoutes(db));
+  api.use(companySkillRoutes(db, { stateRepo: opts.stateRepoService }));
   api.use(companySkillPolicyRoutes(db));
   api.use(inboxAgentPolicyRoutes(db));
   api.use(builtInAgentRoutes(db));
@@ -410,6 +418,7 @@ export async function createApp(
   api.use(
     agentRoutes(db, {
       pluginWorkerManager: workerManager,
+      stateRepo: opts.stateRepoService,
       deploymentMode: opts.deploymentMode,
       confidentialProxyAllowlist: setupTokenLoginProxyAllowlist,
       onSetupTokenLoginService: (service) => {
@@ -422,6 +431,9 @@ export async function createApp(
       },
     }),
   );
+  if (opts.stateRepoService && opts.stateRepoMarkerDir) {
+    api.use(stateRepoRoutes(db, opts.stateRepoService, opts.stateRepoMarkerDir));
+  }
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
   api.use(caseRoutes(db, opts.storageService));
@@ -463,6 +475,9 @@ export async function createApp(
   api.use(instanceSettingsRoutes(db));
   if (opts.databaseBackupService) {
     api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
+  }
+  if (opts.stateSnapshotService) {
+    api.use(instanceStateSnapshotRoutes(opts.stateSnapshotService));
   }
   const pluginRegistry = pluginRegistryService(db);
   const eventBus = createPluginEventBus();

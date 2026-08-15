@@ -2,6 +2,7 @@ import { Router, type NextFunction, type Request, type Response } from "express"
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
+import type { StateRepoService } from "../services/state-repo.js";
 import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
@@ -206,6 +207,7 @@ export function agentRoutes(
   db: Db,
   options: {
     pluginWorkerManager?: PluginWorkerManager;
+    stateRepo?: StateRepoService;
     /** The active deployment mode. The confidential transport guard reads it. */
     deploymentMode?: DeploymentMode;
     /**
@@ -386,7 +388,7 @@ export function agentRoutes(
   const recovery = recoveryService(db, { enqueueWakeup: heartbeat.wakeup });
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
-  const instructions = agentInstructionsService();
+  const instructions = agentInstructionsService(db);
   const companySkills = companySkillService(db);
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
@@ -3523,6 +3525,14 @@ export function agentRoutes(
         clearLegacyPromptTemplate: req.body.clearLegacyPromptTemplate === true,
       },
     });
+    await options.stateRepo?.commit({
+      companyId: existing.companyId,
+      actor: {
+        name: actor.actorType === "agent" ? existing.name : "Board User",
+        email: `${actor.actorType}+${actor.actorId}@paperclip.invalid`,
+      },
+      message: `agent-instructions: update ${existing.name}`,
+    });
 
     res.json(result.file);
   });
@@ -3554,6 +3564,14 @@ export function agentRoutes(
       details: {
         path: relativePath,
       },
+    });
+    await options.stateRepo?.commit({
+      companyId: existing.companyId,
+      actor: {
+        name: actor.actorType === "agent" ? existing.name : "Board User",
+        email: `${actor.actorType}+${actor.actorId}@paperclip.invalid`,
+      },
+      message: `agent-instructions: delete ${relativePath} for ${existing.name}`,
     });
 
     res.json(result.bundle);

@@ -176,7 +176,7 @@ export function pluginManagedAgentService(
 ) {
   const agentSvc = agentService(db);
   const approvalSvc = approvalService(db);
-  const instructions = agentInstructionsService();
+  const instructions = agentInstructionsService(db);
 
   function declarationFor(agentKey: string) {
     const declaration = options.manifest?.agents?.find((agent) => agent.agentKey === agentKey);

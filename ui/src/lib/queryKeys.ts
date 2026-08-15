@@ -379,6 +379,11 @@ export const queryKeys = {
   cloud: {
     stacks: ["cloud", "stacks"] as const,
   },
+  stateRepo: {
+    health: (companyId: string) => ["state-repo", "health", companyId] as const,
+    log: (companyId: string) => ["state-repo", "log", companyId] as const,
+    remote: (companyId: string) => ["state-repo", "remote", companyId] as const,
+  },
   secrets: {
     list: (companyId: string) => ["secrets", companyId] as const,
     providers: (companyId: string) => ["secret-providers", companyId] as const,

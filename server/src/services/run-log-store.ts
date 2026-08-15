@@ -387,25 +387,44 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
 // NOT redirect the product's workspace/file storage (smaller blast radius).
 // Unset RUN_LOG_S3_BUCKET -> no mirror -> local-only (safe degrade). Creds come
 // from the standard AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY chain.
+type RunLogS3Defaults = {
+  enabled: boolean;
+  bucket: string;
+  region: string;
+  endpoint?: string;
+  prefix?: string;
+  forcePathStyle: boolean;
+};
+
+let runLogS3Defaults: RunLogS3Defaults | undefined;
+
+export function configureRunLogS3Defaults(defaults: RunLogS3Defaults | undefined): void {
+  runLogS3Defaults = defaults;
+  cachedStore = null;
+}
+
 function resolveRunLogS3(): DurableRunLogStoreOptions["s3"] {
-  const bucket = process.env.RUN_LOG_S3_BUCKET?.trim();
+  const bucket =
+    process.env.RUN_LOG_S3_BUCKET?.trim() ||
+    (runLogS3Defaults?.enabled ? runLogS3Defaults.bucket : undefined);
   if (!bucket) return undefined;
   const provider = createS3StorageProvider({
     bucket,
-    region: process.env.RUN_LOG_S3_REGION?.trim() || "us-east-1",
-    endpoint: process.env.RUN_LOG_S3_ENDPOINT?.trim() || undefined,
+    region: process.env.RUN_LOG_S3_REGION?.trim() || runLogS3Defaults?.region || "us-east-1",
+    endpoint: process.env.RUN_LOG_S3_ENDPOINT?.trim() || runLogS3Defaults?.endpoint,
     prefix: undefined, // prefixing is handled by keyPrefix below (kept off the provider)
     forcePathStyle: process.env.RUN_LOG_S3_FORCE_PATH_STYLE
       ? process.env.RUN_LOG_S3_FORCE_PATH_STYLE === "true"
-      : true, // Cubbit (and most S3-compatible endpoints) need path-style
+      : (runLogS3Defaults?.forcePathStyle ?? true),
   });
   // Opt-in in-flight tail mirroring: at most one partial upload per interval
   // per active run, so a crash loses at most one interval's tail. Unset/0
   // keeps the historical finalize-only mirroring.
   const inflightSeconds = Number.parseFloat(process.env.RUN_LOG_S3_INFLIGHT_MIRROR_SECONDS ?? "");
+  const defaultPrefix = [runLogS3Defaults?.prefix, "run-logs"].filter(Boolean).join("/");
   return {
     provider,
-    keyPrefix: process.env.RUN_LOG_S3_PREFIX?.trim() || "run-logs",
+    keyPrefix: process.env.RUN_LOG_S3_PREFIX?.trim() || defaultPrefix || "run-logs",
     inflightMirrorMs:
       Number.isFinite(inflightSeconds) && inflightSeconds > 0 ? Math.round(inflightSeconds * 1000) : undefined,
   };

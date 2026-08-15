@@ -22,6 +22,26 @@ export type CloudInstanceHealthStatus = {
   cloudBaseUrl: string | null;
 };
 
+export type HealthWarning = { code: string; message: string };
+
+export type DatabaseBackupHealth = {
+  enabled: boolean;
+  status: "ok" | "warning";
+  backupDir?: string;
+  maxAgeHours?: number;
+  latestBackup?: { name: string; path?: string; mtime: string; ageHours: number; sizeBytes: number } | null;
+  lastFailure?: { path?: string; mtime: string; message: string } | null;
+  warnings: HealthWarning[];
+};
+
+export type StateSnapshotHealth = {
+  enabled: boolean;
+  status: "ok" | "warning";
+  markerDir?: string;
+  latestSnapshot?: Record<string, unknown> | null;
+  warnings: HealthWarning[];
+};
+
 export type HealthStatus = {
   status: "ok";
   version?: string;
@@ -36,6 +56,9 @@ export type HealthStatus = {
   serverInfo?: ServerInfoSnapshot;
   devServer?: DevServerHealthStatus;
   cloud?: CloudInstanceHealthStatus;
+  databaseBackup?: DatabaseBackupHealth;
+  stateSnapshot?: StateSnapshotHealth;
+  warnings?: HealthWarning[];
 };
 
 export const healthApi = {

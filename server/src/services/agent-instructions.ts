@@ -1,5 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createHash } from "node:crypto";
+import { and, eq } from "drizzle-orm";
+import type { Db } from "@paperclipai/db";
+import { builtInManagedResources } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { resolveHomeAwarePath, resolvePaperclipInstanceRoot } from "../home-paths.js";
 
@@ -451,9 +455,69 @@ export function syncInstructionsBundleConfigFromFilePath(
   return applyBundleConfig(next, { mode, rootPath, entryFile });
 }
 
-export function agentInstructionsService() {
+export function agentInstructionsService(db?: Db) {
+  async function getStoredBundle(agent: AgentLike) {
+    if (!db) return null;
+    const rows = await db.select().from(builtInManagedResources).where(and(
+      eq(builtInManagedResources.companyId, agent.companyId),
+      eq(builtInManagedResources.resourceKind, "instructions"),
+      eq(builtInManagedResources.resourceId, agent.id),
+    ));
+    for (const row of rows) {
+      const defaults = asRecord(row.defaultsJson);
+      const files = Object.fromEntries(Object.entries(asRecord(defaults.files)).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+      if (Object.keys(files).length > 0) return { row, entryFile: asString(defaults.entryFile) ?? ENTRY_FILE_DEFAULT, files };
+    }
+    return null;
+  }
+
+  async function persistManagedBundle(agent: AgentLike, entryFile: string, files: Record<string, string>) {
+    if (!db || Object.keys(files).length === 0) return;
+    const existing = await getStoredBundle(agent);
+    const stockHash = `sha256:${createHash("sha256").update(JSON.stringify({ entryFile, files })).digest("hex")}`;
+    const values = {
+      companyId: agent.companyId,
+      bundleKey: existing?.row.bundleKey ?? `custom-agent:${agent.id}`,
+      resourceKind: "instructions",
+      resourceKey: existing?.row.resourceKey ?? "bundle",
+      resourceId: agent.id,
+      stockVersion: existing?.row.stockVersion ?? "custom-v1",
+      stockHash,
+      defaultsJson: { entryFile, files },
+    };
+    await db.insert(builtInManagedResources).values(values).onConflictDoUpdate({
+      target: [builtInManagedResources.companyId, builtInManagedResources.bundleKey, builtInManagedResources.resourceKind, builtInManagedResources.resourceKey],
+      set: { resourceId: agent.id, stockHash, defaultsJson: values.defaultsJson, updatedAt: new Date() },
+    });
+  }
+
+  async function resolveState(agent: AgentLike) {
+    const derived = deriveBundleState(agent);
+    if (derived.mode !== "external") {
+      const stored = await getStoredBundle(agent);
+      if (stored) {
+        const rootPath = resolveManagedInstructionsRoot(agent);
+        const stat = await statIfExists(rootPath);
+        const files = stat?.isDirectory() ? await listFilesRecursive(rootPath) : [];
+        if (files.length === 0) {
+          await fs.mkdir(rootPath, { recursive: true });
+          await writeBundleFiles(rootPath, stored.files, { overwriteExisting: true });
+        }
+        return recoverManagedBundleState(agent, { ...derived, mode: "managed", rootPath, entryFile: stored.entryFile, resolvedEntryPath: path.resolve(rootPath, stored.entryFile) });
+      }
+    }
+    return recoverManagedBundleState(agent, derived);
+  }
+
+  async function persistState(agent: AgentLike, state: BundleState) {
+    if (state.mode !== "managed" || !state.rootPath) return;
+    const relativePaths = await listFilesRecursive(state.rootPath);
+    const files = Object.fromEntries(await Promise.all(relativePaths.map(async (relativePath) => [relativePath, await fs.readFile(resolvePathWithinRoot(state.rootPath!, relativePath), "utf8")] as const)));
+    await persistManagedBundle(agent, state.entryFile, files);
+  }
+
   async function getBundle(agent: AgentLike): Promise<AgentInstructionsBundle> {
-    const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
+    const state = await resolveState(agent);
     if (!state.rootPath) return toBundle(agent, state, []);
     const stat = await statIfExists(state.rootPath);
     if (!stat?.isDirectory()) {
@@ -468,7 +532,7 @@ export function agentInstructionsService() {
   }
 
   async function readFile(agent: AgentLike, relativePath: string): Promise<AgentInstructionsFileDetail> {
-    const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
+    const state = await resolveState(agent);
     if (relativePath === LEGACY_PROMPT_TEMPLATE_PATH) {
       const content = asString(state.config[PROMPT_KEY]);
       if (content === null) throw notFound("Instructions file not found");
@@ -510,7 +574,7 @@ export function agentInstructionsService() {
     options?: { clearLegacyPromptTemplate?: boolean },
   ): Promise<{ adapterConfig: Record<string, unknown>; state: BundleState }> {
     const derived = deriveBundleState(agent);
-    const current = await recoverManagedBundleState(agent, derived);
+    const current = await resolveState(agent);
     if (current.rootPath && current.mode) {
       const adapterConfig = buildPersistedBundleConfig(derived, current, options);
       return {
@@ -554,7 +618,7 @@ export function agentInstructionsService() {
       clearLegacyPromptTemplate?: boolean;
     },
   ): Promise<{ bundle: AgentInstructionsBundle; adapterConfig: Record<string, unknown> }> {
-    const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
+    const state = await resolveState(agent);
     const nextMode = input.mode ?? state.mode ?? "managed";
     const nextEntryFile = input.entryFile ? normalizeRelativeFilePath(input.entryFile) : state.entryFile;
     let nextRootPath: string;
@@ -592,7 +656,9 @@ export function agentInstructionsService() {
       entryFile: nextEntryFile,
       clearLegacyPromptTemplate: input.clearLegacyPromptTemplate,
     });
-    const nextBundle = await getBundle({ ...agent, adapterConfig: nextConfig });
+    const nextAgent = { ...agent, adapterConfig: nextConfig };
+    if (nextMode === "managed") await persistState(nextAgent, await resolveState(nextAgent));
+    const nextBundle = await getBundle(nextAgent);
     return { bundle: nextBundle, adapterConfig: nextConfig };
   }
 
@@ -625,6 +691,7 @@ export function agentInstructionsService() {
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
     await fs.writeFile(absolutePath, content, "utf8");
     const nextAgent = { ...agent, adapterConfig: prepared.adapterConfig };
+    await persistState(nextAgent, prepared.state);
     const [bundle, file] = await Promise.all([
       getBundle(nextAgent),
       readFile(nextAgent, relativePath),
@@ -637,7 +704,7 @@ export function agentInstructionsService() {
     adapterConfig: Record<string, unknown>;
   }> {
     const derived = deriveBundleState(agent);
-    const state = await recoverManagedBundleState(agent, derived);
+    const state = await resolveState(agent);
     if (relativePath === LEGACY_PROMPT_TEMPLATE_PATH) {
       throw unprocessable("Cannot delete the legacy promptTemplate pseudo-file");
     }
@@ -649,6 +716,7 @@ export function agentInstructionsService() {
     const absolutePath = resolvePathWithinRoot(state.rootPath, normalizedPath);
     await fs.rm(absolutePath, { force: true });
     const adapterConfig = buildPersistedBundleConfig(derived, state);
+    await persistState({ ...agent, adapterConfig }, state);
     const bundle = await getBundle({ ...agent, adapterConfig });
     return { bundle, adapterConfig };
   }
@@ -658,7 +726,7 @@ export function agentInstructionsService() {
     entryFile: string;
     warnings: string[];
   }> {
-    const state = await recoverManagedBundleState(agent, deriveBundleState(agent));
+    const state = await resolveState(agent);
     if (state.rootPath) {
       const stat = await statIfExists(state.rootPath);
       if (stat?.isDirectory()) {
@@ -718,7 +786,11 @@ export function agentInstructionsService() {
       entryFile,
       clearLegacyPromptTemplate: options?.clearLegacyPromptTemplate,
     });
-    const bundle = await getBundle({ ...agent, adapterConfig });
+    const nextAgent = { ...agent, adapterConfig };
+    const persistedFiles = Object.fromEntries(normalizedEntries);
+    if (!(entryFile in persistedFiles)) persistedFiles[entryFile] = "";
+    await persistManagedBundle(nextAgent, entryFile, persistedFiles);
+    const bundle = await getBundle(nextAgent);
     return { bundle, adapterConfig };
   }
 
@@ -731,5 +803,6 @@ export function agentInstructionsService() {
     exportFiles,
     ensureManagedBundle: ensureWritableBundle,
     materializeManagedBundle,
+    persistManagedBundle,
   };
 }
