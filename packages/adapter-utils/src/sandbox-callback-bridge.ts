@@ -1184,6 +1184,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
       const requestPath = path.posix.join(directories.requestsDir, fileName);
       const responsePath = path.posix.join(directories.responsesDir, fileName);
       const requestId = fileName.replace(/\.json$/i, "") || randomUUID();
+      let responseId = requestId;
       try {
         const raw = await withTimeout(
           input.client.readTextFile(requestPath),
@@ -1191,26 +1192,65 @@ export async function startSandboxCallbackBridgeWorker(input: {
           `Sandbox callback bridge read pending request ${requestId}`,
         );
         const parsed = JSON.parse(raw) as Partial<SandboxCallbackBridgeRequest>;
-        await input.client.remove(requestPath).catch(() => undefined);
-        await withTimeout(
-          writeBridgeResponse(input.client, requestPath, responsePath, {
-            id: typeof parsed.id === "string" && parsed.id.length > 0 ? parsed.id : requestId,
-            status: 503,
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ error: message }),
-            completedAt: new Date().toISOString(),
-          }, {
-            requireRequestPath: false,
-          }),
-          iterationTimeoutMs,
-          `Sandbox callback bridge write 503 for ${requestId}`,
-        );
+        if (typeof parsed.id === "string" && parsed.id.length > 0) {
+          responseId = parsed.id;
+        }
       } catch (error) {
+        // The read or the parse failed, most likely on the same dead channel that
+        // triggered this recovery. Keep the request file, so a later recovery pass
+        // can still read it and deliver a terminal 503. A remove here drops the
+        // request and strands the caller until its own deadline.
         console.warn(
-          `[paperclip] sandbox callback bridge failed to abort pending request ${requestId}: ${error instanceof Error ? error.message : String(error)}`,
+          `[paperclip] sandbox callback bridge could not read pending request ${requestId}: ${error instanceof Error ? error.message : String(error)}`,
         );
-      } finally {
+        continue;
+      }
+      // Write the 503 first, then remove the request file only after the write
+      // lands. Retry a transient failure, bounded by the per-iteration timeout,
+      // exactly like the finalize and 504 backstop writes. When every attempt
+      // fails, keep the request file. A later recovery pass, or the caller retry,
+      // then still finds the queued request and delivers a terminal 503, instead
+      // of a silent drop that strands the caller until its own deadline. The
+      // request is unclaimed or abandoned, so its host mutation never ran; a later
+      // 503 stays exactly-once.
+      let wrote503 = false;
+      let lastWriteError = "Sandbox callback bridge could not write the recovery 503.";
+      for (let attempt = 1; attempt <= MAX_BACKSTOP_WRITE_ATTEMPTS; attempt += 1) {
+        try {
+          await withTimeout(
+            writeBridgeResponse(input.client, requestPath, responsePath, {
+              id: responseId,
+              status: 503,
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ error: message }),
+              completedAt: new Date().toISOString(),
+            }, {
+              requireRequestPath: false,
+            }),
+            iterationTimeoutMs,
+            `Sandbox callback bridge write 503 for ${requestId}`,
+          );
+          wrote503 = true;
+          break;
+        } catch (error) {
+          lastWriteError = error instanceof Error ? error.message : String(error);
+          console.warn(
+            `[paperclip] sandbox callback bridge failed to write recovery 503 for ${requestId} (attempt ${attempt}/${MAX_BACKSTOP_WRITE_ATTEMPTS}): ${lastWriteError}`,
+          );
+          if (attempt < MAX_BACKSTOP_WRITE_ATTEMPTS) {
+            await new Promise((resolve) => setTimeout(resolve, BACKSTOP_WRITE_RETRY_MS));
+          }
+        }
+      }
+      if (wrote503) {
+        // The 503 landed. Remove the request file, so the poll loop does not
+        // re-process it.
         await input.client.remove(requestPath).catch(() => undefined);
+      } else {
+        // Every 503 write failed. Keep the request file for a later recovery pass.
+        console.warn(
+          `[paperclip] sandbox callback bridge kept queued request ${requestId} after every recovery 503 write failed: ${lastWriteError}`,
+        );
       }
     }
   };

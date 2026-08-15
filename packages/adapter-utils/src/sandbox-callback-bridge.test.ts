@@ -2247,6 +2247,193 @@ describe("sandbox callback bridge", () => {
     await worker.stop({ drainTimeoutMs: 10 });
   });
 
+  it("retries a recovery 503 write that fails transiently, delivers the 503, and removes the request", async () => {
+    // The poll times out, so the recovery path aborts the queued request with a
+    // 503. The first 503 write fails, so the recovery must retry it inside the
+    // same pass. It then delivers the 503 and removes the request. The request is
+    // unclaimed, so its host mutation never ran; the 503 stays retry-safe.
+    const waitFor = async (predicate: () => boolean, timeoutMs: number) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (predicate()) {
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      throw new Error("waitFor timed out");
+    };
+
+    const queueDir = "/virtual-bridge/queue";
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const requestFile = "req-503-retry.json";
+    const requestPath = path.posix.join(directories.requestsDir, requestFile);
+    const responsePath = path.posix.join(directories.responsesDir, requestFile);
+
+    const requestBodies = new Map<string, string>();
+    requestBodies.set(requestPath, bridgeRequestJson("req-503-retry"));
+    const responseWrites: Array<{ path: string; status: number; body: string }> = [];
+    const requestRemovals: string[] = [];
+    let listCalls = 0;
+    let writeAttempts = 0;
+
+    const client: SandboxCallbackBridgeQueueClient = {
+      makeDir: async () => {},
+      makeDirs: async () => {},
+      // The first poll never resolves — a silently unresponsive sandbox channel.
+      // The per-iteration timeout converts the hang into a caught error, so the
+      // loop `catch` runs the recovery path. Later listings resolve, so the
+      // recovery enumerates and aborts the request.
+      listJsonFiles: async (dir) => {
+        if (dir !== directories.requestsDir) {
+          return [];
+        }
+        listCalls += 1;
+        if (listCalls === 1) {
+          return await new Promise<string[]>(() => {});
+        }
+        return [...requestBodies.keys()].map((entry) => path.posix.basename(entry)).sort();
+      },
+      readTextFile: async (remotePath) => {
+        const body = requestBodies.get(remotePath);
+        if (body === undefined) {
+          throw new Error(`missing request ${remotePath}`);
+        }
+        return body;
+      },
+      writeTextFile: async () => {},
+      writeResponseFile: async (remotePath, body) => {
+        writeAttempts += 1;
+        // The first recovery 503 write fails; the retry then succeeds.
+        if (writeAttempts === 1) {
+          throw new Error("simulated transient recovery 503 write failure");
+        }
+        responseWrites.push({ path: remotePath, status: JSON.parse(body.trim()).status, body });
+        return { wrote: true };
+      },
+      rename: async () => {},
+      remove: async (remotePath) => {
+        requestRemovals.push(remotePath);
+        requestBodies.delete(remotePath);
+      },
+    };
+
+    const { runtimeSpan } = createWorkerErrorCapture();
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      iterationTimeoutMs: 200,
+      watchdogTimeoutMs: 10_000,
+      runtimeSpan,
+      authorizeRequest: async () => null,
+      handleRequest: async () => ({ status: 200, body: "ok" }),
+    });
+
+    await waitFor(() => responseWrites.some((write) => write.path === responsePath), 3_000);
+
+    // Exactly one response landed: the retry-safe 503. The retry delivered it
+    // after the transient failure.
+    const requestResponses = responseWrites.filter((write) => write.path === responsePath);
+    expect(requestResponses).toHaveLength(1);
+    expect(requestResponses[0]?.status).toBe(503);
+    expect(writeAttempts).toBeGreaterThanOrEqual(2);
+    // The recovery removed the request file only after the 503 write landed.
+    expect(requestRemovals).toContain(requestPath);
+
+    await worker.stop({ drainTimeoutMs: 10 });
+  });
+
+  it("keeps the queued request when every recovery 503 write fails, so a later pass can still deliver a terminal 503", async () => {
+    // The poll times out, so the recovery path aborts the queued request with a
+    // 503. Every 503 write fails. The recovery must keep the request file instead
+    // of dropping it. Without the fix, the recovery removed the request before its
+    // single write attempt, so a failed write left no queue state; a later
+    // recovery pass found nothing and the caller waited until its own deadline.
+    const waitFor = async (predicate: () => boolean, timeoutMs: number) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (predicate()) {
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      throw new Error("waitFor timed out");
+    };
+
+    const queueDir = "/virtual-bridge/queue";
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const requestFile = "req-503-keep.json";
+    const requestPath = path.posix.join(directories.requestsDir, requestFile);
+    const responsePath = path.posix.join(directories.responsesDir, requestFile);
+
+    const requestBodies = new Map<string, string>();
+    requestBodies.set(requestPath, bridgeRequestJson("req-503-keep"));
+    const responseWrites: Array<{ path: string; status: number; body: string }> = [];
+    const requestRemovals: string[] = [];
+    let listCalls = 0;
+    let writeAttempts = 0;
+
+    const client: SandboxCallbackBridgeQueueClient = {
+      makeDir: async () => {},
+      makeDirs: async () => {},
+      listJsonFiles: async (dir) => {
+        if (dir !== directories.requestsDir) {
+          return [];
+        }
+        listCalls += 1;
+        if (listCalls === 1) {
+          return await new Promise<string[]>(() => {});
+        }
+        return [...requestBodies.keys()].map((entry) => path.posix.basename(entry)).sort();
+      },
+      readTextFile: async (remotePath) => {
+        const body = requestBodies.get(remotePath);
+        if (body === undefined) {
+          throw new Error(`missing request ${remotePath}`);
+        }
+        return body;
+      },
+      writeTextFile: async () => {},
+      writeResponseFile: async () => {
+        writeAttempts += 1;
+        // Fail every recovery 503 write attempt.
+        throw new Error("simulated persistent recovery 503 write failure");
+      },
+      rename: async () => {},
+      remove: async (remotePath) => {
+        requestRemovals.push(remotePath);
+        requestBodies.delete(remotePath);
+      },
+    };
+
+    const { runtimeSpan } = createWorkerErrorCapture();
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      iterationTimeoutMs: 200,
+      watchdogTimeoutMs: 10_000,
+      runtimeSpan,
+      authorizeRequest: async () => null,
+      handleRequest: async () => ({ status: 200, body: "ok" }),
+    });
+
+    // Wait until the recovery pass has exhausted its bounded 503 write attempts
+    // (three, the same bound as the finalize and 504 backstop writes).
+    await waitFor(() => writeAttempts >= 3, 3_000);
+
+    // The recovery could not write the 503, so it kept the request file. The
+    // request still sits in the queue for a later recovery pass to deliver a
+    // terminal 503. A drop here would strand the caller until its own deadline.
+    expect(requestRemovals).not.toContain(requestPath);
+    expect(requestBodies.has(requestPath)).toBe(true);
+    // No response landed, because every write failed. The recovery wrote no
+    // partial or retryable status for the possibly-committed mutation.
+    expect(responseWrites).toHaveLength(0);
+
+    await worker.stop({ drainTimeoutMs: 10 });
+  });
+
   it("maps an indeterminate host outcome to a non-retryable 409 in the in-sandbox bridge server", () => {
     // The in-sandbox server returns the host response to the sandbox caller. A 5xx
     // status is retryable by convention, so the server must not forward the
