@@ -1,0 +1,64 @@
+name: Deflector Docker Smoke
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - "Dockerfile"
+      - "packages/adapters/deflector/**"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/deflector-docker-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dockerfile-better-sqlite3:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Validate Dockerfile deps stage
+        run: node ./scripts/check-docker-deps-stage.mjs
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build production image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          load: true
+          tags: paperclip-deflector-smoke:local
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify Node + better-sqlite3 inside image
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint node paperclip-deflector-smoke:local \
+            -e "console.log(JSON.stringify({node:process.version,platform:process.platform,arch:process.arch}))"
+          docker run --rm --entrypoint node -w /app paperclip-deflector-smoke:local \
+            --input-type=module -e "
+              import { createRequire } from 'node:module';
+              import { mkdtempSync } from 'node:fs';
+              import { tmpdir } from 'node:os';
+              import { join } from 'node:path';
+              // pnpm nests deps under the workspace package; resolve from deflector.
+              const require = createRequire('/app/packages/adapters/deflector/package.json');
+              const Database = require('better-sqlite3');
+              const dir = mkdtempSync(join(tmpdir(), 'deflector-'));
+              const db = new Database(join(dir, 'kb.sqlite'));
+              db.exec('CREATE TABLE t (id TEXT PRIMARY KEY)');
+              db.prepare('INSERT INTO t (id) VALUES (?)').run('ok');
+              const row = db.prepare('SELECT id FROM t').get();
+              db.close();
+              if (row?.id !== 'ok') throw new Error('better-sqlite3 readback failed');
+              const pkg = require.resolve('better-sqlite3/package.json');
+              console.log('better-sqlite3 OK', { node: process.version, id: row.id, pkg });
+            "
