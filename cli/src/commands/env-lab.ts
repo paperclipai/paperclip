@@ -1,4 +1,5 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Command } from "commander";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
@@ -111,6 +112,23 @@ export async function envLabDownCommand(opts: { instance?: string; json?: boolea
   p.log.message(`State: ${pc.dim(statePath)}`);
 }
 
+// Build the env-lab cleanup hint as a command with absolute paths. The env-lab
+// fixture runs from a source checkout, so the hint must run the checked-out CLI,
+// not the published binary. A contributor can run `env-lab doctor` from any
+// subdirectory of the checkout. Relative `cli/...` paths resolve against the
+// caller's working directory, so they break outside the repository root. This
+// function resolves the paths from the module location, so the command works
+// from any directory. It runs the local `cli/src` through tsx and passes an
+// inert `argv` value, so no shell reads the argument. The two paths carry double
+// quotes, so a directory with a space in its name stays intact.
+export function buildEnvLabCleanupCommand(): string {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  const cliRoot = path.resolve(moduleDir, "..", "..");
+  const tsxBin = path.join(cliRoot, "node_modules", "tsx", "dist", "cli.mjs");
+  const entry = path.join(cliRoot, "src", "index.ts");
+  return `node "${tsxBin}" "${entry}" env-lab down`;
+}
+
 export async function envLabDoctorCommand(opts: { instance?: string; json?: boolean }) {
   const status = await collectEnvLabDoctorStatus(opts);
 
@@ -141,11 +159,10 @@ export async function envLabDoctorCommand(opts: { instance?: string; json?: bool
   // The env-lab fixture runs from a source checkout, so the cleanup hint must
   // invoke the checked-out CLI, not the published binary. `npx paperclipai`
   // resolves the installed package, so it can stop a different version. The
-  // direct-exec form runs the local `cli/src` and passes an inert `argv` value,
-  // so no shell reads the argument. See `doc/CLI.md`, "safe invocation".
-  p.log.message(
-    `Cleanup: ${pc.dim("node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts env-lab down")}`,
-  );
+  // command uses absolute paths, so it works from any subdirectory of the
+  // checkout. It runs the local `cli/src` and passes an inert `argv` value, so
+  // no shell reads the argument. See `doc/CLI.md`, "safe invocation".
+  p.log.message(`Cleanup: ${pc.dim(buildEnvLabCleanupCommand())}`);
 }
 
 export function registerEnvLabCommands(program: Command) {

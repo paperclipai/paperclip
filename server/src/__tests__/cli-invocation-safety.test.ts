@@ -367,14 +367,22 @@ describe("paperclipai CLI invocation safety", () => {
     const source = read("cli/src/commands/env-lab.ts");
     // The env-lab fixture runs from a source checkout. The cleanup hint must run
     // the local `cli/src` through the direct-exec form. That form passes an inert
-    // `argv` value, so no shell reads the argument.
-    expect(source).toContain(
-      "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts env-lab down",
-    );
+    // `argv` value, so no shell reads the argument. The hint resolves the paths
+    // from the module location, so it works from any subdirectory of the
+    // checkout. A `cli/...` path relative to the caller would break outside the
+    // repository root. The `cli/src/env-lab.test.ts` suite proves the runtime
+    // behaviour; this check pins the source form.
+    expect(source).toContain("fileURLToPath(import.meta.url)");
+    expect(source).toContain('path.join(cliRoot, "src", "index.ts")');
+    expect(source).toContain("env-lab down");
     // The bare `pnpm paperclipai` script form is unsafe. Do not restore it.
     expect(source).not.toContain("pnpm paperclipai env-lab");
     // `pnpm exec paperclipai` does not resolve the CLI binary. Do not use it.
     expect(source).not.toContain("pnpm exec paperclipai env-lab");
+    // The CWD-relative form breaks from a checkout subdirectory. Do not restore it.
+    expect(source).not.toContain(
+      "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts env-lab down",
+    );
   });
 
   it("emits the safe bootstrap fallback command from the UI", () => {
