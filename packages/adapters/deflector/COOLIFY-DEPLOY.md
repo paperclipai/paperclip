@@ -15,7 +15,7 @@
 
 - Build pack: **Dockerfile** (repo root `Dockerfile`)
 - Repo: `yaverabbas/paperclip`
-- Branch: `master` (merge PR #1 first, or temporarily point at `feature/deflector-adapter` for a canary)
+- Branch: `master` (after merging the Deflector Docker/docs PR; or temporarily point at `feature/deflector-adapter` for a canary)
 - Base image from Dockerfile: `node:lts-trixie-slim` (newer than Node 20; settles better-sqlite3 native verify on Linux)
 
 ## Copy-paste Coolify steps
