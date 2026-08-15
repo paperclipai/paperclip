@@ -26,7 +26,10 @@ import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { buildPaperclipWakePayload } from "../services/heartbeat.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
-import { recoveryService } from "../services/recovery/service.js";
+import {
+  PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS,
+  recoveryService,
+} from "../services/recovery/service.js";
 import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/successful-run-handoff.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -440,6 +443,46 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.status, "scheduled_retry"));
     expect(scheduledRun?.scheduledRetryAt?.toISOString()).toBe(expectedRetryAt.toISOString());
+  });
+
+  it("schedules the default provider-quota retry when direct escalation lacks a latest run", async () => {
+    const { coderId, sourceIssue } = await seedCompany();
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    const beforeEscalation = new Date();
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: null,
+      recoveryCause: "provider_quota",
+    });
+
+    const afterEscalation = new Date();
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    const [scheduledRun] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "scheduled_retry"));
+
+    expect(scheduledRun).toMatchObject({
+      agentId: coderId,
+      retryOfRunId: null,
+      scheduledRetryReason: "provider_quota_recovery",
+    });
+    expect(scheduledRun?.scheduledRetryAt?.getTime()).toBeGreaterThanOrEqual(
+      beforeEscalation.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS,
+    );
+    expect(scheduledRun?.scheduledRetryAt?.getTime()).toBeLessThanOrEqual(
+      afterEscalation.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS,
+    );
+    expect(action?.monitorPolicy).toMatchObject({
+      type: "wait_recovery",
+      retryAgentId: coderId,
+      retryAt: scheduledRun?.scheduledRetryAt?.toISOString(),
+    });
   });
 
   it.each([

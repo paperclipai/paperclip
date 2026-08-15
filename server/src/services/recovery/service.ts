@@ -3012,7 +3012,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   function readProviderQuotaRetryAt(latestRun: LatestIssueRun, now: Date) {
-    const classification = classifyAdapterFailureForRecovery(latestRun, now);
+    const classification = latestRun ? classifyAdapterFailureForRecovery(latestRun, now) : null;
     if (classification?.kind === "provider_quota") return classification.retryAt;
 
     const result = parseObject(latestRun?.resultJson);
