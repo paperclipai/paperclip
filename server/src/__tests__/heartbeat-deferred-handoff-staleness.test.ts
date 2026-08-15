@@ -546,6 +546,7 @@ describeEmbeddedPostgres("heartbeat deferred handoff wake staleness", () => {
           taskId: issueId,
           wakeReason: "issue_unblock_requested",
           wakeSource: "automation",
+          skipIssueComment: true,
         },
       });
       expect(ownerWake).toBeNull();
@@ -576,11 +577,22 @@ describeEmbeddedPostgres("heartbeat deferred handoff wake staleness", () => {
 
     // The finalization promotion loop must not cancel the parked owner wake on
     // an assignee mismatch: the unblock owner is deliberately not the assignee.
-    // Promotion links the wake to a run (runId set). Whether that run then
-    // survives the claim-time gates is the claim path's own judgment.
-    const promoted = await waitForCondition(async () => {
+    // The claim-time gate must preserve that same exact, still-blocked owner
+    // wake through adapter execution instead of merely assigning it a runId
+    // before cancelling it as stale.
+    const ownerRunSucceeded = await waitForCondition(async () => {
+      const runs = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.agentId, reviewerId), eq(heartbeatRuns.companyId, companyId)));
+      return runs.some((run) => run.status === "succeeded");
+    });
+    expect(ownerRunSucceeded).toBe(true);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(2);
+
+    const unblockWakeCompleted = await waitForCondition(async () => {
       const wake = await db
-        .select()
+        .select({ status: agentWakeupRequests.status })
         .from(agentWakeupRequests)
         .where(
           and(
@@ -590,9 +602,9 @@ describeEmbeddedPostgres("heartbeat deferred handoff wake staleness", () => {
           ),
         )
         .then((rows) => rows[0]);
-      return wake?.runId != null || wake?.status === "completed";
+      return wake?.status === "completed";
     });
-    expect(promoted).toBe(true);
+    expect(unblockWakeCompleted).toBe(true);
 
     const unblockWake = await db
       .select()
@@ -605,6 +617,87 @@ describeEmbeddedPostgres("heartbeat deferred handoff wake staleness", () => {
         ),
       )
       .then((rows) => rows[0]);
+    expect(unblockWake.status).toBe("completed");
+    expect(unblockWake.error).toBeNull();
     expect(unblockWake.runId).not.toBeNull();
+
+    const unblockRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, unblockWake.runId!))
+      .then((rows) => rows[0]);
+    expect(unblockRun.status).toBe("succeeded");
+  }, 30_000);
+
+  it("cancels an unblock wake when its non-assignee target is not the exact blocked owner", async () => {
+    const { companyId, producerId, reviewerId } = await seedCompanyAndAgents();
+    const issueId = randomUUID();
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Packet with a different unblock owner",
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId: producerId,
+      responsibleUserId: "responsible-user",
+      blockedTransitionAt: new Date(),
+      unblockDescriptor: {
+        owner: { agentId: producerId },
+        action: "Decide the unblock path",
+      },
+    });
+
+    await heartbeat.wakeup(reviewerId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_unblock_requested",
+      payload: { issueId, action: "Decide the unblock path" },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_unblock_requested",
+        wakeSource: "automation",
+      },
+    });
+
+    const mismatchWakeWasSkipped = await waitForCondition(async () => {
+      const wake = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, reviewerId),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+          ),
+        )
+        .then((rows) => rows[0]);
+      return wake?.status === "skipped";
+    });
+    expect(mismatchWakeWasSkipped).toBe(true);
+
+    const mismatchWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, reviewerId),
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .then((rows) => rows[0]);
+    expect(mismatchWake.error).toContain("assignee changed");
+    expect(mismatchWake.runId).not.toBeNull();
+
+    const mismatchRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, mismatchWake.runId!))
+      .then((rows) => rows[0]);
+    expect(mismatchRun.status).toBe("cancelled");
+    expect(mismatchRun.errorCode).toBe("issue_assignee_changed");
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
   }, 30_000);
 });

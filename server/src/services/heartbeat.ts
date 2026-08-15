@@ -12651,6 +12651,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeAgentId: issues.assigneeAgentId,
         executionRunId: issues.executionRunId,
         executionState: issues.executionState,
+        unblockDescriptor: issues.unblockDescriptor,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
@@ -12669,6 +12670,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const isInteractionWake = allowsIssueInteractionWake(context);
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
+    // An unblock-owner wake is intentionally addressed to the blocked issue's
+    // descriptor owner rather than its assignee. Preserve only that exact,
+    // still-blocked agent wake through the ordinary claim-time staleness gate.
+    const unblockOwner = issue.unblockDescriptor?.owner;
+    const isExactBlockedUnblockOwnerWake =
+      wakeReason === "issue_unblock_requested" &&
+      issue.status === "blocked" &&
+      unblockOwner != null &&
+      unblockOwner !== "board" &&
+      typeof unblockOwner === "object" &&
+      "agentId" in unblockOwner &&
+      unblockOwner.agentId === run.agentId;
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
     const interactionResolvedAt = readNonEmptyString(context.interactionResolvedAt);
     const hasResolvedInteractionEvidence = interactionResolvedAt !== null && !Number.isNaN(Date.parse(interactionResolvedAt));
@@ -12714,7 +12727,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issue.assigneeAgentId !== run.agentId &&
       !isInteractionWake &&
       !isCurrentReviewParticipant &&
-      !isNonAssigneeWorkspaceBusyRetry(retryReason, context)
+      !isNonAssigneeWorkspaceBusyRetry(retryReason, context) &&
+      !isExactBlockedUnblockOwnerWake
     ) {
       return {
         stale: true,
