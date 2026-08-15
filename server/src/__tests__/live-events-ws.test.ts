@@ -180,4 +180,39 @@ describe("setupLiveEventsWebSocketServer", () => {
     expect(resolveSessionFromHeaders).toHaveBeenCalledTimes(1);
     expect(socket.endedChunks[0]).toContain("403 Forbidden");
   });
+
+  it("rejects projection credential tokens before any database write, upgrade, or event byte", async () => {
+    const server = new EventEmitter();
+    const databaseAccess = vi.fn(() => {
+      throw new Error("projection WebSocket denial must not touch the database");
+    });
+    const db = new Proxy({}, { get: databaseAccess });
+    setupLiveEventsWebSocketServer(server as never, db as never, {
+      deploymentMode: "authenticated",
+    });
+
+    for (const requestValue of [
+      createUpgradeRequest({
+        headers: { authorization: `Bearer pcwp_v1_${"a".repeat(48)}` },
+      }),
+      createUpgradeRequest({
+        url: `/api/companies/company-1/events/ws?token=pcwp_v1_${"b".repeat(48)}`,
+      }),
+      createUpgradeRequest({
+        url: `/api/companies/company-1/events/ws?token=pcwp_v1_${"c".repeat(48)}`,
+        headers: { authorization: "Bearer synthetic-standard-token" },
+      }),
+    ]) {
+      const socket = new FakeUpgradeSocket();
+      server.emit("upgrade", requestValue, socket as unknown as Duplex, Buffer.alloc(0));
+      await flushPromises();
+      await flushPromises();
+      expect(socket.endedChunks).toHaveLength(1);
+      expect(socket.endedChunks[0]).toContain("403 Forbidden");
+      expect(socket.endedChunks[0]).not.toContain("101 Switching Protocols");
+      expect(socket.endedChunks[0]).not.toContain("company.live_event");
+    }
+
+    expect(databaseAccess).not.toHaveBeenCalled();
+  });
 });
