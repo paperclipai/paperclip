@@ -803,6 +803,55 @@ describe("OnboardingWizard — which step it lands on", () => {
       expect(mockAgentsApi.hire).not.toHaveBeenCalled();
     });
 
+    it("hydrates again when the same company comes back through onboarding", async () => {
+      // The hydration marker is a ref, so it outlives the state it describes.
+      // `reset()` clears the mission field; leaving the marker set would make
+      // the second run believe a mission it no longer holds was already
+      // fetched — and hire the agent without it, exactly as before this fix.
+      await openOnAgentStep();
+
+      const close = [...document.body.querySelectorAll("button")].find((b) =>
+        b.querySelector(".sr-only")?.textContent?.includes("Close"),
+      );
+      expect(close).toBeDefined();
+      await act(async () => {
+        close!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await settle();
+      // `reset()` ran: the wizard is back at the front door with a cleared
+      // mission field, which is precisely the state the marker must not
+      // outlive.
+      expect(currentStep()).not.toBe("agent");
+
+      routerState.pathname = "/";
+      await rerender();
+      await settle();
+      routerState.pathname = "/PC1/onboarding";
+      dialogState.onboardingRouteDismissed = false;
+      await rerender();
+      await settle();
+      expect(currentStep()).toBe("agent");
+
+      const next = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("Next"),
+      )!;
+      await act(async () => {
+        next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await settle();
+      const connect = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("Connect"),
+      )!;
+      await act(async () => {
+        connect.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await settle();
+
+      expect(mockAgentsApi.saveInstructionsFile).toHaveBeenCalled();
+      const [, file] = mockAgentsApi.saveInstructionsFile.mock.calls.at(-1)!;
+      expect(file.content).toContain("Scale the marketplace");
+    });
+
     it("does not offer a way back behind the step it entered on", async () => {
       // Step 1 creates a company. A run that already holds one must not be
       // able to walk into it, by the Back button or the progress bar.

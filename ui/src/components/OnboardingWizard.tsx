@@ -517,6 +517,12 @@ function OnboardingWizardInner({
     setCreatedCompanyPrefix(null);
     setCompanyName("");
     setCompanyGoal("");
+    // The marker travels with the field it describes. It means "companyGoal
+    // holds this company's hydrated mission", so it is cleared wherever that
+    // field is - here and in `reset()`. Left behind, the next run believes a
+    // mission it no longer holds was already fetched, and hires the lead agent
+    // without one.
+    hydratedMissionForRef.current = null;
     setMissionPath(null);
     setMissionConfirmed(false);
     setCreatedCompanyGoalId(null);
@@ -781,6 +787,8 @@ function OnboardingWizardInner({
 
   function reset() {
     onboardingDraftStorage.clear();
+    // Cleared with `companyGoal` below - see `clearCompanyScopedState`.
+    hydratedMissionForRef.current = null;
     setStep(0);
     setOnboardingPath(null);
     setGrowWorkflows("");
