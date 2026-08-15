@@ -717,6 +717,17 @@ export function authorizationService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  /**
+   * A terminated agent can never run again, so an issue still pointing at one
+   * is unowned in practice. Without this, one termination freezes every issue
+   * that agent held: no peer, and not even its former manager, can write to it.
+   */
+  async function assigneeAgentIsTerminated(agentId: string | null | undefined) {
+    if (!agentId) return false;
+    const assignee = await loadAgent(agentId);
+    return assignee?.status === "terminated";
+  }
+
   async function loadProject(projectId: string): Promise<ProjectAuthorizationRow | null> {
     return db
       .select({
@@ -2153,6 +2164,13 @@ export function authorizationService(db: Db) {
           action: input.action,
           reason: "allow_company_agent",
           explanation: "Allowed because the issue has no agent assignee.",
+        });
+      }
+      if (await assigneeAgentIsTerminated(resource.assigneeAgentId)) {
+        return allow({
+          action: input.action,
+          reason: "allow_company_agent",
+          explanation: "Allowed because the issue assignee agent is terminated, so the issue is unowned.",
         });
       }
       if (

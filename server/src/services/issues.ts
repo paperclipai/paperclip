@@ -5305,6 +5305,29 @@ export function issueService(db: Db) {
     });
   }
 
+  // A terminated agent can never run again, so an issue still pointing at one is
+  // unowned in practice — but the checkout guard below only accepts a null
+  // assignee, so the row stays frozen forever. Release the dead assignee when no
+  // run holds the issue, which lets the normal checkout path claim it. Callers
+  // run this after clearExecutionRunIfTerminal/clearCheckoutRunIfTerminal, so a
+  // stale lock left by the terminated agent is already gone by this point.
+  async function releaseTerminatedAssignee(issueId: string): Promise<boolean> {
+    const released = await db
+      .update(issues)
+      .set({ assigneeAgentId: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(issues.id, issueId),
+          isNull(issues.checkoutRunId),
+          isNull(issues.executionRunId),
+          sql`exists (select 1 from ${agents} where ${agents.id} = ${issues.assigneeAgentId} and ${agents.status} = 'terminated')`,
+        ),
+      )
+      .returning({ id: issues.id })
+      .then((rows) => rows[0] ?? null);
+    return Boolean(released);
+  }
+
   async function addStopRelayCommentIfNeeded(
     child: typeof issues.$inferSelect,
     dbOrTx: any = db,
@@ -8003,6 +8026,7 @@ export function issueService(db: Db) {
 
       await clearExecutionRunIfTerminal(id);
       await clearCheckoutRunIfTerminal(id);
+      await releaseTerminatedAssignee(id);
 
       const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
       const readiness = dependencyReadiness.get(id);

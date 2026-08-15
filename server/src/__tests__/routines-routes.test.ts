@@ -129,6 +129,8 @@ const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
 }));
 
+const mockIsTerminatedAgentId = vi.hoisted(() => vi.fn());
+
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockTrackRoutineCreated = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
@@ -151,6 +153,10 @@ function registerModuleMocks() {
 
   vi.doMock("../services/routines.js", () => ({
     routineService: () => mockRoutineService,
+  }));
+
+  vi.doMock("../services/terminated-assignee.js", () => ({
+    isTerminatedAgentId: mockIsTerminatedAgentId,
   }));
 
   vi.doMock("../services/activity-log.js", () => ({
@@ -190,6 +196,7 @@ describe("routine routes", () => {
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../services/activity-log.js");
     vi.doUnmock("../services/routines.js");
+    vi.doUnmock("../services/terminated-assignee.js");
     vi.doUnmock("../routes/routines.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
@@ -215,6 +222,7 @@ describe("routine routes", () => {
       status: "issue_created",
     });
     mockAccessService.canUser.mockResolvedValue(false);
+    mockIsTerminatedAgentId.mockResolvedValue(false);
     mockLogActivity.mockResolvedValue(undefined);
     mockRoutineService.getDescriptionDocument.mockResolvedValue({
       id: "99999999-9999-4999-8999-999999999999",
@@ -470,6 +478,20 @@ describe("routine routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockRoutineService.listRevisions).not.toHaveBeenCalled();
+  });
+
+  it("lets any company agent read revisions when the assigned agent is terminated", async () => {
+    mockIsTerminatedAgentId.mockResolvedValue(true);
+    const app = await createApp({
+      type: "agent",
+      agentId: otherAgentId,
+      companyId,
+    });
+
+    const res = await request(app).get(`/api/routines/${routineId}/revisions`);
+
+    expect(res.status).toBe(200);
+    expect(mockRoutineService.listRevisions).toHaveBeenCalledWith(routineId);
   });
 
   it("restores routine revisions with existing routine-management permissions", async () => {
