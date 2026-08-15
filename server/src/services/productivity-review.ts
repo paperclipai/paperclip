@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { clampIssueRequestDepth } from "@paperclipai/shared";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   costEvents,
@@ -12,7 +13,11 @@ import {
   projects,
 } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
-import { logActivity } from "./activity-log.js";
+import {
+  logActivity,
+  publishActivity,
+  type ActivityPublication,
+} from "./activity-log.js";
 import { budgetService } from "./budgets.js";
 import { issueService } from "./issues.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
@@ -36,6 +41,7 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CONSECUTIVE_NO_ACTION_REVIEWS = 3;
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+const DELIVERED_BATCH_WAKE_STATUSES = ["queued", "deferred_issue_execution", "claimed", "completed"] as const;
 const MAX_CANDIDATE_ISSUES = 250;
 const MAX_RUNS_FOR_STREAK = 100;
 const MAX_PARENT_WALK_DEPTH = 25;
@@ -44,11 +50,20 @@ export const PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX = "Productivity review e
 type IssueRow = typeof issues.$inferSelect;
 type AgentRow = typeof agents.$inferSelect;
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 // Evidence only reads these run fields; selecting the full row detoasts
 // result_json/context_snapshot for up to MAX_RUNS_FOR_STREAK runs per issue.
 type ProductivityRunSample = Pick<
   HeartbeatRunRow,
-  "id" | "agentId" | "status" | "livenessState" | "createdAt" | "nextAction" | "usageJson"
+  | "id"
+  | "agentId"
+  | "status"
+  | "livenessState"
+  | "createdAt"
+  | "startedAt"
+  | "processStartedAt"
+  | "nextAction"
+  | "usageJson"
 >;
 type ProductivityReviewTrigger = "no_comment_streak" | "long_active_duration" | "high_churn";
 
@@ -96,6 +111,7 @@ type EnqueueWakeup = (
     triggerDetail?: "manual" | "ping" | "callback" | "system";
     reason?: string | null;
     payload?: Record<string, unknown> | null;
+    idempotencyKey?: string | null;
     requestedByActorType?: "user" | "agent" | "system";
     requestedByActorId?: string | null;
     contextSnapshot?: Record<string, unknown>;
@@ -104,6 +120,10 @@ type EnqueueWakeup = (
 
 function productivityReviewFingerprint(sourceIssueId: string) {
   return `productivity-review:${sourceIssueId}`;
+}
+
+function productivityReviewBatchFingerprint(ownerAgentId: string) {
+  return `productivity-review-batch:${ownerAgentId}`;
 }
 
 function issueRunScopeSql(issueId: string) {
@@ -459,6 +479,8 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         status: heartbeatRuns.status,
         livenessState: heartbeatRuns.livenessState,
         createdAt: heartbeatRuns.createdAt,
+        startedAt: heartbeatRuns.startedAt,
+        processStartedAt: heartbeatRuns.processStartedAt,
         nextAction: heartbeatRuns.nextAction,
         usageJson: heartbeatRuns.usageJson,
       })
@@ -541,7 +563,15 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     const activeRunCount = latestRuns.filter((run) =>
       ACTIVE_RUN_STATUSES.includes(run.status as (typeof ACTIVE_RUN_STATUSES)[number]),
     ).length;
-    const activeStartedAt = sourceIssue.startedAt ?? sourceIssue.executionLockedAt ?? null;
+    // Queue age and issue checkout age are not execution time. Only a run with a
+    // process (or an adapter-start timestamp for non-process adapters) can trip
+    // the advisory long-active detector. This prevents queued/capacity-bound
+    // work from looking like six hours of active execution.
+    const activeStartedAt = latestRuns
+      .filter((run) => run.status === "running")
+      .map((run) => run.processStartedAt ?? run.startedAt)
+      .filter((value): value is Date => value !== null)
+      .sort((left, right) => left.getTime() - right.getTime())[0] ?? null;
     const elapsedMs = sourceIssue.status === "in_progress" && activeStartedAt
       ? Math.max(0, now.getTime() - activeStartedAt.getTime())
       : null;
@@ -702,6 +732,295 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       `- Runs/assignee comments: ${evidence.runCountLastHour}/${evidence.commentCountLastHour} in 1h, ${evidence.runCountLastSixHours}/${evidence.commentCountLastSixHours} in 6h`,
       `- Next action: ${evidence.nextAction ? truncateInline(evidence.nextAction, 300) : "none recorded"}`,
     ].join("\n");
+  }
+
+  function buildBatchFindingMarkdown(evidence: ProductivityReviewEvidence, prefix: string) {
+    return [
+      `### ${issueUiLink(evidence.sourceIssue, prefix)}`,
+      "",
+      `- Assigned agent: ${evidence.sourceAgent.name} (${evidence.sourceAgent.role})`,
+      `- Trigger: \`${evidence.trigger}\` (${formatTrigger(evidence.trigger)})`,
+      `- Reason: ${evidence.triggerReasons.join("; ")}`,
+      `- Running process elapsed: ${msToHuman(evidence.elapsedMs)}`,
+      `- Active queued/running/scheduled runs: ${evidence.activeRunCount}`,
+      `- Next action: ${evidence.nextAction ? truncateInline(evidence.nextAction, 300) : "none recorded"}`,
+    ].join("\n");
+  }
+
+  function buildBatchReviewMarkdown(evidence: ProductivityReviewEvidence[], prefix: string) {
+    return [
+      "Paperclip grouped advisory long-running-process findings into one manager review.",
+      "No continuation hold is applied by this batch. Source-specific no-comment and high-churn reviews remain separate because they can hold continuation.",
+      "",
+      "## Findings",
+      "",
+      evidence.map((entry) => buildBatchFindingMarkdown(entry, prefix)).join("\n\n"),
+      "",
+      "## Manager Decision",
+      "",
+      "- Close as productive when the listed long-running processes are expected.",
+      "- Comment with any source-specific decomposition, reroute, cancellation, or unblock action.",
+      "- Keep one batch open while reviewing; new advisory findings are appended without another wake.",
+    ].join("\n");
+  }
+
+  async function findOpenProductivityReviewBatch(
+    companyId: string,
+    ownerAgentId: string,
+    dbOrTx: Db | DbTransaction = db,
+  ) {
+    return dbOrTx
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, companyId),
+        eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
+        eq(issues.originId, ownerAgentId),
+        eq(issues.originFingerprint, productivityReviewBatchFingerprint(ownerAgentId)),
+        visibleIssueCondition(),
+        notInArray(issues.status, ["done", "cancelled"]),
+      ))
+      .orderBy(desc(issues.updatedAt), desc(issues.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function batchedSourceIds(
+    dbOrTx: Db | DbTransaction,
+    companyId: string,
+    batchIssueId: string,
+    sourceIssueIds: string[],
+  ) {
+    if (sourceIssueIds.length === 0) return new Set<string>();
+    const rows = await dbOrTx
+      .select({ sourceIssueId: activityLog.entityId })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.action, "issue.productivity_review_batched"),
+        eq(activityLog.entityType, "issue"),
+        inArray(activityLog.entityId, sourceIssueIds),
+        sql`${activityLog.details}->>'batchIssueId' = ${batchIssueId}`,
+      ));
+    return new Set(rows.map((row) => row.sourceIssueId));
+  }
+
+  async function recordBatchedSources(
+    tx: DbTransaction,
+    batchIssueId: string,
+    ownerAgentId: string,
+    evidence: ProductivityReviewEvidence[],
+    publications: ActivityPublication[],
+  ) {
+    for (const entry of evidence) {
+      await logActivity(tx as unknown as Db, {
+        companyId: entry.sourceIssue.companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.productivity_review_batched",
+        entityType: "issue",
+        entityId: entry.sourceIssue.id,
+        agentId: ownerAgentId,
+        details: {
+          source: "productivity_review.reconcile",
+          batchIssueId,
+          sourceIssueId: entry.sourceIssue.id,
+          trigger: entry.trigger,
+          elapsedMs: entry.elapsedMs,
+        },
+      }, publications);
+    }
+  }
+
+  function batchWakeIdempotencyKey(batchIssueId: string) {
+    return `productivity_review_batch:${batchIssueId}`;
+  }
+
+  async function ensureBatchWakeDelivered(input: {
+    batchIssueId: string;
+    companyId: string;
+    ownerAgentId: string;
+    sourceIssueIds: string[];
+  }) {
+    if (!deps?.enqueueWakeup) return false;
+    const idempotencyKey = batchWakeIdempotencyKey(input.batchIssueId);
+    const publications: ActivityPublication[] = [];
+    const delivered = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`productivity-review-wake:${input.companyId}:${input.batchIssueId}`}, 0))`);
+      const marker = await tx
+        .select({ id: activityLog.id })
+        .from(activityLog)
+        .where(and(
+          eq(activityLog.companyId, input.companyId),
+          eq(activityLog.action, "issue.productivity_review_batch_wake_delivered"),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, input.batchIssueId),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (marker) return false;
+
+      const existingWake = await tx
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.companyId, input.companyId),
+          eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+          inArray(agentWakeupRequests.status, DELIVERED_BATCH_WAKE_STATUSES),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      if (!existingWake) {
+        const wake = await deps.enqueueWakeup!(input.ownerAgentId, {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "issue_assigned",
+          idempotencyKey,
+          payload: withRecoveryModelProfileHint({
+            issueId: input.batchIssueId,
+            sourceIssueIds: input.sourceIssueIds,
+            trigger: "long_active_duration",
+          }, "status_only"),
+          requestedByActorType: "system",
+          requestedByActorId: "productivity_review",
+          contextSnapshot: withRecoveryModelProfileHint({
+            issueId: input.batchIssueId,
+            taskId: input.batchIssueId,
+            wakeReason: "issue_assigned",
+            source: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+            productivityReviewTrigger: "long_active_duration",
+            productivityReviewBatch: true,
+          }, "status_only"),
+        });
+        // A null result means dispatch was suppressed or skipped. Leave the
+        // marker absent so a later reconciliation can retry once the agent is
+        // invokable again.
+        if (!wake) return false;
+      }
+
+      await logActivity(txDb, {
+        companyId: input.companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.productivity_review_batch_wake_delivered",
+        entityType: "issue",
+        entityId: input.batchIssueId,
+        agentId: input.ownerAgentId,
+        details: {
+          source: "productivity_review.reconcile",
+          idempotencyKey,
+        },
+      }, publications);
+      return true;
+    });
+    publications.forEach(publishActivity);
+    return delivered;
+  }
+
+  async function createOrUpdateLongActiveBatch(input: {
+    evidence: ProductivityReviewEvidence[];
+    ownerAgentId: string;
+    prefix: string;
+  }) {
+    const first = input.evidence[0];
+    if (!first) return { kind: "existing" as const, reviewIssueId: null, batched: 0 };
+    const companyId = first.sourceIssue.companyId;
+    const publications: ActivityPublication[] = [];
+    const outcome = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`productivity-review-batch:${companyId}:${input.ownerAgentId}`}, 0))`);
+      let batch = await findOpenProductivityReviewBatch(companyId, input.ownerAgentId, tx);
+      let created = false;
+      if (!batch) {
+        try {
+          batch = await issuesSvc.create(companyId, {
+            title: "Review active-work productivity findings",
+            description: buildBatchReviewMarkdown(input.evidence, input.prefix),
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: input.ownerAgentId,
+            assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides("status_only"),
+            originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+            originId: input.ownerAgentId,
+            originFingerprint: productivityReviewBatchFingerprint(input.ownerAgentId),
+            requestDepth: clampIssueRequestDepth(
+              Math.max(...input.evidence.map((entry) => entry.sourceIssue.requestDepth)) + 1,
+            ),
+          });
+          created = true;
+          await tx
+            .update(issues)
+            .set({ createdAt: first.generatedAt, updatedAt: first.generatedAt })
+            .where(eq(issues.id, batch.id));
+        } catch (error) {
+          const maybe = error as { code?: string; constraint?: string; message?: string };
+          const uniqueConflict = maybe.code === "23505" && (
+            maybe.constraint === "issues_active_productivity_review_uq" ||
+            typeof maybe.message === "string" && maybe.message.includes("issues_active_productivity_review_uq")
+          );
+          if (!uniqueConflict) throw error;
+          batch = await findOpenProductivityReviewBatch(companyId, input.ownerAgentId, tx);
+          if (!batch) throw error;
+        }
+      }
+
+      const alreadyBatched = await batchedSourceIds(
+        tx,
+        companyId,
+        batch.id,
+        input.evidence.map((entry) => entry.sourceIssue.id),
+      );
+      const additions = input.evidence.filter((entry) => !alreadyBatched.has(entry.sourceIssue.id));
+      if (additions.length > 0) {
+        if (!created) {
+          await issuesSvc.addComment(
+            batch.id,
+            [
+              "Productivity batch findings added.",
+              "",
+              additions.map((entry) => buildBatchFindingMarkdown(entry, input.prefix)).join("\n\n"),
+            ].join("\n"),
+            {},
+            { createdAt: first.generatedAt },
+            tx,
+          );
+          await tx
+            .update(issues)
+            .set({ updatedAt: first.generatedAt })
+            .where(eq(issues.id, batch.id));
+        }
+        await recordBatchedSources(tx, batch.id, input.ownerAgentId, additions, publications);
+        await logActivity(txDb, {
+          companyId,
+          actorType: "system",
+          actorId: "system",
+          action: created ? "issue.productivity_review_batch_created" : "issue.productivity_review_batch_updated",
+          entityType: "issue",
+          entityId: batch.id,
+          agentId: input.ownerAgentId,
+          details: {
+            source: "productivity_review.reconcile",
+            sourceIssueIds: additions.map((entry) => entry.sourceIssue.id),
+            findingCount: additions.length,
+          },
+        }, publications);
+      }
+      return {
+        kind: created ? "created" as const : additions.length > 0 ? "updated" as const : "existing" as const,
+        reviewIssueId: batch.id,
+        batched: additions.length,
+      };
+    });
+    publications.forEach(publishActivity);
+    await ensureBatchWakeDelivered({
+      batchIssueId: outcome.reviewIssueId,
+      companyId,
+      ownerAgentId: input.ownerAgentId,
+      sourceIssueIds: input.evidence.map((entry) => entry.sourceIssue.id),
+    });
+    return outcome;
   }
 
   async function createOrUpdateReview(
@@ -871,6 +1190,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       snoozed: 0,
       creationCapped: 0,
       noActionSuppressed: 0,
+      batched: 0,
       skipped: 0,
       failed: 0,
       reviewIssueIds: [] as string[],
@@ -878,6 +1198,12 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     };
 
     const prefixCache = new Map<string, string>();
+    const longActiveBatches = new Map<string, {
+      companyId: string;
+      ownerAgentId: string;
+      prefix: string;
+      evidence: ProductivityReviewEvidence[];
+    }>();
     for (const candidate of candidates) {
       if (!candidate.assigneeAgentId) {
         result.skipped += 1;
@@ -912,6 +1238,21 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         prefixCache.set(candidate.companyId, prefix);
       }
       try {
+        if (evidence.trigger === "long_active_duration") {
+          const ownerAgentId = await resolveReviewOwnerAgentId(evidence.sourceIssue, evidence.sourceAgent);
+          if (ownerAgentId) {
+            const key = `${candidate.companyId}:${ownerAgentId}`;
+            const group = longActiveBatches.get(key) ?? {
+              companyId: candidate.companyId,
+              ownerAgentId,
+              prefix,
+              evidence: [],
+            };
+            group.evidence.push(evidence);
+            longActiveBatches.set(key, group);
+            continue;
+          }
+        }
         const outcome = await createOrUpdateReview(evidence, { prefix, thresholds });
         if (outcome.kind === "created") result.created += 1;
         else if (outcome.kind === "updated") result.updated += 1;
@@ -930,6 +1271,29 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
             requestDepth: candidate.requestDepth,
           },
           "productivity review reconciliation skipped malformed candidate",
+        );
+      }
+    }
+
+    for (const batch of longActiveBatches.values()) {
+      try {
+        const outcome = await createOrUpdateLongActiveBatch(batch);
+        if (outcome.kind === "created") result.created += 1;
+        else if (outcome.kind === "updated") result.updated += 1;
+        else result.existing += 1;
+        result.batched += outcome.batched;
+        if (outcome.reviewIssueId) result.reviewIssueIds.push(outcome.reviewIssueId);
+      } catch (err) {
+        result.failed += batch.evidence.length;
+        result.failedIssueIds.push(...batch.evidence.map((entry) => entry.sourceIssue.id));
+        logger.warn(
+          {
+            err,
+            companyId: batch.companyId,
+            ownerAgentId: batch.ownerAgentId,
+            sourceIssueIds: batch.evidence.map((entry) => entry.sourceIssue.id),
+          },
+          "productivity review reconciliation skipped malformed long-active batch",
         );
       }
     }

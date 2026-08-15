@@ -575,6 +575,15 @@ On startup and on the periodic recovery loop, Paperclip now does five things in 
 
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output. The productivity-review pass is later and separate; it reviews unusual progression patterns on assigned source issues, not stale run handles after a source issue already has a valid disposition.
 
+Productivity reviews have two delivery shapes:
+
+- no-comment and high-churn findings remain source-specific because an open review can hold continuation for that source
+- long-active findings are advisory and are grouped into one open manager batch; the batch receives one assignment wake and subsequent source findings are appended without another wake
+
+Long-active duration is measured from an issue-linked run that is actually `running`, using its process start (or adapter start when there is no process timestamp). Issue checkout age, queued time, and scheduled-retry time do not count as active execution. This keeps capacity waits visible to queue/liveness tooling without manufacturing productivity-review floods.
+
+Batch membership and finding comments are serialized per manager batch so overlapping recovery sweeps cannot append the same source twice. Wake delivery is also serialized and durably marked: if dispatch is interrupted, a later reconciliation retries the existing batch instead of creating another review issue.
+
 ## 11. Task Watchdog for Issue Trees
 
 A task watchdog watches a configured issue subtree after that subtree has stopped moving. It is a product-level verification and recovery mechanism for selected work, not a process monitor.
@@ -723,7 +732,7 @@ Do not fold watchdog work only because the run is quiet. The watchdog must still
 
 In the normal non-terminal case, critical silence can still create issue-backed evaluation work and block the source issue when blocking is necessary for correctness. In the source-resolved case, a completed source issue should not acquire a new manager review or blocker merely because an old run handle stayed active; only real unresolved work should block work.
 
-This is distinct from productivity review. Productivity review asks whether an assigned source issue has unusual progression patterns, such as no-comment terminal-run streaks, long active duration, or high churn. Source-resolved watchdog folding asks whether a stale active-run signal outlived a source issue that already reached a valid terminal disposition. One does not substitute for the other.
+This is distinct from productivity review. Productivity review asks whether an assigned source issue has unusual progression patterns, such as no-comment terminal-run streaks, actual long-running process duration, or high churn. Source-resolved watchdog folding asks whether a stale active-run signal outlived a source issue that already reached a valid terminal disposition. One does not substitute for the other.
 
 Detached process cleanup is operational hygiene, not source issue liveness. Cleanup should be best-effort and auditable. If cleanup fails but the source issue is already terminal with same-run durable evidence, Paperclip should preserve the cleanup failure on the run/watchdog audit trail and route only the cleanup concern to bounded recovery when a real owner/action remains.
 

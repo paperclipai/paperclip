@@ -3,6 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   createDb,
@@ -158,6 +159,32 @@ describeEmbeddedPostgres("productivity review service", () => {
     }
 
     return runs;
+  }
+
+  async function insertRunningProcess(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    processStartedAt: Date;
+  }) {
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: input.companyId,
+      agentId: input.agentId,
+      status: "running",
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      startedAt: input.processStartedAt,
+      processStartedAt: input.processStartedAt,
+      lastUsefulActionAt: input.processStartedAt,
+      contextSnapshot: { issueId: input.issueId, taskId: input.issueId },
+      livenessState: "healthy",
+      nextAction: "Finish the current implementation pass.",
+      createdAt: input.processStartedAt,
+      updatedAt: input.processStartedAt,
+    });
+    return runId;
   }
 
   async function listProductivityReviews(companyId: string) {
@@ -488,6 +515,12 @@ describeEmbeddedPostgres("productivity review service", () => {
       status: "in_progress",
       startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
     });
+    await insertRunningProcess({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      processStartedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
     const service = productivityReviewService(db);
 
     const result = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
@@ -499,10 +532,282 @@ describeEmbeddedPostgres("productivity review service", () => {
     });
 
     expect(result.created).toBe(1);
+    expect(result.batched).toBe(1);
     const [review] = await listProductivityReviews(seeded.companyId);
-    expect(review?.description).toContain("Primary trigger: `long_active_duration`");
+    expect(review?.title).toBe("Review active-work productivity findings");
+    expect(review?.description).toContain("`long_active_duration`");
+    expect(review?.parentId).toBeNull();
+    expect(review?.originId).toBe(seeded.managerId);
+    expect(review?.originFingerprint).toBe(`productivity-review-batch:${seeded.managerId}`);
     expect(review?.priority).toBe("medium");
     expect(hold.held).toBe(false);
+  });
+
+  it("does not treat queued work or issue checkout age as active process time", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 12 * 60 * 60 * 1000),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      status: "queued",
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      contextSnapshot: { issueId: seeded.issueId, taskId: seeded.issueId },
+      createdAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+      updatedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.batched).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("batches multiple long-running sources for one manager and wakes only once", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({ status: "in_progress" });
+    const secondIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: secondIssueId,
+      companyId: seeded.companyId,
+      title: "Implement export pipeline",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: seeded.coderId,
+      issueNumber: 2,
+      identifier: `${seeded.issuePrefix}-2`,
+      startedAt: new Date(now.getTime() - 8 * 60 * 60 * 1000),
+      createdAt: seeded.createdAt,
+      updatedAt: seeded.createdAt,
+    });
+    await Promise.all([
+      insertRunningProcess({
+        companyId: seeded.companyId,
+        agentId: seeded.coderId,
+        issueId: seeded.issueId,
+        processStartedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+      }),
+      insertRunningProcess({
+        companyId: seeded.companyId,
+        agentId: seeded.coderId,
+        issueId: secondIssueId,
+        processStartedAt: new Date(now.getTime() - 8 * 60 * 60 * 1000),
+      }),
+    ]);
+    const wakeups: Array<{ agentId: string; payload?: Record<string, unknown> | null }> = [];
+    const service = productivityReviewService(db, {
+      enqueueWakeup: async (agentId, opts) => {
+        wakeups.push({ agentId, payload: opts?.payload });
+        return { id: "batch-wake" };
+      },
+    });
+
+    const first = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    const thirdIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: thirdIssueId,
+      companyId: seeded.companyId,
+      title: "Implement billing pipeline",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: seeded.coderId,
+      issueNumber: 4,
+      identifier: `${seeded.issuePrefix}-4`,
+      startedAt: new Date(now.getTime() - 9 * 60 * 60 * 1000),
+      createdAt: seeded.createdAt,
+      updatedAt: seeded.createdAt,
+    });
+    await insertRunningProcess({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: thirdIssueId,
+      processStartedAt: new Date(now.getTime() - 9 * 60 * 60 * 1000),
+    });
+    const second = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const third = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(first.created).toBe(1);
+    expect(first.batched).toBe(2);
+    expect(second.created).toBe(0);
+    expect(second.updated).toBe(1);
+    expect(second.batched).toBe(1);
+    expect(third.existing).toBe(1);
+    expect(third.batched).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(1);
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]?.agentId).toBe(seeded.managerId);
+    expect(wakeups[0]?.payload?.sourceIssueIds).toEqual(expect.arrayContaining([seeded.issueId, secondIssueId]));
+    const batchedActivities = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.productivity_review_batched"));
+    expect(batchedActivities.map((entry) => entry.entityId)).toEqual(
+      expect.arrayContaining([seeded.issueId, secondIssueId, thirdIssueId]),
+    );
+  });
+
+  it("retries an interrupted batch wake without creating another batch", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({ status: "in_progress" });
+    await insertRunningProcess({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      processStartedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    let attempts = 0;
+    const service = productivityReviewService(db, {
+      enqueueWakeup: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("simulated wake interruption");
+        return { id: "recovered-batch-wake" };
+      },
+    });
+
+    const interrupted = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const recovered = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(interrupted.failed).toBe(1);
+    expect(recovered.existing).toBe(1);
+    expect(attempts).toBe(2);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(1);
+    const wakeMarkers = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.productivity_review_batch_wake_delivered"));
+    expect(wakeMarkers).toHaveLength(1);
+  });
+
+  it("reconciles a persisted batch wake after the dispatch response is lost", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({ status: "in_progress" });
+    await insertRunningProcess({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      processStartedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    let dispatchCalls = 0;
+    const service = productivityReviewService(db, {
+      enqueueWakeup: async (agentId, opts) => {
+        dispatchCalls += 1;
+        await db.insert(agentWakeupRequests).values({
+          companyId: seeded.companyId,
+          agentId,
+          source: opts?.source ?? "assignment",
+          reason: opts?.reason ?? null,
+          payload: opts?.payload ?? null,
+          status: "queued",
+          idempotencyKey: opts?.idempotencyKey ?? null,
+        });
+        throw new Error("simulated lost wake response");
+      },
+    });
+
+    const interrupted = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const recovered = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(interrupted.failed).toBe(1);
+    expect(recovered.existing).toBe(1);
+    expect(dispatchCalls).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(1);
+    const wakeMarkers = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.productivity_review_batch_wake_delivered"));
+    expect(wakeMarkers).toHaveLength(1);
+  });
+
+  it("retries a cancelled batch wake instead of marking it delivered", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({ status: "in_progress" });
+    await insertRunningProcess({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      processStartedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    let dispatchCalls = 0;
+    const service = productivityReviewService(db, {
+      enqueueWakeup: async (agentId, opts) => {
+        dispatchCalls += 1;
+        if (dispatchCalls === 1) {
+          await db.insert(agentWakeupRequests).values({
+            companyId: seeded.companyId,
+            agentId,
+            source: opts?.source ?? "assignment",
+            reason: opts?.reason ?? null,
+            payload: opts?.payload ?? null,
+            status: "cancelled",
+            idempotencyKey: opts?.idempotencyKey ?? null,
+          });
+          throw new Error("simulated cancelled wake response");
+        }
+        return { id: "replacement-batch-wake" };
+      },
+    });
+
+    const interrupted = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const recovered = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(interrupted.failed).toBe(1);
+    expect(recovered.existing).toBe(1);
+    expect(dispatchCalls).toBe(2);
+    const wakeMarkers = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.productivity_review_batch_wake_delivered"));
+    expect(wakeMarkers).toHaveLength(1);
+  });
+
+  it("serializes overlapping batch reconciliation without duplicate membership or wake delivery", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({ status: "in_progress" });
+    await insertRunningProcess({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      processStartedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    let wakeCount = 0;
+    const makeService = () => productivityReviewService(db, {
+      enqueueWakeup: async () => {
+        wakeCount += 1;
+        return { id: `batch-wake-${wakeCount}` };
+      },
+    });
+
+    await Promise.all([
+      makeService().reconcileProductivityReviews({ now, companyId: seeded.companyId }),
+      makeService().reconcileProductivityReviews({ now, companyId: seeded.companyId }),
+    ]);
+
+    const [batch] = await listProductivityReviews(seeded.companyId);
+    expect(batch).toBeDefined();
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(1);
+    expect(wakeCount).toBe(1);
+    const memberships = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.productivity_review_batched"));
+    expect(memberships).toHaveLength(1);
+    const appendComments = await db
+      .select()
+      .from(issueComments)
+      .where(and(
+        eq(issueComments.issueId, batch!.id),
+        sql`${issueComments.body} like 'Productivity batch findings added.%'`,
+      ));
+    expect(appendComments).toHaveLength(0);
   });
 
   it("skips a long-active candidate while its assignee is paused and reviews it once unpaused", async () => {
@@ -510,6 +815,12 @@ describeEmbeddedPostgres("productivity review service", () => {
     const seeded = await seedAssignedIssue({
       status: "in_progress",
       startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    await insertRunningProcess({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      processStartedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
     });
     await db.update(agents).set({ status: "paused" }).where(eq(agents.id, seeded.coderId));
     const service = productivityReviewService(db);
