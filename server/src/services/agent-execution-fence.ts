@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNotNull, isNull, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, agentWakeupRequests, heartbeatRuns } from "@paperclipai/db";
+import {
+  agents,
+  agentWakeupRequests,
+  environmentLeases,
+  heartbeatRuns,
+  issues,
+  workspaceRuntimeServices,
+} from "@paperclipai/db";
 import { conflict, notFound } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 
@@ -262,6 +269,110 @@ export function agentExecutionFenceService(db: Db) {
           .then((rows) => rows[0] ?? null);
       }),
 
+    markRunFinalizerCompleted: async (runId: string) =>
+      db.transaction(async (tx) => {
+        const current = await tx
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!current) throw notFound("Heartbeat run not found");
+        if (current.executionFinalizerCompletedAt) return current;
+        if (UNFINALIZED_RUN_STATUSES.includes(current.status as (typeof UNFINALIZED_RUN_STATUSES)[number])) {
+          throw conflict("Cannot complete the finalizer before the run is terminal", {
+            runId,
+            status: current.status,
+          });
+        }
+
+        if (current.wakeupRequestId) {
+          const wakeup = await tx
+            .select({
+              id: agentWakeupRequests.id,
+              agentId: agentWakeupRequests.agentId,
+              runId: agentWakeupRequests.runId,
+              status: agentWakeupRequests.status,
+            })
+            .from(agentWakeupRequests)
+            .where(eq(agentWakeupRequests.id, current.wakeupRequestId))
+            .for("update")
+            .then((rows) => rows[0] ?? null);
+          const expectedWakeupStatus = current.status === "succeeded" ? "completed" : current.status;
+          if (
+            !wakeup ||
+            wakeup.agentId !== current.agentId ||
+            wakeup.runId !== current.id ||
+            wakeup.status !== expectedWakeupStatus
+          ) {
+            throw conflict("Cannot complete the finalizer before the linked wakeup is finalized", {
+              runId,
+              wakeupRequestId: current.wakeupRequestId,
+              expectedWakeupStatus,
+              actualWakeupStatus: wakeup?.status ?? null,
+            });
+          }
+        }
+
+        const [activeLease, ownedIssue, activeEphemeralService] = await Promise.all([
+          tx
+            .select({ id: environmentLeases.id })
+            .from(environmentLeases)
+            .where(
+              and(
+                eq(environmentLeases.heartbeatRunId, runId),
+                eq(environmentLeases.status, "active"),
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0] ?? null),
+          tx
+            .select({
+              id: issues.id,
+              checkoutRunId: issues.checkoutRunId,
+              executionRunId: issues.executionRunId,
+            })
+            .from(issues)
+            .where(eq(issues.executionRunId, runId))
+            .limit(1)
+            .then((rows) => rows[0] ?? null),
+          tx
+            .select({ id: workspaceRuntimeServices.id })
+            .from(workspaceRuntimeServices)
+            .where(
+              and(
+                eq(workspaceRuntimeServices.startedByRunId, runId),
+                eq(workspaceRuntimeServices.lifecycle, "ephemeral"),
+                inArray(workspaceRuntimeServices.status, ["provisioning", "starting", "running"]),
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0] ?? null),
+        ]);
+        if (activeLease || ownedIssue || activeEphemeralService) {
+          throw conflict("Cannot complete the finalizer while execution resources remain owned", {
+            runId,
+            activeEnvironmentLeaseId: activeLease?.id ?? null,
+            ownedIssueId: ownedIssue?.id ?? null,
+            ownedIssueCheckoutRunId: ownedIssue?.checkoutRunId ?? null,
+            ownedIssueExecutionRunId: ownedIssue?.executionRunId ?? null,
+            activeEphemeralRuntimeServiceId: activeEphemeralService?.id ?? null,
+          });
+        }
+
+        const now = new Date();
+        return tx
+          .update(heartbeatRuns)
+          .set({ executionFinalizerCompletedAt: now, updatedAt: now })
+          .where(and(eq(heartbeatRuns.id, runId), isNull(heartbeatRuns.executionFinalizerCompletedAt)))
+          .returning()
+          .then((rows) => {
+            const updated = rows[0];
+            if (!updated) throw conflict("Run finalizer completion lost its compare-and-set race");
+            return updated;
+          });
+      }),
+
     acknowledgeRunFinalization: async (runId: string) =>
       db.transaction(async (tx) => {
         const current = await tx
@@ -276,6 +387,11 @@ export function agentExecutionFenceService(db: Db) {
           throw conflict("Cannot acknowledge finalization before the run is terminal", {
             runId,
             status: current.status,
+          });
+        }
+        if (!current.executionFinalizerCompletedAt) {
+          throw conflict("Cannot acknowledge finalization before the complete finalizer is durable", {
+            runId,
           });
         }
 

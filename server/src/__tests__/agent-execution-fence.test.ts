@@ -8,8 +8,11 @@ import {
   budgetPolicies,
   companies,
   createDb,
+  environmentLeases,
+  environments,
   heartbeatRunEvents,
   heartbeatRuns,
+  issues,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -18,6 +21,7 @@ import {
 import { agentExecutionFenceService } from "../services/agent-execution-fence.js";
 import { agentService } from "../services/agents.js";
 import { budgetService } from "../services/budgets.js";
+import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { heartbeatService } from "../services/heartbeat.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -35,11 +39,14 @@ describePostgres("agent execution fence", () => {
   afterEach(async () => {
     await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
+    await db.delete(issues);
+    await db.delete(environmentLeases);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(budgetPolicies);
     await db.delete(agents);
     await db.delete(companies);
+    await db.delete(environments);
   });
 
   afterAll(async () => tempDb?.cleanup());
@@ -346,6 +353,7 @@ describePostgres("agent execution fence", () => {
       .update(heartbeatRuns)
       .set({ status: "succeeded", finishedAt: new Date() })
       .where(eq(heartbeatRuns.id, fencedRun.id));
+    await fences.markRunFinalizerCompleted(fencedRun.id);
     await fences.acknowledgeRunFinalization(fencedRun.id);
     await fences.release(fencedAgent.id, acquired.fenceId);
   });
@@ -557,6 +565,8 @@ describePostgres("agent execution fence", () => {
       .where(eq(heartbeatRuns.id, run.id));
     expect((await service.get(agent.id, acquired.fenceId)).drained).toBe(false);
 
+    await expect(service.acknowledgeRunFinalization(run.id)).rejects.toMatchObject({ status: 409 });
+    await service.markRunFinalizerCompleted(run.id);
     await service.acknowledgeRunFinalization(run.id);
     const drained = await service.get(agent.id, acquired.fenceId);
     expect(drained.drained).toBe(true);
@@ -595,11 +605,15 @@ describePostgres("agent execution fence", () => {
       .where(eq(agentWakeupRequests.id, wakeup.id));
 
     const service = agentExecutionFenceService(db);
-    await expect(service.acknowledgeRunFinalization(run.id)).rejects.toMatchObject({ status: 409 });
+    await expect(service.markRunFinalizerCompleted(run.id)).rejects.toMatchObject({ status: 409 });
     await db
       .update(agentWakeupRequests)
       .set({ status: "completed", finishedAt: new Date() })
       .where(eq(agentWakeupRequests.id, wakeup.id));
+    await expect(service.markRunFinalizerCompleted(run.id)).resolves.toMatchObject({
+      id: run.id,
+      executionFinalizerCompletedAt: expect.any(Date),
+    });
     await expect(service.acknowledgeRunFinalization(run.id)).resolves.toMatchObject({
       id: run.id,
       executionFinalizedAt: expect.any(Date),
@@ -652,6 +666,7 @@ describePostgres("agent execution fence", () => {
       .where(eq(agentWakeupRequests.id, wakeup.id))
       .then((rows) => rows[0]!);
     expect(finalizedWakeup.status).toBe("interrupted");
+    await service.markRunFinalizerCompleted(run.id);
     await expect(service.acknowledgeRunFinalization(run.id)).resolves.toMatchObject({
       executionFinalizedAt: expect.any(Date),
     });
@@ -659,7 +674,7 @@ describePostgres("agent execution fence", () => {
     await service.release(agent.id, acquired.fenceId);
   });
 
-  it("finalizes an interrupted shutdown run coherently while fenced", async () => {
+  it("keeps a shutdown run undrained until cleanup finishes and suppresses a racing retry", async () => {
     const { company, agent } = await seedAgent("running");
     const wakeup = await db
       .insert(agentWakeupRequests)
@@ -688,6 +703,29 @@ describePostgres("agent execution fence", () => {
       .set({ runId: run.id })
       .where(eq(agentWakeupRequests.id, wakeup.id));
 
+    let releaseCleanup!: () => void;
+    const cleanupBlocked = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    let cleanupStarted!: () => void;
+    const cleanupStart = new Promise<void>((resolve) => {
+      cleanupStarted = resolve;
+    });
+    const runtime = environmentRuntimeService(db);
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: {},
+      environmentRuntime: {
+        ...runtime,
+        releaseRunLeases: async (...args) => {
+          cleanupStarted();
+          await cleanupBlocked;
+          return runtime.releaseRunLeases(...args);
+        },
+      },
+    });
+    const drain = heartbeat.drainRunningRunsForShutdown("SIGTERM");
+    await cleanupStart;
+
     const service = agentExecutionFenceService(db);
     const acquired = await service.acquire({
       agentId: agent.id,
@@ -695,9 +733,14 @@ describePostgres("agent execution fence", () => {
       actorUserId: "board-user",
       reason: "maintenance",
     });
+    await expect(service.get(agent.id, acquired.fenceId)).resolves.toMatchObject({
+      drained: false,
+      pendingRunIds: [run.id],
+    });
+    await expect(service.release(agent.id, acquired.fenceId)).rejects.toMatchObject({ status: 409 });
 
-    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
-    await expect(heartbeat.drainRunningRunsForShutdown("SIGTERM")).resolves.toMatchObject({
+    releaseCleanup();
+    await expect(drain).resolves.toMatchObject({
       interrupted: 1,
       interruptedRunIds: [run.id],
       retryRunIds: [],
@@ -767,7 +810,7 @@ describePostgres("agent execution fence", () => {
     });
   });
 
-  it("repairs a missed terminal acknowledgement during orphan reconciliation", async () => {
+  it("does not certify a bare terminal row during orphan reconciliation", async () => {
     const { company, agent } = await seedAgent("idle");
     const run = await db
       .insert(heartbeatRuns)
@@ -789,7 +832,110 @@ describePostgres("agent execution fence", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, run.id))
       .then((rows) => rows[0]!);
-    expect(reconciled.executionFinalizedAt).toEqual(expect.any(Date));
+    expect(reconciled.executionFinalizedAt).toBeNull();
+
+    await agentExecutionFenceService(db).markRunFinalizerCompleted(run.id);
+    await heartbeatService(db, { runtimeEnv: {} }).reapOrphanedRuns();
+    const certified = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, run.id))
+      .then((rows) => rows[0]!);
+    expect(certified.executionFinalizedAt).toEqual(expect.any(Date));
+  });
+
+  it("refuses durable finalizer completion while a run still owns an issue or active lease", async () => {
+    const { company, agent } = await seedAgent("idle");
+    const run = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: company.id,
+        agentId: agent.id,
+        status: "failed",
+        startedAt: new Date(Date.now() - 60_000),
+        finishedAt: new Date(Date.now() - 30_000),
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const issue = await db
+      .insert(issues)
+      .values({
+        companyId: company.id,
+        title: "Finalizer ownership test",
+        executionRunId: run.id,
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const service = agentExecutionFenceService(db);
+
+    await expect(service.markRunFinalizerCompleted(run.id)).rejects.toMatchObject({ status: 409 });
+    await db
+      .update(issues)
+      .set({ executionRunId: null })
+      .where(eq(issues.id, issue.id));
+
+    const environment = await db
+      .insert(environments)
+      .values({
+        name: `Fence Finalizer ${randomUUID()}`,
+        driver: `test-${randomUUID()}`,
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const lease = await db
+      .insert(environmentLeases)
+      .values({
+        companyId: company.id,
+        environmentId: environment.id,
+        heartbeatRunId: run.id,
+        status: "active",
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+
+    await expect(service.markRunFinalizerCompleted(run.id)).rejects.toMatchObject({ status: 409 });
+    await db
+      .update(environmentLeases)
+      .set({ status: "released", releasedAt: new Date() })
+      .where(eq(environmentLeases.id, lease.id));
+    await expect(service.markRunFinalizerCompleted(run.id)).resolves.toMatchObject({
+      executionFinalizerCompletedAt: expect.any(Date),
+    });
+  });
+
+  it("allows durable finalizer completion after issue execution transfers to a retry", async () => {
+    const { company, agent } = await seedAgent("idle");
+    const run = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: company.id,
+        agentId: agent.id,
+        status: "failed",
+        startedAt: new Date(Date.now() - 60_000),
+        finishedAt: new Date(Date.now() - 30_000),
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const retry = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: company.id,
+        agentId: agent.id,
+        status: "scheduled_retry",
+        retryOfRunId: run.id,
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    await db.insert(issues).values({
+      companyId: company.id,
+      title: "Transferred retry ownership test",
+      checkoutRunId: run.id,
+      executionRunId: retry.id,
+    });
+
+    await expect(agentExecutionFenceService(db).markRunFinalizerCompleted(run.id)).resolves.toMatchObject({
+      executionFinalizerCompletedAt: expect.any(Date),
+    });
   });
 
   it("allows terminal wakeup finalization but rejects requeue for pre-fence running work", async () => {
@@ -846,6 +992,7 @@ describePostgres("agent execution fence", () => {
         .where(eq(agentWakeupRequests.id, wakeup.id)),
     ).resolves.toBeDefined();
 
+    await service.markRunFinalizerCompleted(run.id);
     await service.acknowledgeRunFinalization(run.id);
     await service.release(agent.id, acquired.fenceId);
   });
@@ -918,6 +1065,7 @@ describePostgres("agent execution fence", () => {
       .update(agentWakeupRequests)
       .set({ status: "completed", finishedAt: new Date() })
       .where(eq(agentWakeupRequests.id, wakeup.id));
+    await service.markRunFinalizerCompleted(run.id);
     await service.acknowledgeRunFinalization(run.id);
     await service.release(agent.id, acquired.fenceId);
   });
@@ -953,6 +1101,7 @@ describePostgres("agent execution fence", () => {
       .update(heartbeatRuns)
       .set({ status: "succeeded", finishedAt: new Date() })
       .where(eq(heartbeatRuns.id, run.id));
+    await service.markRunFinalizerCompleted(run.id);
     await service.acknowledgeRunFinalization(run.id);
     await service.release(agent.id, acquired.fenceId);
   });

@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { type AnyPgColumn, pgTable, uuid, text, timestamp, jsonb, index, integer, bigint, boolean } from "drizzle-orm/pg-core";
+import { type AnyPgColumn, pgTable, uuid, text, timestamp, jsonb, index, integer, bigint, boolean, check } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { agentWakeupRequests } from "./agent_wakeup_requests.js";
@@ -16,6 +16,7 @@ export const heartbeatRuns = pgTable(
     responsibleUserId: text("responsible_user_id"),
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
+    executionFinalizerCompletedAt: timestamp("execution_finalizer_completed_at", { withTimezone: true }),
     executionFinalizedAt: timestamp("execution_finalized_at", { withTimezone: true }),
     error: text("error"),
     wakeupRequestId: uuid("wakeup_request_id").references(() => agentWakeupRequests.id),
@@ -61,6 +62,10 @@ export const heartbeatRuns = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    executionFinalizationOrderCheck: check(
+      "heartbeat_runs_execution_finalization_order_check",
+      sql`${table.executionFinalizedAt} is null or ${table.executionFinalizerCompletedAt} is not null`,
+    ),
     companyAgentStartedIdx: index("heartbeat_runs_company_agent_started_idx").on(
       table.companyId,
       table.agentId,

@@ -6,7 +6,11 @@ ALTER TABLE "agents" ADD COLUMN "execution_fence_restore_status" text;--> statem
 ALTER TABLE "agents" ADD COLUMN "execution_fence_reason" text;--> statement-breakpoint
 ALTER TABLE "agents" ADD COLUMN "execution_fence_actor_user_id" text;--> statement-breakpoint
 ALTER TABLE "agents" ADD COLUMN "execution_fence_acquired_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "heartbeat_runs" ADD COLUMN "execution_finalizer_completed_at" timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "heartbeat_runs" ADD COLUMN "execution_finalized_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "heartbeat_runs" ADD CONSTRAINT "heartbeat_runs_execution_finalization_order_check" CHECK (
+  "execution_finalized_at" is null or "execution_finalizer_completed_at" is not null
+);--> statement-breakpoint
 ALTER TABLE "agents" ADD CONSTRAINT "agents_execution_fence_state_check" CHECK ((
         "agents"."execution_fence_id" is null
         and "agents"."execution_fence_prior_status" is null
@@ -25,10 +29,27 @@ ALTER TABLE "agents" ADD CONSTRAINT "agents_execution_fence_state_check" CHECK (
         and "agents"."execution_fence_acquired_at" is not null
       ));--> statement-breakpoint
 UPDATE "heartbeat_runs"
-SET "execution_finalized_at" = coalesce("finished_at", "updated_at", now())
+SET "execution_finalizer_completed_at" = coalesce("finished_at", "updated_at", now()),
+    "execution_finalized_at" = coalesce("finished_at", "updated_at", now())
 WHERE "execution_finalized_at" is null
   AND "started_at" is not null
-  AND "status" NOT IN ('queued', 'running', 'scheduled_retry');--> statement-breakpoint
+  AND "status" NOT IN ('queued', 'running', 'scheduled_retry')
+  AND NOT EXISTS (
+    SELECT 1 FROM "environment_leases" lease
+    WHERE lease."heartbeat_run_id" = "heartbeat_runs"."id"
+      AND lease."status" = 'active'
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM "issues" issue
+    WHERE issue."checkout_run_id" = "heartbeat_runs"."id"
+       OR issue."execution_run_id" = "heartbeat_runs"."id"
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM "workspace_runtime_services" runtime_service
+    WHERE runtime_service."started_by_run_id" = "heartbeat_runs"."id"
+      AND runtime_service."lifecycle" = 'ephemeral'
+      AND runtime_service."status" IN ('provisioning', 'starting', 'running')
+  );--> statement-breakpoint
 CREATE OR REPLACE FUNCTION "guard_agent_heartbeat_execution_fence"()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -157,7 +178,7 @@ END;
 $$;--> statement-breakpoint
 DROP TRIGGER IF EXISTS "heartbeat_runs_execution_fence_guard" ON "heartbeat_runs";--> statement-breakpoint
 CREATE TRIGGER "heartbeat_runs_execution_fence_guard"
-BEFORE INSERT OR UPDATE OF "agent_id", "status", "context_snapshot", "execution_finalized_at" ON "heartbeat_runs"
+BEFORE INSERT OR UPDATE OF "agent_id", "status", "context_snapshot", "execution_finalizer_completed_at", "execution_finalized_at" ON "heartbeat_runs"
 FOR EACH ROW
 EXECUTE FUNCTION "guard_agent_heartbeat_execution_fence"();--> statement-breakpoint
 DROP TRIGGER IF EXISTS "agent_wakeup_requests_execution_fence_guard" ON "agent_wakeup_requests";--> statement-breakpoint
