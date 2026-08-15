@@ -45,6 +45,10 @@ import { Button } from "@/components/ui/button";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { latestSameRunHandoffTimestamp } from "@/lib/issue-chat-messages";
 import { isLiveIssueRun, isTerminalIssueStatus } from "@/lib/liveIssueIds";
+import {
+  resolveTaskChatBlockers,
+  TaskChatBlockerLinks,
+} from "@/components/task-chat/TaskChatBlockerLinks";
 
 function toMs(value: Date | string | null | undefined): number {
   if (!value) return 0;
@@ -126,7 +130,37 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     draftKey,
     onInterruptQueued,
     interruptingQueuedRunId,
+    blockedBy = [],
+    blockerAttention,
   } = props;
+
+  const blockerLinks = useMemo(
+    () => issueStatus === "blocked"
+      ? resolveTaskChatBlockers(blockedBy, blockerAttention?.terminalBlockerIssueId)
+      : null,
+    [blockedBy, blockerAttention?.terminalBlockerIssueId, issueStatus],
+  );
+
+  const threadHeaderWithBlockers = threadHeader || blockerLinks ? (
+    <>
+      {threadHeader}
+      {blockerLinks ? (
+        <TaskChatBlockerLinks
+          directBlocker={blockerLinks.directBlocker}
+          ultimateBlocker={blockerLinks.ultimateBlocker}
+          placement="top"
+        />
+      ) : null}
+    </>
+  ) : undefined;
+
+  const bottomBlockerLinks = blockerLinks ? (
+    <TaskChatBlockerLinks
+      directBlocker={blockerLinks.directBlocker}
+      ultimateBlocker={blockerLinks.ultimateBlocker}
+      placement="bottom"
+    />
+  ) : null;
 
   const linkedRunMetaById = useMemo(() => {
     const map = new Map<string, NonNullable<TaskChatThreadProps["linkedRuns"]>[number]>();
@@ -592,41 +626,51 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       <div className={cn("flex flex-col", !isMobile && "min-h-0 flex-1")}>
         {items.length === 0 && !tailRunId ? (
           <div className={isMobile ? undefined : "min-h-0 flex-1 overflow-y-auto"}>
-            {threadHeader ? (
+            {threadHeaderWithBlockers ? (
               <div
                 className="mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-6 px-4 pt-4"
                 data-testid="task-chat-thread-header"
               >
-                {threadHeader}
+                {threadHeaderWithBlockers}
               </div>
             ) : null}
             <div className="px-3 py-10 text-center text-sm text-muted-foreground">{emptyMessage}</div>
+            {bottomBlockerLinks ? (
+              <div className="mx-auto w-full max-w-(--tc-shell-max-w) px-4 pb-4">
+                {bottomBlockerLinks}
+              </div>
+            ) : null}
           </div>
         ) : (
           <TaskChatThreadView
             items={items}
-            header={threadHeader}
+            header={threadHeaderWithBlockers}
             renderInteraction={renderInteraction}
             renderBrief={issueBrief ? () => <TaskChatDescriptionBubble brief={issueBrief} /> : undefined}
             renderMessageActions={renderMessageActions}
             renderQueuedAction={renderQueuedAction}
-            tail={tailRunId ? (
-              <div data-testid="task-chat-live-transcript">
-                <TaskChatLiveRunPill
-                  status={tailStatus}
-                  startedAtMs={tailStartedAtMs}
-                  finishedAtMs={tailFinishedAtMs}
-                  toolSummary={tailToolSummary}
-                />
-                <TaskChatLiveTail
-                  items={tailItems}
-                  emptyMessage={
-                    tailStatus === "queued"
-                      ? "Waiting to start..."
-                      : "Waiting for transcript..."
-                  }
-                />
-              </div>
+            tail={tailRunId || bottomBlockerLinks ? (
+              <>
+                {tailRunId ? (
+                  <div data-testid="task-chat-live-transcript">
+                    <TaskChatLiveRunPill
+                      status={tailStatus}
+                      startedAtMs={tailStartedAtMs}
+                      finishedAtMs={tailFinishedAtMs}
+                      toolSummary={tailToolSummary}
+                    />
+                    <TaskChatLiveTail
+                      items={tailItems}
+                      emptyMessage={
+                        tailStatus === "queued"
+                          ? "Waiting to start..."
+                          : "Waiting for transcript..."
+                      }
+                    />
+                  </div>
+                ) : null}
+                {bottomBlockerLinks}
+              </>
             ) : null}
             contentKey={threadContentKey}
             scroll={!isMobile}
