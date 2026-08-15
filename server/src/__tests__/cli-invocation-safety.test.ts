@@ -127,11 +127,16 @@ const DOC_PHRASES = new Set<string>([
 //  - Markdown (`.md`, `.mdx`): trust a backtick inline-code span only. A backtick
 //    opens a real literal span. A double quote in Markdown is plain prose, not a
 //    literal delimiter, so the guard does not trust a double-quote span.
-//  - Source (`.ts`, `.tsx`, `.js`, `.jsx`): trust a quote span only when a
-//    source-string terminator follows the close delimiter. A terminator is one
-//    of `,` `;` `)` `]` `}`, after optional whitespace. A close delimiter that a
-//    shell expansion (for example `$(`) or a string concatenation follows is not
-//    a proven literal end, so the guard does not trust the span.
+//  - Source (`.ts`, `.tsx`, `.js`, `.jsx`): trust a quote span only when it is
+//    the complete value of a `command:` property. The guard proves this shape by
+//    two facts. First, a `command` key and a colon sit directly before the open
+//    delimiter. Second, a source-string terminator (one of `,` `;` `)` `]` `}`,
+//    after optional whitespace) follows the close delimiter. A bare comma is not
+//    enough. An array element or a call argument also ends at a comma, and a
+//    later `join` or a call concatenates it with an untrusted tail. The shape
+//    `["pnpm paperclipai run", tail].join("")` extracts the allowlisted prefix
+//    but the runtime value carries the tail. The guard trusts only the direct
+//    `command:` property, so it fails closed on every other comma-terminated span.
 //  - Any other file type: never trust a span, and fail closed.
 //
 // The guard trusts a span only when its opener is adjacent to the marker: the
@@ -220,12 +225,28 @@ function fileKind(relPath: string): FileKind {
 // literal end.
 const SOURCE_TERMINATOR = /^[ \t]*[,;)\]}]/;
 
+// A complete static command literal has the shape `command: <literal>`. A
+// `command` key and a colon sit directly before the open delimiter. This proves
+// the literal is the whole property value. An array element or a call argument
+// has a different context before the open delimiter (a `[`, a `(`, or a comma),
+// so it never matches. The `(?:^|[^\w$])` guard stops a longer key such as
+// `subcommand` from matching the `command` tail.
+const COMMAND_PROPERTY_OPENER = /(?:^|[^\w$])command\s*:\s*$/;
+
+// Return the text directly before the open delimiter. The open delimiter is the
+// last character of `before` after the removal of the adjacency gap.
+function textBeforeOpener(before: string): string {
+  const head = before.replace(ADJACENCY_GAP, "");
+  return head.slice(0, -1);
+}
+
 // Return true when a trusted span opens the command in a proven literal context.
 // The context depends on the file type. The guard fails closed on every other
 // context, so it never infers a safe span outside a proven literal.
 function spanIsProvenLiteral(
   relPath: string,
   open: string,
+  before: string,
   tail: string,
   close: number,
 ): boolean {
@@ -235,8 +256,13 @@ function spanIsProvenLiteral(
   // plain prose, so the guard does not trust it.
   if (kind === "markdown") return open === "`";
   // A source string literal (a double quote or a template backtick) is a proven
-  // literal only when a source terminator follows its close delimiter.
-  return SOURCE_TERMINATOR.test(tail.slice(close + 1));
+  // literal only when it is the complete value of a `command:` property. Two
+  // facts must hold. The `command:` key sits directly before the open delimiter,
+  // and a source terminator follows the close delimiter. A bare comma alone is
+  // not enough, because an array element or a call argument also ends at a comma
+  // and a later concatenation joins it with an untrusted tail.
+  if (!SOURCE_TERMINATOR.test(tail.slice(close + 1))) return false;
+  return COMMAND_PROPERTY_OPENER.test(textBeforeOpener(before));
 }
 
 function extractCommand(relPath: string, text: string, at: number): string {
@@ -248,7 +274,7 @@ function extractCommand(relPath: string, text: string, at: number): string {
     // guard trusts the matching close delimiter as a real terminator only inside
     // a proven literal context for this file type.
     const close = nextUnescapedDelimiter(tail, open);
-    if (close >= 0 && spanIsProvenLiteral(relPath, open, tail, close)) {
+    if (close >= 0 && spanIsProvenLiteral(relPath, open, before, tail, close)) {
       return normalizeCommand(tail.slice(0, close));
     }
   }
@@ -622,6 +648,35 @@ describe("paperclipai CLI invocation safety", () => {
         read("tests/perf/issue-detail/playwright.config.ts"),
       ),
     ).toEqual([]);
+  });
+
+  // ── Fail closed on a comma-terminated fragment that a join concatenates ───
+  //
+  // The round-6 guard trusted any source quote span whose close delimiter a comma
+  // follows. A comma is a source terminator, but it does not prove the literal is
+  // the complete emitted command. An array element and a call argument both end
+  // at a comma, and a later `join` or a call concatenates the element with an
+  // untrusted tail. The guard now trusts a comma only for a direct `command:`
+  // property, so each composition below reports one offender.
+
+  it("fails closed on an allowlisted prefix joined with a tail in an array literal", () => {
+    // The literal is one array element, not the whole command. `join("")`
+    // concatenates it with `userControlledTail`, so the runtime value carries the
+    // tail. The comma after the element is a source terminator, but it does not
+    // prove a complete command, so the guard reports the whole expression.
+    const source =
+      'const command = ["pnpm paperclipai run", userControlledTail].join("");';
+    const offenders = scanText("src/build-command.ts", source);
+    expect(offenders).toHaveLength(1);
+  });
+
+  it("fails closed on an allowlisted prefix passed as a call argument with a tail", () => {
+    // A function-call argument list joins an allowlisted prefix literal with a
+    // tail. The comma after the prefix is a call-argument separator, not a proof
+    // of a complete command, so the guard reports the composition.
+    const source = 'const command = buildCommand("pnpm paperclipai run", tail);';
+    const offenders = scanText("src/build-command.ts", source);
+    expect(offenders).toHaveLength(1);
   });
 
   it("flags an allowlisted prefix with a backtick suffix on a continued line", () => {
