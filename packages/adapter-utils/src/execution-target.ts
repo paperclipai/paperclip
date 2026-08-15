@@ -1527,6 +1527,14 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     signalStopped = resolve;
   });
   let stdinSeq = 0;
+  // One promise chain per session that serializes the stdin file writes. Each
+  // write is multi-exec on the command-managed client: prepare, append per 32
+  // KiB, then an atomic rename. The chain makes the rename for file N finish
+  // before the write for file N+1 starts, so the files land in send order.
+  // Without it the writes overlap. A small later chunk can then rename ahead of
+  // a big earlier chunk, so the wrapper reads the stdin bytes out of order and
+  // corrupts a large prompt on the stdin path.
+  let stdinWriteChain: Promise<void> = Promise.resolve();
   let pollTimer: NodeJS.Timeout | null = null;
   const pendingRemoteEvents: Array<{
     type?: string;
@@ -1637,9 +1645,21 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
         if (stdinPayload) {
           stdinSeq += 1;
           const name = `${String(stdinSeq).padStart(12, "0")}.json`;
-          void runRuntimeWork(AGENT_SESSION_SEND_INPUT_SPAN, () =>
-            client.writeTextFile(path.posix.join(stdinDir, name), jsonLine(stdinPayload)),
-          ).catch((error) => {
+          const filePath = path.posix.join(stdinDir, name);
+          // Chain this write after the previous one, so the atomic rename for
+          // file N finishes before the write for file N+1 starts. Keep the
+          // per-message `sandbox.agentSession.sendInput` span inside the chain.
+          const write = stdinWriteChain.then(() =>
+            runRuntimeWork(AGENT_SESSION_SEND_INPUT_SPAN, () =>
+              client.writeTextFile(filePath, jsonLine(stdinPayload)),
+            ),
+          );
+          // The next message chains after this write on success or failure, so a
+          // failed write never blocks the chain. This mirrors the wrapper
+          // `writeChain` pattern for its event files.
+          stdinWriteChain = write.then(() => undefined, () => undefined);
+          // Keep the failure behavior: send one error line, then destroy the socket.
+          write.catch((error) => {
             nextSocket.write(jsonLine({ type: "error", message: error instanceof Error ? error.message : String(error) }));
             nextSocket.destroy();
           });
@@ -1908,12 +1928,40 @@ const stdinMaxParseRetries = (() => {
   return Number.isFinite(raw) && raw > 0 ? raw : 100;
 })();
 const stdinParseRetries = new Map();
+// Track the next expected sequence number. The host writes the stdin files in
+// send order and pads the number to 12 digits, starting at 1. The files sort in
+// send order. When the smallest present number is greater than expected, an
+// earlier file has not appeared yet: a missing file, not an unreadable one. Hold
+// the send order and wait for it, bounded by the same retry budget as the
+// unreadable-file path. This turns a reordering into a loud error, never silent
+// corruption.
+let stdinExpectedSeq = 1;
+let stdinGapRetries = 0;
 
 async function pollStdin() {
   while (!stdinClosed) {
     const entries = (await fs.readdir(stdinDir).catch(() => [])).filter((name) => name.endsWith(".json")).sort();
     for (const name of entries) {
       if (stdinClosed) break;
+      const entrySeq = Number.parseInt(name, 10);
+      // Hold the send order when an earlier file has not appeared. Do not consume
+      // this later file: wait for the missing file on a later cycle, bounded by
+      // the retry budget. After the budget, fail loud and advance past the gap,
+      // so the present file can run.
+      if (Number.isFinite(entrySeq) && entrySeq > stdinExpectedSeq) {
+        stdinGapRetries += 1;
+        if (stdinGapRetries < stdinMaxParseRetries) {
+          break;
+        }
+        await writeEvent({
+          type: "error",
+          message:
+            "Advanced past missing stdin files " + stdinExpectedSeq + " to " + (entrySeq - 1) +
+            " after " + stdinMaxParseRetries + " retries.",
+        });
+        stdinGapRetries = 0;
+        stdinExpectedSeq = entrySeq;
+      }
       const file = path.posix.join(stdinDir, name);
       let message;
       try {
@@ -1936,6 +1984,10 @@ async function pollStdin() {
               "Dropped unreadable stdin file after " + stdinMaxParseRetries + " retries: " + name + ": " +
               (error instanceof Error ? error.message : String(error)),
           });
+          // The file is resolved (dropped). Advance the expected number and reset
+          // the gap budget, then let the loop go on to the next entry.
+          if (Number.isFinite(entrySeq)) stdinExpectedSeq = entrySeq + 1;
+          stdinGapRetries = 0;
           continue;
         }
         // The file is not readable yet and is not past the retry limit. Keep it
@@ -1949,6 +2001,10 @@ async function pollStdin() {
       // then act on the message. A later cycle never re-reads a handled file.
       stdinParseRetries.delete(name);
       await fs.rm(file, { force: true }).catch(() => undefined);
+      // The file is handled. Advance the expected number and reset the gap
+      // budget, so the next expected file starts fresh.
+      if (Number.isFinite(entrySeq)) stdinExpectedSeq = entrySeq + 1;
+      stdinGapRetries = 0;
       if (message.type === "stdin" && typeof message.data === "string") {
         if (!stdinClosed) child.stdin.write(Buffer.from(message.data, "base64"));
       } else if (message.type === "stdinEnd") {
