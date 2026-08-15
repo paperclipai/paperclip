@@ -1,11 +1,22 @@
-import { describe, expect, it, vi, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { execute } from "./execute.js";
-import { openKb, upsertPatterns } from "./kb.js";
 import { SEED_PATTERNS } from "./match.js";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+
+const openKb = vi.fn((_kbPath: string) => ({ close: () => {} }));
+const seedKbIfEmpty = vi.fn((_db: unknown, _patterns?: unknown) => 0);
+const loadPatterns = vi.fn((_db: unknown) => SEED_PATTERNS);
+
+vi.mock("./kb.js", () => ({
+  openKb: (kbPath: string) => openKb(kbPath),
+  seedKbIfEmpty: (db: unknown, patterns?: unknown) => seedKbIfEmpty(db, patterns),
+  loadPatterns: (db: unknown) => loadPatterns(db),
+  upsertPatterns: vi.fn(),
+}));
+
+import { execute } from "./execute.js";
 
 function makeCtx(overrides: {
   kbPath: string;
@@ -34,17 +45,22 @@ function makeCtx(overrides: {
 }
 
 describe("execute", () => {
+  beforeEach(() => {
+    openKb.mockReturnValue({ close: () => {} });
+    seedKbIfEmpty.mockReturnValue(0);
+    loadPatterns.mockReturnValue(SEED_PATTERNS);
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.clearAllMocks();
   });
 
   it("resolves when pattern matches and origin is terminal", async () => {
     const dir = mkdtempSync(join(tmpdir(), "deflector-ex-"));
     const kbPath = join(dir, "kb.sqlite");
     const auditPath = join(dir, "audit.jsonl");
-    const db = openKb(kbPath);
-    upsertPatterns(db, SEED_PATTERNS);
-    db.close();
+    writeFileSync(auditPath, "");
 
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       const u = String(url);
@@ -86,35 +102,31 @@ describe("execute", () => {
     }
   });
 
-  it("releases assignment when no pattern matches", async () => {
+  it("does nothing (no PATCH) when no pattern matches", async () => {
     const dir = mkdtempSync(join(tmpdir(), "deflector-ex-"));
     const kbPath = join(dir, "kb.sqlite");
     const auditPath = join(dir, "audit.jsonl");
-    const db = openKb(kbPath);
-    upsertPatterns(db, SEED_PATTERNS);
-    db.close();
+    writeFileSync(auditPath, "");
 
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string, init?: RequestInit) => {
-        const u = String(url);
-        if (u.includes("/api/issues/") && (!init || !init.method || init.method === "GET")) {
-          return new Response(
-            JSON.stringify({
-              id: "issue-2",
-              identifier: "AIP-2",
-              title: "Investigate conversion drop",
-              originKind: "manual",
-              originId: null,
-              companyId: "co-1",
-              status: "todo",
-            }),
-            { status: 200 },
-          );
-        }
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
-      }),
-    );
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/api/issues/") && (!init || !init.method || init.method === "GET")) {
+        return new Response(
+          JSON.stringify({
+            id: "issue-2",
+            identifier: "AIP-2",
+            title: "Investigate conversion drop",
+            originKind: "manual",
+            originId: null,
+            companyId: "co-1",
+            status: "todo",
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
     try {
       const result = await execute(
@@ -126,6 +138,10 @@ describe("execute", () => {
       );
       expect(result.exitCode).toBe(0);
       expect(result.summary).toContain("pass-through");
+      const mutating = fetchMock.mock.calls.filter(
+        (c) => c[1]?.method && c[1].method !== "GET",
+      );
+      expect(mutating).toHaveLength(0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

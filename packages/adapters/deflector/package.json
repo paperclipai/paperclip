@@ -53,12 +53,17 @@
     "seed:kb": "tsx scripts/seed-kb.ts"
   },
   "dependencies": {
-    "@paperclipai/adapter-utils": "workspace:*"
+    "@paperclipai/adapter-utils": "workspace:*",
+    "better-sqlite3": "^11.10.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.19.21",
     "tsx": "^4.20.5",
     "typescript": "^5.7.3",
     "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

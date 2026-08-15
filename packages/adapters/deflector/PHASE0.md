@@ -30,3 +30,10 @@ AIP join check: 575 stranded recoveries had a terminal origin; most historical r
 ## Wazir notes
 
 Mined `Wazir/watchlog.md`, `Wazir/kb/`, `Wazir/SOPs/`, `Wazir/playbook/`. Useful for ops memory; no additional auto-resolve pattern cleared the conservatism bar.
+
+## Runtime / no-match notes (review follow-up)
+
+- Target runtime: **Node 20+** (repo `engines`, Coolify prod `node:20-bookworm-slim`).
+- KB uses `better-sqlite3` via lazy `createRequire` inside `openKb` (not a top-level ESM import), so server boot does not crash on Node 20 the way `node:sqlite` would.
+- Linux/Node 20 installs use npm prebuilds. Local Windows/Node 24 without VS C++ may lack bindings; unit tests mock KB / soft-skip native open.
+- No-match path is a true no-op (audit log only). Clearing `assigneeAgentId` would orphan issues because heartbeat recovery only continues work for non-null assignees.

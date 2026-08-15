@@ -1,7 +1,14 @@
 import { mkdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import type { Database as BetterSqliteDatabase } from "better-sqlite3";
 import { SEED_PATTERNS, type PatternRule, type ConfidenceTier } from "./match.js";
+
+// better-sqlite3 is CJS/native; load via createRequire so this package stays ESM
+// and works on Node 20 (node:sqlite is Node 22.5+ only / experimental).
+const require = createRequire(import.meta.url);
+
+export type KbDatabase = BetterSqliteDatabase;
 
 function rowToPattern(row: Record<string, unknown>): PatternRule {
   return {
@@ -21,9 +28,10 @@ function rowToPattern(row: Record<string, unknown>): PatternRule {
   };
 }
 
-export function openKb(kbPath: string): DatabaseSync {
+export function openKb(kbPath: string): KbDatabase {
   mkdirSync(dirname(kbPath), { recursive: true });
-  const db = new DatabaseSync(kbPath);
+  const Database = require("better-sqlite3") as typeof import("better-sqlite3");
+  const db = new Database(kbPath);
   db.exec(`
     CREATE TABLE IF NOT EXISTS patterns (
       id TEXT PRIMARY KEY,
@@ -43,7 +51,7 @@ export function openKb(kbPath: string): DatabaseSync {
   return db;
 }
 
-export function seedKbIfEmpty(db: DatabaseSync, patterns: PatternRule[] = SEED_PATTERNS): number {
+export function seedKbIfEmpty(db: KbDatabase, patterns: PatternRule[] = SEED_PATTERNS): number {
   const count = db.prepare("SELECT COUNT(*) AS c FROM patterns").get() as { c: number };
   if (Number(count.c) > 0) return 0;
   const insert = db.prepare(`
@@ -72,7 +80,7 @@ export function seedKbIfEmpty(db: DatabaseSync, patterns: PatternRule[] = SEED_P
   return n;
 }
 
-export function loadPatterns(db: DatabaseSync): PatternRule[] {
+export function loadPatterns(db: KbDatabase): PatternRule[] {
   const rows = db.prepare("SELECT * FROM patterns WHERE enabled = 1 ORDER BY id").all() as Record<
     string,
     unknown
@@ -80,7 +88,7 @@ export function loadPatterns(db: DatabaseSync): PatternRule[] {
   return rows.map(rowToPattern);
 }
 
-export function upsertPatterns(db: DatabaseSync, patterns: PatternRule[]): void {
+export function upsertPatterns(db: KbDatabase, patterns: PatternRule[]): void {
   const upsert = db.prepare(`
     INSERT INTO patterns (
       id, name, title_regex, origin_kind, require_origin_terminal,

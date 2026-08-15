@@ -194,19 +194,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     );
 
     if (!match.matched || !match.pattern) {
-      // Release assignment so the issue can proceed to a normal agent.
-      if (!dryRun) {
-        await apiFetch(apiBase, `/api/issues/${issueId}`, {
-          method: "PATCH",
-          token,
-          runId,
-          body: {
-            comment:
-              "Deflector: no high-confidence pattern matched. Releasing assignment for normal routing.",
-            assigneeAgentId: null,
-          },
-        });
-      }
+      // Spec: no match → do nothing. Heartbeat only continues work for issues
+      // with a non-null assignee; clearing assigneeAgentId would orphan the
+      // ticket. Routing/reassignment is an operator concern outside this adapter.
       appendAudit(auditPath, {
         ts: new Date().toISOString(),
         runId,
@@ -218,7 +208,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         patternId: null,
         confidence: null,
         reason: match.reason,
-        action: dryRun ? "dry_run" : "released",
+        action: dryRun ? "dry_run" : "skipped",
         detail: { originKind: issue.originKind, originStatus },
       });
       return {

@@ -7,7 +7,7 @@ Auto-resolves only high-confidence repeat issues; everything else is released fo
 
 - `src/server/execute.ts` — heartbeat execution
 - `src/server/match.ts` — matching engine
-- `src/server/kb.ts` — SQLite KB (`node:sqlite`)
+- `src/server/kb.ts` — SQLite KB (`better-sqlite3`, Node 20 compatible)
 - `src/server/audit.ts` — JSONL audit log
 - `scripts/seed-kb.ts` — manual/cron seed (not in live request path)
 
