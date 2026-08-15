@@ -10688,10 +10688,57 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       statedDisposition && typeof statedDisposition.blocker === "string" && statedDisposition.blocker.trim()
         ? statedDisposition.blocker.trim()
         : null;
+    // `blocked` is only safe to apply when the adapter has affirmatively
+    // identified a blocker as well as named it. A status-only recovery has no
+    // authority to manufacture a wait state from a bare status or prose.
+    const statedVerifiedBlocker = statedDisposition?.hasBlocker === true && statedBlocker;
     const statedReviewer =
       statedDisposition && typeof statedDisposition.reviewer === "string" && statedDisposition.reviewer.trim()
         ? statedDisposition.reviewer.trim()
         : null;
+
+    // A missing-disposition handoff is a constrained, status-only pass. It
+    // must not turn a freshly assigned card into `blocked` merely because the
+    // agent was silent (or emitted `blocked` without naming a blocker). The
+    // original task was actionable before checkout; return it to `todo` so the
+    // normal assignment dispatcher can continue it. A named blocker still
+    // follows the explicit disposition path below, where it becomes a
+    // first-class dependency.
+    const isDispositionOnlyHandoff = context.handoffRequired === true ||
+      context.wakeReason === FINISH_SUCCESSFUL_RUN_HANDOFF_REASON;
+    const hasVerifiedExistingBlocker = Boolean(explicitBlocker) || hasExplicitBlockedExternalWait(issue.description);
+    if (
+      issue.status === "in_progress" &&
+      issue.assigneeAgentId === run.agentId &&
+      !issue.assigneeUserId &&
+      isDispositionOnlyHandoff &&
+      !hasVerifiedExistingBlocker &&
+      (!statedStatus || (statedStatus === "blocked" && !statedVerifiedBlocker))
+    ) {
+      const restored = await issuesSvc.update(issue.id, {
+        status: "todo",
+        actorAgentId: run.agentId,
+        actorUserId: null,
+      });
+      if (restored) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: "system",
+          actorId: "heartbeat",
+          agentId: run.agentId,
+          runId: run.id,
+          action: "issue.disposition_only_returned_to_todo",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            label: "Disposition-only pass returned an unblocked issue to todo",
+            sourceRunId: run.id,
+            statedStatus,
+          },
+        });
+        return;
+      }
+    }
     // RETIRED (2026-08-05, TSMC-19765): the PAPERCLIP_DISPOSITION_ENFORCE flag and the
     // issue.disposition_shadow measurement. Seven weeks of shadow data (54,625 records)
     // answered the question: stated dispositions are applied cleanly (361 applies, zero
@@ -10718,8 +10765,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             actorUserId: null,
           });
           if (applied) appliedStatus = statedStatus;
-        } else if (statedStatus === "blocked" && statedBlocker) {
-          if (isTransientPaperclipControlPlaneWriteFailure(statedBlocker)) {
+        } else if (statedStatus === "blocked" && statedVerifiedBlocker) {
+          if (isTransientPaperclipControlPlaneWriteFailure(statedVerifiedBlocker)) {
             // The normal finalization path has either queued exactly one
             // status-only comment reconcile or has deliberately exhausted
             // that bounded retry. Never convert a local API outage into a
@@ -10755,7 +10802,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           const blockerIssue = await issuesSvc.create(issue.companyId, buildStatedDispositionBlockerIssueInput({
             sourceIdentifier: issue.identifier,
             sourceId: issue.id,
-            blocker: statedBlocker,
+            blocker: statedVerifiedBlocker,
             projectId: issue.projectId,
             projectWorkspaceId: issue.projectWorkspaceId,
             executionWorkspaceSettings: issue.executionWorkspaceSettings

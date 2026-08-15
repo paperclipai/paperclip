@@ -4167,6 +4167,145 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(activity.some((event) => event.action === "issue.successful_run_handoff_required")).toBe(false);
   });
 
+  it("returns an unblocked disposition-only handoff to todo when it omits a disposition", async () => {
+    const { agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "finish_successful_run_handoff",
+        handoffRequired: true,
+        handoffReason: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      },
+    }).where(eq(heartbeatRuns.id, runId));
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Recorded no further disposition.",
+      provider: "test",
+      model: "test-model",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("todo");
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups.filter((wakeup) => wakeup.reason === "finish_successful_run_handoff")).toHaveLength(0);
+    const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+    expect(activity).toContainEqual(expect.objectContaining({
+      action: "issue.disposition_only_returned_to_todo",
+      details: expect.objectContaining({ statedStatus: null }),
+    }));
+  });
+
+  it("does not let a disposition-only handoff strand an issue on an unverified named blocker", async () => {
+    const { runId, issueId } = await seedQueuedIssueRunFixture();
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "finish_successful_run_handoff",
+        handoffRequired: true,
+        handoffReason: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      },
+    }).where(eq(heartbeatRuns.id, runId));
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Blocked without a verified condition.",
+      resultJson: {
+        disposition: { status: "blocked", hasBlocker: false, blocker: "Need an answer" },
+      },
+      provider: "test",
+      model: "test-model",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("todo");
+    await expect(sourceBlockerIssueIds(issue!.companyId, issueId)).resolves.toEqual([]);
+  });
+
+  it("returns a disposition-only handoff to todo when a blocker is asserted but not named", async () => {
+    const { runId, issueId } = await seedQueuedIssueRunFixture();
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "finish_successful_run_handoff",
+        handoffRequired: true,
+        handoffReason: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      },
+    }).where(eq(heartbeatRuns.id, runId));
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Blocked without a named condition.",
+      resultJson: {
+        disposition: { status: "blocked", hasBlocker: true },
+      },
+      provider: "test",
+      model: "test-model",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("todo");
+    await expect(sourceBlockerIssueIds(issue!.companyId, issueId)).resolves.toEqual([]);
+  });
+
+  it("records a disposition-only blocker only when the adapter verifies and names it", async () => {
+    const { runId, issueId } = await seedQueuedIssueRunFixture();
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "finish_successful_run_handoff",
+        handoffRequired: true,
+        handoffReason: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      },
+    }).where(eq(heartbeatRuns.id, runId));
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Targeted check failed.",
+      resultJson: {
+        disposition: { status: "blocked", hasBlocker: true, blocker: "pnpm test:run -- failing check heartbeat regression" },
+      },
+      provider: "test",
+      model: "test-model",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    await expect(sourceBlockerIssueIds(issue!.companyId, issueId)).resolves.toHaveLength(1);
+  });
+
   it("applies a narrow intended-done control-plane outage receipt without a second generation run", async () => {
     expect(inferIntendedDoneDispositionFromFinalReport(JSON.stringify({
       status: "blocked",
