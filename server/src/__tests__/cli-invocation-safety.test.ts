@@ -118,19 +118,29 @@ const DOC_PHRASES = new Set<string>([
 //
 // The scan reads Markdown and source files. A `pnpm paperclipai` occurrence
 // sits in one of two places, and only a real terminator ends the command:
-//  - Inside a balanced string span. A backtick opens a Markdown inline-code
-//    span or a JavaScript template literal. A double quote opens a source
-//    string literal. When such a delimiter opens before the marker, the next
-//    matching delimiter closes the span. That close is a real, safely parsed
-//    boundary. The command is the text from the marker to the close.
-//  - Outside a span, in a fenced code block or in plain text. The command runs
-//    to the end of the logical line, or to a ` #` comment. A backtick, a quote,
-//    or a parenthesis here is a shell metacharacter, so it stays in the
-//    extracted command. The command then fails the allowlist match and the
-//    guard reports it. This is the key rule: a quote or a backtick that follows
-//    the command is never a truncation boundary, so a line such as
+//  - Inside a balanced string span whose opener is directly next to the marker.
+//    A backtick opens a Markdown inline-code span or a JavaScript template
+//    literal. A double quote opens a source string literal. The guard trusts the
+//    span only when the opening delimiter is adjacent to the marker: the
+//    delimiter, then optional whitespace or a `$ ` shell prompt, then `pnpm`.
+//    The next matching delimiter closes the span. That close is a real, safely
+//    parsed boundary. The command is the text from the marker to the close.
+//  - Outside a trusted span. This holds for a fenced code block, plain text, and
+//    any line where the nearest earlier delimiter is not adjacent to the marker.
+//    The command runs to the end of the logical line, or to a ` #` comment. A
+//    backtick, a quote, or a parenthesis here is a shell metacharacter, so it
+//    stays in the extracted command. The command then fails the allowlist match
+//    and the guard reports it. This is the key rule: a quote or a backtick that
+//    follows the command is never a truncation boundary, so a line such as
 //    `pnpm paperclipai run "$(cat secret)"` keeps its dangerous suffix and the
 //    guard rejects it.
+//
+// The guard fails closed on an ambiguous quote context. It never infers a safe
+// enclosing span from an arbitrary unmatched delimiter earlier on the line. An
+// earlier `"` or backtick that is not adjacent to the marker is ambiguous
+// context, so the guard extracts to the logical line end and keeps any dangerous
+// suffix in the command. An escaped delimiter (`\"` or an escaped backtick) is
+// literal text, so it never opens or closes a span.
 //
 // The scan collapses internal whitespace, so a backslash-continued command
 // compares as one normalized string.
@@ -139,37 +149,60 @@ function normalizeCommand(raw: string): string {
   return raw.replace(/\s+/g, " ").trim();
 }
 
-// Return the string delimiter that is still open at the end of `before`, or
-// null when no span is open. The scan reads one delimiter at a time: a backtick
-// or a double quote. It opens a span on the first delimiter and closes it on
-// the next matching delimiter. A different delimiter inside an open span is
-// literal content, so the scan ignores it.
-function openDelimiter(before: string): string | null {
-  let open: string | null = null;
-  for (const char of before) {
-    if (char !== "`" && char !== '"') continue;
-    if (open === null) {
-      open = char;
-    } else if (open === char) {
-      open = null;
-    }
+// Return true when the delimiter at index `index` in `text` is escaped. A
+// delimiter is escaped when an odd number of backslashes sit directly before it.
+function isEscaped(text: string, index: number): boolean {
+  let backslashes = 0;
+  for (let i = index - 1; i >= 0 && text[i] === "\\"; i -= 1) {
+    backslashes += 1;
   }
-  return open;
+  return backslashes % 2 === 1;
+}
+
+// Return the span delimiter that opens the command, or null when no delimiter is
+// adjacent to the marker. The guard trusts a span only when its opener sits
+// directly next to the marker. The opener is the last character of `before`
+// after the removal of an optional trailing gap: whitespace and, at most, one
+// `$ ` shell prompt. An earlier unmatched delimiter that is not adjacent is
+// ambiguous context, so this function returns null and the caller fails closed.
+// An escaped delimiter (`\"` or an escaped backtick) is literal text, so it does
+// not open a span.
+const ADJACENCY_GAP = /(?:[ \t]*(?:\$[ \t]+)?)$/;
+
+function adjacentSpanOpener(before: string): string | null {
+  const head = before.replace(ADJACENCY_GAP, "");
+  const last = head.length - 1;
+  if (last < 0) return null;
+  const char = head[last];
+  if (char !== "`" && char !== '"') return null;
+  if (isEscaped(head, last)) return null;
+  return char;
+}
+
+// Return the index of the next unescaped `delimiter` in `tail`, or -1 when the
+// span has no close. An escaped delimiter is literal text, so it does not close
+// the span.
+function nextUnescapedDelimiter(tail: string, delimiter: string): number {
+  for (let i = 0; i < tail.length; i += 1) {
+    if (tail[i] === delimiter && !isEscaped(tail, i)) return i;
+  }
+  return -1;
 }
 
 function extractCommand(text: string, at: number): string {
   const before = text.slice(0, at);
   const tail = text.slice(at);
-  const open = openDelimiter(before);
+  const open = adjacentSpanOpener(before);
   if (open !== null) {
-    // The marker sits inside a balanced span. The matching close delimiter is
-    // the only real terminator here.
-    const close = tail.indexOf(open);
+    // The marker sits inside a span whose opener is adjacent to the marker. The
+    // matching close delimiter is the only real terminator here.
+    const close = nextUnescapedDelimiter(tail, open);
     const raw = close < 0 ? tail : tail.slice(0, close);
     return normalizeCommand(raw);
   }
-  // Outside a span the command runs to a ` #` comment or the line end. A quote,
-  // a backtick, or a parenthesis stays inside the extracted command.
+  // Outside a trusted span the command runs to a ` #` comment or the line end. A
+  // quote, a backtick, or a parenthesis stays inside the extracted command, so
+  // an ambiguous earlier delimiter never truncates the command.
   const comment = tail.search(/\s#/);
   const raw = comment < 0 ? tail : tail.slice(0, comment);
   return normalizeCommand(raw);
@@ -425,6 +458,68 @@ describe("paperclipai CLI invocation safety", () => {
     expect(scanText("doc/E.md", "pnpm paperclipai run `hostname`")).toHaveLength(1);
     // A single-quoted suffix is also part of the full command.
     expect(scanText("doc/E.md", "pnpm paperclipai onboard 'extra value'")).toHaveLength(1);
+  });
+
+  // ── Fail closed on an ambiguous quote context before the marker ──────────
+  //
+  // The round-4 guard toggled a span open on every unmatched delimiter earlier
+  // on the logical line. So an arbitrary leading `"` or backtick before the
+  // marker opened a false span, and the first delimiter in the tail closed it.
+  // The extraction then dropped the dangerous suffix and matched the allowlisted
+  // prefix. That is fail-open. The guard now trusts a span only when its opener
+  // is adjacent to the marker. A non-adjacent earlier delimiter is ambiguous, so
+  // the guard extracts to the logical line end and keeps the dangerous suffix.
+  //
+  // Each case below extracts the full command that includes the suffix, so each
+  // reports exactly one offender. On the round-4 code each accepted case
+  // extracted only `pnpm paperclipai run` (or `... doctor`) and reported zero
+  // offenders. The comment on each case marks that fail-open delta.
+
+  it("fails closed on a leading unmatched double quote before the marker", () => {
+    // Round-4: the leading `"` opened a span; the tail `"` closed it; the guard
+    // extracted `pnpm paperclipai run` and reported zero offenders (fail open).
+    const line = 'some prose with one " quote then pnpm paperclipai run "$(dangerous)"';
+    expect(scanText("doc/E.md", line)).toHaveLength(1);
+    // The same shape with a doctor prefix and a `$VAR` suffix.
+    const varLine = 'a stray " quote and pnpm paperclipai doctor "$HOME/x"';
+    expect(scanText("doc/E.md", varLine)).toHaveLength(1);
+  });
+
+  it("fails closed on a leading unmatched backtick and on mixed delimiters", () => {
+    // Round-4: the leading backtick opened a span; the tail backtick closed it;
+    // the guard extracted `pnpm paperclipai run` and reported zero offenders.
+    const backtick = "a stray ` tick then pnpm paperclipai run `hostname`";
+    expect(scanText("doc/E.md", backtick)).toHaveLength(1);
+    // Mixed: a leading unmatched backtick, then a double-quoted `$( )` suffix.
+    const mixedA = 'a stray ` tick then pnpm paperclipai run "$(cat secret)"';
+    expect(scanText("doc/E.md", mixedA)).toHaveLength(1);
+    // Mixed: a leading unmatched double quote, then a backtick suffix.
+    const mixedB = 'a stray " quote then pnpm paperclipai run `hostname`';
+    expect(scanText("doc/E.md", mixedB)).toHaveLength(1);
+  });
+
+  it("does not let an escaped delimiter before the marker open a span", () => {
+    // An escaped quote is literal text, not a span opener. Round-4 counted the
+    // `"` in `\"` as a real delimiter, opened a span, and could fail open. The
+    // guard ignores an escaped delimiter, so it extracts the full command.
+    const escapedQuote = 'a label \\" then pnpm paperclipai run "$(dangerous)"';
+    expect(scanText("doc/E.md", escapedQuote)).toHaveLength(1);
+    const escapedTick = "a label \\` then pnpm paperclipai run `hostname`";
+    expect(scanText("doc/E.md", escapedTick)).toHaveLength(1);
+    // An escaped delimiter directly before the marker is not an adjacent opener,
+    // so the guard fails closed and keeps the dangerous suffix.
+    const adjacentEscaped = '\\"pnpm paperclipai run "$(dangerous)"';
+    expect(scanText("doc/E.md", adjacentEscaped)).toHaveLength(1);
+  });
+
+  it("still trusts a span whose opener is adjacent to the marker", () => {
+    // A Markdown inline-code span and a source string literal both place the
+    // opener directly before the marker, so the guard reads the full command
+    // inside the span and matches the allowlist. An optional `$ ` prompt inside
+    // the span still counts as adjacent.
+    expect(scanText("doc/E.md", "Run `pnpm paperclipai run` to start.")).toEqual([]);
+    expect(scanText("doc/E.md", '  command: "pnpm paperclipai onboard --yes --run",')).toEqual([]);
+    expect(scanText("doc/E.md", "Run `$ pnpm paperclipai doctor` to check.")).toEqual([]);
   });
 
   it("flags an allowlisted prefix with a backtick suffix on a continued line", () => {
