@@ -4916,6 +4916,28 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     )).toBe(true);
   });
 
+  it("does not reap a local run without a pid while process metadata is still fresh", async () => {
+    const { runId } = await seedRunFixture({
+      processPid: null,
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        startedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(0);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+  });
+
   it("retries a pending execution-review participant when another agent has an active issue run", async () => {
     const { companyId, agentId, issueId, runId } = await seedInReviewParticipantRunFixture();
     const otherAgentId = randomUUID();
