@@ -50,6 +50,7 @@ const {
     resolveSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
     reconcileHotRestartAdoption: vi.fn(async () => ({ mode: "none" })),
     reapOrphanedRuns: vi.fn(async () => ({ reaped: 0, runIds: [] })),
+    reapStaleQueuedExecutionLocks: vi.fn(async () => ({ reaped: 0, runIds: [], issueIds: [] })),
     promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),
     resumeQueuedRuns: vi.fn(async () => undefined),
     reconcileStrandedAssignedIssues: vi.fn(async () => ({
@@ -487,6 +488,7 @@ describe("startServer feedback export wiring", () => {
       await startServer();
 
       expect(heartbeatServiceMock.reapOrphanedRuns).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.reapStaleQueuedExecutionLocks).not.toHaveBeenCalled();
       expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).toHaveBeenCalledTimes(1);
 
@@ -550,6 +552,13 @@ describe("startServer feedback export wiring", () => {
 
     expect(heartbeatServiceMock.reconcileHotRestartAdoption).toHaveBeenCalledTimes(1);
     expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(2);
+    expect(heartbeatServiceMock.reapStaleQueuedExecutionLocks).toHaveBeenCalledTimes(1);
+    expect(heartbeatServiceMock.promoteDueScheduledRetries.mock.invocationCallOrder[0]).toBeLessThan(
+      heartbeatServiceMock.resumeQueuedRuns.mock.invocationCallOrder[0]!,
+    );
+    expect(heartbeatServiceMock.resumeQueuedRuns.mock.invocationCallOrder[0]).toBeLessThan(
+      heartbeatServiceMock.reapStaleQueuedExecutionLocks.mock.invocationCallOrder[0]!,
+    );
   });
 
   it("refuses authenticated public startup without an external database URL", async () => {
