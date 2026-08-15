@@ -470,6 +470,39 @@ const DEFAULT_PENDING_SANDBOX_CLEANUP_SWEEP_PAGE = 20;
  */
 const DEFAULT_PENDING_SANDBOX_CLEANUP_STALE_MS = 5 * 60_000;
 
+/**
+ * The acquire provisioned a remote sandbox, the lease insert rejected it, the
+ * compensating teardown failed, and the durable pending-cleanup write also
+ * failed. A live sandbox now has no lease row and no cleanup record, so no
+ * sweep can find it. The acquire throws this error so the failure stays visible
+ * and never resolves to a clean rejection. The `cause` field holds the original
+ * lease insert rejection. The `cleanupWriteError` field holds the write failure.
+ */
+export class SandboxOrphanCleanupWriteError extends Error {
+  readonly provider: string;
+  readonly providerLeaseId: string | null;
+  readonly cleanupWriteError: unknown;
+
+  constructor(input: {
+    provider: string;
+    providerLeaseId: string | null;
+    cause: unknown;
+    cleanupWriteError: unknown;
+  }) {
+    super(
+      `Sandbox provider "${input.provider}" leaked lease ` +
+        `"${input.providerLeaseId ?? "unknown"}": the acquire could not tear it down ` +
+        "and could not record a durable pending-cleanup row. The live sandbox has no " +
+        "durable cleanup state and needs a manual teardown.",
+      { cause: input.cause },
+    );
+    this.name = "SandboxOrphanCleanupWriteError";
+    this.provider = input.provider;
+    this.providerLeaseId = input.providerLeaseId;
+    this.cleanupWriteError = input.cleanupWriteError;
+  }
+}
+
 export interface EnvironmentRuntimeLeaseRecord {
   environment: Environment;
   lease: EnvironmentLease;
@@ -902,8 +935,14 @@ function createSandboxEnvironmentDriver(
   // provider lease id and the same resolution metadata a normal lease holds, so
   // a later cleanup sweep finds and releases the orphan. The insert skips the
   // company-binding assertion, so it records the orphan even for a foreign-bound
-  // environment. The write is best-effort: a failure keeps the original insert
-  // rejection as the thrown error.
+  // environment.
+  //
+  // The write is not best-effort. A failed teardown already left a live sandbox
+  // with no lease row. If this write also fails, the sandbox has no durable
+  // cleanup state and no sweep can ever find it. So a write failure throws
+  // `SandboxOrphanCleanupWriteError`, which the caller propagates. The error
+  // keeps the original insert rejection as its `cause`, so the real reason the
+  // acquire failed stays visible in the error chain.
   const recordPendingSandboxCleanup = async (record: {
     companyId: string;
     environmentId: string;
@@ -913,6 +952,7 @@ function createSandboxEnvironmentDriver(
     provider: string;
     providerLeaseId: string | null;
     metadata: Record<string, unknown>;
+    cause: unknown;
   }): Promise<void> => {
     try {
       const orphan = await environmentsSvc.acquireLease({
@@ -930,9 +970,13 @@ function createSandboxEnvironmentDriver(
         failureReason: "acquire_rejected_teardown_failed",
         cleanupStatus: "failed",
       });
-    } catch {
-      // The durable cleanup record could not be written. The caller still throws
-      // the original insert rejection, so the real cause stays visible.
+    } catch (cleanupWriteError) {
+      throw new SandboxOrphanCleanupWriteError({
+        provider: record.provider,
+        providerLeaseId: record.providerLeaseId,
+        cause: record.cause,
+        cleanupWriteError,
+      });
     }
   };
 
@@ -1401,8 +1445,10 @@ function createSandboxEnvironmentDriver(
               }
             }
             // The teardown failed, so record a durable pending-cleanup row that a
-            // later sweep retries. Keep the original insert rejection as the
-            // thrown error.
+            // later sweep retries. On a successful write the original insert
+            // rejection stays the thrown error below. If the write also fails,
+            // `recordPendingSandboxCleanup` throws a `SandboxOrphanCleanupWriteError`
+            // that carries the original rejection as its cause.
             if (teardownFailed) {
               await recordPendingSandboxCleanup({
                 companyId: input.companyId,
@@ -1413,6 +1459,7 @@ function createSandboxEnvironmentDriver(
                 provider: parsed.config.provider,
                 providerLeaseId: acquiredLease.providerLeaseId,
                 metadata: pluginLeaseMetadata,
+                cause: error,
               });
             }
           }
@@ -1594,8 +1641,10 @@ function createSandboxEnvironmentDriver(
             teardownFailed = true;
           }
           // The teardown failed, so record a durable pending-cleanup row that a
-          // later sweep retries. Keep the original insert rejection as the thrown
-          // error.
+          // later sweep retries. On a successful write the original insert
+          // rejection stays the thrown error below. If the write also fails,
+          // `recordPendingSandboxCleanup` throws a `SandboxOrphanCleanupWriteError`
+          // that carries the original rejection as its cause.
           if (teardownFailed) {
             await recordPendingSandboxCleanup({
               companyId: input.companyId,
@@ -1606,6 +1655,7 @@ function createSandboxEnvironmentDriver(
               provider: parsed.config.provider,
               providerLeaseId: providerLease.providerLeaseId,
               metadata: builtinLeaseMetadata,
+              cause: error,
             });
           }
         }
