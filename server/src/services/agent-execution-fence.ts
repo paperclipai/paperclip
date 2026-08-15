@@ -29,6 +29,10 @@ function errorChain(error: unknown) {
 export function isAgentExecutionFenceError(error: unknown) {
   return errorChain(error).some((entry) => {
     if (!(entry instanceof Error)) return false;
+    const details = "details" in entry && entry.details && typeof entry.details === "object"
+      ? entry.details as { code?: unknown }
+      : null;
+    if (details?.code === "agent_execution_fenced") return true;
     const code = "code" in entry ? String((entry as Error & { code?: unknown }).code ?? "") : "";
     return code === "55000" && /execution fence/i.test(entry.message);
   });

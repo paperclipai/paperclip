@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agentWakeupRequests,
   agents,
+  budgetPolicies,
   companies,
   createDb,
   heartbeatRunEvents,
@@ -16,6 +17,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { agentExecutionFenceService } from "../services/agent-execution-fence.js";
 import { agentService } from "../services/agents.js";
+import { budgetService } from "../services/budgets.js";
 import { heartbeatService } from "../services/heartbeat.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -35,6 +37,7 @@ describePostgres("agent execution fence", () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(budgetPolicies);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -272,6 +275,108 @@ describePostgres("agent execution fence", () => {
     ).resolves.toBeUndefined();
     await expect(service.get(agent.id, acquired.fenceId)).resolves.toMatchObject({ drained: true });
     await service.release(agent.id, acquired.fenceId);
+  });
+
+  it("cancels unfenced company peers without disturbing fenced work", async () => {
+    const { company, agent: fencedAgent } = await seedAgent("running");
+    const siblingAgent = await db
+      .insert(agents)
+      .values({
+        companyId: company.id,
+        name: "Unfenced Sibling Agent",
+        role: "engineer",
+        status: "running",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {},
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const [fencedRun, siblingRun] = await Promise.all([
+      db
+        .insert(heartbeatRuns)
+        .values({
+          companyId: company.id,
+          agentId: fencedAgent.id,
+          status: "running",
+          startedAt: new Date(),
+        })
+        .returning()
+        .then((rows) => rows[0]!),
+      db
+        .insert(heartbeatRuns)
+        .values({
+          companyId: company.id,
+          agentId: siblingAgent.id,
+          status: "running",
+          startedAt: new Date(),
+        })
+        .returning()
+        .then((rows) => rows[0]!),
+    ]);
+
+    const fences = agentExecutionFenceService(db);
+    const acquired = await fences.acquire({
+      agentId: fencedAgent.id,
+      companyId: company.id,
+      actorUserId: "board-user",
+      reason: "maintenance",
+    });
+    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+
+    await expect(
+      heartbeat.cancelBudgetScopeWork({
+        companyId: company.id,
+        scopeType: "company",
+        scopeId: company.id,
+      }),
+    ).resolves.toBeUndefined();
+
+    const [currentFencedRun, currentSiblingRun] = await Promise.all([
+      db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fencedRun.id)).then((rows) => rows[0]!),
+      db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, siblingRun.id)).then((rows) => rows[0]!),
+    ]);
+    expect(currentFencedRun.status).toBe("running");
+    expect(currentSiblingRun).toMatchObject({
+      status: "cancelled",
+      executionFinalizedAt: expect.any(Date),
+    });
+
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, fencedRun.id));
+    await fences.acknowledgeRunFinalization(fencedRun.id);
+    await fences.release(fencedAgent.id, acquired.fenceId);
+  });
+
+  it("restores an agent to idle when a pre-fence budget pause is resumed", async () => {
+    const priorPausedAt = new Date("2026-08-15T12:00:00.000Z");
+    const { company, agent } = await seedAgent("paused");
+    await db
+      .update(agents)
+      .set({ pauseReason: "budget", pausedAt: priorPausedAt })
+      .where(eq(agents.id, agent.id));
+
+    const fences = agentExecutionFenceService(db);
+    const acquired = await fences.acquire({
+      agentId: agent.id,
+      companyId: company.id,
+      actorUserId: "board-user",
+      reason: "maintenance",
+    });
+    await budgetService(db).upsertPolicy(company.id, {
+      scopeType: "agent",
+      scopeId: agent.id,
+      amount: 0,
+    }, "board-user");
+
+    const released = await fences.release(agent.id, acquired.fenceId);
+    expect(released).toMatchObject({
+      status: "idle",
+      pauseReason: null,
+      pausedAt: null,
+    });
   });
 
   it("does not wait on terminal work that never started", async () => {
@@ -611,6 +716,82 @@ describePostgres("agent execution fence", () => {
     await service.release(agent.id, acquired.fenceId);
   });
 
+  it("acknowledges unfenced shutdown finalization before a later fence", async () => {
+    const { company, agent } = await seedAgent("running");
+    const run = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: company.id,
+        agentId: agent.id,
+        status: "running",
+        startedAt: new Date(),
+        contextSnapshot: { responsibleUserId: "board-user" },
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+
+    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+    const drained = await heartbeat.drainRunningRunsForShutdown("SIGTERM");
+    expect(drained).toMatchObject({
+      interrupted: 1,
+      interruptedRunIds: [run.id],
+    });
+    const finalized = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, run.id))
+      .then((rows) => rows[0]!);
+    expect(finalized).toMatchObject({
+      status: "interrupted",
+      executionFinalizedAt: expect.any(Date),
+    });
+
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "cancelled", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.retryOfRunId, run.id));
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "cancelled", finishedAt: new Date() })
+      .where(eq(agentWakeupRequests.agentId, agent.id));
+
+    const fences = agentExecutionFenceService(db);
+    const acquired = await fences.acquire({
+      agentId: agent.id,
+      companyId: company.id,
+      actorUserId: "board-user",
+      reason: "later maintenance",
+    });
+    await expect(fences.release(agent.id, acquired.fenceId)).resolves.toMatchObject({
+      executionFenceId: null,
+    });
+  });
+
+  it("repairs a missed terminal acknowledgement during orphan reconciliation", async () => {
+    const { company, agent } = await seedAgent("idle");
+    const run = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: company.id,
+        agentId: agent.id,
+        status: "failed",
+        startedAt: new Date(Date.now() - 60_000),
+        finishedAt: new Date(Date.now() - 30_000),
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+
+    await expect(heartbeatService(db, { runtimeEnv: {} }).reapOrphanedRuns()).resolves.toMatchObject({
+      reaped: 0,
+    });
+    const reconciled = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, run.id))
+      .then((rows) => rows[0]!);
+    expect(reconciled.executionFinalizedAt).toEqual(expect.any(Date));
+  });
+
   it("allows terminal wakeup finalization but rejects requeue for pre-fence running work", async () => {
     const { company, agent } = await seedAgent("running");
     const wakeup = await db
@@ -831,7 +1012,8 @@ describePostgres("agent execution fence", () => {
     const audit = await db
       .select({ action: activityLog.action, details: activityLog.details })
       .from(activityLog)
-      .where(eq(activityLog.entityId, agent.id));
+      .where(eq(activityLog.entityId, agent.id))
+      .orderBy(asc(activityLog.createdAt));
     expect(audit.map((entry) => entry.action)).toEqual([
       "agent.execution_fence_acquired",
       "agent.execution_fence_released",

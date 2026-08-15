@@ -2236,7 +2236,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(agentWakeupRequests)
       .where(eq(agentWakeupRequests.id, wakeupRequestId))
       .then((rows) => rows[0] ?? null);
-    expect(wakeup?.status).toBe("cancelled");
+    expect(wakeup?.status).toBe("interrupted");
 
     const issue = await db
       .select()

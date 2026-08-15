@@ -285,10 +285,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       await db
         .update(agents)
         .set({
-          executionFenceRestoreStatus: sql`case
-            when ${agents.executionFencePriorStatus} = 'running' then 'idle'
-            else ${agents.executionFencePriorStatus}
-          end`,
+          executionFenceRestoreStatus: "idle",
           executionFencePriorPauseReason: null,
           executionFencePriorPausedAt: null,
           updatedAt: now,
