@@ -15,8 +15,9 @@
 
 - Build pack: **Dockerfile** (repo root `Dockerfile`)
 - Repo: `yaverabbas/paperclip`
-- Branch: `master` (after merging the Deflector Docker/docs PR; or temporarily point at `feature/deflector-adapter` for a canary)
-- Base image from Dockerfile: `node:lts-trixie-slim` (newer than Node 20; settles better-sqlite3 native verify on Linux)
+- Branch: **`master` only after PR #2 is merged** (Dockerfile must include `make`/`g++` and `packages/adapters/deflector/package.json` in the deps stage). Until then, canary on `feature/deflector-adapter`.
+- Base image from Dockerfile: `node:lts-trixie-slim` (Node 24 LTS on the smoke run; newer than prod's Node 20)
+- Smoke proof (CI): https://github.com/yaverabbas/paperclip/actions/runs/31866886911 — image build + `better-sqlite3` open/insert/select **success**
 
 ## Copy-paste Coolify steps
 
