@@ -2402,6 +2402,80 @@ describe("sandbox adapter execution targets", () => {
     }
   });
 
+  it("forwards the host indeterminate-outcome header so the sandbox server maps the 504 to a non-retryable 409", async () => {
+    // The host marks a possibly-committed mutation with a 504 and the
+    // `x-paperclip-bridge-outcome: indeterminate` header. The forward must keep
+    // that header, so the in-sandbox server maps the 504 to a non-retryable 409.
+    // If the forward drops the header, the client sees a retryable 504 and a
+    // retry repeats a mutation that already committed.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-outcome-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    const runtimeRootDir = path.join(remoteCwd, ".paperclip-runtime", "codex");
+    await mkdir(runtimeRootDir, { recursive: true });
+
+    const responseBody = JSON.stringify({ error: "Mutation outcome is indeterminate.", outcome: "indeterminate", retryable: false });
+    const apiServer = createServer((_req, res) => {
+      res.writeHead(504, {
+        "content-type": "application/json",
+        "x-paperclip-bridge-outcome": "indeterminate",
+      });
+      res.end(responseBody);
+    });
+    await new Promise<void>((resolve, reject) => {
+      apiServer.once("error", reject);
+      apiServer.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = apiServer.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected the bridge outcome test API server to listen on a TCP port.");
+    }
+
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "e2b",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+      timeoutMs: 30_000,
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-bridge-outcome",
+      target,
+      runtimeRootDir,
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: `http://127.0.0.1:${address.port}`,
+    });
+    try {
+      const response = await fetch(`${bridge!.env.PAPERCLIP_API_URL}/api/issues/issue-1/comments`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${bridge!.env.PAPERCLIP_API_KEY}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ body: "Status update." }),
+      });
+
+      // The sandbox server maps the indeterminate 504 to a non-retryable 409.
+      expect(response.status).toBe(409);
+      // The outcome header and body still reach the client, so a caller that
+      // reads them still sees the indeterminate result.
+      expect(response.headers.get("x-paperclip-bridge-outcome")).toBe("indeterminate");
+      await expect(response.json()).resolves.toEqual({
+        error: "Mutation outcome is indeterminate.",
+        outcome: "indeterminate",
+        retryable: false,
+      });
+    } finally {
+      await bridge?.stop();
+      await new Promise<void>((resolve) => apiServer.close(() => resolve()));
+    }
+  });
+
   it("forwards bridge traffic to the local listen origin even when public API URLs are configured", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-local-"));
     cleanupDirs.push(rootDir);

@@ -1246,7 +1246,12 @@ export function runtimeAssetDir(
 
 function buildBridgeResponseHeaders(response: Response): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const key of ["content-type", "etag", "last-modified"]) {
+  // Keep `x-paperclip-bridge-outcome` in this list. The host marks a
+  // possibly-committed mutation with the `indeterminate` outcome. The in-sandbox
+  // server reads that header to map the 504 to a terminal 409. If the forward
+  // drops the header, the server keeps the retryable 504 and a caller that
+  // retries 5xx can repeat a mutation that already committed.
+  for (const key of ["content-type", "etag", "last-modified", "x-paperclip-bridge-outcome"]) {
     const value = response.headers.get(key);
     if (value && value.trim().length > 0) out[key] = value.trim();
   }
