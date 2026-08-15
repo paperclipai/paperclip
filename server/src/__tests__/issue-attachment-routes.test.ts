@@ -781,6 +781,9 @@ describe("issue attachment routes", () => {
           originalFilename: "clip.webm",
         },
       }),
+      // The route now hands the service a callback that writes the transition audit row inside the
+      // update transaction, so the status change and its audit entry commit together.
+      expect.objectContaining({ recordTransition: expect.any(Function) }),
     );
   });
 });
