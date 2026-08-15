@@ -2057,6 +2057,196 @@ describe("sandbox callback bridge", () => {
     await worker.stop({ drainTimeoutMs: 10 });
   });
 
+  it("retries a handler response write that fails transiently and delivers the real response, not a retryable 503", async () => {
+    // A handler settles with its own response, but the terminal write fails
+    // once. `finalize` must retry the write and deliver the real response. It
+    // must not fence out recovery and leave the request for a retryable 503,
+    // which would let the caller repeat a possibly-committed mutation.
+    const waitFor = async (predicate: () => boolean, timeoutMs: number) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (predicate()) {
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      throw new Error("waitFor timed out");
+    };
+
+    const queueDir = "/virtual-bridge/queue";
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const requestFile = "req-write-retry.json";
+    const requestPath = path.posix.join(directories.requestsDir, requestFile);
+    const responsePath = path.posix.join(directories.responsesDir, requestFile);
+
+    const requestBodies = new Map<string, string>();
+    requestBodies.set(requestPath, bridgeRequestJson("req-write-retry"));
+    const responseWrites: Array<{ path: string; status: number; body: string }> = [];
+    const requestRemovals: string[] = [];
+    let writeAttempts = 0;
+
+    const client: SandboxCallbackBridgeQueueClient = {
+      makeDir: async () => {},
+      makeDirs: async () => {},
+      listJsonFiles: async (dir) =>
+        dir === directories.requestsDir
+          ? [...requestBodies.keys()].map((entry) => path.posix.basename(entry)).sort()
+          : [],
+      readTextFile: async (remotePath) => {
+        const body = requestBodies.get(remotePath);
+        if (body === undefined) {
+          throw new Error(`missing request ${remotePath}`);
+        }
+        return body;
+      },
+      writeTextFile: async () => {},
+      writeResponseFile: async (remotePath, body) => {
+        writeAttempts += 1;
+        // The first handler-response write fails; the retry then succeeds.
+        if (writeAttempts === 1) {
+          throw new Error("simulated transient response write failure");
+        }
+        responseWrites.push({ path: remotePath, status: JSON.parse(body.trim()).status, body });
+        return { wrote: true };
+      },
+      rename: async () => {},
+      remove: async (remotePath) => {
+        requestRemovals.push(remotePath);
+        requestBodies.delete(remotePath);
+      },
+    };
+
+    const { runtimeSpan } = createWorkerErrorCapture();
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      iterationTimeoutMs: 500,
+      watchdogTimeoutMs: 10_000,
+      runtimeSpan,
+      authorizeRequest: async () => null,
+      // The handler settles with its own 200 response.
+      handleRequest: async () => ({ status: 200, body: JSON.stringify({ ok: true }) }),
+    });
+
+    await waitFor(() => responseWrites.some((write) => write.path === responsePath), 3_000);
+
+    // Exactly one response landed: the handler's real 200. The retry delivered it
+    // after the transient failure.
+    const requestResponses = responseWrites.filter((write) => write.path === responsePath);
+    expect(requestResponses).toHaveLength(1);
+    expect(requestResponses[0]?.status).toBe(200);
+    expect(writeAttempts).toBeGreaterThanOrEqual(2);
+    // The bridge wrote no retryable status, so the caller does not repeat the
+    // request.
+    expect(responseWrites.some((write) => write.status === 503)).toBe(false);
+    expect(responseWrites.some((write) => write.status === 502)).toBe(false);
+    // The handler removed the request file after the write landed.
+    expect(requestRemovals).toContain(requestPath);
+
+    await worker.stop({ drainTimeoutMs: 10 });
+  });
+
+  it("re-arms the 504 backstop when every handler response write fails, so the caller gets a terminal 504 instead of stranding", async () => {
+    // A handler settles with its own response, but every terminal write fails.
+    // `finalize` must roll back the fence and re-arm the 504 backstop, so the
+    // recovery still delivers a non-retryable terminal response. Without the
+    // re-arm, a rejected write leaves the request for a retryable 503 and a hung
+    // write strands the caller until its own deadline.
+    const waitFor = async (predicate: () => boolean, timeoutMs: number) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (predicate()) {
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      throw new Error("waitFor timed out");
+    };
+
+    const queueDir = "/virtual-bridge/queue";
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const requestFile = "req-write-backstop.json";
+    const requestPath = path.posix.join(directories.requestsDir, requestFile);
+    const responsePath = path.posix.join(directories.responsesDir, requestFile);
+
+    const requestBodies = new Map<string, string>();
+    requestBodies.set(requestPath, bridgeRequestJson("req-write-backstop"));
+    const responseWrites: Array<{ path: string; status: number; body: string }> = [];
+    const requestRemovals: string[] = [];
+    let writeAttempts = 0;
+
+    const client: SandboxCallbackBridgeQueueClient = {
+      makeDir: async () => {},
+      makeDirs: async () => {},
+      listJsonFiles: async (dir) =>
+        dir === directories.requestsDir
+          ? [...requestBodies.keys()].map((entry) => path.posix.basename(entry)).sort()
+          : [],
+      readTextFile: async (remotePath) => {
+        const body = requestBodies.get(remotePath);
+        if (body === undefined) {
+          throw new Error(`missing request ${remotePath}`);
+        }
+        return body;
+      },
+      writeTextFile: async () => {},
+      writeResponseFile: async (remotePath, body) => {
+        writeAttempts += 1;
+        // Fail every `finalize` write attempt. The re-armed 504 backstop then
+        // writes on a later attempt.
+        if (writeAttempts <= 3) {
+          throw new Error("simulated persistent response write failure");
+        }
+        responseWrites.push({ path: remotePath, status: JSON.parse(body.trim()).status, body });
+        return { wrote: true };
+      },
+      rename: async () => {},
+      remove: async (remotePath) => {
+        requestRemovals.push(remotePath);
+        requestBodies.delete(remotePath);
+      },
+    };
+
+    const { runtimeSpan } = createWorkerErrorCapture();
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      iterationTimeoutMs: 500,
+      watchdogTimeoutMs: 10_000,
+      // A short grace, so the re-armed backstop fires quickly.
+      abortedHandlerGraceMs: 30,
+      runtimeSpan,
+      authorizeRequest: async () => null,
+      // The handler settles with its own 200 response, a committed mutation.
+      handleRequest: async () => ({ status: 200, body: JSON.stringify({ ok: true }) }),
+    });
+
+    // The re-armed backstop writes the terminal 504 after the finalize writes fail.
+    await waitFor(() => responseWrites.some((write) => write.path === responsePath), 3_000);
+
+    const requestResponses = responseWrites.filter((write) => write.path === responsePath);
+    expect(requestResponses).toHaveLength(1);
+    // The backstop delivered a non-retryable 504 with an indeterminate outcome.
+    expect(requestResponses[0]?.status).toBe(504);
+    const parsed = JSON.parse(requestResponses[0]?.body ?? "{}");
+    const responseBody = JSON.parse(parsed.body);
+    expect(responseBody.outcome).toBe("indeterminate");
+    expect(responseBody.retryable).toBe(false);
+    expect(parsed.headers?.["x-paperclip-bridge-outcome"]).toBe("indeterminate");
+    // The finalize writes failed before the backstop wrote, so it took a later
+    // attempt.
+    expect(writeAttempts).toBeGreaterThanOrEqual(4);
+    // The bridge wrote no retryable status for the possibly-committed mutation.
+    expect(responseWrites.some((write) => write.status === 503)).toBe(false);
+    expect(responseWrites.some((write) => write.status === 502)).toBe(false);
+    // The backstop removed the request file, so it does not strand in the queue.
+    expect(requestRemovals).toContain(requestPath);
+
+    await worker.stop({ drainTimeoutMs: 10 });
+  });
+
   it("maps an indeterminate host outcome to a non-retryable 409 in the in-sandbox bridge server", () => {
     // The in-sandbox server returns the host response to the sandbox caller. A 5xx
     // status is retryable by convention, so the server must not forward the

@@ -878,12 +878,48 @@ export async function startSandboxCallbackBridgeWorker(input: {
         return;
       }
       guard.finalized = true;
+      // This finalize now owns delivery for the request, so drop a pending
+      // backstop timer. The handler settled inside the grace, so the backstop no
+      // longer needs to wait; `finalize` delivers the terminal response itself,
+      // inline, and never leaves the request file for a detached timer that the
+      // busy poll loop could starve.
       if (guard.backstopTimer !== undefined) {
         clearTimeout(guard.backstopTimer);
         guard.backstopTimer = undefined;
       }
-      await writeBridgeResponse(input.client, requestPath, responsePath, response);
-      await input.client.remove(requestPath);
+      // Write the handler response, bounded by the per-iteration timeout so a
+      // hung sandbox channel never strands the caller until its own generic
+      // deadline. Retry a transient write failure, exactly like the 504 backstop
+      // write.
+      let lastWriteError = "Sandbox callback bridge could not write the handler response.";
+      for (let attempt = 1; attempt <= MAX_BACKSTOP_WRITE_ATTEMPTS; attempt += 1) {
+        try {
+          await withTimeout(
+            writeBridgeResponse(input.client, requestPath, responsePath, response),
+            iterationTimeoutMs,
+            `Sandbox callback bridge write response for ${response.id}`,
+          );
+          await input.client.remove(requestPath).catch(() => undefined);
+          return;
+        } catch (error) {
+          lastWriteError = error instanceof Error ? error.message : String(error);
+          console.warn(
+            `[paperclip] sandbox callback bridge failed to write response for ${response.id} (attempt ${attempt}/${MAX_BACKSTOP_WRITE_ATTEMPTS}): ${lastWriteError}`,
+          );
+          if (attempt < MAX_BACKSTOP_WRITE_ATTEMPTS) {
+            await new Promise((resolve) => setTimeout(resolve, BACKSTOP_WRITE_RETRY_MS));
+          }
+        }
+      }
+      // Every handler-response write failed. Deliver a non-retryable 504 backstop
+      // inline, so the caller gets a terminal response instead of a retryable 503
+      // that repeats a possibly-committed mutation, or a strand until its own
+      // deadline. Roll the `finalized` fence back so `writeAbortedHandlerBackstop`
+      // can proceed; it re-fences, retries the 504 write, and removes the request
+      // file. Await it, so the request file does not linger for the poll loop
+      // while the loop still runs.
+      guard.finalized = false;
+      await writeAbortedHandlerBackstop(fileName, guard, lastWriteError);
     };
     try {
       const raw = await input.client.readTextFile(requestPath);
@@ -984,8 +1020,12 @@ export async function startSandboxCallbackBridgeWorker(input: {
     } finally {
       // Drop the guard only when it still points to this attempt. A retry can
       // register a new attempt under the same file name; that new guard must
-      // stay in the map.
-      if (inFlightRequestGuards.get(fileName) === guard) {
+      // stay in the map. Keep the guard when a backstop is still pending: a
+      // failed terminal write re-arms the backstop and keeps the request file,
+      // so the guard must stay in the map. The poll loop then skips the file and
+      // does not re-run a possibly-committed mutation before the backstop writes
+      // its 504.
+      if (guard.backstopTimer === undefined && inFlightRequestGuards.get(fileName) === guard) {
         inFlightRequestGuards.delete(fileName);
       }
     }
