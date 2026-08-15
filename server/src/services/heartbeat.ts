@@ -13160,6 +13160,56 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Math.floor(value);
   }
 
+  // Atomically claim one retry attempt on a pending_cleanup lease. The update
+  // only matches when the lease is still pending_cleanup and its stored attempt
+  // count still equals `expectedAttempts`. Two concurrent sweeps read the same
+  // count, but Postgres serializes the two updates on the row and only the first
+  // matches the guard. The loser gets zero rows and skips the lease. This bounds
+  // the retries to the cap and stops a second destroy of the same lease.
+  // Returns true only for the sweep that won the claim.
+  async function claimPendingCleanupRetryAttempt(
+    leaseId: string,
+    expectedAttempts: number,
+    nextMetadata: Record<string, unknown>,
+  ): Promise<boolean> {
+    const now = new Date();
+    const claimed = await db
+      .update(environmentLeases)
+      .set({ metadata: nextMetadata, lastUsedAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(environmentLeases.id, leaseId),
+          eq(environmentLeases.status, "pending_cleanup"),
+          sql`coalesce((${environmentLeases.metadata} ->> ${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY})::int, 0) = ${expectedAttempts}`,
+        ),
+      )
+      .returning({ id: environmentLeases.id });
+    return claimed.length > 0;
+  }
+
+  // Atomically claim the one-time cap warning for a lease. The update only
+  // matches when the lease has not yet carried the warned flag. Two concurrent
+  // sweeps that both reach the cap race here, but only one update sets the flag
+  // and returns a row. The loser skips the warning. This keeps the warning to
+  // one log line per lease.
+  async function claimPendingCleanupCapWarning(
+    leaseId: string,
+    nextMetadata: Record<string, unknown>,
+  ): Promise<boolean> {
+    const now = new Date();
+    const claimed = await db
+      .update(environmentLeases)
+      .set({ metadata: nextMetadata, updatedAt: now })
+      .where(
+        and(
+          eq(environmentLeases.id, leaseId),
+          sql`coalesce((${environmentLeases.metadata} ->> ${PENDING_CLEANUP_CAP_WARNED_METADATA_KEY})::boolean, false) = false`,
+        ),
+      )
+      .returning({ id: environmentLeases.id });
+    return claimed.length > 0;
+  }
+
   // Retry the leases stranded in "pending_cleanup". A failed destroy leaves a
   // lease in that state forever without this sweep. The reaper tick runs the
   // sweep. The backoff equals the reaper staleness threshold, so a lease waits
@@ -13195,16 +13245,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       if (attempts >= PENDING_CLEANUP_SWEEP_ATTEMPT_CAP) {
         capped += 1;
-        // Warn once, then leave the lease for manual cleanup.
+        // Warn once, then leave the lease for manual cleanup. The atomic claim
+        // keeps the warning to one log line even when two sweeps overlap.
         if (metadata[PENDING_CLEANUP_CAP_WARNED_METADATA_KEY] !== true) {
-          logger.warn(
-            { leaseId: row.id, environmentId: row.environmentId, attempts },
-            "environment lease reached the pending_cleanup retry cap; left for manual cleanup",
-          );
-          await environmentsSvc.updateLeaseMetadata(row.id, {
+          const warned = await claimPendingCleanupCapWarning(row.id, {
             ...metadata,
             [PENDING_CLEANUP_CAP_WARNED_METADATA_KEY]: true,
           });
+          if (warned) {
+            logger.warn(
+              { leaseId: row.id, environmentId: row.environmentId, attempts },
+              "environment lease reached the pending_cleanup retry cap; left for manual cleanup",
+            );
+          }
         }
         continue;
       }
@@ -13213,12 +13266,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const lease = await environmentsSvc.getLeaseById(row.id);
       if (!environment || !lease) continue;
 
-      // Record the attempt before the retry, so a thrown driver error still
-      // counts against the cap.
-      await environmentsSvc.updateLeaseMetadata(row.id, {
+      // Atomically claim the attempt before the retry. Only the winning sweep
+      // increments the count and destroys the lease, so an overlapping sweep
+      // never destroys the same lease twice or exceeds the attempt cap. The
+      // claim records the attempt before the retry, so a thrown driver error
+      // still counts against the cap.
+      const claimed = await claimPendingCleanupRetryAttempt(row.id, attempts, {
         ...metadata,
         [PENDING_CLEANUP_ATTEMPTS_METADATA_KEY]: attempts + 1,
       });
+      if (!claimed) continue;
 
       try {
         const result = await environmentRuntime.destroyRunLease({
