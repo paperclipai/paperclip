@@ -34,9 +34,51 @@ describe("env-lab cleanup command hint", () => {
     process.chdir(originalCwd);
   });
 
-  // Return the two quoted path arguments from the `node` command.
+  // Split a command that uses POSIX single-quoting into its argument tokens. The
+  // parser reads a single-quoted span verbatim and reads `\'` outside a span as a
+  // literal single quote. This is the same rule a POSIX shell obeys, so a token
+  // list proves the shell reads the exact paths and runs no embedded command.
+  function tokenizePosix(command: string): string[] {
+    const tokens: string[] = [];
+    let current = "";
+    let started = false;
+    let inQuotes = false;
+    for (let index = 0; index < command.length; index += 1) {
+      const character = command[index];
+      if (inQuotes) {
+        if (character === "'") {
+          inQuotes = false;
+        } else {
+          current += character;
+        }
+      } else if (character === "'") {
+        inQuotes = true;
+        started = true;
+      } else if (character === "\\") {
+        index += 1;
+        current += command[index];
+        started = true;
+      } else if (character === " ") {
+        if (started) {
+          tokens.push(current);
+          current = "";
+          started = false;
+        }
+      } else {
+        current += character;
+        started = true;
+      }
+    }
+    if (started) {
+      tokens.push(current);
+    }
+    return tokens;
+  }
+
+  // Return the two path arguments from the `node` command.
   function extractPaths(command: string): string[] {
-    return [...command.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+    const tokens = tokenizePosix(command);
+    return tokens.slice(1, 3);
   }
 
   it("resolves both CLI paths to absolute paths", () => {
@@ -80,4 +122,34 @@ describe("env-lab cleanup command hint", () => {
     expect(command).not.toContain("pnpm paperclipai");
     expect(command).not.toContain("pnpm exec paperclipai");
   });
+
+  // A checkout path can hold shell metacharacters. A contributor copies the hint
+  // and pastes it into a shell. The hint must neutralize each metacharacter, so
+  // the shell reads the exact path and runs no embedded command. Each case below
+  // is a checkout root with one dangerous construct.
+  const dangerousRoots = [
+    { label: "a dollar sign", root: "/tmp/env$lab/checkout" },
+    { label: "command substitution", root: "/tmp/$(touch pwned)/checkout" },
+    { label: "backticks", root: "/tmp/`touch pwned`/checkout" },
+    { label: "a double quote", root: '/tmp/env"lab/checkout' },
+    { label: "a single quote", root: "/tmp/env'lab/checkout" },
+  ];
+
+  for (const { label, root } of dangerousRoots) {
+    it(`keeps a checkout path with ${label} inert in the cleanup hint`, () => {
+      const command = buildEnvLabCleanupCommand(root);
+      const tokens = tokenizePosix(command);
+      const tsxBin = path.join(root, "node_modules", "tsx", "dist", "cli.mjs");
+      const entry = path.join(root, "src", "index.ts");
+
+      // The shell reads the exact paths as single argument tokens. It does not
+      // split the paths or run the embedded construct.
+      expect(tokens).toEqual(["node", tsxBin, entry, "env-lab", "down"]);
+
+      // The old double-quoted form left `$(...)`, a backtick pair, and `$NAME`
+      // live. Do not restore it.
+      expect(command).not.toContain(`"${tsxBin}"`);
+      expect(command).not.toContain(`"${entry}"`);
+    });
+  }
 });

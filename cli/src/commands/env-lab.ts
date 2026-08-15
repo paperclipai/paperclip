@@ -112,21 +112,39 @@ export async function envLabDownCommand(opts: { instance?: string; json?: boolea
   p.log.message(`State: ${pc.dim(statePath)}`);
 }
 
+// Quote one argument for a POSIX shell. The env-lab cleanup hint is copyable, so
+// a contributor can paste it into a shell. A checkout path can hold shell
+// metacharacters, such as `$`, a backtick, or a double quote. Inside double
+// quotes a POSIX shell still expands `$(...)`, a backtick pair, and `$NAME`, and
+// a double quote in the path ends the quoted span. So double quotes do not make
+// the path safe. Single quotes stop every expansion. This function wraps the
+// value in single quotes and rewrites each embedded single quote as the `'\''`
+// sequence. The shell then reads the exact path and runs no embedded command.
+function shellQuoteArgument(value: string): string {
+  return "'" + value.replace(/'/g, "'\\''") + "'";
+}
+
+// Resolve the root of the `cli` package from the module location. The env-lab
+// fixture runs from a source checkout. A contributor can run `env-lab doctor`
+// from any subdirectory of the checkout. A path relative to the caller's working
+// directory would break outside the repository root. This function resolves an
+// absolute root from `import.meta.url`, so the command works from any directory.
+function resolveEnvLabCliRoot(): string {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  return path.resolve(moduleDir, "..", "..");
+}
+
 // Build the env-lab cleanup hint as a command with absolute paths. The env-lab
 // fixture runs from a source checkout, so the hint must run the checked-out CLI,
-// not the published binary. A contributor can run `env-lab doctor` from any
-// subdirectory of the checkout. Relative `cli/...` paths resolve against the
-// caller's working directory, so they break outside the repository root. This
-// function resolves the paths from the module location, so the command works
-// from any directory. It runs the local `cli/src` through tsx and passes an
-// inert `argv` value, so no shell reads the argument. The two paths carry double
-// quotes, so a directory with a space in its name stays intact.
-export function buildEnvLabCleanupCommand(): string {
-  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-  const cliRoot = path.resolve(moduleDir, "..", "..");
+// not the published binary. The command runs the local `cli/src` through tsx and
+// passes an inert `argv` value, so no shell reads the argument. Both paths pass
+// through `shellQuoteArgument`, so a metacharacter in the checkout path stays
+// inert when a contributor pastes the command. The `cliRoot` parameter is a test
+// seam; production callers use the resolved checkout root.
+export function buildEnvLabCleanupCommand(cliRoot: string = resolveEnvLabCliRoot()): string {
   const tsxBin = path.join(cliRoot, "node_modules", "tsx", "dist", "cli.mjs");
   const entry = path.join(cliRoot, "src", "index.ts");
-  return `node "${tsxBin}" "${entry}" env-lab down`;
+  return `node ${shellQuoteArgument(tsxBin)} ${shellQuoteArgument(entry)} env-lab down`;
 }
 
 export async function envLabDoctorCommand(opts: { instance?: string; json?: boolean }) {
