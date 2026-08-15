@@ -383,6 +383,65 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
+  it("uses a nested provider-credit reset time during direct escalation", async () => {
+    const expectedRetryAt = new Date();
+    expectedRetryAt.setUTCMinutes(0, 0, 0);
+    expectedRetryAt.setUTCHours(expectedRetryAt.getUTCHours() + 2);
+    const resetHour = String(expectedRetryAt.getUTCHours()).padStart(2, "0");
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    const latestRun = {
+      id: randomUUID(),
+      agentId: coderId,
+      status: "failed",
+      error:
+        "HTTP 402 ProviderError: This request requires more credits, or fewer max_tokens.",
+      errorCode: "adapter_failed",
+      contextSnapshot: { issueId: sourceIssue.id },
+      livenessState: "needs_followup",
+      resultJson: {
+        result: {
+          error: {
+            message: `HTTP 402 ProviderError: This request requires more credits, or fewer max_tokens. Try again at ${resetHour}:00 (UTC).`,
+          },
+        },
+      },
+    } as const;
+    await db.insert(heartbeatRuns).values({
+      id: latestRun.id,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      error: latestRun.error,
+      errorCode: latestRun.errorCode,
+      resultJson: latestRun.resultJson,
+      contextSnapshot: latestRun.contextSnapshot,
+      livenessState: latestRun.livenessState,
+    });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun,
+    });
+
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(action?.monitorPolicy).toMatchObject({
+      type: "wait_recovery",
+      retryAgentId: coderId,
+      retryAt: expectedRetryAt.toISOString(),
+    });
+    const [scheduledRun] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "scheduled_retry"));
+    expect(scheduledRun?.scheduledRetryAt?.toISOString()).toBe(expectedRetryAt.toISOString());
+  });
+
   it.each([
     ["process_lost", undefined, "coder"],
     ["adapter_failed", "successful_run_missing_state", "coder"],

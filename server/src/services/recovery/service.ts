@@ -373,7 +373,7 @@ export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
 const PROVIDER_CREDIT_EXHAUSTION_ERROR_RE =
-  /(?:http\s*402|requires? more credits?|add more credits?|insufficient credits?|insufficient balance for (?:this )?(?:request|model|provider)|not enough credits?|(?:^|[\n"'=:]\s*)provider payment required|(?:^|[\n"'=:]\s*)(?:your )?credit balance (?:is )?(?:too low|insufficient))/i;
+  /(?:http\s*402\b|requires? more credits?|add more credits?|insufficient credits?|insufficient balance for (?:this )?(?:request|model|provider)|not enough credits?|(?:^|[\n"'=:]\s*)provider payment required|(?:^|[\n"'=:]\s*)(?:your )?credit balance (?:is )?(?:too low|insufficient))/i;
 const PROVIDER_CREDIT_EXHAUSTION_RESULT_SIGNATURE_RE =
   /(?:\bmax_tokens\b|can only afford|openrouter\.ai\/settings\/credits)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
@@ -3012,6 +3012,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   function readProviderQuotaRetryAt(latestRun: LatestIssueRun, now: Date) {
+    const classification = classifyAdapterFailureForRecovery(latestRun, now);
+    if (classification?.kind === "provider_quota") return classification.retryAt;
+
     const result = parseObject(latestRun?.resultJson);
     const context = parseObject(latestRun?.contextSnapshot);
     const raw = result.providerQuotaRetryNotBefore ??

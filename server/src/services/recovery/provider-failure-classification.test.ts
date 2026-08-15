@@ -74,6 +74,14 @@ describe("classifyAdapterFailureForRecovery", () => {
     });
   });
 
+  it("does not classify HTTP 4020 from a direct adapter error as provider quota", () => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "adapter_failed",
+      error: "HTTP 4020 is an internal documentation reference.",
+      resultJson: null,
+    })).toBeNull();
+  });
+
   it.each([
     "Customer invoice: payment required before delivery",
     "Customer has insufficient balance to pay the invoice",
