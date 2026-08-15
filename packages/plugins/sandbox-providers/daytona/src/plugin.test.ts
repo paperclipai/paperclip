@@ -160,6 +160,7 @@ describe("Daytona sandbox provider plugin", () => {
         image: null,
         language: "typescript",
         timeoutMs: 450000,
+        livenessTimeoutMs: 30000,
         cpu: null,
         memory: null,
         disk: null,
@@ -2841,6 +2842,38 @@ describe("Daytona sandbox provider plugin", () => {
 
       expect(mockGet).toHaveBeenCalledTimes(2);
       expect(second.process.executeCommand).toHaveBeenCalledTimes(1);
+    });
+
+    it("surfaces a bounded timeout when the freshness refresh never responds", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a", state: "started" });
+      // The sandbox connection went silent: `refreshData` never resolves and
+      // never rejects. Without a per-call bound the exec would stall until the
+      // outer RPC ceiling fires.
+      sandbox.refreshData.mockImplementation(() => new Promise<void>(() => {}));
+      mockGet.mockResolvedValue(sandbox);
+      // A short liveness bound keeps the test fast and proves the config path.
+      const config = { timeoutMs: 300000, reuseLease: false, livenessTimeoutMs: 50 };
+
+      let nowMs = 4_000_000;
+      const restoreFreshness = setDaytonaHandleFreshnessClockForTest(() => nowMs);
+      try {
+        // Prime the cache (single fetch, snapshot "started").
+        await plugin.definition.onEnvironmentExecute?.({ ...execParams("lease-a"), config });
+        // Idle past half of the default 15-min auto-stop interval so the next
+        // lookup refreshes the stale handle.
+        nowMs += 8 * 60_000;
+        await expect(
+          plugin.definition.onEnvironmentExecute?.({ ...execParams("lease-a"), config }),
+        ).rejects.toThrow(/did not respond within 50 ms/);
+      } finally {
+        restoreFreshness();
+      }
+
+      expect(sandbox.refreshData).toHaveBeenCalledTimes(1);
+      // The failed refresh evicted the handle, so the next lookup re-fetches.
+      await plugin.definition.onEnvironmentExecute?.({ ...execParams("lease-a"), config });
+      expect(mockGet).toHaveBeenCalledTimes(2);
     });
 
     it("realizes the workspace from the acquire-seeded handle without a client.get", async () => {
