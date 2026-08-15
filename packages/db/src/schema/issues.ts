@@ -70,6 +70,9 @@ export const issues = pgTable(
     blockedTransitionAt: timestamp("blocked_transition_at", { withTimezone: true }),
     blockedOwnerNotifiedAt: timestamp("blocked_owner_notified_at", { withTimezone: true }),
     startedAt: timestamp("started_at", { withTimezone: true }),
+    // Deliberately independent from work duration and generic updates: this is
+    // the grace clock for the currently routed executor.
+    executorRoutingStartedAt: timestamp("executor_routing_started_at", { withTimezone: true }).notNull().defaultNow(),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
     hiddenAt: timestamp("hidden_at", { withTimezone: true }),

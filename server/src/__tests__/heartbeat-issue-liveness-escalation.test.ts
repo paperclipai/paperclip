@@ -812,6 +812,99 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(result.escalationsCreated).toBe(0);
   });
 
+  it("recovers imported assigned in-progress work with no work start after its routing grace expires", async () => {
+    await enableAutoRecovery();
+    const { companyId, coderId } = await seedBlockedChain({
+      blockerStatus: "done",
+      blockerAssigneeAgentId: "coder",
+    });
+    const importedIssueId = randomUUID();
+    await issueService(db).importIssues(companyId, [{
+      id: importedIssueId,
+      ref: "imported-routing-stall",
+      projectId: null,
+      projectWorkspaceId: null,
+      title: "Imported executor routing stall",
+      description: null,
+      assigneeAgentId: coderId,
+      status: "in_progress",
+      priority: "medium",
+      billingCode: null,
+      assigneeAdapterOverrides: null,
+      executionWorkspaceSettings: null,
+      labelIds: [],
+      monitorNotes: null,
+      monitorScheduledBy: null,
+    }]);
+    const [imported] = await db
+      .select({
+        startedAt: issues.startedAt,
+        executorRoutingStartedAt: issues.executorRoutingStartedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, importedIssueId));
+    expect(imported).toMatchObject({ startedAt: null, executorRoutingStartedAt: expect.any(Date) });
+
+    await db
+      .update(issues)
+      .set({ executorRoutingStartedAt: new Date(Date.now() - 16 * 60 * 1000) })
+      .where(eq(issues.id, importedIssueId));
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(1);
+    expect(result.escalationsCreated).toBe(1);
+    await expect(db
+      .select({ parentId: issues.parentId, originKind: issues.originKind })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation"))))
+      .resolves.toEqual([{ parentId: importedIssueId, originKind: "harness_liveness_escalation" }]);
+  });
+
+  it("starts a fresh executor routing grace period when assigned work enters in progress", async () => {
+    await enableAutoRecovery();
+    const { blockerIssueId } = await seedBlockedChain({ blockerAssigneeAgentId: "coder" });
+    await db
+      .update(issues)
+      .set({ executorRoutingStartedAt: new Date(Date.now() - 16 * 60 * 1000) })
+      .where(eq(issues.id, blockerIssueId));
+
+    await issueService(db).update(blockerIssueId, { status: "in_progress" });
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(0);
+    expect(result.escalationsCreated).toBe(0);
+  });
+
+  it("gives a reassigned in-progress executor a full routing grace period", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, coderId, blockerIssueId } = await seedBlockedChain({
+      blockerStatus: "in_progress",
+      blockerAssigneeAgentId: "coder",
+    });
+    await db
+      .update(issues)
+      .set({ startedAt: new Date(Date.now() - 16 * 60 * 1000) })
+      .where(eq(issues.id, blockerIssueId));
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      status: "running",
+      contextSnapshot: { issueId: blockerIssueId },
+    });
+
+    await issueService(db).update(blockerIssueId, { assigneeAgentId: managerId });
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(0);
+    expect(result.escalationsCreated).toBe(0);
+    await expect(db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation"))))
+      .resolves.toHaveLength(0);
+  });
+
   it("escalates an assigned in-progress blocker when only its manager has an active run", async () => {
     await enableAutoRecovery();
     const { companyId, managerId, coderId, blockedIssueId, blockerIssueId } = await seedBlockedChain({
@@ -830,6 +923,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .update(issues)
       .set({
         startedAt: new Date(Date.now() - 16 * 60 * 1000),
+        executorRoutingStartedAt: new Date(Date.now() - 16 * 60 * 1000),
         // Unrelated edits update this timestamp but must not postpone recovery.
         updatedAt: new Date(),
       })
