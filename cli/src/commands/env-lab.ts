@@ -138,7 +138,7 @@ export async function envLabDoctorCommand(opts: { instance?: string; json?: bool
     p.log.message(`State: ${pc.dim(status.statePath)}`);
   }
 
-  p.log.message(`Cleanup: ${pc.dim("pnpm paperclipai env-lab down")}`);
+  p.log.message(`Cleanup: ${pc.dim("npx paperclipai env-lab down")}`);
 }
 
 export function registerEnvLabCommands(program: Command) {
