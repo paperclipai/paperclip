@@ -1,8 +1,10 @@
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as p from "@clack/prompts";
 import {
   buildEnvLabCleanupCommand,
   collectEnvLabDoctorStatus,
+  envLabDoctorCommand,
   resolveEnvLabCliInvocation,
   resolveEnvLabSshStatePath,
 } from "../commands/env-lab.js";
@@ -225,5 +227,61 @@ describe("env-lab cleanup command hint", () => {
     // command.
     expect(tokens).toEqual(["node", entry, "env-lab", "down"]);
     expect(command).not.toContain(`"${entry}"`);
+  });
+});
+
+describe("env-lab doctor cleanup hint instance", () => {
+  const originalInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+
+  afterEach(() => {
+    if (originalInstanceId === undefined) {
+      delete process.env.PAPERCLIP_INSTANCE_ID;
+    } else {
+      process.env.PAPERCLIP_INSTANCE_ID = originalInstanceId;
+    }
+    vi.restoreAllMocks();
+  });
+
+  // Capture the cleanup hint the doctor prints. The doctor reports through
+  // `p.log`, so the test replaces each channel and reads the captured lines.
+  function captureDoctorMessages(): string[] {
+    const messages: string[] = [];
+    vi.spyOn(p.log, "message").mockImplementation((message?: string) => {
+      messages.push(message ?? "");
+    });
+    vi.spyOn(p.log, "success").mockImplementation(() => {});
+    vi.spyOn(p.log, "warn").mockImplementation(() => {});
+    vi.spyOn(p.log, "info").mockImplementation(() => {});
+    return messages;
+  }
+
+  it("pins the PAPERCLIP_INSTANCE_ID instance when opts.instance is absent", async () => {
+    // The doctor diagnoses the instance that `PAPERCLIP_INSTANCE_ID` selects.
+    // The cleanup hint must target that instance, not the default instance.
+    process.env.PAPERCLIP_INSTANCE_ID = "env-selected-instance";
+    const messages = captureDoctorMessages();
+
+    await envLabDoctorCommand({ instance: undefined });
+
+    const cleanup = messages.find((message) => message.startsWith("Cleanup:"));
+    expect(cleanup).toBeDefined();
+    expect(cleanup).toContain("env-lab down");
+    expect(cleanup).toContain("--instance");
+    expect(cleanup).toContain("env-selected-instance");
+  });
+
+  it("pins the explicit instance over PAPERCLIP_INSTANCE_ID", async () => {
+    // An explicit `--instance` flag overrides the environment variable, so the
+    // hint targets the explicit instance the doctor inspected.
+    process.env.PAPERCLIP_INSTANCE_ID = "env-selected-instance";
+    const messages = captureDoctorMessages();
+
+    await envLabDoctorCommand({ instance: "explicit-instance" });
+
+    const cleanup = messages.find((message) => message.startsWith("Cleanup:"));
+    expect(cleanup).toBeDefined();
+    expect(cleanup).toContain("--instance");
+    expect(cleanup).toContain("explicit-instance");
+    expect(cleanup).not.toContain("env-selected-instance");
   });
 });

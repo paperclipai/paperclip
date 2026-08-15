@@ -212,11 +212,16 @@ export async function envLabDoctorCommand(opts: { instance?: string; json?: bool
   // The cleanup hint runs the same CLI that prints it, so it stops the correct
   // version. The bundled build runs `dist/index.js`; a source checkout runs
   // `src/index.ts` through the checked-out tsx runner. The hint uses absolute
-  // paths, so it works from any working directory. It forwards the inspected
-  // instance, so it stops the fixture this command diagnosed. It passes an inert
-  // `argv` value, so no shell reads the argument. See `doc/CLI.md`, "safe
-  // invocation".
-  p.log.message(`Cleanup: ${pc.dim(buildEnvLabCleanupCommand({ instance: opts.instance }))}`);
+  // paths, so it works from any working directory. It passes an inert `argv`
+  // value, so no shell reads the argument. See `doc/CLI.md`, "safe invocation".
+  //
+  // The doctor diagnoses the instance that `resolvePaperclipInstanceId` selects
+  // from `opts.instance` or the `PAPERCLIP_INSTANCE_ID` environment variable.
+  // The hint pins that resolved instance, so a contributor who pastes the hint
+  // in a shell without `PAPERCLIP_INSTANCE_ID` stops the diagnosed fixture, not
+  // the default instance.
+  const cleanupInstance = resolvePaperclipInstanceId(opts.instance);
+  p.log.message(`Cleanup: ${pc.dim(buildEnvLabCleanupCommand({ instance: cleanupInstance }))}`);
 }
 
 export function registerEnvLabCommands(program: Command) {
