@@ -190,20 +190,20 @@ metadata is not enough to restore named secret versions.
 Onboarding writes default secrets config:
 
 ```sh
-pnpm paperclipai onboard
+npx paperclipai onboard
 ```
 
 Update secrets settings:
 
 ```sh
-pnpm paperclipai configure --section secrets
+npx paperclipai configure --section secrets
 ```
 
 Validate secrets config:
 
 ```sh
-pnpm paperclipai doctor
-pnpm exec paperclipai secrets doctor --company-id <company-id>
+npx paperclipai doctor
+npx paperclipai secrets doctor --company-id <company-id>
 ```
 
 ### Environment Overrides
@@ -475,8 +475,8 @@ store.
 If you have existing agents with inline API keys in their config, migrate them to encrypted secret refs:
 
 ```sh
-pnpm exec paperclipai secrets migrate-inline-env --company-id <company-id>
-pnpm exec paperclipai secrets migrate-inline-env --company-id <company-id> --apply
+npx paperclipai secrets migrate-inline-env --company-id <company-id>
+npx paperclipai secrets migrate-inline-env --company-id <company-id> --apply
 
 # low-level script for direct database maintenance
 pnpm secrets:migrate-inline-env         # dry run
@@ -493,7 +493,7 @@ Company exports include only environment declarations. They do not include
 secret IDs, provider references, encrypted material, or plaintext values.
 
 ```sh
-pnpm exec paperclipai secrets declarations --company-id <company-id> --kind secret
+npx paperclipai secrets declarations --company-id <company-id> --kind secret
 ```
 
 Before importing a package into another instance, use those declarations to
