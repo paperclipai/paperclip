@@ -1239,6 +1239,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const runId = randomUUID();
     const wakeupRequestId = randomUUID();
     const issueId = randomUUID();
+    const projectId = randomUUID();
     const now = new Date("2026-03-19T00:00:00.000Z");
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
@@ -1248,6 +1249,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       issuePrefix,
       defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
+    });
+
+    // The K37-era launch guard refuses git-sensitive adapters without a
+    // project/task workspace; give the fixture a valid, existing workspace so
+    // queued runs actually launch and reach the code under test.
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Paperclip App",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: randomUUID(),
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      sourceType: "local_path",
+      cwd: process.cwd(),
+      isPrimary: true,
     });
 
     await db.insert(agents).values({
@@ -1304,6 +1324,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       title: "Retry transient Codex failure without blocking",
       description: "Verify the successful-run handoff and choose an honest disposition.",
       status: "in_progress",
+      projectId,
       priority: "medium",
       assigneeAgentId: agentId,
       checkoutRunId: runId,
@@ -4194,7 +4215,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await waitForRunToSettle(heartbeat, runId, 5_000);
     await waitForHeartbeatIdle(db, 5_000);
 
-    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    const issue = await waitForValue(async () => {
+      const current = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+      return current?.status === "todo" ? current : null;
+    }, 5_000);
     expect(issue?.status).toBe("todo");
     const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
     expect(wakeups.filter((wakeup) => wakeup.reason === "finish_successful_run_handoff")).toHaveLength(0);
@@ -4234,7 +4258,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await waitForRunToSettle(heartbeat, runId, 5_000);
     await waitForHeartbeatIdle(db, 5_000);
 
-    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    const issue = await waitForValue(async () => {
+      const current = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+      return current?.status === "todo" ? current : null;
+    }, 5_000);
     expect(issue?.status).toBe("todo");
     await expect(sourceBlockerIssueIds(issue!.companyId, issueId)).resolves.toEqual([]);
   });
@@ -4268,7 +4295,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await waitForRunToSettle(heartbeat, runId, 5_000);
     await waitForHeartbeatIdle(db, 5_000);
 
-    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    const issue = await waitForValue(async () => {
+      const current = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+      return current?.status === "todo" ? current : null;
+    }, 5_000);
     expect(issue?.status).toBe("todo");
     await expect(sourceBlockerIssueIds(issue!.companyId, issueId)).resolves.toEqual([]);
   });
@@ -5969,7 +5999,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs[0]?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
     expect((runs[0]?.contextSnapshot as Record<string, unknown>)?.retryReason).toBeUndefined();
 
-    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    const issue = await waitForValue(async () => {
+      const current = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+      return current?.status === "todo" ? current : null;
+    }, 5_000);
     expect(issue?.status).toBe("todo");
 
     const recoveryIssues = await db
@@ -6098,7 +6131,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.skipped).toBe(1);
     expect(result.issueIds).toEqual([]);
 
-    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    const issue = await waitForValue(async () => {
+      const current = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+      return current?.status === "todo" ? current : null;
+    }, 5_000);
     expect(issue?.status).toBe("todo");
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
     expect(runs).toHaveLength(0);
@@ -6445,7 +6481,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(1);
     expect(runs[0]?.id).toBe(runId);
 
-    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    const issue = await waitForValue(async () => {
+      const current = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+      return current?.status === "todo" ? current : null;
+    }, 5_000);
     expect(issue?.status).toBe("todo");
   });
 
@@ -9399,7 +9438,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.continuationRequeued).toBe(0);
     expect(result.escalated).toBe(0);
 
-    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    const issue = await waitForValue(async () => {
+      const current = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+      return current?.status === "todo" ? current : null;
+    }, 5_000);
     expect(issue?.status).toBe("todo");
 
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
