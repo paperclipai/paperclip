@@ -162,6 +162,19 @@ class DeferredLeaseManager implements SetupTokenLeaseManager {
   }
 }
 
+// Builds the durable-record identity from a session scope and the session id. The
+// fake writers use it to simulate the atomic durable `stored` transition that the
+// production writer performs inside the credential transaction.
+function identityFromScope(scope: SetupTokenSessionScope, sessionId: string): SetupTokenCleanupIdentity {
+  return {
+    sessionId,
+    companyId: scope.companyId,
+    ownerUserId: scope.ownerUserId,
+    adapterType: scope.adapterType,
+    environmentId: scope.environmentId,
+  };
+}
+
 function identityMatchesRow(row: SetupTokenCleanupRecord, identity: SetupTokenCleanupIdentity): boolean {
   return (
     row.companyId === identity.companyId &&
@@ -182,8 +195,11 @@ class FakeStore implements SetupTokenCleanupStore {
     // session id alone.
     if (row && identityMatchesRow(row, identity)) row.state = state;
   }
-  async remove(sessionId: string): Promise<void> {
-    this.rows.delete(sessionId);
+  async remove(identity: SetupTokenCleanupIdentity): Promise<void> {
+    // The delete matches the full owner scope, so it never removes a row by the
+    // session id alone.
+    const row = this.rows.get(identity.sessionId);
+    if (row && identityMatchesRow(row, identity)) this.rows.delete(identity.sessionId);
   }
   async listReapable(now: number): Promise<SetupTokenCleanupRecord[]> {
     return [...this.rows.values()].filter(
@@ -249,6 +265,9 @@ function buildService<L extends SetupTokenLeaseManager = FakeLeaseManager>(overr
     overrides.completeCredential ??
     (async (input) => {
       secretWrites.push({ scope: input.scope, sessionId: input.sessionId, token: input.token });
+      // Simulate the atomic durable `stored` transition the production writer runs
+      // inside the credential transaction, so the store reflects the claim.
+      await store.markState(identityFromScope(input.scope, input.sessionId), "stored");
     });
   const logs: string[] = [];
   const service = new SetupTokenSessionService({
@@ -738,13 +757,15 @@ describe("SetupTokenSessionService.completeSession", () => {
 // settles, so it can hold the write in flight and drive a cancel or an expiry
 // into the exact window that used to race the write. It records only the
 // non-secret ids and the token, and it counts how many times the writer started.
-function buildDeferredWriter() {
+function buildDeferredWriter(store: FakeStore) {
   const calls: RecordedSecretWrite[] = [];
   let started = 0;
+  let pendingInput: { scope: SetupTokenSessionScope; sessionId: string } | null = null;
   let resolveWrite: (() => void) | null = null;
   let rejectWrite: ((error: Error) => void) | null = null;
   const writer: SetupTokenSecretWriter = (input) => {
     started += 1;
+    pendingInput = { scope: input.scope, sessionId: input.sessionId };
     calls.push({ scope: input.scope, sessionId: input.sessionId, token: input.token });
     return new Promise<void>((resolve, reject) => {
       resolveWrite = resolve;
@@ -755,7 +776,14 @@ function buildDeferredWriter() {
     writer,
     calls,
     startedCount: () => started,
-    resolve: () => resolveWrite?.(),
+    // The commit resolves the write. It first simulates the atomic durable
+    // `stored` transition the production writer runs inside the same transaction.
+    resolve: async () => {
+      if (pendingInput) {
+        await store.markState(identityFromScope(pendingInput.scope, pendingInput.sessionId), "stored");
+      }
+      resolveWrite?.();
+    },
     reject: () => rejectWrite?.(new Error("storage down")),
   };
 }
@@ -769,8 +797,9 @@ describe("SetupTokenSessionService terminal-race credential write", () => {
     { label: "expiry", run: (service: SetupTokenSessionService, sessionId: string) => service.expire(sessionId, OWNER_SCOPE), terminalState: "timed_out" as const },
   ]) {
     it(`writes no secret when a ${variant.label} wins the race, and leaves no stored claim`, async () => {
-      const deferred = buildDeferredWriter();
-      const { service, processes, store, leases } = buildService({ completeCredential: deferred.writer });
+      const store = new FakeStore();
+      const deferred = buildDeferredWriter(store);
+      const { service, processes, leases } = buildService({ store, completeCredential: deferred.writer });
       const { sessionId } = await service.start(OWNER_SCOPE);
       processes[0].surfacePrompt(FULL_LOGIN_URL);
       service.submitCode(sessionId, OWNER_SCOPE, "code");
@@ -800,8 +829,9 @@ describe("SetupTokenSessionService terminal-race credential write", () => {
     });
 
     it(`does not erase the stored claim when the write wins the race, then a ${variant.label} arrives`, async () => {
-      const deferred = buildDeferredWriter();
-      const { service, processes, store, leases } = buildService({ completeCredential: deferred.writer });
+      const store = new FakeStore();
+      const deferred = buildDeferredWriter(store);
+      const { service, processes, leases } = buildService({ store, completeCredential: deferred.writer });
       const { sessionId } = await service.start(OWNER_SCOPE);
       processes[0].surfacePrompt(FULL_LOGIN_URL);
       service.submitCode(sessionId, OWNER_SCOPE, "code");
@@ -819,7 +849,7 @@ describe("SetupTokenSessionService terminal-race credential write", () => {
 
       // The write wins the serialized ordering: it commits, then the service
       // records the non-secret markers and releases the lock.
-      deferred.resolve();
+      await deferred.resolve();
       await credentialSettled;
       await terminalSettled;
 
@@ -840,8 +870,9 @@ describe("SetupTokenSessionService terminal-race credential write", () => {
     // This proves the natural success path stays intact when a cancel loses the
     // race: the write commits, the cancel completes the session, and the later
     // process-done success transition is an idempotent no-op.
-    const deferred = buildDeferredWriter();
-    const { service, processes, store } = buildService({ completeCredential: deferred.writer });
+    const store = new FakeStore();
+    const deferred = buildDeferredWriter(store);
+    const { service, processes } = buildService({ store, completeCredential: deferred.writer });
     const { sessionId } = await service.start(OWNER_SCOPE);
     processes[0].surfacePrompt(FULL_LOGIN_URL);
     service.submitCode(sessionId, OWNER_SCOPE, "code");
@@ -850,7 +881,7 @@ describe("SetupTokenSessionService terminal-race credential write", () => {
     await flush();
     const cancelSettled = service.cancel(sessionId, OWNER_SCOPE);
     await flush();
-    deferred.resolve();
+    await deferred.resolve();
     await credentialSettled;
     await cancelSettled;
 

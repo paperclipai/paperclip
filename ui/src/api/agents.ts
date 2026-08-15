@@ -280,7 +280,7 @@ export const agentsApi = {
     ),
   startClaudeSetupTokenLogin: (
     companyId: string,
-    data: { environmentId: string; ttlSeconds?: number; overwrite?: ClaudeSetupTokenOverwrite },
+    data: { environmentId: string; overwrite?: ClaudeSetupTokenOverwrite },
   ) =>
     api.post<ClaudeSetupTokenSessionOwnerResponse>(
       `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions`,

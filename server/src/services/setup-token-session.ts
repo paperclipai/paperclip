@@ -132,11 +132,16 @@ export type SetupTokenPromptSink = (prompt: { url: string }) => void;
 export type SetupTokenCredentialSink = (token: string) => Promise<void>;
 
 /**
- * The owner-bound secret writer. The service awaits it one time with the minted
- * token, the owner scope, and the durable session id. It performs the Phase 3
- * owner-bound compare-and-set (idempotent by session id). It resolves on a
- * successful write and rejects on a storage failure. The service holds the token
- * only for this call; it never stores it (Control 1).
+ * The atomic credential-claim writer. The service awaits it one time with the
+ * minted token, the owner scope, and the durable session id. It runs one
+ * control-plane transaction that first transitions the exact durable row to
+ * `stored` with a full-scope conditional update, then performs the owner-bound
+ * secret compare-and-set on the same transaction handle. The commit establishes
+ * the encrypted secret and the `stored` claim together. It resolves on a
+ * successful commit. It rejects and rolls back the whole transaction on a
+ * zero-row transition or on a storage failure, so neither the secret nor the
+ * claim commits. The service holds the token only for this call; it never stores
+ * it (Control 1).
  */
 export type SetupTokenSecretWriter = (input: {
   scope: SetupTokenSessionScope;
@@ -221,7 +226,12 @@ export interface SetupTokenCleanupStore {
    * write never updates a row by the session id alone (SR-3).
    */
   markState(identity: SetupTokenCleanupIdentity, state: SetupTokenSessionState): Promise<void>;
-  remove(sessionId: string): Promise<void>;
+  /**
+   * Deletes the record only when the full owner scope and the session id match.
+   * The delete never removes a row by the session id alone, so a cross-scope
+   * caller cannot delete a foreign row (SR-3).
+   */
+  remove(identity: SetupTokenCleanupIdentity): Promise<void>;
   /**
    * Returns each record whose session is terminal, whose deadline is past, or
    * whose claim is already consumed.
@@ -822,7 +832,15 @@ export class SetupTokenSessionService {
       // durable record, roll back the reservation, then return a fixed,
       // non-secret error.
       await this.releaseLeaseSafely(lease);
-      await this.store.remove(sessionId).catch(() => {});
+      await this.store
+        .remove({
+          sessionId,
+          companyId: scope.companyId,
+          ownerUserId: scope.ownerUserId,
+          adapterType: scope.adapterType,
+          environmentId: scope.environmentId,
+        })
+        .catch(() => {});
       this.releaseReservation(reservation);
       throw new SetupTokenSessionError(503, SETUP_TOKEN_START_FAILED);
     }
@@ -866,16 +884,26 @@ export class SetupTokenSessionService {
    * closed with the fixed, non-secret error. This is complete mediation: a
    * terminal session never commits a secret write.
    *
-   * On a successful write the service marks the durable row `stored` and records
-   * the non-secret `secretStored` marker. The process outcome then moves the
-   * session to `completed`. A cancel or an expiry that arrives after the write
-   * committed sees the `secretStored` marker and reports the completed state; it
-   * does not erase the claim (see {@link terminateLocked}).
+   * The writer runs one control-plane transaction. Inside it, the writer first
+   * transitions the exact durable row to `stored` with a full-scope conditional
+   * update, then writes or rotates the secret on the same transaction handle. The
+   * commit establishes the encrypted secret and the `stored` claim together, so a
+   * crash between the two steps cannot leave a stored token with no valid claim.
+   * The service does not mark the durable row separately; the writer owns the
+   * transition.
    *
-   * On a storage failure the service fails closed: it moves the session to
-   * `failed`, writes no binding, and rejects with a fixed, non-secret error. The
-   * factory (or the runner it wraps) awaits this sink, so the rejection ends the
-   * login as a failure and the process never reports success.
+   * On a successful write the service records the non-secret `secretStored`
+   * marker. The process outcome then moves the session to `completed`. A cancel or
+   * an expiry that arrives after the write committed sees the `secretStored`
+   * marker and reports the completed state; it does not erase the claim (see
+   * {@link terminateLocked}).
+   *
+   * On a zero-row transition or on a storage failure the writer rolls back the
+   * whole transaction and rejects. The service then fails closed: it moves the
+   * session to `failed`, keeps no secret and no claim, and rejects with a fixed,
+   * non-secret error. The factory (or the runner it wraps) awaits this sink, so
+   * the rejection ends the login as a failure and the process never reports
+   * success.
    */
   private async onCredential(session: StoredSession, token: string): Promise<void> {
     await this.withSessionLock(session, async () => {
@@ -886,16 +914,18 @@ export class SetupTokenSessionService {
         throw new SetupTokenSessionError(500, SETUP_TOKEN_STORAGE_FAILED);
       }
       try {
+        // The writer transitions the durable row to `stored` and writes the
+        // secret in one transaction. A zero-row transition or a storage failure
+        // rejects and rolls back both.
         await this.completeCredential({ scope: session.scope, sessionId: session.id, token });
       } catch {
         await this.terminateLocked(session, "failed");
         throw new SetupTokenSessionError(500, SETUP_TOKEN_STORAGE_FAILED);
       }
-      // The write committed while the service held the lock, so a cancel or an
-      // expiry could not interleave. Record the non-secret markers.
+      // The transaction committed while the service held the lock, so a cancel or
+      // an expiry could not interleave. Record the non-secret marker. The durable
+      // row is already `stored` from the committed transition.
       session.secretStored = true;
-      // Mark the durable row `stored`. The row then persists as the one-time claim.
-      await this.store.markState(this.identityOf(session), "stored").catch(() => {});
     });
   }
 
@@ -1154,7 +1184,7 @@ export class SetupTokenSessionService {
       return;
     }
     try {
-      await this.store.remove(session.id);
+      await this.store.remove(this.identityOf(session));
     } catch {
       this.log("[paperclip] Setup-token session: the cleanup record removal failed; it stays retryable.");
     }
@@ -1199,7 +1229,13 @@ export class SetupTokenSessionService {
     for (const record of records) {
       try {
         await this.leases.releaseById(record.leaseId);
-        await this.store.remove(record.sessionId);
+        await this.store.remove({
+          sessionId: record.sessionId,
+          companyId: record.companyId,
+          ownerUserId: record.ownerUserId,
+          adapterType: record.adapterType,
+          environmentId: record.environmentId,
+        });
         released += 1;
       } catch {
         failed += 1;
@@ -1246,6 +1282,63 @@ function toCleanupRecord(row: ClaudeSetupTokenSessionRow): SetupTokenCleanupReco
 }
 
 /**
+ * The database scope predicate. It matches the full owner scope and the session
+ * id, so no write ever addresses a row by the session id alone (SR-3).
+ */
+function setupTokenScopeMatch(identity: SetupTokenCleanupIdentity) {
+  return and(
+    eq(claudeSetupTokenSessions.sessionId, identity.sessionId),
+    eq(claudeSetupTokenSessions.companyId, identity.companyId),
+    eq(claudeSetupTokenSessions.ownerUserId, identity.ownerUserId),
+    eq(claudeSetupTokenSessions.adapterType, identity.adapterType as AgentAdapterType),
+    eq(claudeSetupTokenSessions.environmentId, identity.environmentId),
+  );
+}
+
+/**
+ * The live pre-`stored` states a session may hold when the credential arrives.
+ * The atomic claim writer transitions a row to `stored` only from one of these
+ * states. It never transitions a terminal, an already-`stored`, or a foreign row.
+ */
+export const SETUP_TOKEN_STORED_PREDECESSOR_STATES: readonly SetupTokenSessionState[] = [
+  "starting",
+  "awaiting_code",
+  "submitting",
+];
+
+/**
+ * Transitions the exact session row to `stored` with one conditional update. The
+ * predicate matches the full owner scope and the session id, an allowed
+ * predecessor state, an unexpired deadline against `clock_timestamp()`, and an
+ * unconsumed `bound_at`. It uses `UPDATE … RETURNING` and returns true only when
+ * exactly one row transitions.
+ *
+ * The atomic claim writer runs this update on the same transaction handle as the
+ * secret write, so the commit establishes the `stored` claim and the encrypted
+ * secret together. A zero-row result rolls back the whole transaction, so a
+ * stale, expired, terminal, foreign-scope, or already-bound row writes no secret
+ * (SR-3).
+ */
+export async function transitionSetupTokenSessionToStored(
+  executor: Db,
+  identity: SetupTokenCleanupIdentity,
+): Promise<boolean> {
+  const changed = await executor
+    .update(claudeSetupTokenSessions)
+    .set({ state: "stored", updatedAt: sql`clock_timestamp()` })
+    .where(
+      and(
+        setupTokenScopeMatch(identity),
+        inArray(claudeSetupTokenSessions.state, [...SETUP_TOKEN_STORED_PREDECESSOR_STATES]),
+        gt(claudeSetupTokenSessions.deadlineAt, sql`clock_timestamp()`),
+        isNull(claudeSetupTokenSessions.boundAt),
+      ),
+    )
+    .returning();
+  return changed.length === 1;
+}
+
+/**
  * Builds the durable, database-backed cleanup store. It persists only the
  * non-secret record. Every write matches the full owner scope and the session
  * id, so no write updates a row by the session id alone (SR-3, SR-4). The
@@ -1253,15 +1346,8 @@ function toCleanupRecord(row: ClaudeSetupTokenSessionRow): SetupTokenCleanupReco
  * consumption into one conditional write.
  */
 export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
-  // The store keys every scoped write on these four columns plus the session id.
-  const scopeMatch = (identity: SetupTokenCleanupIdentity) =>
-    and(
-      eq(claudeSetupTokenSessions.sessionId, identity.sessionId),
-      eq(claudeSetupTokenSessions.companyId, identity.companyId),
-      eq(claudeSetupTokenSessions.ownerUserId, identity.ownerUserId),
-      eq(claudeSetupTokenSessions.adapterType, identity.adapterType as AgentAdapterType),
-      eq(claudeSetupTokenSessions.environmentId, identity.environmentId),
-    );
+  // The store keys every scoped write on the full owner scope plus the session id.
+  const scopeMatch = setupTokenScopeMatch;
 
   return {
     async record(record): Promise<void> {
@@ -1287,10 +1373,10 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
         .where(scopeMatch(identity));
     },
 
-    async remove(sessionId): Promise<void> {
-      await db
-        .delete(claudeSetupTokenSessions)
-        .where(eq(claudeSetupTokenSessions.sessionId, sessionId));
+    async remove(identity): Promise<void> {
+      // The delete matches the full owner scope, so it never removes a row by the
+      // session id alone.
+      await db.delete(claudeSetupTokenSessions).where(scopeMatch(identity));
     },
 
     async listReapable(now): Promise<SetupTokenCleanupRecord[]> {

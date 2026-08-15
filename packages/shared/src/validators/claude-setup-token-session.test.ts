@@ -22,13 +22,13 @@ describe("claude setup-token session start request", () => {
     expect(parsed.adapterType).toBe("claude_local");
   });
 
-  it("accepts an optional ttlSeconds inside bounds", () => {
-    const parsed = startClaudeSetupTokenSessionRequestSchema.parse({
+  it("rejects a legacy ttlSeconds: the runtime does not support it", () => {
+    const result = startClaudeSetupTokenSessionRequestSchema.safeParse({
       environmentId: ENVIRONMENT_ID,
       adapterType: "claude_local",
       ttlSeconds: 300,
     });
-    expect(parsed.ttlSeconds).toBe(300);
+    expect(result.success).toBe(false);
   });
 
   it("rejects an agent id: the scope carries no agent id", () => {

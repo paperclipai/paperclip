@@ -39,11 +39,12 @@ export type ClaudeSetupTokenOverwrite =
 // fails closed with a stale conflict.
 //
 // `.strict()` rejects an extra field, so an agent id never validates. The scope
-// carries no agent id: a hire flow with no agent still starts one session.
+// carries no agent id: a hire flow with no agent still starts one session. The
+// runtime does not support a caller-supplied session length, so the schema
+// exposes no `ttlSeconds` field; a legacy `ttlSeconds` fails the strict parse.
 export const startClaudeSetupTokenSessionRequestSchema = z.object({
   environmentId: z.string().uuid(),
   adapterType: z.enum(AGENT_ADAPTER_TYPES),
-  ttlSeconds: z.number().int().min(60).max(24 * 60 * 60).optional(),
   overwrite: claudeSetupTokenOverwriteSchema.optional(),
 }).strict();
 export type StartClaudeSetupTokenSessionRequest =

@@ -30,7 +30,11 @@ import {
   isFixedClaudeOAuthBinding,
   secretService,
 } from "../services/secrets.js";
-import { createDbSetupTokenCleanupStore } from "../services/setup-token-session.js";
+import {
+  createDbSetupTokenCleanupStore,
+  type SetupTokenSessionScope,
+} from "../services/setup-token-session.js";
+import { createSetupTokenSecretWriter } from "../services/setup-token-transport-binding.js";
 
 // The fixed Claude Code OAuth binding. It is a user-secret reference to the
 // fixed key. Any other shape is a replacement or a weaker binding.
@@ -823,5 +827,156 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     expect(await countDeclarationsForAgent(created.id)).toBe(1);
     const definitions = await db.select().from(userSecretDefinitions);
     expect(JSON.stringify(definitions)).not.toContain("sk-secret-resolve");
+  });
+
+  // --- The atomic credential-claim writer (item 2) ---------------------------
+
+  function claimScope(scope: Scope): SetupTokenSessionScope {
+    return {
+      companyId: scope.companyId,
+      ownerUserId: scope.ownerUserId,
+      targetAgentId: null,
+      adapterType: "claude_local",
+      environmentId: scope.environmentId,
+    };
+  }
+
+  it("commits the stored transition and the secret together on a first write", async () => {
+    const scope = await seedScope();
+    const sessionId = await seedStoredClaim(scope, Date.now() + 60_000, "submitting");
+    const writer = createSetupTokenSecretWriter({ db });
+
+    await writer({ scope: claimScope(scope), sessionId, token: "sk-ant-oat01-FIRSTWRITE" });
+
+    // The durable row transitioned to `stored` and stays unconsumed.
+    const claim = await readClaim(sessionId);
+    expect(claim?.state).toBe("stored");
+    expect(claim?.boundAt).toBeNull();
+    // The owner value committed in the same transaction.
+    const status = await secretService(db).readClaudeOAuthUserSecretStatus(
+      scope.companyId,
+      scope.ownerUserId,
+    );
+    expect(status).not.toBeNull();
+    expect(status?.latestVersion).toBe(1);
+  });
+
+  it("rolls back the transition and writes no secret when the secret write fails", async () => {
+    const scope = await seedScope();
+    const sessionId = await seedStoredClaim(scope, Date.now() + 60_000, "submitting");
+    // Inject a completion that fails after the transition. The whole transaction
+    // rolls back, so neither the claim nor the secret commits.
+    const writer = createSetupTokenSecretWriter({
+      db,
+      completionForTx: () => ({
+        async completeClaudeOAuthUserSecret() {
+          throw new Error("storage down");
+        },
+      }),
+    });
+
+    await expect(
+      writer({ scope: claimScope(scope), sessionId, token: "sk-ant-oat01-ROLLBACK" }),
+    ).rejects.toThrow();
+
+    const claim = await readClaim(sessionId);
+    expect(claim?.state).toBe("submitting");
+    expect(claim?.boundAt).toBeNull();
+    expect(
+      await secretService(db).readClaudeOAuthUserSecretStatus(scope.companyId, scope.ownerUserId),
+    ).toBeNull();
+    expect(await countUserSecretDefinitions(scope.companyId)).toBe(0);
+  });
+
+  it("writes no secret for an expired claim", async () => {
+    const scope = await seedScope();
+    const sessionId = await seedStoredClaim(scope, Date.now() - 1_000, "submitting");
+    const writer = createSetupTokenSecretWriter({ db });
+
+    await expect(
+      writer({ scope: claimScope(scope), sessionId, token: "sk-ant-oat01-EXPIRED" }),
+    ).rejects.toThrow();
+
+    expect((await readClaim(sessionId))?.state).toBe("submitting");
+    expect(
+      await secretService(db).readClaudeOAuthUserSecretStatus(scope.companyId, scope.ownerUserId),
+    ).toBeNull();
+  });
+
+  it("writes no secret for an already-consumed claim", async () => {
+    const scope = await seedScope();
+    const sessionId = await seedStoredClaim(scope, Date.now() + 60_000);
+    // Consume the stored claim first, so `bound_at` is set and the predecessor
+    // predicate no longer matches.
+    await createDbSetupTokenCleanupStore(db).consumeStoredClaim({
+      sessionId,
+      companyId: scope.companyId,
+      ownerUserId: scope.ownerUserId,
+      adapterType: "claude_local",
+      environmentId: scope.environmentId,
+    });
+    const writer = createSetupTokenSecretWriter({ db });
+
+    await expect(
+      writer({ scope: claimScope(scope), sessionId, token: "sk-ant-oat01-BOUND" }),
+    ).rejects.toThrow();
+
+    expect(
+      await secretService(db).readClaudeOAuthUserSecretStatus(scope.companyId, scope.ownerUserId),
+    ).toBeNull();
+  });
+
+  it("rotates the stored value under the captured version on a confirmed overwrite", async () => {
+    const scope = await seedScope();
+    await seedStoredOwnerValue(scope, "sk-old-value");
+    const before = await secretService(db).readClaudeOAuthUserSecretStatus(
+      scope.companyId,
+      scope.ownerUserId,
+    );
+    expect(before).not.toBeNull();
+    const sessionId = await seedStoredClaim(scope, Date.now() + 60_000, "submitting");
+    const writer = createSetupTokenSecretWriter({ db });
+
+    await writer({
+      scope: {
+        ...claimScope(scope),
+        confirmedOverwrite: {
+          expectedSecretId: before!.secretId,
+          expectedLatestVersion: before!.latestVersion,
+        },
+      },
+      sessionId,
+      token: "sk-ant-oat01-ROTATED",
+    });
+
+    // The claim transitioned and the stored value rotated to a new version.
+    expect((await readClaim(sessionId))?.state).toBe("stored");
+    const after = await secretService(db).readClaudeOAuthUserSecretStatus(
+      scope.companyId,
+      scope.ownerUserId,
+    );
+    expect(after?.secretId).toBe(before!.secretId);
+    expect(after?.latestVersion).toBe(before!.latestVersion + 1);
+  });
+
+  it("deletes a cleanup row only under the full owner scope", async () => {
+    const scope = await seedScope();
+    const sessionId = await seedStoredClaim(scope, Date.now() + 60_000);
+    const store = createDbSetupTokenCleanupStore(db);
+    const identity = {
+      sessionId,
+      companyId: scope.companyId,
+      ownerUserId: scope.ownerUserId,
+      adapterType: "claude_local",
+      environmentId: scope.environmentId,
+    };
+
+    // A foreign-owner identity with the right session id does not delete the row.
+    await store.remove({ ...identity, ownerUserId: "intruder" });
+    expect(await readClaim(sessionId)).toBeTruthy();
+
+    // The full-scope identity deletes the row.
+    await store.remove(identity);
+    expect(await readClaim(sessionId)).toBeUndefined();
   });
 });

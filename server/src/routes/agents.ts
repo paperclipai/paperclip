@@ -29,8 +29,8 @@ import {
   updateAgentSchema,
   supportedEnvironmentDriversForAdapter,
   LOW_TRUST_REVIEW_PRESET,
-  isValidBrowserCode,
-  claudeSetupTokenOverwriteSchema,
+  startClaudeSetupTokenSessionRequestSchema,
+  submitBrowserCodeRequestSchema,
 } from "@paperclipai/shared";
 import {
   isForbiddenConfigEnvKey,
@@ -368,8 +368,11 @@ export function agentRoutes(
       const row = setupTokenCleanupRows.get(identity.sessionId);
       if (row && scopeMatchesRow(row, identity)) row.state = state;
     },
-    async remove(sessionId): Promise<void> {
-      setupTokenCleanupRows.delete(sessionId);
+    async remove(identity): Promise<void> {
+      // The delete matches the full owner scope, so it never removes a row by the
+      // session id alone.
+      const row = setupTokenCleanupRows.get(identity.sessionId);
+      if (row && scopeMatchesRow(row, identity)) setupTokenCleanupRows.delete(identity.sessionId);
     },
     async listReapable(): Promise<SetupTokenCleanupRecord[]> {
       return [];
@@ -4612,19 +4615,22 @@ export function agentRoutes(
     const agent = await resolveSetupTokenAgent(req, res);
     if (!agent) return;
     const scope = buildSetupTokenScope(req, agent);
-    const browserCode = typeof req.body?.browserCode === "string" ? req.body.browserCode : null;
     res.setHeader("Cache-Control", "no-store");
     // SR-6 and SR-7: the browser code is the confidential OAuth authorization
     // secret. The route does not force TLS. It attaches a non-blocking advisory
     // to the response instead, so the client can show a disclaimer.
     const transportAdvisory = assessSetupTokenTransport(req);
-    if (!browserCode) {
-      // The route echoes no input; it returns fixed error text only (SR-1).
-      res.status(400).json({ error: "A browserCode is required." });
+    // Parse the request with the shared strict validator before the route forwards
+    // the code to the live process. `.strict()` rejects an unknown field, and the
+    // grammar rejects an empty, an oversized, or a control-byte code. The route
+    // echoes no input; it returns fixed error text only (SR-1).
+    const parsed = submitBrowserCodeRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "A valid browser code is required." });
       return;
     }
     try {
-      const result = setupTokenLoginService.submitCode(req.params.sessionId as string, scope, browserCode);
+      const result = setupTokenLoginService.submitCode(req.params.sessionId as string, scope, parsed.data.browserCode);
       res.json({ state: result.state, transportAdvisory });
     } catch (err) {
       sendSetupTokenError(res, err);
@@ -4783,40 +4789,25 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const ownerUserId = deriveSetupTokenOwnerUserId(req);
+    res.setHeader("Cache-Control", "no-store");
 
-    // Validate the adapter. The company-and-environment login serves only the
-    // Claude adapter. A different adapter type gets a fixed 400.
-    const adapterType = typeof req.body?.adapterType === "string" ? req.body.adapterType : null;
+    // Parse the request with the shared strict validator before any session,
+    // lease, or pseudo-terminal side effect. `.strict()` rejects an unknown field,
+    // including a legacy `ttlSeconds`, with a fixed 400. The route echoes no input.
+    const parsed = startClaudeSetupTokenSessionRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "The Claude login start request is invalid." });
+      return;
+    }
+    const { environmentId, adapterType } = parsed.data;
+    const confirmedOverwrite: ClaudeSetupTokenOverwrite | null = parsed.data.overwrite ?? null;
+
+    // The company-and-environment login serves only the Claude adapter. A
+    // different adapter type gets a fixed 400.
     if (adapterType !== CLAUDE_SETUP_TOKEN_ADAPTER_TYPE) {
       res.status(400).json({ error: "Only the claude_local adapter supports a setup-token login." });
       return;
     }
-    const environmentId =
-      typeof req.body?.environmentId === "string" && req.body.environmentId.trim().length > 0
-        ? (req.body.environmentId as string)
-        : null;
-    if (!environmentId) {
-      res.status(400).json({ error: "A sandbox environment is required to start a Claude login." });
-      return;
-    }
-
-    // The optional confirmed-overwrite capture. The client sends it only after a
-    // stored token fails the agent test. The server binds it to the immutable
-    // session scope, so the final secret write rotates the stored value under the
-    // captured version instead of a first write. A concurrent change fails the
-    // compare-and-set and ends the login as a failure with no partial write. A
-    // malformed capture gets a fixed 400.
-    let confirmedOverwrite: ClaudeSetupTokenOverwrite | null = null;
-    if (req.body?.overwrite !== undefined && req.body?.overwrite !== null) {
-      const parsedOverwrite = claudeSetupTokenOverwriteSchema.safeParse(req.body.overwrite);
-      if (!parsedOverwrite.success) {
-        res.status(400).json({ error: "The Claude login overwrite capture is invalid." });
-        return;
-      }
-      confirmedOverwrite = parsedOverwrite.data;
-    }
-
-    res.setHeader("Cache-Control", "no-store");
 
     if (!SETUP_TOKEN_LOGIN_TRANSPORT_READY) {
       // The live login transport binds at a later call site. Fail closed with the
@@ -4920,16 +4911,17 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     const ownerUserId = resolveCompanySessionOwner(req, companyId, res);
     if (ownerUserId === null) return;
-    const browserCode = typeof req.body?.browserCode === "string" ? req.body.browserCode : null;
     res.setHeader("Cache-Control", "no-store");
     // SR-6 and SR-7: the browser code is the confidential OAuth authorization
     // secret. The route does not force TLS. It attaches a non-blocking advisory
     // to the response instead, so the client can show a disclaimer.
     const transportAdvisory = assessSetupTokenTransport(req);
-    // Validate the browser code with the shared grammar before the route forwards
-    // it. The grammar rejects an empty code, an oversized code, and a control
-    // byte. The route echoes no input; it returns fixed error text only (SR-1).
-    if (!browserCode || !isValidBrowserCode(browserCode)) {
+    // Parse the request with the shared strict validator before the route forwards
+    // the code to the live process. `.strict()` rejects an unknown field, and the
+    // grammar rejects an empty, an oversized, or a control-byte code. The route
+    // echoes no input; it returns fixed error text only (SR-1).
+    const parsed = submitBrowserCodeRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
       res.status(400).json({ error: "A valid browser code is required." });
       return;
     }
@@ -4939,7 +4931,7 @@ export function agentRoutes(
         sessionId,
         companySetupTokenKey(companyId, ownerUserId),
       );
-      setupTokenLoginService.submitCode(sessionId, scope, browserCode);
+      setupTokenLoginService.submitCode(sessionId, scope, parsed.data.browserCode);
       const descriptor = setupTokenLoginService.describeOwned(sessionId, scope);
       const body: ClaudeSetupTokenSessionResponse = {
         ...toClaudePublicResponse(descriptor),

@@ -257,8 +257,8 @@ function buildTransport(opts: { onSubmit?: "complete" | "throw" | "pending" } = 
       const row = rows.get(identity.sessionId);
       if (row) row.state = state;
     },
-    async remove(sessionId) {
-      rows.delete(sessionId);
+    async remove(identity) {
+      rows.delete(identity.sessionId);
     },
     async listReapable() {
       return [];
@@ -1123,6 +1123,54 @@ describe("company-and-environment setup-token route — browser-code grammar", (
     }
 
     // No malformed code reached the live login process.
+    expect(transport.submittedCodes).toEqual([]);
+  });
+});
+
+describe("company-and-environment setup-token route — strict request contract", () => {
+  it("rejects a legacy ttlSeconds at start before any session or lease side effect", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+
+    const res = await startCompanySession(app, {
+      environmentId: ENVIRONMENT_ID,
+      adapterType: "claude_local",
+      ttlSeconds: 300,
+    });
+    // The strict validator rejects the unknown field with a fixed 400.
+    expect(res.status).toBe(400);
+    // No session row, no lease, and no pseudo-terminal started.
+    expect(transport.records).toEqual([]);
+    expect(transport.factoryInvocations.count).toBe(0);
+  });
+
+  it("rejects an unknown field at start before any session or lease side effect", async () => {
+    const transport = buildTransport({ onSubmit: "pending" });
+    const { app } = await createApp({ transport });
+
+    const res = await startCompanySession(app, {
+      environmentId: ENVIRONMENT_ID,
+      adapterType: "claude_local",
+      agentId: "44444444-4444-4444-8444-444444444444",
+    });
+    expect(res.status).toBe(400);
+    expect(transport.records).toEqual([]);
+    expect(transport.factoryInvocations.count).toBe(0);
+  });
+
+  it("rejects an unknown field on the browser-code route before it forwards", async () => {
+    const transport = buildTransport({ onSubmit: "complete" });
+    const { app } = await createApp({ transport });
+
+    const startRes = await startCompanySession(app);
+    const sessionId = startRes.body.sessionId as string;
+
+    const res = await request(app)
+      .post(`${COMPANY_BASE}/${sessionId}/code`)
+      .send({ browserCode: BROWSER_CODE, ttlSeconds: 300 });
+    expect(res.status).toBe(400);
+    // The unknown field failed the strict parse before the code reached the
+    // live login process.
     expect(transport.submittedCodes).toEqual([]);
   });
 });

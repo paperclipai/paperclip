@@ -21,7 +21,9 @@
 import {
   SetupTokenSessionError,
   SETUP_TOKEN_START_FAILED,
+  SETUP_TOKEN_STORAGE_FAILED,
   createDbSetupTokenCleanupStore,
+  transitionSetupTokenSessionToStored,
   type SetupTokenCleanupStore,
   type SetupTokenLease,
   type SetupTokenLeaseManager,
@@ -31,6 +33,7 @@ import {
   type SetupTokenSecretWriter,
   type SetupTokenSessionScope,
 } from "./setup-token-session.js";
+import { secretService } from "./secrets.js";
 import type { environmentService } from "./environments.js";
 import type { environmentRuntimeService } from "./environment-runtime.js";
 import type { Db } from "@paperclipai/db";
@@ -116,44 +119,103 @@ export interface SetupTokenSecretCompletion {
   ): Promise<unknown>;
 }
 
+/** The owner-bound compare-and-set input the secrets service consumes. */
+export type ClaudeOAuthWriteInput =
+  | { sessionId: string; mode: "first_write"; value: string }
+  | {
+      sessionId: string;
+      mode: "confirmed_rotation";
+      value: string;
+      expectedSecretId: string;
+      expectedLatestVersion: number;
+    };
+
 /**
- * Builds the production owner-bound secret writer for the login session. It adapts
- * the session writer input `{ scope, sessionId, token }` to the secrets service
- * compare-and-set. The session scope selects the mode. A scope with no overwrite
- * capture writes with `mode: "first_write"`, so the login creates the first owner
- * value only. A scope that carries the confirmed-overwrite capture writes with
+ * Maps the session writer input to the secrets service compare-and-set input. The
+ * session scope selects the mode. A scope with no overwrite capture writes with
+ * `mode: "first_write"`, so the login creates the first owner value only. A scope
+ * that carries the confirmed-overwrite capture writes with
  * `mode: "confirmed_rotation"`, so the login rotates the stored value under the
- * captured `expectedSecretId` and `expectedLatestVersion`. A concurrent change
+ * captured `expectedSecretId` and `expectedLatestVersion`. The overwrite capture
+ * carries no owner; the owner still comes from the scope.
+ */
+export function buildClaudeOAuthWriteInput(
+  scope: SetupTokenSessionScope,
+  sessionId: string,
+  token: string,
+): ClaudeOAuthWriteInput {
+  const overwrite = scope.confirmedOverwrite ?? null;
+  return overwrite
+    ? {
+        sessionId,
+        mode: "confirmed_rotation",
+        value: token,
+        expectedSecretId: overwrite.expectedSecretId,
+        expectedLatestVersion: overwrite.expectedLatestVersion,
+      }
+    : { sessionId, mode: "first_write", value: token };
+}
+
+/**
+ * Builds the production atomic credential-claim writer for the login session. It
+ * runs one control-plane transaction. Inside the transaction it first transitions
+ * the exact durable session row to `stored` with a full-scope conditional update,
+ * then writes or rotates the owner-bound secret on the same transaction handle.
+ * The commit establishes the encrypted secret and the `stored` claim together, so
+ * a crash between the two steps cannot leave a stored token with no valid claim.
+ *
+ * A zero-row transition means no claimable row exists in this scope. The writer
+ * rolls back and rejects with the fixed, non-secret storage error, so the session
+ * marks the login failed. A storage failure rejects and rolls back the whole
+ * transaction, so neither the secret nor the claim commits. A concurrent change
  * fails the compare-and-set with the fixed stale conflict, so the write leaves no
  * partial state (Control 1).
  *
  * It reads the company and the owner only from the immutable session scope, so a
- * request cannot redirect the write to another owner (Control 4). The overwrite
- * capture carries no owner; the owner still comes from the scope. It never logs
+ * request cannot redirect the write to another owner (Control 4). It never logs
  * the token and never puts the token in an error; it lets the secrets service
  * error propagate unchanged, and the session maps a rejection to the fixed,
  * non-secret storage error (Control 1).
  */
 export function createSetupTokenSecretWriter(deps: {
-  secrets: SetupTokenSecretCompletion;
+  db: Db;
+  /**
+   * Builds the transaction-bound owner-bound completion. It defaults to
+   * `secretService(tx)`, so the compare-and-set runs on the passed transaction
+   * handle. A test injects a fake to force a storage failure after the transition.
+   */
+  completionForTx?: (tx: Db) => SetupTokenSecretCompletion;
 }): SetupTokenSecretWriter {
+  const completionForTx = deps.completionForTx ?? ((tx) => secretService(tx));
   return async ({ scope, sessionId, token }) => {
-    const overwrite = scope.confirmedOverwrite ?? null;
-    const input = overwrite
-      ? {
-          sessionId,
-          mode: "confirmed_rotation" as const,
-          value: token,
-          expectedSecretId: overwrite.expectedSecretId,
-          expectedLatestVersion: overwrite.expectedLatestVersion,
-        }
-      : { sessionId, mode: "first_write" as const, value: token };
-    await deps.secrets.completeClaudeOAuthUserSecret(
-      scope.companyId,
-      scope.ownerUserId,
-      input,
-      { userId: scope.ownerUserId },
-    );
+    const input = buildClaudeOAuthWriteInput(scope, sessionId, token);
+    await deps.db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      // Step 1: lock and conditionally transition the exact durable row to
+      // `stored`. The predicate matches the full scope, an allowed predecessor
+      // state, an unexpired deadline, and an unconsumed claim. It requires exactly
+      // one returned row.
+      const transitioned = await transitionSetupTokenSessionToStored(txDb, {
+        sessionId,
+        companyId: scope.companyId,
+        ownerUserId: scope.ownerUserId,
+        adapterType: scope.adapterType,
+        environmentId: scope.environmentId,
+      });
+      if (!transitioned) {
+        // Zero-row result: roll back the whole transaction. The session then marks
+        // the login failed and returns the fixed no-secret error.
+        throw new SetupTokenSessionError(500, SETUP_TOKEN_STORAGE_FAILED);
+      }
+      // Step 2: write or rotate the secret on the same transaction handle. A
+      // failure here rolls back the transition too, so the commit is all-or-none.
+      await completionForTx(txDb).completeClaudeOAuthUserSecret(
+        scope.companyId,
+        scope.ownerUserId,
+        input,
+        { userId: scope.ownerUserId },
+      );
+    });
   };
 }
 
