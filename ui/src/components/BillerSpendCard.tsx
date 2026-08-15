@@ -93,6 +93,8 @@ export function BillerSpendCard({
           {row.subscriptionRunCount > 0
             ? `${row.subscriptionRunCount} subscription run${row.subscriptionRunCount === 1 ? "" : "s"}`
             : "0 subscription runs"}
+          {row.creditRunCount > 0 ? ` · ${row.creditRunCount} credit run${row.creditRunCount === 1 ? "" : "s"}` : ""}
+          {row.otherRunCount > 0 ? ` · ${row.otherRunCount} other run${row.otherRunCount === 1 ? "" : "s"}` : ""}
           {" · "}
           {formatCents(weekSpendCents)} this week
         </div>

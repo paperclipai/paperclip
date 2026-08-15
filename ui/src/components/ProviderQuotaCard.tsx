@@ -53,13 +53,15 @@ export function ProviderQuotaCard({
   // card is mounted twice: once in the "all" tab grid and once in its per-provider tab).
   const totals = useMemo(() => {
     let inputTokens = 0, outputTokens = 0, costCents = 0;
-    let apiRunCount = 0, subRunCount = 0, subInputTokens = 0, subOutputTokens = 0;
+    let apiRunCount = 0, subRunCount = 0, creditRunCount = 0, otherRunCount = 0, subInputTokens = 0, subOutputTokens = 0;
     for (const r of rows) {
       inputTokens += r.inputTokens;
       outputTokens += r.outputTokens;
       costCents += r.costCents;
       apiRunCount += r.apiRunCount;
       subRunCount += r.subscriptionRunCount;
+      creditRunCount += r.creditRunCount;
+      otherRunCount += r.otherRunCount;
       subInputTokens += r.subscriptionInputTokens;
       subOutputTokens += r.subscriptionOutputTokens;
     }
@@ -74,6 +76,8 @@ export function ProviderQuotaCard({
       totalCostCents: costCents,
       totalApiRuns: apiRunCount,
       totalSubRuns: subRunCount,
+      totalCreditRuns: creditRunCount,
+      totalOtherRuns: otherRunCount,
       totalSubInputTokens: subInputTokens,
       totalSubOutputTokens: subOutputTokens,
       totalSubTokens: subTokens,
@@ -88,6 +92,8 @@ export function ProviderQuotaCard({
     totalCostCents,
     totalApiRuns,
     totalSubRuns,
+    totalCreditRuns,
+    totalOtherRuns,
     totalSubInputTokens,
     totalSubOutputTokens,
     totalSubTokens,
@@ -141,12 +147,16 @@ export function ProviderQuotaCard({
               <span className="font-mono">{formatTokens(totalInputTokens)}</span> in
               {" · "}
               <span className="font-mono">{formatTokens(totalOutputTokens)}</span> out
-              {(totalApiRuns > 0 || totalSubRuns > 0) && (
+              {(totalApiRuns > 0 || totalSubRuns > 0 || totalCreditRuns > 0 || totalOtherRuns > 0) && (
                 <span className="ml-1.5">
                   ·{" "}
                   {totalApiRuns > 0 && `~${totalApiRuns} api`}
                   {totalApiRuns > 0 && totalSubRuns > 0 && " / "}
                   {totalSubRuns > 0 && `~${totalSubRuns} sub`}
+                  {(totalApiRuns > 0 || totalSubRuns > 0) && totalCreditRuns > 0 && " / "}
+                  {totalCreditRuns > 0 && `~${totalCreditRuns} credits`}
+                  {(totalApiRuns > 0 || totalSubRuns > 0 || totalCreditRuns > 0) && totalOtherRuns > 0 && " / "}
+                  {totalOtherRuns > 0 && `~${totalOtherRuns} other`}
                   {" runs"}
                 </span>
               )}
