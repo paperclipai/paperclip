@@ -126,6 +126,14 @@ import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
+import {
+  execute as deflectorExecute,
+  testEnvironment as deflectorTestEnvironment,
+} from "@paperclipai/adapter-deflector/server";
+import {
+  agentConfigurationDoc as deflectorAgentConfigurationDoc,
+  models as deflectorModels,
+} from "@paperclipai/adapter-deflector";
 
 function readConfiguredCommand(config: Record<string, unknown>, fallback: string): string {
   const value = typeof config.command === "string" ? config.command.trim() : "";
@@ -432,6 +440,15 @@ const builtinFallbacks = new Map<string, ServerAdapterModule>();
 // external.  Persisted across reloads via the same disabled-adapters store.
 const pausedOverrides = new Set<string>();
 
+const deflectorLocalAdapter: ServerAdapterModule = {
+  type: "deflector_local",
+  execute: deflectorExecute,
+  testEnvironment: deflectorTestEnvironment,
+  models: deflectorModels,
+  supportsLocalAgentJwt: true,
+  agentConfigurationDoc: deflectorAgentConfigurationDoc,
+};
+
 function registerBuiltInAdapters() {
   for (const adapter of [
     acpxLocalAdapter,
@@ -448,6 +465,7 @@ function registerBuiltInAdapters() {
     openclawGatewayAdapter,
     processAdapter,
     httpAdapter,
+    deflectorLocalAdapter,
   ]) {
     adaptersByType.set(adapter.type, adapter);
   }

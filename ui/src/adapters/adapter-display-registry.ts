@@ -134,6 +134,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     icon: Cpu,
     comingSoon: true,
   },
+  deflector_local: {
+    label: "Deflector",
+    description: "Deterministic pre-check; auto-resolves known repeat issues",
+    icon: Cpu,
+  },
   http: {
     label: "HTTP",
     description: "Internal HTTP adapter",
