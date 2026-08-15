@@ -8588,8 +8588,8 @@ export function issueRoutes(
       req.actor.type === "agent" &&
       req.actor.agentId === existing.assigneeAgentId &&
       existing.status === "cancelled" &&
-      req.body.status !== undefined &&
-      req.body.status !== "cancelled"
+      (req.body.resume === true ||
+        (req.body.status !== undefined && req.body.status !== "cancelled"))
     ) {
       res.status(409).json({ error: "Cancelled issues cannot be resumed by a stale agent run" });
       return;

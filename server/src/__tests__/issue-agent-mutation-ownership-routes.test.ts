@@ -1611,6 +1611,26 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("rejects a stale owner run from resuming a cancelled issue through a comment", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({
+        status: "cancelled",
+        assigneeAgentId: ownerAgentId,
+        executionRunId: null,
+        checkoutRunId: null,
+      }),
+    );
+
+    const res = await request(await createApp(ownerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ resume: true, comment: "Resume this issue" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
   it("preserves board authority to reopen a cancelled issue", async () => {
     mockIssueService.getById.mockResolvedValue(
       makeIssue({
