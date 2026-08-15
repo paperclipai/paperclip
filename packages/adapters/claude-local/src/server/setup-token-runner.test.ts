@@ -11,7 +11,7 @@ import {
 // A well-formed authorization URL. The query keys match the contract exactly.
 // The values are synthetic; no real value is present.
 const VALID_URL =
-  "https://claude.com/cai/oauth/authorize?client_id=cid&code=abc&code_challenge=chal&code_challenge_method=S256&redirect_uri=https%3A%2F%2Fexample.test%2Fcb&response_type=code&scope=user&state=st";
+  "https://claude.com/cai/oauth/authorize?client_id=cid&code=abcdefgh&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&response_type=code&scope=user&state=0123456789abcdef";
 
 // The rendered login output. The preamble line, the URL line, and the dedicated
 // prompt line match the Phase 2 parser contract.

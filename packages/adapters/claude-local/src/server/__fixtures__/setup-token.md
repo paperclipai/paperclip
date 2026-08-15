@@ -105,3 +105,51 @@ token parser.
 An executable characterization test drives this live run. See
 [`../setup-token-characterization.test.ts`](../setup-token-characterization.test.ts);
 it is opt-in through `RUN_CLAUDE_SETUP_TOKEN_CHARACTERIZATION=1`.
+
+## Re-characterization on Claude Code 2.1.19 (2026-08-15)
+
+- Re-characterized: 2026-08-15
+- Claude Code: `2.1.19`
+- Environment: real Daytona sandbox, image `daytonaio/sandbox:0.8.0`, headless, no
+  browser. Prompt phase only; no login was completed and no token was minted.
+- Safety: no real authorization URL, browser code, or token is recorded here.
+  Every query value below is a same-shape synthetic placeholder that passes the
+  parser value validators.
+
+The production sandbox image ships `claude` 2.1.19. A real Daytona smoke found
+that this version emits a different login contract than `2.1.205` and `2.1.226`.
+The parser now accepts both contracts:
+
+- Authorization URL for 2.1.19: origin `https://claude.ai`, path
+  `/oauth/authorize`. The full pair is `https://claude.ai/oauth/authorize`.
+- Authorization URL for 2.1.205 and 2.1.226: origin `https://claude.com`, path
+  `/cai/oauth/authorize`. The full pair is `https://claude.com/cai/oauth/authorize`.
+- Both versions carry the same eight query keys: `client_id`, `code`,
+  `code_challenge`, `code_challenge_method`, `redirect_uri`, `response_type`,
+  `scope`, `state`. No fragment.
+- The `redirect_uri` value is the static callback
+  `https://platform.claude.com/oauth/code/callback`. A real 2.1.19 capture
+  confirmed this exact value, so the parser keeps the single pin.
+- The `code` value is a short opaque token. A real 2.1.19 capture measured a
+  four-character value, so the parser accepts a `code` value of one or more
+  characters.
+- Browser-code prompt line: `Paste code here if prompted >`.
+
+Two rendering differences from `2.1.226`:
+
+1. No OSC 8 hyperlink. `2.1.19` prints the URL as plain text, not as an OSC 8
+   hyperlink.
+2. Hard line wrap. `2.1.19` wraps the plain-text URL across several physical
+   lines at the terminal width, with no space at the wrap. The parser joins the
+   URL-character-only physical lines and validates only the final reassembled
+   string.
+
+Sanitized rendered form of the wrapped URL (placeholder values):
+
+```text
+Browser didn't open? Use the url below to sign in (c to copy)
+https://claude.ai/oauth/authorize?client_id=9d1c8f00-1a2b-3c4d-5e6f-708192a3b4c5&code=wZ9x&code_challenge=E9Melhoa2OwvFr
+EMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2
+Fcallback&response_type=code&scope=user%3Ainference&state=Xy7Kd2Pq9Rn4Vb8Lf1Mw6Zc3Hj0Tg5Us
+Paste code here if prompted >
+```

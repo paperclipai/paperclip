@@ -4,10 +4,11 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   SETUP_TOKEN_AFTER_ANCHOR,
+  SETUP_TOKEN_AUTH_URLS,
   SETUP_TOKEN_BEFORE_ANCHOR,
   SETUP_TOKEN_PREFIX,
   SETUP_TOKEN_PROMPT,
-  SETUP_TOKEN_URL_PATH,
+  SETUP_TOKEN_REDIRECT_URI,
   SETUP_TOKEN_URL_QUERY_KEYS,
   parseSetupTokenCredential,
   parseSetupTokenPrompt,
@@ -19,18 +20,35 @@ function readFixture(name: string): string {
   return readFileSync(path.join(fixturesDir, name), "utf8");
 }
 
-// A well-formed authorization URL that carries the exact query keys of the
-// contract. The values are synthetic; the fixture redacts the real values.
-const VALID_URL =
-  "https://claude.com/cai/oauth/authorize" +
-  "?client_id=cid-000" +
-  "&code=redacted" +
-  "&code_challenge=chal-000" +
-  "&code_challenge_method=S256" +
-  "&redirect_uri=https%3A%2F%2Fclaude.com%2Fcallback" +
-  "&response_type=code" +
-  "&scope=user%3Ainference" +
-  "&state=state-000";
+// The synthetic query values. Each value passes the value validators of the
+// contract. No value is a real OAuth value.
+const CLIENT_ID = "9d1c8f00-1a2b-3c4d-5e6f-708192a3b4c5";
+const CODE = "ac_0aB1cD2eF3gH4iJ5kL6mN7oP8qR9sT";
+const CODE_CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+const STATE = "Xy7Kd2Pq9Rn4Vb8Lf1Mw6Zc3Hj0Tg5Us";
+const SCOPE = "org:create_api_key user:profile";
+
+// The query of a well-formed authorization URL. The `redirect_uri` and the
+// `scope` are percent-encoded the way the CLI emits them; the parser decodes and
+// validates each value.
+const QUERY = [
+  `client_id=${CLIENT_ID}`,
+  `code=${CODE}`,
+  `code_challenge=${CODE_CHALLENGE}`,
+  "code_challenge_method=S256",
+  `redirect_uri=${encodeURIComponent(SETUP_TOKEN_REDIRECT_URI)}`,
+  "response_type=code",
+  `scope=${encodeURIComponent(SCOPE)}`,
+  `state=${STATE}`,
+].join("&");
+
+// The two observed authorization URLs. `claude` 2.1.19 emits the `claude.ai`
+// URL; `claude` 2.1.205 and 2.1.226 emit the `claude.com` URL.
+const CLAUDE_AI_URL = `https://claude.ai/oauth/authorize?${QUERY}`;
+const CLAUDE_COM_URL = `https://claude.com/cai/oauth/authorize?${QUERY}`;
+
+// The default URL for the credential-parser regression tests below.
+const VALID_URL = CLAUDE_COM_URL;
 
 // The URL preamble line and the browser-code prompt line, exactly as the
 // fixture records them.
@@ -65,28 +83,57 @@ function chaSpaced(words: string[]): string {
   return words.join("\x1b[9G");
 }
 
+// Wraps a string into physical lines of at most `width` characters, joined with
+// a line feed and no space at the wrap. This reproduces the `claude` 2.1.19 hard
+// line wrap of the plain-text authorization URL.
+function hardWrap(text: string, width: number): string {
+  const lines: string[] = [];
+  for (let i = 0; i < text.length; i += width) {
+    lines.push(text.slice(i, i + width));
+  }
+  return lines.join("\n");
+}
+
 describe("parseSetupTokenPrompt", () => {
-  it("returns the exact URL and prompt from a complete output", () => {
-    const result = parseSetupTokenPrompt(completeOutput(VALID_URL));
+  it("returns the exact claude.com URL and prompt from a complete output", () => {
+    const result = parseSetupTokenPrompt(completeOutput(CLAUDE_COM_URL));
     expect(result).not.toBeNull();
-    expect(result?.url).toBe(VALID_URL);
+    expect(result?.url).toBe(CLAUDE_COM_URL);
+    expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
+  });
+
+  it("returns the exact claude.ai URL and prompt from a complete output", () => {
+    const result = parseSetupTokenPrompt(completeOutput(CLAUDE_AI_URL));
+    expect(result).not.toBeNull();
+    expect(result?.url).toBe(CLAUDE_AI_URL);
+    expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
+  });
+
+  it("reassembles the claude.ai URL from the 2.1.19 hard-wrapped plain-text form", () => {
+    // `claude` 2.1.19 emits the URL as plain text with a hard line wrap and no
+    // OSC 8 hyperlink. The parser joins the URL-character-only physical lines and
+    // validates only the final reassembled string.
+    const wrapped = hardWrap(CLAUDE_AI_URL, 64);
+    expect(wrapped).toContain("\n");
+    const text = [PREAMBLE_LINE, wrapped, PROMPT_LINE].join("\n");
+    const result = parseSetupTokenPrompt(text);
+    expect(result).not.toBeNull();
+    expect(result?.url).toBe(CLAUDE_AI_URL);
     expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
   });
 
   it("returns the URL when the output arrives split across chunks", () => {
-    // The streaming caller accumulates chunks and re-parses the whole buffer.
-    // The first chunk holds a partial URL, so the parser returns null. The joined
-    // buffer holds the whole prompt, so the parser returns the URL.
-    const chunkA = ["Opening browser to sign in…", PREAMBLE_LINE, "https://claude.com/cai/oauth/aut"].join(
+    // The streaming caller accumulates chunks and re-parses the whole buffer. The
+    // chunk boundary falls inside the URL token with no line break, so the joined
+    // buffer holds the whole URL on one line.
+    const chunkA = ["Opening browser to sign in…", PREAMBLE_LINE, CLAUDE_COM_URL.slice(0, 40)].join(
       "\n",
     );
-    const chunkB = ["horize?client_id=cid-000&code=redacted&code_challenge=chal-000&code_challenge_method=S256&redirect_uri=https%3A%2F%2Fclaude.com%2Fcallback&response_type=code&scope=user%3Ainference&state=state-000", PROMPT_LINE, ""].join(
-      "\n",
-    );
+    const chunkB = [`${CLAUDE_COM_URL.slice(40)}`, PROMPT_LINE, ""].join("\n");
     expect(parseSetupTokenPrompt(chunkA)).toBeNull();
     const joined = parseSetupTokenPrompt(chunkA + chunkB);
     expect(joined).not.toBeNull();
-    expect(joined?.url).toBe(VALID_URL);
+    expect(joined?.url).toBe(CLAUDE_COM_URL);
     expect(joined?.prompt).toBe(SETUP_TOKEN_PROMPT);
   });
 
@@ -95,48 +142,188 @@ describe("parseSetupTokenPrompt", () => {
     const reset = "\x1b[0m";
     // The display text wraps across two lines and truncates the URL. The parser
     // must ignore it and read the URI field of the hyperlink.
-    const wrappedDisplay = "https://claude.com/cai/oauth/aut\nhorize?client_id=cid-000&code=…";
+    const wrappedDisplay = "https://claude.com/cai/oauth/aut\nhorize?client_id=…";
     const text = [
       `${cyan}Opening browser to sign in…${reset}`,
       PREAMBLE_LINE,
-      `${cyan}${osc8Hyperlink(VALID_URL, wrappedDisplay)}${reset}`,
+      `${cyan}${osc8Hyperlink(CLAUDE_COM_URL, wrappedDisplay)}${reset}`,
       `${cyan}${PROMPT_LINE}${reset}`,
     ].join("\n");
     const result = parseSetupTokenPrompt(text);
     expect(result).not.toBeNull();
-    expect(result?.url).toBe(VALID_URL);
+    expect(result?.url).toBe(CLAUDE_COM_URL);
     expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
   });
 
-  it("returns null for a wrong origin", () => {
-    const badOrigin = VALID_URL.replace("https://claude.com", "https://claude.example.com");
-    expect(parseSetupTokenPrompt(completeOutput(badOrigin))).toBeNull();
+  it("returns null for a wrong host", () => {
+    const badHost = CLAUDE_COM_URL.replace("https://claude.com", "https://claude.example.com");
+    expect(parseSetupTokenPrompt(completeOutput(badHost))).toBeNull();
   });
 
-  it("returns null for a wrong path", () => {
-    const badPath = VALID_URL.replace(SETUP_TOKEN_URL_PATH, "/cai/oauth/authorise");
-    expect(parseSetupTokenPrompt(completeOutput(badPath))).toBeNull();
+  it("returns null for a mixed-case host spelling", () => {
+    // The raw candidate must start with the exact lowercase host prefix, so a
+    // mixed-case host cannot bind even though the URL class lowercases the host.
+    const mixedCase = CLAUDE_AI_URL.replace("https://claude.ai", "https://Claude.AI");
+    expect(parseSetupTokenPrompt(completeOutput(mixedCase))).toBeNull();
+  });
+
+  it("returns null for an explicit default :443 port on the host", () => {
+    const withPort = CLAUDE_AI_URL.replace("https://claude.ai/", "https://claude.ai:443/");
+    expect(parseSetupTokenPrompt(completeOutput(withPort))).toBeNull();
+  });
+
+  it("returns null for a userinfo prefix on the host", () => {
+    const withUserinfo = CLAUDE_AI_URL.replace("https://claude.ai/", "https://user@claude.ai/");
+    expect(parseSetupTokenPrompt(completeOutput(withUserinfo))).toBeNull();
+  });
+
+  it("returns null for a punycode look-alike host", () => {
+    // A punycode host does not start with the exact lowercase prefix, so the
+    // parser rejects it before the URL parse.
+    const punycode = "https://xn--clade-9wa.ai/oauth/authorize?" + QUERY;
+    expect(parseSetupTokenPrompt(completeOutput(punycode))).toBeNull();
+  });
+
+  it("returns null for the claude.ai host with the claude.com path", () => {
+    const crossPair = `https://claude.ai/cai/oauth/authorize?${QUERY}`;
+    expect(parseSetupTokenPrompt(completeOutput(crossPair))).toBeNull();
+  });
+
+  it("returns null for the claude.com host with the claude.ai path", () => {
+    const crossPair = `https://claude.com/oauth/authorize?${QUERY}`;
+    expect(parseSetupTokenPrompt(completeOutput(crossPair))).toBeNull();
   });
 
   it("returns null for a missing query key", () => {
-    const missingKey = VALID_URL.replace("&state=state-000", "");
+    const missingKey = CLAUDE_COM_URL.replace(`&state=${STATE}`, "");
     expect(parseSetupTokenPrompt(completeOutput(missingKey))).toBeNull();
   });
 
-  it("returns null for an extra query key", () => {
-    const extraKey = `${VALID_URL}&extra=1`;
-    expect(parseSetupTokenPrompt(completeOutput(extraKey))).toBeNull();
+  it("returns null for a duplicate query key", () => {
+    const duplicate = `${CLAUDE_COM_URL}&state=${STATE}`;
+    expect(parseSetupTokenPrompt(completeOutput(duplicate))).toBeNull();
+  });
+
+  it("returns null for an unexpected added key with a valid name", () => {
+    // The parser accepts at most four added keys, so a first added key still
+    // needs a valid name; a valid name alone does not fail. This test proves a
+    // fifth added key fails the count bound.
+    const fiveAdded = `${CLAUDE_COM_URL}&a1=1&b2=2&c3=3&d4=4&e5=5`;
+    expect(parseSetupTokenPrompt(completeOutput(fiveAdded))).toBeNull();
+  });
+
+  it("returns the URL when it carries up to four valid added keys", () => {
+    const fourAdded = `${CLAUDE_COM_URL}&a1=1&b2=2&c3=3&d4=4`;
+    const result = parseSetupTokenPrompt(completeOutput(fourAdded));
+    expect(result).not.toBeNull();
+    expect(result?.url).toBe(fourAdded);
+  });
+
+  it("returns null for an added key with an invalid name", () => {
+    const badName = `${CLAUDE_COM_URL}&Extra=1`;
+    expect(parseSetupTokenPrompt(completeOutput(badName))).toBeNull();
+  });
+
+  it("returns null for an added key value over the length cap", () => {
+    const longValue = `${CLAUDE_COM_URL}&extra=${"a".repeat(257)}`;
+    expect(parseSetupTokenPrompt(completeOutput(longValue))).toBeNull();
+  });
+
+  it("returns null for a duplicate added key", () => {
+    const dupAdded = `${CLAUDE_COM_URL}&extra=1&extra=2`;
+    expect(parseSetupTokenPrompt(completeOutput(dupAdded))).toBeNull();
+  });
+
+  it("returns null for an invalid code_challenge_method", () => {
+    const badMethod = CLAUDE_COM_URL.replace("code_challenge_method=S256", "code_challenge_method=plain");
+    expect(parseSetupTokenPrompt(completeOutput(badMethod))).toBeNull();
+  });
+
+  it("returns null for an invalid response_type", () => {
+    const badType = CLAUDE_COM_URL.replace("response_type=code", "response_type=token");
+    expect(parseSetupTokenPrompt(completeOutput(badType))).toBeNull();
+  });
+
+  it("accepts a short four-character code value", () => {
+    // A real `claude` 2.1.19 capture measured a four-character `code` value, so
+    // the parser accepts it.
+    const shortCode = CLAUDE_AI_URL.replace(`code=${CODE}`, "code=wZ9x");
+    const result = parseSetupTokenPrompt(completeOutput(shortCode));
+    expect(result).not.toBeNull();
+    expect(result?.url).toBe(shortCode);
+  });
+
+  it("returns null for an empty code value", () => {
+    const emptyCode = CLAUDE_COM_URL.replace(`code=${CODE}`, "code=");
+    expect(parseSetupTokenPrompt(completeOutput(emptyCode))).toBeNull();
+  });
+
+  it("returns null for a code_challenge that is too short", () => {
+    const shortChallenge = CLAUDE_COM_URL.replace(`code_challenge=${CODE_CHALLENGE}`, "code_challenge=tooshort");
+    expect(parseSetupTokenPrompt(completeOutput(shortChallenge))).toBeNull();
+  });
+
+  it("returns null for a state that is too short", () => {
+    const shortState = CLAUDE_COM_URL.replace(`state=${STATE}`, "state=short");
+    expect(parseSetupTokenPrompt(completeOutput(shortState))).toBeNull();
+  });
+
+  it("returns null for a client_id with an invalid character", () => {
+    const badClientId = CLAUDE_COM_URL.replace(`client_id=${CLIENT_ID}`, "client_id=bad%2Fid");
+    expect(parseSetupTokenPrompt(completeOutput(badClientId))).toBeNull();
+  });
+
+  it("returns null for a scope with too many tokens", () => {
+    const scope = encodeURIComponent("a b c d e f g h i");
+    const manyScope = CLAUDE_COM_URL.replace(`scope=${encodeURIComponent(SCOPE)}`, `scope=${scope}`);
+    expect(parseSetupTokenPrompt(completeOutput(manyScope))).toBeNull();
+  });
+
+  it("returns null for a scope with an invalid token character", () => {
+    const scope = encodeURIComponent("user:profile bad/token");
+    const badScope = CLAUDE_COM_URL.replace(`scope=${encodeURIComponent(SCOPE)}`, `scope=${scope}`);
+    expect(parseSetupTokenPrompt(completeOutput(badScope))).toBeNull();
+  });
+
+  it("returns null for a redirect_uri with a wrong host", () => {
+    const badRedirect = encodeURIComponent("https://evil.example.com/oauth/code/callback");
+    const url = CLAUDE_COM_URL.replace(
+      `redirect_uri=${encodeURIComponent(SETUP_TOKEN_REDIRECT_URI)}`,
+      `redirect_uri=${badRedirect}`,
+    );
+    expect(parseSetupTokenPrompt(completeOutput(url))).toBeNull();
+  });
+
+  it("returns null for a redirect_uri with a stray query", () => {
+    const badRedirect = encodeURIComponent(`${SETUP_TOKEN_REDIRECT_URI}?next=/`);
+    const url = CLAUDE_COM_URL.replace(
+      `redirect_uri=${encodeURIComponent(SETUP_TOKEN_REDIRECT_URI)}`,
+      `redirect_uri=${badRedirect}`,
+    );
+    expect(parseSetupTokenPrompt(completeOutput(url))).toBeNull();
   });
 
   it("returns null for a URL with a fragment", () => {
-    const withFragment = `${VALID_URL}#section`;
+    const withFragment = `${CLAUDE_COM_URL}#section`;
     expect(parseSetupTokenPrompt(completeOutput(withFragment))).toBeNull();
+  });
+
+  it("returns null for a raw sk-ant- value in a query value", () => {
+    const withKey = CLAUDE_COM_URL.replace(`code=${CODE}`, "code=sk-ant-oat01-abc12345");
+    expect(parseSetupTokenPrompt(completeOutput(withKey))).toBeNull();
+  });
+
+  it("returns null for a percent-encoded sk-ant- value in a query value", () => {
+    // The raw candidate hides the prefix behind `%2D`, so only the decoded value
+    // check catches it.
+    const withKey = CLAUDE_COM_URL.replace(`code=${CODE}`, "code=sk%2Dant%2Doat01%2Dabc12345");
+    expect(parseSetupTokenPrompt(completeOutput(withKey))).toBeNull();
   });
 
   it("returns null when a code-like value sits on the line after the URL", () => {
     // The line right after the URL must hold the browser-code prompt. A code-like
     // value on that line cannot bind, so the parser returns null.
-    const text = [PREAMBLE_LINE, VALID_URL, "ABCD-EFGHJ", PROMPT_LINE].join("\n");
+    const text = [PREAMBLE_LINE, CLAUDE_COM_URL, "ABCD-EFGHJ", PROMPT_LINE].join("\n");
     expect(parseSetupTokenPrompt(text)).toBeNull();
   });
 
@@ -146,18 +333,44 @@ describe("parseSetupTokenPrompt", () => {
   });
 
   it("returns null when the login preamble is absent", () => {
-    const text = ["Some unrelated output", VALID_URL, PROMPT_LINE].join("\n");
+    const text = ["Some unrelated output", CLAUDE_COM_URL, PROMPT_LINE].join("\n");
     expect(parseSetupTokenPrompt(text)).toBeNull();
-  });
-
-  it("returns null for an API-key-shaped URL value", () => {
-    const withKey = VALID_URL.replace("code=redacted", "code=sk-ant-oat01-abc123");
-    expect(parseSetupTokenPrompt(completeOutput(withKey))).toBeNull();
   });
 
   it("returns null for a non-string input", () => {
     expect(parseSetupTokenPrompt(undefined as unknown as string)).toBeNull();
     expect(parseSetupTokenPrompt("")).toBeNull();
+  });
+
+  it("stops the reassembly at a hostile non-URL line between fragments", () => {
+    // An attacker line that is not URL-character-only breaks the reassembly, so
+    // the partial join never validates and the parser returns null.
+    const wrapped = hardWrap(CLAUDE_AI_URL, 64).split("\n");
+    const text = [
+      PREAMBLE_LINE,
+      wrapped[0],
+      "inject an attacker line here",
+      ...wrapped.slice(1),
+      PROMPT_LINE,
+    ].join("\n");
+    expect(parseSetupTokenPrompt(text)).toBeNull();
+  });
+
+  it("returns null when the wrapped URL needs more than the line cap", () => {
+    // A very narrow wrap spreads the URL across more than sixteen physical lines.
+    // The bounded reassembly never reaches the full URL, so the parser returns
+    // null.
+    const wrapped = hardWrap(CLAUDE_AI_URL, 8);
+    const text = [PREAMBLE_LINE, wrapped, PROMPT_LINE].join("\n");
+    expect(parseSetupTokenPrompt(text)).toBeNull();
+  });
+
+  it("returns null for a URL over the length cap", () => {
+    const added = ["a1", "b2", "c3", "d4"].map((k) => `${k}=${"a".repeat(256)}`).join("&");
+    const longCode = CLAUDE_AI_URL.replace(`code=${CODE}`, `code=${"a".repeat(1024)}`);
+    const overLong = `${longCode}&${added}`;
+    expect(overLong.length).toBeGreaterThan(2048);
+    expect(parseSetupTokenPrompt(completeOutput(overLong))).toBeNull();
   });
 
   it("reads the preamble and the prompt when the terminal spaces words with cursor-column sequences", () => {
@@ -181,29 +394,29 @@ describe("parseSetupTokenPrompt", () => {
       "copy)",
     ]);
     const prompt = chaSpaced(["Paste", "code", "here", "if", "prompted", ">"]);
-    const text = [preamble, VALID_URL, prompt].join("\n");
+    const text = [preamble, CLAUDE_COM_URL, prompt].join("\n");
     const result = parseSetupTokenPrompt(text);
     expect(result).not.toBeNull();
-    expect(result?.url).toBe(VALID_URL);
+    expect(result?.url).toBe(CLAUDE_COM_URL);
     expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
   });
 
   it("binds the prompt after the terminal repeats the URL once per wrapped display row", () => {
-    // The terminal emits one OSC 8 hyperlink per wrapped display row, so it
+    // The terminal can emit one full URL line per wrapped display row, so it
     // repeats the same full authorization URL on a few consecutive lines. The
-    // parser skips the repeated URL lines and binds the prompt on the line after
-    // the URL block.
+    // parser accepts the first full URL line and skips the repeated lines, then
+    // binds the prompt on the line after the URL block.
     const text = [
       "Browser didn't open? Use the url below to sign in (c to copy)",
-      VALID_URL,
-      VALID_URL,
-      VALID_URL,
+      CLAUDE_COM_URL,
+      CLAUDE_COM_URL,
+      CLAUDE_COM_URL,
       "",
       "Paste code here if prompted >",
     ].join("\n");
     const result = parseSetupTokenPrompt(text);
     expect(result).not.toBeNull();
-    expect(result?.url).toBe(VALID_URL);
+    expect(result?.url).toBe(CLAUDE_COM_URL);
     expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
   });
 
@@ -212,8 +425,8 @@ describe("parseSetupTokenPrompt", () => {
     // the bind, so a stray value between the URL and the prompt cannot pass.
     const text = [
       "Browser didn't open? Use the url below to sign in (c to copy)",
-      VALID_URL,
-      VALID_URL,
+      CLAUDE_COM_URL,
+      CLAUDE_COM_URL,
       "an unrelated line",
       "Paste code here if prompted >",
     ].join("\n");
@@ -221,11 +434,13 @@ describe("parseSetupTokenPrompt", () => {
   });
 
   it("keeps its contract in sync with the characterization fixture", () => {
-    // The fixture documents the prompt text, the URL path, and the query keys.
-    // This test fails if the parser contract drifts from the fixture.
+    // The fixture documents the prompt text, the two authorization URLs, and the
+    // query keys. This test fails if the parser contract drifts from the fixture.
     const fixture = readFixture("setup-token.md");
     expect(fixture).toContain(SETUP_TOKEN_PROMPT);
-    expect(fixture).toContain(SETUP_TOKEN_URL_PATH);
+    for (const url of SETUP_TOKEN_AUTH_URLS) {
+      expect(fixture).toContain(url);
+    }
     for (const key of SETUP_TOKEN_URL_QUERY_KEYS) {
       expect(fixture).toContain(`\`${key}\``);
     }

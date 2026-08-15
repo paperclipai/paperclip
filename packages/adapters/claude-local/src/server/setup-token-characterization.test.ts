@@ -2,9 +2,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import {
   parseSetupTokenPrompt,
+  SETUP_TOKEN_AUTH_URLS,
   SETUP_TOKEN_PROMPT,
-  SETUP_TOKEN_URL_ORIGIN,
-  SETUP_TOKEN_URL_PATH,
   SETUP_TOKEN_URL_QUERY_KEYS,
 } from "./setup-token-parse.js";
 
@@ -120,8 +119,9 @@ run("claude setup-token live characterization", () => {
       expect(parsed, "the parser did not read the live setup-token prompt").not.toBeNull();
 
       const url = new URL(parsed!.url);
-      expect(url.origin).toBe(SETUP_TOKEN_URL_ORIGIN);
-      expect(url.pathname).toBe(SETUP_TOKEN_URL_PATH);
+      // The live CLI emits one of the two accepted origin-and-path pairs. The
+      // installed version decides which pair the run records.
+      expect(SETUP_TOKEN_AUTH_URLS).toContain(`${url.origin}${url.pathname}`);
       expect([...url.searchParams.keys()].sort()).toEqual([...SETUP_TOKEN_URL_QUERY_KEYS].sort());
       expect(url.hash).toBe("");
       expect(parsed!.prompt).toBe(SETUP_TOKEN_PROMPT);
@@ -136,7 +136,7 @@ run("claude setup-token live characterization", () => {
       // eslint-disable-next-line no-console
       console.log(
         `[characterization] Claude Code v${version}: prompt "${SETUP_TOKEN_PROMPT}", ` +
-          `URL ${SETUP_TOKEN_URL_ORIGIN}${SETUP_TOKEN_URL_PATH} with query keys ` +
+          `URL ${url.origin}${url.pathname} with query keys ` +
           `[${[...SETUP_TOKEN_URL_QUERY_KEYS].join(", ")}].`,
       );
     },
