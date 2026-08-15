@@ -3921,16 +3921,6 @@ export function issueRoutes(
     return decision.allowed;
   }
 
-  /**
-   * True when the issue's assignee row is a terminated agent. Terminated agents
-   * can never run again, so anything they still hold has to stay reclaimable.
-   */
-  async function assigneeAgentIsTerminated(assigneeAgentId: string | null | undefined) {
-    if (!assigneeAgentId) return false;
-    const assignee = await agentsSvc.getById(assigneeAgentId);
-    return assignee?.status === "terminated";
-  }
-
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
@@ -3984,9 +3974,10 @@ export function issueRoutes(
       return true;
     }
     // A terminated agent has no live run and can never resume, so its issues are
-    // unowned in practice. Without this the assignee run lock below freezes every
-    // issue the terminated agent held, with no supported path back.
-    if (issue.assigneeAgentId !== actorAgentId && (await assigneeAgentIsTerminated(issue.assigneeAgentId))) {
+    // unowned in practice. The authorization service reports that with its own
+    // reason. Without this the assignee run lock below freezes every issue the
+    // terminated agent held, with no supported path back.
+    if (boundaryDecision.reason === "allow_terminated_assignee") {
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {

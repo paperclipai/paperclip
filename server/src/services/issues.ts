@@ -5312,6 +5312,11 @@ export function issueService(db: Db) {
   // run this after clearExecutionRunIfTerminal/clearCheckoutRunIfTerminal, so a
   // stale lock left by the terminated agent is already gone by this point.
   async function releaseTerminatedAssignee(issueId: string): Promise<boolean> {
+    const before = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
     const released = await db
       .update(issues)
       .set({ assigneeAgentId: null, updatedAt: new Date() })
@@ -5323,9 +5328,24 @@ export function issueService(db: Db) {
           sql`exists (select 1 from ${agents} where ${agents.id} = ${issues.assigneeAgentId} and ${agents.status} = 'terminated')`,
         ),
       )
-      .returning({ id: issues.id })
+      .returning({ id: issues.id, companyId: issues.companyId })
       .then((rows) => rows[0] ?? null);
-    return Boolean(released);
+    if (!released) return false;
+    // Ownership changes here without an actor request, so record why. An operator
+    // who sees an issue lose its assignee must be able to read the reason.
+    await logActivity(db, {
+      companyId: released.companyId,
+      actorType: "system",
+      actorId: "issue_service",
+      action: "issue.terminated_assignee_released",
+      entityType: "issue",
+      entityId: released.id,
+      details: {
+        previousAssigneeAgentId: before?.assigneeAgentId ?? null,
+        reason: "assignee_agent_terminated",
+      },
+    });
+    return true;
   }
 
   async function addStopRelayCommentIfNeeded(

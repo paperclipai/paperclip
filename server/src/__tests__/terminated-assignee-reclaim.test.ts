@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
   agents,
   companies,
   companyMemberships,
@@ -24,6 +25,21 @@ import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compa
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+// Assigning an issue wakes the new assignee. The wake starts a background run
+// that outlives this file and then writes to the embedded Postgres after the
+// database stops, which fails the whole test file with an unhandled error. This
+// suite checks ownership rules, not wake delivery, so make the wake a no-op.
+vi.mock("../services/heartbeat.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/heartbeat.js")>("../services/heartbeat.js");
+  return {
+    ...actual,
+    heartbeatService: (...args: Parameters<typeof actual.heartbeatService>) => ({
+      ...actual.heartbeatService(...args),
+      wakeup: async () => null,
+    }),
+  };
+});
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -175,6 +191,15 @@ describeEmbeddedPostgres("reclaiming work owned by a terminated agent", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.assigneeAgentId).toBe(liveAgentId);
     expect(res.body.status).toBe("in_progress");
+
+    // The release of the dead assignee is an ownership change with no actor
+    // request behind it, so it must leave an audit trail.
+    const [audit] = await db
+      .select({ action: activityLog.action, details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.terminated_assignee_released"));
+    expect(audit?.action).toBe("issue.terminated_assignee_released");
+    expect((audit?.details as Record<string, unknown>)?.previousAssigneeAgentId).toBe(deadAgentId);
   });
 
   it("lets another agent mutate an in_progress issue left behind by a terminated assignee", async () => {

@@ -111,6 +111,7 @@ export type AuthorizationDecision = {
     | "allow_visible_issue_write"
     | "allow_self"
     | "allow_company_agent"
+    | "allow_terminated_assignee"
     | "allow_company_member"
     | "allow_simple_company_member"
     | "allow_manager_chain"
@@ -2169,7 +2170,7 @@ export function authorizationService(db: Db) {
       if (await assigneeAgentIsTerminated(resource.assigneeAgentId)) {
         return allow({
           action: input.action,
-          reason: "allow_company_agent",
+          reason: "allow_terminated_assignee",
           explanation: "Allowed because the issue assignee agent is terminated, so the issue is unowned.",
         });
       }
