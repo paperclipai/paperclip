@@ -160,6 +160,15 @@ describe("codex execute", () => {
     await fs.mkdir(sharedCodexHome, { recursive: true });
     await fs.writeFile(path.join(sharedCodexHome, "auth.json"), `${fakeCodexAuthJson}\n`, "utf8");
     await fs.writeFile(path.join(sharedCodexHome, "config.toml"), 'model = "codex-mini-latest"\n', "utf8");
+    const hostSkillFiles = await Promise.all(
+      Array.from({ length: 128 }, async (_, index) => {
+        const skillDir = path.join(root, ".agents", "skills", `host-skill-${index}`);
+        await fs.mkdir(skillDir, { recursive: true });
+        const skillFile = path.join(skillDir, "SKILL.md");
+        await fs.writeFile(skillFile, `# host-skill-${index}\n`, "utf8");
+        return skillFile;
+      }),
+    );
     await writeFakeCodexCommand(commandPath);
 
     const previousHome = process.env.HOME;
@@ -198,6 +207,9 @@ describe("codex execute", () => {
             PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
           },
           promptTemplate: "Follow the paperclip heartbeat.",
+          paperclipSkillSync: {
+            desiredSkills: [],
+          },
         },
         context: {},
         authToken: "run-jwt-token",
@@ -220,12 +232,24 @@ describe("codex execute", () => {
       expect((await fs.lstat(managedAuth)).isSymbolicLink()).toBe(true);
       expect(await fs.realpath(managedAuth)).toBe(await fs.realpath(path.join(sharedCodexHome, "auth.json")));
       expect((await fs.lstat(managedConfig)).isFile()).toBe(true);
-      expect(await fs.readFile(managedConfig, "utf8")).toBe("");
+      const managedConfigText = await fs.readFile(managedConfig, "utf8");
+      expect(managedConfigText.match(/\[\[skills\.config\]\]/g)).toHaveLength(hostSkillFiles.length);
+      for (const skillFile of hostSkillFiles) {
+        expect(managedConfigText).toContain(`path = ${JSON.stringify(skillFile)}`);
+      }
+      expect(managedConfigText.match(/enabled = false/g)).toHaveLength(hostSkillFiles.length);
+      await expect(fs.access(path.join(managedCodexHome, "skills"))).rejects.toThrow();
       await expect(fs.lstat(path.join(sharedCodexHome, "companies", "company-1"))).rejects.toThrow();
       expect(logs).toContainEqual(
         expect.objectContaining({
           stream: "stdout",
           chunk: expect.stringContaining("Using Paperclip-managed Codex home"),
+        }),
+      );
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining(`Disabled ${hostSkillFiles.length} unselected host Codex skill(s)`),
         }),
       );
     } finally {
