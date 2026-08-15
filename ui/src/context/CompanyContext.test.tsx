@@ -22,6 +22,21 @@ vi.mock("../api/companies", () => ({
   companiesApi: mockCompaniesApi,
 }));
 
+const mockAuthApi = vi.hoisted(() => ({
+  getSession: vi.fn(),
+}));
+
+vi.mock("../api/auth", () => ({
+  authApi: mockAuthApi,
+}));
+
+function sessionFor(userId: string) {
+  return {
+    session: { id: `session-${userId}`, userId },
+    user: { id: userId, name: "Example", email: `${userId}@example.com`, image: null },
+  };
+}
+
 const activeCompany = { id: "company-1" };
 const secondActiveCompany = { id: "company-2" };
 const archivedCompany = { id: "archived-company" };
@@ -52,6 +67,12 @@ function makeCompany(id: string): Company {
     createdAt: new Date(),
     updatedAt: new Date(),
   };
+}
+
+async function flushReact() {
+  await act(async () => {
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+  });
 }
 
 function Probe({ onSelectedCompanyId }: { onSelectedCompanyId: (companyId: string | null) => void }) {
@@ -181,6 +202,7 @@ describe("CompanyProvider", () => {
         queries: { retry: false },
       },
     });
+    mockAuthApi.getSession.mockResolvedValue(null);
   });
 
   afterEach(async () => {
@@ -255,5 +277,82 @@ describe("CompanyProvider", () => {
 
     expect(seen).toEqual([null, "company-1"]);
     expect(localStorage.getItem("paperclip.selectedCompanyId")).toBe("company-1");
+  });
+
+  // The `["companies"]` cache entry is shared app-wide and carries no account
+  // identity, so it survives a change of account in this tab. Cached data is
+  // served whether or not it is stale, so freshness cannot stand in for
+  // "belongs to the account signed in now".
+  describe("when the account changes in this tab", () => {
+    async function bootWithFirstAccount(seen: Array<string | null>) {
+      mockAuthApi.getSession.mockResolvedValue(sessionFor("user-1"));
+      queryClient.setQueryData(queryKeys.companies.all, {
+        companies: [makeCompany("company-1")],
+        unauthorized: false,
+      });
+      mockCompaniesApi.list.mockImplementation(() => new Promise(() => {}));
+
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <CompanyProvider>
+              <Probe onSelectedCompanyId={(companyId) => seen.push(companyId)} />
+            </CompanyProvider>
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+
+      expect(seen).toEqual([null, "company-1"]);
+      expect(localStorage.getItem("paperclip.selectedCompanyId")).toBe("company-1");
+    }
+
+    it("drops the previous account's selection and re-reads the list", async () => {
+      const seen: Array<string | null> = [];
+      await bootWithFirstAccount(seen);
+
+      let resolveSecondList: ((companies: Company[]) => void) | null = null;
+      mockCompaniesApi.list.mockImplementation(
+        () =>
+          new Promise<Company[]>((resolve) => {
+            resolveSecondList = resolve;
+          }),
+      );
+
+      await act(async () => {
+        queryClient.setQueryData(queryKeys.auth.session, sessionFor("user-2"));
+      });
+      await flushReact();
+
+      // Nothing from the previous account is exposed while the new list loads.
+      expect(seen).toEqual([null, "company-1", null]);
+      expect(queryClient.getQueryData(queryKeys.companies.all)).toBeUndefined();
+      expect(resolveSecondList).not.toBeNull();
+
+      await act(async () => {
+        resolveSecondList?.([makeCompany("company-2")]);
+        await Promise.resolve();
+      });
+      await flushReact();
+
+      expect(seen).toEqual([null, "company-1", null, "company-2"]);
+      expect(localStorage.getItem("paperclip.selectedCompanyId")).toBe("company-2");
+    });
+
+    it("leaves the selection alone when the same account is observed again", async () => {
+      const seen: Array<string | null> = [];
+      await bootWithFirstAccount(seen);
+      const listCallsAfterBoot = mockCompaniesApi.list.mock.calls.length;
+
+      // A session refetch returns an equal-but-new object for the same account.
+      await act(async () => {
+        queryClient.setQueryData(queryKeys.auth.session, sessionFor("user-1"));
+      });
+      await flushReact();
+
+      expect(seen).toEqual([null, "company-1"]);
+      expect(localStorage.getItem("paperclip.selectedCompanyId")).toBe("company-1");
+      expect(mockCompaniesApi.list.mock.calls.length).toBe(listCallsAfterBoot);
+    });
   });
 });

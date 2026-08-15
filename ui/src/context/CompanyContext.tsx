@@ -4,11 +4,13 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Company } from "@paperclipai/shared";
+import { authApi } from "../api/auth";
 import { companiesApi } from "../api/companies";
 import { companiesListQueryOptions, type CompanyListResult } from "../api/companies-query";
 import { queryKeys } from "../lib/queryKeys";
@@ -102,9 +104,68 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
     [companies],
   );
 
+  // The `["companies"]` entry is shared app-wide and carries no account identity,
+  // so it outlives a change of account in this tab: the previous account's list
+  // keeps being served, and the effect below would auto-select from it and write
+  // that company id to localStorage. Signing in through the app drops the entry,
+  // but nothing does when the session lapses server-side or a second account
+  // signs in on another tab — so watch the account itself.
+  const { data: session, isPending: isSessionPending } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+    retry: false,
+  });
+  const sessionUserId = session?.user.id ?? null;
+  const observedUserIdRef = useRef<string | null | undefined>(undefined);
+  const [awaitingAccountScopedList, setAwaitingAccountScopedList] = useState(false);
+
+  useEffect(() => {
+    // Until the session settles the account is unknown, not changed.
+    if (isSessionPending) return;
+    const previousUserId = observedUserIdRef.current;
+    observedUserIdRef.current = sessionUserId;
+    // First settled observation is this tab's boot: no previous account to leave.
+    if (previousUserId === undefined || previousUserId === sessionUserId) return;
+
+    // The live selection belongs to the account that just went away. The stored
+    // one deliberately survives: resolveBootstrapCompanySelection re-validates it
+    // against the incoming list, so an account signing back in keeps its company
+    // while an unrelated account cannot inherit it.
+    setSelectedCompanyIdState(null);
+    setSelectionSource("bootstrap");
+    setAwaitingAccountScopedList(true);
+    // `removeQueries`, not `resetQueries`: reset rewinds the update counters
+    // `isFetchedAfterMount` is derived from while mounted observers keep their
+    // pre-reset baseline, which strands consumers gating on that flag (see
+    // AppsConnect.tsx). Removing the entry leaves nothing readable from the
+    // previous account and gives observers a fresh query to fetch against.
+    queryClient.removeQueries({ queryKey: queryKeys.companies.all, exact: true });
+
+    // Drive the replacement fetch here rather than leaning on observer refetch
+    // semantics, so the gate below lifts exactly when a list for this account
+    // has landed.
+    let cancelled = false;
+    void queryClient
+      .fetchQuery({ ...companiesListQueryOptions, staleTime: 0 })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setAwaitingAccountScopedList(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isSessionPending, queryClient, sessionUserId]);
+
   // Auto-select first company when list loads
   useEffect(() => {
+    // Nothing may be derived from the list until one has been fetched for the
+    // account signed in now.
+    if (awaitingAccountScopedList) return;
     if (isLoading) return;
+    // An errored list says nothing about which companies this account has, and
+    // `retry: false` makes a single network blip stick. Treat it as undecided
+    // rather than as "no companies", which would clear the stored selection.
+    if (error) return;
     if (companies.length === 0) {
       if (shouldClearStoredCompanySelection({
         companies,
@@ -130,7 +191,15 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
     setSelectedCompanyIdState(next);
     setSelectionSource("bootstrap");
     localStorage.setItem(STORAGE_KEY, next);
-  }, [companies, companyListUnauthorized, error, isLoading, selectedCompanyId, sidebarCompanies]);
+  }, [
+    awaitingAccountScopedList,
+    companies,
+    companyListUnauthorized,
+    error,
+    isLoading,
+    selectedCompanyId,
+    sidebarCompanies,
+  ]);
 
   const setSelectedCompanyId = useCallback((companyId: string, options?: CompanySelectionOptions) => {
     setSelectedCompanyIdState(companyId);
