@@ -5,6 +5,7 @@ import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCloudInstance } from "../hooks/useCloudInstance";
 import { companiesApi } from "../api/companies";
+import { useBulkCompanyAgentMutations } from "../hooks/useBulkCompanyAgentMutations";
 import { queryKeys } from "../lib/queryKeys";
 import { formatCents, relativeTime } from "../lib/utils";
 import { Input } from "@/components/ui/input";
@@ -21,6 +22,8 @@ import { Badge } from "@/components/ui/badge";
 import {
   Pencil,
   Check,
+  Pause,
+  Play,
   X,
   Plus,
   MoreHorizontal,
@@ -31,6 +34,23 @@ import {
   Calendar,
   ArchiveRestore,
 } from "lucide-react";
+
+function CompanyBulkMenuItems({ companyId }: { companyId: string }) {
+  const { bulkPause, bulkResume } = useBulkCompanyAgentMutations(companyId);
+  const busy = bulkPause.isPending || bulkResume.isPending;
+  return (
+    <>
+      <DropdownMenuItem onClick={() => bulkPause.mutate()} disabled={busy}>
+        <Pause className="h-3.5 w-3.5" />
+        Pause All Agents
+      </DropdownMenuItem>
+      <DropdownMenuItem onClick={() => bulkResume.mutate()} disabled={busy}>
+        <Play className="h-3.5 w-3.5" />
+        Resume All Agents
+      </DropdownMenuItem>
+    </>
+  );
+}
 
 export function Companies() {
   const {
@@ -247,6 +267,8 @@ export function Companies() {
                           Unarchive
                         </DropdownMenuItem>
                       )}
+                      <DropdownMenuSeparator />
+                      <CompanyBulkMenuItems companyId={company.id} />
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
                         variant="destructive"
