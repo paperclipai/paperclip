@@ -76,10 +76,31 @@ function isFiniteNonNegative(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
+/** The full {@link AdapterBillingType} union, used to validate operator overrides. */
+const KNOWN_BILLING_TYPES: ReadonlySet<AdapterBillingType> = new Set([
+  "api",
+  "subscription",
+  "metered_api",
+  "subscription_included",
+  "subscription_overage",
+  "credits",
+  "fixed",
+  "unknown",
+]);
+
+function isKnownBillingType(value: unknown): value is AdapterBillingType {
+  return typeof value === "string" && KNOWN_BILLING_TYPES.has(value as AdapterBillingType);
+}
+
 function parseEntry(value: unknown): TokenRateCardEntry | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
   if (!isFiniteNonNegative(raw.usdPerThousandTokens)) return null;
+  // An operator override with an unsupported billingType (typo, unknown
+  // value) must not silently replace a valid built-in entry: that would
+  // reintroduce the `unknown` billing-type misclassification this rate card
+  // exists to fix. Reject the whole entry so the built-in falls through.
+  if (raw.billingType !== undefined && !isKnownBillingType(raw.billingType)) return null;
   const multipliers: Record<string, number> = {};
   if (raw.modelMultipliers && typeof raw.modelMultipliers === "object") {
     for (const [model, multiplier] of Object.entries(raw.modelMultipliers as Record<string, unknown>)) {
@@ -88,7 +109,7 @@ function parseEntry(value: unknown): TokenRateCardEntry | null {
   }
   return {
     usdPerThousandTokens: raw.usdPerThousandTokens,
-    billingType: typeof raw.billingType === "string" ? (raw.billingType as AdapterBillingType) : "credits",
+    billingType: isKnownBillingType(raw.billingType) ? raw.billingType : "credits",
     ...(Object.keys(multipliers).length > 0 ? { modelMultipliers: multipliers } : {}),
     ...(typeof raw.note === "string" && raw.note.trim().length > 0 ? { note: raw.note.trim() } : {}),
   };

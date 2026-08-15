@@ -133,6 +133,21 @@ describe("token rate card", () => {
     }
   });
 
+  it("rejects an override with an unsupported billingType instead of degrading to unknown", () => {
+    const env = {
+      [TOKEN_RATE_CARD_ENV_KEY]: JSON.stringify({
+        "github-copilot": { usdPerThousandTokens: 0.02, billingType: "credit" },
+      }),
+    };
+    const entry = lookupTokenRateCardEntry("github-copilot", env);
+    // Falls back to the built-in entry rather than adopting the typo'd
+    // override: a malformed billingType override must not silently degrade
+    // the biller to "unknown" the way the CLI-reported path did before this
+    // rate card existed.
+    expect(entry?.usdPerThousandTokens).toBe(0.0092);
+    expect(entry?.billingType).toBe("credits");
+  });
+
   it("matches the biller case-insensitively", () => {
     expect(lookupTokenRateCardEntry("GitHub-Copilot")?.billingType).toBe("credits");
     expect(lookupTokenRateCardEntry("  ")).toBeNull();
