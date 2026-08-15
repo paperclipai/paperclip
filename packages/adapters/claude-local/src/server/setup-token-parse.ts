@@ -272,8 +272,14 @@ function hasValidQuery(parsed: URL): boolean {
     if (values.length !== 1) return false;
   }
 
-  // Reject an API-key prefix in any decoded value.
-  for (const values of byKey.values()) {
+  // Reject an API-key prefix in any decoded key and any decoded value. The
+  // `URLSearchParams` decoder turns a percent-encoded name into its literal
+  // form, so a secret-shaped value can hide in a query name (for example,
+  // `sk%2Dant%2Dredacted` decodes to `sk-ant-redacted`). The parser rejects the
+  // prefix in the name and in the value, before it classifies an added key. The
+  // raw-candidate check stays in place as defense in depth.
+  for (const [key, values] of byKey) {
+    if (API_KEY_RE.test(key)) return false;
     if (API_KEY_RE.test(values[0])) return false;
   }
 

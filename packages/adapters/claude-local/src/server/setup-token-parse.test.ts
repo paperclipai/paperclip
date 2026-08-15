@@ -320,6 +320,23 @@ describe("parseSetupTokenPrompt", () => {
     expect(parseSetupTokenPrompt(completeOutput(withKey))).toBeNull();
   });
 
+  it("returns null for a literal sk-ant- value in an added query key", () => {
+    // The secret rides inside a query name, not a value. The added-key name is
+    // valid in shape, so only the decoded-key check catches the prefix and the
+    // parser returns no accepted prompt result.
+    const withKey = `${CLAUDE_COM_URL}&sk-ant-redacted=x`;
+    expect(parseSetupTokenPrompt(completeOutput(withKey))).toBeNull();
+  });
+
+  it("returns null for a percent-encoded sk-ant- value in an added query key", () => {
+    // The raw candidate hides the prefix behind `%2D`, so the raw-candidate
+    // check misses it. `URLSearchParams` decodes the name to `sk-ant-redacted`,
+    // so the decoded-key check catches it and the parser returns no accepted
+    // prompt result.
+    const withKey = `${CLAUDE_COM_URL}&sk%2Dant%2Dredacted=x`;
+    expect(parseSetupTokenPrompt(completeOutput(withKey))).toBeNull();
+  });
+
   it("returns null when a code-like value sits on the line after the URL", () => {
     // The line right after the URL must hold the browser-code prompt. A code-like
     // value on that line cannot bind, so the parser returns null.
