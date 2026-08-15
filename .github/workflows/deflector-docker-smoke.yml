@@ -41,15 +41,16 @@ jobs:
       - name: Verify Node + better-sqlite3 inside image
         run: |
           set -euo pipefail
-          docker run --rm paperclip-deflector-smoke:local \
-            node -e "console.log(JSON.stringify({node:process.version,platform:process.platform,arch:process.arch}))"
-          docker run --rm -w /app paperclip-deflector-smoke:local \
-            node --input-type=module -e "
+          docker run --rm --entrypoint node paperclip-deflector-smoke:local \
+            -e "console.log(JSON.stringify({node:process.version,platform:process.platform,arch:process.arch}))"
+          docker run --rm --entrypoint node -w /app paperclip-deflector-smoke:local \
+            --input-type=module -e "
               import { createRequire } from 'node:module';
               import { mkdtempSync } from 'node:fs';
               import { tmpdir } from 'node:os';
               import { join } from 'node:path';
-              const require = createRequire(import.meta.url);
+              // pnpm nests deps under the workspace package; resolve from deflector.
+              const require = createRequire('/app/packages/adapters/deflector/package.json');
               const Database = require('better-sqlite3');
               const dir = mkdtempSync(join(tmpdir(), 'deflector-'));
               const db = new Database(join(dir, 'kb.sqlite'));
@@ -58,15 +59,6 @@ jobs:
               const row = db.prepare('SELECT id FROM t').get();
               db.close();
               if (row?.id !== 'ok') throw new Error('better-sqlite3 readback failed');
-              console.log('better-sqlite3 OK', { node: process.version, id: row.id });
-            "
-          docker run --rm -w /app paperclip-deflector-smoke:local \
-            node --input-type=module -e "
-              import { createRequire } from 'node:module';
-              const require = createRequire(import.meta.url);
-              // Resolve from the workspace package the same way the adapter does.
-              const pkg = require.resolve('better-sqlite3/package.json', {
-                paths: ['/app/packages/adapters/deflector']
-              });
-              console.log('deflector better-sqlite3 path', pkg);
+              const pkg = require.resolve('better-sqlite3/package.json');
+              console.log('better-sqlite3 OK', { node: process.version, id: row.id, pkg });
             "
