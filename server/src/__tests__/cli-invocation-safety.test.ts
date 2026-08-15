@@ -343,10 +343,13 @@ describe("paperclipai CLI invocation safety", () => {
   // inside a checkout of this repository. A reader who installs the published
   // `paperclipai` package has no such script, so the command fails for them.
   // The runtime surfaces below reach that installed reader: the server startup
-  // banner, the client connection-error hint, the env-lab cleanup hint, the UI
-  // bootstrap fallback command, and the board skill. Each must emit the
-  // `npx paperclipai` form, which resolves the installed binary and the
-  // in-repo binary alike.
+  // banner, the client connection-error hint, the UI bootstrap fallback command,
+  // and the board skill. Each must emit the `npx paperclipai` form, which
+  // resolves the installed binary and the in-repo binary alike.
+  //
+  // The env-lab cleanup hint is different. The env-lab fixture runs only from a
+  // source checkout, so its reader has the repository. That hint must invoke the
+  // checked-out CLI, not the published binary. See the env-lab test below.
 
   it("emits the safe onboard form from the server startup banner", () => {
     const source = read("server/src/startup-banner.ts");
@@ -360,10 +363,18 @@ describe("paperclipai CLI invocation safety", () => {
     expect(source).not.toContain("pnpm paperclipai run");
   });
 
-  it("emits the safe cleanup form from the env-lab status output", () => {
+  it("emits the checked-out CLI cleanup form from the env-lab status output", () => {
     const source = read("cli/src/commands/env-lab.ts");
-    expect(source).toContain("npx paperclipai env-lab down");
+    // The env-lab fixture runs from a source checkout. The cleanup hint must run
+    // the local `cli/src` through the direct-exec form. That form passes an inert
+    // `argv` value, so no shell reads the argument.
+    expect(source).toContain(
+      "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts env-lab down",
+    );
+    // The bare `pnpm paperclipai` script form is unsafe. Do not restore it.
     expect(source).not.toContain("pnpm paperclipai env-lab");
+    // `pnpm exec paperclipai` does not resolve the CLI binary. Do not use it.
+    expect(source).not.toContain("pnpm exec paperclipai env-lab");
   });
 
   it("emits the safe bootstrap fallback command from the UI", () => {

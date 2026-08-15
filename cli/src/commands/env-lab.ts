@@ -138,7 +138,14 @@ export async function envLabDoctorCommand(opts: { instance?: string; json?: bool
     p.log.message(`State: ${pc.dim(status.statePath)}`);
   }
 
-  p.log.message(`Cleanup: ${pc.dim("npx paperclipai env-lab down")}`);
+  // The env-lab fixture runs from a source checkout, so the cleanup hint must
+  // invoke the checked-out CLI, not the published binary. `npx paperclipai`
+  // resolves the installed package, so it can stop a different version. The
+  // direct-exec form runs the local `cli/src` and passes an inert `argv` value,
+  // so no shell reads the argument. See `doc/CLI.md`, "safe invocation".
+  p.log.message(
+    `Cleanup: ${pc.dim("node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts env-lab down")}`,
+  );
 }
 
 export function registerEnvLabCommands(program: Command) {
