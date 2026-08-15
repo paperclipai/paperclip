@@ -46,10 +46,16 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
 import {
+  canGoBackFromOnboardingStep,
+  canJumpToOnboardingStep,
   companyPrefixFromOnboardingPath,
   resolveRouteOnboardingOptions,
 } from "../lib/onboarding-route";
 import { useCompanyMission } from "../hooks/useCompanyMission";
+import {
+  isExistingCompanyMissionUnresolved,
+  planMissionPersistence,
+} from "../lib/onboarding-mission";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
 import { AgentCapsule } from "./AgentCapsule";
@@ -358,6 +364,12 @@ function OnboardingWizardInner({
   const existingCompanyId = effectiveOnboardingOptions.companyId;
 
   const [step, setStep] = useState<Step>((saved?.step as Step) ?? initialStep);
+  // The step this run *entered* on, which bounds how far back it can walk.
+  // Captured once, when the wizard opens, for the same reason the step itself
+  // is: it derives from queries, so a live read would move the floor under a
+  // customer mid-flow — and here that would quietly re-open the "create a
+  // company" step to a run that already holds one.
+  const [entryStep, setEntryStep] = useState<number>((saved?.step as Step) ?? initialStep);
   const [onboardingPath, setOnboardingPath] = useState<"create" | "grow" | null>((saved?.onboardingPath as "create" | "grow" | null) ?? null);
 
   // "Grow existing" questionnaire fields
@@ -424,6 +436,54 @@ function OnboardingWizardInner({
   // the user back to the route's initial step mid-flow.
   const createdCompanyIdRef = useRef<string | null>(null);
   createdCompanyIdRef.current = createdCompanyId;
+
+  // The mission of the company actually in hand, which is not always the one
+  // the route named - the dashboard opens the wizard with a company too. Same
+  // query key as the route lookup above, so when they agree this is one cache
+  // entry and no second request.
+  const {
+    mission: existingCompanyMission,
+    settled: existingMissionSettled,
+    fetching: existingMissionFetching,
+  } = useCompanyMission(createdCompanyId);
+
+  // Seed the mission field from the company's own goal.
+  //
+  // A company that already has its mission opens on the agent step, so steps 1
+  // and 2 never run and `companyGoal` stays empty. It is not only a display
+  // field: the Review checklist reads it, and `composeCeoInstructions` seeds
+  // the lead agent's instructions from it. Left empty, the agent is hired
+  // knowing nothing of the mission the customer gave at signup - which is the
+  // answer this whole flow exists to carry forward.
+  //
+  // Only when the field is empty, so a customer editing their mission is never
+  // overwritten by the stored copy.
+  const hydratedMissionForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!effectiveOnboardingOpen || !createdCompanyId) return;
+    if (hydratedMissionForRef.current === createdCompanyId) return;
+    if (!existingMissionSettled || existingMissionFetching) return;
+    hydratedMissionForRef.current = createdCompanyId;
+    if (!existingCompanyMission.goalInput) return;
+    setCompanyGoal((current) => (current.trim() ? current : existingCompanyMission.goalInput));
+    setCreatedCompanyGoalId((current) => current ?? existingCompanyMission.goalId);
+  }, [
+    effectiveOnboardingOpen,
+    createdCompanyId,
+    existingMissionSettled,
+    existingMissionFetching,
+    existingCompanyMission.goalInput,
+    existingCompanyMission.goalId,
+  ]);
+
+  // Hiring seeds the agent's instructions from `companyGoal`, so it must not
+  // run while that field is still waiting to be hydrated - the agent would be
+  // created with an empty or foreign mission and nothing would report it.
+  const missionUnresolvedForHire = isExistingCompanyMissionUnresolved({
+    existingCompanyId: createdCompanyId,
+    goalsLoaded: existingMissionSettled,
+    goalsFetching: existingMissionFetching,
+  });
   // The step the request wants, mirrored for the same reason. `initialStep` is
   // *derived* - from the company list, and now from the goal list behind
   // `useCompanyMission` - so its value changes whenever one of those queries
@@ -479,6 +539,7 @@ function OnboardingWizardInner({
     // If explicit options are provided, they take precedence over saved state
     if (initialStepRef.current) {
       setStep(initialStepRef.current);
+      setEntryStep(initialStepRef.current);
     }
     const routeCompanyId = effectiveOnboardingOptions.companyId ?? null;
     if (routeCompanyId) {
@@ -941,21 +1002,16 @@ function OnboardingWizardInner({
       // without writing it would leave the company with no mission at all,
       // which is the state this whole change exists to remove.
       //
-      // Only when the wizard has not already written one. Returning to step 2
-      // and confirming again must not add a second goal.
-      if (createdCompanyGoalId) {
-        setStep(3);
-        return;
-      }
+      // A goal already in hand means update it, not skip the write. It used
+      // to mean skip, which was safe only while the field could not hold an
+      // unsaved change: the id was set by *writing* the mission, so arriving
+      // here with one meant nothing had been typed since. Hydration breaks
+      // that - the id now also arrives from the company's existing goal, with
+      // the customer's edits sitting in the field beside it - and skipping
+      // would discard exactly the answer this step asked for.
       setLoading(true);
       setError(null);
       try {
-        const parsedGoal = parseOnboardingGoalInput(companyGoal);
-        const payload = {
-          title: parsedGoal.title,
-          ...(parsedGoal.description ? { description: parsedGoal.description } : {})
-        };
-
         // The company may already have a mission this step could not see.
         // `useCompanyMission` fails open, so a goal lookup that exhausted its
         // retries sends a company that has one here anyway. Adding a second
@@ -966,24 +1022,29 @@ function OnboardingWizardInner({
         // customer just answered the question on a step that asked it, so
         // their answer is the mission. A read that fails still writes: an
         // unwritten mission is the failure this whole change exists to remove.
-        let existingGoalId: string | null = null;
+        let existingGoalId: string | null = createdCompanyGoalId;
         try {
           const goals = await queryClient.fetchQuery({
             queryKey: queryKeys.goals.list(createdCompanyId),
             queryFn: () => goalsApi.list(createdCompanyId)
           });
-          existingGoalId = selectDefaultCompanyGoalId(goals);
+          existingGoalId = existingGoalId ?? selectDefaultCompanyGoalId(goals);
         } catch {
           // Still cannot tell. Fall through and write.
         }
 
-        const goal = existingGoalId
-          ? await goalsApi.update(existingGoalId, payload)
-          : await goalsApi.create(createdCompanyId, {
-              ...payload,
-              level: "company",
-              status: "active"
-            });
+        const plan = planMissionPersistence({
+          goalInput: companyGoal,
+          existingGoalId,
+        });
+        if (plan.kind === "skip") {
+          setStep(3);
+          return;
+        }
+        const goal =
+          plan.kind === "update"
+            ? await goalsApi.update(plan.goalId, plan.payload)
+            : await goalsApi.create(createdCompanyId, plan.payload);
         queryClient.invalidateQueries({
           queryKey: queryKeys.goals.list(createdCompanyId)
         });
@@ -1046,6 +1107,11 @@ function OnboardingWizardInner({
   // doesn't hire a second agent.
   async function handleGiveHeartbeat() {
     if (!createdCompanyId) return;
+    // Guarded at the button and the Enter path too; repeated here because this
+    // seeds the agent's instructions from `companyGoal`, and hiring with an
+    // unhydrated mission fails silently - the agent exists, and simply never
+    // learns what the company is for.
+    if (missionUnresolvedForHire) return;
     if (createdAgentId) {
       setStep(5);
       return;
@@ -1214,7 +1280,8 @@ function OnboardingWizardInner({
       if (step === 1 && companyName.trim()) setStep(2);
       else if (step === 2 && companyName.trim() && companyGoal.trim()) handleConfirmMission();
       else if (step === 3 && agentName.trim()) setStep(4);
-      else if (step === 4 && agentName.trim()) handleGiveHeartbeat();
+      else if (step === 4 && agentName.trim() && !missionUnresolvedForHire)
+        handleGiveHeartbeat();
       else if (step === 5) handleLaunchToDashboard();
     }
   }
@@ -1272,7 +1339,11 @@ function OnboardingWizardInner({
               <div className="flex items-center gap-1.5 mb-8">
                 {([1, 2, 3, 4, 5] as const).map((s) => {
                   const filled = step >= s;
-                  const canJump = s < step;
+                  const canJump = canJumpToOnboardingStep({
+                    targetStep: s,
+                    currentStep: step,
+                    entryStep,
+                  });
                   return (
                     <button
                       key={s}
@@ -2101,7 +2172,7 @@ function OnboardingWizardInner({
               {/* Footer navigation */}
               <div className="flex items-center justify-between mt-8">
                 <div>
-                  {step > 1 && step > (effectiveOnboardingOptions.initialStep ?? 0) && (
+                  {canGoBackFromOnboardingStep({ currentStep: step, entryStep }) && (
                     <Button
                       variant="ghost"
                       size="sm"
@@ -2154,7 +2225,12 @@ function OnboardingWizardInner({
                   {step === 4 && (
                     <Button
                       size="sm"
-                      disabled={!agentName.trim() || loading || adapterEnvLoading}
+                      disabled={
+                        !agentName.trim() ||
+                        loading ||
+                        adapterEnvLoading ||
+                        missionUnresolvedForHire
+                      }
                       onClick={handleGiveHeartbeat}
                     >
                       {loading ? (
