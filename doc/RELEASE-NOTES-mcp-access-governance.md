@@ -46,7 +46,7 @@ This release introduces new tables (`tool_applications`, `tool_connections`, `to
 
 Upgrade steps for existing deployments:
 
-1. Apply DB migrations as usual (`npx paperclipai migrate`).
+1. Apply DB migrations as usual (`pnpm paperclipai migrate`).
 2. Confirm the Tools & Access tab appears in the UI for board users.
 3. From **Examples**, install `safe-read-only-todo-kv` and run the bundled smoke. Expect `ok: true` across all three checks (`allow_read_tool`, `deny_write_tool`, `audit_written`).
 4. For each existing agent runtime that previously called MCP servers directly: replace direct MCP wiring with a managed connection. Until you do, those agents have no governed tool access on this release.

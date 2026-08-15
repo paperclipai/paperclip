@@ -17,7 +17,7 @@ The default mode. Optimized for single-operator local use.
 
 ```sh
 # Set during onboard
-npx paperclipai onboard
+pnpm paperclipai onboard
 # Choose "local_trusted"
 ```
 
@@ -35,7 +35,7 @@ For private network access (Tailscale, VPN, LAN).
 - **Bind**: choose `loopback`, `lan`, `tailnet`, or `custom`
 
 ```sh
-npx paperclipai onboard
+pnpm paperclipai onboard
 # Choose "authenticated" -> "private"
 ```
 
@@ -55,7 +55,7 @@ For internet-facing deployment.
 - **Bind**: usually `loopback` behind a reverse proxy; `lan/custom` is advanced
 
 ```sh
-npx paperclipai onboard
+pnpm paperclipai onboard
 # Choose "authenticated" -> "public"
 ```
 
@@ -78,11 +78,11 @@ A signed-in user visits this URL to claim board ownership. This:
 Update the deployment mode:
 
 ```sh
-npx paperclipai configure --section server
+pnpm paperclipai configure --section server
 ```
 
 Runtime override via environment variable:
 
 ```sh
-PAPERCLIP_DEPLOYMENT_MODE=authenticated PAPERCLIP_BIND=lan npx paperclipai run
+PAPERCLIP_DEPLOYMENT_MODE=authenticated PAPERCLIP_BIND=lan pnpm paperclipai run
 ```

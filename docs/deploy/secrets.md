@@ -190,19 +190,19 @@ metadata is not enough to restore named secret versions.
 Onboarding writes default secrets config:
 
 ```sh
-npx paperclipai onboard
+pnpm paperclipai onboard
 ```
 
 Update secrets settings:
 
 ```sh
-npx paperclipai configure --section secrets
+pnpm paperclipai configure --section secrets
 ```
 
 Validate secrets config:
 
 ```sh
-npx paperclipai doctor
+pnpm paperclipai doctor
 npx paperclipai secrets doctor --company-id <company-id>
 ```
 

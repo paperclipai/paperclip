@@ -10,7 +10,7 @@ Instance setup and diagnostics commands.
 One-command bootstrap and start:
 
 ```sh
-npx paperclipai run
+pnpm paperclipai run
 ```
 
 Does:
@@ -22,7 +22,7 @@ Does:
 Choose a specific instance:
 
 ```sh
-npx paperclipai run --instance dev
+pnpm paperclipai run --instance dev
 ```
 
 ## `paperclipai onboard`
@@ -30,7 +30,7 @@ npx paperclipai run --instance dev
 Interactive first-time setup:
 
 ```sh
-npx paperclipai onboard
+pnpm paperclipai onboard
 ```
 
 If Paperclip is already configured, rerunning `onboard` keeps the existing config in place. Use `paperclipai configure` to change settings on an existing install.
@@ -43,13 +43,13 @@ First prompt:
 Start immediately after onboarding:
 
 ```sh
-npx paperclipai onboard --run
+pnpm paperclipai onboard --run
 ```
 
 Non-interactive defaults + immediate start (opens browser on server listen):
 
 ```sh
-npx paperclipai onboard --yes
+pnpm paperclipai onboard --yes
 ```
 
 On an existing install, `--yes` now preserves the current config and just starts Paperclip with that setup.
@@ -59,8 +59,8 @@ On an existing install, `--yes` now preserves the current config and just starts
 Health checks with optional auto-repair:
 
 ```sh
-npx paperclipai doctor
-npx paperclipai doctor --repair
+pnpm paperclipai doctor
+pnpm paperclipai doctor --repair
 ```
 
 Validates:
@@ -77,9 +77,9 @@ Validates:
 Update configuration sections:
 
 ```sh
-npx paperclipai configure --section server
-npx paperclipai configure --section secrets
-npx paperclipai configure --section storage
+pnpm paperclipai configure --section server
+pnpm paperclipai configure --section secrets
+pnpm paperclipai configure --section storage
 ```
 
 `--section secrets` updates the deployment-level provider used as the fallback
@@ -94,7 +94,7 @@ coming-soon GCP/Vault) live in the board UI under
 Show resolved environment configuration:
 
 ```sh
-npx paperclipai env
+pnpm paperclipai env
 ```
 
 This now includes bind-oriented deployment settings such as `PAPERCLIP_BIND` and `PAPERCLIP_BIND_HOST` when configured.
@@ -120,12 +120,12 @@ npx paperclipai allowed-hostname my-tailscale-host
 Override with:
 
 ```sh
-PAPERCLIP_HOME=/custom/home PAPERCLIP_INSTANCE_ID=dev npx paperclipai run
+PAPERCLIP_HOME=/custom/home PAPERCLIP_INSTANCE_ID=dev pnpm paperclipai run
 ```
 
 Or pass `--data-dir` directly on any command:
 
 ```sh
-npx paperclipai run --data-dir ./tmp/paperclip-dev
-npx paperclipai doctor --data-dir ./tmp/paperclip-dev
+pnpm paperclipai run --data-dir ./tmp/paperclip-dev
+pnpm paperclipai doctor --data-dir ./tmp/paperclip-dev
 ```

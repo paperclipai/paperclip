@@ -8,7 +8,7 @@ The Paperclip CLI handles instance setup, diagnostics, and control-plane operati
 ## Usage
 
 ```sh
-npx paperclipai --help
+pnpm paperclipai --help
 ```
 
 ## Global Options
@@ -29,7 +29,7 @@ Company-scoped commands also accept `--company-id <id>`.
 For clean local instances, pass `--data-dir` on the command you run:
 
 ```sh
-npx paperclipai run --data-dir ./tmp/paperclip-dev
+pnpm paperclipai run --data-dir ./tmp/paperclip-dev
 ```
 
 ## Context Profiles
@@ -41,13 +41,13 @@ Store defaults to avoid repeating flags:
 npx paperclipai context set --api-base http://localhost:3100 --company-id <id>
 
 # View current context
-npx paperclipai context show
+pnpm paperclipai context show
 
 # List profiles
-npx paperclipai context list
+pnpm paperclipai context list
 
 # Switch profile
-npx paperclipai context use default
+pnpm paperclipai context use default
 ```
 
 To avoid storing secrets in context, use an env var:

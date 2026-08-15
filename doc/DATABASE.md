@@ -261,7 +261,7 @@ PAPERCLIP_SECRETS_STRICT_MODE=true
 You can set strict mode and provider defaults via:
 
 ```sh
-npx paperclipai configure --section secrets
+pnpm paperclipai configure --section secrets
 ```
 
 Inline secret migration command:
