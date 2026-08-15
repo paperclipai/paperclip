@@ -16664,6 +16664,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
         const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
+        const deferredRetryReason = readNonEmptyString(deferredContextSeed.retryReason);
         // Local-CLI agents post comments under user auth, so a self-comment from
         // the run that is now ending would otherwise look like a real human
         // comment and trigger a reopen on the very issue this run just closed.
@@ -16784,6 +16785,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           !deferredIsInteractionWake &&
           !deferredIsCurrentReviewParticipant &&
           !deferredIsCommentDrivenWake &&
+          !isNonAssigneeWorkspaceBusyRetry(deferredRetryReason, deferredContextSeed) &&
           !deferredIsUnblockOwnerWake
             ? "Cancelled because issue assignee changed before the queued run could start; the new owner will be woken instead"
             : (issue.status === "done" || issue.status === "cancelled") &&

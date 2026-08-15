@@ -23,7 +23,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { heartbeatService } from "../services/heartbeat.ts";
+import { WORKSPACE_BUSY_RETRY_REASON, heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
@@ -193,6 +193,31 @@ describeEmbeddedPostgres("heartbeat deferred handoff wake staleness", () => {
       });
     }
     return { companyId, producerId, reviewerId };
+  }
+
+  async function insertDeferredWake(input: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+    contextSnapshot: Record<string, unknown>;
+  }) {
+    const id = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id,
+      companyId: input.companyId,
+      agentId: input.agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      status: "deferred_issue_execution",
+      requestedAt: new Date(Date.now() - 60 * 60_000),
+      payload: {
+        issueId: input.issueId,
+        mutation: "update",
+        [DEFERRED_CONTEXT_KEY]: input.contextSnapshot,
+      },
+    });
+    return id;
   }
 
   it("promotes a changes-requested handoff wake past a stale deferred reviewer wake", async () => {
@@ -499,6 +524,132 @@ describeEmbeddedPostgres("heartbeat deferred handoff wake staleness", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.wakeupRequestId, staleWakeId));
     expect(staleRuns).toHaveLength(0);
+  }, 30_000);
+
+  it("promotes and runs a deferred non-assignee workspace-busy retry", async () => {
+    const { companyId, producerId, reviewerId } = await seedCompanyAndAgents();
+    const issueId = randomUUID();
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Packet with a deferred non-assignee retry",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: producerId,
+      responsibleUserId: "responsible-user",
+    });
+
+    const workspaceBusyWakeId = await insertDeferredWake({
+      companyId,
+      issueId,
+      agentId: reviewerId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "workspace_busy_retry",
+        retryReason: WORKSPACE_BUSY_RETRY_REASON,
+        workspaceBusyDeferredWhileAssignee: false,
+        skipIssueComment: true,
+      },
+    });
+
+    await heartbeat.wakeup(producerId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId, mutation: "update" },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+        skipIssueComment: true,
+      },
+    });
+
+    const workspaceBusyWakeCompleted = await waitForCondition(async () => {
+      const wake = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, workspaceBusyWakeId))
+        .then((rows) => rows[0]);
+      return wake?.status === "completed";
+    });
+    expect(workspaceBusyWakeCompleted).toBe(true);
+
+    const workspaceBusyWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, workspaceBusyWakeId))
+      .then((rows) => rows[0]);
+    expect(workspaceBusyWake.status).toBe("completed");
+    expect(workspaceBusyWake.error).toBeNull();
+    expect(workspaceBusyWake.runId).not.toBeNull();
+
+    const workspaceBusyRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, workspaceBusyWake.runId!))
+      .then((rows) => rows[0]);
+    expect(workspaceBusyRun.status).toBe("succeeded");
+  }, 30_000);
+
+  it("still skips an ordinary deferred non-assignee wake", async () => {
+    const { companyId, producerId, reviewerId } = await seedCompanyAndAgents();
+    const issueId = randomUUID();
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Packet with a stale ordinary non-assignee wake",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: producerId,
+      responsibleUserId: "responsible-user",
+    });
+
+    const ordinaryWakeId = await insertDeferredWake({
+      companyId,
+      issueId,
+      agentId: reviewerId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+        skipIssueComment: true,
+      },
+    });
+
+    await heartbeat.wakeup(producerId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId, mutation: "update" },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+        skipIssueComment: true,
+      },
+    });
+
+    const ordinaryWakeSkipped = await waitForCondition(async () => {
+      const wake = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, ordinaryWakeId))
+        .then((rows) => rows[0]);
+      return wake?.status === "skipped";
+    });
+    expect(ordinaryWakeSkipped).toBe(true);
+
+    const ordinaryWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, ordinaryWakeId))
+      .then((rows) => rows[0]);
+    expect(ordinaryWake.error).toContain("assignee changed");
+    expect(ordinaryWake.runId).toBeNull();
   }, 30_000);
 
   it("promotes a deferred unblock-owner wake even though the owner is not the assignee", async () => {
