@@ -5079,14 +5079,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     // the very noise the cap exists to stop.
     const requiresDeterministicManualRepair =
       recoveryCause === "workspace_validation_failed";
+    let ensuredRecoveryIssueId: string | null = recoveryAction.recoveryIssueId ?? null;
     if (!recoveryAction.recoveryIssueId && !requiresDeterministicManualRepair) {
-      await ensureStrandedIssueRecoveryIssue({
+      const ensured = await ensureStrandedIssueRecoveryIssue({
         issue: input.issue,
         latestRun: input.latestRun,
         previousStatus: input.previousStatus,
         recoveryCause,
         successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
       });
+      ensuredRecoveryIssueId = ensured?.id ?? null;
     }
 
     const isProviderQuotaWait = recoveryCause === "provider_quota" &&
@@ -5130,7 +5132,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     // issue, the card must stay ACTIONABLE. Silence earns the loud exhausted
     // notice below — it never manufactures a wait state. Real blockers
     // (independent blocker issues) still take the blocked path.
-    const onlySelfReferentialBlockers = blockerIds.every((id) => id === recoveryAction.recoveryIssueId);
+    // The freshly ensured recovery issue is already an unresolved blocker
+    // relation by the time blockerIds is computed, while the LOCAL action row
+    // still carries a null recoveryIssueId — compare against the ensured id
+    // (live 2026-08-15 16:26, TSM-6676: the null comparison bypassed this
+    // guard and the card froze behind its own recovery issue anyway).
+    const onlySelfReferentialBlockers = blockerIds.every((id) => id === ensuredRecoveryIssueId);
     if (
       recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON &&
       onlySelfReferentialBlockers &&
