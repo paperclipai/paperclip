@@ -137,13 +137,23 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
     // `removeQueries`, not `resetQueries`: reset rewinds the update counters
     // `isFetchedAfterMount` is derived from while mounted observers keep their
     // pre-reset baseline, which strands consumers gating on that flag (see
-    // AppsConnect.tsx). Removing the entry leaves nothing readable from the
-    // previous account and gives observers a fresh query to fetch against.
+    // AppsConnect.tsx). Removal is what fits *here*, for a reason worth saying
+    // out loud: removal notifies nobody, so on its own it would leave mounted
+    // observers serving the previous account. What rebinds them is the render
+    // the state updates above just scheduled — every observer re-binds to a
+    // fresh query on the next render. Do not lift this call anywhere that lacks
+    // that guarantee; the sign-out sweep is exactly such a place.
     queryClient.removeQueries({ queryKey: queryKeys.companies.all, exact: true });
+
+    // Coalescing keys on the request path alone, so without this the fetch below
+    // can join a `/companies` request issued under the previous session and be
+    // answered with that account's companies.
+    companiesApi.detachInflightList();
 
     // Drive the replacement fetch here rather than leaning on observer refetch
     // semantics, so the gate below lifts exactly when a list for this account
-    // has landed.
+    // has landed. A failure is not swallowed: it lands on the query itself, so
+    // `error` below holds the selection undecided and the context exposes it.
     let cancelled = false;
     void queryClient
       .fetchQuery({ ...companiesListQueryOptions, staleTime: 0 })

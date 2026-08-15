@@ -16,6 +16,7 @@ import {
 const mockCompaniesApi = vi.hoisted(() => ({
   list: vi.fn(),
   create: vi.fn(),
+  detachInflightList: vi.fn(),
 }));
 
 vi.mock("../api/companies", () => ({
@@ -328,6 +329,9 @@ describe("CompanyProvider", () => {
       expect(seen).toEqual([null, "company-1", null]);
       expect(queryClient.getQueryData(queryKeys.companies.all)).toBeUndefined();
       expect(resolveSecondList).not.toBeNull();
+      // The replacement fetch must not be coalesced into a `/companies` request
+      // issued under the previous session.
+      expect(mockCompaniesApi.detachInflightList).toHaveBeenCalled();
 
       await act(async () => {
         resolveSecondList?.([makeCompany("company-2")]);
