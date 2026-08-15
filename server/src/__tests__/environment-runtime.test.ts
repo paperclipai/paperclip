@@ -970,9 +970,9 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const destroySpy = vi
       .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
       .mockRejectedValue(new Error("teardown failed"));
-    // Force the durable pending-cleanup write to fail too. The pending-cleanup
-    // write acquires a lease without a company-binding assertion, so reject only
-    // that call and let the primary company-bound acquire reject for real.
+    // Force the durable pending-cleanup write to fail too. The durable write is
+    // a single atomic insert through `insertPendingCleanupLease`, so reject that
+    // method and let the primary company-bound acquire reject for real.
     const realEnvironmentService = environmentsModule.environmentService;
     const factorySpy = vi
       .spyOn(environmentsModule, "environmentService")
@@ -980,10 +980,8 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         const real = realEnvironmentService(database);
         return {
           ...real,
-          acquireLease: (params: Parameters<typeof real.acquireLease>[0]) =>
-            params.assertCompanyBinding
-              ? real.acquireLease(params)
-              : Promise.reject(new Error("pending-cleanup write failed")),
+          insertPendingCleanupLease: () =>
+            Promise.reject(new Error("pending-cleanup write failed")),
         };
       });
     try {
@@ -1114,10 +1112,8 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         const real = realEnvironmentService(database);
         return {
           ...real,
-          acquireLease: (params: Parameters<typeof real.acquireLease>[0]) =>
-            params.assertCompanyBinding
-              ? real.acquireLease(params)
-              : Promise.reject(new Error("pending-cleanup write failed")),
+          insertPendingCleanupLease: () =>
+            Promise.reject(new Error("pending-cleanup write failed")),
         };
       });
     try {
@@ -1155,6 +1151,44 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     }
 
     await environmentService(db).update(environment.id, { driver: "local", config: {} });
+  });
+
+  it("records the orphan directly in the pending_cleanup state with one atomic insert", async () => {
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Atomic Pending Cleanup Insert",
+      config: { provider: "fake", image: "ubuntu:24.04", reuseLease: false },
+    });
+
+    const lease = await environmentService(db).insertPendingCleanupLease({
+      companyId,
+      environmentId: environment.id,
+      executionWorkspaceId: null,
+      issueId: null,
+      heartbeatRunId: runId,
+      provider: "fake",
+      providerLeaseId: "sandbox://fake/atomic-orphan",
+      metadata: { provider: "fake", reuseLease: false },
+      failureReason: "acquire_rejected_teardown_failed",
+    });
+
+    // The returned lease is already in the terminal recovery state. It never
+    // passes through the `active` state, so a crash cannot strand the orphan.
+    expect(lease.status).toBe("pending_cleanup");
+    expect(lease.cleanupStatus).toBe("failed");
+    expect(lease.leasePolicy).toBe("ephemeral");
+    expect(lease.failureReason).toBe("acquire_rejected_teardown_failed");
+    expect(lease.providerLeaseId).toBe("sandbox://fake/atomic-orphan");
+    expect(lease.releasedAt).not.toBeNull();
+
+    // One insert created exactly one row, and the sweep reads that row directly.
+    const rows = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.environmentId, environment.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("pending_cleanup");
+    expect(rows[0]?.cleanupStatus).toBe("failed");
   });
 
   it("retries the built-in teardown for a pending-cleanup orphan and marks it cleaned", async () => {

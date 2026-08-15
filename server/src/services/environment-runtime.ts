@@ -937,6 +937,12 @@ function createSandboxEnvironmentDriver(
   // company-binding assertion, so it records the orphan even for a foreign-bound
   // environment.
   //
+  // One atomic insert writes the row directly in the terminal `pending_cleanup`
+  // state. A two-step insert-then-update could crash between the two writes and
+  // leave the row in an intermediate `active` state that no sweep finds, so the
+  // single insert removes that window. The sweep and startup recovery both scan
+  // for the `pending_cleanup` status, so the orphan is visible at once.
+  //
   // The write is not best-effort. A failed teardown already left a live sandbox
   // with no lease row. If this write also fails, the sandbox has no durable
   // cleanup state and no sweep can ever find it. So a write failure throws
@@ -955,20 +961,16 @@ function createSandboxEnvironmentDriver(
     cause: unknown;
   }): Promise<void> => {
     try {
-      const orphan = await environmentsSvc.acquireLease({
+      await environmentsSvc.insertPendingCleanupLease({
         companyId: record.companyId,
         environmentId: record.environmentId,
         executionWorkspaceId: record.executionWorkspaceId,
         issueId: record.issueId,
         heartbeatRunId: record.heartbeatRunId,
-        leasePolicy: "ephemeral",
         provider: record.provider,
         providerLeaseId: record.providerLeaseId,
         metadata: record.metadata,
-      });
-      await environmentsSvc.releaseLease(orphan.id, "pending_cleanup", {
         failureReason: "acquire_rejected_teardown_failed",
-        cleanupStatus: "failed",
       });
     } catch (cleanupWriteError) {
       throw new SandboxOrphanCleanupWriteError({

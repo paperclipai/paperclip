@@ -1347,6 +1347,58 @@ export function environmentService(db: Db) {
       return row ? toEnvironmentLease(row) : null;
     },
 
+    /**
+     * Record a lease-less orphan sandbox directly in the terminal
+     * `pending_cleanup` state with one atomic insert. The sweep reads a row with
+     * status `pending_cleanup` and cleanup status `failed`, so this insert makes
+     * the orphan visible to recovery immediately. It never passes through the
+     * `active` state, so a process or database crash cannot strand the row in an
+     * intermediate state that no sweep finds. The insert skips the company
+     * binding assertion, so it records the orphan even for a foreign-bound
+     * environment.
+     */
+    insertPendingCleanupLease: async (input: {
+      companyId: string;
+      environmentId: string;
+      executionWorkspaceId?: string | null;
+      issueId?: string | null;
+      heartbeatRunId?: string | null;
+      provider?: string | null;
+      providerLeaseId?: string | null;
+      metadata?: Record<string, unknown> | null;
+      failureReason: string;
+    }): Promise<EnvironmentLease> => {
+      const now = new Date();
+      const row = await db
+        .insert(environmentLeases)
+        .values({
+          companyId: input.companyId,
+          environmentId: input.environmentId,
+          executionWorkspaceId: input.executionWorkspaceId ?? null,
+          issueId: input.issueId ?? null,
+          heartbeatRunId: input.heartbeatRunId ?? null,
+          status: "pending_cleanup" as const,
+          leasePolicy: "ephemeral",
+          provider: input.provider ?? null,
+          providerLeaseId: input.providerLeaseId ?? null,
+          acquiredAt: now,
+          lastUsedAt: now,
+          expiresAt: null,
+          releasedAt: now,
+          failureReason: input.failureReason,
+          cleanupStatus: "failed",
+          metadata: input.metadata ?? null,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!row) {
+        throw new Error("Failed to record pending sandbox cleanup lease");
+      }
+      return toEnvironmentLease(row);
+    },
+
     updateLeaseMetadata: async (
       id: string,
       metadata: Record<string, unknown> | null,
