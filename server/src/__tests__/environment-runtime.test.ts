@@ -773,6 +773,171 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     await environmentService(db).update(environment.id, { driver: "local", config: {} });
   });
 
+  it("records a durable pending-cleanup lease when the built-in teardown fails after a foreign-company rejection", async () => {
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Foreign-bound Fake Sandbox Teardown Fail",
+      config: { provider: "fake", image: "ubuntu:24.04", reuseLease: false },
+    });
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other Co Built-in",
+      issuePrefix: "OTC",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(builtInManagedResources).values({
+      companyId: otherCompanyId,
+      bundleKey: "managed-environment",
+      resourceKind: "environment",
+      resourceKey: "managed-sandbox",
+      resourceId: environment.id,
+      stockVersion: "1",
+      stockHash: "hash",
+    });
+
+    // The remote teardown fails, so the acquire cannot release the sandbox
+    // directly. It must record a durable pending-cleanup row instead.
+    const destroySpy = vi
+      .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
+      .mockRejectedValue(new Error("teardown failed"));
+    try {
+      await expect(
+        runtime.acquireRunLease({
+          companyId,
+          environment,
+          issueId: null,
+          heartbeatRunId: runId,
+          persistedExecutionWorkspace: null,
+          assertCompanyBinding: true,
+        }),
+      ).rejects.toMatchObject({ status: 403, details: { code: "environment_company_mismatch" } });
+
+      expect(destroySpy).toHaveBeenCalledTimes(1);
+      // The failed teardown left a durable pending-cleanup row that carries the
+      // provider lease id for a later sweep.
+      const rows = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.environmentId, environment.id));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.status).toBe("pending_cleanup");
+      expect(rows[0]?.cleanupStatus).toBe("failed");
+      expect(rows[0]?.providerLeaseId).toMatch(new RegExp(`^sandbox://fake/${runId}/[0-9a-f-]{36}$`));
+    } finally {
+      destroySpy.mockRestore();
+    }
+  });
+
+  it("records a durable pending-cleanup lease when the plugin teardown fails after a foreign-company rejection", async () => {
+    const pluginId = randomUUID();
+    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const pluginConfig = { provider: "fake-plugin", image: "fake:test", reuseLease: false };
+    const environment = {
+      ...baseEnvironment,
+      name: "Foreign-bound Plugin Sandbox Teardown Fail",
+      driver: "sandbox",
+      config: pluginConfig,
+    };
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: pluginConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "paperclip.fake-plugin-sandbox-provider",
+      packageName: "@paperclipai/plugin-fake-sandbox",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "paperclip.fake-plugin-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Fake Plugin Sandbox Provider",
+        description: "Test fake plugin provider",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin",
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other Co Plugin",
+      issuePrefix: "OTD",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(builtInManagedResources).values({
+      companyId: otherCompanyId,
+      bundleKey: "managed-environment",
+      resourceKind: "environment",
+      resourceKey: "managed-sandbox",
+      resourceId: environment.id,
+      stockVersion: "1",
+      stockHash: "hash",
+    });
+
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentDestroyLease"] })),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "plugin-lease-2",
+            metadata: { provider: "fake-plugin", image: "fake:test", reuseLease: false },
+          };
+        }
+        if (method === "environmentDestroyLease") {
+          throw new Error("destroy failed");
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    await expect(
+      runtimeWithPlugin.acquireRunLease({
+        companyId,
+        environment,
+        issueId: null,
+        heartbeatRunId: runId,
+        persistedExecutionWorkspace: null,
+        assertCompanyBinding: true,
+      }),
+    ).rejects.toMatchObject({ status: 403, details: { code: "environment_company_mismatch" } });
+
+    // The failed plugin teardown left a durable pending-cleanup row that carries
+    // the provider lease id for a later sweep.
+    const rows = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.environmentId, environment.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("pending_cleanup");
+    expect(rows[0]?.cleanupStatus).toBe("failed");
+    expect(rows[0]?.providerLeaseId).toBe("plugin-lease-2");
+
+    await environmentService(db).update(environment.id, { driver: "local", config: {} });
+  });
+
   it("uses plugin-backed sandbox config for execute and release", async () => {
     const pluginId = randomUUID();
     const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();

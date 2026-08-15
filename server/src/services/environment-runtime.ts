@@ -877,6 +877,47 @@ function createSandboxEnvironmentDriver(
   const pluginWorkerReadyPollMs = options.pluginWorkerReadyPollMs ?? DEFAULT_PLUGIN_SANDBOX_WORKER_READY_POLL_MS;
   const environmentsSvc = environmentService(db);
 
+  // Records a durable pending-cleanup lease row for a remote sandbox that the
+  // acquire provisioned but could not tear down. The conditional lease insert
+  // rejected (a foreign-company binding), then the compensating teardown also
+  // failed, so no lease row tracks the live sandbox. This row carries the
+  // provider lease id and the same resolution metadata a normal lease holds, so
+  // a later cleanup sweep finds and releases the orphan. The insert skips the
+  // company-binding assertion, so it records the orphan even for a foreign-bound
+  // environment. The write is best-effort: a failure keeps the original insert
+  // rejection as the thrown error.
+  const recordPendingSandboxCleanup = async (record: {
+    companyId: string;
+    environmentId: string;
+    executionWorkspaceId: string | null;
+    issueId: string | null;
+    heartbeatRunId: string | null;
+    provider: string;
+    providerLeaseId: string | null;
+    metadata: Record<string, unknown>;
+  }): Promise<void> => {
+    try {
+      const orphan = await environmentsSvc.acquireLease({
+        companyId: record.companyId,
+        environmentId: record.environmentId,
+        executionWorkspaceId: record.executionWorkspaceId,
+        issueId: record.issueId,
+        heartbeatRunId: record.heartbeatRunId,
+        leasePolicy: "ephemeral",
+        provider: record.provider,
+        providerLeaseId: record.providerLeaseId,
+        metadata: record.metadata,
+      });
+      await environmentsSvc.releaseLease(orphan.id, "pending_cleanup", {
+        failureReason: "acquire_rejected_teardown_failed",
+        cleanupStatus: "failed",
+      });
+    } catch {
+      // The durable cleanup record could not be written. The caller still throws
+      // the original insert rejection, so the real cause stays visible.
+    }
+  };
+
   // The run-time exec parent context, held per lease id. A plugin sandbox
   // provider can open a persistent session on the first command and delete it
   // on lease release. The session open runs inside `execute`, under the run
@@ -1281,6 +1322,17 @@ function createSandboxEnvironmentDriver(
             })
           : null;
 
+        const pluginLeaseMetadata = {
+          ...(input.agentId ? { agentId: input.agentId } : {}),
+          driver: input.environment.driver,
+          executionWorkspaceMode: input.executionWorkspaceMode,
+          pluginId: pluginProvider.resolved.plugin.id,
+          pluginKey: pluginProvider.resolved.plugin.pluginKey,
+          sandboxProviderPlugin: true,
+          ...sandboxConfigForLeaseMetadata(storedConfig),
+          ...sanitizedProviderMetadata,
+          ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
+        };
         try {
           return await environmentsSvc.acquireLease({
             companyId: input.companyId,
@@ -1296,17 +1348,7 @@ function createSandboxEnvironmentDriver(
               input.requestedExpiresAt,
               acquiredLease.expiresAt ? new Date(acquiredLease.expiresAt) : undefined,
             ),
-            metadata: {
-              ...(input.agentId ? { agentId: input.agentId } : {}),
-              driver: input.environment.driver,
-              executionWorkspaceMode: input.executionWorkspaceMode,
-              pluginId: pluginProvider.resolved.plugin.id,
-              pluginKey: pluginProvider.resolved.plugin.pluginKey,
-              sandboxProviderPlugin: true,
-              ...sandboxConfigForLeaseMetadata(storedConfig),
-              ...sanitizedProviderMetadata,
-              ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
-            },
+            metadata: pluginLeaseMetadata,
           });
         } catch (error) {
           // The conditional lease insert rejected, so no lease row exists. A
@@ -1318,28 +1360,42 @@ function createSandboxEnvironmentDriver(
           // Claude login runs on a plugin-backed sandbox, so this path is the one
           // the login uses. Do not tear down a reused sandbox that an earlier
           // lease still owns.
-          if (
-            (!reusableLease || acquiredLease.providerLeaseId !== reusableLease.providerLeaseId) &&
-            pluginWorkerManager.isRunning(pluginProvider.resolved.plugin.id)
-          ) {
-            try {
-              await pluginWorkerManager.call(
-                pluginProvider.resolved.plugin.id,
-                "environmentDestroyLease",
-                {
-                  driverKey: parsed.config.provider,
-                  companyId: input.companyId,
-                  environmentId: input.environment.id,
-                  issueId: input.issueId,
-                  config: workerConfig,
-                  providerLeaseId: acquiredLease.providerLeaseId,
-                  leaseMetadata: acquiredLease.metadata ?? undefined,
-                },
-                resolvePluginSandboxRpcTimeoutMs(workerConfig),
-              );
-            } catch {
-              // The remote teardown failed. Keep the original insert rejection as
-              // the thrown error, so the caller sees the real cause.
+          if (!reusableLease || acquiredLease.providerLeaseId !== reusableLease.providerLeaseId) {
+            let teardownFailed = !pluginWorkerManager.isRunning(pluginProvider.resolved.plugin.id);
+            if (!teardownFailed) {
+              try {
+                await pluginWorkerManager.call(
+                  pluginProvider.resolved.plugin.id,
+                  "environmentDestroyLease",
+                  {
+                    driverKey: parsed.config.provider,
+                    companyId: input.companyId,
+                    environmentId: input.environment.id,
+                    issueId: input.issueId,
+                    config: workerConfig,
+                    providerLeaseId: acquiredLease.providerLeaseId,
+                    leaseMetadata: acquiredLease.metadata ?? undefined,
+                  },
+                  resolvePluginSandboxRpcTimeoutMs(workerConfig),
+                );
+              } catch {
+                teardownFailed = true;
+              }
+            }
+            // The teardown failed, so record a durable pending-cleanup row that a
+            // later sweep retries. Keep the original insert rejection as the
+            // thrown error.
+            if (teardownFailed) {
+              await recordPendingSandboxCleanup({
+                companyId: input.companyId,
+                environmentId: input.environment.id,
+                executionWorkspaceId: input.executionWorkspaceId ?? null,
+                issueId: input.issueId ?? null,
+                heartbeatRunId: input.heartbeatRunId ?? null,
+                provider: parsed.config.provider,
+                providerLeaseId: acquiredLease.providerLeaseId,
+                metadata: pluginLeaseMetadata,
+              });
             }
           }
           throw error;
@@ -1477,6 +1533,13 @@ function createSandboxEnvironmentDriver(
           })
         : null;
 
+      const builtinLeaseMetadata = {
+        ...(input.agentId ? { agentId: input.agentId } : {}),
+        driver: input.environment.driver,
+        executionWorkspaceMode: input.executionWorkspaceMode,
+        ...providerLease.metadata,
+        ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
+      };
       try {
         return await environmentsSvc.acquireLease({
           companyId: input.companyId,
@@ -1492,13 +1555,7 @@ function createSandboxEnvironmentDriver(
             input.requestedExpiresAt,
             providerLease.expiresAt ? new Date(providerLease.expiresAt) : undefined,
           ),
-          metadata: {
-            ...(input.agentId ? { agentId: input.agentId } : {}),
-            driver: input.environment.driver,
-            executionWorkspaceMode: input.executionWorkspaceMode,
-            ...providerLease.metadata,
-            ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
-          },
+          metadata: builtinLeaseMetadata,
         });
       } catch (error) {
         // The conditional lease insert rejected, so no lease row exists. A managed
@@ -1509,14 +1566,29 @@ function createSandboxEnvironmentDriver(
         // insert leaks a live sandbox that no lease row tracks. Do not tear down a
         // reused sandbox that an earlier lease still owns.
         if (!reusableLease || providerLease.providerLeaseId !== reusableLease.providerLeaseId) {
+          let teardownFailed = false;
           try {
             await destroySandboxProviderLease({
               config: parsed.config,
               providerLeaseId: providerLease.providerLeaseId,
             });
           } catch {
-            // The remote teardown failed. Keep the original insert rejection as the
-            // thrown error, so the caller sees the real cause.
+            teardownFailed = true;
+          }
+          // The teardown failed, so record a durable pending-cleanup row that a
+          // later sweep retries. Keep the original insert rejection as the thrown
+          // error.
+          if (teardownFailed) {
+            await recordPendingSandboxCleanup({
+              companyId: input.companyId,
+              environmentId: input.environment.id,
+              executionWorkspaceId: input.executionWorkspaceId ?? null,
+              issueId: input.issueId ?? null,
+              heartbeatRunId: input.heartbeatRunId ?? null,
+              provider: parsed.config.provider,
+              providerLeaseId: providerLease.providerLeaseId,
+              metadata: builtinLeaseMetadata,
+            });
           }
         }
         throw error;
