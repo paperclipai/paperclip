@@ -93,8 +93,10 @@ import { useDialogActions, useDialogState } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
 import {
   isOnboardingWizardActive,
+  onboardingStepForCompany,
   shouldRedirectCompanylessRouteToOnboarding,
 } from "./lib/onboarding-route";
+import { useCompanyMission } from "./hooks/useCompanyMission";
 import { normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
 
 function boardRoutes() {
@@ -393,11 +395,18 @@ function legacyToolsRedirectTarget(tab?: string) {
   return `/apps/advanced/${tab}`;
 }
 
-function OnboardingRoutePage() {
+export function OnboardingRoutePage() {
   const { companies } = useCompany();
   const { openOnboarding } = useDialogActions();
   const { onboardingOpen, onboardingRouteDismissed } = useDialogState();
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
+  const matchedCompany = companyPrefix
+    ? companies.find((company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase()) ?? null
+    : null;
+  // Which step this company belongs on, by the same rule the route resolver
+  // and the dashboard already use. Resolved above the early return below,
+  // because a hook cannot be called after it.
+  const { hasMission } = useCompanyMission(matchedCompany?.id ?? null);
 
   // The OnboardingWizard auto-opens on this route (and can also be opened
   // explicitly). While it is showing it covers the whole screen, so the
@@ -407,9 +416,6 @@ function OnboardingRoutePage() {
   if (isOnboardingWizardActive({ onboardingOpen, routeDismissed: onboardingRouteDismissed })) {
     return null;
   }
-  const matchedCompany = companyPrefix
-    ? companies.find((company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase()) ?? null
-    : null;
 
   const title = matchedCompany
     ? `Add another agent to ${matchedCompany.name}`
@@ -431,7 +437,16 @@ function OnboardingRoutePage() {
           <Button
             onClick={() =>
               matchedCompany
-                ? openOnboarding({ initialStep: 2, companyId: matchedCompany.id })
+                ? openOnboarding({
+                    // "Add another agent" to a company that already has its
+                    // mission must not stop to ask for the mission again. An
+                    // unsettled or failed lookup reads as "no mission" and
+                    // costs the step, which the customer can pass - and the
+                    // mission step now updates the existing goal rather than
+                    // adding a second one.
+                    initialStep: onboardingStepForCompany(hasMission),
+                    companyId: matchedCompany.id,
+                  })
                 : openOnboarding()
             }
           >
