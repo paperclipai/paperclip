@@ -1281,32 +1281,69 @@ function createSandboxEnvironmentDriver(
             })
           : null;
 
-        return await environmentsSvc.acquireLease({
-          companyId: input.companyId,
-          environmentId: input.environment.id,
-          executionWorkspaceId: input.executionWorkspaceId,
-          issueId: input.issueId,
-          heartbeatRunId: input.heartbeatRunId,
-          assertCompanyBinding: input.assertCompanyBinding,
-          leasePolicy: resolvedLeasePolicy,
-          provider: parsed.config.provider,
-          providerLeaseId: acquiredLease.providerLeaseId,
-          expiresAt: providerAttestedLeaseExpiry(
-            input.requestedExpiresAt,
-            acquiredLease.expiresAt ? new Date(acquiredLease.expiresAt) : undefined,
-          ),
-          metadata: {
-            ...(input.agentId ? { agentId: input.agentId } : {}),
-            driver: input.environment.driver,
-            executionWorkspaceMode: input.executionWorkspaceMode,
-            pluginId: pluginProvider.resolved.plugin.id,
-            pluginKey: pluginProvider.resolved.plugin.pluginKey,
-            sandboxProviderPlugin: true,
-            ...sandboxConfigForLeaseMetadata(storedConfig),
-            ...sanitizedProviderMetadata,
-            ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
-          },
-        });
+        try {
+          return await environmentsSvc.acquireLease({
+            companyId: input.companyId,
+            environmentId: input.environment.id,
+            executionWorkspaceId: input.executionWorkspaceId,
+            issueId: input.issueId,
+            heartbeatRunId: input.heartbeatRunId,
+            assertCompanyBinding: input.assertCompanyBinding,
+            leasePolicy: resolvedLeasePolicy,
+            provider: parsed.config.provider,
+            providerLeaseId: acquiredLease.providerLeaseId,
+            expiresAt: providerAttestedLeaseExpiry(
+              input.requestedExpiresAt,
+              acquiredLease.expiresAt ? new Date(acquiredLease.expiresAt) : undefined,
+            ),
+            metadata: {
+              ...(input.agentId ? { agentId: input.agentId } : {}),
+              driver: input.environment.driver,
+              executionWorkspaceMode: input.executionWorkspaceMode,
+              pluginId: pluginProvider.resolved.plugin.id,
+              pluginKey: pluginProvider.resolved.plugin.pluginKey,
+              sandboxProviderPlugin: true,
+              ...sandboxConfigForLeaseMetadata(storedConfig),
+              ...sanitizedProviderMetadata,
+              ...(reusableScope ? { reusableSandboxLease: reusableScope } : {}),
+            },
+          });
+        } catch (error) {
+          // The conditional lease insert rejected, so no lease row exists. A
+          // managed reconciliation can bind the environment to another company
+          // between the route guard and this insert, so the insert fails closed
+          // with `environment_company_mismatch`. This call already provisioned the
+          // remote plugin sandbox above, so tear it down now. Without this step
+          // the rejected insert leaks a live sandbox that no lease row tracks. The
+          // Claude login runs on a plugin-backed sandbox, so this path is the one
+          // the login uses. Do not tear down a reused sandbox that an earlier
+          // lease still owns.
+          if (
+            (!reusableLease || acquiredLease.providerLeaseId !== reusableLease.providerLeaseId) &&
+            pluginWorkerManager.isRunning(pluginProvider.resolved.plugin.id)
+          ) {
+            try {
+              await pluginWorkerManager.call(
+                pluginProvider.resolved.plugin.id,
+                "environmentDestroyLease",
+                {
+                  driverKey: parsed.config.provider,
+                  companyId: input.companyId,
+                  environmentId: input.environment.id,
+                  issueId: input.issueId,
+                  config: workerConfig,
+                  providerLeaseId: acquiredLease.providerLeaseId,
+                  leaseMetadata: acquiredLease.metadata ?? undefined,
+                },
+                resolvePluginSandboxRpcTimeoutMs(workerConfig),
+              );
+            } catch {
+              // The remote teardown failed. Keep the original insert rejection as
+              // the thrown error, so the caller sees the real cause.
+            }
+          }
+          throw error;
+        }
       }
 
       // Built-in sandbox provider path. Same guard as the plugin-backed path:

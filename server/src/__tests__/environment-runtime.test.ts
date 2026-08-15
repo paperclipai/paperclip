@@ -651,6 +651,128 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     }
   });
 
+  it("destroys the remote plugin sandbox when the lease insert rejects a foreign-company binding", async () => {
+    // The Claude login runs on a plugin-backed sandbox provider (Daytona), so this
+    // path is the one the login uses. It must also release the remote sandbox when
+    // the conditional lease insert rejects a foreign-company binding.
+    const pluginId = randomUUID();
+    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const pluginConfig = { provider: "fake-plugin", image: "fake:test", reuseLease: false };
+    const environment = {
+      ...baseEnvironment,
+      name: "Foreign-bound Plugin Sandbox",
+      driver: "sandbox",
+      config: pluginConfig,
+    };
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: pluginConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "paperclip.fake-plugin-sandbox-provider",
+      packageName: "@paperclipai/plugin-fake-sandbox",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "paperclip.fake-plugin-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Fake Plugin Sandbox Provider",
+        description: "Test fake plugin provider",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin",
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+
+    // A managed reconciliation binds the environment to another company after the
+    // route guard read an empty binding list. The lease insert then rejects the
+    // foreign-company binding with the 403 `environment_company_mismatch`.
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other Co",
+      issuePrefix: "OTB",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(builtInManagedResources).values({
+      companyId: otherCompanyId,
+      bundleKey: "managed-environment",
+      resourceKind: "environment",
+      resourceKey: "managed-sandbox",
+      resourceId: environment.id,
+      stockVersion: "1",
+      stockHash: "hash",
+    });
+
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentDestroyLease"] })),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "plugin-lease-1",
+            metadata: { provider: "fake-plugin", image: "fake:test", reuseLease: false },
+          };
+        }
+        if (method === "environmentDestroyLease") {
+          return undefined;
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    await expect(
+      runtimeWithPlugin.acquireRunLease({
+        companyId,
+        environment,
+        issueId: null,
+        heartbeatRunId: runId,
+        persistedExecutionWorkspace: null,
+        assertCompanyBinding: true,
+      }),
+    ).rejects.toMatchObject({
+      status: 403,
+      details: { code: "environment_company_mismatch" },
+    });
+
+    // The rejected insert leaves no lease row.
+    const leaseRows = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.environmentId, environment.id));
+    expect(leaseRows).toHaveLength(0);
+
+    // The acquire provisioned the remote plugin sandbox, so it destroys the
+    // sandbox on the rejection. Without this teardown the rejected insert leaks a
+    // live sandbox that no lease row tracks.
+    const destroyCalls = (workerManager.call as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (callArgs) => callArgs[1] === "environmentDestroyLease",
+    );
+    expect(destroyCalls).toHaveLength(1);
+    expect(destroyCalls[0]?.[2]).toMatchObject({ providerLeaseId: "plugin-lease-1" });
+
+    await environmentService(db).update(environment.id, { driver: "local", config: {} });
+  });
+
   it("uses plugin-backed sandbox config for execute and release", async () => {
     const pluginId = randomUUID();
     const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
