@@ -322,6 +322,59 @@ test("testEnvironment resolves config.yaml and .env from explicit child HERMES_H
   }
 });
 
+test("testEnvironment prioritizes mixed-case child HERMES_HOME over Windows LOCALAPPDATA for config.yaml and .env", async () => {
+  const originalPlatform = process.platform;
+  const hermesHome = await mkdtemp(join(tmpdir(), "hermes-paperclip-windows-explicit-home-"));
+  const localAppData = await mkdtemp(join(tmpdir(), "hermes-paperclip-windows-conflicting-localappdata-"));
+  Object.defineProperty(process, "platform", { value: "win32" });
+
+  try {
+    await writeFile(
+      join(hermesHome, "config.yaml"),
+      [
+        "model:",
+        "  default: explicit-priority-model",
+        "  provider: explicit-home-provider",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      join(hermesHome, ".env"),
+      "OPENAI_API_KEY=from-explicit-hermes-home-only\n",
+      "utf8",
+    );
+
+    const result = await testEnvironment({
+      companyId: "company-test",
+      adapterType: "hermes_local",
+      config: {
+        hermesCommand: "python3",
+        model: "explicit-priority-model",
+        env: {
+          hErMeS_hOmE: hermesHome,
+          LOCALAPPDATA: localAppData,
+          HOME: "",
+          USERPROFILE: "",
+        },
+      },
+    });
+
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      code: "hermes_api_keys_found",
+      message: "API keys found: OpenAI",
+    }));
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      code: "hermes_provider_unsupported",
+      message: expect.stringContaining('"explicit-home-provider"'),
+    }));
+  } finally {
+    Object.defineProperty(process, "platform", { value: originalPlatform });
+    await rm(hermesHome, { recursive: true, force: true });
+    await rm(localAppData, { recursive: true, force: true });
+  }
+});
+
 test("testEnvironment resolves native Windows LOCALAPPDATA/hermes config.yaml and .env", async () => {
   const originalPlatform = process.platform;
   const localAppData = await mkdtemp(join(tmpdir(), "hermes-paperclip-localappdata-"));
