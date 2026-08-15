@@ -408,6 +408,89 @@ describe("stdin file race (parent PAP-4037)", () => {
     }
   });
 
+  it("holds stdinEnd on stop until an earlier pending stdin write lands first", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-stdin-stop-order-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "echo-child.mjs");
+    await writeFile(childPath, "process.stdin.on('data', (c) => process.stdout.write(c));\n", "utf8");
+
+    // Record each stdin file finalize (atomic rename). `finalizeStarted` marks
+    // the start; `finalizeOrder` marks the completion. Delay the FIRST chunk's
+    // finalize, so its write is still pending when `stop()` runs. `stop()` must
+    // chain the `stdinEnd` write after the pending chunk, so file 2 (stdinEnd)
+    // never finishes its rename before file 1.
+    const finalizeStarted: string[] = [];
+    const finalizeOrder: string[] = [];
+    const runner = createLocalSandboxRunner(async (script) => {
+      const finalizeMatch = /base64 -d[\s\S]*mv '[^']*\.decoded' '([^']+\.json)'/.exec(script);
+      if (finalizeMatch) {
+        const name = path.posix.basename(finalizeMatch[1]);
+        finalizeStarted.push(name);
+        if (name === "000000000001.json") await delay(300);
+        finalizeOrder.push(name);
+      }
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-stdin-stop-order",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+
+    let peer: net.Socket | null = null;
+    let stopped = false;
+    try {
+      const proxySource = await readFile(bridge!.agentCommand, "utf8");
+      const port = Number(/port: (\d+)/.exec(proxySource)?.[1] ?? Number.NaN);
+      const tokenLiteral = /const token = (".*?");/.exec(proxySource)?.[1];
+      expect(Number.isFinite(port)).toBe(true);
+      const token = JSON.parse(tokenLiteral as string) as string;
+
+      const peerSocket = net.createConnection({ host: "127.0.0.1", port });
+      peer = peerSocket;
+      peerSocket.setEncoding("utf8");
+      peerSocket.on("error", () => undefined);
+      peerSocket.on("data", () => undefined);
+      await new Promise<void>((resolve, reject) => {
+        peerSocket.once("connect", () => resolve());
+        peerSocket.once("error", reject);
+      });
+
+      // Send one stdin message. It authenticates and writes file 1, whose
+      // finalize the runner delays. Wait until that finalize has started, so the
+      // write is in flight when `stop()` runs.
+      const head = `${JSON.stringify({ token, type: "stdin", data: Buffer.from("HEAD_ONE_", "utf8").toString("base64") })}\n`;
+      peerSocket.write(head);
+      await waitFor(() => finalizeStarted.includes("000000000001.json"), 8_000);
+
+      // Stop the bridge while file 1's write is still pending. `stop()` awaits
+      // the chained `stdinEnd` write, so both finalizes are complete when it
+      // returns, in send order.
+      await bridge!.stop();
+      stopped = true;
+      expect(finalizeOrder).toEqual(["000000000001.json", "000000000002.json"]);
+    } finally {
+      peer?.destroy();
+      if (!stopped) await bridge?.stop();
+    }
+  });
+
   // ---- Host atomic-write tests ------------------------------------------
 
   // A runner that executes each bridge shell script on the local filesystem,

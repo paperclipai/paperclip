@@ -1845,10 +1845,21 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       if (pollTimer) clearTimeout(pollTimer);
       for (const liveSocket of liveSockets) liveSocket.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve())).catch(() => undefined);
-      await client.writeTextFile(
-        path.posix.join(stdinDir, `${String(stdinSeq + 1).padStart(12, "0")}.json`),
-        jsonLine({ type: "stdinEnd" }),
-      ).catch(() => undefined);
+      // Wait for every accepted stdin write before `stdinEnd`. The socket handler
+      // fires each chunk write un-awaited through `stdinWriteChain`, so an earlier
+      // chunk can still be pending here. Chain the `stdinEnd` write onto the same
+      // per-session chain, so its file rename never finishes before an earlier
+      // chunk. `stdinSeq` is stable now, because the sockets are destroyed and the
+      // server is closed, so no new message can increment it.
+      const stdinEndPath = path.posix.join(
+        stdinDir,
+        `${String(stdinSeq + 1).padStart(12, "0")}.json`,
+      );
+      const stdinEndWrite = stdinWriteChain.then(() =>
+        client.writeTextFile(stdinEndPath, jsonLine({ type: "stdinEnd" })),
+      );
+      stdinWriteChain = stdinEndWrite.then(() => undefined, () => undefined);
+      await stdinEndWrite.catch(() => undefined);
       await client.remove(sessionDir).catch(() => undefined);
       await fs.rm(proxyDir, { recursive: true, force: true }).catch(() => undefined);
     },
