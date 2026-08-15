@@ -46,7 +46,88 @@ process.exit(0);
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeUsagePiCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+if (process.argv.includes("--list-models")) {
+  console.log("provider  model");
+  console.log("github-copilot  claude-opus-4.5");
+  process.exit(0);
+}
+console.log(JSON.stringify({ type: "agent_start" }));
+console.log(JSON.stringify({ type: "turn_start" }));
+console.log(JSON.stringify({
+  type: "turn_end",
+  message: {
+    role: "assistant",
+    content: "done",
+    usage: {
+      input: 1000,
+      output: 4000,
+      cacheRead: 995000,
+      // What Pi computes off an API-shaped price table: the cache read is
+      // discounted 10x, which is exactly the assumption GitHub does not honor.
+      cost: { total: 0.6025 }
+    }
+  },
+  toolResults: []
+}));
+console.log(JSON.stringify({ type: "agent_end", messages: [] }));
+process.exit(0);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 describe("pi_local execute", () => {
+  it("prices the github-copilot lane off tokens, with no cache-read discount", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-credits-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "pi");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeUsagePiCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+
+    try {
+      const result = await execute({
+        runId: "run-pi-copilot-credits",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Pi Agent",
+          adapterType: "pi_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          model: "github-copilot/claude-opus-4.5",
+          promptTemplate: "Keep working.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.biller).toBe("github-copilot");
+      expect(result.billingType).toBe("credits");
+      expect(result.usage?.cachedInputTokens).toBe(995_000);
+      // 1,000,000 tokens at $0.0092/1k, cache reads billed at full rate.
+      expect(result.costUsd).toBeCloseTo(9.2, 6);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("fails the run when Pi exhausts automatic retries despite exiting 0", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-execute-"));
     const workspace = path.join(root, "workspace");

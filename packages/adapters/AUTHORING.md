@@ -68,3 +68,45 @@ above) so the opt-in shows up in code review.
 
 For the architecture-level write-up of cross-run persistence, see
 [`docs/guides/board-operator/execution-workspaces-and-runtime-services.md`](../../docs/guides/board-operator/execution-workspaces-and-runtime-services.md#cross-run-persistence-no-remote-git-contract).
+
+## Credit-billed lanes: do not trust the CLI's cost field
+
+Coding CLIs report `costUsd` from an API-shaped price table: separate input,
+output, and *discounted* cache-read rates. Some billers do not sell tokens that
+way. GitHub Copilot meters agent traffic against premium credits, where a cache
+read costs exactly as much as a fresh input token.
+
+Reconciled against a real Copilot org bill, passing the CLI number through
+understated that lane by **12.3x**, because ~99% of a long-running agent
+workload's tokens are cache reads.
+
+So an adapter that can route through such a biller must run its result through
+[`applyTokenRateCard`](../adapter-utils/src/token-rate-card.ts) instead of
+forwarding `costUsd` and hard-coding `billingType: "unknown"`:
+
+```ts
+const priced = applyTokenRateCard({
+  biller,
+  model,
+  usage,
+  reportedCostUsd: parsed.usage.costUsd,
+  env: runtimeEnv,
+});
+// → { costUsd, billingType, pricingSource }
+```
+
+Billers with no rate-card entry keep the adapter-reported cost and billing type,
+so this is safe to apply unconditionally. Operators can add or override entries
+per deployment with `PAPERCLIP_TOKEN_RATE_CARD_JSON`, which is also how a lane
+that is genuinely not billed (a free tier) gets priced at `$0` instead of
+carrying a shadow price:
+
+```sh
+PAPERCLIP_TOKEN_RATE_CARD_JSON='{"google":{"usdPerThousandTokens":0,"billingType":"fixed","note":"AI Studio free tier"}}'
+```
+
+Known limitation: the built-in `github-copilot` rate is *blended*. GitHub does
+not publish a per-model token multiplier for credit-metered usage, so the total
+reconciles while the split between models (Opus vs Sonnet) is approximate. When
+a real multiplier is known, add it to `modelMultipliers` rather than forking the
+rate.
