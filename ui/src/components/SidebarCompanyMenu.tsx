@@ -6,6 +6,7 @@ import {
   GripVertical,
   LogOut,
   Plus,
+  RefreshCw,
   UserPlus,
 } from "lucide-react";
 import {
@@ -198,7 +199,8 @@ function SortableCompanyItem({
 export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompanyMenuProps = {}) {
   const [internalOpen, setInternalOpen] = useState(false);
   const [isEditingOrder, setIsEditingOrder] = useState(false);
-  const { companies, selectedCompany, setSelectedCompanyId } = useCompany();
+  const { companies, selectedCompany, setSelectedCompanyId, companyListUnavailable, retryCompanies } =
+    useCompany();
   const { openOnboarding } = useDialogActions();
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking;
@@ -437,7 +439,27 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
                 </SortableContext>
               </DndContext>
               {orderedCompanies.length === 0 ? (
-                <DropdownMenuItem disabled>No companies</DropdownMenuItem>
+                // "No companies" is a claim about the account. After a failed
+                // list request it is one we cannot make, and this menu is the
+                // only place the customer can act on it — say what happened and
+                // offer the way back.
+                companyListUnavailable ? (
+                  <>
+                    <DropdownMenuItem disabled>Couldn&apos;t load companies</DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={(event) => {
+                        // Keep the menu open so the result of the retry is visible.
+                        event.preventDefault();
+                        void retryCompanies();
+                      }}
+                    >
+                      <RefreshCw className="h-4 w-4 mr-2" />
+                      Try again
+                    </DropdownMenuItem>
+                  </>
+                ) : (
+                  <DropdownMenuItem disabled>No companies</DropdownMenuItem>
+                )
               ) : null}
             </>
           )}
