@@ -44,4 +44,38 @@ describe("redactDiagnosticText", () => {
     expect(output).toContain("DIAGMARKER1234");
     expect(output).not.toContain("opaque");
   });
+
+  it("redacts a JSON secret value that contains an escaped quote", () => {
+    // The value holds an escaped quote, so a naive matcher stops at the `\"` and
+    // leaves the rest of the credential. The marker sits after the escaped quote.
+    const input = '{"token":"pre\\"MARKERQUOTE_A"}';
+    const output = redactDiagnosticText(input);
+    expect(output).not.toContain("MARKERQUOTE_A");
+    expect(output).toContain(`"token":"${REDACTED_COMMAND_TEXT_VALUE}"`);
+  });
+
+  it("redacts a JSON secret value that contains an escaped backslash", () => {
+    const input = '{"secret":"pre\\\\MARKERBACKSLASH_A"}';
+    const output = redactDiagnosticText(input);
+    expect(output).not.toContain("MARKERBACKSLASH_A");
+    expect(output).toContain(`"secret":"${REDACTED_COMMAND_TEXT_VALUE}"`);
+  });
+
+  it("redacts an escaped-JSON secret value that contains an escaped quote", () => {
+    // A diagnostic can carry a serialized JSON string, so the whole JSON is
+    // escaped a second time. The inner value still holds an escaped quote.
+    const innerJson = '{"token":"pre\\"MARKERQUOTE_B"}';
+    const input = JSON.stringify(innerJson);
+    const output = redactDiagnosticText(input);
+    expect(output).not.toContain("MARKERQUOTE_B");
+    expect(output).toContain(REDACTED_COMMAND_TEXT_VALUE);
+  });
+
+  it("redacts an escaped-JSON secret value that contains an escaped backslash", () => {
+    const innerJson = '{"password":"pre\\\\MARKERBACKSLASH_B"}';
+    const input = JSON.stringify(innerJson);
+    const output = redactDiagnosticText(input);
+    expect(output).not.toContain("MARKERBACKSLASH_B");
+    expect(output).toContain(REDACTED_COMMAND_TEXT_VALUE);
+  });
 });

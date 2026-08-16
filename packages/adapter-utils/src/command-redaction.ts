@@ -60,15 +60,18 @@ export function redactCommandText(command: string, redactedValue = REDACTED_COMM
 // A JSON secret field is a key/value pair such as `"token":"opaque-value"`. The
 // command redaction handles shell `KEY=value` syntax only. A sandbox diagnostic
 // can also carry a serialized JSON error, so the sanitizer must redact the JSON
-// form too.
+// form too. The value body consumes JSON escape sequences. An escaped quote
+// (`\"`) inside the value does not end the match early.
 const JSON_SECRET_FIELD_RE = new RegExp(
-  String.raw`("(?:${SECRET_NAME_PATTERN})"\s*:\s*")[^"]*(")`,
+  String.raw`("(?:${SECRET_NAME_PATTERN})"\s*:\s*")(?:\\[\s\S]|[^"\\])*(")`,
   "gi",
 );
 // An escaped JSON secret field is the same pair inside a JSON string. The double
-// quotes appear as `\"`, so the value ends at the next backslash.
+// quote appears as `\"` and a backslash appears as `\\`. The value body
+// consumes the doubled escape sequences. An escaped quote inside the value does
+// not end the match early. The value ends at the next unescaped `\"`.
 const JSON_ESCAPED_SECRET_FIELD_RE = new RegExp(
-  String.raw`(\\"(?:${SECRET_NAME_PATTERN})\\"\s*:\s*\\")[^\\]*(\\")`,
+  String.raw`(\\"(?:${SECRET_NAME_PATTERN})\\"\s*:\s*\\")(?:\\\\\\\\|\\\\\\"|\\\\[\s\S]|[^\\"])*(\\")`,
   "gi",
 );
 

@@ -85,4 +85,25 @@ describe("logRedactedSandboxProbeDiagnostic", () => {
     expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
+
+  it("redacts a JSON secret value with an escaped quote before it reaches the log", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // The value holds an escaped quote, then the rest of the credential. A naive
+    // matcher stops at the escaped quote and leaks the marker to the log.
+    logRedactedSandboxProbeDiagnostic("probe failed", '{"token":"pre\\"MARKERLOGQUOTE"}');
+    const loggedText = JSON.stringify(warnSpy.mock.calls);
+    expect(loggedText).not.toContain("MARKERLOGQUOTE");
+    expect(loggedText).toContain("***REDACTED***");
+    warnSpy.mockRestore();
+  });
+
+  it("redacts an escaped-JSON secret value before it reaches the log", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const innerJson = '{"password":"pre\\\\MARKERLOGBACKSLASH"}';
+    logRedactedSandboxProbeDiagnostic("probe failed", JSON.stringify(innerJson));
+    const loggedText = JSON.stringify(warnSpy.mock.calls);
+    expect(loggedText).not.toContain("MARKERLOGBACKSLASH");
+    expect(loggedText).toContain("***REDACTED***");
+    warnSpy.mockRestore();
+  });
 });
