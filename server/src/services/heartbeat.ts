@@ -1332,7 +1332,7 @@ async function resolveRunScopedMentionedSkillKeys(input: {
     .filter((skillKey): skillKey is string => Boolean(skillKey));
 }
 
-function leaseReleaseStatusForRunStatus(
+export function leaseReleaseStatusForRunStatus(
   status: string | null | undefined,
 ): Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed"> {
   if (status === "cancelled") return "expired";
@@ -19273,6 +19273,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reconcileStrandedAssignedIssues,
 
     terminalizeRunOnLeaseRelease,
+
+    releaseEnvironmentLeasesForRun,
 
     sweepStaleIssueLocks,
 

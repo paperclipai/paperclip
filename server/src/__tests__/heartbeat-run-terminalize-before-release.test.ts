@@ -17,7 +17,11 @@ import {
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 vi.mock("../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClient }));
 
-import { heartbeatService } from "../services/heartbeat.ts";
+import {
+  heartbeatService,
+  leaseReleaseStatusForRunStatus,
+  type HeartbeatEnvironmentRuntime,
+} from "../services/heartbeat.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -33,16 +37,26 @@ if (!embeddedPostgresSupport.supported) {
 // This file is a characterization test. It pins the CURRENT run-teardown order
 // in server/src/services/heartbeat.ts:16586-16607: the teardown finally
 // terminalizes the run FIRST, then releases the environment lease using the
-// terminalized status. It never changes production code.
+// terminalized status. The production order is:
+//   latestRun = await terminalizeRunOnLeaseRelease(latestRun);   // :16593 first
+//   await releaseEnvironmentLeasesForRun({ status: latestRun?.status, ... }); // :16601 second
 //
 // The enclosing teardown finally is not reasonably invokable in isolation: it
 // lives deep in the heartbeat run body and needs a full sandbox, adapter, and
-// workspace bring-up to reach. `releaseEnvironmentLeasesForRun` is also not
-// exposed on `heartbeatService(db)`. So this test reproduces the documented
-// production sequence directly against the embedded database and asserts the
-// release step observes the already-terminal status. The production order is:
-//   latestRun = await terminalizeRunOnLeaseRelease(latestRun);   // :16593 first
-//   await releaseEnvironmentLeasesForRun({ status: latestRun?.status, ... }); // :16601 second
+// workspace bring-up to reach. So this test drives the two real production
+// functions in the same order against the embedded database:
+// `terminalizeRunOnLeaseRelease` and `releaseEnvironmentLeasesForRun`. It thus
+// executes the real lease-release boundary: the terminalized run status flows
+// through the real run-status → lease-status mapping
+// (`leaseReleaseStatusForRunStatus`) and the real environment orchestrator
+// (`envOrchestrator.releaseForRun`) down to the runtime leaf. The test injects a
+// fake `environmentRuntime` that records the mapped lease status at that leaf, so
+// a wrong terminal state or a broken mapping fails the suite.
+//
+// The two additive test seams keep production behavior unchanged. The service now
+// exposes `releaseEnvironmentLeasesForRun` (next to the existing
+// `terminalizeRunOnLeaseRelease`), and `leaseReleaseStatusForRunStatus` is now
+// exported for the direct mapping assertions below.
 describeEmbeddedPostgres("heartbeat teardown terminalizes the run before releasing the lease", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -122,13 +136,34 @@ describeEmbeddedPostgres("heartbeat teardown terminalizes the run before releasi
       .then((rows) => rows[0]?.status ?? null);
   }
 
-  // Reproduce the production teardown sequence at heartbeat.ts:16586-16607 and
-  // report what the release step observes. Terminalize runs first; the status
-  // threaded into `releaseEnvironmentLeasesForRun` is the terminalized run's
-  // status; and the run row is already terminal in the database when release
-  // would run (release is the later step).
-  async function runTeardownSequenceObservingRelease(runId: string) {
-    const heartbeat = heartbeatService(db);
+  // Drive the two real production functions in the teardown order at
+  // heartbeat.ts:16586-16607 and report what the real release step observes.
+  // Terminalize runs first. Then `releaseEnvironmentLeasesForRun` runs with the
+  // terminalized run status. That real call maps the run status through
+  // `leaseReleaseStatusForRunStatus` and passes it to the real environment
+  // orchestrator, which reaches the runtime leaf. The injected fake
+  // `environmentRuntime` records the run id and the mapped lease status at that
+  // leaf, so the test observes the actual boundary, not a reproduction.
+  async function runTeardownSequenceObservingRelease(input: {
+    runId: string;
+    companyId: string;
+    agentId: string;
+  }) {
+    const { runId, companyId, agentId } = input;
+    const releaseLeafCalls: Array<{ runId: string; status: string }> = [];
+    const fakeEnvironmentRuntime = {
+      // The orchestrator's `releaseForRun` calls this leaf with the mapped lease
+      // status. There are no seeded leases, so return an empty release set.
+      releaseRunLeases: async (
+        heartbeatRunId: string,
+        status: "released" | "expired" | "failed",
+      ) => {
+        releaseLeafCalls.push({ runId: heartbeatRunId, status });
+        return [];
+      },
+    } as unknown as HeartbeatEnvironmentRuntime;
+    const heartbeat = heartbeatService(db, { environmentRuntime: fakeEnvironmentRuntime });
+
     let latestRun = await db
       .select()
       .from(heartbeatRuns)
@@ -140,19 +175,44 @@ describeEmbeddedPostgres("heartbeat teardown terminalizes the run before releasi
     const statusThreadedToRelease = latestRun?.status ?? null;
     // The run row as the later release step observes it in the database.
     const dbStatusAtRelease = await runStatus(runId);
-    return { statusBeforeTerminalize, statusThreadedToRelease, dbStatusAtRelease, terminalRun: latestRun };
+
+    // Execute the real release step exactly as the teardown does at :16601.
+    await heartbeat.releaseEnvironmentLeasesForRun({
+      runId,
+      companyId,
+      agentId,
+      status: statusThreadedToRelease,
+    });
+    const orchestratorObservedRunId = releaseLeafCalls.at(-1)?.runId ?? null;
+    const orchestratorObservedLeaseStatus = releaseLeafCalls.at(-1)?.status ?? null;
+
+    return {
+      statusBeforeTerminalize,
+      statusThreadedToRelease,
+      dbStatusAtRelease,
+      releaseCallCount: releaseLeafCalls.length,
+      orchestratorObservedRunId,
+      orchestratorObservedLeaseStatus,
+      terminalRun: latestRun,
+    };
   }
 
   it("terminalizes a running run to succeeded before release when the issue reached done", async () => {
-    const { issueId, runId } = await seed({ issueStatus: "done", runStatus: "running" });
+    const { companyId, agentId, issueId, runId } = await seed({ issueStatus: "done", runStatus: "running" });
 
-    const observed = await runTeardownSequenceObservingRelease(runId);
+    const observed = await runTeardownSequenceObservingRelease({ runId, companyId, agentId });
 
     // The run was still running before terminalize, but release observes the
     // terminalized status, proving terminalize ran first.
     expect(observed.statusBeforeTerminalize).toBe("running");
     expect(observed.statusThreadedToRelease).toBe("succeeded");
     expect(observed.dbStatusAtRelease).toBe("succeeded");
+
+    // The real orchestrator ran once and received the run id plus the mapped
+    // lease status for a succeeded run.
+    expect(observed.releaseCallCount).toBe(1);
+    expect(observed.orchestratorObservedRunId).toBe(runId);
+    expect(observed.orchestratorObservedLeaseStatus).toBe("released");
 
     // The issue outcome is preserved and the lifecycle event records the reason.
     const issueStatus = await db
@@ -172,13 +232,17 @@ describeEmbeddedPostgres("heartbeat teardown terminalizes the run before releasi
   });
 
   it("terminalizes a running run to interrupted before release when the issue is not terminal", async () => {
-    const { runId } = await seed({ issueStatus: "in_progress", runStatus: "running" });
+    const { companyId, agentId, runId } = await seed({ issueStatus: "in_progress", runStatus: "running" });
 
-    const observed = await runTeardownSequenceObservingRelease(runId);
+    const observed = await runTeardownSequenceObservingRelease({ runId, companyId, agentId });
 
     expect(observed.statusBeforeTerminalize).toBe("running");
     expect(observed.statusThreadedToRelease).toBe("interrupted");
     expect(observed.dbStatusAtRelease).toBe("interrupted");
+
+    // An interrupted run maps to a normal lease release.
+    expect(observed.releaseCallCount).toBe(1);
+    expect(observed.orchestratorObservedLeaseStatus).toBe("released");
 
     const row = await db
       .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
@@ -192,25 +256,29 @@ describeEmbeddedPostgres("heartbeat teardown terminalizes the run before releasi
   it("terminalizes a still-queued run to interrupted before release", async () => {
     // A queued run holds a lease but never reached running. Release must observe a
     // terminal status, not the queued phantom-live status.
-    const { runId } = await seed({ issueStatus: "in_progress", runStatus: "queued" });
+    const { companyId, agentId, runId } = await seed({ issueStatus: "in_progress", runStatus: "queued" });
 
-    const observed = await runTeardownSequenceObservingRelease(runId);
+    const observed = await runTeardownSequenceObservingRelease({ runId, companyId, agentId });
 
     expect(observed.statusBeforeTerminalize).toBe("queued");
     expect(observed.statusThreadedToRelease).toBe("interrupted");
     expect(observed.dbStatusAtRelease).toBe("interrupted");
+    expect(observed.orchestratorObservedLeaseStatus).toBe("released");
   });
 
   it("threads an already-terminal run's status through unchanged and writes no new event", async () => {
     // When another path already made the run terminal, terminalize is a no-op, so
     // release still observes that authoritative terminal status.
-    const { runId } = await seed({ issueStatus: "done", runStatus: "failed" });
+    const { companyId, agentId, runId } = await seed({ issueStatus: "done", runStatus: "failed" });
 
-    const observed = await runTeardownSequenceObservingRelease(runId);
+    const observed = await runTeardownSequenceObservingRelease({ runId, companyId, agentId });
 
     expect(observed.statusBeforeTerminalize).toBe("failed");
     expect(observed.statusThreadedToRelease).toBe("failed");
     expect(observed.dbStatusAtRelease).toBe("failed");
+
+    // A failed run maps to a failed lease release at the orchestrator.
+    expect(observed.orchestratorObservedLeaseStatus).toBe("failed");
 
     const eventCount = await db
       .select({ id: heartbeatRunEvents.id })
@@ -218,5 +286,27 @@ describeEmbeddedPostgres("heartbeat teardown terminalizes the run before releasi
       .where(eq(heartbeatRunEvents.runId, runId))
       .then((rows) => rows.length);
     expect(eventCount).toBe(0);
+  });
+});
+
+// Pin the real run-status → lease-release-status mapping the teardown threads
+// into the environment orchestrator (heartbeat.ts:16601-16606). The database
+// tests above reach the "released" and "failed" branches; this direct test also
+// pins the "expired" and "timed_out" branches. It needs no database, so it runs
+// on every host.
+describe("run-status to lease-release-status mapping", () => {
+  it("maps each terminal run status to the lease-release status the orchestrator receives", () => {
+    // A normal or in-progress run releases the lease.
+    expect(leaseReleaseStatusForRunStatus("succeeded")).toBe("released");
+    expect(leaseReleaseStatusForRunStatus("interrupted")).toBe("released");
+    expect(leaseReleaseStatusForRunStatus("running")).toBe("released");
+    expect(leaseReleaseStatusForRunStatus("queued")).toBe("released");
+    expect(leaseReleaseStatusForRunStatus(null)).toBe("released");
+    expect(leaseReleaseStatusForRunStatus(undefined)).toBe("released");
+    // A failed or timed-out run marks the lease release as failed.
+    expect(leaseReleaseStatusForRunStatus("failed")).toBe("failed");
+    expect(leaseReleaseStatusForRunStatus("timed_out")).toBe("failed");
+    // A cancelled run expires the lease.
+    expect(leaseReleaseStatusForRunStatus("cancelled")).toBe("expired");
   });
 });

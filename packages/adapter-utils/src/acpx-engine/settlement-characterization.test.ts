@@ -380,9 +380,11 @@ describe("ACP settlement — Layer A: engine teardown orchestration", () => {
         agentCommand: "node ./fake-acp.js",
         stateDir: path.join(root, "state"),
         mode: "persistent",
-        // A short idle window so the scheduled cleanup timer does not outlive the
-        // test; the warm-save decision only needs warmIdleMs>0.
-        warmHandleIdleMs: 30,
+        // A long idle window so the scheduled cleanup timer cannot fire during the
+        // assertions and evict the warm handle. The warm-save decision only needs
+        // warmIdleMs>0. The test clears the timer below, so it never outlives the
+        // test.
+        warmHandleIdleMs: 60_000,
       },
       context: {},
       onLog: async () => {},
@@ -395,8 +397,12 @@ describe("ACP settlement — Layer A: engine teardown orchestration", () => {
     expect(closeSpy).not.toHaveBeenCalled();
     expect(warmHandles.size).toBe(1);
 
-    // Drain the scheduled idle-cleanup timer so no timer outlives the test.
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    // Clear the scheduled idle-cleanup timer so no timer outlives the test. The
+    // long idle window kept the timer from racing the assertions above; clearing
+    // it here makes cleanup deterministic instead of a timed drain.
+    for (const entry of warmHandles.values()) {
+      if (entry.cleanupTimer) clearTimeout(entry.cleanupTimer);
+    }
   });
 
   it("test_completed_non_persistent_local_run_closes_runtime_once", async () => {
