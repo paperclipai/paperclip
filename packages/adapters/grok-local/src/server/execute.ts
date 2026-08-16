@@ -76,8 +76,12 @@ function renderApiAccessNote(env: Record<string, string>): string {
   if (!hasNonEmptyEnvValue(env, "PAPERCLIP_API_URL") || !hasNonEmptyEnvValue(env, "PAPERCLIP_API_KEY")) return "";
   return [
     "Paperclip API access note:",
-    "Use shell commands with curl to make Paperclip API requests when needed.",
-    "Include X-Paperclip-Run-Id on mutating requests.",
+    "Use shell commands with curl to make Paperclip API requests when needed; browser or web tools may not reach the local Paperclip server.",
+    "GET example:",
+    "  curl -sS -H \"Authorization: Bearer $PAPERCLIP_API_KEY\" \"$PAPERCLIP_API_URL/api/agents/me\"",
+    "POST/PATCH example:",
+    "  curl -sS -X POST -H \"Authorization: Bearer $PAPERCLIP_API_KEY\" -H 'Content-Type: application/json' -H \"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\" -d '{...}' \"$PAPERCLIP_API_URL/api/issues/{id}/comments\"",
+    "Include X-Paperclip-Run-Id on every mutating request, and verify the response before claiming the mutation is complete.",
     "",
     "",
   ].join("\n");

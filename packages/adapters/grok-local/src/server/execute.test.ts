@@ -203,6 +203,51 @@ describe("grok_local execute", () => {
     }
   });
 
+  it("gives Grok an executable Paperclip mutation recipe when API access is available", async () => {
+    const previousApiUrl = process.env.PAPERCLIP_API_URL;
+    const prompts: string[] = [];
+    try {
+      process.env.PAPERCLIP_API_URL = "http://127.0.0.1:3100";
+      runProcessMock.mockImplementation(async () => {
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "sess-1" }),
+          stderr: "",
+        };
+      });
+
+      await execute({
+        runId: "run-api-guidance",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Grok Agent",
+          adapterType: "grok_local",
+          adapterConfig: {},
+        },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { cwd: await makeTempRoot() },
+        context: {},
+        authToken: "run-token",
+        onLog: async () => {},
+        onMeta: async (meta) => {
+          prompts.push(meta.prompt ?? "");
+        },
+      });
+
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toContain("curl -sS -H \"Authorization: Bearer $PAPERCLIP_API_KEY\"");
+      expect(prompts[0]).toContain("/api/issues/{id}/comments");
+      expect(prompts[0]).toContain("X-Paperclip-Run-Id");
+      expect(prompts[0]).toContain("verify the response");
+    } finally {
+      if (previousApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
+      else process.env.PAPERCLIP_API_URL = previousApiUrl;
+    }
+  });
+
   it("cleans up staged assets when setup fails before the Grok process starts", async () => {
     const root = await makeTempRoot();
     const instructionsPath = path.join(root, "managed", "AGENTS.md");
