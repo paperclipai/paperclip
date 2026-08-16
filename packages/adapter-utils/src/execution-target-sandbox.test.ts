@@ -214,7 +214,11 @@ describe("sandbox adapter execution targets", () => {
       `proxy stderr=${JSON.stringify(result.stderr)}`,
     ];
     const walk = async (dir: string, depth: number): Promise<void> => {
-      if (depth > 3) return;
+      // Deep enough to reach the queue frames, which are the point. They sit
+      // at process-sessions/<id>/stdin/<seq>.json — depth 4 from the runtime
+      // root — so a cap of 3 listed the `stdin/` directory and stopped, making
+      // "the queue is empty" and "the walk never looked" print identically.
+      if (depth > 5) return;
       let entries;
       try {
         entries = await readdir(dir, { withFileTypes: true });
