@@ -593,10 +593,18 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           const result = await callHost("http.fetch", {
             url,
             init: Object.keys(serializedInit).length > 0 ? serializedInit : undefined,
+            // Ask for base64 so binary bodies (.docx, images, archives)
+            // survive the JSON-RPC wire; a host that predates the option
+            // ignores it and replies with utf8 text and no bodyEncoding
+            // marker, which decodes below exactly as before.
+            responseEncoding: "base64",
           });
 
           // Reconstruct a Response-like object from the serialized result
-          return new Response(result.body, {
+          const body = result.bodyEncoding === "base64"
+            ? Buffer.from(result.body, "base64")
+            : result.body;
+          return new Response(body, {
             status: result.status,
             statusText: result.statusText,
             headers: result.headers,

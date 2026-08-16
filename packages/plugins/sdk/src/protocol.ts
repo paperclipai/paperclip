@@ -1250,8 +1250,25 @@ export interface WorkerToHostMethods {
 
   // HTTP
   "http.fetch": [
-    params: { url: string; init?: Record<string, unknown> },
-    result: { status: number; statusText: string; headers: Record<string, string>; body: string },
+    params: {
+      url: string;
+      init?: Record<string, unknown>;
+      /**
+       * How the worker wants the response body encoded on the wire. "base64"
+       * preserves binary bodies (the JSON-RPC transport cannot carry raw
+       * bytes); hosts that predate this option ignore it and reply with utf8
+       * text and no `bodyEncoding` marker.
+       */
+      responseEncoding?: "utf8" | "base64";
+    },
+    result: {
+      status: number;
+      statusText: string;
+      headers: Record<string, string>;
+      body: string;
+      /** Encoding of `body`. Absent means utf8 text (legacy hosts). */
+      bodyEncoding?: "utf8" | "base64";
+    },
   ];
 
   // Secrets
