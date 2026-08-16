@@ -13330,15 +13330,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const isOrphanEphemeralLease = lease.leasePolicy === "ephemeral";
       const useRecordedTeardown = isOrphanEphemeralLease || !environment;
 
-      // Do not consume a finite cleanup attempt while the provider plugin worker
-      // is briefly down (e.g. a rolling restart of the plugin worker process). A
-      // worker-down teardown throws, and the atomic claim below would count that
-      // throw against the cap, so a long restart could exhaust the retries and
-      // strand a live sandbox. So probe the worker first, and skip the lease this
-      // tick when the worker is not ready. A later sweep retries after the worker
-      // recovers. The probe reports ready for every persistent condition, so a
-      // genuine teardown failure still runs, throws, and counts toward the cap.
-      // A runtime with no probe method treats the lease as ready, so the sweep
+      // Do not consume a finite cleanup attempt while the provider plugin is
+      // briefly unavailable. A plugin worker restart or a plugin reload makes the
+      // provider unavailable for a short window. A teardown in that window throws,
+      // and the atomic claim below would count that throw against the cap, so a
+      // long restart or reload could exhaust the retries and strand a live
+      // sandbox. So probe the provider first, and skip the lease this tick when
+      // the provider is not ready. A later sweep retries after the provider
+      // recovers. The probe reports ready for every persistent condition (a
+      // missing provider, a built-in provider, or no worker manager), so a
+      // genuine teardown failure still runs, throws, and counts toward the cap. A
+      // runtime with no probe method treats the lease as ready, so the sweep
       // keeps its earlier behavior.
       const workerReady = environmentRuntime.isPendingCleanupWorkerReady
         ? await environmentRuntime.isPendingCleanupWorkerReady({ environment, lease })

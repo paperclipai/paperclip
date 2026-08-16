@@ -520,6 +520,63 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     expect(finalRow?.cleanupStatus).toBe("success");
   });
 
+  it("test_pending_cleanup_sweep_never_caps_while_provider_unavailable_then_cleans_up", async () => {
+    const { companyId } = await seedCompanyAndEnvironment();
+    // An orphan ephemeral lease that a failed plugin acquire recorded. The sweep
+    // tears it down through retryPendingSandboxTeardown.
+    const leaseId = await insertOrphanEphemeralLease({
+      companyId,
+      environmentId: null,
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    // The provider stays unavailable for more sweeps than the finite attempt
+    // cap. A long plugin reload or a long worker restart looks like this. The
+    // probe reports not ready every time, so no sweep claims an attempt.
+    let providerReady = false;
+    const isPendingCleanupWorkerReady = vi.fn(async () => providerReady);
+    const retryPendingSandboxTeardown = vi.fn(async () => {});
+    const runtime = {
+      isPendingCleanupWorkerReady,
+      retryPendingSandboxTeardown,
+    } as unknown as HeartbeatEnvironmentRuntime;
+    const heartbeat = heartbeatService(db, { environmentRuntime: runtime });
+
+    // Run one more sweep than the cap. A per-sweep claim would exhaust the cap
+    // and strand the sandbox, so this proves the unavailable provider never
+    // burns an attempt.
+    for (let sweep = 0; sweep < ATTEMPT_CAP + 1; sweep += 1) {
+      const result = await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 });
+      // The lease is swept and skipped every time; it never caps and never
+      // tears down while the provider is unavailable.
+      expect(result).toEqual({ swept: 1, destroyed: 0, capped: 0 });
+    }
+    expect(retryPendingSandboxTeardown).not.toHaveBeenCalled();
+    // The unavailable provider consumed no finite attempt across every sweep.
+    expect(await readAttempts(leaseId)).toBe(0);
+    const afterUnavailable = await db
+      .select({ status: environmentLeases.status })
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, leaseId))
+      .then((rows) => rows[0]?.status);
+    expect(afterUnavailable).toBe("pending_cleanup");
+
+    // The provider recovers, so the next sweep claims the first attempt and
+    // tears the sandbox down.
+    providerReady = true;
+    const recovered = await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 });
+    expect(recovered).toEqual({ swept: 1, destroyed: 1, capped: 0 });
+    expect(retryPendingSandboxTeardown).toHaveBeenCalledTimes(1);
+
+    const finalRow = await db
+      .select({ status: environmentLeases.status, cleanupStatus: environmentLeases.cleanupStatus })
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, leaseId))
+      .then((rows) => rows[0]);
+    expect(finalRow?.status).toBe("expired");
+    expect(finalRow?.cleanupStatus).toBe("success");
+  });
+
   // Read the current retry attempt count from a lease's metadata.
   async function readAttempts(leaseId: string): Promise<number> {
     const metadata = await db

@@ -1621,6 +1621,89 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     ).resolves.toBe(true);
   });
 
+  it("reports the plugin cleanup provider not ready while the plugin is not ready, then ready after it recovers", async () => {
+    // A pending_cleanup orphan targets a plugin-backed provider. A plugin reload
+    // or a plugin reinstall moves the plugin through a "not ready" status. The
+    // sweep must not consume a finite retry attempt in that transient window. So
+    // the readiness probe reports "not ready" while the plugin status is not
+    // "ready", even when its worker runs, and "ready" after the plugin recovers.
+    const pluginId = randomUUID();
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Cleanup Plugin Readiness",
+      config: { provider: "fake-plugin-reload", image: "fake:test", reuseLease: false },
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "paperclip.fake-plugin-reload-sandbox-provider",
+      packageName: "@paperclipai/plugin-fake-reload-sandbox",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "paperclip.fake-plugin-reload-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Fake Plugin Reload Sandbox Provider",
+        description: "Test fake plugin provider reload readiness",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin-reload",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin Reload",
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      // The plugin starts in a not-ready status, as during a reload.
+      status: "installing",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+
+    // The worker runs the whole time, so the probe result depends on the plugin
+    // status alone, not on a down worker.
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async () => {
+        throw new Error("call must not run during a readiness probe");
+      }),
+    } as unknown as PluginWorkerManager;
+
+    const orphan = await environmentService(db).insertPendingCleanupLease({
+      companyId,
+      environmentId: environment.id,
+      executionWorkspaceId: null,
+      issueId: null,
+      heartbeatRunId: runId,
+      provider: "fake-plugin-reload",
+      providerLeaseId: "plugin-lease-reload",
+      metadata: { provider: "fake-plugin-reload", driver: "sandbox", reuseLease: false },
+      failureReason: "acquire_rejected_teardown_failed",
+    });
+    const lease = (await environmentService(db).getLeaseById(orphan.id))!;
+
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    // A not-ready plugin is the transient reload window, so the probe reports
+    // not ready. The sweep skips the lease without a claim, so no attempt burns.
+    await expect(
+      runtimeWithPlugin.isPendingCleanupWorkerReady({ environment, lease }),
+    ).resolves.toBe(false);
+    expect((workerManager.call as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+
+    // The plugin becomes ready, so the probe now reports ready and the sweep
+    // proceeds.
+    await db.update(plugins).set({ status: "ready" }).where(eq(plugins.id, pluginId));
+    await expect(
+      runtimeWithPlugin.isPendingCleanupWorkerReady({ environment, lease }),
+    ).resolves.toBe(true);
+  });
+
   it("records an orphan with a null reference when a delete already removed the environment", async () => {
     // Ordering: a delete removes the environment before the acquire records the
     // orphan. The environment foreign key must not fail the insert. The record

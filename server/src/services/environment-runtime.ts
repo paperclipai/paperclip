@@ -1907,15 +1907,25 @@ function createSandboxEnvironmentDriver(
       // toward the cap.
       if (!pluginWorkerManager) return true;
       // Resolve the installed plugin without a wait. A plugin that is not
-      // installed or not ready is a permanent condition, so report ready and let
-      // the teardown run and count toward the cap.
+      // installed at all is a permanent condition, because an uninstall removed
+      // it. Report ready, so the teardown runs, throws, and counts toward the
+      // cap. A capped lease stays in pending_cleanup and is discoverable for
+      // manual cleanup.
       const installed = await resolvePluginSandboxProviderDriverByKey({
         db,
         driverKey: recordedProvider,
         workerManager: pluginWorkerManager,
         requireRunning: false,
       });
-      if (!installed || installed.plugin.status !== "ready") return true;
+      if (!installed) return true;
+      // The plugin is installed but not ready yet. A plugin reload or a plugin
+      // reinstall moves the plugin through this state, so it is a transient
+      // window, not a permanent condition. Report not ready, so the sweep skips
+      // the lease without a claim, and a later sweep retries after the plugin
+      // becomes ready. A teardown here only throws "is not_ready" and burns a
+      // finite attempt, so a long reload could exhaust the retries and strand the
+      // sandbox.
+      if (installed.plugin.status !== "ready") return false;
       // The plugin is installed and ready, so gate on the live worker. A running
       // worker is ready. A down worker is the transient restart window, so report
       // not ready and let a later sweep retry after the worker recovers.
