@@ -609,6 +609,15 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
 const DEFAULT_WAKEUP_ISSUE_LOCK_TIMEOUT_MS = 15_000;
+/**
+ * K40 generalization (2026-08-16): an automated skip identical to one recorded
+ * within this window is reconciler churn, not information — it is dropped
+ * instead of written. Ten minutes ≈ 2-3 reconciler cycles of quiet per
+ * undispatchable card while staying far below any legitimate state-change
+ * cadence (windows move hourly, deps resolve on issue transitions, both of
+ * which produce non-skip wakes that are never suppressed).
+ */
+const SKIPPED_WAKE_SUPPRESSION_MS = 10 * 60 * 1000;
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
@@ -20834,6 +20843,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       skipReason: string,
       patch: Partial<typeof agentWakeupRequests.$inferInsert> = {},
     ) => {
+      // K40 generalization (2026-08-16 evening storm): reconcilers re-request the
+      // same undispatchable wake every cycle, and each cycle wrote a fresh skipped
+      // row — ~40 identical skips per lane per 10 minutes across the fleet. An
+      // identical skip (same agent, issue, reason) recorded within the suppression
+      // window is churn, not information: drop it silently. Automated callers only —
+      // an operator's wake always records its outcome so silent-skip debugging
+      // (TSMC-20910) keeps its evidence trail.
+      const isAutomatedSkip =
+        triggerDetail === "system" || opts.requestedByActorType === "system";
+      if (isAutomatedSkip) {
+        const skipIssueId =
+          typeof (payload as Record<string, unknown> | null | undefined)?.issueId === "string"
+            ? ((payload as Record<string, unknown>).issueId as string)
+            : null;
+        const recentIdentical = await db
+          .select({ id: agentWakeupRequests.id })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.agentId, agentId),
+              eq(agentWakeupRequests.status, "skipped"),
+              eq(agentWakeupRequests.reason, skipReason),
+              gte(
+                agentWakeupRequests.createdAt,
+                new Date(Date.now() - SKIPPED_WAKE_SUPPRESSION_MS),
+              ),
+              skipIssueId
+                ? sql`${agentWakeupRequests.payload} ->> 'issueId' = ${skipIssueId}`
+                : sql`true`,
+            ),
+          )
+          .limit(1);
+        if (recentIdentical.length > 0) return;
+      }
       await db.insert(agentWakeupRequests).values({
         companyId: agent.companyId,
         agentId,

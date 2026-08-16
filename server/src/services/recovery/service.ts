@@ -693,17 +693,29 @@ function successfulRunHandoffRecoveryEvidence(latestRun: LatestIssueRun): Succes
   };
 }
 
-function canRouteSourceRecoveryToShellHandler(issue: Pick<typeof issues.$inferSelect, "originKind">) {
-  return issue.originKind === "routine_execution";
+function canRouteSourceRecoveryToShellHandler(
+  issue: Pick<typeof issues.$inferSelect, "originKind">,
+  sourceAssigneeAdapterType?: string | null,
+) {
+  // 2026-08-16 storm RCA: routine ORIGIN alone is not shell-routability. The stalled
+  // TSBC dailies were routine-origin but assigned to model lanes — their recovery is
+  // diagnosis/judgment, and the shell-handler that got them (BenchmarkOps) could only
+  // no-op continuation-loop at ~8/min. A shell handler may own recovery only when the
+  // stalled work itself belongs to a shell handler (recovering script work with scripts).
+  return (
+    issue.originKind === "routine_execution" &&
+    sourceAssigneeAdapterType === "paperclip_shell_handler"
+  );
 }
 
 function canOwnSourceScopedRecovery(
   issue: Pick<typeof issues.$inferSelect, "originKind">,
   candidate: Pick<typeof agents.$inferSelect, "adapterType"> | null | undefined,
+  sourceAssigneeAdapterType?: string | null,
 ) {
   if (!candidate) return false;
   if (candidate.adapterType !== "paperclip_shell_handler") return true;
-  return canRouteSourceRecoveryToShellHandler(issue);
+  return canRouteSourceRecoveryToShellHandler(issue, sourceAssigneeAdapterType);
 }
 
 function isExhaustedSuccessfulRunHandoff(latestRun: LatestIssueRun) {
@@ -3272,7 +3284,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const candidateIds: string[] = [];
     if (preferredOwnerAgentId) candidateIds.push(preferredOwnerAgentId);
     if (capabilityMatchedOwner?.selectedAgentId) candidateIds.push(capabilityMatchedOwner.selectedAgentId);
-    const allowShellHandlerCatchAll = canRouteSourceRecoveryToShellHandler(issue);
+    const sourceAssignee = issue.assigneeAgentId ? await getAgent(issue.assigneeAgentId) : null;
+    const allowShellHandlerCatchAll = canRouteSourceRecoveryToShellHandler(
+      issue,
+      sourceAssignee?.adapterType ?? null,
+    );
     // Cheap-lane first only for genuine routine-op work. For non-routine issues,
     // preserve the explicit capable assignee/recovery chain instead of
     // overwriting it with a shell-handler catch-all.
@@ -3307,7 +3323,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       seen.add(agentId);
       const candidate = await getAgent(agentId);
       if (!candidate || candidate.companyId !== issue.companyId) continue;
-      if (!canOwnSourceScopedRecovery(issue, candidate)) continue;
+      if (!canOwnSourceScopedRecovery(issue, candidate, sourceAssignee?.adapterType ?? null)) continue;
       const budgetBlock = await budgets.getInvocationBlock(issue.companyId, candidate.id, {
         issueId: issue.id,
         projectId: issue.projectId,
