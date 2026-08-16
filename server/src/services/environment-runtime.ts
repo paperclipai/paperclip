@@ -481,6 +481,35 @@ export interface EnvironmentRuntimeDriver {
    * toward the cap. It reports `false` only for the transient worker-down window.
    */
   isPendingCleanupWorkerReady?(input: { environment: Environment | null; lease: EnvironmentLease }): Promise<boolean>;
+  /**
+   * Flush the in-process buffer of orphan pending-cleanup records that every
+   * synchronous database write could not land. The acquire buffers an orphan
+   * here when the database is down after a failed teardown, so no durable row
+   * exists yet. The cleanup sweep calls this method each tick. The method
+   * re-inserts each buffered record. A record whose write now succeeds leaves the
+   * buffer and becomes a normal `pending_cleanup` row that the sweep tears down.
+   * A record whose write still fails stays in the buffer for a later flush. The
+   * method reports how many records it recovered and how many still wait.
+   */
+  flushDeferredOrphanCleanups?(): Promise<{ recovered: number; pending: number }>;
+}
+
+/**
+ * One orphan pending-cleanup record held in the in-process buffer. The acquire
+ * buffers it when every synchronous database write fails after a failed
+ * teardown. A later cleanup sweep flushes it back to the database. The record
+ * carries the same fields a `pending_cleanup` lease row needs, so the flush
+ * re-inserts it without loss.
+ */
+interface DeferredOrphanCleanupRecord {
+  companyId: string;
+  environmentId: string;
+  executionWorkspaceId: string | null;
+  issueId: string | null;
+  heartbeatRunId: string | null;
+  provider: string;
+  providerLeaseId: string | null;
+  metadata: Record<string, unknown>;
 }
 
 /**
@@ -532,6 +561,11 @@ const DEFAULT_PLUGIN_SANDBOX_WORKER_READY_POLL_MS = 100;
 // attempt can still land the durable row that a sweep finds.
 const DEFAULT_SANDBOX_ORPHAN_CLEANUP_WRITE_ATTEMPTS = 3;
 const DEFAULT_SANDBOX_ORPHAN_CLEANUP_WRITE_BACKOFF_MS = 100;
+
+// A prolonged database outage after a failed teardown can buffer many orphan
+// records in-process. The bound stops that buffer from growing without limit. A
+// full buffer keeps the error log as the last durable handle for a new orphan.
+const DEFAULT_DEFERRED_ORPHAN_CLEANUP_BUFFER_LIMIT = 256;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -950,6 +984,7 @@ function createSandboxEnvironmentDriver(
     pluginWorkerReadyPollMs?: number;
     pendingCleanupWriteAttempts?: number;
     pendingCleanupWriteBackoffMs?: number;
+    deferredOrphanCleanupBufferLimit?: number;
   } = {},
 ): EnvironmentRuntimeDriver {
   const pluginWorkerManager = options.pluginWorkerManager;
@@ -965,7 +1000,89 @@ function createSandboxEnvironmentDriver(
     0,
     options.pendingCleanupWriteBackoffMs ?? DEFAULT_SANDBOX_ORPHAN_CLEANUP_WRITE_BACKOFF_MS,
   );
+  // The buffer holds at least one orphan, so a zero or negative override never
+  // drops every buffered record.
+  const deferredOrphanCleanupBufferLimit = Math.max(
+    1,
+    options.deferredOrphanCleanupBufferLimit ?? DEFAULT_DEFERRED_ORPHAN_CLEANUP_BUFFER_LIMIT,
+  );
   const environmentsSvc = environmentService(db);
+
+  // A live sandbox whose teardown failed needs a durable `pending_cleanup` row,
+  // so a sweep can find and release it. When every synchronous write attempt
+  // fails, the database is down but the process still runs. So the driver keeps
+  // the orphan record in this in-process buffer, and a later cleanup sweep
+  // flushes it back to the database. The buffer closes the common window where
+  // the database recovers after the synchronous attempts but while the process
+  // still runs. A process crash during the outage still loses the record, because
+  // the buffer is in-process only; the error log stays the last handle for that
+  // case. The `pending_cleanup` failure reason matches the synchronous write, so
+  // a flushed row and a synchronous row are indistinguishable to the sweep.
+  const deferredOrphanCleanups: DeferredOrphanCleanupRecord[] = [];
+  const DEFERRED_ORPHAN_CLEANUP_FAILURE_REASON = "acquire_rejected_teardown_failed";
+
+  // Add one orphan record to the in-process buffer. Report `false` only when the
+  // buffer is full, so the caller keeps the error log as the last durable handle.
+  const enqueueDeferredOrphanCleanup = (record: DeferredOrphanCleanupRecord): boolean => {
+    // Dedup by the provider lease id, so a repeated failure for the same orphan
+    // never buffers it twice. Each acquire mints a unique provider lease id, so
+    // two distinct orphans never collide. Skip the dedup for a null lease id,
+    // because a null value carries no identity.
+    const alreadyBuffered =
+      record.providerLeaseId !== null &&
+      deferredOrphanCleanups.some((entry) => entry.providerLeaseId === record.providerLeaseId);
+    if (alreadyBuffered) return true;
+    if (deferredOrphanCleanups.length >= deferredOrphanCleanupBufferLimit) return false;
+    deferredOrphanCleanups.push(record);
+    return true;
+  };
+
+  const flushDeferredOrphanCleanups = async (): Promise<{ recovered: number; pending: number }> => {
+    if (deferredOrphanCleanups.length === 0) {
+      return { recovered: 0, pending: 0 };
+    }
+    // Take the whole batch synchronously before the first await, so a second
+    // concurrent flush sees an empty buffer and never re-inserts the same record.
+    const batch = deferredOrphanCleanups.splice(0, deferredOrphanCleanups.length);
+    let recovered = 0;
+    for (const record of batch) {
+      try {
+        await environmentsSvc.insertPendingCleanupLease({
+          companyId: record.companyId,
+          environmentId: record.environmentId,
+          executionWorkspaceId: record.executionWorkspaceId,
+          issueId: record.issueId,
+          heartbeatRunId: record.heartbeatRunId,
+          provider: record.provider,
+          providerLeaseId: record.providerLeaseId,
+          metadata: record.metadata,
+          failureReason: DEFERRED_ORPHAN_CLEANUP_FAILURE_REASON,
+        });
+        // The durable row exists now, so the sweep finds and releases the orphan.
+        recovered += 1;
+      } catch {
+        // The database is still down. Re-queue the record for a later flush,
+        // unless the buffer filled again. The identifiers carry no secret; the
+        // caught write exception never enters the log, because it can hold a
+        // credential in its message, code, cause, or stack.
+        const requeued = enqueueDeferredOrphanCleanup(record);
+        logger.warn(
+          {
+            errorKind: SANDBOX_ORPHAN_CLEANUP_WRITE_ERROR_KIND,
+            provider: record.provider,
+            providerLeaseId: record.providerLeaseId,
+            companyId: record.companyId,
+            environmentId: record.environmentId,
+            requeued,
+          },
+          requeued
+            ? "deferred sandbox orphan cleanup flush failed; kept the orphan buffered for a later flush"
+            : "deferred sandbox orphan cleanup flush failed and the in-process buffer is full; live sandbox needs a manual teardown",
+        );
+      }
+    }
+    return { recovered, pending: deferredOrphanCleanups.length };
+  };
 
   // Records a durable pending-cleanup lease row for a remote sandbox that the
   // acquire provisioned but could not tear down. The conditional lease insert
@@ -1051,13 +1168,28 @@ function createSandboxEnvironmentDriver(
         }
       }
     }
-    // Every attempt failed, so no lease row tracks the live sandbox. The
-    // database is the only automated cleanup store, and it stays unavailable, so
-    // the single durable handle that remains is this log. Emit it at error
-    // level, so an operator can find the leaked sandbox and tear it down by hand.
+    // Every synchronous attempt failed, so no lease row tracks the live sandbox
+    // yet. The database is down, but the process still runs. So buffer the orphan
+    // in-process, and let a later cleanup sweep flush it back to the database
+    // once the database recovers. The buffer keeps a durable handle to the orphan
+    // through the outage window, instead of only a log line. A process crash
+    // during the outage still loses the record, because the buffer is in-process
+    // only, so the error log below stays the last handle for that case.
+    const buffered = enqueueDeferredOrphanCleanup({
+      companyId: record.companyId,
+      environmentId: record.environmentId,
+      executionWorkspaceId: record.executionWorkspaceId,
+      issueId: record.issueId,
+      heartbeatRunId: record.heartbeatRunId,
+      provider: record.provider,
+      providerLeaseId: record.providerLeaseId,
+      metadata: record.metadata,
+    });
     logger.error(
-      diagnosticFields,
-      "sandbox orphan cleanup write failed; live sandbox has no durable lease row and needs a manual teardown",
+      { ...diagnosticFields, buffered, deferredBufferSize: deferredOrphanCleanups.length },
+      buffered
+        ? "sandbox orphan cleanup write failed; buffered the orphan in-process for a later cleanup-sweep flush"
+        : "sandbox orphan cleanup write failed and the in-process buffer is full; live sandbox needs a manual teardown",
     );
     throw new SandboxOrphanCleanupWriteError({
       provider: record.provider,
@@ -1936,6 +2068,8 @@ function createSandboxEnvironmentDriver(
       return pluginWorkerManager.isRunning(installed.plugin.id);
     },
 
+    flushDeferredOrphanCleanups,
+
     async realizeWorkspace(input) {
       // Resolve the realized cwd and any provider metadata first, then build ONE
       // workspace-realization record and wrap it the SAME way for every driver. A
@@ -2724,6 +2858,7 @@ export function environmentRuntimeService(
     pluginWorkerReadyPollMs?: number;
     pendingCleanupWriteAttempts?: number;
     pendingCleanupWriteBackoffMs?: number;
+    deferredOrphanCleanupBufferLimit?: number;
   } = {},
 ) {
   const environmentsSvc = environmentService(db);
@@ -2738,6 +2873,7 @@ export function environmentRuntimeService(
       pluginWorkerReadyPollMs: options.pluginWorkerReadyPollMs,
       pendingCleanupWriteAttempts: options.pendingCleanupWriteAttempts,
       pendingCleanupWriteBackoffMs: options.pendingCleanupWriteBackoffMs,
+      deferredOrphanCleanupBufferLimit: options.deferredOrphanCleanupBufferLimit,
     }),
     ...(options.pluginWorkerManager
       ? [createPluginEnvironmentDriver(db, options.pluginWorkerManager)]
@@ -2926,6 +3062,23 @@ export function environmentRuntimeService(
       const driver = getDriver(getLeaseDriverKey(input.lease, input.environment));
       if (!driver?.isPendingCleanupWorkerReady) return true;
       return driver.isPendingCleanupWorkerReady(input);
+    },
+
+    // Flush the in-process orphan-cleanup buffers of every driver that keeps one.
+    // The cleanup sweep calls this each tick, so a buffered orphan lands a durable
+    // `pending_cleanup` row once the database recovers, and the same sweep tears
+    // it down. The dispatcher sums the recovered and pending counts across all
+    // drivers. A driver with no buffer contributes nothing.
+    async flushDeferredOrphanCleanups(): Promise<{ recovered: number; pending: number }> {
+      let recovered = 0;
+      let pending = 0;
+      for (const driver of drivers.values()) {
+        if (!driver.flushDeferredOrphanCleanups) continue;
+        const result = await driver.flushDeferredOrphanCleanups();
+        recovered += result.recovered;
+        pending += result.pending;
+      }
+      return { recovered, pending };
     },
 
     async destroyReusableSandboxLeases(input: {

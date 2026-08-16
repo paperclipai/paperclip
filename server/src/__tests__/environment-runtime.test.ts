@@ -1152,6 +1152,234 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     }
   });
 
+  it("buffers the orphan in-process and a later sweep flush lands the durable row after the database recovers", async () => {
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Foreign-bound Fake Sandbox Cleanup Buffer Flush",
+      config: { provider: "fake", image: "ubuntu:24.04", reuseLease: false },
+    });
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other Co Cleanup Buffer",
+      issuePrefix: "OCB",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(builtInManagedResources).values({
+      companyId: otherCompanyId,
+      bundleKey: "managed-environment",
+      resourceKind: "environment",
+      resourceKey: "managed-sandbox",
+      resourceId: environment.id,
+      stockVersion: "1",
+      stockHash: "hash",
+    });
+
+    // The remote teardown fails, so the acquire tries to record a durable
+    // pending-cleanup row instead.
+    const destroySpy = vi
+      .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
+      .mockRejectedValue(new Error("teardown failed"));
+    // The database is down, so every synchronous pending-cleanup write rejects.
+    // The flag flips to false when the database recovers, so a later flush lands
+    // the durable row.
+    let databaseDown = true;
+    const realEnvironmentService = environmentsModule.environmentService;
+    const factorySpy = vi
+      .spyOn(environmentsModule, "environmentService")
+      .mockImplementation((database: Parameters<typeof realEnvironmentService>[0]) => {
+        const real = realEnvironmentService(database);
+        return {
+          ...real,
+          insertPendingCleanupLease: (
+            input: Parameters<typeof real.insertPendingCleanupLease>[0],
+          ) => {
+            if (databaseDown) {
+              return Promise.reject(new Error("pending-cleanup write failed; database down"));
+            }
+            return real.insertPendingCleanupLease(input);
+          },
+        };
+      });
+    const logSpy = vi.spyOn(logger, "error").mockImplementation(() => logger);
+    try {
+      // Set the retry backoff to zero, so the retries never slow the test.
+      const runtime = environmentRuntimeService(db, { pendingCleanupWriteBackoffMs: 0 });
+      const rejection = await runtime
+        .acquireRunLease({
+          companyId,
+          environment,
+          issueId: null,
+          heartbeatRunId: runId,
+          persistedExecutionWorkspace: null,
+          assertCompanyBinding: true,
+        })
+        .then(
+          () => {
+            throw new Error("acquireRunLease resolved but must reject");
+          },
+          (error: unknown) => error,
+        );
+
+      // The synchronous write failed on every attempt, so the acquire still
+      // throws the orphan-cleanup write error that keeps the original rejection.
+      expect(rejection).toBeInstanceOf(SandboxOrphanCleanupWriteError);
+      // The database was down, so no durable row exists yet.
+      let rows = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.environmentId, environment.id));
+      expect(rows).toHaveLength(0);
+      // The acquire buffered the orphan in-process, so the log records the buffer.
+      const bufferedLog = logSpy.mock.calls.find(
+        ([fields]) =>
+          (fields as { errorKind?: string } | undefined)?.errorKind ===
+          "sandbox_orphan_cleanup_write_failed",
+      );
+      expect(bufferedLog?.[0]).toMatchObject({ buffered: true });
+
+      // The database recovers, so the next cleanup-sweep flush lands the row.
+      databaseDown = false;
+      const flushed = await runtime.flushDeferredOrphanCleanups();
+      expect(flushed).toEqual({ recovered: 1, pending: 0 });
+
+      // A durable pending_cleanup row now tracks the orphan, so a sweep finds and
+      // releases the leaked sandbox.
+      rows = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.environmentId, environment.id));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.status).toBe("pending_cleanup");
+      expect(rows[0]?.cleanupStatus).toBe("failed");
+      expect(rows[0]?.failureReason).toBe("acquire_rejected_teardown_failed");
+      expect(rows[0]?.providerLeaseId).toBeTruthy();
+
+      // The buffer is empty now, so a second flush inserts nothing.
+      const second = await runtime.flushDeferredOrphanCleanups();
+      expect(second).toEqual({ recovered: 0, pending: 0 });
+      const rowsAfter = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.environmentId, environment.id));
+      expect(rowsAfter).toHaveLength(1);
+    } finally {
+      logSpy.mockRestore();
+      factorySpy.mockRestore();
+      destroySpy.mockRestore();
+    }
+  });
+
+  it("keeps the buffered orphan when the flush write still fails, then recovers on a later flush", async () => {
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Foreign-bound Fake Sandbox Cleanup Buffer Requeue",
+      config: { provider: "fake", image: "ubuntu:24.04", reuseLease: false },
+    });
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other Co Cleanup Requeue",
+      issuePrefix: "OCQ",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(builtInManagedResources).values({
+      companyId: otherCompanyId,
+      bundleKey: "managed-environment",
+      resourceKind: "environment",
+      resourceKey: "managed-sandbox",
+      resourceId: environment.id,
+      stockVersion: "1",
+      stockHash: "hash",
+    });
+
+    const destroySpy = vi
+      .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
+      .mockRejectedValue(new Error("teardown failed"));
+    let databaseDown = true;
+    const realEnvironmentService = environmentsModule.environmentService;
+    const factorySpy = vi
+      .spyOn(environmentsModule, "environmentService")
+      .mockImplementation((database: Parameters<typeof realEnvironmentService>[0]) => {
+        const real = realEnvironmentService(database);
+        return {
+          ...real,
+          insertPendingCleanupLease: (
+            input: Parameters<typeof real.insertPendingCleanupLease>[0],
+          ) => {
+            if (databaseDown) {
+              return Promise.reject(new Error("pending-cleanup write failed; database down"));
+            }
+            return real.insertPendingCleanupLease(input);
+          },
+        };
+      });
+    const errorLogSpy = vi.spyOn(logger, "error").mockImplementation(() => logger);
+    const warnLogSpy = vi.spyOn(logger, "warn").mockImplementation(() => logger);
+    try {
+      const runtime = environmentRuntimeService(db, { pendingCleanupWriteBackoffMs: 0 });
+      await runtime
+        .acquireRunLease({
+          companyId,
+          environment,
+          issueId: null,
+          heartbeatRunId: runId,
+          persistedExecutionWorkspace: null,
+          assertCompanyBinding: true,
+        })
+        .then(
+          () => {
+            throw new Error("acquireRunLease resolved but must reject");
+          },
+          () => undefined,
+        );
+
+      // The database is still down, so the flush re-queues the orphan instead of
+      // losing it. The buffer keeps the record for a later tick.
+      const firstFlush = await runtime.flushDeferredOrphanCleanups();
+      expect(firstFlush).toEqual({ recovered: 0, pending: 1 });
+      const rowsWhileDown = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.environmentId, environment.id));
+      expect(rowsWhileDown).toHaveLength(0);
+      // The flush logs the re-queue and never carries the caught write exception.
+      // The sync-retry path also warns with the same error kind, so match on the
+      // `requeued` field that only the flush warn carries.
+      const requeueLog = warnLogSpy.mock.calls.find(
+        ([fields]) => (fields as { requeued?: boolean } | undefined)?.requeued === true,
+      );
+      expect(requeueLog).toBeDefined();
+      expect(requeueLog?.[0]).toMatchObject({
+        errorKind: "sandbox_orphan_cleanup_write_failed",
+        requeued: true,
+      });
+      expect(requeueLog?.[0]).not.toHaveProperty("cause");
+      expect(requeueLog?.[0]).not.toHaveProperty("cleanupWriteError");
+
+      // The database recovers, so the next flush lands the durable row exactly
+      // once from the still-buffered record.
+      databaseDown = false;
+      const secondFlush = await runtime.flushDeferredOrphanCleanups();
+      expect(secondFlush).toEqual({ recovered: 1, pending: 0 });
+      const rowsAfter = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.environmentId, environment.id));
+      expect(rowsAfter).toHaveLength(1);
+      expect(rowsAfter[0]?.status).toBe("pending_cleanup");
+    } finally {
+      warnLogSpy.mockRestore();
+      errorLogSpy.mockRestore();
+      factorySpy.mockRestore();
+      destroySpy.mockRestore();
+    }
+  });
+
   it("throws a SandboxOrphanCleanupWriteError when the plugin durable pending-cleanup write also fails", async () => {
     const pluginId = randomUUID();
     const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();

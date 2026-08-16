@@ -13298,6 +13298,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const now = new Date();
     const cutoff = new Date(now.getTime() - backoffMs);
 
+    // Flush the in-process orphan-cleanup buffer first. A failed acquire buffers
+    // an orphan there when every synchronous pending-cleanup write failed after a
+    // failed teardown. The flush re-inserts each buffered record, so a durable
+    // `pending_cleanup` row lands once the database recovers. The flush runs
+    // before the read below, so this same tick tears down a freshly-landed row.
+    try {
+      const flushed = await environmentRuntime.flushDeferredOrphanCleanups?.();
+      if (flushed && (flushed.recovered > 0 || flushed.pending > 0)) {
+        logger.info(
+          { recovered: flushed.recovered, pending: flushed.pending },
+          "flushed the in-process orphan sandbox cleanup buffer to the database",
+        );
+      }
+    } catch {
+      // A flush failure never stops the sweep. The buffer keeps the orphan for a
+      // later tick, and the database rows below still need this sweep. The caught
+      // exception never enters the log, because a write error can carry a
+      // credential in its message, code, cause, or stack.
+      logger.warn("orphan sandbox cleanup buffer flush failed; the sweep continues");
+    }
+
     const rows = await db
       .select()
       .from(environmentLeases)

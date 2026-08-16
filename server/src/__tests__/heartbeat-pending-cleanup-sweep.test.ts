@@ -1307,4 +1307,40 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     const arrayMetadata = await readMetadata(arrayLeaseId);
     expect(arrayMetadata?.[ATTEMPTS_KEY]).toBe(1);
   });
+
+  it("flushes the in-process orphan buffer before the read, so a freshly landed row is swept the same tick", async () => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+
+    // The flush lands one durable orphan row, exactly as the runtime buffer does
+    // after the database recovers. The sweep must run this flush before it reads
+    // the rows, so the same tick tears the freshly-landed orphan down.
+    const flushDeferredOrphanCleanups = vi.fn(async () => {
+      await insertOrphanEphemeralLease({
+        companyId,
+        environmentId,
+        updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+      });
+      return { recovered: 1, pending: 0 };
+    });
+    // The recorded-data teardown succeeds, so the sweep releases the lease.
+    const retryPendingSandboxTeardown = vi.fn(async () => {});
+    const runtime = {
+      flushDeferredOrphanCleanups,
+      retryPendingSandboxTeardown,
+    } as unknown as HeartbeatEnvironmentRuntime;
+    const heartbeat = heartbeatService(db, { environmentRuntime: runtime });
+
+    const result = await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 });
+
+    // The flush ran once before the read, so the row it landed is visible to the
+    // same sweep and tears down through the recorded-data teardown path.
+    expect(flushDeferredOrphanCleanups).toHaveBeenCalledTimes(1);
+    expect(retryPendingSandboxTeardown).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ swept: 1, destroyed: 1, capped: 0 });
+
+    const rows = await db.select().from(environmentLeases);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("expired");
+    expect(rows[0]?.cleanupStatus).toBe("success");
+  });
 });
