@@ -5,12 +5,17 @@ import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { issueStatusText } from "@/lib/status-colors";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { Link } from "@/lib/router";
-import { deriveOriginatingActor, type Issue, type IssueLabel } from "@paperclipai/shared";
+import {
+  deriveOriginatingActor,
+  type Issue,
+  type IssueLabel,
+  type WorkspaceRuntimeFailureEvidence,
+} from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "../../api/access";
 import { agentsApi } from "../../api/agents";
 import { authApi } from "../../api/auth";
-import { executionWorkspacesApi } from "../../api/execution-workspaces";
+import { executionWorkspacesApi, readWorkspaceRuntimeActionFailure } from "../../api/execution-workspaces";
 import { instanceSettingsApi } from "../../api/instanceSettings";
 import { issuesApi } from "../../api/issues";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
@@ -74,9 +79,11 @@ import {
 import { describeReassignInterrupt } from "../../lib/interrupt-handoff";
 import {
   buildWorkspaceRuntimeControlSections,
-  WorkspaceRuntimeQuickControls,
+  buildWorkspaceServiceControlEntries,
+  resolveWorkspaceServiceControlRequests,
   type WorkspaceRuntimeControlRequest,
 } from "../WorkspaceRuntimeControls";
+import { WorkspaceServiceControlBar } from "../WorkspaceServiceControlBar";
 import { ExternalObjectRows } from "./external-object-rows";
 import {
   asRecord,
@@ -283,6 +290,9 @@ export function IssueProperties({
   const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
   const [runtimeActionMessage, setRuntimeActionMessage] = useState<string | null>(null);
   const [runtimeActionErrorMessage, setRuntimeActionErrorMessage] = useState<string | null>(null);
+  const [runtimeActionFailure, setRuntimeActionFailure] = useState<WorkspaceRuntimeFailureEvidence | null>(null);
+  const [runtimeActionFailureRequest, setRuntimeActionFailureRequest] = useState<WorkspaceRuntimeControlRequest | null>(null);
+  const [pendingWorkspaceRuntimeActions, setPendingWorkspaceRuntimeActions] = useState<WorkspaceRuntimeControlRequest[]>([]);
   const [unarchiveErrorMessage, setUnarchiveErrorMessage] = useState<string | null>(null);
   const [watchdogOpen, setWatchdogOpen] = useState(false);
   const [watchdogAgentInput, setWatchdogAgentInput] = useState(issue.watchdog?.watchdogAgentId ?? "");
@@ -295,6 +305,11 @@ export function IssueProperties({
     setBlockingExpanded(false);
     setSubTasksExpanded(false);
     setRelatedTasksExpanded(false);
+    setRuntimeActionMessage(null);
+    setRuntimeActionErrorMessage(null);
+    setRuntimeActionFailure(null);
+    setRuntimeActionFailureRequest(null);
+    setPendingWorkspaceRuntimeActions([]);
   }, [issue.id]);
 
   const { data: session } = useQuery({
@@ -427,9 +442,14 @@ export function IssueProperties({
     [issue, issueProject],
   );
   const showWorkspaceDetailLink = Boolean(issue.executionWorkspaceId) && !issueUsesMainWorkspace;
+  const effectiveRuntimeProjection = issueUsesMainWorkspace
+    ? null
+    : issue.currentExecutionWorkspace?.effectiveRuntimeConfig ?? null;
   const workspaceRuntimeConfig = issueUsesMainWorkspace
     ? null
-    : issue.currentExecutionWorkspace?.config?.workspaceRuntime ?? null;
+    : effectiveRuntimeProjection?.workspaceRuntime
+      ?? issue.currentExecutionWorkspace?.config?.workspaceRuntime
+      ?? null;
   const workspaceRuntimeServices = issue.currentExecutionWorkspace?.runtimeServices ?? [];
   const workspaceCanRunCommands = Boolean(issue.currentExecutionWorkspace?.cwd);
   const workspaceCanStartServices = Boolean(workspaceRuntimeConfig) && workspaceCanRunCommands;
@@ -438,7 +458,26 @@ export function IssueProperties({
     runtimeServices: workspaceRuntimeServices,
     canStartServices: workspaceCanStartServices,
     canRunJobs: workspaceCanRunCommands,
-  }), [workspaceCanRunCommands, workspaceCanStartServices, workspaceRuntimeConfig, workspaceRuntimeServices]);
+    desiredState: effectiveRuntimeProjection?.desiredState
+      ?? issue.currentExecutionWorkspace?.config?.desiredState
+      ?? null,
+    serviceStates: effectiveRuntimeProjection?.serviceStates
+      ?? issue.currentExecutionWorkspace?.config?.serviceStates
+      ?? null,
+    configSource: effectiveRuntimeProjection?.source
+      ?? (issue.currentExecutionWorkspace?.config?.workspaceRuntime
+        ? { type: "execution_workspace" as const, id: issue.currentExecutionWorkspace.id }
+        : null),
+  }), [
+    effectiveRuntimeProjection,
+    issue.currentExecutionWorkspace?.config?.desiredState,
+    issue.currentExecutionWorkspace?.config?.serviceStates,
+    issue.currentExecutionWorkspace?.id,
+    workspaceCanRunCommands,
+    workspaceCanStartServices,
+    workspaceRuntimeConfig,
+    workspaceRuntimeServices,
+  ]);
   const hasWorkspaceRuntimeControls = !issueUsesMainWorkspace && (
     workspaceRuntimeSections.services.length > 0
     || workspaceRuntimeSections.otherServices.length > 0
@@ -460,6 +499,8 @@ export function IssueProperties({
         void queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId) });
       }
       setRuntimeActionErrorMessage(null);
+      setRuntimeActionFailure(null);
+      setRuntimeActionFailureRequest(null);
       setRuntimeActionMessage(
         request.action === "run"
           ? "Workspace job completed."
@@ -470,12 +511,41 @@ export function IssueProperties({
               : "Workspace service started.",
       );
     },
-    onError: (error) => {
+    onError: (error, request) => {
+      const failure = readWorkspaceRuntimeActionFailure(error);
+      const workspaceId = issue.currentExecutionWorkspace?.id ?? issue.executionWorkspaceId;
       setRuntimeActionMessage(null);
-      setRuntimeActionErrorMessage(error instanceof Error ? error.message : "Failed to control workspace commands.");
+      setRuntimeActionFailure(failure);
+      setRuntimeActionFailureRequest(failure ? request : null);
+      setRuntimeActionErrorMessage(
+        failure
+          ? null
+          : error instanceof Error
+            ? error.message
+            : "Failed to control workspace commands.",
+      );
+      void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
+      if (workspaceId) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.detail(workspaceId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.workspaceOperations(workspaceId) });
+      }
+    },
+    onSettled: (_result, _error, request) => {
+      setPendingWorkspaceRuntimeActions((current) => current.filter((pending) => pending !== request));
     },
   });
-  const pendingWorkspaceRuntimeAction = controlWorkspaceRuntime.isPending ? controlWorkspaceRuntime.variables ?? null : null;
+  const workspaceServiceControlEntries = buildWorkspaceServiceControlEntries({
+    sections: workspaceRuntimeSections,
+    runtimeServices: workspaceRuntimeServices,
+    pendingRequests: pendingWorkspaceRuntimeActions,
+    actionFailure: runtimeActionFailure,
+    actionFailureRequest: runtimeActionFailureRequest,
+  });
+  const runWorkspaceRuntimeControlRequests = (requests: WorkspaceRuntimeControlRequest[]) => {
+    if (requests.length === 0) return;
+    setPendingWorkspaceRuntimeActions((current) => [...current, ...requests]);
+    for (const request of requests) controlWorkspaceRuntime.mutate(request);
+  };
   const referencedIssueIdentifiers = issue.referencedIssueIdentifiers ?? [];
   const relatedTasks = useMemo(() => {
     const excluded = new Set<string>();
@@ -2433,14 +2503,19 @@ export function IssueProperties({
           {hasWorkspaceRuntimeControls && (
             <PropertyRow label="Service">
               <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-                <WorkspaceRuntimeQuickControls
-                  sections={workspaceRuntimeSections}
-                  isPending={controlWorkspaceRuntime.isPending}
-                  pendingRequest={pendingWorkspaceRuntimeAction}
-                  onAction={(request) => controlWorkspaceRuntime.mutate(request)}
-                  square
-                  align="start"
-                  iconOnly
+                <WorkspaceServiceControlBar
+                  services={workspaceServiceControlEntries}
+                  onAction={(action, serviceKey) => {
+                    runWorkspaceRuntimeControlRequests(
+                      resolveWorkspaceServiceControlRequests(workspaceRuntimeSections, action, serviceKey),
+                    );
+                  }}
+                  getOperationHref={(operationId) => {
+                    const workspaceId = issue.currentExecutionWorkspace?.id ?? issue.executionWorkspaceId;
+                    return workspaceId
+                      ? `/execution-workspaces/${workspaceId}/runtime-logs#operation-${operationId}`
+                      : null;
+                  }}
                 />
                 {runtimeActionMessage ? (
                   <span className="text-xs text-muted-foreground" role="status">{runtimeActionMessage}</span>

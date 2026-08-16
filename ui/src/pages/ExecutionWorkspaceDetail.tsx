@@ -1,7 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ExecutionWorkspace, Issue, Project, ProjectWorkspace, RoutineListItem, WorkspaceOperation } from "@paperclipai/shared";
+import type {
+  ExecutionWorkspace,
+  Issue,
+  Project,
+  ProjectWorkspace,
+  RoutineListItem,
+  WorkspaceOperation,
+  WorkspaceRuntimeFailureEvidence,
+} from "@paperclipai/shared";
 import { Copy, ExternalLink, Loader2, Play, Repeat } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardAction } from "@/components/ui/card";
@@ -13,7 +21,7 @@ import { CopyText } from "../components/CopyText";
 import { ExecutionWorkspaceCloseDialog } from "../components/ExecutionWorkspaceCloseDialog";
 import { MissingPluginTabPlaceholder } from "../components/MissingPluginTabPlaceholder";
 import { agentsApi } from "../api/agents";
-import { executionWorkspacesApi } from "../api/execution-workspaces";
+import { executionWorkspacesApi, readWorkspaceRuntimeActionFailure } from "../api/execution-workspaces";
 import { heartbeatsApi } from "../api/heartbeats";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
@@ -115,6 +123,33 @@ function resolveExecutionWorkspaceTab(pathname: string, workspaceId: string): Ex
 function executionWorkspaceTabPath(workspaceId: string, tab: ExecutionWorkspaceBaseTab) {
   const segment = tab === "runtime_logs" ? "runtime-logs" : tab;
   return `/execution-workspaces/${workspaceId}/${segment}`;
+}
+
+function WorkspaceOperationFocusTarget({
+  operationId,
+  targeted,
+  className,
+  children,
+}: {
+  operationId: string;
+  targeted: boolean;
+  className: string;
+  children: ReactNode;
+}) {
+  const targetRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    if (!targeted || !targetRef.current) return;
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ?? false;
+    targetRef.current.scrollIntoView?.({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
+    targetRef.current.querySelector<HTMLElement>("[data-operation-heading]")?.focus({ preventScroll: true });
+  }, [operationId, targeted]);
+
+  return (
+    <div ref={targetRef} id={`operation-${operationId}`} className={className}>
+      {children}
+    </div>
+  );
 }
 
 function LegacyWorkspaceTabRedirect({ workspaceId }: { workspaceId: string }) {
@@ -779,6 +814,8 @@ export function ExecutionWorkspaceDetail() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [runtimeActionErrorMessage, setRuntimeActionErrorMessage] = useState<string | null>(null);
   const [runtimeActionMessage, setRuntimeActionMessage] = useState<string | null>(null);
+  const [runtimeActionFailure, setRuntimeActionFailure] = useState<WorkspaceRuntimeFailureEvidence | null>(null);
+  const [runtimeActionFailureRequest, setRuntimeActionFailureRequest] = useState<WorkspaceRuntimeControlRequest | null>(null);
   const [pendingRuntimeActions, setPendingRuntimeActions] = useState<WorkspaceRuntimeControlRequest[]>([]);
   const activeRouteTab = workspaceId ? resolveExecutionWorkspaceTab(location.pathname, workspaceId) : null;
   const pluginTabFromSearch = useMemo(() => {
@@ -854,13 +891,25 @@ export function ExecutionWorkspaceDetail() {
     [workspacePluginTabItems],
   );
   const inheritedRuntimeConfig = linkedProjectWorkspace?.runtimeConfig?.workspaceRuntime ?? null;
-  const effectiveRuntimeConfig = workspace?.config?.workspaceRuntime ?? inheritedRuntimeConfig;
-  const runtimeConfigSource =
-    workspace?.config?.workspaceRuntime
-      ? "execution_workspace"
-      : inheritedRuntimeConfig
-        ? "project_workspace"
-        : "none";
+  const effectiveRuntimeProjection = workspace?.effectiveRuntimeConfig ?? null;
+  const effectiveRuntimeConfig = effectiveRuntimeProjection?.workspaceRuntime
+    ?? workspace?.config?.workspaceRuntime
+    ?? inheritedRuntimeConfig;
+  const effectiveRuntimeSource = effectiveRuntimeProjection?.source
+    ?? (workspace?.config?.workspaceRuntime
+      ? { type: "execution_workspace" as const, id: workspace.id }
+      : inheritedRuntimeConfig && linkedProjectWorkspace
+        ? { type: "project_workspace" as const, id: linkedProjectWorkspace.id }
+        : null);
+  const effectiveRuntimeDesiredState = effectiveRuntimeProjection?.desiredState
+    ?? workspace?.config?.desiredState
+    ?? linkedProjectWorkspace?.runtimeConfig?.desiredState
+    ?? null;
+  const effectiveRuntimeServiceStates = effectiveRuntimeProjection?.serviceStates
+    ?? workspace?.config?.serviceStates
+    ?? linkedProjectWorkspace?.runtimeConfig?.serviceStates
+    ?? null;
+  const runtimeConfigSource = effectiveRuntimeSource?.type ?? "none";
 
   const configuredRuntimeConfig = useMemo(() => {
     if (!form || form.inheritRuntime) return inheritedRuntimeConfig;
@@ -890,6 +939,8 @@ export function ExecutionWorkspaceDetail() {
     setForm(formStateFromWorkspace(workspace));
     setErrorMessage(null);
     setRuntimeActionErrorMessage(null);
+    setRuntimeActionFailure(null);
+    setRuntimeActionFailureRequest(null);
     setPendingRuntimeActions([]);
   }, [workspace]);
 
@@ -949,6 +1000,8 @@ export function ExecutionWorkspaceDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.workspaceOperations(result.workspace.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(result.workspace.projectId) });
       setRuntimeActionErrorMessage(null);
+      setRuntimeActionFailure(null);
+      setRuntimeActionFailureRequest(null);
       setRuntimeActionMessage(
         request.action === "run"
           ? "Workspace job completed."
@@ -959,9 +1012,20 @@ export function ExecutionWorkspaceDetail() {
               : "Workspace service started.",
       );
     },
-    onError: (error) => {
+    onError: (error, request) => {
+      const failure = readWorkspaceRuntimeActionFailure(error);
       setRuntimeActionMessage(null);
-      setRuntimeActionErrorMessage(error instanceof Error ? error.message : "Failed to control workspace commands.");
+      setRuntimeActionFailure(failure);
+      setRuntimeActionFailureRequest(failure ? request : null);
+      setRuntimeActionErrorMessage(
+        failure
+          ? null
+          : error instanceof Error
+            ? error.message
+            : "Failed to control workspace commands.",
+      );
+      void queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.detail(workspace!.id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.workspaceOperations(workspace!.id) });
     },
     onSettled: (_result, _error, request) => {
       setPendingRuntimeActions((current) => current.filter((pendingRequest) => pendingRequest !== request));
@@ -985,12 +1049,17 @@ export function ExecutionWorkspaceDetail() {
     runtimeServices: workspace.runtimeServices ?? [],
     canStartServices: canStartRuntimeServices,
     canRunJobs: canRunWorkspaceCommands,
+    desiredState: effectiveRuntimeDesiredState,
+    serviceStates: effectiveRuntimeServiceStates,
+    configSource: effectiveRuntimeSource,
   });
   const pendingRuntimeAction = controlRuntimeServices.isPending ? controlRuntimeServices.variables ?? null : null;
   const serviceControlEntries = buildWorkspaceServiceControlEntries({
     sections: runtimeControlSections,
     runtimeServices: workspace.runtimeServices ?? [],
     pendingRequests: pendingRuntimeActions,
+    actionFailure: runtimeActionFailure,
+    actionFailureRequest: runtimeActionFailureRequest,
   });
 
   const pluginSlotContext = {
@@ -1056,6 +1125,8 @@ export function ExecutionWorkspaceDetail() {
               );
             }}
             onViewLogs={() => handleTabChange("runtime_logs")}
+            getOperationHref={(operationId) =>
+              `/execution-workspaces/${workspace.id}/runtime-logs#operation-${operationId}`}
             onManageServices={() => handleTabChange("services")}
           />
         </div>
@@ -1497,10 +1568,26 @@ export function ExecutionWorkspaceDetail() {
             ) : workspaceOperationsQuery.data && workspaceOperationsQuery.data.length > 0 ? (
               <div className="space-y-3">
                 {workspaceOperationsQuery.data.map((operation) => (
-                  <div key={operation.id} className="rounded-none border border-border/80 bg-background px-4 py-3">
+                  <WorkspaceOperationFocusTarget
+                    key={operation.id}
+                    operationId={operation.id}
+                    targeted={location.hash === `#operation-${operation.id}`}
+                    className={cn(
+                      "rounded-none border border-border/80 bg-background px-4 py-3",
+                      location.hash === `#operation-${operation.id}`
+                        ? "workspace-operation-target border-destructive/40 bg-destructive/5"
+                        : null,
+                    )}
+                  >
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div className="space-y-1">
-                        <div className="text-sm font-medium">{operation.command ?? workspaceOperationPhaseLabel(operation.phase)}</div>
+                        <div
+                          className="text-sm font-medium outline-none"
+                          data-operation-heading
+                          tabIndex={-1}
+                        >
+                          {operation.command ?? workspaceOperationPhaseLabel(operation.phase)}
+                        </div>
                         <div className="text-xs text-muted-foreground">
                           {formatDateTime(operation.startedAt)}
                           {operation.finishedAt ? ` → ${formatDateTime(operation.finishedAt)}` : ""}
@@ -1513,7 +1600,7 @@ export function ExecutionWorkspaceDetail() {
                       </div>
                       <StatusPill className="self-start">{operation.status}</StatusPill>
                     </div>
-                  </div>
+                  </WorkspaceOperationFocusTarget>
                 ))}
               </div>
             ) : (

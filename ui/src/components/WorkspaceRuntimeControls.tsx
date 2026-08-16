@@ -1,7 +1,11 @@
 import type {
   WorkspaceCommandDefinition,
+  WorkspaceRuntimeConfigSource,
   WorkspaceRuntimeControlTarget,
+  WorkspaceRuntimeDesiredState,
+  WorkspaceRuntimeFailureEvidence,
   WorkspaceRuntimeService,
+  WorkspaceRuntimeServiceStateMap,
 } from "@paperclipai/shared";
 import {
   listWorkspaceCommandDefinitions,
@@ -28,6 +32,10 @@ export type WorkspaceRuntimeControlItem = {
   title: string;
   kind: "service" | "job";
   statusLabel: string;
+  actualState: WorkspaceRuntimeService["actualState"];
+  desiredState: WorkspaceRuntimeDesiredState | null;
+  configSource: WorkspaceRuntimeConfigSource | null;
+  latestFailure: WorkspaceRuntimeFailureEvidence | null;
   lifecycle: "shared" | "ephemeral" | null;
   healthStatus: "unknown" | "healthy" | "unhealthy" | null;
   command: string | null;
@@ -88,12 +96,24 @@ function buildServiceItem(
   command: WorkspaceCommandDefinition,
   runtimeService: WorkspaceRuntimeService | null,
   canStartServices: boolean,
+  desiredState: WorkspaceRuntimeDesiredState | null,
+  serviceStates: WorkspaceRuntimeServiceStateMap | null,
+  configSource: WorkspaceRuntimeConfigSource | null,
 ): WorkspaceRuntimeControlItem {
+  const commandDesiredState = (
+    command.serviceIndex === null
+      ? null
+      : serviceStates?.[String(command.serviceIndex)]
+  ) ?? desiredState;
   return {
     key: `command:${command.id}:${runtimeService?.id ?? "idle"}`,
     title: command.name,
     kind: "service",
     statusLabel: runtimeService?.status ?? "stopped",
+    actualState: runtimeService?.actualState ?? runtimeService?.status ?? "stopped",
+    desiredState: runtimeService?.desiredState ?? commandDesiredState,
+    configSource,
+    latestFailure: runtimeService?.latestFailure ?? null,
     lifecycle: runtimeService?.lifecycle ?? command.lifecycle,
     healthStatus: runtimeService?.healthStatus ?? "unknown",
     command: runtimeService?.command ?? command.command,
@@ -118,6 +138,10 @@ function buildJobItem(
     title: command.name,
     kind: "job",
     statusLabel: "run once",
+    actualState: "stopped",
+    desiredState: null,
+    configSource: null,
+    latestFailure: null,
     lifecycle: null,
     healthStatus: null,
     command: command.command,
@@ -138,6 +162,9 @@ export function buildWorkspaceRuntimeControlSections(input: {
   runtimeServices: WorkspaceRuntimeService[] | null | undefined;
   canStartServices: boolean;
   canRunJobs?: boolean;
+  desiredState?: WorkspaceRuntimeDesiredState | null;
+  serviceStates?: WorkspaceRuntimeServiceStateMap | null;
+  configSource?: WorkspaceRuntimeConfigSource | null;
 }): WorkspaceRuntimeControlSections {
   const commands = listWorkspaceCommandDefinitions(input.runtimeConfig);
   const runtimeServices = [...(input.runtimeServices ?? [])];
@@ -153,7 +180,14 @@ export function buildWorkspaceRuntimeControlSections(input: {
 
     const runtimeService = matchWorkspaceRuntimeServiceToCommand(command, runtimeServices);
     if (runtimeService) matchedRuntimeServiceIds.add(runtimeService.id);
-    services.push(buildServiceItem(command, runtimeService, input.canStartServices));
+    services.push(buildServiceItem(
+      command,
+      runtimeService,
+      input.canStartServices,
+      input.desiredState ?? null,
+      input.serviceStates ?? null,
+      input.configSource ?? null,
+    ));
   }
 
   const otherServices = runtimeServices
@@ -167,6 +201,10 @@ export function buildWorkspaceRuntimeControlSections(input: {
       title: runtimeService.serviceName,
       kind: "service" as const,
       statusLabel: runtimeService.status,
+      actualState: runtimeService.actualState ?? runtimeService.status,
+      desiredState: runtimeService.desiredState ?? input.desiredState ?? null,
+      configSource: input.configSource ?? null,
+      latestFailure: runtimeService.latestFailure ?? null,
       lifecycle: runtimeService.lifecycle,
       healthStatus: runtimeService.healthStatus,
       command: runtimeService.command ?? null,
@@ -213,6 +251,32 @@ function isActiveStatusLabel(statusLabel: string) {
   return statusLabel === "running" || statusLabel === "starting" || statusLabel === "provisioning";
 }
 
+function isControlStateTransitional(state: WorkspaceServiceControlEntry["state"]) {
+  return state === "provisioning"
+    || state === "starting"
+    || state === "stopping"
+    || state === "retrying"
+    || state === "restarting";
+}
+
+function controlTargetMatchesItem(
+  request: WorkspaceRuntimeControlRequest,
+  item: WorkspaceRuntimeControlItem,
+) {
+  const comparisons = [
+    request.workspaceCommandId == null
+      ? null
+      : request.workspaceCommandId === (item.workspaceCommandId ?? null),
+    request.runtimeServiceId == null
+      ? null
+      : request.runtimeServiceId === (item.runtimeServiceId ?? null),
+    request.serviceIndex == null
+      ? null
+      : request.serviceIndex === (item.serviceIndex ?? null),
+  ].filter((comparison): comparison is boolean => comparison !== null);
+  return comparisons.length > 0 && comparisons.every(Boolean);
+}
+
 /**
  * Maps runtime control sections onto the fixed-geometry service control bar
  * model. In-flight mutations overlay the transitional states (starting /
@@ -224,6 +288,8 @@ export function buildWorkspaceServiceControlEntries(input: {
   isPending?: boolean;
   pendingRequest?: WorkspaceRuntimeControlRequest | null;
   pendingRequests?: WorkspaceRuntimeControlRequest[];
+  actionFailure?: WorkspaceRuntimeFailureEvidence | null;
+  actionFailureRequest?: WorkspaceRuntimeControlRequest | null;
 }): WorkspaceServiceControlEntry[] {
   const runtimeServicesById = new Map(
     (input.runtimeServices ?? []).map((runtimeService) => [runtimeService.id, runtimeService]),
@@ -243,32 +309,50 @@ export function buildWorkspaceServiceControlEntries(input: {
               ? "failed"
               : "stopped";
 
+    const runtimeService = item.runtimeServiceId ? runtimeServicesById.get(item.runtimeServiceId) ?? null : null;
+    const actionFailureMatches = input.actionFailure && input.actionFailureRequest
+      ? controlTargetMatchesItem(input.actionFailureRequest, item)
+      : false;
+    const latestFailure = actionFailureMatches ? input.actionFailure : item.latestFailure;
+    if (
+      latestFailure
+      && (item.actualState === "stopped" || item.actualState === "failed")
+      && !isControlStateTransitional(state)
+    ) state = "failed";
+
     const pendingRequest = pendingRequests.find((request) =>
-      request.action !== "run"
-      && (request.workspaceCommandId ?? null) === (item.workspaceCommandId ?? null)
-      && (request.runtimeServiceId ?? null) === (item.runtimeServiceId ?? null)
-      && (request.serviceIndex ?? null) === (item.serviceIndex ?? null));
+      request.action !== "run" && controlTargetMatchesItem(request, item));
     if (pendingRequest) {
       state = pendingRequest.action === "stop"
         ? "stopping"
         : pendingRequest.action === "restart"
           ? "restarting"
-          : "starting";
+          : state === "failed"
+            ? "retrying"
+            : "starting";
     }
-
-    const runtimeService = item.runtimeServiceId ? runtimeServicesById.get(item.runtimeServiceId) ?? null : null;
     const failureDetail = state === "failed"
-      ? `Service failed${runtimeService?.stoppedAt ? ` · ${timeAgo(runtimeService.stoppedAt)}` : ""}`
+      ? `Service failed${latestFailure?.failedAt
+        ? ` · ${timeAgo(latestFailure.failedAt)}`
+        : runtimeService?.stoppedAt
+          ? ` · ${timeAgo(runtimeService.stoppedAt)}`
+          : ""}`
       : null;
 
     return {
       key: item.key,
       name: item.title,
       state,
+      actualState: latestFailure && (item.actualState === "stopped" || item.actualState === "failed")
+        ? "failed"
+        : item.actualState,
+      desiredState: item.desiredState,
+      configSource: item.configSource,
       healthStatus: item.healthStatus,
       url: item.url,
       port: item.port,
       failureDetail,
+      latestFailure,
       canStart: item.canStart,
     };
   });

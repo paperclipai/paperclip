@@ -4,6 +4,7 @@ import {
   listWorkspaceServiceCommandDefinitions,
   matchWorkspaceRuntimeServiceToCommand,
 } from "@paperclipai/shared";
+import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { and, desc, eq, inArray } from "drizzle-orm";
 
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
@@ -34,12 +35,20 @@ export function selectCurrentRuntimeServiceRows(rows: WorkspaceRuntimeServiceRow
 export function selectConfiguredRuntimeServiceRows(
   rows: WorkspaceRuntimeServiceRow[],
   workspaceRuntime: Record<string, unknown> | null | undefined,
+  desiredState: WorkspaceRuntimeDesiredState | null = null,
+  serviceStates: WorkspaceRuntimeServiceStateMap | null = null,
 ) {
   const availableRows = selectCurrentRuntimeServiceRows(rows).map((row) => ({
     ...row,
     configIndex: null as number | null,
+    workspaceCommandId: null as string | null,
+    desiredState: null as WorkspaceRuntimeDesiredState | null,
   }));
-  const selectedRows: Array<WorkspaceRuntimeServiceRow & { configIndex: number | null }> = [];
+  const selectedRows: Array<WorkspaceRuntimeServiceRow & {
+    configIndex: number | null;
+    workspaceCommandId: string | null;
+    desiredState: WorkspaceRuntimeDesiredState | null;
+  }> = [];
 
   for (const command of listWorkspaceServiceCommandDefinitions(workspaceRuntime)) {
     const reuseScope = command.rawConfig.reuseScope;
@@ -60,6 +69,10 @@ export function selectConfiguredRuntimeServiceRows(
     selectedRows.push({
       ...matchedRow,
       configIndex: command.serviceIndex,
+      workspaceCommandId: command.id,
+      desiredState:
+        (command.serviceIndex === null ? null : serviceStates?.[String(command.serviceIndex)])
+        ?? desiredState,
     });
     availableRows.splice(availableRows.indexOf(matchedRow), 1);
   }

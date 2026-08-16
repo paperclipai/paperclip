@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ExecutionWorkspace, Project } from "@paperclipai/shared";
+import type { ExecutionWorkspace, Project, WorkspaceOperation } from "@paperclipai/shared";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -34,6 +34,7 @@ const mockPluginSlotState = vi.hoisted(() => ({
 const mockRouteLocation = vi.hoisted(() => ({
   pathname: "/execution-workspaces/workspace-1/issues",
   search: "",
+  hash: "",
 }));
 
 vi.mock("../api/execution-workspaces", () => ({ executionWorkspacesApi: mockExecutionWorkspacesApi }));
@@ -48,7 +49,7 @@ vi.mock("@/lib/router", () => ({
     <a href={to} className={className}>{children}</a>
   ),
   Navigate: ({ to }: { to: string }) => <div data-testid="navigate">{to}</div>,
-  useLocation: () => ({ ...mockRouteLocation, hash: "", state: null }),
+  useLocation: () => ({ ...mockRouteLocation, state: null }),
   useNavigate: () => mockNavigate,
   useParams: () => ({ workspaceId: "workspace-1" }),
 }));
@@ -238,6 +239,7 @@ describe("ExecutionWorkspaceDetail plugin slots", () => {
     vi.clearAllMocks();
     mockRouteLocation.pathname = "/execution-workspaces/workspace-1/issues";
     mockRouteLocation.search = "";
+    mockRouteLocation.hash = "";
   });
 
   async function render() {
@@ -359,5 +361,55 @@ describe("ExecutionWorkspaceDetail plugin slots", () => {
       "Routines",
       "Default",
     ]);
+  });
+
+  it("targets, highlights, and focuses the exact runtime operation from the URL", async () => {
+    const focusSpy = vi.spyOn(HTMLElement.prototype, "focus");
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    const now = new Date("2026-08-12T14:00:00.000Z");
+    const operation: WorkspaceOperation = {
+      id: "operation-1",
+      companyId: "company-1",
+      executionWorkspaceId: "workspace-1",
+      heartbeatRunId: null,
+      issueId: "issue-1",
+      phase: "workspace_runtime_provision",
+      command: "pnpm dev",
+      cwd: "/tmp/workspace-1",
+      status: "failed",
+      exitCode: 1,
+      logStore: "local",
+      logRef: "runtime-operations/operation-1.log",
+      logBytes: 42,
+      logSha256: null,
+      logCompressed: false,
+      stdoutExcerpt: null,
+      stderrExcerpt: "Address already in use",
+      metadata: null,
+      startedAt: now,
+      finishedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    };
+    mockRouteLocation.pathname = "/execution-workspaces/workspace-1/runtime-logs";
+    mockRouteLocation.hash = "#operation-operation-1";
+    mockExecutionWorkspacesApi.listWorkspaceOperations.mockResolvedValue([operation]);
+
+    await render();
+
+    const operationCard = container.querySelector<HTMLElement>("#operation-operation-1");
+    expect(operationCard).not.toBeNull();
+    expect(operationCard?.className).toContain("workspace-operation-target");
+    expect(operationCard?.className).toContain("border-destructive/40");
+    await act(async () => {
+      await flush();
+    });
+    const operationHeading = operationCard?.querySelector("[data-operation-heading]");
+    expect(focusSpy.mock.contexts).toContain(operationHeading);
+    expect(scrollIntoView.mock.contexts).toContain(operationCard);
+    focusSpy.mockRestore();
+    HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
   });
 });

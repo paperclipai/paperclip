@@ -5,11 +5,58 @@ const mockApi = vi.hoisted(() => ({
   post: vi.fn(),
 }));
 
+const MockApiError = vi.hoisted(() => class extends Error {
+  status: number;
+  body: unknown;
+
+  constructor(message: string, status: number, body: unknown) {
+    super(message);
+    this.status = status;
+    this.body = body;
+  }
+});
+
 vi.mock("./client", () => ({
   api: mockApi,
+  ApiError: MockApiError,
 }));
 
-import { executionWorkspacesApi } from "./execution-workspaces";
+import { executionWorkspacesApi, readWorkspaceRuntimeActionFailure } from "./execution-workspaces";
+
+describe("readWorkspaceRuntimeActionFailure", () => {
+  it("keeps only the structured redaction-safe operation evidence", () => {
+    const failure = readWorkspaceRuntimeActionFailure(new MockApiError(
+      "Port 45439 is unavailable.",
+      409,
+      {
+        error: "Port 45439 is unavailable.",
+        details: {
+          code: "workspace_runtime_port_allocation_exhausted",
+          remediation: "Retry to use another available port.",
+          operationId: "operation-1",
+          operationLogPath: "/api/workspace-operations/operation-1/log",
+          failedAt: "2026-08-12T14:00:00.000Z",
+          port: 45439,
+          attemptedPortCount: 10,
+          cwd: "/private/workspace/path",
+          processPid: 1234,
+        },
+      },
+    ));
+
+    expect(failure).toEqual({
+      operationId: "operation-1",
+      operationLogPath: "/api/workspace-operations/operation-1/log",
+      code: "workspace_runtime_port_allocation_exhausted",
+      message: "Port 45439 is unavailable.",
+      remediation: "Retry to use another available port.",
+      details: { port: 45439, attemptedPortCount: 10 },
+      failedAt: new Date("2026-08-12T14:00:00.000Z"),
+    });
+    expect(JSON.stringify(failure)).not.toContain("/private/workspace/path");
+    expect(JSON.stringify(failure)).not.toContain("1234");
+  });
+});
 
 describe("executionWorkspacesApi.listSummaries", () => {
   beforeEach(() => {

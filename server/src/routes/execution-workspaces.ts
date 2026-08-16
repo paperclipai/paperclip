@@ -38,8 +38,28 @@ import { assertCanManageExecutionWorkspaceRuntimeServices } from "./workspace-ru
 import { appendWithCap } from "../adapters/utils.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { HttpError } from "../errors.js";
+import { getWorkspaceOperationFailureEvidence } from "../services/workspace-operations.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
+
+function toWorkspaceRuntimeOperationHttpError(error: unknown) {
+  const evidence = getWorkspaceOperationFailureEvidence(error);
+  if (!evidence) return error;
+
+  return new HttpError(
+    error instanceof HttpError ? error.status : 500,
+    error instanceof HttpError ? error.message : evidence.message,
+    {
+      code: evidence.code,
+      remediation: evidence.remediation,
+      operationId: evidence.operationId,
+      operationLogPath: evidence.operationLogPath,
+      failedAt: evidence.failedAt,
+      ...(evidence.details ?? {}),
+    },
+  );
+}
 
 export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: PluginWorkerManager } = {}) {
   const router = Router();
@@ -212,7 +232,10 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       res.status(404).json({ error: "Workspace command not found for this execution workspace" });
       return;
     }
-    if (target.runtimeServiceId && !(existing.runtimeServices ?? []).some((service) => service.id === target.runtimeServiceId)) {
+    const targetedRuntimeService = target.runtimeServiceId
+      ? (existing.runtimeServices ?? []).find((service) => service.id === target.runtimeServiceId) ?? null
+      : null;
+    if (target.runtimeServiceId && !targetedRuntimeService) {
       res.status(404).json({ error: "Runtime service not found for this execution workspace" });
       return;
     }
@@ -224,7 +247,12 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     const selectedServiceIndex =
       workspaceCommand?.kind === "service"
         ? workspaceCommand.serviceIndex
-        : target.serviceIndex ?? null;
+        : target.serviceIndex ?? targetedRuntimeService?.configIndex ?? null;
+    const selectedWorkspaceCommandId =
+      workspaceCommand?.id
+      ?? target.workspaceCommandId
+      ?? targetedRuntimeService?.workspaceCommandId
+      ?? null;
     if (
       selectedServiceIndex !== undefined
       && selectedServiceIndex !== null
@@ -267,7 +295,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       metadata: {
         action,
         executionWorkspaceId: existing.id,
-        workspaceCommandId: workspaceCommand?.id ?? target.workspaceCommandId ?? null,
+        workspaceCommandId: selectedWorkspaceCommandId,
         workspaceCommandKind: workspaceCommand?.kind ?? null,
         workspaceCommandName: workspaceCommand?.name ?? null,
         runtimeServiceId: selectedRuntimeServiceId,
@@ -450,12 +478,14 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
                 : "Started execution workspace runtime services.\n",
           metadata: {
             runtimeServiceCount,
-            workspaceCommandId: workspaceCommand?.id ?? target.workspaceCommandId ?? null,
+            workspaceCommandId: selectedWorkspaceCommandId,
             runtimeServiceId: selectedRuntimeServiceId,
             serviceIndex: selectedServiceIndex,
           },
         };
       },
+    }).catch((error) => {
+      throw toWorkspaceRuntimeOperationHttpError(error);
     });
 
     const workspace = await svc.getById(id);
@@ -476,7 +506,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       entityId: existing.id,
       details: {
         runtimeServiceCount,
-        workspaceCommandId: workspaceCommand?.id ?? target.workspaceCommandId ?? null,
+        workspaceCommandId: selectedWorkspaceCommandId,
         workspaceCommandKind: workspaceCommand?.kind ?? null,
         workspaceCommandName: workspaceCommand?.name ?? null,
         runtimeServiceId: selectedRuntimeServiceId,

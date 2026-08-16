@@ -75,6 +75,7 @@ function createExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): 
     createdAt: new Date("2026-04-16T04:59:00.000Z"),
     updatedAt: new Date("2026-04-16T05:00:00.000Z"),
     ...overrides,
+    effectiveRuntimeConfig: overrides.effectiveRuntimeConfig ?? null,
   };
 }
 

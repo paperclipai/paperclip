@@ -53,7 +53,7 @@ describe("selectConfiguredRuntimeServiceRows", () => {
     expect(selectConfiguredRuntimeServiceRows(historicalRows, null)).toEqual([]);
   });
 
-  it("selects the newest current row for each configured service and annotates its config index", () => {
+  it("selects the newest configured row including failed state and annotates effective intent", () => {
     const oldWeb = runtimeServiceRow({
       serviceName: "web",
       command: "pnpm dev",
@@ -62,6 +62,8 @@ describe("selectConfiguredRuntimeServiceRows", () => {
     const currentWeb = runtimeServiceRow({
       serviceName: "web",
       command: "pnpm dev",
+      status: "failed",
+      healthStatus: "unhealthy",
       updatedAt: new Date("2026-07-30T10:00:00.000Z"),
     });
     const removedWorker = runtimeServiceRow({
@@ -73,13 +75,18 @@ describe("selectConfiguredRuntimeServiceRows", () => {
     const selected = selectConfiguredRuntimeServiceRows(
       [removedWorker, currentWeb, oldWeb],
       { services: [{ name: "web", command: "pnpm dev" }] },
+      "stopped",
+      { "0": "running" },
     );
 
     expect(selected).toEqual([
       expect.objectContaining({
         id: currentWeb.id,
         serviceName: "web",
+        status: "failed",
         configIndex: 0,
+        workspaceCommandId: "service:web",
+        desiredState: "running",
       }),
     ]);
   });

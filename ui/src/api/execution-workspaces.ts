@@ -5,9 +5,10 @@ import type {
   ExecutionWorkspaceCloseReadiness,
   WorkspaceOverviewResponse,
   WorkspaceOperation,
+  WorkspaceRuntimeFailureEvidence,
   WorkspaceRuntimeControlTarget,
 } from "@paperclipai/shared";
-import { api } from "./client";
+import { api, ApiError } from "./client";
 import { sanitizeWorkspaceRuntimeControlTarget } from "./workspace-runtime-control";
 
 type WorkspaceOverviewFilters = {
@@ -16,6 +17,51 @@ type WorkspaceOverviewFilters = {
   limit?: number;
   offset?: number;
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Reads the allowlisted runtime-operation evidence returned by failed start and
+ * restart requests. Raw stderr, commands, host paths, and process metadata are
+ * deliberately not part of this presentation contract.
+ */
+export function readWorkspaceRuntimeActionFailure(error: unknown): WorkspaceRuntimeFailureEvidence | null {
+  if (!(error instanceof ApiError) || !isRecord(error.body)) return null;
+  const raw = error.body.details;
+  if (!isRecord(raw)) return null;
+  if (
+    typeof raw.operationId !== "string"
+    || typeof raw.operationLogPath !== "string"
+    || typeof raw.code !== "string"
+    || typeof raw.remediation !== "string"
+    || typeof raw.failedAt !== "string"
+  ) return null;
+
+  const safeDetails = {
+    ...(typeof raw.port === "number" ? { port: raw.port } : {}),
+    ...(typeof raw.attemptedPortCount === "number" ? { attemptedPortCount: raw.attemptedPortCount } : {}),
+    ...(typeof raw.conflictingExecutionWorkspaceId === "string"
+      ? { conflictingExecutionWorkspaceId: raw.conflictingExecutionWorkspaceId }
+      : {}),
+    ...(typeof raw.conflictingProjectWorkspaceId === "string"
+      ? { conflictingProjectWorkspaceId: raw.conflictingProjectWorkspaceId }
+      : {}),
+  };
+  const failedAt = new Date(raw.failedAt);
+  if (Number.isNaN(failedAt.getTime())) return null;
+
+  return {
+    operationId: raw.operationId,
+    operationLogPath: raw.operationLogPath,
+    code: raw.code,
+    message: typeof error.body.error === "string" ? error.body.error : error.message,
+    remediation: raw.remediation,
+    details: Object.keys(safeDetails).length > 0 ? safeDetails : null,
+    failedAt,
+  };
+}
 
 function normalizeWorkspaceOverview(response: WorkspaceOverviewResponse): WorkspaceOverviewResponse {
   return {

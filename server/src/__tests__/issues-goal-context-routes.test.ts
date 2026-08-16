@@ -298,6 +298,8 @@ describe.sequential("issue goal context routes", () => {
       scopeType: "execution_workspace",
       scopeId: workspaceId,
       serviceName: "Dev server",
+      actualState: "stopped",
+      desiredState: "running",
       lifecycle: "shared",
       reuseKey: "dev-server",
       command: "pnpm dev",
@@ -313,6 +315,8 @@ describe.sequential("issue goal context routes", () => {
       stoppedAt: null,
       healthStatus: "healthy",
       configIndex: 0,
+      workspaceCommandId: "service:dev-server",
+      latestFailure: null,
       metadata: { huge: "runtime metadata should not be embedded" },
     };
     mockIssueService.getById.mockResolvedValueOnce({
@@ -402,10 +406,21 @@ describe.sequential("issue goal context routes", () => {
         desiredState: null,
         serviceStates: null,
       },
+      effectiveRuntimeConfig: {
+        workspaceRuntime: { services: [{ name: "Dev server", command: "pnpm dev" }] },
+        source: { type: "execution_workspace", id: workspaceId },
+        desiredState: "running",
+        serviceStates: null,
+      },
       metadata: { huge: "execution workspace metadata should not be embedded" },
       runtimeServices: [
-        { ...runtimeServiceBase, id: "service-running", status: "running" },
-        { ...runtimeServiceBase, id: "service-stopped", status: "stopped" },
+        {
+          ...runtimeServiceBase,
+          id: "service-failed",
+          status: "failed",
+          actualState: "failed",
+          healthStatus: "unhealthy",
+        },
       ],
       createdAt: new Date("2026-03-24T12:00:00Z"),
       updatedAt: new Date("2026-03-24T12:00:00Z"),
@@ -422,9 +437,15 @@ describe.sequential("issue goal context routes", () => {
     expect(res.body.currentExecutionWorkspace.metadata).toBeNull();
     expect(res.body.currentExecutionWorkspace.runtimeServices).toHaveLength(1);
     expect(res.body.currentExecutionWorkspace.runtimeServices[0]).toMatchObject({
-      id: "service-running",
-      status: "running",
+      id: "service-failed",
+      status: "failed",
+      actualState: "failed",
+      desiredState: "running",
       url: "http://localhost:3100",
+    });
+    expect(res.body.currentExecutionWorkspace.effectiveRuntimeConfig.source).toEqual({
+      type: "execution_workspace",
+      id: workspaceId,
     });
     expect(res.body.currentExecutionWorkspace.runtimeServices[0]).not.toHaveProperty("metadata");
   });
@@ -512,13 +533,31 @@ describe.sequential("issue goal context routes", () => {
       mode: "isolated_workspace",
       status: "active",
       cwd: "/tmp/pap-581",
+      effectiveRuntimeConfig: {
+        workspaceRuntime: { services: [{ name: "web", command: "pnpm dev" }] },
+        source: { type: "project_workspace", id: "project-workspace-1" },
+        desiredState: "running",
+        serviceStates: null,
+      },
       runtimeServices: [
         {
           id: "service-1",
           serviceName: "web",
-          status: "running",
-          url: "http://127.0.0.1:5173",
-          healthStatus: "healthy",
+          status: "failed",
+          actualState: "failed",
+          desiredState: "running",
+          url: null,
+          healthStatus: "unhealthy",
+          workspaceCommandId: "service:web",
+          latestFailure: {
+            operationId: "operation-1",
+            operationLogPath: "/api/workspace-operations/operation-1/log",
+            code: "workspace_runtime_start_failed",
+            message: "Workspace runtime service failed to start.",
+            remediation: "Review the workspace operation log and retry.",
+            details: null,
+            failedAt: new Date("2026-08-11T12:00:00.000Z"),
+          },
         },
       ],
     });
@@ -535,9 +574,15 @@ describe.sequential("issue goal context routes", () => {
       runtimeServices: [
         expect.objectContaining({
           serviceName: "web",
-          url: "http://127.0.0.1:5173",
+          actualState: "failed",
+          desiredState: "running",
+          latestFailure: expect.objectContaining({ operationId: "operation-1" }),
         }),
       ],
     }));
+    expect(res.body.currentExecutionWorkspace.effectiveRuntimeConfig.source).toEqual({
+      type: "project_workspace",
+      id: "project-workspace-1",
+    });
   });
 });

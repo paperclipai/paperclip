@@ -80,6 +80,7 @@ vi.mock("../api/projects", () => ({
 
 vi.mock("../api/execution-workspaces", () => ({
   executionWorkspacesApi: mockExecutionWorkspacesApi,
+  readWorkspaceRuntimeActionFailure: () => null,
 }));
 
 vi.mock("../api/issues", () => ({
@@ -279,6 +280,8 @@ function createRuntimeService(overrides: Partial<WorkspaceRuntimeService> = {}):
     scopeId: "workspace-1",
     serviceName: "web",
     status: "running",
+    actualState: "running",
+    desiredState: null,
     lifecycle: "shared",
     reuseKey: null,
     command: "pnpm dev",
@@ -294,6 +297,7 @@ function createRuntimeService(overrides: Partial<WorkspaceRuntimeService> = {}):
     stoppedAt: null,
     stopPolicy: null,
     healthStatus: "healthy",
+    latestFailure: null,
     createdAt: new Date("2026-04-06T12:02:00.000Z"),
     updatedAt: new Date("2026-04-06T12:03:00.000Z"),
     ...overrides,
@@ -325,6 +329,7 @@ function createExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): 
     cleanupEligibleAt: null,
     cleanupReason: null,
     config: null,
+    effectiveRuntimeConfig: null,
     metadata: null,
     runtimeServices: [createRuntimeService()],
     createdAt: new Date("2026-04-06T12:01:00.000Z"),
@@ -1437,12 +1442,17 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("shows a green service link above the workspace row for a live non-main workspace", async () => {
+  it("shows the live service model above the workspace row for a non-main workspace", async () => {
     mockProjectsApi.list.mockResolvedValue([createProject()]);
     const serviceUrl = "http://127.0.0.1:62475";
     const updatedWorkspace = createExecutionWorkspace({
       mode: "isolated_workspace",
-      runtimeServices: [createRuntimeService({ url: serviceUrl, status: "stopped", stoppedAt: new Date("2026-04-06T12:06:00.000Z") })],
+      runtimeServices: [createRuntimeService({
+        url: serviceUrl,
+        status: "stopped",
+        actualState: "stopped",
+        stoppedAt: new Date("2026-04-06T12:06:00.000Z"),
+      })],
     });
     mockExecutionWorkspacesApi.controlRuntimeCommands.mockResolvedValue({
       workspace: updatedWorkspace,
@@ -1465,7 +1475,13 @@ describe("IssueProperties", () => {
               services: [{ name: "web", command: "pnpm dev" }],
             },
           },
-          runtimeServices: [createRuntimeService({ url: serviceUrl, status: "running", configIndex: 0 })],
+          runtimeServices: [createRuntimeService({
+            url: serviceUrl,
+            status: "running",
+            actualState: "running",
+            desiredState: "running",
+            configIndex: 0,
+          })],
         }),
       }),
       childIssues: [],
@@ -1475,15 +1491,16 @@ describe("IssueProperties", () => {
 
     const serviceLink = container.querySelector(`a[href="${serviceUrl}"]`);
     expect(serviceLink).not.toBeNull();
-    expect(serviceLink?.className).toContain("sm:self-start");
-    expect(serviceLink?.className).not.toContain("sm:self-end");
+    expect(container.textContent).toContain("Actual: Running");
+    expect(container.textContent).toContain("Desired: Running");
+    expect(container.textContent).toContain("Health: Healthy");
     expect((container.textContent ?? "").indexOf("Workspace")).toBeLessThan(
       (container.textContent ?? "").indexOf("Service"),
     );
     const stopButton = container.querySelector<HTMLButtonElement>('button[aria-label="Stop"]');
     expect(stopButton).not.toBeUndefined();
     expect(stopButton?.getAttribute("data-size")).toBe("icon-xs");
-    expect(stopButton?.getAttribute("data-variant")).toBe("outline");
+    expect(stopButton?.getAttribute("data-variant")).toBe("ghost");
 
     await act(async () => {
       stopButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -1496,6 +1513,83 @@ describe("IssueProperties", () => {
       expect.objectContaining({ action: "stop", runtimeServiceId: "service-1" }),
     );
     expect(container.textContent).toContain("Workspace service stopped.");
+
+    act(() => root.unmount());
+  });
+
+  it("renders an inherited failed service with safe retry and exact operation access", async () => {
+    mockProjectsApi.list.mockResolvedValue([createProject()]);
+    const failedAt = new Date("2026-08-12T14:00:00.000Z");
+    const failedService = createRuntimeService({
+      status: "failed",
+      actualState: "failed",
+      desiredState: "running",
+      healthStatus: "unknown",
+      port: 45439,
+      url: null,
+      configIndex: 0,
+      latestFailure: {
+        operationId: "operation-1",
+        operationLogPath: "/api/workspace-operations/operation-1/log",
+        code: "workspace_runtime_port_allocation_exhausted",
+        message: "Port 45439 is unavailable.",
+        remediation: "Retry to use another available port.",
+        details: { port: 45439 },
+        failedAt,
+      },
+    });
+    mockExecutionWorkspacesApi.controlRuntimeCommands.mockResolvedValue({
+      workspace: createExecutionWorkspace({ runtimeServices: [failedService] }),
+      operation: {},
+    });
+
+    const root = renderProperties(container, {
+      issue: createIssue({
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-main",
+        executionWorkspaceId: "workspace-1",
+        currentExecutionWorkspace: createExecutionWorkspace({
+          config: null,
+          effectiveRuntimeConfig: {
+            workspaceRuntime: {
+              services: [{ name: "web", command: "pnpm dev" }],
+            },
+            source: { type: "project_workspace", id: "workspace-main" },
+            desiredState: "running",
+            serviceStates: { "0": "running" },
+          },
+          runtimeServices: [failedService],
+        }),
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Inherited from project workspace");
+    expect(container.textContent).toContain("Actual: Failed");
+    expect(container.textContent).toContain("Desired: Running");
+    expect(container.textContent).toContain("Health: Not reporting");
+    expect(container.textContent).toContain("Port 45439");
+    expect(container.textContent).toContain("No live URL");
+    expect(container.textContent).toContain("Port 45439 is unavailable.");
+    expect(container.textContent).toContain("Paperclip will not stop another workspace.");
+    expect(container.querySelectorAll('button[aria-label="Retry"]')).toHaveLength(1);
+    expect(container.querySelector('button[aria-label="Start"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Restart"]')).toBeNull();
+    expect(container.querySelector('a[href="/execution-workspaces/workspace-1/runtime-logs#operation-operation-1"]')).not.toBeNull();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Retry"]')!.click();
+    });
+    await flush();
+
+    expect(mockExecutionWorkspacesApi.controlRuntimeCommands).toHaveBeenCalledWith(
+      "workspace-1",
+      "start",
+      expect.objectContaining({ action: "start", runtimeServiceId: "service-1", serviceIndex: 0 }),
+    );
 
     act(() => root.unmount());
   });
