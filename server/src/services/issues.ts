@@ -5332,6 +5332,28 @@ export function issueService(db: Db) {
       );
   }
 
+  async function updateIssueAndSetCheckoutRunContext(
+    set: any,
+    where: any,
+    agentId: string,
+    issueId: string,
+    checkoutRunId: string | null,
+    dbOrTx: any = db,
+  ) {
+    return dbOrTx.transaction(async (tx: any) => {
+      const updated = await tx
+        .update(issues)
+        .set(set)
+        .where(where)
+        .returning()
+        .then((rows: any[]) => rows[0] ?? null);
+      if (updated && checkoutRunId) {
+        await setCheckoutRunContextSnapshot(agentId, issueId, checkoutRunId, tx);
+      }
+      return updated;
+    });
+  }
+
   async function addStopRelayCommentIfNeeded(
     child: typeof issues.$inferSelect,
     dbOrTx: any = db,
@@ -8065,9 +8087,8 @@ export function issueService(db: Db) {
       const executionLockCondition = checkoutRunId
         ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
         : isNull(issues.executionRunId);
-      const updated = await db
-        .update(issues)
-        .set({
+      const updated = await updateIssueAndSetCheckoutRunContext(
+        {
           assigneeAgentId: agentId,
           assigneeUserId: null,
           checkoutRunId,
@@ -8075,22 +8096,19 @@ export function issueService(db: Db) {
           status: "in_progress",
           startedAt: now,
           updatedAt: now,
-        })
-        .where(
-          and(
-            eq(issues.id, id),
-            inArray(issues.status, expectedStatuses),
-            or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
-            executionLockCondition,
-          ),
-        )
-        .returning()
-        .then((rows) => rows[0] ?? null);
+        },
+        and(
+          eq(issues.id, id),
+          inArray(issues.status, expectedStatuses),
+          or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+          executionLockCondition,
+        ),
+        agentId,
+        id,
+        checkoutRunId,
+      );
 
       if (updated) {
-        if (checkoutRunId) {
-          await setCheckoutRunContextSnapshot(agentId, id, checkoutRunId);
-        }
         const [enriched] = await withIssueLabels(db, [updated]);
         return enriched;
       }
@@ -8116,26 +8134,24 @@ export function issueService(db: Db) {
         (current.executionRunId == null || current.executionRunId === checkoutRunId) &&
         checkoutRunId
       ) {
-        const adopted = await db
-          .update(issues)
-          .set({
+        const adopted = await updateIssueAndSetCheckoutRunContext(
+          {
             checkoutRunId,
             executionRunId: checkoutRunId,
             updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(issues.id, id),
-              eq(issues.status, "in_progress"),
-              eq(issues.assigneeAgentId, agentId),
-              isNull(issues.checkoutRunId),
-              or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId)),
-            ),
-          )
-          .returning()
-          .then((rows) => rows[0] ?? null);
+          },
+          and(
+            eq(issues.id, id),
+            eq(issues.status, "in_progress"),
+            eq(issues.assigneeAgentId, agentId),
+            isNull(issues.checkoutRunId),
+            or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId)),
+          ),
+          agentId,
+          id,
+          checkoutRunId,
+        );
         if (adopted) {
-          await setCheckoutRunContextSnapshot(agentId, id, checkoutRunId);
           return adopted;
         }
       }
@@ -8185,21 +8201,19 @@ export function issueService(db: Db) {
           if (current.status !== "in_progress") {
             adoptionSet.startedAt = now;
           }
-          const adopted = await db
-            .update(issues)
-            .set(adoptionSet)
-            .where(
-              and(
-                eq(issues.id, id),
-                inArray(issues.status, expectedStatuses),
-                eq(issues.executionRunId, current.executionRunId),
-                or(isNull(issues.assigneeAgentId), eq(issues.assigneeAgentId, agentId)),
-              ),
-            )
-            .returning()
-            .then((rows) => rows[0] ?? null);
+          const adopted = await updateIssueAndSetCheckoutRunContext(
+            adoptionSet,
+            and(
+              eq(issues.id, id),
+              inArray(issues.status, expectedStatuses),
+              eq(issues.executionRunId, current.executionRunId),
+              or(isNull(issues.assigneeAgentId), eq(issues.assigneeAgentId, agentId)),
+            ),
+            agentId,
+            id,
+            checkoutRunId,
+          );
           if (adopted) {
-            await setCheckoutRunContextSnapshot(agentId, id, checkoutRunId);
             const [enriched] = await withIssueLabels(db, [adopted]);
             return enriched;
           }
