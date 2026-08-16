@@ -156,6 +156,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     resultJson?: Record<string, unknown> | null;
     adapterType?: string;
     agentName?: string;
+    issueId?: string;
   }) {
     const adapterType = input.adapterType ?? "codex_local";
     const agentName = input.agentName ?? (adapterType === "claude_local" ? "ClaudeCoder" : "CodexCoder");
@@ -205,7 +206,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
           : {}),
       },
       contextSnapshot: {
-        issueId: randomUUID(),
+        issueId: input.issueId ?? randomUUID(),
         wakeReason: "issue_assigned",
       },
       updatedAt: input.now,
@@ -216,11 +217,13 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   it("records provider quota failures, schedules the reset-time retry, and leaves the agent idle", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
-      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      issuePrefix,
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
     });
@@ -242,7 +245,24 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       permissions: {},
     });
 
-    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Wait for the provider reset",
+      status: "in_progress",
+      priority: "high",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const run = await heartbeat.invoke(
+      agentId,
+      "assignment",
+      { issueId, wakeReason: "issue_assigned" },
+      "system",
+    );
     expect(run).not.toBeNull();
 
     const failedRun = await waitForRunToFinish(heartbeat, run!.id);
@@ -282,6 +302,21 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     );
     expect((retryRun?.contextSnapshot as Record<string, unknown> | null)?.codexTransientFallbackMode ?? null).toBeNull();
 
+    const immediateRecoveryRuns = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.retryOfRunId, run!.id),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'retryReason' = 'missing_issue_comment'`,
+      ));
+    expect(immediateRecoveryRuns).toHaveLength(0);
+
+    const missingCommentWakeups = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.reason, "missing_issue_comment"));
+    expect(missingCommentWakeups).toHaveLength(0);
+
     await expect
       .poll(
         () =>
@@ -293,6 +328,261 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         { timeout: 5_000, interval: 50 },
       )
       .toEqual({ status: "idle", errorReason: null });
+  });
+
+  it("coalesces concurrent provider quota retries for the same issue and reset boundary", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const firstRunId = randomUUID();
+    const secondRunId = randomUUID();
+    const now = new Date("2026-07-26T09:00:00.000Z");
+    const retryNotBefore = "2026-07-26T11:30:00.000Z";
+
+    await seedRetryFixture({
+      runId: firstRunId,
+      companyId,
+      agentId,
+      issueId,
+      now,
+      errorCode: "provider_quota",
+      errorFamily: "provider_quota",
+      retryNotBefore,
+      adapterType: "claude_local",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Retry after the shared quota reset",
+      status: "in_progress",
+      priority: "high",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-1`,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: secondRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "Internal error: You've hit your session limit",
+      errorCode: "provider_quota",
+      finishedAt: now,
+      resultJson: {
+        errorFamily: "provider_quota",
+        retryNotBefore,
+        transientRetryNotBefore: retryNotBefore,
+        providerQuotaRetryNotBefore: retryNotBefore,
+      },
+      contextSnapshot: {
+        issueId,
+        wakeReason: "missing_issue_comment",
+      },
+      updatedAt: now,
+      createdAt: now,
+    });
+
+    const [first, second] = await Promise.all([
+      heartbeat.scheduleBoundedRetry(firstRunId, { now, random: () => 0.5 }),
+      heartbeat.scheduleBoundedRetry(secondRunId, { now, random: () => 0.5 }),
+    ]);
+
+    expect(first.outcome).toBe("scheduled");
+    expect(second.outcome).toBe("scheduled");
+    if (first.outcome !== "scheduled" || second.outcome !== "scheduled") return;
+    expect(new Set([first.run.id, second.run.id]).size).toBe(1);
+
+    const retryRuns = await db
+      .select({ id: heartbeatRuns.id, wakeupRequestId: heartbeatRuns.wakeupRequestId })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.status, "scheduled_retry"),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        sql`${heartbeatRuns.contextSnapshot} ->> 'providerQuotaRetryNotBefore' = ${retryNotBefore}`,
+      ));
+    expect(retryRuns).toHaveLength(1);
+
+    const wakeups = await db
+      .select({
+        id: agentWakeupRequests.id,
+        coalescedCount: agentWakeupRequests.coalescedCount,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, retryRuns[0]!.wakeupRequestId!));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]).toMatchObject({
+      coalescedCount: 1,
+      idempotencyKey: `provider-quota-retry:${companyId}:${issueId}:${retryNotBefore}`,
+    });
+  });
+
+  it("adopts a pre-upgrade provider-quota retry before missing-comment finalization", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const existingRetryId = randomUUID();
+    const existingWakeupId = randomUUID();
+    const now = new Date("2026-07-26T09:00:00.000Z");
+    const retryNotBefore = "2030-04-22T21:00:00.000Z";
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const adapterType = `provider_quota_existing_retry_${randomUUID()}`;
+    let releaseAdapter = () => {};
+    const adapterGate = new Promise<void>((resolve) => {
+      releaseAdapter = resolve;
+    });
+
+    registerServerAdapter({
+      type: adapterType,
+      execute: async () => {
+        await adapterGate;
+        return {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorMessage: "You've hit your session limit - resets at 4pm (America/Chicago).",
+          errorCode: "provider_quota",
+          errorFamily: "provider_quota",
+          retryNotBefore,
+          resultJson: {
+            errorFamily: "provider_quota",
+            retryNotBefore,
+            providerQuotaRetryNotBefore: retryNotBefore,
+          },
+        };
+      },
+      testEnvironment: async () => ({
+        adapterType,
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Claude Coder",
+      role: "engineer",
+      status: "idle",
+      adapterType,
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Reuse the retry created before idempotency keys changed",
+      status: "in_progress",
+      priority: "high",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    try {
+      const sourceRun = await heartbeat.invoke(
+        agentId,
+        "assignment",
+        { issueId, wakeReason: "issue_assigned" },
+        "system",
+      );
+      expect(sourceRun).not.toBeNull();
+
+      await db.insert(agentWakeupRequests).values({
+        id: existingWakeupId,
+        companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "provider_quota_recovery",
+        payload: { issueId },
+        status: "queued",
+        idempotencyKey: `provider_quota_recovery:${issueId}:${retryNotBefore}`,
+        updatedAt: now,
+        createdAt: now,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: existingRetryId,
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "scheduled_retry",
+        wakeupRequestId: existingWakeupId,
+        retryOfRunId: sourceRun!.id,
+        scheduledRetryAt: new Date(retryNotBefore),
+        scheduledRetryAttempt: 1,
+        scheduledRetryReason: "provider_quota_recovery",
+        contextSnapshot: { issueId, providerQuotaRetryNotBefore: retryNotBefore },
+        updatedAt: now,
+        createdAt: now,
+      });
+      await db
+        .update(agentWakeupRequests)
+        .set({ runId: existingRetryId })
+        .where(eq(agentWakeupRequests.id, existingWakeupId));
+
+      releaseAdapter();
+      const failedRun = await waitForRunToFinish(heartbeat, sourceRun!.id);
+      expect(failedRun).toMatchObject({ status: "failed", errorCode: "provider_quota" });
+
+      await expect
+        .poll(
+          () => db
+            .select({
+              executionRunId: issues.executionRunId,
+              executionAgentNameKey: issues.executionAgentNameKey,
+            })
+            .from(issues)
+            .where(eq(issues.id, issueId))
+            .then((rows) => rows[0] ?? null),
+          { timeout: 5_000, interval: 50 },
+        )
+        .toEqual({ executionRunId: existingRetryId, executionAgentNameKey: "claude coder" });
+      await expect
+        .poll(
+          () => db
+            .select({ status: agents.status })
+            .from(agents)
+            .where(eq(agents.id, agentId))
+            .then((rows) => rows[0]?.status ?? null),
+          { timeout: 5_000, interval: 50 },
+        )
+        .toBe("idle");
+      const scheduledRetries = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.status, "scheduled_retry"),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ));
+      const immediateRecoveryRuns = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(sql`${heartbeatRuns.contextSnapshot} ->> 'retryReason' = 'missing_issue_comment'`);
+      const immediateRecoveryWakeups = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.reason, "missing_issue_comment"));
+      expect(scheduledRetries).toEqual([{ id: existingRetryId }]);
+      expect(immediateRecoveryRuns).toHaveLength(0);
+      expect(immediateRecoveryWakeups).toHaveLength(0);
+    } finally {
+      releaseAdapter();
+      unregisterServerAdapter(adapterType);
+    }
   });
 
   async function seedMaxTurnFixture(input?: {
