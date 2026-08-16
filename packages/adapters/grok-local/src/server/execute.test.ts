@@ -239,6 +239,8 @@ describe("grok_local execute", () => {
 
       expect(prompts).toHaveLength(1);
       expect(prompts[0]).toContain("curl -sS -H \"Authorization: Bearer $PAPERCLIP_API_KEY\"");
+      expect(prompts[0]).toContain("--fail-with-body");
+      expect(prompts[0]).toContain('{\"body\":\"Describe the completed mutation and verification\"}');
       expect(prompts[0]).toContain("/api/issues/{id}/comments");
       expect(prompts[0]).toContain("X-Paperclip-Run-Id");
       expect(prompts[0]).toContain("verify the response");
