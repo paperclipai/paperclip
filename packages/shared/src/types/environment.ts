@@ -93,7 +93,10 @@ export interface Environment {
   updatedAt: Date;
 }
 
-export type EnvironmentDeleteBlockedReason = "managed_local" | "instance_default";
+export type EnvironmentDeleteBlockedReason =
+  | "managed_local"
+  | "instance_default"
+  | "pending_sandbox_cleanup";
 
 export interface EnvironmentDeleteBlastRadius {
   environmentId: string;
@@ -113,6 +116,13 @@ export interface EnvironmentDeleteBlastRadius {
     activeCustomImageSetupSessionCount: number;
     hasActiveRuntimeUse: boolean;
   };
+  /**
+   * Count of leases in the terminal `pending_cleanup` state. Each such lease
+   * holds the only durable provider reference for a sandbox that a teardown
+   * retry must destroy. A delete or a provider change must not remove this
+   * reference, so a count above zero blocks the delete.
+   */
+  pendingCleanupLeaseCount: number;
 }
 
 export interface EnvironmentLease {

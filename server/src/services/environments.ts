@@ -1109,11 +1109,42 @@ export function environmentService(db: Db) {
               select 1 from ${instanceSettings}
               where ${instanceSettings.defaultEnvironmentId} = ${environments.id}
             )`,
+            // A `pending_cleanup` lease holds the only durable provider
+            // reference for an orphan sandbox. The environment foreign key uses
+            // `on delete cascade`, so a delete removes that reference and strands
+            // the remote sandbox. This predicate refuses the delete while such a
+            // lease exists. It runs in the same statement as the delete, so it
+            // also closes the check-to-delete race.
+            sql`not exists (
+              select 1 from ${environmentLeases}
+              where ${environmentLeases.environmentId} = ${environments.id}
+                and ${environmentLeases.status} = 'pending_cleanup'
+            )`,
           ),
         )
         .returning()
         .then((rows) => rows[0] ?? null);
       return row ? toEnvironment(row) : null;
+    },
+
+    /**
+     * Return true when the environment has one or more leases in the terminal
+     * `pending_cleanup` state. Each such lease is the only durable provider
+     * reference for an orphan sandbox that a teardown retry must destroy. The
+     * delete guard and the provider-change guard call this to protect that
+     * reference.
+     */
+    hasUnresolvedPendingCleanupLeases: async (environmentId: string): Promise<boolean> => {
+      const rows = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(environmentLeases)
+        .where(
+          and(
+            eq(environmentLeases.environmentId, environmentId),
+            eq(environmentLeases.status, "pending_cleanup"),
+          ),
+        );
+      return countFromRows(rows) > 0;
     },
 
     getDeleteBlastRadius: async (id: string): Promise<EnvironmentDeleteBlastRadius | null> => {
@@ -1135,6 +1166,7 @@ export function environmentService(db: Db) {
         projectRows,
         secretBindingRows,
         activeLeaseRows,
+        pendingCleanupLeaseRows,
         activeSetupRows,
       ] = await Promise.all([
         db
@@ -1177,6 +1209,15 @@ export function environmentService(db: Db) {
           ),
         db
           .select({ count: sql<number>`count(*)::int` })
+          .from(environmentLeases)
+          .where(
+            and(
+              eq(environmentLeases.environmentId, id),
+              eq(environmentLeases.status, "pending_cleanup"),
+            ),
+          ),
+        db
+          .select({ count: sql<number>`count(*)::int` })
           .from(environmentCustomImageSetupSessions)
           .where(
             and(
@@ -1188,9 +1229,15 @@ export function environmentService(db: Db) {
 
       const isManagedLocal = environment.driver === "local";
       const isInstanceDefault = countFromRows(instanceDefaultRows) > 0;
+      const pendingCleanupLeaseCount = countFromRows(pendingCleanupLeaseRows);
       const deleteBlockedReasons: EnvironmentDeleteBlockedReason[] = [];
       if (isManagedLocal) deleteBlockedReasons.push("managed_local");
       if (isInstanceDefault) deleteBlockedReasons.push("instance_default");
+      // A `pending_cleanup` lease holds the only durable provider reference for
+      // an orphan sandbox. The environment foreign key uses `on delete cascade`,
+      // so a delete removes that reference before a teardown retry can destroy
+      // the sandbox. Block the delete until the sweep resolves the lease.
+      if (pendingCleanupLeaseCount > 0) deleteBlockedReasons.push("pending_sandbox_cleanup");
       const activeLeaseCount = countFromRows(activeLeaseRows);
       const activeCustomImageSetupSessionCount = countFromRows(activeSetupRows);
 
@@ -1198,6 +1245,7 @@ export function environmentService(db: Db) {
         environmentId: id,
         canDelete: deleteBlockedReasons.length === 0,
         deleteBlockedReasons,
+        pendingCleanupLeaseCount,
         staticReferences: {
           isManagedLocal,
           isInstanceDefault,

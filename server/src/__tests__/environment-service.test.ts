@@ -397,6 +397,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
       environmentId,
       canDelete: false,
       deleteBlockedReasons: ["instance_default"],
+      pendingCleanupLeaseCount: 0,
       staticReferences: {
         isManagedLocal: false,
         isInstanceDefault: true,
@@ -486,6 +487,98 @@ describeEmbeddedPostgres("environmentService leases", () => {
 
     expect(removedDeletable?.id).toBe(deletableEnvId);
     expect(deletedRows).toHaveLength(0);
+  });
+
+  it("blocks delete while a pending_cleanup lease still holds the sandbox reference", async () => {
+    const companyId = randomUUID();
+    const environmentId = randomUUID();
+    const now = new Date();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(environments).values({
+      id: environmentId,
+      name: "Pending Cleanup Guard",
+      driver: "ssh",
+      status: "active",
+      config: {
+        host: "pending.example.test",
+        port: 22,
+        username: "fixture",
+        remoteWorkspacePath: "/srv/paperclip",
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+    await svc.insertPendingCleanupLease({
+      companyId,
+      environmentId,
+      provider: "fake-plugin",
+      providerLeaseId: "sandbox-1",
+      failureReason: "teardown_failed",
+    });
+
+    const impact = await svc.getDeleteBlastRadius(environmentId);
+    expect(impact?.canDelete).toBe(false);
+    expect(impact?.deleteBlockedReasons).toContain("pending_sandbox_cleanup");
+    expect(impact?.pendingCleanupLeaseCount).toBe(1);
+    expect(await svc.hasUnresolvedPendingCleanupLeases(environmentId)).toBe(true);
+
+    const removed = await svc.removeIfDeletable(environmentId);
+    const rows = await db.select().from(environments).where(eq(environments.id, environmentId));
+    expect(removed).toBeNull();
+    expect(rows).toHaveLength(1);
+  });
+
+  it("allows delete once the pending_cleanup lease resolves", async () => {
+    const companyId = randomUUID();
+    const environmentId = randomUUID();
+    const now = new Date();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(environments).values({
+      id: environmentId,
+      name: "Resolved Cleanup Guard",
+      driver: "ssh",
+      status: "active",
+      config: {
+        host: "resolved.example.test",
+        port: 22,
+        username: "fixture",
+        remoteWorkspacePath: "/srv/paperclip",
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+    const lease = await svc.insertPendingCleanupLease({
+      companyId,
+      environmentId,
+      provider: "fake-plugin",
+      providerLeaseId: "sandbox-1",
+      failureReason: "teardown_failed",
+    });
+    // The sweep marks a cleaned orphan `expired`, so it leaves the terminal
+    // `pending_cleanup` state and no longer blocks the delete.
+    await svc.releaseLease(lease.id, "expired", { cleanupStatus: "success" });
+
+    const impact = await svc.getDeleteBlastRadius(environmentId);
+    expect(impact?.canDelete).toBe(true);
+    expect(impact?.pendingCleanupLeaseCount).toBe(0);
+    expect(await svc.hasUnresolvedPendingCleanupLeases(environmentId)).toBe(false);
+
+    const removed = await svc.removeIfDeletable(environmentId);
+    const rows = await db.select().from(environments).where(eq(environments.id, environmentId));
+    expect(removed?.id).toBe(environmentId);
+    expect(rows).toHaveLength(0);
   });
 
   it("creates and then reuses the default local environment for a company", async () => {

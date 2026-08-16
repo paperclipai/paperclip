@@ -583,6 +583,9 @@ export function environmentRoutes(
     if (impact.staticReferences.isInstanceDefault) {
       return "Cannot delete the current instance default environment. Set a new default environment before deleting this one.";
     }
+    if (impact.pendingCleanupLeaseCount > 0) {
+      return "Cannot delete this environment while a sandbox cleanup is pending. Wait for the cleanup sweep to destroy the orphan sandbox, then retry.";
+    }
     return null;
   }
 
@@ -1090,6 +1093,20 @@ export function environmentRoutes(
         }),
     });
     assertNoClientPlatformProvisionedMarkers(req.body.metadata);
+    // A `pending_cleanup` lease holds the only durable provider reference for an
+    // orphan sandbox that a teardown retry must destroy. A driver or config
+    // change re-points the environment provider, so the sweep can no longer
+    // reach the original sandbox. Block a provider change while such a lease
+    // exists, so the operator resolves the cleanup first.
+    const changesProviderTarget =
+      (req.body.driver !== undefined && req.body.driver !== existing.driver) ||
+      req.body.config !== undefined;
+    if (changesProviderTarget && (await svc.hasUnresolvedPendingCleanupLeases(existing.id))) {
+      throw conflict(
+        "Cannot change the driver or provider config while a sandbox cleanup is pending. Wait for the cleanup sweep to destroy the orphan sandbox, then retry.",
+        { code: "environment_pending_sandbox_cleanup" },
+      );
+    }
     const actor = getActorInfo(req);
     const nextDriver = req.body.driver ?? existing.driver;
     const nextName = req.body.name ?? existing.name;

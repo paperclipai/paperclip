@@ -39,6 +39,7 @@ const mockEnvironmentService = vi.hoisted(() => ({
   update: vi.fn(),
   removeIfDeletable: vi.fn(),
   getDeleteBlastRadius: vi.fn(),
+  hasUnresolvedPendingCleanupLeases: vi.fn(),
   listLeases: vi.fn(),
   getLeaseById: vi.fn(),
 }));
@@ -150,6 +151,7 @@ function createDeleteBlastRadius(overrides: Partial<{
   secretBindingCount: number;
   activeLeaseCount: number;
   activeCustomImageSetupSessionCount: number;
+  pendingCleanupLeaseCount: number;
 }> = {}) {
   const staticReferences = {
     isManagedLocal: overrides.isManagedLocal ?? false,
@@ -167,14 +169,17 @@ function createDeleteBlastRadius(overrides: Partial<{
       (overrides.activeLeaseCount ?? 0) > 0
       || (overrides.activeCustomImageSetupSessionCount ?? 0) > 0,
   };
+  const pendingCleanupLeaseCount = overrides.pendingCleanupLeaseCount ?? 0;
   const deleteBlockedReasons = [
     ...(staticReferences.isManagedLocal ? ["managed_local" as const] : []),
     ...(staticReferences.isInstanceDefault ? ["instance_default" as const] : []),
+    ...(pendingCleanupLeaseCount > 0 ? ["pending_sandbox_cleanup" as const] : []),
   ];
   return {
     environmentId: "env-1",
     canDelete: deleteBlockedReasons.length === 0,
     deleteBlockedReasons,
+    pendingCleanupLeaseCount,
     staticReferences,
     activeRuntimeUse,
   };
@@ -255,6 +260,8 @@ describe("environment routes", () => {
     mockEnvironmentService.update.mockReset();
     mockEnvironmentService.removeIfDeletable.mockReset();
     mockEnvironmentService.getDeleteBlastRadius.mockReset();
+    mockEnvironmentService.hasUnresolvedPendingCleanupLeases.mockReset();
+    mockEnvironmentService.hasUnresolvedPendingCleanupLeases.mockResolvedValue(false);
     mockEnvironmentService.listLeases.mockReset();
     mockEnvironmentService.getLeaseById.mockReset();
     mockExecutionWorkspaceService.clearEnvironmentSelection.mockReset();
@@ -1078,6 +1085,7 @@ describe("environment routes", () => {
       environmentId: "env-1",
       canDelete: true,
       deleteBlockedReasons: [],
+      pendingCleanupLeaseCount: 0,
       staticReferences: {
         isManagedLocal: false,
         isInstanceDefault: false,
@@ -1520,6 +1528,121 @@ describe("environment routes", () => {
     );
     expect(res.body.details).toEqual({ deleteBlockedReasons: ["instance_default"] });
     expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
+  });
+
+  it("rejects deleting an environment with a pending sandbox cleanup", async () => {
+    const environment = {
+      ...createEnvironment(),
+      driver: "ssh" as const,
+      name: "SSH Fixture",
+      config: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        privateKey: null,
+        privateKeySecretRef: null,
+        knownHosts: null,
+        strictHostKeyChecking: true,
+      },
+    };
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(createDeleteBlastRadius({
+      pendingCleanupLeaseCount: 1,
+    }));
+    const app = createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app).delete("/api/environments/env-1");
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe(
+      "Cannot delete this environment while a sandbox cleanup is pending. Wait for the cleanup sweep to destroy the orphan sandbox, then retry.",
+    );
+    expect(res.body.details).toEqual({ deleteBlockedReasons: ["pending_sandbox_cleanup"] });
+    expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
+  });
+
+  it("rejects a driver or provider config change while a sandbox cleanup is pending", async () => {
+    const environment = {
+      ...createEnvironment(),
+      id: "env-ssh",
+      driver: "ssh" as const,
+      name: "SSH Fixture",
+      config: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        privateKey: null,
+        privateKeySecretRef: null,
+        knownHosts: null,
+        strictHostKeyChecking: true,
+      },
+    };
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.hasUnresolvedPendingCleanupLeases.mockResolvedValue(true);
+    const app = createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .patch("/api/environments/env-ssh")
+      .send({
+        config: {
+          host: "changed.example.test",
+          port: 22,
+          username: "ssh-user",
+          remoteWorkspacePath: "/srv/paperclip/workspace",
+        },
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe(
+      "Cannot change the driver or provider config while a sandbox cleanup is pending. Wait for the cleanup sweep to destroy the orphan sandbox, then retry.",
+    );
+    expect(res.body.details).toEqual({ code: "environment_pending_sandbox_cleanup" });
+    expect(mockEnvironmentService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows a non-provider update while a sandbox cleanup is pending", async () => {
+    const environment = {
+      ...createEnvironment(),
+      id: "env-ssh",
+      driver: "ssh" as const,
+      name: "SSH Fixture",
+      config: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        privateKey: null,
+        privateKeySecretRef: null,
+        knownHosts: null,
+        strictHostKeyChecking: true,
+      },
+    };
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.hasUnresolvedPendingCleanupLeases.mockResolvedValue(true);
+    mockEnvironmentService.update.mockResolvedValue({ ...environment, description: "Updated" });
+    const app = createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .patch("/api/environments/env-ssh")
+      .send({ description: "Updated" });
+
+    expect(res.status).toBe(200);
+    expect(mockEnvironmentService.hasUnresolvedPendingCleanupLeases).not.toHaveBeenCalled();
+    expect(mockEnvironmentService.update).toHaveBeenCalled();
   });
 
   it("describes an environment's secret refs with owner metadata", async () => {
