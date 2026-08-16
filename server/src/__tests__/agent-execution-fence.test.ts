@@ -825,7 +825,7 @@ describePostgres("agent execution fence", () => {
     await expect(fences.release(agent.id, acquired.fenceId)).resolves.toBeDefined();
   });
 
-  it("does not synthesize finalization proof for a missed terminal row", async () => {
+  it("retries the real finalizer proof for a resource-free terminal row", async () => {
     const { company, agent } = await seedAgent("idle");
     const run = await db
       .insert(heartbeatRuns)
@@ -842,29 +842,26 @@ describePostgres("agent execution fence", () => {
     await expect(heartbeatService(db, { runtimeEnv: {} }).reapOrphanedRuns()).resolves.toMatchObject({
       reaped: 0,
     });
-    const untouched = await db
+    const recovered = await db
       .select()
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, run.id))
       .then((rows) => rows[0]!);
-    expect(untouched).toMatchObject({
-      executionFinalizerCompletedAt: null,
-      executionFinalizedAt: null,
+    expect(recovered).toMatchObject({
+      executionFinalizerCompletedAt: expect.any(Date),
+      executionFinalizedAt: expect.any(Date),
     });
     const fences = agentExecutionFenceService(db);
     const acquired = await fences.acquire({
       agentId: agent.id,
       companyId: company.id,
       actorUserId: "board-user",
-      reason: "terminal proof remains absent",
+      reason: "terminal proof recovered",
     });
     await expect(fences.get(agent.id, acquired.fenceId)).resolves.toMatchObject({
-      drained: false,
-      pendingRunIds: [run.id],
+      drained: true,
+      pendingRunIds: [],
     });
-    await expect(fences.release(agent.id, acquired.fenceId)).rejects.toMatchObject({ status: 409 });
-    await fences.markRunFinalizerCompleted(run.id);
-    await fences.acknowledgeRunFinalization(run.id);
     await expect(fences.release(agent.id, acquired.fenceId)).resolves.toBeDefined();
   });
 

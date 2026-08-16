@@ -13677,6 +13677,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
 
+    // A terminal status can become durable before the finalizer marker write.
+    // Re-run the genuine ownership proof for those rows instead of leaving the
+    // fence permanently blocked after a transient DB or wakeup-finalization
+    // failure. Never race a live in-process finally path.
+    const missedFinalizers = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.executionFinalizationRequired, true),
+          isNotNull(heartbeatRuns.startedAt),
+          inArray(heartbeatRuns.status, [...HEARTBEAT_RUN_TERMINAL_STATUSES]),
+          isNull(heartbeatRuns.executionFinalizerCompletedAt),
+          isNull(heartbeatRuns.executionFinalizedAt),
+        ),
+      );
+    for (const { id } of missedFinalizers) {
+      if (liveRunExecutions.has(id)) continue;
+      await acknowledgeRunFinalizationReliably(id).catch((error) => {
+        logger.warn(
+          { err: error, runId: id },
+          "deferred reconciliation could not complete terminal run finalization",
+        );
+      });
+    }
+
     // Only a durable finalizer-completed marker authorizes deferred
     // acknowledgement. This repairs transient acknowledgement failures without
     // fabricating proof for arbitrary terminal rows.

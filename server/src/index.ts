@@ -93,6 +93,7 @@ import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent
 import {
   coordinateHeartbeatSchedulerShutdown,
   finalizeServerShutdown,
+  drainExecutionOwnershipForShutdown,
   loadWithoutCoordinatedShutdownSignalHooks,
 } from "./shutdown.js";
 import { systemdNotify } from "./services/systemd-notify.js";
@@ -1656,17 +1657,22 @@ export async function startServer(): Promise<StartedServer> {
       }
 
       try {
-        const drain = !skipHeartbeatDrain && drainHeartbeatRunsForShutdown
-          ? await drainHeartbeatRunsForShutdown(signal, selectiveDrainRunIds)
-          : null;
-        const retainedRuntimes = await closeAcpxEngineRuntimesForShutdown();
+        const { drain, retainedRuntimes } = await drainExecutionOwnershipForShutdown({
+          drainHeartbeatRuns: async () => !skipHeartbeatDrain && drainHeartbeatRunsForShutdown
+            ? drainHeartbeatRunsForShutdown(signal, selectiveDrainRunIds)
+            : null,
+          closeRetainedRuntimes: closeAcpxEngineRuntimesForShutdown,
+        });
         logger.info(
           { signal, drain, heartbeatDrainSkipped: skipHeartbeatDrain, retainedRuntimes },
           "shutdown heartbeat and retained-runtime drain complete",
         );
       } catch (err) {
-        logger.error({ err, signal }, "shutdown heartbeat or retained-runtime drain failed");
-        return;
+        logger.error(
+          { err, signal },
+          "shutdown execution ownership drain failed; exiting non-zero so the supervisor terminates the process group",
+        );
+        process.exit(1);
       }
 
       // Whatever the drain did not finalize (timed-out runs, the hot-restart

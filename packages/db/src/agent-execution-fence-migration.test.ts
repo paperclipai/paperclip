@@ -75,6 +75,7 @@ describeEmbeddedPostgres("agent execution fence forward migration", () => {
     const agentId = randomUUID();
     const wakeupRequestId = randomUUID();
     const legacyRunId = randomUUID();
+    const resourceOwningRunId = randomUUID();
     await sql`
       INSERT INTO "companies" ("id", "name", "issue_prefix")
       VALUES (${companyId}, 'Fence Migration', 'FNC')
@@ -98,6 +99,22 @@ describeEmbeddedPostgres("agent execution fence forward migration", () => {
       )
     `;
 
+    await sql`
+      INSERT INTO "heartbeat_runs" (
+        "id", "company_id", "agent_id", "status", "started_at", "finished_at", "process_pid"
+      ) VALUES (
+        ${resourceOwningRunId}, ${companyId}, ${agentId}, 'failed', now() - interval '1 minute', now(), 424242
+      )
+    `;
+
+    await expect(applyPendingMigrations(database.connectionString)).rejects.toThrow(
+      /requires zero admitted executions/i,
+    );
+    await sql`
+      UPDATE "heartbeat_runs"
+      SET "process_pid" = null
+      WHERE "id" = ${resourceOwningRunId}
+    `;
     await expect(applyPendingMigrations(database.connectionString)).resolves.toBeUndefined();
 
     const [legacy] = await sql<{ execution_finalization_required: boolean }[]>`

@@ -13,6 +13,33 @@ BEGIN
         AND "started_at" is not null
         AND "execution_finalized_at" is null
       )
+      OR (
+        "started_at" is not null
+        AND "execution_finalized_at" is null
+        AND (
+          "process_pid" is not null
+          OR "process_group_id" is not null
+          OR EXISTS (
+            SELECT 1
+            FROM "issues" issue
+            WHERE issue."execution_run_id" = "heartbeat_runs"."id"
+              OR issue."checkout_run_id" = "heartbeat_runs"."id"
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM "environment_leases" lease
+            WHERE lease."heartbeat_run_id" = "heartbeat_runs"."id"
+              AND lease."status" = 'active'
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM "workspace_runtime_services" runtime_service
+            WHERE runtime_service."started_by_run_id" = "heartbeat_runs"."id"
+              AND runtime_service."lifecycle" = 'ephemeral'
+              AND runtime_service."status" IN ('provisioning', 'starting', 'running')
+          )
+        )
+      )
   ) OR EXISTS (
     SELECT 1
     FROM "agent_wakeup_requests"
@@ -20,7 +47,7 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'Agent execution fence migration requires zero admitted executions'
       USING ERRCODE = '55000',
-            HINT = 'Stop admissions and drain wakeups, queued, running, scheduled-retry, and required-but-unfinalized executions before applying this migration.';
+            HINT = 'Stop admissions and drain wakeups, queued, running, scheduled-retry, required-but-unfinalized executions, and legacy runs that still own execution resources before applying this migration.';
   END IF;
 END;
 $$;--> statement-breakpoint

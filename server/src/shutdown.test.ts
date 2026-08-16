@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   coordinateHeartbeatSchedulerShutdown,
   finalizeServerShutdown,
+  drainExecutionOwnershipForShutdown,
   loadWithoutCoordinatedShutdownSignalHooks,
 } from "./shutdown.js";
 
@@ -315,5 +316,51 @@ describe("coordinateHeartbeatSchedulerShutdown", () => {
       preparationError,
       waitedForSchedulerIdle: true,
     });
+  });
+});
+
+describe("drainExecutionOwnershipForShutdown", () => {
+  it("always closes retained runtimes after a heartbeat drain failure", async () => {
+    const drainError = new Error("heartbeat drain failed");
+    const closeRetainedRuntimes = vi.fn(async () => ({ closedWarmHandles: 1 }));
+
+    await expect(drainExecutionOwnershipForShutdown({
+      drainHeartbeatRuns: async () => {
+        throw drainError;
+      },
+      closeRetainedRuntimes,
+    })).rejects.toBe(drainError);
+
+    expect(closeRetainedRuntimes).toHaveBeenCalledOnce();
+  });
+
+  it("retries retained runtime closure before failing shutdown", async () => {
+    const closeError = new Error("runtime close failed");
+    const closeRetainedRuntimes = vi
+      .fn()
+      .mockRejectedValueOnce(closeError)
+      .mockResolvedValueOnce({ closedWarmHandles: 1 });
+
+    await expect(drainExecutionOwnershipForShutdown({
+      drainHeartbeatRuns: async () => ({ interrupted: 0 }),
+      closeRetainedRuntimes,
+      retainedRuntimeCloseAttempts: 2,
+    })).resolves.toEqual({
+      drain: { interrupted: 0 },
+      retainedRuntimes: { closedWarmHandles: 1 },
+    });
+    expect(closeRetainedRuntimes).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed when retained runtime closure remains unsuccessful", async () => {
+    const closeError = new Error("runtime close failed");
+    const closeRetainedRuntimes = vi.fn().mockRejectedValue(closeError);
+
+    await expect(drainExecutionOwnershipForShutdown({
+      drainHeartbeatRuns: async () => null,
+      closeRetainedRuntimes,
+      retainedRuntimeCloseAttempts: 3,
+    })).rejects.toBe(closeError);
+    expect(closeRetainedRuntimes).toHaveBeenCalledTimes(3);
   });
 });

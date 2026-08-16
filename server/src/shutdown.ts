@@ -131,3 +131,43 @@ export async function coordinateHeartbeatSchedulerShutdown<
     waitedForSchedulerIdle: true,
   };
 }
+
+export async function drainExecutionOwnershipForShutdown<TDrain, TRetained>(input: {
+  drainHeartbeatRuns: () => Promise<TDrain>;
+  closeRetainedRuntimes: () => Promise<TRetained>;
+  retainedRuntimeCloseAttempts?: number;
+}): Promise<{ drain: TDrain; retainedRuntimes: TRetained }> {
+  let drain: TDrain | undefined;
+  let drainError: unknown = null;
+  try {
+    drain = await input.drainHeartbeatRuns();
+  } catch (error) {
+    drainError = error;
+  }
+
+  const attempts = Math.max(1, Math.trunc(input.retainedRuntimeCloseAttempts ?? 3));
+  let retainedRuntimes: TRetained | undefined;
+  let retainedRuntimeError: unknown = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      retainedRuntimes = await input.closeRetainedRuntimes();
+      retainedRuntimeError = null;
+      break;
+    } catch (error) {
+      retainedRuntimeError = error;
+    }
+  }
+
+  if (drainError && retainedRuntimeError) {
+    throw new AggregateError(
+      [drainError, retainedRuntimeError],
+      "Heartbeat drain and retained runtime closure both failed",
+    );
+  }
+  if (drainError) throw drainError;
+  if (retainedRuntimeError) throw retainedRuntimeError;
+  return {
+    drain: drain as TDrain,
+    retainedRuntimes: retainedRuntimes as TRetained,
+  };
+}
