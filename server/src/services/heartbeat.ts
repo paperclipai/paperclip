@@ -13318,12 +13318,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       // An orphan ephemeral lease keeps its provider, its provider lease id, and
       // its sandbox config in the lease row. A failed acquire records it, and its
-      // environment row may be gone or foreign-bound. So the orphan teardown reads
-      // the recorded data and accepts a null environment. A reuse_by_environment
-      // lease still needs the environment row for the destroy, so the sweep skips
-      // it when the environment row is gone.
+      // environment row may be gone or foreign-bound. A reuse_by_environment lease
+      // whose environment a delete removed keeps the same recorded data, because
+      // the schema sets the environment reference to null on delete and preserves
+      // the row. Both leases tear down from the recorded lease data through
+      // `retryPendingSandboxTeardown`, which never reads the environment row. So
+      // the sweep uses that path whenever the lease is an orphan ephemeral lease
+      // or its environment row is gone. A reuse_by_environment lease whose
+      // environment still exists tears down through `destroyRunLease`, which
+      // resolves the current environment config.
       const isOrphanEphemeralLease = lease.leasePolicy === "ephemeral";
-      if (!isOrphanEphemeralLease && !environment) continue;
+      const useRecordedTeardown = isOrphanEphemeralLease || !environment;
 
       // Atomically claim the attempt before the retry. Only the winning sweep
       // increments the count and tears the sandbox down, so an overlapping sweep
@@ -13334,9 +13339,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (!claimed) continue;
 
       try {
-        if (isOrphanEphemeralLease) {
-          // Tear the orphan sandbox down from the recorded provider config and
-          // the cleanup-authorized secret versions. The teardown returns no value
+        if (useRecordedTeardown) {
+          // Tear the sandbox down from the recorded provider config and the
+          // cleanup-authorized secret versions. The teardown returns no value
           // and throws on failure, so the sweep releases the lease itself.
           await environmentRuntime.retryPendingSandboxTeardown({ environment, lease });
           await environmentsSvc.releaseLease(lease.id, "expired", {
@@ -13355,12 +13360,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       } catch {
-        // The orphan teardown throws on failure, so revert the lease to
+        // The recorded-data teardown throws on failure, so revert the lease to
         // pending_cleanup for a later sweep. The claimed attempt still counts
-        // against the cap, so the retries stay bounded. The reuse_by_environment
-        // destroy reverts the lease itself, so this revert only runs for the
-        // orphan path.
-        if (isOrphanEphemeralLease) {
+        // against the cap, so the retries stay bounded. The `destroyRunLease`
+        // path reverts the lease itself, so this revert only runs for the
+        // recorded-data teardown path.
+        if (useRecordedTeardown) {
           await environmentsSvc.releaseLease(lease.id, "pending_cleanup", {
             cleanupStatus: "failed",
             failureReason: "pending_cleanup_retry",

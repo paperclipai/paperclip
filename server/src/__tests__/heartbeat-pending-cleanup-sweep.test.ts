@@ -98,7 +98,7 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
 
   async function insertPendingCleanupLease(input: {
     companyId: string;
-    environmentId: string;
+    environmentId: string | null;
     updatedAt: Date;
     metadata?: Record<string, unknown>;
   }): Promise<string> {
@@ -386,6 +386,84 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
       .then((rows) => rows[0]);
     expect(finalRow?.status).toBe("expired");
     expect(finalRow?.cleanupStatus).toBe("success");
+    expect((finalRow?.metadata as Record<string, unknown> | null)?.[ATTEMPTS_KEY]).toBe(1);
+  });
+
+  it("test_pending_cleanup_sweep_tears_down_reusable_lease_after_environment_delete", async () => {
+    const { companyId } = await seedCompanyAndEnvironment();
+    // A reuse_by_environment lease whose environment a delete removed. The
+    // schema sets the environment reference to null and preserves the
+    // pending_cleanup row, so the lease still points at a live provider sandbox.
+    const leaseId = await insertPendingCleanupLease({
+      companyId,
+      environmentId: null,
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    // The environment row is gone, so the sweep must tear the sandbox down from
+    // the recorded lease data through retryPendingSandboxTeardown. It must not
+    // call destroyRunLease, which needs the environment. The teardown succeeds
+    // and does not release the lease; the sweep releases it.
+    const retryPendingSandboxTeardown = vi.fn(async (input: { environment: unknown }) => {
+      expect(input.environment).toBeNull();
+    });
+    const destroyRunLease = vi.fn(async () => null);
+    const runtime = { retryPendingSandboxTeardown, destroyRunLease } as unknown as HeartbeatEnvironmentRuntime;
+    const heartbeat = heartbeatService(db, { environmentRuntime: runtime });
+
+    const result = await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 });
+
+    expect(result).toEqual({ swept: 1, destroyed: 1, capped: 0 });
+    expect(retryPendingSandboxTeardown).toHaveBeenCalledTimes(1);
+    expect(retryPendingSandboxTeardown.mock.calls[0]?.[0]).toMatchObject({
+      lease: expect.objectContaining({ id: leaseId }),
+    });
+    expect(destroyRunLease).not.toHaveBeenCalled();
+
+    const finalRow = await db
+      .select({ status: environmentLeases.status, cleanupStatus: environmentLeases.cleanupStatus })
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, leaseId))
+      .then((rows) => rows[0]);
+    expect(finalRow?.status).toBe("expired");
+    expect(finalRow?.cleanupStatus).toBe("success");
+  });
+
+  it("test_pending_cleanup_sweep_keeps_reusable_lease_when_recorded_teardown_fails", async () => {
+    const { companyId } = await seedCompanyAndEnvironment();
+    const leaseId = await insertPendingCleanupLease({
+      companyId,
+      environmentId: null,
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    // The recorded-data teardown throws, so the sweep reverts the lease to
+    // pending_cleanup for a later retry. The claimed attempt still counts
+    // against the cap, so the retries stay bounded.
+    const retryPendingSandboxTeardown = vi.fn(async () => {
+      throw new Error("provider teardown failed");
+    });
+    const destroyRunLease = vi.fn(async () => null);
+    const runtime = { retryPendingSandboxTeardown, destroyRunLease } as unknown as HeartbeatEnvironmentRuntime;
+    const heartbeat = heartbeatService(db, { environmentRuntime: runtime });
+
+    const result = await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 });
+
+    expect(result).toEqual({ swept: 1, destroyed: 0, capped: 0 });
+    expect(retryPendingSandboxTeardown).toHaveBeenCalledTimes(1);
+    expect(destroyRunLease).not.toHaveBeenCalled();
+
+    const finalRow = await db
+      .select({
+        status: environmentLeases.status,
+        cleanupStatus: environmentLeases.cleanupStatus,
+        metadata: environmentLeases.metadata,
+      })
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, leaseId))
+      .then((rows) => rows[0]);
+    expect(finalRow?.status).toBe("pending_cleanup");
+    expect(finalRow?.cleanupStatus).toBe("failed");
     expect((finalRow?.metadata as Record<string, unknown> | null)?.[ATTEMPTS_KEY]).toBe(1);
   });
 
