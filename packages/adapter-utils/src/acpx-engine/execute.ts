@@ -3325,6 +3325,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       let processIdentitySink!: AcpxProcessIdentitySink;
       let resumedSession = false;
       let clearSession = false;
+      // Signals that the settlement deliberately retained this run's process as an
+      // idle reusable runtime. Absent means any live process is still run-owned.
+      let processOwnership: AdapterExecutionResult["processOwnership"];
       let referencedProjectStagingFailuresField:
         | { referencedProjectStagingFailures: Array<{ projectId: string }> }
         | Record<string, never> = {};
@@ -3957,6 +3960,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           cancelTurnReason: null,
         };
 
+
         const errorMessage = timedOut
           ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
           : resultErrorMessage(terminal);
@@ -3982,6 +3986,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           ...billingFields,
           ...referencedProjectStagingFailuresField,
           model: prepared.requestedModel || null,
+          ...(processOwnership ? { processOwnership } : {}),
           ...(turnUsage.usage ? { usage: turnUsage.usage, usageBasis: "per_run" as const } : {}),
           costUsd: turnUsage.costUsd,
           resultJson: {
@@ -4165,7 +4170,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // on close.
         endSession: (slots, decision) => timedPhase("end_session", async () => {
           if (!slots.has("acp_runtime")) return;
-          if (decision.kind === "save" && decision.savedId === "acp_runtime") return;
+          if (decision.kind === "save" && decision.savedId === "acp_runtime") {
+            // The settlement retained the runtime as an idle reusable process.
+            // Signal run-process ownership release so the drain-fence finalizer
+            // can certify this run without blocking on the still-live process.
+            processOwnership = "retained_runtime";
+            return;
+          }
           const settlement: RuntimeSettlementPlan = runtimeSettlement ?? {
             mode: "direct",
             handle: syntheticCloseHandle(),
@@ -4272,7 +4283,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           if (!capturedResult) {
             throw new Error("run coordinator reproduced a result before the run recorded one");
           }
-          return capturedResult;
+          // The settlement decided the reuse after the result was captured; carry
+          // its retained-runtime signal into the reproduced result so the server
+          // releases run-process ownership for the still-live warm process.
+          return processOwnership ? { ...capturedResult, processOwnership } : capturedResult;
         },
       };
       return await runAttempt(plan);

@@ -754,14 +754,17 @@ describePostgres("agent execution fence", () => {
     ]);
     expect(finalizedRun).toMatchObject({
       status: "interrupted",
-      executionFinalizedAt: expect.any(Date),
+      executionFinalizerCompletedAt: null,
+      executionFinalizedAt: null,
     });
     expect(finalizedWakeup.status).toBe("interrupted");
+    await service.markRunFinalizerCompleted(run.id);
+    await service.acknowledgeRunFinalization(run.id);
     await expect(service.get(agent.id, acquired.fenceId)).resolves.toMatchObject({ drained: true });
     await service.release(agent.id, acquired.fenceId);
   });
 
-  it("acknowledges unfenced shutdown finalization before a later fence", async () => {
+  it("does not acknowledge shutdown finalization before the execution finally path", async () => {
     const { company, agent } = await seedAgent("running");
     const run = await db
       .insert(heartbeatRuns)
@@ -788,7 +791,8 @@ describePostgres("agent execution fence", () => {
       .then((rows) => rows[0]!);
     expect(finalized).toMatchObject({
       status: "interrupted",
-      executionFinalizedAt: expect.any(Date),
+      executionFinalizerCompletedAt: null,
+      executionFinalizedAt: null,
     });
 
     await db
@@ -805,14 +809,19 @@ describePostgres("agent execution fence", () => {
       agentId: agent.id,
       companyId: company.id,
       actorUserId: "board-user",
-      reason: "later maintenance",
+      reason: "must wait for the actual execution finally path",
     });
-    await expect(fences.release(agent.id, acquired.fenceId)).resolves.toMatchObject({
-      executionFenceId: null,
+    await expect(fences.get(agent.id, acquired.fenceId)).resolves.toMatchObject({
+      drained: false,
+      pendingRunIds: [run.id],
     });
+    await expect(fences.release(agent.id, acquired.fenceId)).rejects.toMatchObject({ status: 409 });
+    await fences.markRunFinalizerCompleted(run.id);
+    await fences.acknowledgeRunFinalization(run.id);
+    await expect(fences.release(agent.id, acquired.fenceId)).resolves.toBeDefined();
   });
 
-  it("explicitly reconciles a terminal row instead of synthesizing migration proof", async () => {
+  it("does not synthesize finalization proof for a missed terminal row", async () => {
     const { company, agent } = await seedAgent("idle");
     const run = await db
       .insert(heartbeatRuns)
@@ -829,15 +838,83 @@ describePostgres("agent execution fence", () => {
     await expect(heartbeatService(db, { runtimeEnv: {} }).reapOrphanedRuns()).resolves.toMatchObject({
       reaped: 0,
     });
-    const reconciled = await db
+    const untouched = await db
       .select()
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, run.id))
       .then((rows) => rows[0]!);
-    expect(reconciled).toMatchObject({
+    expect(untouched).toMatchObject({
+      executionFinalizerCompletedAt: null,
+      executionFinalizedAt: null,
+    });
+    const fences = agentExecutionFenceService(db);
+    const acquired = await fences.acquire({
+      agentId: agent.id,
+      companyId: company.id,
+      actorUserId: "board-user",
+      reason: "terminal proof remains absent",
+    });
+    await expect(fences.get(agent.id, acquired.fenceId)).resolves.toMatchObject({
+      drained: false,
+      pendingRunIds: [run.id],
+    });
+    await expect(fences.release(agent.id, acquired.fenceId)).rejects.toMatchObject({ status: 409 });
+    await fences.markRunFinalizerCompleted(run.id);
+    await fences.acknowledgeRunFinalization(run.id);
+    await expect(fences.release(agent.id, acquired.fenceId)).resolves.toBeDefined();
+  });
+
+  it("retries acknowledgement only after durable finalizer completion exists", async () => {
+    const { company, agent } = await seedAgent("idle");
+    const run = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: company.id,
+        agentId: agent.id,
+        status: "failed",
+        startedAt: new Date(Date.now() - 60_000),
+        finishedAt: new Date(Date.now() - 30_000),
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const fences = agentExecutionFenceService(db);
+    await fences.markRunFinalizerCompleted(run.id);
+
+    await expect(heartbeatService(db, { runtimeEnv: {} }).reapOrphanedRuns()).resolves.toMatchObject({
+      reaped: 0,
+    });
+
+    const recovered = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, run.id))
+      .then((rows) => rows[0]!);
+    expect(recovered).toMatchObject({
       executionFinalizerCompletedAt: expect.any(Date),
       executionFinalizedAt: expect.any(Date),
     });
+  });
+
+  it("forces durable finalization tracking on every post-cutover run and keeps it immutable", async () => {
+    const { company, agent } = await seedAgent("idle");
+    const run = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: company.id,
+        agentId: agent.id,
+        status: "failed",
+        executionFinalizationRequired: false,
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+
+    expect(run.executionFinalizationRequired).toBe(true);
+    await expect(
+      db
+        .update(heartbeatRuns)
+        .set({ executionFinalizationRequired: false })
+        .where(eq(heartbeatRuns.id, run.id)),
+    ).rejects.toBeDefined();
   });
 
   it("refuses durable finalizer completion while a run still owns an issue or active lease", async () => {
@@ -922,16 +999,17 @@ describePostgres("agent execution fence", () => {
       })
       .returning()
       .then((rows) => rows[0]!);
-    await db.insert(issues).values({
+    const issue = await db.insert(issues).values({
       companyId: company.id,
       title: "Transferred retry ownership test",
-      checkoutRunId: run.id,
+      checkoutRunId: retry.id,
       executionRunId: retry.id,
-    });
+    }).returning().then((rows) => rows[0]!);
 
     await expect(agentExecutionFenceService(db).markRunFinalizerCompleted(run.id)).resolves.toMatchObject({
       executionFinalizerCompletedAt: expect.any(Date),
     });
+    expect(issue.checkoutRunId).toBe(retry.id);
   });
 
   it("rejects execution resource attachment after durable finalizer completion", async () => {
@@ -974,6 +1052,13 @@ describePostgres("agent execution fence", () => {
       }),
     ).rejects.toBeDefined();
     await expect(
+      db.insert(issues).values({
+        companyId: company.id,
+        title: "Late checkout owner",
+        checkoutRunId: run.id,
+      }),
+    ).rejects.toBeDefined();
+    await expect(
       db.insert(workspaceRuntimeServices).values({
         id: randomUUID(),
         companyId: company.id,
@@ -1006,6 +1091,94 @@ describePostgres("agent execution fence", () => {
       isProcessGroupAlive: () => true,
     });
     await expect(service.markRunFinalizerCompleted(run.id)).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("refuses durable finalizer completion while a pid-only execution is alive", async () => {
+    const { company, agent } = await seedAgent("idle");
+    const run = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: company.id,
+        agentId: agent.id,
+        status: "failed",
+        startedAt: new Date(Date.now() - 60_000),
+        finishedAt: new Date(Date.now() - 30_000),
+        processPid: 4242,
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+
+    const service = agentExecutionFenceService(db, {
+      isPidAlive: () => true,
+      isProcessGroupAlive: () => false,
+    });
+    await expect(service.markRunFinalizerCompleted(run.id)).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("allows durable finalizer completion after a live process is explicitly retained by the runtime", async () => {
+    const { company, agent } = await seedAgent("idle");
+    const run = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: company.id,
+        agentId: agent.id,
+        status: "succeeded",
+        startedAt: new Date(Date.now() - 60_000),
+        finishedAt: new Date(Date.now() - 30_000),
+        processPid: 4242,
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "running",
+        finishedAt: null,
+        processOwnershipReleasedAt: new Date(Date.now() - 31_000),
+      })
+      .where(eq(heartbeatRuns.id, run.id));
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date(Date.now() - 30_000) })
+      .where(eq(heartbeatRuns.id, run.id));
+
+    const service = agentExecutionFenceService(db, {
+      isPidAlive: () => true,
+      isProcessGroupAlive: () => false,
+    });
+    await expect(service.markRunFinalizerCompleted(run.id)).resolves.toMatchObject({
+      executionFinalizerCompletedAt: expect.any(Date),
+      processOwnershipReleasedAt: expect.any(Date),
+    });
+    await expect(service.acknowledgeRunFinalization(run.id)).resolves.toMatchObject({
+      executionFinalizedAt: expect.any(Date),
+    });
+  });
+
+  it("rejects late process metadata attachment after durable finalizer completion", async () => {
+    const { company, agent } = await seedAgent("idle");
+    const run = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: company.id,
+        agentId: agent.id,
+        status: "failed",
+        startedAt: new Date(Date.now() - 60_000),
+        finishedAt: new Date(Date.now() - 30_000),
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    await agentExecutionFenceService(db, {
+      isPidAlive: () => false,
+      isProcessGroupAlive: () => false,
+    }).markRunFinalizerCompleted(run.id);
+
+    await expect(
+      db.update(heartbeatRuns).set({ processPid: 4242 }).where(eq(heartbeatRuns.id, run.id)),
+    ).rejects.toBeDefined();
+    await expect(
+      db.update(heartbeatRuns).set({ processGroupId: 4242 }).where(eq(heartbeatRuns.id, run.id)),
+    ).rejects.toBeDefined();
   });
 
   it("suppresses an orphan retry rejected by an acquired fence and still drains", async () => {
@@ -1046,6 +1219,11 @@ describePostgres("agent execution fence", () => {
       runIds: [run.id],
     });
     expect(acquired).not.toBeNull();
+    const recoveryEvents = await db
+      .select({ message: heartbeatRunEvents.message })
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, run.id));
+    expect(recoveryEvents.some((event) => event.message.includes("queued retry"))).toBe(false);
     await expect(fences.get(agent.id, acquired!.fenceId)).resolves.toMatchObject({ drained: true });
     await expect(fences.release(agent.id, acquired!.fenceId)).resolves.toBeDefined();
   });

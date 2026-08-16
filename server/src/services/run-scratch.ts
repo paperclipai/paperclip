@@ -27,7 +27,7 @@ export interface HeartbeatRunScratchEnvResult {
 
 export type HeartbeatRunScratchCleanupResult =
   | { removed: true; dir: string }
-  | { removed: false; dir: string; reason: "missing" | "unmarked" | "owner_mismatch" | "process_group_alive" };
+  | { removed: false; dir: string; reason: "missing" | "unmarked" | "owner_mismatch" | "process_alive" };
 
 export interface HeartbeatRunScratchReconciliationResult {
   processGroupAlive: boolean;
@@ -108,6 +108,21 @@ export async function prepareHeartbeatRunScratch(input: {
   return { dir, markerPath, metadata };
 }
 
+export async function listHeartbeatRunScratch(): Promise<HeartbeatRunScratch[]> {
+  const tmpRoot = path.resolve(os.tmpdir());
+  const entries = await fs.readdir(tmpRoot, { withFileTypes: true });
+  const scratch: HeartbeatRunScratch[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith("paperclip-run-")) continue;
+    const dir = path.join(tmpRoot, entry.name);
+    const markerPath = path.join(dir, HEARTBEAT_RUN_SCRATCH_MARKER);
+    const metadata = await readMarker(markerPath);
+    if (!metadata) continue;
+    scratch.push({ dir, markerPath, metadata });
+  }
+  return scratch;
+}
+
 export function buildHeartbeatRunScratchEnv(
   existingEnv: Record<string, unknown>,
   scratch: HeartbeatRunScratch,
@@ -130,7 +145,9 @@ export function buildHeartbeatRunScratchEnv(
 
 export async function cleanupHeartbeatRunScratch(input: {
   scratch: HeartbeatRunScratch;
+  processPid?: number | null;
   processGroupId?: number | null;
+  isPidAlive?: (pid: number) => boolean;
   isProcessGroupAlive?: (processGroupId: number | null | undefined) => boolean;
 }): Promise<HeartbeatRunScratchCleanupResult> {
   const tmpRoot = path.resolve(os.tmpdir());
@@ -154,8 +171,11 @@ export async function cleanupHeartbeatRunScratch(input: {
   ) {
     return { removed: false, dir, reason: "owner_mismatch" };
   }
-  if (input.isProcessGroupAlive?.(input.processGroupId) === true) {
-    return { removed: false, dir, reason: "process_group_alive" };
+  if (
+    (typeof input.processPid === "number" && input.isPidAlive?.(input.processPid) === true) ||
+    input.isProcessGroupAlive?.(input.processGroupId) === true
+  ) {
+    return { removed: false, dir, reason: "process_alive" };
   }
 
   await fs.rm(dir, { recursive: true, force: true });
@@ -166,10 +186,15 @@ export async function reconcileHeartbeatRunScratch(input: {
   companyId: string;
   agentId: string;
   runId: string;
+  processPid?: number | null;
   processGroupId?: number | null;
+  isPidAlive?: (pid: number) => boolean;
   isProcessGroupAlive?: (processGroupId: number | null | undefined) => boolean;
 }): Promise<HeartbeatRunScratchReconciliationResult> {
-  if (input.isProcessGroupAlive?.(input.processGroupId) === true) {
+  if (
+    (typeof input.processPid === "number" && input.isPidAlive?.(input.processPid) === true) ||
+    input.isProcessGroupAlive?.(input.processGroupId) === true
+  ) {
     return { processGroupAlive: true, removedDirs: [], remainingDirs: [] };
   }
 
@@ -182,8 +207,12 @@ export async function reconcileHeartbeatRunScratch(input: {
     const dir = path.join(tmpRoot, entry.name);
     const markerPath = path.join(dir, HEARTBEAT_RUN_SCRATCH_MARKER);
     const metadata = await readMarker(markerPath);
+    if (!metadata) {
+      const runSegment = sanitizePathSegment(input.runId.slice(0, 12), "run");
+      if (entry.name.includes(`-${runSegment}-`)) remainingDirs.push(dir);
+      continue;
+    }
     if (
-      !metadata ||
       metadata.companyId !== input.companyId ||
       metadata.agentId !== input.agentId ||
       metadata.runId !== input.runId
@@ -192,7 +221,9 @@ export async function reconcileHeartbeatRunScratch(input: {
     }
     const result = await cleanupHeartbeatRunScratch({
       scratch: { dir, markerPath, metadata },
+      processPid: input.processPid,
       processGroupId: input.processGroupId,
+      isPidAlive: input.isPidAlive,
       isProcessGroupAlive: input.isProcessGroupAlive,
     });
     if (result.removed || result.reason === "missing") removedDirs.push(dir);

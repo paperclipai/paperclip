@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, isNotNull, isNull, notInArray } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, notInArray, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -11,7 +11,10 @@ import {
 } from "@paperclipai/db";
 import { conflict, notFound } from "../errors.js";
 import { logActivity } from "./activity-log.js";
-import { isProcessGroupAlive as defaultIsProcessGroupAlive } from "./local-service-supervisor.js";
+import {
+  isPidAlive as defaultIsPidAlive,
+  isProcessGroupAlive as defaultIsProcessGroupAlive,
+} from "./local-service-supervisor.js";
 import { reconcileHeartbeatRunScratch } from "./run-scratch.js";
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -70,6 +73,7 @@ async function readFenceCensus(
       .where(
         and(
           eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.executionFinalizationRequired, true),
           isNotNull(heartbeatRuns.startedAt),
           isNull(heartbeatRuns.executionFinalizedAt),
           notInArray(heartbeatRuns.status, [...NEVER_EXECUTING_RUN_STATUSES]),
@@ -110,9 +114,11 @@ async function readFenceCensus(
 export function agentExecutionFenceService(
   db: Db,
   options: {
+    isPidAlive?: (pid: number) => boolean;
     isProcessGroupAlive?: (processGroupId: number | null | undefined) => boolean;
   } = {},
 ) {
+  const isPidAlive = options.isPidAlive ?? defaultIsPidAlive;
   const isProcessGroupAlive = options.isProcessGroupAlive ?? defaultIsProcessGroupAlive;
   async function getLockedAgent(
     tx: DbTransaction,
@@ -286,30 +292,41 @@ export function agentExecutionFenceService(
           .for("update")
           .then((rows) => rows[0] ?? null);
         if (!current) throw notFound("Heartbeat run not found");
+        if (!current.executionFinalizationRequired) {
+          throw conflict("Legacy run is outside durable finalization tracking", { runId });
+        }
         if (UNFINALIZED_RUN_STATUSES.includes(current.status as (typeof UNFINALIZED_RUN_STATUSES)[number])) {
           throw conflict("Cannot complete the finalizer before the run is terminal", {
             runId,
             status: current.status,
           });
         }
-        const scratchReconciliation = await reconcileHeartbeatRunScratch({
-          companyId: current.companyId,
-          agentId: current.agentId,
-          runId: current.id,
-          processGroupId: current.processGroupId,
-          isProcessGroupAlive,
-        });
-        if (scratchReconciliation.processGroupAlive) {
-          throw conflict("Cannot complete the finalizer while the execution process group is alive", {
+        const processAlive =
+          (typeof current.processPid === "number" && isPidAlive(current.processPid)) ||
+          isProcessGroupAlive(current.processGroupId);
+        if (processAlive && !current.processOwnershipReleasedAt) {
+          throw conflict("Cannot complete the finalizer while the execution process is alive", {
             runId,
+            processPid: current.processPid,
             processGroupId: current.processGroupId,
           });
         }
-        if (scratchReconciliation.remainingDirs.length > 0) {
-          throw conflict("Cannot complete the finalizer while execution scratch remains", {
-            runId,
-            remainingScratchDirs: scratchReconciliation.remainingDirs,
+        if (!processAlive) {
+          const scratchReconciliation = await reconcileHeartbeatRunScratch({
+            companyId: current.companyId,
+            agentId: current.agentId,
+            runId: current.id,
+            processPid: current.processPid,
+            processGroupId: current.processGroupId,
+            isPidAlive,
+            isProcessGroupAlive,
           });
+          if (scratchReconciliation.remainingDirs.length > 0) {
+            throw conflict("Cannot complete the finalizer while execution scratch remains", {
+              runId,
+              remainingScratchDirs: scratchReconciliation.remainingDirs,
+            });
+          }
         }
 
         if (current.wakeupRequestId) {
@@ -359,7 +376,7 @@ export function agentExecutionFenceService(
               executionRunId: issues.executionRunId,
             })
             .from(issues)
-            .where(eq(issues.executionRunId, runId))
+            .where(or(eq(issues.executionRunId, runId), eq(issues.checkoutRunId, runId)))
             .limit(1)
             .then((rows) => rows[0] ?? null),
           tx
@@ -410,6 +427,9 @@ export function agentExecutionFenceService(
           .then((rows) => rows[0] ?? null);
         if (!current) throw notFound("Heartbeat run not found");
         if (current.executionFinalizedAt) return current;
+        if (!current.executionFinalizationRequired) {
+          throw conflict("Legacy run is outside durable finalization tracking", { runId });
+        }
         if (UNFINALIZED_RUN_STATUSES.includes(current.status as (typeof UNFINALIZED_RUN_STATUSES)[number])) {
           throw conflict("Cannot acknowledge finalization before the run is terminal", {
             runId,
@@ -421,9 +441,16 @@ export function agentExecutionFenceService(
             runId,
           });
         }
-        if (current.processGroupId && isProcessGroupAlive(current.processGroupId)) {
-          throw conflict("Cannot acknowledge finalization while the execution process group is alive", {
+        if (
+          !current.processOwnershipReleasedAt &&
+          (
+            (current.processPid && isPidAlive(current.processPid)) ||
+            (current.processGroupId && isProcessGroupAlive(current.processGroupId))
+          )
+        ) {
+          throw conflict("Cannot acknowledge finalization while the execution process is alive", {
             runId,
+            processPid: current.processPid,
             processGroupId: current.processGroupId,
           });
         }

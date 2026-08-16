@@ -82,6 +82,12 @@ export interface AdapterExecutionResult {
   errorFamily?: AdapterExecutionErrorFamily | null;
   retryNotBefore?: string | null;
   errorMeta?: Record<string, unknown>;
+  /**
+   * Signals that a completed turn deliberately left its process alive as an
+   * idle, reusable runtime. The server persists this run boundary before it
+   * certifies finalization; absence means any live process is still run-owned.
+   */
+  processOwnership?: "retained_runtime";
   usage?: UsageSummary;
   /**
    * How `usage` totals are scoped. "per_run" means the tokens cover only this

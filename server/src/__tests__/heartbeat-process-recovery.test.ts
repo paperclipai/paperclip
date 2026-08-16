@@ -123,6 +123,10 @@ import {
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
 } from "@paperclipai/adapter-utils/server-utils";
+import {
+  HEARTBEAT_RUN_SCRATCH_MARKER,
+  listHeartbeatRunScratch,
+} from "../services/run-scratch.ts";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -2053,6 +2057,66 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(settled?.status).toBe("succeeded");
   });
 
+  it("durably releases a retained warm runtime from the completed run before finalization", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    if (!child.pid) throw new Error("Test warm runtime did not expose a pid");
+    mockAdapterExecute.mockImplementationOnce(async (rawInput?: unknown) => {
+      const input = rawInput as {
+        onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+      };
+      await input.onSpawn?.({
+        pid: child.pid!,
+        processGroupId: null,
+        startedAt: new Date("2026-08-15T20:00:00.000Z").toISOString(),
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Warm runtime retained after a completed turn.",
+        provider: "test",
+        model: "test-model",
+        processOwnership: "retained_runtime" as const,
+      };
+    });
+    const { runId } = await seedRunFixture({
+      adapterType: "codex_local",
+      agentStatus: "idle",
+      runStatus: "queued",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    const settled = await waitForValue(async () => {
+      const current = await heartbeat.getRun(runId);
+      return current?.executionFinalizedAt ? current : null;
+    }, 5_000);
+
+    expect(isPidAlive(child.pid)).toBe(true);
+    expect(settled).toMatchObject({
+      status: "succeeded",
+      processPid: child.pid,
+      processOwnershipReleasedAt: expect.any(Date),
+      executionFinalizerCompletedAt: expect.any(Date),
+      executionFinalizedAt: expect.any(Date),
+    });
+
+    const retainedScratch = (await listHeartbeatRunScratch())
+      .filter((entry) => entry.metadata.runId === runId);
+    expect(retainedScratch).toHaveLength(1);
+
+    child.kill("SIGKILL");
+    await expect(waitForPidExit(child.pid)).resolves.toBe(true);
+    await heartbeat.reapOrphanedRuns();
+    expect((await listHeartbeatRunScratch()).some((entry) => entry.metadata.runId === runId)).toBe(false);
+  });
+
   it("reports adopted hot-restart runs before startup reap can mark them process_lost", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
@@ -2247,6 +2311,180 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.executionRunId).toBe(retryRun?.id);
   });
 
+  it("waits for the genuine execution finalizer and leaves shutdown recovery queued", async () => {
+    let signalAdapterStarted!: () => void;
+    const adapterStarted = new Promise<void>((resolve) => {
+      signalAdapterStarted = resolve;
+    });
+    let releaseAdapter!: () => void;
+    const adapterBlocked = new Promise<void>((resolve) => {
+      releaseAdapter = resolve;
+    });
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      signalAdapterStarted();
+      await adapterBlocked;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Shutdown finalizer regression test.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const { agentId, runId } = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "queued",
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await adapterStarted;
+
+    let drainSettled = false;
+    const drain = heartbeat
+      .drainRunningRunsForShutdown("SIGTERM", new Date("2026-03-19T00:06:00.000Z"))
+      .finally(() => {
+        drainSettled = true;
+      });
+    await waitForValue(async () => {
+      const current = await heartbeat.getRun(runId);
+      return current?.status === "interrupted" ? current : null;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(drainSettled).toBe(false);
+
+    releaseAdapter();
+    await expect(drain).resolves.toMatchObject({
+      interruptedRunIds: [runId],
+      retryRunIds: [expect.any(String)],
+    });
+    const original = await heartbeat.getRun(runId);
+    expect(original).toMatchObject({
+      status: "interrupted",
+      executionFinalizerCompletedAt: expect.any(Date),
+      executionFinalizedAt: expect.any(Date),
+    });
+    const retries = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.retryOfRunId, runId)));
+    expect(retries).toHaveLength(1);
+    expect(retries[0]).toMatchObject({ status: "queued" });
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds shutdown waiting for an execution without a local process handle", async () => {
+    let signalAdapterStarted!: () => void;
+    const adapterStarted = new Promise<void>((resolve) => {
+      signalAdapterStarted = resolve;
+    });
+    let releaseAdapter!: () => void;
+    const adapterBlocked = new Promise<void>((resolve) => {
+      releaseAdapter = resolve;
+    });
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      signalAdapterStarted();
+      await adapterBlocked;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Remote execution completed after the shutdown deadline.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const { runId } = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "queued",
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db, { shutdownExecutionWaitTimeoutMs: 25 });
+    await heartbeat.resumeQueuedRuns();
+    await adapterStarted;
+
+    const drain = heartbeat.drainRunningRunsForShutdown(
+      "SIGTERM",
+      new Date("2026-03-19T00:06:00.000Z"),
+    );
+    try {
+      await expect(Promise.race([
+        drain,
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("shutdown drain did not honor its execution deadline")), 500);
+        }),
+      ])).resolves.toMatchObject({
+        interruptedRunIds: [runId],
+        drainTimedOutRunIds: [runId],
+      });
+      const interrupted = await heartbeat.getRun(runId);
+      expect(interrupted).toMatchObject({
+        status: "interrupted",
+        executionFinalizerCompletedAt: null,
+        executionFinalizedAt: null,
+      });
+    } finally {
+      releaseAdapter();
+      await drain;
+    }
+
+    const eventuallyFinalized = await waitForValue(async () => {
+      const current = await heartbeat.getRun(runId);
+      return current?.executionFinalizedAt ? current : null;
+    });
+    expect(eventuallyFinalized).toMatchObject({
+      executionFinalizerCompletedAt: expect.any(Date),
+      executionFinalizedAt: expect.any(Date),
+    });
+  });
+
+  it("genuinely finalizes a previously adopted run during a later shutdown", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeGreaterThan(0);
+    const { runId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: child.pid ?? null,
+      processGroupId: null,
+      contextSnapshot: {
+        executionEngine: "cli",
+        processTopology: "detached",
+      },
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        resultJson: {
+          hotRestart: {
+            adopted: true,
+            adoptedAt: "2026-03-19T00:05:00.000Z",
+            processPid: child.pid,
+            processGroupId: null,
+          },
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    await expect(heartbeat.drainRunningRunsForShutdown(
+      "SIGTERM",
+      new Date("2026-03-19T00:06:00.000Z"),
+    )).resolves.toMatchObject({
+      interruptedRunIds: [runId],
+    });
+    await expect(waitForPidExit(child.pid!)).resolves.toBe(true);
+
+    const finalized = await heartbeat.getRun(runId);
+    expect(finalized).toMatchObject({
+      status: "interrupted",
+      executionFinalizerCompletedAt: expect.any(Date),
+      executionFinalizedAt: expect.any(Date),
+    });
+  });
+
   it("does not overwrite a run that is no longer running during graceful shutdown drain", async () => {
     const { runId, wakeupRequestId } = await seedRunFixture({
       agentStatus: "running",
@@ -2412,6 +2650,36 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(lease?.status).toBe("failed");
     expect(lease?.releasedAt).toBeTruthy();
+  });
+
+  it("quarantines malformed scratch run IDs without aborting orphan recovery", async () => {
+    const malformedScratchDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-malformed-id-"));
+    const { runId } = await seedRunFixture({
+      processPid: 999_999_999,
+      includeIssue: false,
+    });
+    try {
+      await fs.writeFile(
+        path.join(malformedScratchDir, HEARTBEAT_RUN_SCRATCH_MARKER),
+        `${JSON.stringify({
+          version: 1,
+          companyId: randomUUID(),
+          agentId: randomUUID(),
+          runId: "not-a-uuid",
+          issueId: null,
+          issueIdentifier: null,
+          createdAt: "2026-03-19T00:00:00.000Z",
+        })}\n`,
+        { mode: 0o600 },
+      );
+
+      await expect(heartbeatService(db).reapOrphanedRuns()).resolves.toEqual({
+        reaped: 1,
+        runIds: [runId],
+      });
+    } finally {
+      await fs.rm(malformedScratchDir, { recursive: true, force: true });
+    }
   });
 
   it.skipIf(process.platform === "win32")("reaps orphaned descendant process groups when the parent pid is already gone", async () => {

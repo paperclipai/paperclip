@@ -85,6 +85,7 @@ import {
   agentExecutionFenceService,
   isAgentExecutionFenceError,
 } from "./agent-execution-fence.js";
+import { persistFinalizationStepReliably } from "./finalization-retry.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
@@ -185,6 +186,7 @@ import {
   HEARTBEAT_RUN_SCRATCH_MARKER,
   buildHeartbeatRunScratchEnv,
   cleanupHeartbeatRunScratch,
+  listHeartbeatRunScratch,
   prepareHeartbeatRunScratch,
   type HeartbeatRunScratch,
 } from "./run-scratch.js";
@@ -441,6 +443,7 @@ export {
 } from "./recovery/service.js";
 export const ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS = 60 * 1000;
 export const ACTIVE_RUN_LOG_RUNTIME_STATUS_REFRESH_INTERVAL_MS = 5 * 1000;
+const SHUTDOWN_EXECUTION_FINALIZER_WAIT_MS = 30 * 1000;
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
   2 * 60 * 1000,
   10 * 60 * 1000,
@@ -785,7 +788,13 @@ const activeRunExecutions = new Set<string>();
 // — shared across service instances like activeRunExecutions above — so callers
 // that must guarantee no run write is still in flight (graceful shutdown, and
 // tests tearing down a shared database) can await drainActiveRunExecutions().
-const activeRunExecutionPromises = new Set<Promise<void>>();
+const activeRunExecutionPromises = new Map<string, Promise<void>>();
+// A shutdown drain must let each selected execution flush its real finally
+// path without allowing that path to start the queued restart-recovery run in
+// the process that is exiting. The marker is process-local and covers only
+// promises that this process actually owns; synthetic DB rows are never
+// granted finalization proof by it.
+const shutdownDrainingRunIds = new Set<string>();
 // Routes dispatch a wakeup fire-and-forget (void heartbeat.wakeup(...)). The
 // wakeup promise stays pending through its asynchronous prologue, and it
 // resolves only after it inserts the queued run and registers the run
@@ -6610,6 +6619,7 @@ export interface HeartbeatServiceOptions {
   environmentRuntime?: HeartbeatEnvironmentRuntime;
   runtimeEnv?: Record<string, string | undefined>;
   beforeProcessLossRetryEnqueue?: (runId: string) => Promise<void> | void;
+  shutdownExecutionWaitTimeoutMs?: number;
 }
 
 type WorkspaceReadyCommentWriter = {
@@ -6741,18 +6751,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return runningProcesses.has(id) || activeRunExecutions.has(id);
     },
   };
+  async function acknowledgeCompletedRunFinalizationReliably(runId: string) {
+    return persistFinalizationStepReliably(() => executionFences.acknowledgeRunFinalization(runId));
+  }
   async function acknowledgeRunFinalizationReliably(runId: string) {
-    await executionFences.markRunFinalizerCompleted(runId);
-    let lastError: unknown = null;
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      try {
-        return await executionFences.acknowledgeRunFinalization(runId);
-      } catch (error) {
-        lastError = error;
-        if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 25));
-      }
-    }
-    throw lastError;
+    await persistFinalizationStepReliably(() => executionFences.markRunFinalizerCompleted(runId));
+    return acknowledgeCompletedRunFinalizationReliably(runId);
   }
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
@@ -9821,6 +9825,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  async function releaseRunProcessOwnership(runId: string) {
+    const releasedAt = new Date();
+    const released = await db
+      .update(heartbeatRuns)
+      .set({
+        processOwnershipReleasedAt: releasedAt,
+        updatedAt: releasedAt,
+      })
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running")))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!released) {
+      throw conflict("Cannot release process ownership outside the active heartbeat execution", { runId });
+    }
+    return released;
+  }
+
   async function clearDetachedRunWarning(runId: string) {
     const updated = await db
       .update(heartbeatRuns)
@@ -10689,107 +10710,212 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (selectedRunIds?.length === 0) {
       return { interrupted: 0, interruptedRunIds: [], retryRunIds: [] };
     }
-    const activeRuns = await db
-      .select({
-        run: heartbeatRuns,
-        agent: agents,
-      })
-      .from(heartbeatRuns)
-      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
-      .where(
-        selectedRunIds
-          ? and(
-            eq(heartbeatRuns.status, "running"),
-            inArray(heartbeatRuns.id, selectedRunIds),
-          )
-          : eq(heartbeatRuns.status, "running"),
-      );
+    if (!selectedRunIds) {
+      await Promise.allSettled([...activeWakeupPromises]);
+    }
+    const selectedExecutionEntries = [...activeRunExecutionPromises.entries()]
+      .filter(([runId]) => !selectedRunIds || selectedRunIds.includes(runId));
+    const selectedExecutionRunIds = new Set(selectedExecutionEntries.map(([runId]) => runId));
+    for (const [runId] of selectedExecutionEntries) shutdownDrainingRunIds.add(runId);
 
     const interruptedRunIds: string[] = [];
     const retryRunIds: string[] = [];
+    const adoptedRunIdsRequiringFinalization: string[] = [];
+    const drainTimedOutRunIds: string[] = [];
 
-    for (const { run, agent } of activeRuns) {
-      const running = runningProcesses.get(run.id);
-      try {
-        if (running) {
-          await terminateHeartbeatRunProcess({
-            pid: running.child.pid ?? run.processPid,
-            processGroupId: running.processGroupId ?? run.processGroupId,
-            graceMs: Math.max(1, running.graceSec) * 1000,
-          });
-        } else if (run.processPid || run.processGroupId) {
-          await terminateHeartbeatRunProcess({
-            pid: run.processPid,
-            processGroupId: run.processGroupId,
-          });
-        }
-      } finally {
-        runningProcesses.delete(run.id);
-      }
+    try {
+      const activeRuns = await db
+        .select({
+          run: heartbeatRuns,
+          agent: agents,
+        })
+        .from(heartbeatRuns)
+        .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+        .where(
+          selectedRunIds
+            ? and(
+              eq(heartbeatRuns.status, "running"),
+              inArray(heartbeatRuns.id, selectedRunIds),
+            )
+            : eq(heartbeatRuns.status, "running"),
+        );
 
-      const message = `Interrupted by graceful server shutdown (${signal}); retry queued for restart recovery`;
-      const interruptedStatus = await setRunStatusIfRunning(run.id, "interrupted", {
-        finishedAt: now,
-        error: message,
-        errorCode: "server_shutdown_interrupted",
-        signal,
-        resultJson: mergeRunStopMetadataForAgent(agent, "interrupted", {
-          resultJson: parseObject(run.resultJson),
-          errorCode: "server_shutdown_interrupted",
-          errorMessage: message,
-        }),
-      });
-      if (!interruptedStatus.updated || !interruptedStatus.run) continue;
-      let interrupted = interruptedStatus.run;
-      await setWakeupStatus(run.wakeupRequestId, "interrupted", {
-        finishedAt: now,
-        error: null,
-      });
-      interrupted = await classifyAndPersistRunLiveness(interrupted, parseObject(interrupted.resultJson)) ?? interrupted;
-
-      await releaseEnvironmentLeasesForRun({
-        runId: interrupted.id,
-        companyId: interrupted.companyId,
-        agentId: interrupted.agentId,
-        status: interrupted.status,
-        failureReason: interrupted.error ?? undefined,
-      });
-
-      const currentAgent = await getAgent(interrupted.agentId);
-      let retry: typeof heartbeatRuns.$inferSelect | null = null;
-      if (currentAgent && !currentAgent.executionFenceId) {
+      for (const { run, agent } of activeRuns) {
+        const running = runningProcesses.get(run.id);
         try {
-          retry = await enqueueProcessLossRetry(interrupted, currentAgent, now);
-        } catch (error) {
-          if (!isAgentExecutionFenceError(error)) throw error;
+          if (running) {
+            await terminateHeartbeatRunProcess({
+              pid: running.child.pid ?? run.processPid,
+              processGroupId: running.processGroupId ?? run.processGroupId,
+              graceMs: Math.max(1, running.graceSec) * 1000,
+            });
+          } else if (run.processPid || run.processGroupId) {
+            await terminateHeartbeatRunProcess({
+              pid: run.processPid,
+              processGroupId: run.processGroupId,
+            });
+          }
+        } finally {
+          runningProcesses.delete(run.id);
+        }
+
+        const message = `Interrupted by graceful server shutdown (${signal}); retry queued for restart recovery`;
+        const interruptedStatus = await setRunStatusIfRunning(run.id, "interrupted", {
+          finishedAt: now,
+          error: message,
+          errorCode: "server_shutdown_interrupted",
+          signal,
+          resultJson: mergeRunStopMetadataForAgent(agent, "interrupted", {
+            resultJson: parseObject(run.resultJson),
+            errorCode: "server_shutdown_interrupted",
+            errorMessage: message,
+          }),
+        });
+        if (!interruptedStatus.updated || !interruptedStatus.run) continue;
+        let interrupted = interruptedStatus.run;
+        await setWakeupStatus(run.wakeupRequestId, "interrupted", {
+          finishedAt: now,
+          error: null,
+        });
+        interrupted = await classifyAndPersistRunLiveness(interrupted, parseObject(interrupted.resultJson)) ?? interrupted;
+
+        await releaseEnvironmentLeasesForRun({
+          runId: interrupted.id,
+          companyId: interrupted.companyId,
+          agentId: interrupted.agentId,
+          status: interrupted.status,
+          failureReason: interrupted.error ?? undefined,
+        });
+
+        const currentAgent = await getAgent(interrupted.agentId);
+        let retry: typeof heartbeatRuns.$inferSelect | null = null;
+        if (currentAgent && !currentAgent.executionFenceId) {
+          try {
+            retry = await enqueueProcessLossRetry(interrupted, currentAgent, now);
+          } catch (error) {
+            if (!isAgentExecutionFenceError(error)) throw error;
+          }
+        }
+        if (!retry) {
+          await releaseIssueExecutionAndPromote(interrupted, {
+            suppressImmediateRecovery: true,
+          });
+        } else {
+          retryRunIds.push(retry.id);
+        }
+
+        await appendRunEvent(interrupted, await nextRunEventSeq(interrupted.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message,
+          payload: {
+            signal,
+            ...(run.processPid ? { processPid: run.processPid } : {}),
+            ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
+            ...(retry ? { retryRunId: retry.id } : {}),
+          },
+        });
+
+        await finalizeAgentStatus(run.agentId, "interrupted", message, {
+          wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+        });
+        interruptedRunIds.push(interrupted.id);
+        if (
+          !selectedExecutionRunIds.has(run.id) &&
+          readHotRestartAdoptionMetadata(parseObject(run.resultJson))
+        ) {
+          adoptedRunIdsRequiringFinalization.push(run.id);
         }
       }
-      if (!retry) {
-        await releaseIssueExecutionAndPromote(interrupted, {
-          suppressImmediateRecovery: true,
-        });
-      } else {
-        retryRunIds.push(retry.id);
+
+      // Await only executions selected for this drain. A selective hot restart
+      // must not wait on adopted runs, while a normal SIGTERM/SIGINT waits for
+      // every execution owned by this process. The execution promise settles
+      // only after the genuine finally path has flushed its durable proof. A
+      // remote adapter may have no local process handle to terminate, so bound
+      // this wait below the service manager's stop deadline. A timed-out run
+      // keeps its drain marker until its promise settles and remains without
+      // finalization proof if the process exits first.
+      if (selectedExecutionEntries.length > 0) {
+        const configuredTimeoutMs = options.shutdownExecutionWaitTimeoutMs;
+        const timeoutMs = configuredTimeoutMs !== undefined && Number.isFinite(configuredTimeoutMs)
+          ? Math.max(1, configuredTimeoutMs)
+          : SHUTDOWN_EXECUTION_FINALIZER_WAIT_MS;
+        let timeout: ReturnType<typeof setTimeout> | null = null;
+        const waitOutcome = await Promise.race([
+          Promise.all(selectedExecutionEntries.map(([, execution]) => execution)).then(() => "settled" as const),
+          new Promise<"timed_out">((resolve) => {
+            timeout = setTimeout(() => resolve("timed_out"), timeoutMs);
+          }),
+        ]);
+        if (timeout) clearTimeout(timeout);
+        if (waitOutcome === "timed_out") {
+          drainTimedOutRunIds.push(
+            ...selectedExecutionEntries
+              .filter(([runId, execution]) => activeRunExecutionPromises.get(runId) === execution)
+              .map(([runId]) => runId),
+          );
+          logger.error(
+            { signal, timeoutMs, runIds: drainTimedOutRunIds },
+            "shutdown execution finalizer wait reached its deadline; leaving proof fail-closed",
+          );
+        }
       }
 
-      await appendRunEvent(interrupted, await nextRunEventSeq(interrupted.id), {
-        eventType: "lifecycle",
-        stream: "system",
-        level: "warn",
-        message,
-        payload: {
-          signal,
-          ...(run.processPid ? { processPid: run.processPid } : {}),
-          ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
-          ...(retry ? { retryRunId: retry.id } : {}),
-        },
-      });
+      for (const [runId] of selectedExecutionEntries) {
+        if (drainTimedOutRunIds.includes(runId)) continue;
+        const current = await getRun(runId);
+        if (!current?.executionFinalizerCompletedAt || current.executionFinalizedAt) continue;
+        await acknowledgeCompletedRunFinalizationReliably(runId);
+      }
 
-      await finalizeAgentStatus(run.agentId, "interrupted", message, {
-        wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
-      });
-      await acknowledgeRunFinalizationReliably(interrupted.id);
-      interruptedRunIds.push(interrupted.id);
+      // A process adopted after a hot restart has no execution promise in this
+      // server. Persisted adoption metadata, successful child termination, and
+      // the shutdown cleanup above establish the narrow recovery authority for
+      // this genuine finalization path.
+      if (adoptedRunIdsRequiringFinalization.length > 0) {
+        const retainedScratch = await listHeartbeatRunScratch();
+        for (const runId of adoptedRunIdsRequiringFinalization) {
+          const current = await getRun(runId);
+          if (!current || !isHeartbeatRunTerminalStatus(current.status)) continue;
+          await revokeHeartbeatRunGatewayTokens({
+            db,
+            companyId: current.companyId,
+            runId,
+          });
+          await releaseRuntimeServicesForRun(runId);
+          for (const scratch of retainedScratch.filter((entry) =>
+            entry.metadata.runId === runId &&
+            entry.metadata.companyId === current.companyId &&
+            entry.metadata.agentId === current.agentId
+          )) {
+            const cleanup = await cleanupHeartbeatRunScratch({
+              scratch,
+              processPid: current.processPid,
+              processGroupId: current.processGroupId,
+              isPidAlive: isProcessAlive,
+              isProcessGroupAlive,
+            });
+            if (!cleanup.removed && cleanup.reason !== "missing") {
+              throw new Error(
+                `Cannot finalize adopted shutdown run ${runId}: scratch cleanup ${cleanup.reason}`,
+              );
+            }
+          }
+          await acknowledgeRunFinalizationReliably(runId);
+        }
+      }
+    } finally {
+      for (const [runId, execution] of selectedExecutionEntries) {
+        if (drainTimedOutRunIds.includes(runId)) {
+          void execution.finally(() => {
+            shutdownDrainingRunIds.delete(runId);
+          });
+        } else {
+          shutdownDrainingRunIds.delete(runId);
+        }
+      }
     }
 
     if (interruptedRunIds.length > 0) {
@@ -10803,6 +10929,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       interrupted: interruptedRunIds.length,
       interruptedRunIds,
       retryRunIds,
+      ...(drainTimedOutRunIds.length > 0 ? { drainTimedOutRunIds } : {}),
     };
   }
 
@@ -11737,6 +11864,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .update(issues)
           .set({
             executionRunId: scheduledRun.id,
+            checkoutRunId: sql`CASE WHEN ${issues.checkoutRunId} = ${run.id} THEN NULL ELSE ${issues.checkoutRunId} END`,
             executionAgentNameKey: normalizeAgentNameKey(agent.name),
             executionLockedAt: now,
             ...(detachWorkspaceFromIssue
@@ -13528,24 +13656,87 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
 
-    const missedFinalizations = await db
+    // Only a durable finalizer-completed marker authorizes deferred
+    // acknowledgement. This repairs transient acknowledgement failures without
+    // fabricating proof for arbitrary terminal rows.
+    const missedAcknowledgements = await db
       .select({ id: heartbeatRuns.id })
       .from(heartbeatRuns)
       .where(
         and(
-          isNotNull(heartbeatRuns.startedAt),
+          isNotNull(heartbeatRuns.executionFinalizerCompletedAt),
           isNull(heartbeatRuns.executionFinalizedAt),
-          notInArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
         ),
       );
-    for (const { id } of missedFinalizations) {
-      if (liveRunExecutions.has(id)) continue;
-      await acknowledgeRunFinalizationReliably(id).catch((error) => {
+    for (const { id } of missedAcknowledgements) {
+      await acknowledgeCompletedRunFinalizationReliably(id).catch((error) => {
         logger.warn(
           { err: error, runId: id },
-          "deferred reconciliation could not acknowledge terminal run finalization",
+          "deferred reconciliation could not acknowledge completed run finalization",
         );
       });
+    }
+
+    // A warm ACP runtime may outlive the run that created its scratch. Once the
+    // retained process exits, the next reaper pass assumes cleanup ownership.
+    // Work is proportional to marked scratch directories, not run history.
+    const retainedScratch = await listHeartbeatRunScratch().catch((error) => {
+      logger.warn({ err: error }, "could not enumerate retained heartbeat run scratch");
+      return [];
+    });
+    if (retainedScratch.length > 0) {
+      const malformedScratch = retainedScratch.filter((entry) => !isUuidLike(entry.metadata.runId));
+      if (malformedScratch.length > 0) {
+        logger.warn(
+          {
+            scratchDirs: malformedScratch.map((entry) => entry.dir),
+            runIds: malformedScratch.map((entry) => entry.metadata.runId),
+          },
+          "quarantined heartbeat run scratch with malformed run ids",
+        );
+      }
+      const validRetainedScratch = retainedScratch.filter((entry) => isUuidLike(entry.metadata.runId));
+      const scratchRunIds = [...new Set(validRetainedScratch.map((entry) => entry.metadata.runId))];
+      const completedRetainedRuns = scratchRunIds.length > 0
+        ? await db
+          .select({
+            id: heartbeatRuns.id,
+            companyId: heartbeatRuns.companyId,
+            agentId: heartbeatRuns.agentId,
+            processPid: heartbeatRuns.processPid,
+            processGroupId: heartbeatRuns.processGroupId,
+          })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              inArray(heartbeatRuns.id, scratchRunIds),
+              isNotNull(heartbeatRuns.processOwnershipReleasedAt),
+              isNotNull(heartbeatRuns.executionFinalizedAt),
+            ),
+          )
+        : [];
+      for (const run of completedRetainedRuns) {
+        await Promise.all(
+          validRetainedScratch
+            .filter((entry) =>
+              entry.metadata.runId === run.id &&
+              entry.metadata.companyId === run.companyId &&
+              entry.metadata.agentId === run.agentId
+            )
+            .map(async (scratch) => {
+              const result = await cleanupHeartbeatRunScratch({
+                scratch,
+                processPid: run.processPid,
+                processGroupId: run.processGroupId,
+                isPidAlive: isProcessAlive,
+                isProcessGroupAlive,
+              });
+              if (result.removed) {
+                logger.info({ runId: run.id, scratchDir: result.dir }, "reconciled retained runtime scratch");
+              }
+            }),
+        );
+      }
     }
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
@@ -13724,9 +13915,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         eventType: "lifecycle",
         stream: "system",
         level: "error",
-        message: shouldRetry
-          ? `${baseMessage}; queued retry ${retriedRun?.id ?? ""}`.trim()
-          : baseMessage,
+        message: retriedRun
+          ? `${baseMessage}; queued retry ${retriedRun.id}`
+          : shouldRetry
+            ? `${baseMessage}; retry suppressed`
+            : baseMessage,
         payload: {
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
@@ -13999,9 +14192,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // it. executeRun resolves only after its finally block finishes flushing
         // run rows/events, so awaiting this promise guarantees the run's writes
         // have landed before a caller (e.g. a test's afterEach) mutates the DB.
-        activeRunExecutionPromises.add(execution);
+        activeRunExecutionPromises.set(claimedRun.id, execution);
         void execution.finally(() => {
-          activeRunExecutionPromises.delete(execution);
+          if (activeRunExecutionPromises.get(claimedRun.id) === execution) {
+            activeRunExecutionPromises.delete(claimedRun.id);
+          }
         });
       }
       return claimedRuns;
@@ -14024,7 +14219,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function drainActiveRunExecutions() {
     while (activeWakeupPromises.size > 0 || activeRunExecutionPromises.size > 0) {
       await Promise.allSettled([...activeWakeupPromises]);
-      await Promise.all([...activeRunExecutionPromises]);
+      await Promise.all([...activeRunExecutionPromises.values()]);
     }
   }
 
@@ -16103,6 +16298,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
           authToken: authToken ?? undefined,
         });
+        if (adapterResult.processOwnership === "retained_runtime") {
+          await releaseRunProcessOwnership(run.id);
+        }
         // Adapter returned cleanly, which means its workspace-restore finally
         // block also ran without throwing. Record the workspace_finalize
         // barrier so dependents that share this executionWorkspace can wake.
@@ -16827,7 +17025,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             try {
               scratchCleanup = await cleanupHeartbeatRunScratch({
                 scratch: scratchForCleanup,
+                processPid: latestRun.processPid,
                 processGroupId: latestRun.processGroupId,
+                isPidAlive: isProcessAlive,
                 isProcessGroupAlive,
               });
             } catch (scratchCleanupError) {
@@ -16875,7 +17075,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
           activeRunExecutions.delete(run.id);
           try {
-            await startNextQueuedRunForAgent(run.agentId);
+            if (!shutdownDrainingRunIds.has(run.id)) {
+              await startNextQueuedRunForAgent(run.agentId);
+            }
           } finally {
             await acknowledgeRunFinalizationReliably(run.id).catch((error) => {
               logger.error(

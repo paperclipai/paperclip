@@ -6,6 +6,7 @@ import {
   HEARTBEAT_RUN_SCRATCH_MARKER,
   buildHeartbeatRunScratchEnv,
   cleanupHeartbeatRunScratch,
+  listHeartbeatRunScratch,
   prepareHeartbeatRunScratch,
   reconcileHeartbeatRunScratch,
   type HeartbeatRunScratch,
@@ -101,7 +102,24 @@ describe("heartbeat run scratch cleanup", () => {
       isProcessGroupAlive: () => true,
     });
 
-    expect(result).toEqual({ removed: false, dir: scratch.dir, reason: "process_group_alive" });
+    expect(result).toEqual({ removed: false, dir: scratch.dir, reason: "process_alive" });
+    await expect(fs.stat(scratch.dir)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
+  });
+
+  it("skips cleanup while a pid-only run process is still alive", async () => {
+    const scratch = await trackScratch(await prepareHeartbeatRunScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "run-1",
+    }));
+
+    const result = await cleanupHeartbeatRunScratch({
+      scratch,
+      processPid: 456,
+      isPidAlive: () => true,
+    });
+
+    expect(result).toEqual({ removed: false, dir: scratch.dir, reason: "process_alive" });
     await expect(fs.stat(scratch.dir)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
   });
 
@@ -139,6 +157,44 @@ describe("heartbeat run scratch cleanup", () => {
     });
     await Promise.all(owned.map((scratch) => expect(fs.stat(scratch.dir)).rejects.toMatchObject({ code: "ENOENT" })));
     await expect(fs.stat(other.dir)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
+  });
+
+  it("lists only valid marked scratch directories for post-exit reconciliation", async () => {
+    const owned = await trackScratch(await prepareHeartbeatRunScratch({
+      companyId: "company-list",
+      agentId: "agent-list",
+      runId: "run-list",
+    }));
+    const unmarked = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-unmarked-list-"));
+    cleanupDirs.add(unmarked);
+
+    const listed = await listHeartbeatRunScratch();
+
+    expect(listed).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        dir: owned.dir,
+        metadata: expect.objectContaining({ runId: "run-list" }),
+      }),
+    ]));
+    expect(listed.some((entry) => entry.dir === unmarked)).toBe(false);
+  });
+
+  it("fails closed when a run-named scratch directory has a corrupt marker", async () => {
+    const scratch = await trackScratch(await prepareHeartbeatRunScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "run-corrupt-marker-123456",
+    }));
+    await fs.writeFile(scratch.markerPath, "not-json", "utf8");
+
+    const result = await reconcileHeartbeatRunScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "run-corrupt-marker-123456",
+    });
+
+    expect(result.remainingDirs).toContain(scratch.dir);
+    await expect(fs.stat(scratch.dir)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
   });
 
   it("builds explicit scratch env without clobbering configured temp dirs", async () => {
