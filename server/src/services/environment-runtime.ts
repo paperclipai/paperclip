@@ -485,9 +485,9 @@ export interface EnvironmentRuntimeDriver {
 
 /**
  * The acquire provisioned a remote sandbox, the lease insert rejected it, the
- * compensating teardown failed, and the durable pending-cleanup write also
- * failed. A live sandbox now has no lease row and no cleanup record, so no
- * sweep can find it. The acquire throws this error so the failure stays visible
+ * compensating teardown failed, and every retry of the durable pending-cleanup
+ * write also failed. A live sandbox now has no lease row and no cleanup record,
+ * so no sweep can find it. The acquire throws this error so the failure stays visible
  * and never resolves to a clean rejection. The `cause` field holds the original
  * lease insert rejection. The `cleanupWriteError` field holds the write failure.
  */
@@ -524,6 +524,14 @@ export interface EnvironmentRuntimeLeaseRecord {
 
 const DEFAULT_PLUGIN_SANDBOX_WORKER_READY_TIMEOUT_MS = 5_000;
 const DEFAULT_PLUGIN_SANDBOX_WORKER_READY_POLL_MS = 100;
+
+// The durable pending-cleanup write is the only automated way to find a leaked
+// sandbox. A single insert can lose to a transient database fault (a dropped
+// connection, a lock timeout, a serialization conflict). So the acquire retries
+// the write a few times with a short backoff before it gives up. A later
+// attempt can still land the durable row that a sweep finds.
+const DEFAULT_SANDBOX_ORPHAN_CLEANUP_WRITE_ATTEMPTS = 3;
+const DEFAULT_SANDBOX_ORPHAN_CLEANUP_WRITE_BACKOFF_MS = 100;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -940,11 +948,23 @@ function createSandboxEnvironmentDriver(
     pluginWorkerManager?: PluginWorkerManager;
     pluginWorkerReadyTimeoutMs?: number;
     pluginWorkerReadyPollMs?: number;
+    pendingCleanupWriteAttempts?: number;
+    pendingCleanupWriteBackoffMs?: number;
   } = {},
 ): EnvironmentRuntimeDriver {
   const pluginWorkerManager = options.pluginWorkerManager;
   const pluginWorkerReadyTimeoutMs = options.pluginWorkerReadyTimeoutMs ?? DEFAULT_PLUGIN_SANDBOX_WORKER_READY_TIMEOUT_MS;
   const pluginWorkerReadyPollMs = options.pluginWorkerReadyPollMs ?? DEFAULT_PLUGIN_SANDBOX_WORKER_READY_POLL_MS;
+  // The retry count is at least one attempt, so a zero or negative override
+  // never skips the durable write. The backoff is at least zero milliseconds.
+  const pendingCleanupWriteAttempts = Math.max(
+    1,
+    options.pendingCleanupWriteAttempts ?? DEFAULT_SANDBOX_ORPHAN_CLEANUP_WRITE_ATTEMPTS,
+  );
+  const pendingCleanupWriteBackoffMs = Math.max(
+    0,
+    options.pendingCleanupWriteBackoffMs ?? DEFAULT_SANDBOX_ORPHAN_CLEANUP_WRITE_BACKOFF_MS,
+  );
   const environmentsSvc = environmentService(db);
 
   // Records a durable pending-cleanup lease row for a remote sandbox that the
@@ -964,12 +984,18 @@ function createSandboxEnvironmentDriver(
   //
   // The write is not best-effort. A failed teardown already left a live sandbox
   // with no lease row. If this write also fails, no sweep can find the sandbox.
-  // So a write failure first logs the plain provider identifiers at error level,
-  // so an operator keeps a durable handle to find and tear the sandbox down by
-  // hand. The write failure then throws `SandboxOrphanCleanupWriteError`, which
-  // the caller propagates. The error keeps the original insert rejection as its
-  // `cause`, so the real reason the acquire failed stays visible in the error
-  // chain.
+  // So a single write failure does not give up. A transient database fault (a
+  // dropped connection, a lock timeout, a serialization conflict) can reject one
+  // insert but clear on the next. The write retries a few times with a short
+  // backoff. A retry that lands the row gives a sweep a durable handle to the
+  // orphan, so the acquire recovers the cleanup state.
+  //
+  // Only after every attempt fails does the write give up. Then it logs the
+  // plain provider identifiers at error level, so an operator keeps a durable
+  // handle to find and tear the sandbox down by hand. The write then throws
+  // `SandboxOrphanCleanupWriteError`, which the caller propagates. The error
+  // keeps the original insert rejection as its `cause`, so the real reason the
+  // acquire failed stays visible in the error chain.
   const recordPendingSandboxCleanup = async (record: {
     companyId: string;
     environmentId: string;
@@ -981,46 +1007,64 @@ function createSandboxEnvironmentDriver(
     metadata: Record<string, unknown>;
     cause: unknown;
   }): Promise<void> => {
-    try {
-      await environmentsSvc.insertPendingCleanupLease({
-        companyId: record.companyId,
-        environmentId: record.environmentId,
-        executionWorkspaceId: record.executionWorkspaceId,
-        issueId: record.issueId,
-        heartbeatRunId: record.heartbeatRunId,
-        provider: record.provider,
-        providerLeaseId: record.providerLeaseId,
-        metadata: record.metadata,
-        failureReason: "acquire_rejected_teardown_failed",
-      });
-    } catch (cleanupWriteError) {
-      // The durable database write failed, so no lease row tracks the live
-      // sandbox. The database is the only automated cleanup store, and it is
-      // unavailable here, so the single durable handle that stays is this log.
-      // Emit the plain provider identifiers at error level, so an operator can
-      // find the leaked sandbox and tear it down by hand. Never log the caught
-      // exception: it can carry a credential in its name, code, message, cause,
-      // or stack. The provider identifiers below carry no secret.
-      logger.error(
-        {
-          errorKind: SANDBOX_ORPHAN_CLEANUP_WRITE_ERROR_KIND,
-          provider: record.provider,
-          providerLeaseId: record.providerLeaseId,
+    // The provider identifiers are the only fields any diagnostic log emits.
+    // They carry no secret. The caught write exception never enters a log: it
+    // can carry a credential in its name, code, message, cause, or stack.
+    const diagnosticFields = {
+      errorKind: SANDBOX_ORPHAN_CLEANUP_WRITE_ERROR_KIND,
+      provider: record.provider,
+      providerLeaseId: record.providerLeaseId,
+      companyId: record.companyId,
+      environmentId: record.environmentId,
+      executionWorkspaceId: record.executionWorkspaceId,
+      issueId: record.issueId,
+      heartbeatRunId: record.heartbeatRunId,
+    };
+    let lastCleanupWriteError: unknown;
+    for (let attempt = 1; attempt <= pendingCleanupWriteAttempts; attempt += 1) {
+      try {
+        await environmentsSvc.insertPendingCleanupLease({
           companyId: record.companyId,
           environmentId: record.environmentId,
           executionWorkspaceId: record.executionWorkspaceId,
           issueId: record.issueId,
           heartbeatRunId: record.heartbeatRunId,
-        },
-        "sandbox orphan cleanup write failed; live sandbox has no durable lease row and needs a manual teardown",
-      );
-      throw new SandboxOrphanCleanupWriteError({
-        provider: record.provider,
-        providerLeaseId: record.providerLeaseId,
-        cause: record.cause,
-        cleanupWriteError,
-      });
+          provider: record.provider,
+          providerLeaseId: record.providerLeaseId,
+          metadata: record.metadata,
+          failureReason: "acquire_rejected_teardown_failed",
+        });
+        // The durable row exists now, so a sweep can find and release the
+        // orphan. The caller rethrows the original insert rejection above.
+        return;
+      } catch (cleanupWriteError) {
+        lastCleanupWriteError = cleanupWriteError;
+        if (attempt < pendingCleanupWriteAttempts) {
+          // The write failed, but attempts remain. Log the retry at warn level
+          // and back off, then try again. A later attempt can still land the
+          // durable row.
+          logger.warn(
+            { ...diagnosticFields, attempt, maxAttempts: pendingCleanupWriteAttempts },
+            "sandbox orphan cleanup write failed; retrying the durable pending-cleanup write",
+          );
+          await delay(pendingCleanupWriteBackoffMs * attempt);
+        }
+      }
     }
+    // Every attempt failed, so no lease row tracks the live sandbox. The
+    // database is the only automated cleanup store, and it stays unavailable, so
+    // the single durable handle that remains is this log. Emit it at error
+    // level, so an operator can find the leaked sandbox and tear it down by hand.
+    logger.error(
+      diagnosticFields,
+      "sandbox orphan cleanup write failed; live sandbox has no durable lease row and needs a manual teardown",
+    );
+    throw new SandboxOrphanCleanupWriteError({
+      provider: record.provider,
+      providerLeaseId: record.providerLeaseId,
+      cause: record.cause,
+      cleanupWriteError: lastCleanupWriteError,
+    });
   };
 
   // The run-time exec parent context, held per lease id. A plugin sandbox
@@ -2664,6 +2708,8 @@ export function environmentRuntimeService(
     pluginWorkerManager?: PluginWorkerManager;
     pluginWorkerReadyTimeoutMs?: number;
     pluginWorkerReadyPollMs?: number;
+    pendingCleanupWriteAttempts?: number;
+    pendingCleanupWriteBackoffMs?: number;
   } = {},
 ) {
   const environmentsSvc = environmentService(db);
@@ -2676,6 +2722,8 @@ export function environmentRuntimeService(
       pluginWorkerManager: options.pluginWorkerManager,
       pluginWorkerReadyTimeoutMs: options.pluginWorkerReadyTimeoutMs,
       pluginWorkerReadyPollMs: options.pluginWorkerReadyPollMs,
+      pendingCleanupWriteAttempts: options.pendingCleanupWriteAttempts,
+      pendingCleanupWriteBackoffMs: options.pendingCleanupWriteBackoffMs,
     }),
     ...(options.pluginWorkerManager
       ? [createPluginEnvironmentDriver(db, options.pluginWorkerManager)]

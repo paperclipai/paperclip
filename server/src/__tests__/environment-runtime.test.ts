@@ -971,9 +971,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const destroySpy = vi
       .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
       .mockRejectedValue(new Error("teardown failed"));
-    // Force the durable pending-cleanup write to fail too. The durable write is
-    // a single atomic insert through `insertPendingCleanupLease`, so reject that
-    // method and let the primary company-bound acquire reject for real.
+    // Force the durable pending-cleanup write to fail on every attempt. The
+    // write retries a few times, so reject the insert each time and let the
+    // primary company-bound acquire reject for real.
+    const failingInsert = vi
+      .fn<Parameters<ReturnType<typeof environmentService>["insertPendingCleanupLease"]>, Promise<never>>()
+      .mockRejectedValue(new Error("pending-cleanup write failed"));
     const realEnvironmentService = environmentsModule.environmentService;
     const factorySpy = vi
       .spyOn(environmentsModule, "environmentService")
@@ -981,15 +984,17 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         const real = realEnvironmentService(database);
         return {
           ...real,
-          insertPendingCleanupLease: () =>
-            Promise.reject(new Error("pending-cleanup write failed")),
+          insertPendingCleanupLease: failingInsert,
         };
       });
     // The durable database write fails, so the only durable handle left is the
     // error log. Capture it to prove the leaked sandbox stays discoverable.
     const logSpy = vi.spyOn(logger, "error").mockImplementation(() => logger);
     try {
-      const runtimeWithFailingCleanup = environmentRuntimeService(db);
+      // Set the retry backoff to zero, so the retries never slow the test.
+      const runtimeWithFailingCleanup = environmentRuntimeService(db, {
+        pendingCleanupWriteBackoffMs: 0,
+      });
       const rejection = await runtimeWithFailingCleanup
         .acquireRunLease({
           companyId,
@@ -1016,6 +1021,9 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         details: { code: "environment_company_mismatch" },
       });
       expect(destroySpy).toHaveBeenCalledTimes(1);
+      // The write retried the durable insert before it gave up, so more than one
+      // attempt ran.
+      expect(failingInsert.mock.calls.length).toBeGreaterThan(1);
       // The durable write failed before it created a row, so no lease row exists.
       const rows = await db
         .select()
@@ -1040,6 +1048,105 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       expect(cleanupLog?.[0]).not.toHaveProperty("cleanupWriteError");
     } finally {
       logSpy.mockRestore();
+      factorySpy.mockRestore();
+      destroySpy.mockRestore();
+    }
+  });
+
+  it("recovers cleanup state when a retry of the durable pending-cleanup write succeeds", async () => {
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Foreign-bound Fake Sandbox Cleanup Write Retry",
+      config: { provider: "fake", image: "ubuntu:24.04", reuseLease: false },
+    });
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other Co Cleanup Retry",
+      issuePrefix: "OCR",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(builtInManagedResources).values({
+      companyId: otherCompanyId,
+      bundleKey: "managed-environment",
+      resourceKind: "environment",
+      resourceKey: "managed-sandbox",
+      resourceId: environment.id,
+      stockVersion: "1",
+      stockHash: "hash",
+    });
+
+    // The remote teardown fails, so the acquire tries to record a durable
+    // pending-cleanup row instead.
+    const destroySpy = vi
+      .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
+      .mockRejectedValue(new Error("teardown failed"));
+    // The first durable write attempt fails, so the acquire retries. The second
+    // attempt delegates to the real insert, so a durable pending_cleanup row
+    // lands and a later sweep can find the orphan.
+    let insertAttempts = 0;
+    const realEnvironmentService = environmentsModule.environmentService;
+    const factorySpy = vi
+      .spyOn(environmentsModule, "environmentService")
+      .mockImplementation((database: Parameters<typeof realEnvironmentService>[0]) => {
+        const real = realEnvironmentService(database);
+        return {
+          ...real,
+          insertPendingCleanupLease: (
+            input: Parameters<typeof real.insertPendingCleanupLease>[0],
+          ) => {
+            insertAttempts += 1;
+            if (insertAttempts === 1) {
+              return Promise.reject(new Error("pending-cleanup write failed once"));
+            }
+            return real.insertPendingCleanupLease(input);
+          },
+        };
+      });
+    try {
+      // Set the retry backoff to zero, so the retry never slows the test.
+      const runtimeWithRetry = environmentRuntimeService(db, {
+        pendingCleanupWriteBackoffMs: 0,
+      });
+      const rejection = await runtimeWithRetry
+        .acquireRunLease({
+          companyId,
+          environment,
+          issueId: null,
+          heartbeatRunId: runId,
+          persistedExecutionWorkspace: null,
+          assertCompanyBinding: true,
+        })
+        .then(
+          () => {
+            throw new Error("acquireRunLease resolved but must reject");
+          },
+          (error: unknown) => error,
+        );
+
+      // The retry landed the durable row, so the acquire rejects with the
+      // original company-mismatch rejection, not a SandboxOrphanCleanupWriteError.
+      expect(rejection).not.toBeInstanceOf(SandboxOrphanCleanupWriteError);
+      expect(rejection).toMatchObject({
+        status: 403,
+        details: { code: "environment_company_mismatch" },
+      });
+      expect(destroySpy).toHaveBeenCalledTimes(1);
+      // The first attempt failed and the second succeeded, so the write ran twice.
+      expect(insertAttempts).toBe(2);
+      // A durable pending_cleanup lease row now tracks the orphan, so a sweep can
+      // find and release the leaked sandbox.
+      const rows = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.environmentId, environment.id));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.status).toBe("pending_cleanup");
+      expect(rows[0]?.cleanupStatus).toBe("failed");
+      expect(rows[0]?.failureReason).toBe("acquire_rejected_teardown_failed");
+    } finally {
       factorySpy.mockRestore();
       destroySpy.mockRestore();
     }
@@ -1138,7 +1245,10 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         };
       });
     try {
-      const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+      const runtimeWithPlugin = environmentRuntimeService(db, {
+        pluginWorkerManager: workerManager,
+        pendingCleanupWriteBackoffMs: 0,
+      });
       const rejection = await runtimeWithPlugin
         .acquireRunLease({
           companyId,
