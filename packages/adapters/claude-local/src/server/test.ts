@@ -33,6 +33,10 @@ import { prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveClaudeExecutionEngineForRun, testClaudeAcpEnvironment } from "./acp.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
+import {
+  buildClaudeLoginRequiredHint,
+  logRedactedSandboxProbeDiagnostic,
+} from "./probe-diagnostics.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -67,11 +71,6 @@ function lastNonInitStdoutLine(text: string): string {
     return line;
   }
   return "";
-}
-
-function truncateDetail(value: string, max = 240): string {
-  const clean = value.replace(/\s+/g, " ").trim();
-  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
 function summarizeProbeDetail(stdout: string, stderr: string): string | null {
@@ -335,7 +334,6 @@ export async function testEnvironment(
         stdout: probe.stdout,
         stderr: probe.stderr,
       });
-      const detail = summarizeProbeDetail(probe.stdout, probe.stderr);
 
       if (probe.timedOut) {
         checks.push({
@@ -345,14 +343,17 @@ export async function testEnvironment(
           hint: "Retry the probe. If this persists, verify Claude can run `Respond with hello` from this directory manually.",
         });
       } else if (loginMeta.requiresLogin) {
+        // The raw probe output is untrusted. Route it to the log-only boundary
+        // and return only a fixed public message and a safe hint.
+        logRedactedSandboxProbeDiagnostic(
+          "Claude CLI hello probe reported login required",
+          summarizeProbeDetail(probe.stdout, probe.stderr),
+        );
         checks.push({
           code: "claude_hello_probe_auth_required",
           level: "warn",
           message: "Claude CLI is installed, but login is required.",
-          ...(detail ? { detail } : {}),
-          hint: loginMeta.loginUrl
-            ? `Run \`claude login\` and complete sign-in at ${loginMeta.loginUrl}, then retry.`
-            : "Run `claude login` in this environment, then retry the probe.",
+          hint: buildClaudeLoginRequiredHint(loginMeta.loginUrl),
         });
         if (targetIsSandbox) {
           // Emit the neutral canonical check so the user interface can decide
@@ -362,20 +363,26 @@ export async function testEnvironment(
             code: ADAPTER_AUTH_MISSING_CHECK_CODE,
             level: "warn",
             message: "The sandbox has no ready authentication for this adapter.",
-            ...(detail ? { detail } : {}),
             hint: "Provide credentials for this adapter, or start login in the sandbox.",
           });
         }
       } else if ((probe.exitCode ?? 1) === 0) {
         const summary = parsedStream.summary.trim();
         const hasHello = /\bhello\b/i.test(summary);
+        if (!hasHello) {
+          // The unexpected summary is untrusted probe output. Route it to the
+          // log-only boundary and keep the check text fixed.
+          logRedactedSandboxProbeDiagnostic(
+            "Claude CLI hello probe returned unexpected output",
+            summary,
+          );
+        }
         checks.push({
           code: hasHello ? "claude_hello_probe_passed" : "claude_hello_probe_unexpected_output",
           level: hasHello ? "info" : "warn",
           message: hasHello
             ? "Claude hello probe succeeded."
             : "Claude probe ran but did not return `hello` as expected.",
-          ...(summary ? { detail: summary.replace(/\s+/g, " ").trim().slice(0, 240) } : {}),
           ...(hasHello
             ? {}
             : {
@@ -383,20 +390,20 @@ export async function testEnvironment(
               }),
         });
       } else {
-        // Surface the actual failure instead of the leading stream-json
-        // `system/init` line: the real error lives in the final `result`
-        // event (parsed) or, when the CLI dies before emitting one, the last
-        // non-init stdout line — never the first one `summarizeProbeDetail`
-        // returns.
+        // Compose the richest raw diagnostic for the log. The real error lives
+        // in the final `result` event (parsed) or, when the CLI dies before it
+        // emits one, the last non-init stdout line — never the first line that
+        // `summarizeProbeDetail` returns.
         const stdoutFallback = lastNonInitStdoutLine(probe.stdout);
         const failureDetail =
           (parsed ? describeClaudeFailure(parsed) : null) ||
-          (firstNonEmptyLine(probe.stderr)
-            ? truncateDetail(firstNonEmptyLine(probe.stderr))
-            : "") ||
-          (stdoutFallback ? truncateDetail(stdoutFallback) : "") ||
-          detail ||
+          firstNonEmptyLine(probe.stderr) ||
+          stdoutFallback ||
+          summarizeProbeDetail(probe.stdout, probe.stderr) ||
           "";
+        // The failure diagnostic is untrusted. Route it to the log-only
+        // boundary and return only a fixed public message and hint.
+        logRedactedSandboxProbeDiagnostic("Claude CLI hello probe failed", failureDetail);
         // Provider-quota exhaustion (usage/session limit) is classified
         // separately from generic transient upstream errors: auth works, the
         // subscription's usage window is just spent. Surface it as its own
@@ -417,7 +424,6 @@ export async function testEnvironment(
                 code: "claude_hello_probe_usage_limited",
                 level: "warn",
                 message: "Claude hello probe hit the subscription usage limit.",
-                ...(failureDetail ? { detail: failureDetail } : {}),
                 hint: "Authentication works; the account's usage window is exhausted. Wait for the limit to reset and re-run Test.",
               }
             : transient
@@ -425,14 +431,12 @@ export async function testEnvironment(
                   code: "claude_hello_probe_transient_upstream",
                   level: "warn",
                   message: "Claude hello probe hit a transient upstream error (rate limit or overload).",
-                  ...(failureDetail ? { detail: failureDetail } : {}),
                   hint: "This is usually temporary. Wait a moment and re-run Test.",
                 }
               : {
                   code: "claude_hello_probe_failed",
                   level: "error",
                   message: "Claude hello probe failed.",
-                  ...(failureDetail ? { detail: failureDetail } : {}),
                   hint: `Exit code ${probe.exitCode ?? "unknown"}. Run \`claude --print - --output-format stream-json --verbose\` manually in this directory and prompt \`Respond with hello\` to debug.`,
                 },
         );

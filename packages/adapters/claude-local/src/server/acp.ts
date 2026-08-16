@@ -42,7 +42,10 @@ import {
   prepareClaudeConfigSeed,
   prepareSandboxClaudeProbeRuntime,
 } from "./claude-config.js";
-import { logRedactedSandboxProbeDiagnostic } from "./probe-diagnostics.js";
+import {
+  buildClaudeLoginRequiredHint,
+  logRedactedSandboxProbeDiagnostic,
+} from "./probe-diagnostics.js";
 import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
 import { buildClaudeProbePermissionArgs } from "./permissions.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
@@ -503,9 +506,7 @@ function buildAcpSandboxAuthMissingChecks(loginUrl: string | null): AdapterEnvir
       code: "claude_hello_probe_auth_required",
       level: "warn",
       message: "Claude ACP is available, but login is required.",
-      hint: loginUrl
-        ? `Run \`claude login\` and complete sign-in at ${loginUrl}, then retry.`
-        : "Run `claude login` in this environment, then retry the probe.",
+      hint: buildClaudeLoginRequiredHint(loginUrl),
     },
     {
       code: ADAPTER_AUTH_MISSING_CHECK_CODE,

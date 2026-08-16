@@ -63,6 +63,7 @@ export {
 export {
   REDACTED_COMMAND_TEXT_VALUE,
   redactCommandText,
+  redactDiagnosticText,
 } from "./command-redaction.js";
 export { buildSandboxNpmInstallCommand } from "./sandbox-install-command.js";
 export {

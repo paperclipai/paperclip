@@ -140,6 +140,38 @@ describe("probeClaudeAcpSandboxLogin", () => {
     expect(checks.every((check) => check.level === "warn")).toBe(true);
   });
 
+  it("never renders an untrusted login URL with sensitive query or fragment text", async () => {
+    // The sandbox prints a login-required line that carries a malicious URL. The
+    // URL has a non-allowlisted host, a query, and a fragment, each with a
+    // marker. The normalizer must reject the URL, so no marker reaches a check.
+    probeResult.value = {
+      exitCode: 1,
+      stdout: [
+        initLine,
+        '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Please run `claude login`. Visit https://evil.example.com/claude-login?leak=SECRETQUERYmarker#SECRETFRAGmarker","session_id":"abc"}',
+      ].join("\n"),
+      stderr: "",
+      timedOut: false,
+    };
+
+    const checks = await probeClaudeAcpSandboxLogin({
+      config: { engine: "acp" },
+      target: sandboxTarget,
+    });
+
+    // The login-required checks still appear.
+    expect(checks.some((check) => check.code === "claude_hello_probe_auth_required")).toBe(true);
+    expect(checks.some((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE)).toBe(true);
+    const checkText = JSON.stringify(checks);
+    // No marker and no untrusted host reaches any check.
+    expect(checkText).not.toContain("SECRETQUERYmarker");
+    expect(checkText).not.toContain("SECRETFRAGmarker");
+    expect(checkText).not.toContain("evil.example.com");
+    // The hint falls back to the fixed `claude login` text.
+    const authRequired = checks.find((check) => check.code === "claude_hello_probe_auth_required");
+    expect(authRequired?.hint).toBe("Run `claude login` in this environment, then retry the probe.");
+  });
+
   it("emits no checks when the sandbox probe reports a healthy login", async () => {
     probeResult.value = { exitCode: 0, stdout: helloStdout, stderr: "", timedOut: false };
 
