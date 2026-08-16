@@ -470,6 +470,7 @@ describe("WikiPage", () => {
   let consoleError: ReturnType<typeof vi.spyOn>;
   let hostLocation: { pathname: string; search: string; hash: string };
   let navigatedTo: string | null;
+  let secondBrainGraphData: unknown;
 
   beforeEach(() => {
     container = document.createElement("div");
@@ -482,6 +483,7 @@ describe("WikiPage", () => {
       hash: "",
     };
     navigatedTo = null;
+    secondBrainGraphData = null;
     (globalThis as BridgeGlobal).__paperclipPluginBridge__ = {
       sdkUi: {
         usePluginData: (key: string) => {
@@ -621,6 +623,9 @@ describe("WikiPage", () => {
               refresh: () => undefined,
             };
           }
+          if (key === "second-brain-graph") {
+            return { data: secondBrainGraphData, loading: false, error: null, refresh: () => undefined };
+          }
           if (key === "distillation-page-provenance") {
             return { data: null, loading: false, error: null, refresh: () => undefined };
           }
@@ -667,6 +672,44 @@ describe("WikiPage", () => {
     const consoleOutput = consoleError.mock.calls.flat().join("\n");
     expect(consoleOutput).not.toContain("Objects are not valid as a React child");
     expect(consoleOutput).not.toContain("Each child in a list should have a unique \"key\" prop");
+  });
+
+  it("renders the second-brain graph response without a legacy space object", () => {
+    hostLocation = {
+      pathname: "/PAP/wiki/graph",
+      search: "",
+      hash: "",
+    };
+    secondBrainGraphData = {
+      status: "ok",
+      checkedAt: "2026-08-16T00:00:00.000Z",
+      wikiId: "default",
+      scope: { kind: "company", spaceSlug: null, focusPath: null, depth: 1 },
+      nodes: [{
+        id: "wiki_page:default:wiki/index.md",
+        kind: "wiki_page",
+        label: "Knowledge home",
+        sublabel: "default · wiki/index.md",
+        status: null,
+        group: "index",
+        href: "/wiki/page/wiki/index.md",
+        weight: 1,
+        updatedAt: "2026-08-16T00:00:00.000Z",
+        metadata: { path: "wiki/index.md", tags: [] },
+      }],
+      edges: [],
+      stats: { nodes: 1, edges: 0, wikiPages: 1, spaces: 1, relations: 0, orphans: 1, issues: 0, projects: 0, agents: 0, documents: 0, workProducts: 0, references: 0 },
+      warnings: [],
+    };
+
+    act(() => {
+      root.render(createElement(WikiPage, {
+        context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
+      } as never));
+    });
+
+    expect(container.textContent).toContain("Second brain");
+    expect(container.textContent).not.toContain("LLM Wiki failed to render");
   });
 
   it("prioritizes file drop on the ingest page without recent ingest or cost copy", () => {

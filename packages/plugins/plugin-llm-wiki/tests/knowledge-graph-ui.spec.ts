@@ -127,6 +127,17 @@ describe("knowledge graph layout", () => {
     expect(stats).toEqual({ incoming: 1, outgoing: 1, neighbors: 1 });
   });
 
+  it("labels second-brain responses that do not include a legacy space object", () => {
+    expect(knowledgeGraphTestUtils.knowledgeGraphContextLabel({
+      space: undefined,
+      scope: { kind: "space", spaceSlug: "default" },
+    })).toBe("default");
+    expect(knowledgeGraphTestUtils.knowledgeGraphContextLabel({
+      space: undefined,
+      scope: { kind: "company" },
+    })).toBe("Company wiki");
+  });
+
   it("fits visible nodes inside the graph viewport with stable padding", () => {
     const layout = knowledgeGraphTestUtils.buildKnowledgeGraphLayout(graphData, {
       enabledKinds: new Set(["project", "issue", "wiki_page", "agent"]),

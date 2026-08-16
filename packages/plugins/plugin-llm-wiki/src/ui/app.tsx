@@ -431,11 +431,16 @@ type KnowledgeGraphData = {
   status: "ok";
   checkedAt: string;
   wikiId: string;
-  space: Pick<WikiSpace, "id" | "slug" | "displayName" | "bindingKind" | "projectId">;
+  // The legacy knowledge-graph response includes a resolved space. The
+  // second-brain response is scoped across spaces and intentionally omits it.
+  space?: Pick<WikiSpace, "id" | "slug" | "displayName" | "bindingKind" | "projectId">;
   scope: {
-    kind: "project" | "company";
-    projectId: string | null;
-    projectName: string | null;
+    kind: "project" | "company" | "space" | "local";
+    projectId?: string | null;
+    projectName?: string | null;
+    spaceSlug?: string | null;
+    focusPath?: string | null;
+    depth?: number;
   };
   nodes: KnowledgeGraphNode[];
   edges: KnowledgeGraphEdge[];
@@ -2675,6 +2680,7 @@ export const knowledgeGraphTestUtils = {
   fitKnowledgeGraphViewport,
   getKnowledgeGraphConnectionStats,
   isKnowledgeGraphHistoricalNode,
+  knowledgeGraphContextLabel,
   knowledgeGraphLabelVisualScale,
   knowledgeGraphNodeVisualScale,
 };
@@ -2691,6 +2697,14 @@ function graphOpenLabel(node: KnowledgeGraphNode | null): string {
   if (node.kind === "agent") return "Open agent";
   if (node.kind === "wiki_page" || node.kind === "source") return "Open page";
   return "Open";
+}
+
+function knowledgeGraphContextLabel(data: Pick<KnowledgeGraphData, "space" | "scope">): string {
+  if (data.space?.displayName) return data.space.displayName;
+  if (data.scope.kind === "project" && data.scope.projectName) return data.scope.projectName;
+  if (data.scope.kind === "space" && data.scope.spaceSlug) return data.scope.spaceSlug;
+  if (data.scope.kind === "local") return "Local graph";
+  return "Company wiki";
 }
 
 function GraphStat({ label, value }: { label: string; value: number }) {
@@ -3063,7 +3077,7 @@ function KnowledgeGraphView({
           badges={mode === "brain"
             ? <><Badge>{brainStats.pages.toLocaleString()} notes</Badge><Badge>{brainStats.links.toLocaleString()} links</Badge></>
             : <><Badge>{graph.nodes.length.toLocaleString()} visible</Badge><Badge>{visibleEdgeCount.toLocaleString()} connections</Badge></>}
-          right={<Tiny>{data.space.displayName} · {data.checkedAt.slice(0, 10)}</Tiny>}
+          right={<Tiny>{knowledgeGraphContextLabel(data)} · {data.checkedAt.slice(0, 10)}</Tiny>}
         />
         <CardBody padding={0}>
           <div style={{
