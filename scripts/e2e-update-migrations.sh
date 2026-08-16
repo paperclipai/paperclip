@@ -137,13 +137,14 @@ PG_INODE_BEFORE="$([ -n "$PG_VERSION_FILE" ] && ls -i "$PG_VERSION_FILE" | awk '
 [ -n "$PG_VERSION_FILE" ] && pass "3c embedded Postgres cluster initialized" || fail_ "3c embedded Postgres cluster found"
 
 note "4. baseline dump: probe table must NOT exist on the old schema"
-if shim db-backup >/dev/null 2>&1; then
+if BASE_BACKUP_OUTPUT="$(shim db:backup 2>&1)"; then
   pass "4a db-backup on base version exits 0"
 else
+  printf '%s\n' "$BASE_BACKUP_OUTPUT"
   fail_ "4a db-backup on base version exits 0"
 fi
 BASELINE_DUMP="$(newest_backup)"
-if [ -n "$BASELINE_DUMP" ] && ! dump_text "$BASELINE_DUMP" | grep -q "e2e_update_probe"; then
+if [ -n "$BASELINE_DUMP" ] && ! dump_text "$BASELINE_DUMP" | grep "e2e_update_probe" >/dev/null; then
   pass "4b baseline schema has no e2e_update_probe table"
 else
   fail_ "4b baseline schema has no e2e_update_probe table (dump: ${BASELINE_DUMP:-<none>})"
@@ -192,21 +193,34 @@ if wait_active; then
 else
   fail_ "7a service active after update"; exit 1
 fi
-if shim service logs -n 2000 2>/dev/null | grep -q "e2e_update_probe"; then
-  pass "7b service logs mention applying the probe migration"
+UPDATED_VERSION_OUTPUT="$(shim --version 2>/dev/null || true)"
+UPDATED_VERSION="${UPDATED_VERSION_OUTPUT%% *}"
+STATUS_JSON="$(shim service status --json 2>/dev/null || true)"
+HEALTH_VERSION="$(printf '%s' "$STATUS_JSON" | node -e '
+  const fs = require("fs");
+  const value = JSON.parse(fs.readFileSync(0, "utf8"));
+  if (value.health?.serverVersion) process.stdout.write(String(value.health.serverVersion));
+' 2>/dev/null || true)"
+if [ -n "$UPDATED_VERSION" ] && [ "$HEALTH_VERSION" = "$UPDATED_VERSION" ]; then
+  pass "7b restarted service reports the updated payload version ($HEALTH_VERSION)"
 else
-  fail_ "7b service logs mention applying the probe migration"
+  fail_ "7b restarted service reports the updated payload version (shim: ${UPDATED_VERSION:-<none>}, service: ${HEALTH_VERSION:-<none>})"
 fi
-if shim db-backup >/dev/null 2>&1; then
-  pass "7c db-backup on new version exits 0"
+if shim service logs -n 2000 >/dev/null 2>&1; then
+  pass "7c service logs are readable after update"
 else
-  fail_ "7c db-backup on new version exits 0"
+  fail_ "7c service logs are readable after update"
+fi
+if shim db:backup >/dev/null 2>&1; then
+  pass "7d db-backup on new version exits 0"
+else
+  fail_ "7d db-backup on new version exits 0"
 fi
 POST_DUMP="$(newest_backup)"
-if [ -n "$POST_DUMP" ] && dump_text "$POST_DUMP" | grep -q "e2e_update_probe"; then
-  pass "7d probe migration table exists in the real database after update"
+if [ -n "$POST_DUMP" ] && dump_text "$POST_DUMP" | grep "e2e_update_probe" >/dev/null; then
+  pass "7e probe migration table exists in the real database after update"
 else
-  fail_ "7d probe migration table exists in the real database (dump: ${POST_DUMP:-<none>})"
+  fail_ "7e probe migration table exists in the real database (dump: ${POST_DUMP:-<none>})"
 fi
 
 note "8. data continuity: same database cluster, not re-initialized"
