@@ -44,6 +44,7 @@ import type {
   IssueCommentMetadata,
   IssueCommentPresentation,
   IssueBlockerAttention,
+  IssueBlockerAttentionEdgeKind,
   IssueReviewAttention,
   IssueReviewAttentionPath,
   IssueBlockedInboxAttention,
@@ -1948,6 +1949,7 @@ type IssueBlockerAttentionInputNode =
 type IssueBlockerAttentionEdge = {
   issueId: string;
   blockerIssueId: string;
+  kind: IssueBlockerAttentionEdgeKind;
 };
 type IssueBlockerAttentionQueryRow = IssueBlockerAttentionNode & {
   issueId: string | null;
@@ -2090,8 +2092,11 @@ function createIssueBlockerAttention(input: Partial<IssueBlockerAttention> = {})
     coveredBlockerCount: input.coveredBlockerCount ?? 0,
     stalledBlockerCount: input.stalledBlockerCount ?? 0,
     attentionBlockerCount: input.attentionBlockerCount ?? 0,
+    dependencyBlockerCount: input.dependencyBlockerCount ?? 0,
+    childBlockerCount: input.childBlockerCount ?? 0,
     pendingFinalizeBlockerIssueIds: input.pendingFinalizeBlockerIssueIds ?? [],
     sampleBlockerIdentifier: input.sampleBlockerIdentifier ?? null,
+    sampleBlockerEdgeKind: input.sampleBlockerEdgeKind ?? null,
     sampleStalledBlockerIdentifier: input.sampleStalledBlockerIdentifier ?? null,
     blockingTreeLive: input.blockingTreeLive ?? false,
     terminalBlockerIssueId: input.terminalBlockerIssueId ?? null,
@@ -2108,10 +2113,17 @@ function appendBlockerAttentionEdges(
 ) {
   for (const row of rows) {
     const existing = edgesByIssueId.get(row.issueId) ?? [];
-    if (!existing.some((edge) => edge.blockerIssueId === row.blockerIssueId)) {
-      existing.push(row);
-      edgesByIssueId.set(row.issueId, existing);
+    const duplicate = existing.find((edge) => edge.blockerIssueId === row.blockerIssueId);
+    if (duplicate) {
+      // An issue can be both an open child and an explicit blocker. Report the
+      // explicit dependency, because that is the edge a caller can also see in
+      // `blockedBy`. This runs on either merge order, so the reported kind does
+      // not depend on which query returned the row first.
+      if (row.kind === "blocked_by") duplicate.kind = "blocked_by";
+      continue;
     }
+    existing.push(row);
+    edgesByIssueId.set(row.issueId, existing);
   }
 }
 
@@ -2416,10 +2428,10 @@ async function listIssueBlockerAttentionMap(
       appendBlockerAttentionEdges(edgesByIssueId, [
         ...unresolvedExplicitBlockerRows
           .filter((row): row is IssueBlockerAttentionQueryRow & { issueId: string } => row.issueId !== null)
-          .map((row) => ({ issueId: row.issueId, blockerIssueId: row.blockerIssueId })),
+          .map((row) => ({ issueId: row.issueId, blockerIssueId: row.blockerIssueId, kind: "blocked_by" as const })),
         ...childRows
           .filter((row): row is IssueBlockerAttentionQueryRow & { issueId: string } => row.issueId !== null)
-          .map((row) => ({ issueId: row.issueId, blockerIssueId: row.blockerIssueId })),
+          .map((row) => ({ issueId: row.issueId, blockerIssueId: row.blockerIssueId, kind: "child" as const })),
       ]);
 
       for (const row of [...unresolvedExplicitBlockerRows, ...childRows]) {
@@ -2781,10 +2793,13 @@ async function listIssueBlockerAttentionMap(
       coveredBlockerCount,
       stalledBlockerCount,
       attentionBlockerCount,
+      dependencyBlockerCount: topLevelEdges.filter((edge) => edge.kind === "blocked_by").length,
+      childBlockerCount: topLevelEdges.filter((edge) => edge.kind === "child").length,
       pendingFinalizeBlockerIssueIds: topLevelEdges
         .map((edge) => edge.blockerIssueId)
         .filter((blockerIssueId) => pendingFinalizeBlockerIssueIds.has(blockerIssueId)),
       sampleBlockerIdentifier: sampleEntry?.result.sampleBlockerIdentifier ?? blockerSampleIdentifier(sampleNode),
+      sampleBlockerEdgeKind: sampleEntry?.edge.kind ?? null,
       sampleStalledBlockerIdentifier:
         stalledEntry?.result.sampleStalledBlockerIdentifier ?? sampleStalledFromChain ?? null,
       blockingTreeLive: topLevelEdges.some((edge) => pathHasLiveWork(edge.blockerIssueId, new Set([root.id]))),
