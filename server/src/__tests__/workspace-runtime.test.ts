@@ -3127,6 +3127,100 @@ describe("realizeExecutionWorkspace", () => {
     await expect(fs.readFile(path.join(initial.cwd, ".paperclip-restored-state"), "utf8")).resolves.toBe("reprovisioned\n");
   }, 15_000);
 
+  it("rejects an empty base checkout path with a clear cause", async () => {
+    // An empty base path makes the later "git" spawn fail with a raw ENOENT.
+    // The reopen must throw a clear cause first that names the empty checkout.
+    let error: unknown = null;
+    try {
+      await ensurePersistedExecutionWorkspaceAvailable({
+        base: {
+          baseCwd: "",
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        workspace: {
+          mode: "isolated_workspace",
+          strategyType: "git_worktree",
+          cwd: "/does-not-exist/worktree",
+          providerRef: "/does-not-exist/worktree",
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+          repoUrl: null,
+          baseRef: "HEAD",
+          branchName: "feature-branch",
+        },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-461",
+          title: "Empty base checkout path",
+        },
+        agent: {
+          id: "agent-1",
+          name: "Codex Coder",
+          companyId: "company-1",
+        },
+      });
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      "Cannot rebuild the git worktree: the base project checkout path is empty.",
+    );
+  });
+
+  it("preserves a whitespace-only base checkout path and reports it as missing", async () => {
+    // The reopen must use the persisted base path exactly. A trim would change
+    // a whitespace-only path into an empty path and hide the real cause.
+    // A directory name can consist of spaces, so keep the path unchanged and
+    // let the directory-exists check report the missing checkout.
+    let error: unknown = null;
+    try {
+      await ensurePersistedExecutionWorkspaceAvailable({
+        base: {
+          baseCwd: "   ",
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        workspace: {
+          mode: "isolated_workspace",
+          strategyType: "git_worktree",
+          cwd: "/does-not-exist/worktree",
+          providerRef: "/does-not-exist/worktree",
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+          repoUrl: null,
+          baseRef: "HEAD",
+          branchName: "feature-branch",
+        },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-461",
+          title: "Whitespace base checkout path",
+        },
+        agent: {
+          id: "agent-1",
+          name: "Codex Coder",
+          companyId: "company-1",
+        },
+      });
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      "Cannot rebuild the git worktree: the base project checkout directory does not exist.",
+    );
+  });
+
   it("auto-detects the default branch when baseRef is not configured", async () => {
     // Create a repo with "master" as default branch (not "main")
     const repoRoot = await createTempRepo("master");

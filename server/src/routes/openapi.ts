@@ -4607,6 +4607,8 @@ registry.registerPath({
   path: "/api/issues/{id}/interactions",
   tags: ["issues"],
   summary: "Create an issue thread interaction",
+  description:
+    "Resolver policy defaults to canonical `anyone` for every interaction kind. `not_creator` and `human_only` are opt-in restrictions; deprecated `board_or_agents` and `board_only` inputs are accepted as compatibility aliases.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(createIssueThreadInteractionSchema),

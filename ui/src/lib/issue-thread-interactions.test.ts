@@ -20,10 +20,15 @@ import type {
   RequestItemVerdictsInteraction,
 } from "./issue-thread-interactions";
 
+// The open default every interaction now inherits when its creator omits
+// `resolverPolicy` (PAP-17277 contract).
 const resolverPolicyFields = {
-  resolverPolicy: "board_only",
-  requestedResolverPolicy: "board_only",
-  effectiveResolverPolicy: "board_only",
+  resolverPolicy: "anyone",
+  requestedResolverPolicy: "anyone",
+  effectiveResolverPolicy: "anyone",
+  resolverPolicyProvenance: "inherited",
+  effectiveResolverPolicySource: "requested",
+  legacyResolverPolicyAliases: { requested: "board_or_agents", effective: "board_or_agents" },
 } as const;
 
 describe("buildSuggestedTaskTree", () => {

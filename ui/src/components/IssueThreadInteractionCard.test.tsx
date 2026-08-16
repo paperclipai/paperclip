@@ -4,6 +4,8 @@ import { act as reactAct, type ComponentProps, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Agent } from "@paperclipai/shared";
+import { ApiError } from "../api/client";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
 import { ThemeProvider } from "../context/ThemeContext";
 import { TooltipProvider } from "./ui/tooltip";
@@ -33,6 +35,10 @@ import {
   agentResolvedRequestConfirmationInteraction,
   withdrawnRequestConfirmationInteraction,
   issueClosedRequestConfirmationInteraction,
+  notCreatorRequestConfirmationInteraction,
+  humanOnlyRequestConfirmationInteraction,
+  companyCappedRequestConfirmationInteraction,
+  legacyRestrictedRequestConfirmationInteraction,
 } from "../fixtures/issueThreadInteractionFixtures";
 
 let root: Root | null = null;
@@ -505,6 +511,114 @@ describe("IssueThreadInteractionCard", () => {
     expect(onAcceptInteraction).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "request_confirmation" }),
     );
+  });
+
+  // PAP-17287: a denial is persistent, so the inline error keeps the server's
+  // reason and names who can respond instead of offering a doomed retry.
+  it("keeps the server denial reason in an aria-live region when a confirmation is refused", async () => {
+    const onAcceptInteraction = vi.fn(async () => {
+      throw new ApiError("This issue-thread interaction is human-only", 403, {
+        error: "This issue-thread interaction is human-only",
+        code: "interaction_human_only",
+      });
+    });
+    const host = renderCard({
+      interaction: humanOnlyRequestConfirmationInteraction,
+      onAcceptInteraction,
+    });
+
+    const confirmButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Approve"),
+    );
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const error = host.querySelector('[data-testid="interaction-action-error"]');
+    expect(error?.getAttribute("aria-live")).toBe("assertive");
+    expect(error?.textContent).toContain("This issue-thread interaction is human-only.");
+    expect(error?.textContent).toContain("Only the board can respond.");
+    expect(error?.textContent).not.toMatch(/try again/i);
+    // PAP-17289: one live region, not two. `role="alert"` is itself an
+    // assertive live region, so nesting it inside this wrapper can announce the
+    // same denial twice.
+    expect(error?.querySelector('[role="alert"]')).toBeNull();
+    expect(host.querySelectorAll('[aria-live], [role="alert"]').length).toBe(1);
+  });
+
+  it("still offers a retry when a resolution fails for a transient reason", async () => {
+    const onAcceptInteraction = vi.fn(async () => {
+      throw new ApiError("Request failed: 503", 503, null);
+    });
+    const host = renderCard({
+      interaction: pendingRequestConfirmationInteraction,
+      onAcceptInteraction,
+    });
+
+    await act(async () => {
+      Array.from(host.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Approve plan"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(
+      host.querySelector('[data-testid="interaction-action-error"]')?.textContent,
+    ).toBe("Request failed: 503. Try again.");
+  });
+
+  it("surfaces a denied suggested-task acceptance instead of failing silently", async () => {
+    const onAcceptInteraction = vi.fn(async () => {
+      throw new ApiError("Only the addressed agent or an authorized human may resolve this issue-thread interaction", 403, {
+        error: "Only the addressed agent or an authorized human may resolve this issue-thread interaction",
+        code: "interaction_addressee_mismatch",
+      });
+    });
+    const host = renderCard({
+      interaction: pendingSuggestedTasksInteraction,
+      onAcceptInteraction,
+    });
+
+    await act(async () => {
+      Array.from(host.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Accept"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const error = host.querySelector('[data-testid="interaction-action-error"]');
+    expect(error?.getAttribute("aria-live")).toBe("assertive");
+    expect(error?.textContent).toContain("may resolve this issue-thread interaction.");
+  });
+
+  it("surfaces a denied answer submission on a questions card", async () => {
+    const onSubmitInteractionAnswers = vi.fn(async () => {
+      throw new ApiError("This issue-thread interaction is human-only", 403, {
+        error: "This issue-thread interaction is human-only",
+        code: "interaction_human_only",
+      });
+    });
+    const host = renderCard({
+      interaction: pendingAskUserQuestionsInteraction,
+      onSubmitInteractionAnswers,
+    });
+
+    // Answer every question so Submit is enabled, then submit.
+    for (const group of ['[role="radio"]', '[role="checkbox"]']) {
+      const option = host.querySelector(group);
+      await act(async () => {
+        (option as HTMLElement | null)?.click();
+      });
+    }
+    const submit = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Send answers"),
+    );
+    expect(submit?.hasAttribute("disabled")).toBe(false);
+    await act(async () => {
+      submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(
+      host.querySelector('[data-testid="interaction-action-error"]')?.textContent,
+    ).toContain("This issue-thread interaction is human-only.");
   });
 
   it("standardizes the bare-reject button to Reject even when the payload carries a legacy rejectLabel", () => {
@@ -1001,5 +1115,93 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     const label = "Expired · issue closed";
     const occurrences = (host.textContent ?? "").split(label).length - 1;
     expect(occurrences).toBe(1);
+  });
+
+});
+
+/**
+ * The effective audience is shown *before* anyone responds, so a reader never
+ * has to guess whether an open card is waiting on them (PAP-17280).
+ */
+describe("IssueThreadInteractionCard resolver audience", () => {
+  it("shows an open audience on a pending card created without a restriction", () => {
+    const host = renderCard({ interaction: pendingRequestConfirmationInteraction });
+
+    const audience = host.querySelector('[data-testid="interaction-audience"]');
+    expect(audience?.getAttribute("data-audience-policy")).toBe("anyone");
+    expect(audience?.getAttribute("data-audience-open")).toBe("true");
+    expect(audience?.textContent).toContain("Anyone");
+    expect(audience?.textContent).toContain("the board or any agent, including the one that asked");
+    // An open card must never read as board-required.
+    expect(audience?.textContent).not.toMatch(/only a person on the board/i);
+    expect(host.querySelector('[data-testid="interaction-audience-note"]')).toBeNull();
+  });
+
+  it("names the excluded creator for an explicit not_creator card", () => {
+    const host = renderCard({
+      interaction: notCreatorRequestConfirmationInteraction,
+      agentMap: new Map([["agent-codex", { name: "CodexCoder" } as Agent]]),
+    });
+
+    const audience = host.querySelector('[data-testid="interaction-audience"]');
+    expect(audience?.getAttribute("data-audience-policy")).toBe("not_creator");
+    expect(audience?.getAttribute("data-audience-open")).toBe("false");
+    expect(audience?.textContent).toContain("Anyone except creator");
+    expect(audience?.textContent).toContain("except CodexCoder can respond");
+  });
+
+  it("keeps human-only ownership copy on a human-only card", () => {
+    const host = renderCard({ interaction: humanOnlyRequestConfirmationInteraction });
+
+    const audience = host.querySelector('[data-testid="interaction-audience"]');
+    expect(audience?.getAttribute("data-audience-policy")).toBe("human_only");
+    expect(audience?.textContent).toContain("Human only");
+    expect(audience?.textContent).toContain("Only a person on the board can respond");
+  });
+
+  it("keeps addressee ownership copy on an agent-addressed card", () => {
+    const host = renderCard({
+      interaction: agentAddressedRequestConfirmationInteraction,
+      agentMap: new Map([["agent-codex", { name: "CodexCoder" } as Agent]]),
+    });
+
+    const audience = host.querySelector('[data-testid="interaction-audience"]');
+    expect(audience?.getAttribute("data-audience-open")).toBe("false");
+    expect(audience?.textContent).toContain("Addressed");
+    expect(audience?.textContent).toContain("Only CodexCoder or a person on the board can respond");
+    expect(audience?.textContent).not.toContain("Anyone");
+  });
+
+  it("explains a company cap that narrowed the requested audience", () => {
+    const host = renderCard({ interaction: companyCappedRequestConfirmationInteraction });
+
+    const audience = host.querySelector('[data-testid="interaction-audience"]');
+    expect(audience?.getAttribute("data-audience-policy")).toBe("human_only");
+    expect(
+      host.querySelector('[data-testid="interaction-audience-note"]')?.textContent,
+    ).toBe("Company interaction governance narrowed this from Anyone to Human only.");
+  });
+
+  it("explains a legacy card that predates the open default", () => {
+    const host = renderCard({ interaction: legacyRestrictedRequestConfirmationInteraction });
+
+    expect(
+      host.querySelector('[data-testid="interaction-audience-note"]')?.textContent,
+    ).toContain("Created before Anyone became the default");
+  });
+
+  it("omits the audience row once a card is resolved and shows who resolved it", () => {
+    const host = renderCard({
+      interaction: agentResolvedRequestConfirmationInteraction,
+      agentMap: new Map([["agent-codex", { name: "CodexCoder" } as Agent]]),
+    });
+
+    expect(host.querySelector('[data-testid="interaction-audience"]')).toBeNull();
+    const footer = host.querySelector('[data-testid="interaction-resolved-footer"]');
+    expect(footer?.textContent).toContain("Resolved by");
+    expect(footer?.textContent).toContain("CodexCoder");
+    expect(
+      footer?.querySelector('[data-testid="interaction-resolved-by-agent-chip"]'),
+    ).not.toBeNull();
   });
 });

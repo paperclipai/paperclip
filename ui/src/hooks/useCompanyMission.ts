@@ -2,6 +2,10 @@ import { useQuery } from "@tanstack/react-query";
 import { goalsApi } from "../api/goals";
 import { queryKeys } from "../lib/queryKeys";
 import { selectDefaultCompanyGoalId } from "../lib/onboarding-launch";
+import {
+  selectExistingCompanyMission,
+  type ExistingCompanyMission,
+} from "../lib/onboarding-mission";
 
 /**
  * Whether a company already has its mission, for deciding which onboarding
@@ -28,14 +32,28 @@ import { selectDefaultCompanyGoalId } from "../lib/onboarding-launch";
  * gates follow: a check that guards a convenience must never be able to block
  * the thing it guards.
  *
+ * `mission` carries the same goal back in the shape the wizard's mission
+ * textarea holds it. A company entered on the agent step never runs steps 1
+ * and 2, so that field is otherwise empty — and it is what seeds the lead
+ * agent's instructions, so an empty one costs the customer the mission they
+ * gave at signup.
+ *
+ * `fetching` is exposed separately from `settled` for the same reason the
+ * draft ownership gate distinguishes them: retained goals from a previous read
+ * are the right company's but not necessarily its current mission, so a
+ * consumer that must not act on a stale mission waits on this rather than on
+ * `settled`.
+ *
  * The goal list is read under the query key the launch path already uses, so
  * this shares that cache entry rather than adding a request.
  */
 export function useCompanyMission(companyId: string | null | undefined): {
   hasMission: boolean | undefined;
   settled: boolean;
+  mission: ExistingCompanyMission;
+  fetching: boolean;
 } {
-  const { data: goals, isPending } = useQuery({
+  const { data: goals, isPending, isFetching } = useQuery({
     queryKey: queryKeys.goals.list(companyId ?? ""),
     queryFn: () => goalsApi.list(companyId!),
     enabled: Boolean(companyId),
@@ -46,5 +64,9 @@ export function useCompanyMission(companyId: string | null | undefined): {
     // A disabled query stays pending forever, so no company means nothing to
     // wait for rather than an answer that never comes.
     settled: !companyId || !isPending,
+    mission: goals
+      ? selectExistingCompanyMission(goals)
+      : { goalId: null, goalInput: "" },
+    fetching: Boolean(companyId) && isFetching,
   };
 }

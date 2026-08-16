@@ -93,6 +93,7 @@ import {
 } from "./helpers";
 import { PropertyPicker } from "./property-picker";
 import { PropertyChip, PropertyRow, PropertySection } from "./primitives";
+import { issueReviewPolicyBadge } from "../../lib/review-policy";
 import { IssueCasesPanel } from "../IssueCasesPanel";
 import { ExpandRelationListButton, RemovableIssueReferencePill } from "./relation-controls";
 import { Badge } from "@/components/ui/badge";
@@ -848,6 +849,10 @@ export function IssueProperties({
   const approverTrigger = approverValues.length > 0
     ? <span className="text-sm truncate min-w-0" title={approverLabel}>{approverLabel}</span>
     : <span className="text-sm text-muted-foreground">None</span>;
+  // PAP-16506 P4: who may give the `in_review` verdict. Only an agent sets this,
+  // and only the two opt-in constraints are worth a row — the default (`null` ≡
+  // "anyone can approve") is what every issue already does, so it shows nothing.
+  const reviewPolicyBadge = issueReviewPolicyBadge(issue.reviewPolicy);
   const nextRunnableExecutionStage = (() => {
     if (issue.executionState?.status === "changes_requested" && issue.executionState.currentStageType) {
       return issue.executionState.currentStageType;
@@ -2302,6 +2307,16 @@ export function IssueProperties({
       </PropertySection>
 
       <PropertySection title="Execution">
+        {/* Read-only: agents set the policy, the board does not. */}
+        {reviewPolicyBadge ? (
+          <PropertyRow label="Approvals">
+            <PropertyChip title={reviewPolicyBadge.description}>
+              <reviewPolicyBadge.Icon className="shrink-0 text-muted-foreground" aria-hidden />
+              <span className="min-w-0 truncate">{reviewPolicyBadge.label}</span>
+            </PropertyChip>
+          </PropertyRow>
+        ) : null}
+
         <PropertyPicker
           inline={inline}
           label="Reviewers"

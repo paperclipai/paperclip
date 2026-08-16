@@ -22,7 +22,7 @@ Does:
 Choose a specific instance:
 
 ```sh
-pnpm paperclipai run --instance dev
+npx paperclipai run --instance dev
 ```
 
 ## `paperclipai onboard`
@@ -104,7 +104,7 @@ This now includes bind-oriented deployment settings such as `PAPERCLIP_BIND` and
 Allow a private hostname for authenticated/private mode:
 
 ```sh
-pnpm exec paperclipai allowed-hostname my-tailscale-host
+npx paperclipai allowed-hostname my-tailscale-host
 ```
 
 ## Local Storage Paths
@@ -126,6 +126,6 @@ PAPERCLIP_HOME=/custom/home PAPERCLIP_INSTANCE_ID=dev pnpm paperclipai run
 Or pass `--data-dir` directly on any command:
 
 ```sh
-pnpm paperclipai run --data-dir ./tmp/paperclip-dev
-pnpm paperclipai doctor --data-dir ./tmp/paperclip-dev
+npx paperclipai run --data-dir ./tmp/paperclip-dev
+npx paperclipai doctor --data-dir ./tmp/paperclip-dev
 ```

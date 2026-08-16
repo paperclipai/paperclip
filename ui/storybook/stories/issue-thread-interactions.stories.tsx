@@ -17,6 +17,11 @@ import {
   failedRequestConfirmationInteraction,
   failedToolActionInteraction,
   genericPendingRequestConfirmationInteraction,
+  agentAddressedRequestConfirmationInteraction,
+  companyCappedRequestConfirmationInteraction,
+  humanOnlyRequestConfirmationInteraction,
+  legacyRestrictedRequestConfirmationInteraction,
+  notCreatorRequestConfirmationInteraction,
   pendingToolActionDestructiveInteraction,
   pendingToolActionWriteInteraction,
   runningToolActionInteraction,
@@ -110,6 +115,19 @@ function ScenarioCard({
       </CardHeader>
       <CardContent>{children}</CardContent>
     </Card>
+  );
+}
+
+function AudienceCard({ interaction }: { interaction: RequestConfirmationInteraction }) {
+  return (
+    <IssueThreadInteractionCard
+      interaction={interaction}
+      agentMap={storybookAgentMap}
+      currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+      userLabelMap={boardUserLabels}
+      onAcceptInteraction={() => undefined}
+      onRejectInteraction={() => undefined}
+    />
   );
 }
 
@@ -780,6 +798,58 @@ export const ToolActionLegacyGeneric: Story = {
       >
         <ToolActionCard interaction={genericPendingRequestConfirmationInteraction} interactive />
       </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+/**
+ * PAP-17280: the audience row every pending card now carries. `Anyone` is the
+ * default a requester gets by omitting `resolverPolicy`; the rest are the
+ * narrowings a requester, a company cap, or a governed action asks for.
+ */
+export const ResolverAudienceStates: Story = {
+  render: () => (
+    <StoryFrame>
+      <Section eyebrow="Resolver audience" title="Who can respond (PAP-17280)">
+        <div className="grid gap-6 xl:grid-cols-2">
+          <ScenarioCard
+            title="Default · Anyone"
+            description="No resolverPolicy was requested, so the card is open company attention — the board or any agent, including the one that asked."
+          >
+            <AudienceCard interaction={pendingRequestConfirmationInteraction} />
+          </ScenarioCard>
+          <ScenarioCard
+            title="Anyone except creator"
+            description="Requested on purpose when the answer has to be independent of the agent that asked."
+          >
+            <AudienceCard interaction={notCreatorRequestConfirmationInteraction} />
+          </ScenarioCard>
+          <ScenarioCard
+            title="Human only"
+            description="Reserved for a person: agents are turned away by the server, and the copy says so."
+          >
+            <AudienceCard interaction={humanOnlyRequestConfirmationInteraction} />
+          </ScenarioCard>
+          <ScenarioCard
+            title="Named addressee"
+            description="One agent owns the response; the card stays out of the open attention feed."
+          >
+            <AudienceCard interaction={agentAddressedRequestConfirmationInteraction} />
+          </ScenarioCard>
+          <ScenarioCard
+            title="Narrowed by a company cap"
+            description="The request asked for Anyone; company interaction governance capped the kind, and the card explains the narrowing."
+          >
+            <AudienceCard interaction={companyCappedRequestConfirmationInteraction} />
+          </ScenarioCard>
+          <ScenarioCard
+            title="Legacy restricted card"
+            description="Created before Anyone became the default. Migration keeps it restricted fail-closed and the card says a new card would be open."
+          >
+            <AudienceCard interaction={legacyRestrictedRequestConfirmationInteraction} />
+          </ScenarioCard>
+        </div>
+      </Section>
     </StoryFrame>
   ),
 };

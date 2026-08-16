@@ -83,7 +83,12 @@ describe("useCompanyMission", () => {
     mockGoalsApi.list.mockReturnValue(new Promise(() => {}));
     render("company-1");
 
-    expect(captured).toEqual({ hasMission: undefined, settled: false });
+    expect(captured).toEqual({
+      hasMission: undefined,
+      settled: false,
+      mission: { goalId: null, goalInput: "" },
+      fetching: true,
+    });
   });
 
   it("reports a mission when the company has a company-level goal", async () => {
@@ -91,7 +96,14 @@ describe("useCompanyMission", () => {
     render("company-1");
     await settle();
 
-    expect(captured).toEqual({ hasMission: true, settled: true });
+    // The mission comes back in the shape the wizard's textarea holds, so the
+    // agent step can seed the lead agent's instructions from it.
+    expect(captured).toEqual({
+      hasMission: true,
+      settled: true,
+      mission: { goalId: "goal-1", goalInput: "Ship the thing" },
+      fetching: false,
+    });
   });
 
   it("reports no mission when the company has no company-level goal", async () => {
@@ -99,7 +111,12 @@ describe("useCompanyMission", () => {
     render("company-1");
     await settle();
 
-    expect(captured).toEqual({ hasMission: false, settled: true });
+    expect(captured).toEqual({
+      hasMission: false,
+      settled: true,
+      mission: { goalId: null, goalInput: "" },
+      fetching: false,
+    });
   });
 
   it("settles with an unknown mission when the lookup fails", async () => {
@@ -112,7 +129,12 @@ describe("useCompanyMission", () => {
     render("company-1");
     await settle();
 
-    expect(captured).toEqual({ hasMission: undefined, settled: true });
+    expect(captured).toEqual({
+      hasMission: undefined,
+      settled: true,
+      mission: { goalId: null, goalInput: "" },
+      fetching: false,
+    });
   });
 
   it("settles immediately when there is no company to ask about", () => {
@@ -120,7 +142,12 @@ describe("useCompanyMission", () => {
     // is the same failure as above, reached without a request.
     render(null);
 
-    expect(captured).toEqual({ hasMission: undefined, settled: true });
+    expect(captured).toEqual({
+      hasMission: undefined,
+      settled: true,
+      mission: { goalId: null, goalInput: "" },
+      fetching: false,
+    });
     expect(mockGoalsApi.list).not.toHaveBeenCalled();
   });
 });

@@ -32,6 +32,14 @@ const mockGoalsApi = vi.hoisted(() => ({
   update: vi.fn(),
 }));
 const mockAdaptersApi = vi.hoisted(() => ({ list: vi.fn() }));
+const mockAgentsApi = vi.hoisted(() => ({
+  create: vi.fn(),
+  adapterModels: vi.fn(),
+  hire: vi.fn(),
+  instructionsBundle: vi.fn(),
+  saveInstructionsFile: vi.fn(),
+  testEnvironment: vi.fn(),
+}));
 const mockCompaniesApi = vi.hoisted(() => ({ create: vi.fn() }));
 
 const routerState = vi.hoisted(() => ({ pathname: "/" }));
@@ -54,9 +62,7 @@ const companyState = vi.hoisted(() => ({
 vi.mock("../api/goals", () => ({ goalsApi: mockGoalsApi }));
 vi.mock("@/api/adapters", () => ({ adaptersApi: mockAdaptersApi }));
 vi.mock("../api/companies", () => ({ companiesApi: mockCompaniesApi }));
-vi.mock("../api/agents", () => ({
-  agentsApi: { create: vi.fn(), adapterModels: vi.fn().mockResolvedValue([]) },
-}));
+vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../api/approvals", () => ({ approvalsApi: { create: vi.fn() } }));
 vi.mock("../api/issues", () => ({ issuesApi: { create: vi.fn() } }));
 vi.mock("../api/projects", () => ({ projectsApi: { list: vi.fn(), create: vi.fn() } }));
@@ -176,6 +182,16 @@ describe("OnboardingWizard — which step it lands on", () => {
     dialogState.onboardingRouteDismissed = false;
     mockAdaptersApi.list.mockResolvedValue([]);
     mockGoalsApi.list.mockResolvedValue([]);
+    mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockAgentsApi.hire.mockResolvedValue({ agent: { id: "agent-1" }, approval: null });
+    mockAgentsApi.instructionsBundle.mockResolvedValue({ entryFile: "AGENTS.md" });
+    mockAgentsApi.saveInstructionsFile.mockResolvedValue({});
+    mockAgentsApi.testEnvironment.mockResolvedValue({
+      adapterType: "claude_local",
+      status: "pass",
+      checks: [],
+      testedAt: new Date("2026-03-02T00:00:00Z").toISOString(),
+    });
   });
 
   afterEach(async () => {
@@ -701,5 +717,155 @@ describe("OnboardingWizard — which step it lands on", () => {
     await settle();
 
     expect(currentStep()).toBe("agent");
+  });
+
+  describe("a company that already has its mission", () => {
+    // It opens on the agent step, so steps 1 and 2 never run. Everything the
+    // mission feeds has to come from the company instead of the form.
+
+    const MISSION_GOAL = {
+      ...COMPANY_GOAL,
+      title: "Scale the marketplace",
+      description: "Reach 1000 sellers",
+    };
+
+    async function openOnAgentStep() {
+      routerState.pathname = "/PC1/onboarding";
+      mockGoalsApi.list.mockResolvedValue([MISSION_GOAL]);
+      await render();
+      await settle();
+      expect(currentStep()).toBe("agent");
+    }
+
+    it("seeds the lead agent's instructions with the mission it was never asked for", async () => {
+      // The regression this exists for. The agent step feeds
+      // `composeCeoInstructions` from the mission field, and a company entered
+      // here never types one — so the agent was hired knowing nothing of the
+      // mission the customer gave at signup, and nothing reported it.
+      await openOnAgentStep();
+
+      const next = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("Next"),
+      )!;
+      await act(async () => {
+        next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await settle();
+
+      const connect = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("Connect"),
+      )!;
+      expect(connect.hasAttribute("disabled")).toBe(false);
+      await act(async () => {
+        connect.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await settle();
+
+      expect(mockAgentsApi.saveInstructionsFile).toHaveBeenCalled();
+      const [, file] = mockAgentsApi.saveInstructionsFile.mock.calls[0];
+      expect(file.content).toContain("Scale the marketplace");
+      expect(file.content).toContain("Reach 1000 sellers");
+    });
+
+    it("will not hire while the mission is being re-read", async () => {
+      // Cached goals plus an in-flight refetch: the field holds the right
+      // company's mission, but not necessarily its current one. Hiring inside
+      // that window seeds the agent from a value about to change, and reports
+      // nothing — the same "retained data is not an answer" rule the draft
+      // ownership gate follows.
+      await openOnAgentStep();
+
+      const next = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("Next"),
+      )!;
+      await act(async () => {
+        next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await settle();
+      expect(
+        [...document.body.querySelectorAll("button")]
+          .find((b) => b.textContent?.includes("Connect"))!
+          .hasAttribute("disabled"),
+      ).toBe(false);
+
+      mockGoalsApi.list.mockReturnValue(new Promise(() => {}));
+      await act(async () => {
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.goals.list("company-1"),
+        });
+      });
+      await settle(2);
+
+      const connect = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("Connect"),
+      )!;
+      expect(connect.hasAttribute("disabled")).toBe(true);
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+    });
+
+    it("hydrates again when the same company comes back through onboarding", async () => {
+      // The hydration marker is a ref, so it outlives the state it describes.
+      // `reset()` clears the mission field; leaving the marker set would make
+      // the second run believe a mission it no longer holds was already
+      // fetched — and hire the agent without it, exactly as before this fix.
+      await openOnAgentStep();
+
+      const close = [...document.body.querySelectorAll("button")].find((b) =>
+        b.querySelector(".sr-only")?.textContent?.includes("Close"),
+      );
+      expect(close).toBeDefined();
+      await act(async () => {
+        close!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await settle();
+      // `reset()` ran: the wizard is back at the front door with a cleared
+      // mission field, which is precisely the state the marker must not
+      // outlive.
+      expect(currentStep()).not.toBe("agent");
+
+      routerState.pathname = "/";
+      await rerender();
+      await settle();
+      routerState.pathname = "/PC1/onboarding";
+      dialogState.onboardingRouteDismissed = false;
+      await rerender();
+      await settle();
+      expect(currentStep()).toBe("agent");
+
+      const next = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("Next"),
+      )!;
+      await act(async () => {
+        next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await settle();
+      const connect = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("Connect"),
+      )!;
+      await act(async () => {
+        connect.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await settle();
+
+      expect(mockAgentsApi.saveInstructionsFile).toHaveBeenCalled();
+      const [, file] = mockAgentsApi.saveInstructionsFile.mock.calls.at(-1)!;
+      expect(file.content).toContain("Scale the marketplace");
+    });
+
+    it("does not offer a way back behind the step it entered on", async () => {
+      // Step 1 creates a company. A run that already holds one must not be
+      // able to walk into it, by the Back button or the progress bar.
+      await openOnAgentStep();
+
+      const back = [...document.body.querySelectorAll("button")].find((b) =>
+        b.textContent?.includes("Back"),
+      );
+      expect(back).toBeUndefined();
+
+      const nameSegment = document.body.querySelector(
+        '[aria-label="Step 1"]',
+      ) as HTMLButtonElement | null;
+      expect(nameSegment?.disabled).toBe(true);
+    });
   });
 });

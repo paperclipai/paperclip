@@ -1164,7 +1164,9 @@ describe("environment routes", () => {
     expect(res.body.sandboxProviders["secure-plugin"]).toMatchObject({
       status: "supported",
       supportsRunExecution: true,
-      supportsReusableLeases: true,
+      // The mock manifest omits reusable leases, so the capability defaults to
+      // false and agrees with the execution guard.
+      supportsReusableLeases: false,
       supportsInteractiveSetup: true,
       interactiveSetupConnectionTypes: ["ssh"],
       supportsTemplateCapture: true,

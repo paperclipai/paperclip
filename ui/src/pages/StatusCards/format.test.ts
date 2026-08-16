@@ -30,11 +30,19 @@ function update(overrides: Partial<StatusCardUpdate>): StatusCardUpdate {
   };
 }
 
+// A fixed instant rather than the real clock. `rollupUpdatesToday` filters on
+// the *UTC* day boundary, so a suite that builds its fixtures from `new Date()`
+// fails in two ways: it straddles midnight UTC if the run happens to cross it,
+// and in any zone east of UTC+12 "today at local noon" is already yesterday in
+// UTC, so the rows it means to count are filtered out. The function takes `now`
+// for exactly this reason — the sibling test below already passes one.
+const NOW = new Date("2026-07-23T12:00:00.000Z");
+
 function iso(daysAgo: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - daysAgo);
-  // Noon avoids DST/midnight edge cases in the local-day filter.
-  d.setHours(12, 0, 0, 0);
+  const d = new Date(NOW);
+  d.setUTCDate(d.getUTCDate() - daysAgo);
+  // Noon UTC, so a row is unambiguously inside the UTC day it belongs to.
+  d.setUTCHours(12, 0, 0, 0);
   return d.toISOString();
 }
 
@@ -61,7 +69,7 @@ describe("rollupUpdatesToday", () => {
       // yesterday + last week — must not be counted as "today"
       update({ kind: "full", inputTokens: 9999, outputTokens: 9999, costCents: 99, startedAt: iso(1) }),
       update({ kind: "incremental", inputTokens: 9999, outputTokens: 9999, costCents: 99, startedAt: iso(7) }),
-    ]);
+    ], NOW);
     // Only today's full rebuild counts as an update (compile excluded).
     expect(rollup.updateCount).toBe(1);
     // Today's tokens/cost include today's compile but not older days.

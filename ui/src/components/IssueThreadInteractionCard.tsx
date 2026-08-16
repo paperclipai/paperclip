@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Agent } from "@paperclipai/shared";
 import { AlertTriangle, ArrowUpRight, Bot, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, Clock, ExternalLink, FileText, GitBranch, ImagePlus, Loader2, MessageSquareQuote, MinusCircle, ShieldAlert, ThumbsUp, TriangleAlert, Wrench, X, XCircle } from "lucide-react";
 import { Link } from "@/lib/router";
 import { formatAssigneeUserLabel } from "../lib/assignees";
+import { describeInteractionAudience, type InteractionAudienceDescription } from "../lib/interaction-audience";
+import { interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
 import {
   buildSuggestedTaskTree,
   collectSuggestedTaskClientKeys,
@@ -28,6 +30,7 @@ import {
   type SuggestedTaskTreeNode,
 } from "../lib/issue-thread-interactions";
 import { cn, formatDateTime, formatShortDate } from "../lib/utils";
+import { InteractionAudienceLine } from "./InteractionAudienceLine";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
@@ -39,6 +42,48 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { Badge } from "@/components/ui/badge";
 
 const OTHER_ANSWER_ID = "__paperclip_other__";
+
+/**
+ * The card's server-evaluated audience, shared with the per-kind subcards below
+ * (PAP-17287). A subcard that catches a rejected resolution needs to name who
+ * *can* respond, and re-deriving the audience per subcard would let two parts of
+ * the same card describe one policy differently.
+ */
+const InteractionAudienceContext = createContext<InteractionAudienceDescription | null>(null);
+
+/**
+ * Turns a rejected resolution into copy for the inline error region: the
+ * server's own denial reason, plus who can respond when the denial is an
+ * audience refusal. Never invites a retry that policy will refuse again.
+ */
+function useResolutionErrorMessage() {
+  const audience = useContext(InteractionAudienceContext);
+  return (error: unknown) => interactionResolutionErrorMessage(error, audience);
+}
+
+/**
+ * The inline resolution error. Announced through an `aria-live` region because a
+ * denial is the only feedback a failed decision gets — the row stays put and no
+ * toast fires on the attention surface.
+ *
+ * The live region is the *outer* wrapper, mounted whether or not there is a
+ * message: a region has to be in the accessibility tree before its content
+ * changes for the change to be announced. The styled inner div deliberately
+ * carries no `role="alert"` — `alert` is itself an assertive live region, and
+ * nesting one inside another makes some screen reader / browser pairs announce
+ * the same denial twice (PAP-17289).
+ */
+function InteractionActionError({ message }: { message: string | null }) {
+  return (
+    <div aria-live="assertive" data-testid="interaction-action-error">
+      {message ? (
+        <div className="rounded-sm border border-destructive/60 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {message}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 interface IssueThreadInteractionCardProps {
   interaction: IssueThreadInteraction;
@@ -674,14 +719,19 @@ function SuggestTasksCard({
     [interaction.payload.tasks],
   );
   const selectedCount = selectedClientKeys.size;
+  const [actionError, setActionError] = useState<string | null>(null);
+  const resolutionErrorMessage = useResolutionErrorMessage();
   const createdCount = interaction.result?.createdTasks?.length ?? 0;
   const skippedCount = interaction.result?.skippedClientKeys?.length ?? 0;
 
   async function handleAccept() {
     if (!onAcceptInteraction) return;
     setWorking("accept");
+    setActionError(null);
     try {
       await onAcceptInteraction(interaction, [...selectedClientKeys]);
+    } catch (error) {
+      setActionError(resolutionErrorMessage(error));
     } finally {
       setWorking(null);
     }
@@ -690,9 +740,12 @@ function SuggestTasksCard({
   async function handleReject() {
     if (!onRejectInteraction) return;
     setWorking("reject");
+    setActionError(null);
     try {
       await onRejectInteraction(interaction, rejectReason.trim() || undefined);
       setRejecting(false);
+    } catch (error) {
+      setActionError(resolutionErrorMessage(error));
     } finally {
       setWorking(null);
     }
@@ -854,6 +907,8 @@ function SuggestTasksCard({
               </div>
             </div>
           ) : null}
+
+          <InteractionActionError message={actionError} />
         </div>
       ) : null}
     </div>
@@ -953,6 +1008,8 @@ function AskUserQuestionsCard({
   );
   const [working, setWorking] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const resolutionErrorMessage = useResolutionErrorMessage();
 
   useEffect(() => {
     setDraftAnswers(
@@ -1028,6 +1085,7 @@ function AskUserQuestionsCard({
   async function handleSubmit() {
     if (!onSubmitInteractionAnswers || !canSubmit) return;
     setWorking(true);
+    setActionError(null);
     try {
       await onSubmitInteractionAnswers(
         interaction,
@@ -1042,6 +1100,8 @@ function AskUserQuestionsCard({
           };
         }),
       );
+    } catch (error) {
+      setActionError(resolutionErrorMessage(error));
     } finally {
       setWorking(false);
     }
@@ -1050,8 +1110,11 @@ function AskUserQuestionsCard({
   async function handleCancel() {
     if (!onCancelInteraction) return;
     setCancelling(true);
+    setActionError(null);
     try {
       await onCancelInteraction(interaction);
+    } catch (error) {
+      setActionError(resolutionErrorMessage(error));
     } finally {
       setCancelling(false);
     }
@@ -1227,6 +1290,8 @@ function AskUserQuestionsCard({
               </Button>
             </div>
           </div>
+
+          <InteractionActionError message={actionError} />
         </div>
       ) : interaction.status === "cancelled" ? (
         <div className="rounded-2xl border border-rose-300/60 bg-rose-50/85 p-4 text-sm leading-6 text-rose-950 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-100">
@@ -1766,6 +1831,7 @@ function RequestToolActionCard({
   const [rejectReason, setRejectReason] = useState("");
   const [working, setWorking] = useState<"accept" | "reject" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const resolutionErrorMessage = useResolutionErrorMessage();
   const [nowMs, setNowMs] = useState(() => Date.now());
   const isPending = state === "pending";
   const isDestructive = payload.risk === "destructive";
@@ -1789,8 +1855,8 @@ function RequestToolActionCard({
     setActionError(null);
     try {
       await onAcceptInteraction(interaction);
-    } catch {
-      setActionError("Couldn't submit. Try again.");
+    } catch (error) {
+      setActionError(resolutionErrorMessage(error));
     } finally {
       setWorking(null);
     }
@@ -1803,8 +1869,8 @@ function RequestToolActionCard({
     try {
       await onRejectInteraction(interaction, rejectReason.trim() || undefined);
       setRejecting(false);
-    } catch {
-      setActionError("Couldn't submit. Try again.");
+    } catch (error) {
+      setActionError(resolutionErrorMessage(error));
     } finally {
       setWorking(null);
     }
@@ -1904,11 +1970,7 @@ function RequestToolActionCard({
               </div>
             ) : null}
 
-            {actionError ? (
-              <div className="rounded-sm border border-destructive/60 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {actionError}
-              </div>
-            ) : null}
+            <InteractionActionError message={actionError} />
           </div>
         </>
       ) : (
@@ -2112,11 +2174,7 @@ function ConfirmationActionRow({
         </div>
       ) : null}
 
-      {actionError ? (
-        <div className="rounded-sm border border-destructive/60 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {actionError}
-        </div>
-      ) : null}
+      <InteractionActionError message={actionError} />
     </div>
   );
 }
@@ -2145,6 +2203,7 @@ function RequestConfirmationCard({
 }) {
   const [working, setWorking] = useState<"accept" | "reject" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const resolutionErrorMessage = useResolutionErrorMessage();
   const [shots, setShots] = useState<{ name: string; url: string }[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -2201,8 +2260,8 @@ function RequestConfirmationCard({
     setActionError(null);
     try {
       await onAcceptInteraction(interaction);
-    } catch {
-      setActionError("Try again");
+    } catch (error) {
+      setActionError(resolutionErrorMessage(error));
     } finally {
       setWorking(null);
     }
@@ -2214,8 +2273,8 @@ function RequestConfirmationCard({
     setActionError(null);
     try {
       await onRejectInteraction(interaction, reason);
-    } catch {
-      setActionError("Try again");
+    } catch (error) {
+      setActionError(resolutionErrorMessage(error));
     } finally {
       setWorking(null);
     }
@@ -2489,6 +2548,7 @@ function RequestCheckboxConfirmationCard({
   const [working, setWorking] = useState<"accept" | "reject" | null>(null);
   const [acceptAttempted, setAcceptAttempted] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const resolutionErrorMessage = useResolutionErrorMessage();
 
   const optionSeed = useMemo(() => optionIds.join("\n"), [optionIds]);
 
@@ -2551,8 +2611,8 @@ function RequestCheckboxConfirmationCard({
     setActionError(null);
     try {
       await onAcceptInteraction(interaction, undefined, [...selectedOptionIds]);
-    } catch {
-      setActionError("Try again");
+    } catch (error) {
+      setActionError(resolutionErrorMessage(error));
     } finally {
       setWorking(null);
     }
@@ -2564,8 +2624,8 @@ function RequestCheckboxConfirmationCard({
     setActionError(null);
     try {
       await onRejectInteraction(interaction, reason);
-    } catch {
-      setActionError("Try again");
+    } catch (error) {
+      setActionError(resolutionErrorMessage(error));
     } finally {
       setWorking(null);
     }
@@ -2832,6 +2892,7 @@ function RequestItemVerdictsCard({
   const [working, setWorking] = useState(false);
   const [attempted, setAttempted] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const resolutionErrorMessage = useResolutionErrorMessage();
 
   // When the server merges newly-resolved items, drop their local drafts and
   // clear the applying/working state so the terminal chips take over (S3 → S4).
@@ -2920,8 +2981,8 @@ function RequestItemVerdictsCard({
       await onSubmitInteractionVerdicts(interaction, verdicts);
       // Success: the parent refetch updates `interaction.result`, the effect
       // above clears drafts + applying state, and terminal chips render.
-    } catch {
-      setActionError("Try again");
+    } catch (error) {
+      setActionError(resolutionErrorMessage(error));
       setApplyingItemIds(new Set());
       setWorking(false);
     }
@@ -3115,11 +3176,7 @@ function RequestItemVerdictsCard({
         </div>
       ) : null}
 
-      {actionError ? (
-        <div className="rounded-sm border border-destructive/60 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {actionError}
-        </div>
-      ) : null}
+      <InteractionActionError message={actionError} />
     </div>
   );
 }
@@ -3252,6 +3309,15 @@ export function IssueThreadInteractionCard({
         userLabelMap,
       })
     : null;
+  // PAP-17280: the effective audience, shown *before* anyone responds so a
+  // reader never has to guess whether an open card is waiting on them. Derived
+  // from the same server snapshot the resolver routes enforce, so the copy
+  // cannot promise a wider audience than the API allows.
+  const audience = describeInteractionAudience({
+    interaction,
+    creatorLabel: createdByLabel,
+    addresseeLabel,
+  });
   const statusText =
     adminOutcome === "withdrawn"
       ? "Withdrawn"
@@ -3262,160 +3328,172 @@ export function IssueThreadInteractionCard({
           : statusLabel(interaction.status);
 
   return (
-    <div className={cn("rounded-lg border p-5 shadow-none", styles.shell)}>
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0 flex-1 basis-64">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className={cn("inline-flex items-center gap-1 rounded-sm border px-2.5 py-1 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow)", styles.badge)}>
-              <StatusIcon className={cn("h-3.5 w-3.5", iconSpin && "animate-spin")} />
-              {isPlan ? "Plan" : interactionKindLabel(interaction.kind)}
-              <span className="text-current/60">/</span>
-              {statusText}
-            </span>
-            {addresseeLabel ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Badge
-                    variant="secondary"
-                    className="gap-1"
-                    data-testid="interaction-addressee-badge"
-                  >
-                    <Bot className="h-3 w-3" />
-                    For {addresseeLabel}
-                  </Badge>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" className="max-w-xs text-xs">
-                  Directed to {addresseeLabel}. Agent-addressed interactions are handled by that agent and are kept out of the board attention feed.
-                </TooltipContent>
-              </Tooltip>
+    // Every nested subcard resolves the same interaction, so they all explain a
+    // denial with the same audience the header states (PAP-17287).
+    <InteractionAudienceContext.Provider value={audience}>
+      <div className={cn("rounded-lg border p-5 shadow-none", styles.shell)}>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0 flex-1 basis-64">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={cn("inline-flex items-center gap-1 rounded-sm border px-2.5 py-1 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow)", styles.badge)}>
+                <StatusIcon className={cn("h-3.5 w-3.5", iconSpin && "animate-spin")} />
+                {isPlan ? "Plan" : interactionKindLabel(interaction.kind)}
+                <span className="text-current/60">/</span>
+                {statusText}
+              </span>
+              {addresseeLabel ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Badge
+                      variant="secondary"
+                      className="gap-1"
+                      data-testid="interaction-addressee-badge"
+                    >
+                      <Bot className="h-3 w-3" />
+                      For {addresseeLabel}
+                    </Badge>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="max-w-xs text-xs">
+                    Directed to {addresseeLabel}. Agent-addressed interactions are owned by that agent and are kept out of the open company attention feed.
+                  </TooltipContent>
+                </Tooltip>
+              ) : null}
+            </div>
+
+            <div className="mt-3 text-lg font-bold text-foreground">
+              {interaction.title
+                ?? (interaction.kind === "suggest_tasks"
+                  ? "Suggested task tree"
+                  : interaction.kind === "ask_user_questions"
+                    // Only a human-only card is genuinely "for the operator";
+                    // an open card is answerable by any teammate (PAP-17280).
+                    ? interaction.payload.title
+                      ?? (audience.policy === "human_only"
+                        ? "Questions for the operator"
+                        : "Questions to answer")
+                  : interaction.kind === "request_checkbox_confirmation"
+                    ? "Checkbox confirmation requested"
+                    : isToolAction
+                      ? "Tool approval requested"
+                      : interaction.kind === "request_item_verdicts"
+                        ? "Review these items"
+                        : isPlan
+                          ? "Plan review"
+                          : "Confirmation requested")}
+            </div>
+            {interaction.summary ? (
+              <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
+                {interaction.summary}
+              </p>
+            ) : null}
+            {interaction.status === "pending" ? (
+              <InteractionAudienceLine audience={audience} className="mt-3" />
             ) : null}
           </div>
 
-          <div className="mt-3 text-lg font-bold text-foreground">
-            {interaction.title
-              ?? (interaction.kind === "suggest_tasks"
-                ? "Suggested task tree"
-                : interaction.kind === "ask_user_questions"
-                  ? interaction.payload.title ?? "Questions for the operator"
-                : interaction.kind === "request_checkbox_confirmation"
-                  ? "Checkbox confirmation requested"
-                  : isToolAction
-                    ? "Tool approval requested"
-                    : interaction.kind === "request_item_verdicts"
-                      ? "Review these items"
-                      : isPlan
-                        ? "Plan review"
-                        : "Confirmation requested")}
-          </div>
-          {interaction.summary ? (
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
-              {interaction.summary}
-            </p>
-          ) : null}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="rounded-sm border border-border/70 bg-transparent px-3 py-2 text-right text-xs text-muted-foreground">
+                <div className="font-medium text-foreground">{formatShortDate(interaction.createdAt)}</div>
+                <div>proposed by {createdByLabel}</div>
+              </div>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-xs">
+              Created {formatDateTime(interaction.createdAt)}
+            </TooltipContent>
+          </Tooltip>
         </div>
 
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <div className="rounded-sm border border-border/70 bg-transparent px-3 py-2 text-right text-xs text-muted-foreground">
-              <div className="font-medium text-foreground">{formatShortDate(interaction.createdAt)}</div>
-              <div>proposed by {createdByLabel}</div>
+        <div className="mt-5">
+          {interaction.kind === "suggest_tasks" ? (
+            <SuggestTasksCard
+              interaction={interaction}
+              agentMap={agentMap}
+              currentUserId={currentUserId}
+              userLabelMap={userLabelMap}
+              onAcceptInteraction={onAcceptInteraction}
+              onRejectInteraction={onRejectInteraction}
+            />
+          ) : interaction.kind === "ask_user_questions" ? (
+            <AskUserQuestionsCard
+              interaction={interaction}
+              onSubmitInteractionAnswers={onSubmitInteractionAnswers}
+              onCancelInteraction={onCancelInteraction}
+              externalReferences={externalReferences}
+            />
+          ) : interaction.kind === "request_checkbox_confirmation" ? (
+            <RequestCheckboxConfirmationCard
+              interaction={interaction}
+              primaryActionOnRight={primaryActionOnRight}
+              onAcceptInteraction={onAcceptInteraction}
+              onRejectInteraction={onRejectInteraction}
+              externalReferences={externalReferences}
+            />
+          ) : isToolAction && interaction.kind === "request_confirmation" && toolActionState ? (
+            <RequestToolActionCard
+              interaction={interaction}
+              state={toolActionState}
+              resolvedByLabel={resolvedByLabel}
+              requestedByLabel={createdByLabel}
+              onAcceptInteraction={onAcceptInteraction}
+              onRejectInteraction={onRejectInteraction}
+              externalReferences={externalReferences}
+            />
+          ) : interaction.kind === "request_item_verdicts" ? (
+            <RequestItemVerdictsCard
+              interaction={interaction}
+              onSubmitInteractionVerdicts={onSubmitInteractionVerdicts}
+              externalReferences={externalReferences}
+            />
+          ) : (
+            <RequestConfirmationCard
+              interaction={interaction}
+              isPlan={isPlan}
+              primaryActionOnRight={primaryActionOnRight}
+              onAcceptInteraction={onAcceptInteraction}
+              onRejectInteraction={onRejectInteraction}
+              onUploadImage={onUploadImage}
+              externalReferences={externalReferences}
+            />
+          )}
+        </div>
+
+        {adminOutcome === "withdrawn" ? (
+          <div
+            className="mt-4 border-t border-border/60 pt-3 text-xs text-muted-foreground"
+            data-testid="interaction-withdrawn-footer"
+          >
+            <div>
+              Withdrawn by{" "}
+              <span className="font-medium text-foreground">{resolvedByLabel ?? "an agent"}</span>
+              {resolvedByAgent ? <ResolvedByAgentChip /> : null}
+              {interaction.resolvedAt ? ` on ${formatShortDate(interaction.resolvedAt)}` : ""}
             </div>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" className="text-xs">
-            Created {formatDateTime(interaction.createdAt)}
-          </TooltipContent>
-        </Tooltip>
-      </div>
-
-      <div className="mt-5">
-        {interaction.kind === "suggest_tasks" ? (
-          <SuggestTasksCard
-            interaction={interaction}
-            agentMap={agentMap}
-            currentUserId={currentUserId}
-            userLabelMap={userLabelMap}
-            onAcceptInteraction={onAcceptInteraction}
-            onRejectInteraction={onRejectInteraction}
-          />
-        ) : interaction.kind === "ask_user_questions" ? (
-          <AskUserQuestionsCard
-            interaction={interaction}
-            onSubmitInteractionAnswers={onSubmitInteractionAnswers}
-            onCancelInteraction={onCancelInteraction}
-            externalReferences={externalReferences}
-          />
-        ) : interaction.kind === "request_checkbox_confirmation" ? (
-          <RequestCheckboxConfirmationCard
-            interaction={interaction}
-            primaryActionOnRight={primaryActionOnRight}
-            onAcceptInteraction={onAcceptInteraction}
-            onRejectInteraction={onRejectInteraction}
-            externalReferences={externalReferences}
-          />
-        ) : isToolAction && interaction.kind === "request_confirmation" && toolActionState ? (
-          <RequestToolActionCard
-            interaction={interaction}
-            state={toolActionState}
-            resolvedByLabel={resolvedByLabel}
-            requestedByLabel={createdByLabel}
-            onAcceptInteraction={onAcceptInteraction}
-            onRejectInteraction={onRejectInteraction}
-            externalReferences={externalReferences}
-          />
-        ) : interaction.kind === "request_item_verdicts" ? (
-          <RequestItemVerdictsCard
-            interaction={interaction}
-            onSubmitInteractionVerdicts={onSubmitInteractionVerdicts}
-            externalReferences={externalReferences}
-          />
-        ) : (
-          <RequestConfirmationCard
-            interaction={interaction}
-            isPlan={isPlan}
-            primaryActionOnRight={primaryActionOnRight}
-            onAcceptInteraction={onAcceptInteraction}
-            onRejectInteraction={onRejectInteraction}
-            onUploadImage={onUploadImage}
-            externalReferences={externalReferences}
-          />
-        )}
-      </div>
-
-      {adminOutcome === "withdrawn" ? (
-        <div
-          className="mt-4 border-t border-border/60 pt-3 text-xs text-muted-foreground"
-          data-testid="interaction-withdrawn-footer"
-        >
-          <div>
-            Withdrawn by{" "}
-            <span className="font-medium text-foreground">{resolvedByLabel ?? "an agent"}</span>
+            {adminReason ? (
+              <div className="mt-1 italic text-muted-foreground/90">"{adminReason}"</div>
+            ) : null}
+          </div>
+        ) : adminOutcome === "issue_closed" && interaction.resolvedAt ? (
+          // The header badge + body already explain the issue-closed expiry;
+          // the footer is just the audit timestamp.
+          <div
+            className="mt-4 border-t border-border/60 pt-3 text-xs text-muted-foreground"
+            data-testid="interaction-issue-closed-footer"
+          >
+            {formatShortDate(interaction.resolvedAt)}
+          </div>
+        ) : resolvedByLabel && !isToolAction ? (
+          <div
+            className="mt-4 flex flex-wrap items-center gap-x-1 gap-y-0.5 border-t border-border/60 pt-3 text-xs text-muted-foreground"
+            data-testid="interaction-resolved-footer"
+          >
+            Resolved by <span className="font-medium text-foreground">{resolvedByLabel}</span>
             {resolvedByAgent ? <ResolvedByAgentChip /> : null}
             {interaction.resolvedAt ? ` on ${formatShortDate(interaction.resolvedAt)}` : ""}
           </div>
-          {adminReason ? (
-            <div className="mt-1 italic text-muted-foreground/90">"{adminReason}"</div>
-          ) : null}
-        </div>
-      ) : adminOutcome === "issue_closed" && interaction.resolvedAt ? (
-        // The header badge + body already explain the issue-closed expiry;
-        // the footer is just the audit timestamp.
-        <div
-          className="mt-4 border-t border-border/60 pt-3 text-xs text-muted-foreground"
-          data-testid="interaction-issue-closed-footer"
-        >
-          {formatShortDate(interaction.resolvedAt)}
-        </div>
-      ) : resolvedByLabel && !isToolAction ? (
-        <div
-          className="mt-4 flex flex-wrap items-center gap-x-1 gap-y-0.5 border-t border-border/60 pt-3 text-xs text-muted-foreground"
-          data-testid="interaction-resolved-footer"
-        >
-          Resolved by <span className="font-medium text-foreground">{resolvedByLabel}</span>
-          {resolvedByAgent ? <ResolvedByAgentChip /> : null}
-          {interaction.resolvedAt ? ` on ${formatShortDate(interaction.resolvedAt)}` : ""}
-        </div>
-      ) : null}
-    </div>
+        ) : null}
+      </div>
+    </InteractionAudienceContext.Provider>
   );
 }
 

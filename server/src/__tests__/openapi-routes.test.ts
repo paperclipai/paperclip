@@ -207,6 +207,20 @@ describe("openapi routes", () => {
     expect(
       res.body.paths["/api/issues/{id}/interactions/{interactionId}/withdraw"].post.summary,
     ).toBe("Withdraw a pending issue thread interaction");
+    const createInteraction = res.body.paths["/api/issues/{id}/interactions"].post;
+    expect(createInteraction.description).toContain("defaults to canonical `anyone`");
+    const createInteractionSchema = JSON.stringify(
+      createInteraction.requestBody.content["application/json"].schema,
+    );
+    for (const resolverPolicy of [
+      "anyone",
+      "not_creator",
+      "human_only",
+      "board_or_agents",
+      "board_only",
+    ]) {
+      expect(createInteractionSchema).toContain(`\"${resolverPolicy}\"`);
+    }
     expect(res.body.paths["/api/companies/{companyId}/folders/items/move"].post.summary).toBe(
       "Move an item into or out of a folder",
     );

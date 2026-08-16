@@ -1,3 +1,4 @@
+import { legacyIssueThreadInteractionResolverPolicyAlias } from "@paperclipai/shared";
 import type { LiveRunForIssue } from "../api/heartbeats";
 import type {
   IssueChatComment,
@@ -6,6 +7,7 @@ import type {
 import type { IssueTimelineEvent } from "../lib/issue-timeline-events";
 import type {
   AskUserQuestionsInteraction,
+  IssueThreadInteractionBase,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
   RequestConfirmationToolActionPayload,
@@ -19,6 +21,42 @@ export const issueThreadInteractionFixtureMeta = {
   issueId: "issue-thread-interactions",
   currentUserId: "user-board",
 } as const;
+
+/**
+ * Resolver-audience snapshot fields shared by every interaction fixture.
+ *
+ * The default is the open audience: `anyone` with `inherited` provenance, which
+ * is what the server returns for a create request that omits `resolverPolicy`
+ * (PAP-17277 contract, PAP-17280 surfaces). A fixture that wants a restriction
+ * states it explicitly, exactly as a requester must.
+ */
+function resolverAudienceFields(
+  overrides: Partial<IssueThreadInteractionBase>,
+): Pick<
+  IssueThreadInteractionBase,
+  | "resolverPolicy"
+  | "requestedResolverPolicy"
+  | "effectiveResolverPolicy"
+  | "resolverPolicyProvenance"
+  | "effectiveResolverPolicySource"
+  | "legacyResolverPolicyAliases"
+> {
+  const requested = overrides.requestedResolverPolicy ?? overrides.resolverPolicy ?? "anyone";
+  const effective = overrides.effectiveResolverPolicy ?? requested;
+  return {
+    resolverPolicy: requested,
+    requestedResolverPolicy: requested,
+    effectiveResolverPolicy: effective,
+    resolverPolicyProvenance:
+      overrides.resolverPolicyProvenance ?? (requested === "anyone" ? "inherited" : "explicit"),
+    effectiveResolverPolicySource:
+      overrides.effectiveResolverPolicySource ?? (effective === requested ? "requested" : "company_cap"),
+    legacyResolverPolicyAliases: overrides.legacyResolverPolicyAliases ?? {
+      requested: legacyIssueThreadInteractionResolverPolicyAlias(requested),
+      effective: legacyIssueThreadInteractionResolverPolicyAlias(effective),
+    },
+  };
+}
 
 function createComment(overrides: Partial<IssueChatComment>): IssueChatComment {
   const createdAt = overrides.createdAt ?? new Date("2026-04-20T14:00:00.000Z");
@@ -105,9 +143,7 @@ function createSuggestTasksInteraction(
     },
     result: null,
     ...overrides,
-    resolverPolicy: overrides.resolverPolicy ?? "board_only",
-    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "board_only",
-    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "board_only",
+    ...resolverAudienceFields(overrides),
   };
 }
 
@@ -184,9 +220,7 @@ function createAskUserQuestionsInteraction(
     },
     result: null,
     ...overrides,
-    resolverPolicy: overrides.resolverPolicy ?? "board_only",
-    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "board_only",
-    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "board_only",
+    ...resolverAudienceFields(overrides),
   };
 }
 
@@ -230,9 +264,7 @@ function createRequestConfirmationInteraction(
     },
     result: null,
     ...overrides,
-    resolverPolicy: overrides.resolverPolicy ?? "board_only",
-    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "board_only",
-    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "board_only",
+    ...resolverAudienceFields(overrides),
   };
 }
 
@@ -292,9 +324,7 @@ function createRequestCheckboxConfirmationInteraction(
     },
     result: null,
     ...overrides,
-    resolverPolicy: overrides.resolverPolicy ?? "board_only",
-    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "board_only",
-    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "board_only",
+    ...resolverAudienceFields(overrides),
   };
 }
 
@@ -795,11 +825,51 @@ export const agentAddressedRequestConfirmationInteraction =
     id: "interaction-confirmation-agent-addressed",
     title: "Confirm the deploy window with the release agent",
     summary:
-      "Directed to the release agent, who is permitted to resolve this without waiting on the board.",
+      "Directed to the release agent, who owns this response without waiting on the board.",
     addresseeAgentId: "agent-codex",
-    requestedResolverPolicy: "board_or_agents",
-    resolverPolicy: "board_or_agents",
-    effectiveResolverPolicy: "board_or_agents",
+  });
+
+// --- Explicit resolver restrictions (PAP-17280) ---
+// Every card above is open by default; these four are the deliberate narrowings
+// a requester or a company must ask for, one per audience row the card renders.
+
+/** Independent review requested on purpose: the creator is excluded. */
+export const notCreatorRequestConfirmationInteraction =
+  createRequestConfirmationInteraction({
+    id: "interaction-confirmation-not-creator",
+    title: "Independent review of the migration plan",
+    summary: "Asked for a second pair of eyes, so the agent that wrote the plan cannot approve it.",
+    requestedResolverPolicy: "not_creator",
+  });
+
+/** A decision reserved for a person. */
+export const humanOnlyRequestConfirmationInteraction =
+  createRequestConfirmationInteraction({
+    id: "interaction-confirmation-human-only",
+    title: "Approve the customer-facing announcement",
+    summary: "Reserved for a human on the board because it commits the company publicly.",
+    requestedResolverPolicy: "human_only",
+  });
+
+/** Open request narrowed by company interaction governance. */
+export const companyCappedRequestConfirmationInteraction =
+  createRequestConfirmationInteraction({
+    id: "interaction-confirmation-company-capped",
+    title: "Confirm the data retention change",
+    summary: "Asked for an open audience; the company caps this kind at a human decision.",
+    requestedResolverPolicy: "anyone",
+    effectiveResolverPolicy: "human_only",
+    effectiveResolverPolicySource: "company_cap",
+  });
+
+/** Pre-migration card whose provenance cannot prove it was ever open. */
+export const legacyRestrictedRequestConfirmationInteraction =
+  createRequestConfirmationInteraction({
+    id: "interaction-confirmation-legacy-restricted",
+    title: "Confirm the archived cleanup batch",
+    summary: "Created before Anyone became the default, so it stays restricted until re-created.",
+    requestedResolverPolicy: "not_creator",
+    resolverPolicyProvenance: "legacy_inherited_restriction",
   });
 
 // Confirmation resolved by an agent under governance: exercises the
@@ -812,9 +882,6 @@ export const agentResolvedRequestConfirmationInteraction =
     createdByAgentId: "agent-codex",
     resolvedByAgentId: "agent-codex",
     resolvedByRunId: "run-agent-resolve-1",
-    requestedResolverPolicy: "board_or_agents",
-    resolverPolicy: "board_or_agents",
-    effectiveResolverPolicy: "board_or_agents",
     resolvedAt: new Date("2026-04-20T15:05:00.000Z"),
     updatedAt: new Date("2026-04-20T15:05:00.000Z"),
     result: { version: 1, outcome: "accepted" },
@@ -1065,9 +1132,7 @@ function createRequestItemVerdictsInteraction(
     },
     result: null,
     ...overrides,
-    resolverPolicy: overrides.resolverPolicy ?? "board_only",
-    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "board_only",
-    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "board_only",
+    ...resolverAudienceFields(overrides),
   };
 }
 

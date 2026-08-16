@@ -7,6 +7,7 @@ const mockFindExistingIssueBlockersResolvedWake = vi.hoisted(() => vi.fn(async (
 const mockIssueService = vi.hoisted(() => ({
   getAncestors: vi.fn(),
   getById: vi.fn(),
+  getByIdForUpdate: vi.fn(),
   getByIdentifier: vi.fn(async () => null),
   getComment: vi.fn(),
   getCommentCursor: vi.fn(),
@@ -114,6 +115,7 @@ async function createApp() {
     select: vi.fn(() => ({
       from: vi.fn(() => query),
     })),
+    transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
   };
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
@@ -145,6 +147,7 @@ describe("issue dependency wakeups in issue routes", () => {
     vi.clearAllMocks();
     mockFindExistingIssueBlockersResolvedWake.mockResolvedValue(null);
     mockIssueService.getAncestors.mockResolvedValue([]);
+    mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.getCommentCursor.mockResolvedValue({
       totalComments: 0,

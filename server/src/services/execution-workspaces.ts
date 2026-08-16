@@ -52,6 +52,7 @@ import {
   type PullRequestMergeDetailsResolver,
 } from "./github-pull-request-merge.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import { createGitRemoteAuthProvider } from "./git-credentials.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import {
   listCurrentRuntimeServicesForExecutionWorkspaces,
@@ -2764,11 +2765,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           };
         }
 
-        const [{ ensurePersistedExecutionWorkspaceAvailable }, { workspaceOperationService }] =
-          await Promise.all([
-            import("./workspace-runtime.js"),
-            import("./workspace-operations.js"),
-          ]);
+        const [
+          { ensurePersistedExecutionWorkspaceAvailable },
+          { workspaceOperationService },
+          { ensureManagedProjectWorkspace },
+        ] = await Promise.all([
+          import("./workspace-runtime.js"),
+          import("./workspace-operations.js"),
+          // heartbeat.js imports this module, so a static import creates a
+          // cycle. Load ensureManagedProjectWorkspace dynamically instead.
+          import("./heartbeat.js"),
+        ]);
         const [projectWorkspace, projectPolicy] = await Promise.all([
           row.projectWorkspaceId
             ? db
@@ -2786,6 +2793,25 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             .where(and(eq(projects.companyId, row.companyId), eq(projects.id, row.projectId)))
             .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy)),
         ]);
+        // Resolve the base checkout that the rebuild spawns git in. A
+        // local-folder project stores its base path in projectWorkspaces.cwd.
+        // A managed_checkout project stores null there, so resolve its live
+        // managed checkout instead. Never use row.cwd for a git_worktree
+        // rebuild: row.cwd is the archived worktree path, which the reaper
+        // already removed from disk. A spawn in that missing directory fails
+        // with "spawn git ENOENT" and hides the real cause.
+        let resolvedBaseCwd = projectWorkspace?.cwd ?? null;
+        if (resolvedBaseCwd == null && row.strategyType === "git_worktree" && row.projectId) {
+          const managedWorkspace = await ensureManagedProjectWorkspace({
+            companyId: row.companyId,
+            projectId: row.projectId,
+            repoUrl: row.repoUrl,
+            resolveGitAuth: createGitRemoteAuthProvider(db, row.companyId, {
+              issueId: row.sourceIssueId ?? issue.id,
+            }),
+          });
+          resolvedBaseCwd = managedWorkspace.cwd;
+        }
         const config = readExecutionWorkspaceConfig(row.metadata as Record<string, unknown> | null);
         const nextGeneration = readExecutionWorkspaceLifecycleGeneration(
           row.metadata as Record<string, unknown> | null,
@@ -2803,7 +2829,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           const realized = await ensurePersistedExecutionWorkspaceAvailable({
             db: tx as unknown as Db,
             base: {
-              baseCwd: projectWorkspace?.cwd ?? row.cwd ?? "",
+              baseCwd: resolvedBaseCwd ?? row.cwd ?? "",
               source: "task_session",
               projectId: row.projectId,
               workspaceId: row.projectWorkspaceId,

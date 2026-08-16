@@ -1,13 +1,18 @@
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { getProcessSessionRemoteSource } from "./execution-target.js";
+import {
+  getProcessSessionRemoteSource,
+  startAdapterExecutionTargetProcessSessionBridge,
+  type AdapterSandboxExecutionTarget,
+} from "./execution-target.js";
 import { createCommandManagedSandboxCallbackBridgeQueueClient } from "./sandbox-callback-bridge.js";
-import type { RunProcessResult } from "./server-utils.js";
+import { runChildProcess, type RunProcessResult } from "./server-utils.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -220,6 +225,270 @@ describe("stdin file race (parent PAP-4037)", () => {
 
     expect(collectDelivered(poller.frames)).toBe("still-alive");
     expect(poller.frames.some((frame) => frame.type === "exit")).toBe(true);
+  });
+
+  it("holds a later stdin file until the missing earlier file appears", async () => {
+    const poller = await startPollerWrapper();
+
+    // File 2 is complete, but file 1 has not appeared yet (a host reordering).
+    // The poller must not deliver file 2 ahead of the missing file 1. It holds
+    // the send order and waits for the earlier file.
+    await poller.writeFileAtomic("000000000002.json", stdinMessage("second-payload"));
+    await delay(300);
+    // File 2 is still on disk and nothing was delivered: the poller holds it.
+    const afterHold = await readdir(poller.stdinDir);
+    expect(afterHold).toContain("000000000002.json");
+    expect(collectDelivered(poller.frames)).toBe("");
+
+    // File 1 arrives. The poller now delivers file 1 then file 2, in send order.
+    await poller.writeFileAtomic("000000000001.json", stdinMessage("first-payload"));
+    await waitFor(() => collectDelivered(poller.frames).includes("second-payload"));
+    expect(collectDelivered(poller.frames)).toBe("first-payloadsecond-payload");
+
+    await poller.writeFileAtomic("000000000003.json", stdinEndMessage);
+    await poller.exited;
+    expect(poller.frames.some((frame) => frame.type === "exit")).toBe(true);
+  });
+
+  it("fails loud and advances past a missing stdin file after the retry limit", async () => {
+    const poller = await startPollerWrapper({ maxRetries: 3 });
+
+    // File 1 never appears. File 2 is complete. After the retry limit the poller
+    // writes a loud error event and advances past the gap, then delivers file 2.
+    // So a permanent reordering fails loud, never silently.
+    await poller.writeFileAtomic("000000000002.json", stdinMessage("after-gap"));
+
+    await waitFor(() =>
+      poller.frames.some(
+        (frame) =>
+          frame.type === "error" &&
+          typeof frame.message === "string" &&
+          frame.message.includes("Advanced past missing stdin files"),
+      ),
+    );
+    await waitFor(() => collectDelivered(poller.frames).includes("after-gap"));
+
+    await poller.writeFileAtomic("000000000003.json", stdinEndMessage);
+    await poller.exited;
+    expect(collectDelivered(poller.frames)).toBe("after-gap");
+    expect(poller.frames.some((frame) => frame.type === "exit")).toBe(true);
+  });
+
+  // ---- Host serialization test (drives the real bridge) -----------------
+
+  // A runner that runs each bridge shell script as a real child process, so the
+  // test drives the whole legacy-poll bridge: the socket handler, the command-
+  // managed `writeTextFile` script, the nohup wrapper, and the output poll.
+  function createLocalSandboxRunner(
+    onExecute?: (script: string) => Promise<void>,
+  ) {
+    let counter = 0;
+    return {
+      execute: async (input: {
+        command: string;
+        args?: string[];
+        cwd?: string;
+        env?: Record<string, string>;
+        stdin?: string;
+        timeoutMs?: number;
+        onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+      }): Promise<RunProcessResult> => {
+        counter += 1;
+        const script = input.args?.[1] ?? "";
+        if (onExecute) await onExecute(script);
+        const command =
+          input.command === "bash" ? "/bin/bash" : input.command === "sh" ? "/bin/sh" : input.command;
+        return runChildProcess(`stdin-order-run-${counter}`, command, input.args ?? [], {
+          cwd: input.cwd ?? process.cwd(),
+          env: input.env ?? {},
+          stdin: input.stdin,
+          timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
+          graceSec: 5,
+          onLog: input.onLog ?? (async () => {}),
+        });
+      },
+    };
+  }
+
+  it("serializes host stdin writes so a slow earlier write still lands first", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-stdin-host-order-"));
+    cleanupDirs.push(rootDir);
+    // The child echoes every stdin byte to stdout, so the wrapper reports the
+    // exact bytes and order the child received on its stdin.
+    const childPath = path.join(rootDir, "echo-child.mjs");
+    await writeFile(childPath, "process.stdin.on('data', (c) => process.stdout.write(c));\n", "utf8");
+
+    // Record the send-order-relevant event: the completion of each stdin file's
+    // finalize (atomic rename). Delay the finalize of the FIRST file, so its
+    // write resolves slower than the second. Without serialization the second
+    // rename would land first; the per-session chain must keep the send order.
+    const finalizeOrder: string[] = [];
+    const runner = createLocalSandboxRunner(async (script) => {
+      const finalizeMatch = /base64 -d[\s\S]*mv '[^']*\.decoded' '([^']+\.json)'/.exec(script);
+      if (finalizeMatch) {
+        const remotePath = finalizeMatch[1];
+        if (remotePath.endsWith("000000000001.json")) await delay(300);
+        finalizeOrder.push(path.posix.basename(remotePath));
+      }
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-stdin-host-order",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+
+    let peer: net.Socket | null = null;
+    try {
+      const proxySource = await readFile(bridge!.agentCommand, "utf8");
+      const port = Number(/port: (\d+)/.exec(proxySource)?.[1] ?? Number.NaN);
+      const tokenLiteral = /const token = (".*?");/.exec(proxySource)?.[1];
+      expect(Number.isFinite(port)).toBe(true);
+      const token = JSON.parse(tokenLiteral as string) as string;
+
+      const peerSocket = net.createConnection({ host: "127.0.0.1", port });
+      peer = peerSocket;
+      peerSocket.setEncoding("utf8");
+      peerSocket.on("error", () => undefined);
+      const delivered: string[] = [];
+      let peerBuffer = "";
+      peerSocket.on("data", (chunk: string) => {
+        peerBuffer += chunk;
+        const lines = peerBuffer.split("\n");
+        peerBuffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const frame = JSON.parse(line) as { type?: string; stream?: string; data?: string };
+          if (frame.type === "data" && frame.stream === "stdout" && typeof frame.data === "string") {
+            delivered.push(Buffer.from(frame.data, "base64").toString("utf8"));
+          }
+        }
+      });
+      await new Promise<void>((resolve, reject) => {
+        peerSocket.once("connect", () => resolve());
+        peerSocket.once("error", reject);
+      });
+
+      // Send two stdin messages back to back. The first authenticates and writes
+      // file 1; the second writes file 2. Both are scheduled before file 1's
+      // delayed finalize resolves, so an un-chained handler would race them.
+      const head = `${JSON.stringify({ token, type: "stdin", data: Buffer.from("HEAD_ONE_", "utf8").toString("base64") })}\n`;
+      const tail = `${JSON.stringify({ token, type: "stdin", data: Buffer.from("TAIL_TWO", "utf8").toString("base64") })}\n`;
+      peerSocket.write(head);
+      peerSocket.write(tail);
+
+      // The two finalize renames complete in send order, not in the order the
+      // delayed and fast writes would otherwise finish.
+      await waitFor(() => finalizeOrder.length >= 2, 8_000);
+      expect(finalizeOrder.slice(0, 2)).toEqual(["000000000001.json", "000000000002.json"]);
+
+      // End to end: the child receives the two payloads intact and in send
+      // order, so the prompt is byte-identical on the child stdin.
+      await waitFor(() => delivered.join("").includes("TAIL_TWO"), 8_000);
+      expect(delivered.join("")).toBe("HEAD_ONE_TAIL_TWO");
+    } finally {
+      peer?.destroy();
+      await bridge?.stop();
+    }
+  });
+
+  it("holds stdinEnd on stop until an earlier pending stdin write lands first", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-stdin-stop-order-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "echo-child.mjs");
+    await writeFile(childPath, "process.stdin.on('data', (c) => process.stdout.write(c));\n", "utf8");
+
+    // Record each stdin file finalize (atomic rename). `finalizeStarted` marks
+    // the start; `finalizeOrder` marks the completion. Delay the FIRST chunk's
+    // finalize, so its write is still pending when `stop()` runs. `stop()` must
+    // chain the `stdinEnd` write after the pending chunk, so file 2 (stdinEnd)
+    // never finishes its rename before file 1.
+    const finalizeStarted: string[] = [];
+    const finalizeOrder: string[] = [];
+    const runner = createLocalSandboxRunner(async (script) => {
+      const finalizeMatch = /base64 -d[\s\S]*mv '[^']*\.decoded' '([^']+\.json)'/.exec(script);
+      if (finalizeMatch) {
+        const name = path.posix.basename(finalizeMatch[1]);
+        finalizeStarted.push(name);
+        if (name === "000000000001.json") await delay(300);
+        finalizeOrder.push(name);
+      }
+    });
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-stdin-stop-order",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+
+    let peer: net.Socket | null = null;
+    let stopped = false;
+    try {
+      const proxySource = await readFile(bridge!.agentCommand, "utf8");
+      const port = Number(/port: (\d+)/.exec(proxySource)?.[1] ?? Number.NaN);
+      const tokenLiteral = /const token = (".*?");/.exec(proxySource)?.[1];
+      expect(Number.isFinite(port)).toBe(true);
+      const token = JSON.parse(tokenLiteral as string) as string;
+
+      const peerSocket = net.createConnection({ host: "127.0.0.1", port });
+      peer = peerSocket;
+      peerSocket.setEncoding("utf8");
+      peerSocket.on("error", () => undefined);
+      peerSocket.on("data", () => undefined);
+      await new Promise<void>((resolve, reject) => {
+        peerSocket.once("connect", () => resolve());
+        peerSocket.once("error", reject);
+      });
+
+      // Send one stdin message. It authenticates and writes file 1, whose
+      // finalize the runner delays. Wait until that finalize has started, so the
+      // write is in flight when `stop()` runs.
+      const head = `${JSON.stringify({ token, type: "stdin", data: Buffer.from("HEAD_ONE_", "utf8").toString("base64") })}\n`;
+      peerSocket.write(head);
+      await waitFor(() => finalizeStarted.includes("000000000001.json"), 8_000);
+
+      // Stop the bridge while file 1's write is still pending. `stop()` awaits
+      // the chained `stdinEnd` write, so both finalizes are complete when it
+      // returns, in send order.
+      await bridge!.stop();
+      stopped = true;
+      expect(finalizeOrder).toEqual(["000000000001.json", "000000000002.json"]);
+    } finally {
+      peer?.destroy();
+      if (!stopped) await bridge?.stop();
+    }
   });
 
   // ---- Host atomic-write tests ------------------------------------------

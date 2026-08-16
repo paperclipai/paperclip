@@ -211,9 +211,13 @@ function createSuggestedTasksInteraction(
     },
     result: null,
     ...overrides,
-    resolverPolicy: overrides.resolverPolicy ?? "board_only",
-    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "board_only",
-    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "board_only",
+    resolverPolicy: overrides.resolverPolicy ?? "anyone",
+    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "anyone",
+    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "anyone",
+    resolverPolicyProvenance: overrides.resolverPolicyProvenance ?? "inherited",
+    effectiveResolverPolicySource: overrides.effectiveResolverPolicySource ?? "requested",
+    legacyResolverPolicyAliases: overrides.legacyResolverPolicyAliases
+      ?? { requested: "board_or_agents", effective: "board_or_agents" },
   };
 }
 
@@ -253,9 +257,13 @@ function createQuestionInteraction(
     },
     result: null,
     ...overrides,
-    resolverPolicy: overrides.resolverPolicy ?? "board_only",
-    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "board_only",
-    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "board_only",
+    resolverPolicy: overrides.resolverPolicy ?? "anyone",
+    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "anyone",
+    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "anyone",
+    resolverPolicyProvenance: overrides.resolverPolicyProvenance ?? "inherited",
+    effectiveResolverPolicySource: overrides.effectiveResolverPolicySource ?? "requested",
+    legacyResolverPolicyAliases: overrides.legacyResolverPolicyAliases
+      ?? { requested: "board_or_agents", effective: "board_or_agents" },
   };
 }
 
@@ -289,9 +297,13 @@ function createExpiredRequestConfirmationInteraction(
       commentId: "comment-1",
     },
     ...overrides,
-    resolverPolicy: overrides.resolverPolicy ?? "board_only",
-    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "board_only",
-    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "board_only",
+    resolverPolicy: overrides.resolverPolicy ?? "anyone",
+    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "anyone",
+    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "anyone",
+    resolverPolicyProvenance: overrides.resolverPolicyProvenance ?? "inherited",
+    effectiveResolverPolicySource: overrides.effectiveResolverPolicySource ?? "requested",
+    legacyResolverPolicyAliases: overrides.legacyResolverPolicyAliases
+      ?? { requested: "board_or_agents", effective: "board_or_agents" },
   };
 }
 

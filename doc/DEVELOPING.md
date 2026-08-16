@@ -230,7 +230,7 @@ pnpm dev --authenticated-private
 Allow additional private hostnames (for example custom Tailscale hostnames):
 
 ```sh
-pnpm exec paperclipai allowed-hostname dotta-macbook-pro
+npx paperclipai allowed-hostname dotta-macbook-pro
 ```
 
 ## Test Commands
@@ -434,7 +434,7 @@ Instead, create a repo-local Paperclip config plus an isolated instance for the 
 ```sh
 paperclipai worktree init
 # or create the git worktree and initialize it in one step:
-pnpm paperclipai worktree:make paperclip-pr-432
+npx paperclipai worktree:make paperclip-pr-432
 ```
 
 This command:
@@ -507,7 +507,7 @@ eval "$(paperclipai worktree env)"
 
 ### Worktree CLI Reference
 
-**`pnpm paperclipai worktree init [options]`** — Create repo-local config/env and an isolated instance for the current worktree.
+**`npx paperclipai worktree init [options]`** — Create repo-local config/env and an isolated instance for the current worktree.
 
 | Option | Description |
 |---|---|
@@ -537,7 +537,7 @@ Repair an already-created repo-managed worktree and reseed its isolated instance
 
 ```sh
 cd /path/to/paperclip/.paperclip/worktrees/PAP-884-ai-commits-component
-pnpm exec paperclipai worktree init --force --seed-mode minimal \
+npx paperclipai worktree init --force --seed-mode minimal \
   --name PAP-884-ai-commits-component \
   --from-config ~/.paperclip/instances/default/config.json
 ```
@@ -546,7 +546,7 @@ That rewrites the worktree-local `.paperclip/config.json` + `.paperclip/.env`, r
 
 For an already-created worktree where you want the CLI to decide whether to rebuild missing worktree metadata or just reseed the isolated DB, use `worktree repair`.
 
-**`pnpm paperclipai worktree repair [options]`** — Repair the current linked worktree by default, or create/repair a named linked worktree under `.paperclip/worktrees/` when `--branch` is provided. The command never targets the primary checkout unless you explicitly pass `--branch`.
+**`npx paperclipai worktree repair [options]`** — Repair the current linked worktree by default, or create/repair a named linked worktree under `.paperclip/worktrees/` when `--branch` is provided. The command never targets the primary checkout unless you explicitly pass `--branch`.
 
 | Option | Description |
 |---|---|
@@ -567,13 +567,14 @@ cd /path/to/paperclip/.paperclip/worktrees/PAP-1132-assistant-ui-pap-1131-make-i
 pnpm paperclipai worktree repair
 
 # From the primary checkout, create or repair a linked worktree for a branch under .paperclip/worktrees/.
+# This command repairs the local checkout, so run the checked-out CLI through the direct-exec form.
 cd /path/to/paperclip
-pnpm paperclipai worktree repair --branch PAP-1132-assistant-ui-pap-1131-make-issues-comments-be-like-a-chat
+node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts worktree repair --branch PAP-1132-assistant-ui-pap-1131-make-issues-comments-be-like-a-chat
 ```
 
 For an already-created worktree where you want to keep the existing repo-local config/env and only overwrite the isolated database, use `worktree reseed` instead. Stop the target worktree's Paperclip server first so the command can replace the DB safely.
 
-**`pnpm paperclipai worktree reseed [options]`** — Re-seed an existing worktree-local instance from another Paperclip instance or worktree while preserving the target worktree's current config, ports, and instance identity.
+**`npx paperclipai worktree reseed [options]`** — Re-seed an existing worktree-local instance from another Paperclip instance or worktree while preserving the target worktree's current config, ports, and instance identity.
 
 | Option | Description |
 |---|---|
@@ -591,7 +592,7 @@ Examples:
 ```sh
 # From the main repo, reseed a worktree from the current default/master instance.
 cd /path/to/paperclip
-pnpm paperclipai worktree reseed \
+npx paperclipai worktree reseed \
   --from current \
   --to PAP-1132-assistant-ui-pap-1131-make-issues-comments-be-like-a-chat \
   --seed-mode full \
@@ -599,12 +600,12 @@ pnpm paperclipai worktree reseed \
 
 # From inside a worktree, reseed it from the default instance config.
 cd /path/to/paperclip/.paperclip/worktrees/PAP-1132-assistant-ui-pap-1131-make-issues-comments-be-like-a-chat
-pnpm paperclipai worktree reseed \
+npx paperclipai worktree reseed \
   --from-instance default \
   --seed-mode full
 ```
 
-**`pnpm paperclipai worktree:make <name> [options]`** — Create `~/NAME` as a git worktree, then initialize an isolated Paperclip instance inside it. This combines `git worktree add` with `worktree init` in a single step.
+**`npx paperclipai worktree:make <name> [options]`** — Create `~/NAME` as a git worktree, then initialize an isolated Paperclip instance inside it. This combines `git worktree add` with `worktree init` in a single step.
 
 | Option | Description |
 |---|---|
@@ -623,12 +624,12 @@ pnpm paperclipai worktree reseed \
 Examples:
 
 ```sh
-pnpm paperclipai worktree:make paperclip-pr-432
-pnpm paperclipai worktree:make my-feature --start-point origin/main
-pnpm paperclipai worktree:make experiment --no-seed
+npx paperclipai worktree:make paperclip-pr-432
+npx paperclipai worktree:make my-feature --start-point origin/main
+npx paperclipai worktree:make experiment --no-seed
 ```
 
-**`pnpm paperclipai worktree env [options]`** — Print shell exports for the current worktree-local Paperclip instance.
+**`npx paperclipai worktree env [options]`** — Print shell exports for the current worktree-local Paperclip instance.
 
 | Option | Description |
 |---|---|
@@ -640,7 +641,7 @@ Examples:
 ```sh
 pnpm paperclipai worktree env
 pnpm paperclipai worktree env --json
-eval "$(pnpm paperclipai worktree env)"
+eval "$(npx paperclipai worktree env)"
 ```
 
 For project execution worktrees, Paperclip can also run a project-defined provision command after it creates or reuses an isolated git worktree. Configure this on the project's execution workspace policy (`workspaceStrategy.provisionCommand`). The command runs inside the derived worktree and receives `PAPERCLIP_WORKSPACE_*`, `PAPERCLIP_PROJECT_ID`, `PAPERCLIP_AGENT_ID`, and `PAPERCLIP_ISSUE_*` environment variables so each repo can bootstrap itself however it wants.
@@ -869,15 +870,15 @@ Paperclip CLI now includes client-side control-plane commands in addition to set
 Quick examples:
 
 ```sh
-pnpm exec paperclipai issue list --company-id <company-id>
-pnpm exec paperclipai issue create --company-id <company-id> --title "Investigate checkout conflict"
-pnpm exec paperclipai issue update <issue-id> --status in_progress --comment "Started triage"
+npx paperclipai issue list --company-id <company-id>
+npx paperclipai issue create --company-id <company-id> --title "Investigate checkout conflict"
+npx paperclipai issue update <issue-id> --status in_progress --comment "Started triage"
 ```
 
 Set defaults once with context profiles:
 
 ```sh
-pnpm exec paperclipai context set --api-base http://localhost:3100 --company-id <company-id>
+npx paperclipai context set --api-base http://localhost:3100 --company-id <company-id>
 ```
 
 Then run commands without repeating flags:
@@ -961,4 +962,4 @@ Networking behavior for this smoke script:
 
 - auto-detects and prints a Paperclip host URL reachable from inside OpenClaw Docker
 - default container-side host alias is `host.docker.internal` (override with `PAPERCLIP_HOST_FROM_CONTAINER` / `PAPERCLIP_HOST_PORT`)
-- if Paperclip rejects container hostnames in authenticated/private mode, allow `host.docker.internal` via `pnpm exec paperclipai allowed-hostname host.docker.internal` and restart Paperclip
+- if Paperclip rejects container hostnames in authenticated/private mode, allow `host.docker.internal` via `npx paperclipai allowed-hostname host.docker.internal` and restart Paperclip

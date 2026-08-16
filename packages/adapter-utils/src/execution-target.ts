@@ -1246,7 +1246,12 @@ export function runtimeAssetDir(
 
 function buildBridgeResponseHeaders(response: Response): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const key of ["content-type", "etag", "last-modified"]) {
+  // Keep `x-paperclip-bridge-outcome` in this list. The host marks a
+  // possibly-committed mutation with the `indeterminate` outcome. The in-sandbox
+  // server reads that header to map the 504 to a terminal 409. If the forward
+  // drops the header, the server keeps the retryable 504 and a caller that
+  // retries 5xx can repeat a mutation that already committed.
+  for (const key of ["content-type", "etag", "last-modified", "x-paperclip-bridge-outcome"]) {
     const value = response.headers.get(key);
     if (value && value.trim().length > 0) out[key] = value.trim();
   }
@@ -1527,6 +1532,14 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     signalStopped = resolve;
   });
   let stdinSeq = 0;
+  // One promise chain per session that serializes the stdin file writes. Each
+  // write is multi-exec on the command-managed client: prepare, append per 32
+  // KiB, then an atomic rename. The chain makes the rename for file N finish
+  // before the write for file N+1 starts, so the files land in send order.
+  // Without it the writes overlap. A small later chunk can then rename ahead of
+  // a big earlier chunk, so the wrapper reads the stdin bytes out of order and
+  // corrupts a large prompt on the stdin path.
+  let stdinWriteChain: Promise<void> = Promise.resolve();
   let pollTimer: NodeJS.Timeout | null = null;
   const pendingRemoteEvents: Array<{
     type?: string;
@@ -1637,9 +1650,21 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
         if (stdinPayload) {
           stdinSeq += 1;
           const name = `${String(stdinSeq).padStart(12, "0")}.json`;
-          void runRuntimeWork(AGENT_SESSION_SEND_INPUT_SPAN, () =>
-            client.writeTextFile(path.posix.join(stdinDir, name), jsonLine(stdinPayload)),
-          ).catch((error) => {
+          const filePath = path.posix.join(stdinDir, name);
+          // Chain this write after the previous one, so the atomic rename for
+          // file N finishes before the write for file N+1 starts. Keep the
+          // per-message `sandbox.agentSession.sendInput` span inside the chain.
+          const write = stdinWriteChain.then(() =>
+            runRuntimeWork(AGENT_SESSION_SEND_INPUT_SPAN, () =>
+              client.writeTextFile(filePath, jsonLine(stdinPayload)),
+            ),
+          );
+          // The next message chains after this write on success or failure, so a
+          // failed write never blocks the chain. This mirrors the wrapper
+          // `writeChain` pattern for its event files.
+          stdinWriteChain = write.then(() => undefined, () => undefined);
+          // Keep the failure behavior: send one error line, then destroy the socket.
+          write.catch((error) => {
             nextSocket.write(jsonLine({ type: "error", message: error instanceof Error ? error.message : String(error) }));
             nextSocket.destroy();
           });
@@ -1825,10 +1850,21 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
       if (pollTimer) clearTimeout(pollTimer);
       for (const liveSocket of liveSockets) liveSocket.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve())).catch(() => undefined);
-      await client.writeTextFile(
-        path.posix.join(stdinDir, `${String(stdinSeq + 1).padStart(12, "0")}.json`),
-        jsonLine({ type: "stdinEnd" }),
-      ).catch(() => undefined);
+      // Wait for every accepted stdin write before `stdinEnd`. The socket handler
+      // fires each chunk write un-awaited through `stdinWriteChain`, so an earlier
+      // chunk can still be pending here. Chain the `stdinEnd` write onto the same
+      // per-session chain, so its file rename never finishes before an earlier
+      // chunk. `stdinSeq` is stable now, because the sockets are destroyed and the
+      // server is closed, so no new message can increment it.
+      const stdinEndPath = path.posix.join(
+        stdinDir,
+        `${String(stdinSeq + 1).padStart(12, "0")}.json`,
+      );
+      const stdinEndWrite = stdinWriteChain.then(() =>
+        client.writeTextFile(stdinEndPath, jsonLine({ type: "stdinEnd" })),
+      );
+      stdinWriteChain = stdinEndWrite.then(() => undefined, () => undefined);
+      await stdinEndWrite.catch(() => undefined);
       await client.remove(sessionDir).catch(() => undefined);
       await fs.rm(proxyDir, { recursive: true, force: true }).catch(() => undefined);
     },
@@ -1908,12 +1944,40 @@ const stdinMaxParseRetries = (() => {
   return Number.isFinite(raw) && raw > 0 ? raw : 100;
 })();
 const stdinParseRetries = new Map();
+// Track the next expected sequence number. The host writes the stdin files in
+// send order and pads the number to 12 digits, starting at 1. The files sort in
+// send order. When the smallest present number is greater than expected, an
+// earlier file has not appeared yet: a missing file, not an unreadable one. Hold
+// the send order and wait for it, bounded by the same retry budget as the
+// unreadable-file path. This turns a reordering into a loud error, never silent
+// corruption.
+let stdinExpectedSeq = 1;
+let stdinGapRetries = 0;
 
 async function pollStdin() {
   while (!stdinClosed) {
     const entries = (await fs.readdir(stdinDir).catch(() => [])).filter((name) => name.endsWith(".json")).sort();
     for (const name of entries) {
       if (stdinClosed) break;
+      const entrySeq = Number.parseInt(name, 10);
+      // Hold the send order when an earlier file has not appeared. Do not consume
+      // this later file: wait for the missing file on a later cycle, bounded by
+      // the retry budget. After the budget, fail loud and advance past the gap,
+      // so the present file can run.
+      if (Number.isFinite(entrySeq) && entrySeq > stdinExpectedSeq) {
+        stdinGapRetries += 1;
+        if (stdinGapRetries < stdinMaxParseRetries) {
+          break;
+        }
+        await writeEvent({
+          type: "error",
+          message:
+            "Advanced past missing stdin files " + stdinExpectedSeq + " to " + (entrySeq - 1) +
+            " after " + stdinMaxParseRetries + " retries.",
+        });
+        stdinGapRetries = 0;
+        stdinExpectedSeq = entrySeq;
+      }
       const file = path.posix.join(stdinDir, name);
       let message;
       try {
@@ -1936,6 +2000,10 @@ async function pollStdin() {
               "Dropped unreadable stdin file after " + stdinMaxParseRetries + " retries: " + name + ": " +
               (error instanceof Error ? error.message : String(error)),
           });
+          // The file is resolved (dropped). Advance the expected number and reset
+          // the gap budget, then let the loop go on to the next entry.
+          if (Number.isFinite(entrySeq)) stdinExpectedSeq = entrySeq + 1;
+          stdinGapRetries = 0;
           continue;
         }
         // The file is not readable yet and is not past the retry limit. Keep it
@@ -1949,6 +2017,10 @@ async function pollStdin() {
       // then act on the message. A later cycle never re-reads a handled file.
       stdinParseRetries.delete(name);
       await fs.rm(file, { force: true }).catch(() => undefined);
+      // The file is handled. Advance the expected number and reset the gap
+      // budget, so the next expected file starts fresh.
+      if (Number.isFinite(entrySeq)) stdinExpectedSeq = entrySeq + 1;
+      stdinGapRetries = 0;
       if (message.type === "stdin" && typeof message.data === "string") {
         if (!stdinClosed) child.stdin.write(Buffer.from(message.data, "base64"));
       } else if (message.type === "stdinEnd") {
@@ -2162,7 +2234,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       maxBodyBytes,
       getRuntimeParentContext: input.getRuntimeParentContext,
       runtimeSpan: input.runtimeSpan,
-      handleRequest: async (request) => {
+      handleRequest: async (request, options) => {
         const method = request.method.trim().toUpperCase() || "GET";
         if (bridgeDebugEnabled) {
           await onLog(
@@ -2177,11 +2249,19 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
         }
         headers.set("authorization", `Bearer ${hostApiToken}`);
         headers.set("x-paperclip-run-id", input.runId);
+        // Abort the forward when the worker aborts the request (its per-iteration
+        // timeout or watchdog fired), or after the 30s ceiling, whichever comes
+        // first. The worker abort lets the bridge fail a hung forward fast
+        // instead of stranding the request until the 30s ceiling.
+        const timeoutSignal = AbortSignal.timeout(30_000);
+        const forwardSignal = options?.signal
+          ? AbortSignal.any([options.signal, timeoutSignal])
+          : timeoutSignal;
         const response = await fetch(buildBridgeForwardUrl(hostApiUrl, request), {
           method,
           headers,
           ...(method === "GET" || method === "HEAD" ? {} : { body: request.body }),
-          signal: AbortSignal.timeout(30_000),
+          signal: forwardSignal,
         });
         if (bridgeDebugEnabled) {
           await onLog(

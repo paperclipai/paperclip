@@ -1,4 +1,6 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -27,6 +29,7 @@ import {
   readExecutionWorkspaceLifecycleGeneration,
   readMetadataReopenPendingConsumptionSince,
 } from "../services/execution-workspaces.js";
+import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -126,6 +129,96 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
       },
     });
     return workspaceId;
+  }
+
+  // Seed a company and project whose primary project workspace has a null cwd.
+  // This models a managed_checkout project: the base is not a local folder, so
+  // the live managed checkout supplies the base path at rebuild time.
+  async function seedManagedCheckoutProject() {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `PAP-${companyId.slice(0, 8)}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Managed checkout project",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "managed_checkout",
+      cwd: null,
+      isPrimary: true,
+    });
+    return { companyId, projectId, projectWorkspaceId };
+  }
+
+  // Seed one closed isolated git_worktree row. The reaper already removed the
+  // worktree directory, so cwd points at a path that is not on disk.
+  async function seedClosedGitWorktreeWorkspace(input: {
+    companyId: string;
+    projectId: string;
+    projectWorkspaceId: string;
+    cwd: string;
+    repoUrl: string;
+    branchName: string;
+  }) {
+    const workspaceId = randomUUID();
+    await db.insert(executionWorkspaces).values({
+      id: workspaceId,
+      companyId: input.companyId,
+      projectId: input.projectId,
+      projectWorkspaceId: input.projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "reopen-git-worktree",
+      status: "archived",
+      providerType: "local_fs",
+      cwd: input.cwd,
+      repoUrl: input.repoUrl,
+      baseRef: null,
+      branchName: input.branchName,
+      closedAt: new Date(),
+      cleanupReason: "issue_terminal",
+      cleanupEligibleAt: new Date(),
+      metadata: {
+        [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 1,
+      },
+    });
+    return workspaceId;
+  }
+
+  // Build a real git repository at the managed checkout path so
+  // ensureManagedProjectWorkspace adopts it without a network clone. The repo
+  // holds the branch that the archived worktree row references.
+  function initManagedGitRepo(dir: string, worktreeBranch: string) {
+    mkdirSync(dir, { recursive: true });
+    const git = (...args: string[]) =>
+      execFileSync("git", args, {
+        cwd: dir,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: "Test",
+          GIT_AUTHOR_EMAIL: "test@example.com",
+          GIT_COMMITTER_NAME: "Test",
+          GIT_COMMITTER_EMAIL: "test@example.com",
+        },
+        stdio: "ignore",
+      });
+    git("init");
+    writeFileSync(join(dir, "README.md"), "seed\n");
+    git("add", "README.md");
+    git("commit", "-m", "seed");
+    git("branch", worktreeBranch);
   }
 
   async function seedIssue(input: {
@@ -244,6 +337,56 @@ describeEmbeddedPostgres("reopen archived isolated execution workspace", () => {
     expect(row?.cleanupReason).toBe(EXECUTION_WORKSPACE_REOPEN_FAILED_REASON);
     expect(row?.cleanupEligibleAt).toBeNull();
     expect(readExecutionWorkspaceLifecycleGeneration(row?.metadata as Record<string, unknown> | null)).toBe(3);
+  });
+
+  it("resolves the managed base checkout for a git_worktree row when the project workspace cwd is null", async () => {
+    const previousHome = process.env.PAPERCLIP_HOME;
+    const tempHome = await mkdtemp(join(tmpdir(), "paperclip-reopen-home-"));
+    tempDirs.push(tempHome);
+    process.env.PAPERCLIP_HOME = tempHome;
+    try {
+      const { companyId, projectId, projectWorkspaceId } = await seedManagedCheckoutProject();
+      const repoUrl = "https://example.test/acme/widget.git";
+      const branchName = "reopen-feature";
+      // Build the live managed checkout that the rebuild must spawn git in.
+      const managedDir = resolveManagedProjectWorkspaceDir({ companyId, projectId, repoName: "widget" });
+      initManagedGitRepo(managedDir, branchName);
+
+      // The archived worktree path. The reaper already removed it from disk.
+      const deletedWorktree = join(tempHome, "worktrees", "reopen-worktree");
+      const workspaceId = await seedClosedGitWorktreeWorkspace({
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        cwd: deletedWorktree,
+        repoUrl,
+        branchName,
+      });
+      const issueId = await seedIssue({ companyId, projectId, workspaceId, issueNumber: 4305 });
+
+      const svc = executionWorkspaceService(db);
+      const result = await svc.reopenClosedIsolatedExecutionWorkspaceForIssue({
+        workspaceId,
+        issue: { id: issueId, companyId, projectId },
+        actor: { agentId: null, actorType: "user" },
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.reopened).toBe(true);
+
+      const row = await readWorkspace(workspaceId);
+      expect(row?.status).toBe("active");
+      expect(row?.closedAt).toBeNull();
+      expect(row?.cleanupReason).toBeNull();
+      // The rebuild recreated the worktree at the archived path from the managed
+      // base checkout.
+      const worktreeStat = await stat(deletedWorktree).catch(() => null);
+      expect(worktreeStat?.isDirectory()).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousHome;
+    }
   });
 
   it("refuses to reopen a workspace in another company", async () => {

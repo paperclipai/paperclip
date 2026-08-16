@@ -715,7 +715,9 @@ export function environmentRoutes(
             supportsSavedProbe: true,
             supportsUnsavedProbe: true,
             supportsRunExecution: true,
-            supportsReusableLeases: driver.supportsReusableLeases ?? true,
+            // Default absent to false, so the presentation agrees with the
+            // execution guard (=== true).
+            supportsReusableLeases: driver.supportsReusableLeases ?? false,
             supportsInteractiveSetup: driver.supportsInteractiveSetup,
             interactiveSetupConnectionTypes: driver.interactiveSetupConnectionTypes,
             supportsTemplateCapture: driver.supportsTemplateCapture,

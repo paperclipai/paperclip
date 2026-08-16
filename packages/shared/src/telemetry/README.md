@@ -1,7 +1,9 @@
 # Telemetry Data Contract
 
 This document explains how contributors should use Paperclip's public telemetry
-contract. It intentionally does not list individual events or dimensions.
+contract. It does not duplicate the full list of individual events or
+dimensions. It documents extra semantic and privacy rules where the generated
+shape is not sufficient.
 
 The canonical source for first-party event names, dimensions, optionality,
 allowed primitive value types, and enum descriptions is
@@ -54,6 +56,23 @@ the generated telemetry contract specifically requires that emitted value.
 If a dimension is privacy-protected before emission, emit only the protected
 value and its matching public marker as defined by the typed helper or generated
 contract. Do not emit private source material in telemetry dimensions.
+
+## Interaction Resolver Events
+
+`interaction.created` records the interaction kind and whether the create
+request used a deprecated resolver-policy alias. It does not record the prompt,
+title, options, questions, target identifier, creator identifier, or resolver
+identifier.
+
+`interaction.resolved` records the low-cardinality interaction outcome defined
+in the generated contract. Its `legacy_inherited_restriction` dimension is
+`true` only when stored migration provenance preserves a legacy resolver-policy
+restriction. It is `false` for canonical new writes. This dimension describes
+policy provenance. It does not contain user content or an identifier.
+
+Use `trackInteractionCreated()` and `trackInteractionResolved()` from
+`events.ts` to emit these events. The generated contract remains the authority
+for their exact dimensions and optionality.
 
 ## Sandbox Startup Trace Spans
 

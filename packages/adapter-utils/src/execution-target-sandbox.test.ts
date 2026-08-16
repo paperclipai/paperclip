@@ -148,7 +148,22 @@ describe("sandbox adapter execution targets", () => {
     throw new Error(message);
   }
 
-  async function runProxyWithInput(command: string, input: string): Promise<{ stdout: string; stderr: string; code: number | null }> {
+  type ProxyRunResult = {
+    stdout: string;
+    stderr: string;
+    code: number | null;
+    /**
+     * How long the exchange took. The bridge and the proxy both run on 5s
+     * budgets, which is generous locally and tight on a CI runner sharing a
+     * box with 19 other lanes. A run that returns fast and empty is a
+     * different fault from one that nearly hit the ceiling, and the numbers
+     * are the only way to tell them apart after the fact.
+     */
+    elapsedMs: number;
+  };
+
+  async function runProxyWithInput(command: string, input: string): Promise<ProxyRunResult> {
+    const startedAt = performance.now();
     const child = spawn(command, [], { stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
@@ -175,7 +190,65 @@ describe("sandbox adapter execution targets", () => {
         resolve(exitCode);
       });
     });
-    return { stdout, stderr, code };
+    return { stdout, stderr, code, elapsedMs: Math.round(performance.now() - startedAt) };
+  }
+
+  /**
+   * A failure report for a proxy exchange, attached to the assertions below.
+   *
+   * `execution-target-sandbox` has failed twice in CI and never once in a few
+   * hundred local runs, so the next occurrence has to carry its own evidence -
+   * a second unreproducible failure teaches nothing. The observed signature was
+   * an empty stdout with exit code 0, meaning the child exited cleanly having
+   * produced nothing, which is what a lost stdin frame looks like from here.
+   *
+   * The runtime tree is the part that discriminates. The stdin queue files are
+   * written by the host and deleted by the wrapper once parsed, so what remains
+   * says whether the frame was never written, written and never consumed, or
+   * consumed normally and the reply lost on the way back.
+   */
+  async function describeProxyRun(result: ProxyRunResult, runtimeRootDir: string): Promise<string> {
+    const lines = [
+      `proxy exit=${result.code} elapsedMs=${result.elapsedMs}`,
+      `proxy stdout=${JSON.stringify(result.stdout)}`,
+      `proxy stderr=${JSON.stringify(result.stderr)}`,
+    ];
+    const walk = async (dir: string, depth: number): Promise<void> => {
+      // Deep enough to reach the queue frames, which are the point. They sit
+      // at process-sessions/<id>/stdin/<seq>.json — depth 4 from the runtime
+      // root — so a cap of 3 listed the `stdin/` directory and stopped, making
+      // "the queue is empty" and "the walk never looked" print identically.
+      if (depth > 5) return;
+      let entries;
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch (error) {
+        lines.push(`${"  ".repeat(depth)}<unreadable ${dir}: ${(error as Error).message}>`);
+        return;
+      }
+      for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          lines.push(`${"  ".repeat(depth)}${entry.name}/`);
+          await walk(full, depth + 1);
+          continue;
+        }
+        // Small files are the queue and event frames, and their contents are
+        // the point. Anything larger is a child script or a log; the size is
+        // enough to say it exists.
+        let detail = "";
+        try {
+          const raw = await readFile(full, "utf8");
+          detail = raw.length <= 400 ? ` ${JSON.stringify(raw)}` : ` <${raw.length}B>`;
+        } catch (error) {
+          detail = ` <unreadable: ${(error as Error).message}>`;
+        }
+        lines.push(`${"  ".repeat(depth)}${entry.name}${detail}`);
+      }
+    };
+    lines.push(`runtime tree under ${runtimeRootDir}:`);
+    await walk(runtimeRootDir, 1);
+    return lines.join("\n");
   }
 
   function combinedStream(
@@ -729,9 +802,10 @@ describe("sandbox adapter execution targets", () => {
 
     try {
       const result = await runProxyWithInput(bridge!.agentCommand, "hello\n");
-      expect(result.code).toBe(0);
-      expect(result.stdout).toBe("out:hello\n");
-      expect(result.stderr).toBe("err:hello\n");
+      const report = await describeProxyRun(result, path.posix.join(rootDir, ".paperclip-runtime", "acpx"));
+      expect(result.code, report).toBe(0);
+      expect(result.stdout, report).toBe("out:hello\n");
+      expect(result.stderr, report).toBe("err:hello\n");
     } finally {
       await bridge?.stop();
     }
@@ -1026,9 +1100,10 @@ describe("sandbox adapter execution targets", () => {
 
       try {
         const result = await runProxyWithInput(bridge!.agentCommand, "hello\n");
-        expect(result.code).toBe(0);
-        expect(result.stdout).toBe("out:hello\n");
-        expect(result.stderr).toBe("err:hello\n");
+        const report = await describeProxyRun(result, path.posix.join(rootDir, ".paperclip-runtime", "acpx"));
+        expect(result.code, report).toBe(0);
+        expect(result.stdout, report).toBe("out:hello\n");
+        expect(result.stderr, report).toBe("err:hello\n");
       } finally {
         await bridge?.stop();
       }
@@ -1087,8 +1162,9 @@ describe("sandbox adapter execution targets", () => {
         // frame flows, so it is observable as soon as the handle resolves.
         expect(spanNames).toContain("sandbox.agentProcess");
         const result = await runProxyWithInput(bridge!.agentCommand, "hello\n");
-        expect(result.code).toBe(0);
-        expect(result.stdout).toBe("out:hello\n");
+        const report = await describeProxyRun(result, path.posix.join(rootDir, ".paperclip-runtime", "acpx"));
+        expect(result.code, report).toBe(0);
+        expect(result.stdout, report).toBe("out:hello\n");
       } finally {
         await bridge?.stop();
       }
@@ -1480,7 +1556,10 @@ describe("sandbox adapter execution targets", () => {
         // Round-trip one input so a stdin-delivery control exec runs and gets
         // recorded before the assertions below.
         const result = await runProxyWithInput(bridge!.agentCommand, "hello\n");
-        expect(result.stdout).toBe("out:hello\n");
+        expect(
+          result.stdout,
+          await describeProxyRun(result, path.posix.join(rootDir, ".paperclip-runtime", "acpx")),
+        ).toBe("out:hello\n");
 
         // Exactly one exec runs on the persistent session: the long-lived agent
         // command. It streams its output through the session log stream, so it
@@ -2438,6 +2517,80 @@ describe("sandbox adapter execution targets", () => {
         auth: "Bearer real-run-jwt",
         runId: "run-bridge-limit",
       }]);
+    } finally {
+      await bridge?.stop();
+      await new Promise<void>((resolve) => apiServer.close(() => resolve()));
+    }
+  });
+
+  it("forwards the host indeterminate-outcome header so the sandbox server maps the 504 to a non-retryable 409", async () => {
+    // The host marks a possibly-committed mutation with a 504 and the
+    // `x-paperclip-bridge-outcome: indeterminate` header. The forward must keep
+    // that header, so the in-sandbox server maps the 504 to a non-retryable 409.
+    // If the forward drops the header, the client sees a retryable 504 and a
+    // retry repeats a mutation that already committed.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-outcome-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    const runtimeRootDir = path.join(remoteCwd, ".paperclip-runtime", "codex");
+    await mkdir(runtimeRootDir, { recursive: true });
+
+    const responseBody = JSON.stringify({ error: "Mutation outcome is indeterminate.", outcome: "indeterminate", retryable: false });
+    const apiServer = createServer((_req, res) => {
+      res.writeHead(504, {
+        "content-type": "application/json",
+        "x-paperclip-bridge-outcome": "indeterminate",
+      });
+      res.end(responseBody);
+    });
+    await new Promise<void>((resolve, reject) => {
+      apiServer.once("error", reject);
+      apiServer.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = apiServer.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected the bridge outcome test API server to listen on a TCP port.");
+    }
+
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "e2b",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+      timeoutMs: 30_000,
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-bridge-outcome",
+      target,
+      runtimeRootDir,
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: `http://127.0.0.1:${address.port}`,
+    });
+    try {
+      const response = await fetch(`${bridge!.env.PAPERCLIP_API_URL}/api/issues/issue-1/comments`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${bridge!.env.PAPERCLIP_API_KEY}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ body: "Status update." }),
+      });
+
+      // The sandbox server maps the indeterminate 504 to a non-retryable 409.
+      expect(response.status).toBe(409);
+      // The outcome header and body still reach the client, so a caller that
+      // reads them still sees the indeterminate result.
+      expect(response.headers.get("x-paperclip-bridge-outcome")).toBe("indeterminate");
+      await expect(response.json()).resolves.toEqual({
+        error: "Mutation outcome is indeterminate.",
+        outcome: "indeterminate",
+        retryable: false,
+      });
     } finally {
       await bridge?.stop();
       await new Promise<void>((resolve) => apiServer.close(() => resolve()));

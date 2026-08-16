@@ -3207,4 +3207,68 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(sshRelease).not.toHaveBeenCalled();
     expect(acquired.lease.metadata?.driver).toBe("local");
   });
+
+  it("test_release_run_leases_continues_after_first_release_fails", async () => {
+    const { companyId, environment, runId } = await seedEnvironment();
+    const environmentsSvc = environmentService(db);
+
+    // Seed two active leases for one run. The first driver release throws; the
+    // second must still release.
+    const failingLease = await environmentsSvc.acquireLease({
+      companyId,
+      environmentId: environment.id,
+      heartbeatRunId: runId,
+      provider: "local",
+      providerLeaseId: "fail-release",
+      metadata: { driver: "local" },
+    });
+    const healthyLease = await environmentsSvc.acquireLease({
+      companyId,
+      environmentId: environment.id,
+      heartbeatRunId: runId,
+      provider: "local",
+      providerLeaseId: "healthy-release",
+      metadata: { driver: "local" },
+    });
+
+    const runtimeWithFailingDriver = environmentRuntimeService(db, {
+      drivers: [
+        {
+          driver: "local",
+          acquireRunLease: async () => {
+            throw new Error("acquire should not be called");
+          },
+          releaseRunLease: async ({ lease, status }) => {
+            if (lease.providerLeaseId === "fail-release") {
+              throw new Error("driver release failed");
+            }
+            return await environmentsSvc.releaseLease(lease.id, status);
+          },
+        },
+      ],
+    });
+
+    const errors: Array<{ leaseId: string; error: unknown }> = [];
+    const released = await runtimeWithFailingDriver.releaseRunLeases(
+      runId,
+      "released",
+      (leaseId, error) => errors.push({ leaseId, error }),
+    );
+
+    // The healthy lease released even though the first release failed.
+    expect(released).toHaveLength(1);
+    expect(released[0]?.lease.id).toBe(healthyLease.id);
+    expect(released[0]?.lease.status).toBe("released");
+
+    // The failed release reported one lease-specific error.
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.leaseId).toBe(failingLease.id);
+    expect((errors[0]?.error as Error).message).toBe("driver release failed");
+
+    // The database confirms the isolation. The healthy lease released; the
+    // failing lease stayed active.
+    const rows = await db.select().from(environmentLeases);
+    expect(rows.find((row) => row.id === healthyLease.id)?.status).toBe("released");
+    expect(rows.find((row) => row.id === failingLease.id)?.status).toBe("active");
+  });
 });

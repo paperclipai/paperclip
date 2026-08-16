@@ -2902,4 +2902,72 @@ describe("IssueProperties", () => {
 
     act(() => root.unmount());
   });
+  // PAP-16506 P4: only an agent sets `reviewPolicy`, so the panel shows it and
+  // never offers a control. The default — a NULL column, meaning anyone with
+  // write access can approve — is what every issue already does, so it shows
+  // nothing at all rather than a row reading "Anyone" or "None".
+  const findApprovalsRow = () =>
+    container.querySelector('[data-property-label="Approvals"]')?.closest('[data-property-row="true"]') ?? null;
+
+  it("shows no approvals row on an issue that has never set a policy", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({ reviewPolicy: null }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    expect(findApprovalsRow()).toBeNull();
+    expect(container.textContent).not.toContain("Review policy");
+
+    act(() => root.unmount());
+  });
+
+  it("shows no approvals row when the policy is the explicit default", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({ reviewPolicy: "anyone" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    expect(findApprovalsRow()).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("badges an opt-in constraint read-only, with no control to change it", async () => {
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ reviewPolicy: "human_only" }),
+      childIssues: [],
+      onUpdate,
+      inline: true,
+    });
+    await flush();
+
+    const row = findApprovalsRow();
+    expect(row?.textContent).toContain("Human only");
+    // Read-only: the row is a chip, not a picker — nothing here can PATCH.
+    expect(row?.querySelector("button")).toBeNull();
+    expect(onUpdate).not.toHaveBeenCalled();
+
+    act(() => root.unmount());
+  });
+
+  it("badges a not_creator policy as 'Anyone else'", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({ reviewPolicy: "not_creator" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    expect(findApprovalsRow()?.textContent).toContain("Anyone else");
+
+    act(() => root.unmount());
+  });
 });

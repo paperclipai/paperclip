@@ -5,6 +5,7 @@ import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { companiesApi } from "../api/companies";
+import { companiesListQueryOptions } from "../api/companies-query";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
@@ -45,10 +46,16 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
 import {
+  canGoBackFromOnboardingStep,
+  canJumpToOnboardingStep,
   companyPrefixFromOnboardingPath,
   resolveRouteOnboardingOptions,
 } from "../lib/onboarding-route";
 import { useCompanyMission } from "../hooks/useCompanyMission";
+import {
+  isExistingCompanyMissionUnresolved,
+  planMissionPersistence,
+} from "../lib/onboarding-mission";
 import { AsciiArtAnimation } from "./AsciiArtAnimation";
 import { FrontDoor } from "./FrontDoor";
 import { AgentCapsule } from "./AgentCapsule";
@@ -171,7 +178,8 @@ const INCOMPLETE_ONBOARDING_STATE_MESSAGE =
  * clear before computing `saved` and mounting the inner component at all.
  */
 export function OnboardingWizard() {
-  const { companies, loading: companiesLoading, error: companiesError } = useCompany();
+  // Deliberately does not call `useCompany()`. The list it exposes is the
+  // shared cache, which is what this gate must not trust - see below.
 
   // Parsed once (not re-parsed by the cleanup effect below) so the restored
   // value and the "should we wipe the blob" decision always agree.
@@ -185,48 +193,82 @@ export function OnboardingWizard() {
     }
   }, []);
 
-  // A failed company query is not an answer *when it left us with nothing*.
-  // React Query reports that as `isLoading === false` with `data` defaulted to
-  // an empty list, which reads exactly like "settled, and this account owns
-  // nothing" - and that verdict deletes the draft below. Discarding a
-  // customer's onboarding because their company request timed out is the one
-  // outcome here that cannot be undone.
+  // Whether this account owns the company the draft names is an authorization
+  // question, and the shared company cache cannot answer it.
   //
-  // An error with companies still in hand is a different thing: a background
-  // refetch failed over a cache that is still good. Blocking on that would
-  // fail closed, and onboarding would simply never appear for a customer whose
-  // list is fine. Only an error that leaves the list empty is undecidable.
-  // Named for what it governs: whether the *draft* can be judged. It is not
-  // the same question as whether to mount - see the gate below.
-  // Any error at all, not only one that left the list empty.
+  // `main.tsx` sets `staleTime: 30_000` for every query, so for thirty seconds
+  // after a sign-in a mounted observer of the company list serves whatever is
+  // cached with no request at all. `Auth.tsx` invalidates the list on sign-in,
+  // but invalidation keeps serving the old data while it refetches. Neither
+  // shows up as loading and neither shows up as an error, so the previous
+  // account's companies arrive looking perfectly healthy - and a check that
+  // trusts "not loading, no error" finds the old company id in them and hands
+  // one account's onboarding draft to the next.
   //
-  // The companies cache is not scoped to an account and survives sign-out -
-  // `useSignOut` invalidates only the session and health queries, and
-  // invalidation keeps serving the old data anyway. So after A signs out and B
-  // signs in, a *failed* refetch leaves A's companies in hand. Trusting a
-  // non-empty list there would find A's company id in it, call the draft
-  // owned, and hand A's onboarding to B - which is the exact leak this whole
-  // change exists to close, reached through a different door.
+  // Sign-out is no longer the hole it was: `useSignOut` now resets every
+  // account-scoped cache entry rather than invalidating two of them, so the
+  // ordinary A-signs-out-then-B-signs-in path does not leave A's companies in
+  // hand.
   //
-  // The cost is small and recoverable: during a transient refetch failure the
-  // draft is not restored. It is not deleted either, and the next successful
-  // load restores it.
+  // That covers the button, not the question. An account can change without
+  // it - a session lapsing server-side, a second account signing in on a warm
+  // tab, a caller supplying the company context from somewhere else - so this
+  // gate stays independent of that fix rather than deferring to it.
   //
-  // A truthy check rather than `!== null`. The context types this
-  // `Error | null`, but `undefined` reaches here from any consumer that
-  // provides the company context without an `error` key, and `undefined !==
-  // null` would read a healthy load as a failure.
-  const ownershipUndecidable = companiesLoading || Boolean(companiesError);
+  // So this asks for a list fetched *for this mount*, rather than reading the
+  // one in hand. `isFetchedAfterMount` is the part that matters; `staleTime: 0`
+  // is what makes that reachable while the shared entry is still fresh. It
+  // shares the query key, so the result populates the same cache entry the
+  // rest of the app reads.
+  const companiesQuery = useQuery({
+    ...companiesListQueryOptions,
+    staleTime: 0,
+    // Only a *parseable* saved draft poses the question. Without one there is
+    // nothing to authorize, and this must not add a request to every wizard
+    // mount - nor make the cleanup of unreadable junk wait on an endpoint that
+    // has no bearing on whether it is junk.
+    enabled: rawBlob !== undefined && rawBlob !== null,
+  });
+
+  // Decidable only with a list that succeeded, was fetched since this
+  // component mounted, actually arrived, and that the server was willing to
+  // give us.
+  //
+  // `isSuccess` is what ties the answer to this session. React Query keeps the
+  // last good `data` when a refetch fails, so after an account switch the
+  // retained value is the *previous* account's list - but a failed refetch
+  // flips status to error, so `isSuccess` rejects it. Combined with
+  // `staleTime: 0`, which makes every mount refetch, and the mount gate below
+  // holding while that is in flight, a success here is always this session's.
+  //
+  // `isFetchedAfterMount` looks like it belongs here too and does not: it is
+  // true after a *failed* refetch as well, so it never rejects anything
+  // `isSuccess` has not already rejected. Left out rather than kept as
+  // decoration - no test could distinguish it, which is how a guard rots.
+  //
+  // The `unauthorized` check is the last one: `companiesListQueryOptions`
+  // folds 401 and 403 into `{ companies: [], unauthorized: true }` rather than
+  // throwing, so an auth blip arrives as a *successful* fetch of an empty list
+  // and would otherwise read as "this account owns nothing" and delete the
+  // draft.
+  const ownershipDecidable =
+    companiesQuery.isSuccess &&
+    companiesQuery.data !== undefined &&
+    !companiesQuery.data.unauthorized;
 
   const { saved, staleStateDetected } = useMemo(() => {
     if (rawBlob === undefined) return { saved: null, staleStateDetected: false };
-    // Companies not settled yet: restoreOnboardingState must not be called
-    // (see its CONTRACT). Not stale, just not decidable yet.
-    if (ownershipUndecidable) return { saved: null, staleStateDetected: false };
+    // Unreadable, so junk regardless of who owns what. Judged before the
+    // ownership check rather than after it, so clearing it does not wait on a
+    // company request that cannot change the answer.
     if (rawBlob === null) return { saved: null, staleStateDetected: true };
-    const restored = restoreOnboardingState(rawBlob, companies);
+    // Not decidable yet, or not decidable at all. Either way: restore nothing,
+    // delete nothing. A draft withheld is recoverable on the next load; a
+    // draft deleted, or one handed to the wrong account, is not.
+    if (!ownershipDecidable) return { saved: null, staleStateDetected: false };
+    const restored = restoreOnboardingState(rawBlob, companiesQuery.data!.companies);
     return { saved: restored, staleStateDetected: restored === null };
-  }, [rawBlob, ownershipUndecidable, companies]);
+  }, [rawBlob, ownershipDecidable, companiesQuery.data]);
 
   // A discarded/malformed state should not sit in storage waiting to confuse
   // the next onboarding attempt (e.g. a different signed-in user).
@@ -235,24 +277,27 @@ export function OnboardingWizard() {
     onboardingDraftStorage.clear();
   }, [staleStateDetected]);
 
-  // A saved blob exists and the company list is still in flight: wait rather
-  // than mount the inner wizard with a premature, and unrecoverable, guess at
-  // the draft.
+  // A saved blob exists and the verification fetch is still in flight: wait,
+  // rather than mount the inner wizard with a premature and unrecoverable
+  // guess at the draft. Its ~20 `useState(saved?.x ?? default)` initializers
+  // only read `saved` once.
   //
-  // Only while *loading*, not on error. An error with an empty list is still
-  // undecidable - nothing is restored and nothing is cleared, per the memo
-  // above - but withholding the wizard on top of that is a dead end, because
-  // the companies query sets `retry: false`. With no companies the dashboard
-  // offers a "Get Started" button that opens onboarding, and a gate that
-  // returned null here would make that button do nothing at all until a
-  // refetch happened to succeed.
+  // `isFetching`, not `isLoading`. `isLoading` is false whenever the cache
+  // holds retained data, so a refetch over a warm cache would mount the wizard
+  // while ownership was still undecidable - and with the wizard open, the
+  // persist effect would overwrite the customer's own draft with defaults
+  // before the answer arrived. `isFetching` covers the refetch too.
+  //
+  // While in flight, not on failure. The companies query sets `retry: false`,
+  // so a failed fetch stays failed; and with no companies the dashboard offers
+  // a "Get Started" button wired to onboarding, which a gate that returned null
+  // here would make do nothing at all.
   //
   // Mounting does not cost the draft. The persist effect that would overwrite
   // it is itself gated on `effectiveOnboardingOpen`, so a mounted-but-closed
-  // wizard writes nothing, and the blob survives for a later load that can
-  // decide. If the wizard *is* open the customer is onboarding right now,
-  // which supersedes the draft anyway.
-  if (rawBlob !== undefined && companiesLoading) {
+  // wizard writes nothing. If the wizard is open the customer is onboarding
+  // right now, which supersedes the draft anyway.
+  if (rawBlob !== undefined && companiesQuery.isFetching) {
     return null;
   }
 
@@ -324,6 +369,12 @@ function OnboardingWizardInner({
   const existingCompanyId = effectiveOnboardingOptions.companyId;
 
   const [step, setStep] = useState<Step>((saved?.step as Step) ?? initialStep);
+  // The step this run *entered* on, which bounds how far back it can walk.
+  // Captured once, when the wizard opens, for the same reason the step itself
+  // is: it derives from queries, so a live read would move the floor under a
+  // customer mid-flow — and here that would quietly re-open the "create a
+  // company" step to a run that already holds one.
+  const [entryStep, setEntryStep] = useState<number>((saved?.step as Step) ?? initialStep);
   const [onboardingPath, setOnboardingPath] = useState<"create" | "grow" | null>((saved?.onboardingPath as "create" | "grow" | null) ?? null);
 
   // "Grow existing" questionnaire fields
@@ -390,6 +441,54 @@ function OnboardingWizardInner({
   // the user back to the route's initial step mid-flow.
   const createdCompanyIdRef = useRef<string | null>(null);
   createdCompanyIdRef.current = createdCompanyId;
+
+  // The mission of the company actually in hand, which is not always the one
+  // the route named - the dashboard opens the wizard with a company too. Same
+  // query key as the route lookup above, so when they agree this is one cache
+  // entry and no second request.
+  const {
+    mission: existingCompanyMission,
+    settled: existingMissionSettled,
+    fetching: existingMissionFetching,
+  } = useCompanyMission(createdCompanyId);
+
+  // Seed the mission field from the company's own goal.
+  //
+  // A company that already has its mission opens on the agent step, so steps 1
+  // and 2 never run and `companyGoal` stays empty. It is not only a display
+  // field: the Review checklist reads it, and `composeCeoInstructions` seeds
+  // the lead agent's instructions from it. Left empty, the agent is hired
+  // knowing nothing of the mission the customer gave at signup - which is the
+  // answer this whole flow exists to carry forward.
+  //
+  // Only when the field is empty, so a customer editing their mission is never
+  // overwritten by the stored copy.
+  const hydratedMissionForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!effectiveOnboardingOpen || !createdCompanyId) return;
+    if (hydratedMissionForRef.current === createdCompanyId) return;
+    if (!existingMissionSettled || existingMissionFetching) return;
+    hydratedMissionForRef.current = createdCompanyId;
+    if (!existingCompanyMission.goalInput) return;
+    setCompanyGoal((current) => (current.trim() ? current : existingCompanyMission.goalInput));
+    setCreatedCompanyGoalId((current) => current ?? existingCompanyMission.goalId);
+  }, [
+    effectiveOnboardingOpen,
+    createdCompanyId,
+    existingMissionSettled,
+    existingMissionFetching,
+    existingCompanyMission.goalInput,
+    existingCompanyMission.goalId,
+  ]);
+
+  // Hiring seeds the agent's instructions from `companyGoal`, so it must not
+  // run while that field is still waiting to be hydrated - the agent would be
+  // created with an empty or foreign mission and nothing would report it.
+  const missionUnresolvedForHire = isExistingCompanyMissionUnresolved({
+    existingCompanyId: createdCompanyId,
+    goalsLoaded: existingMissionSettled,
+    goalsFetching: existingMissionFetching,
+  });
   // The step the request wants, mirrored for the same reason. `initialStep` is
   // *derived* - from the company list, and now from the goal list behind
   // `useCompanyMission` - so its value changes whenever one of those queries
@@ -423,6 +522,12 @@ function OnboardingWizardInner({
     setCreatedCompanyPrefix(null);
     setCompanyName("");
     setCompanyGoal("");
+    // The marker travels with the field it describes. It means "companyGoal
+    // holds this company's hydrated mission", so it is cleared wherever that
+    // field is - here and in `reset()`. Left behind, the next run believes a
+    // mission it no longer holds was already fetched, and hires the lead agent
+    // without one.
+    hydratedMissionForRef.current = null;
     setMissionPath(null);
     setMissionConfirmed(false);
     setCreatedCompanyGoalId(null);
@@ -445,6 +550,7 @@ function OnboardingWizardInner({
     // If explicit options are provided, they take precedence over saved state
     if (initialStepRef.current) {
       setStep(initialStepRef.current);
+      setEntryStep(initialStepRef.current);
     }
     const routeCompanyId = effectiveOnboardingOptions.companyId ?? null;
     if (routeCompanyId) {
@@ -686,6 +792,8 @@ function OnboardingWizardInner({
 
   function reset() {
     onboardingDraftStorage.clear();
+    // Cleared with `companyGoal` below - see `clearCompanyScopedState`.
+    hydratedMissionForRef.current = null;
     setStep(0);
     setOnboardingPath(null);
     setGrowWorkflows("");
@@ -907,21 +1015,16 @@ function OnboardingWizardInner({
       // without writing it would leave the company with no mission at all,
       // which is the state this whole change exists to remove.
       //
-      // Only when the wizard has not already written one. Returning to step 2
-      // and confirming again must not add a second goal.
-      if (createdCompanyGoalId) {
-        setStep(3);
-        return;
-      }
+      // A goal already in hand means update it, not skip the write. It used
+      // to mean skip, which was safe only while the field could not hold an
+      // unsaved change: the id was set by *writing* the mission, so arriving
+      // here with one meant nothing had been typed since. Hydration breaks
+      // that - the id now also arrives from the company's existing goal, with
+      // the customer's edits sitting in the field beside it - and skipping
+      // would discard exactly the answer this step asked for.
       setLoading(true);
       setError(null);
       try {
-        const parsedGoal = parseOnboardingGoalInput(companyGoal);
-        const payload = {
-          title: parsedGoal.title,
-          ...(parsedGoal.description ? { description: parsedGoal.description } : {})
-        };
-
         // The company may already have a mission this step could not see.
         // `useCompanyMission` fails open, so a goal lookup that exhausted its
         // retries sends a company that has one here anyway. Adding a second
@@ -932,24 +1035,29 @@ function OnboardingWizardInner({
         // customer just answered the question on a step that asked it, so
         // their answer is the mission. A read that fails still writes: an
         // unwritten mission is the failure this whole change exists to remove.
-        let existingGoalId: string | null = null;
+        let existingGoalId: string | null = createdCompanyGoalId;
         try {
           const goals = await queryClient.fetchQuery({
             queryKey: queryKeys.goals.list(createdCompanyId),
             queryFn: () => goalsApi.list(createdCompanyId)
           });
-          existingGoalId = selectDefaultCompanyGoalId(goals);
+          existingGoalId = existingGoalId ?? selectDefaultCompanyGoalId(goals);
         } catch {
           // Still cannot tell. Fall through and write.
         }
 
-        const goal = existingGoalId
-          ? await goalsApi.update(existingGoalId, payload)
-          : await goalsApi.create(createdCompanyId, {
-              ...payload,
-              level: "company",
-              status: "active"
-            });
+        const plan = planMissionPersistence({
+          goalInput: companyGoal,
+          existingGoalId,
+        });
+        if (plan.kind === "skip") {
+          setStep(3);
+          return;
+        }
+        const goal =
+          plan.kind === "update"
+            ? await goalsApi.update(plan.goalId, plan.payload)
+            : await goalsApi.create(createdCompanyId, plan.payload);
         queryClient.invalidateQueries({
           queryKey: queryKeys.goals.list(createdCompanyId)
         });
@@ -1012,6 +1120,11 @@ function OnboardingWizardInner({
   // doesn't hire a second agent.
   async function handleGiveHeartbeat() {
     if (!createdCompanyId) return;
+    // Guarded at the button and the Enter path too; repeated here because this
+    // seeds the agent's instructions from `companyGoal`, and hiring with an
+    // unhydrated mission fails silently - the agent exists, and simply never
+    // learns what the company is for.
+    if (missionUnresolvedForHire) return;
     if (createdAgentId) {
       setStep(5);
       return;
@@ -1180,7 +1293,8 @@ function OnboardingWizardInner({
       if (step === 1 && companyName.trim()) setStep(2);
       else if (step === 2 && companyName.trim() && companyGoal.trim()) handleConfirmMission();
       else if (step === 3 && agentName.trim()) setStep(4);
-      else if (step === 4 && agentName.trim()) handleGiveHeartbeat();
+      else if (step === 4 && agentName.trim() && !missionUnresolvedForHire)
+        handleGiveHeartbeat();
       else if (step === 5) handleLaunchToDashboard();
     }
   }
@@ -1238,7 +1352,11 @@ function OnboardingWizardInner({
               <div className="flex items-center gap-1.5 mb-8">
                 {([1, 2, 3, 4, 5] as const).map((s) => {
                   const filled = step >= s;
-                  const canJump = s < step;
+                  const canJump = canJumpToOnboardingStep({
+                    targetStep: s,
+                    currentStep: step,
+                    entryStep,
+                  });
                   return (
                     <button
                       key={s}
@@ -2067,7 +2185,7 @@ function OnboardingWizardInner({
               {/* Footer navigation */}
               <div className="flex items-center justify-between mt-8">
                 <div>
-                  {step > 1 && step > (effectiveOnboardingOptions.initialStep ?? 0) && (
+                  {canGoBackFromOnboardingStep({ currentStep: step, entryStep }) && (
                     <Button
                       variant="ghost"
                       size="sm"
@@ -2120,7 +2238,12 @@ function OnboardingWizardInner({
                   {step === 4 && (
                     <Button
                       size="sm"
-                      disabled={!agentName.trim() || loading || adapterEnvLoading}
+                      disabled={
+                        !agentName.trim() ||
+                        loading ||
+                        adapterEnvLoading ||
+                        missionUnresolvedForHire
+                      }
                       onClick={handleGiveHeartbeat}
                     >
                       {loading ? (

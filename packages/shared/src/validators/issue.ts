@@ -25,8 +25,11 @@ import {
   clampIssueRequestDepth,
   ISSUE_STATUSES,
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
+  ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES,
+  ISSUE_THREAD_INTERACTION_EFFECTIVE_RESOLVER_POLICY_SOURCES,
   ISSUE_THREAD_INTERACTION_KINDS,
   ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES,
+  ISSUE_THREAD_INTERACTION_RESOLVER_POLICY_PROVENANCES,
   ISSUE_THREAD_INTERACTION_STATUSES,
   ISSUE_WATCHDOG_DISCOVERY_KINDS,
   MODEL_PROFILE_KEYS,
@@ -692,7 +695,18 @@ export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
 
 export const issueThreadInteractionStatusSchema = z.enum(ISSUE_THREAD_INTERACTION_STATUSES);
 export const issueThreadInteractionKindSchema = z.enum(ISSUE_THREAD_INTERACTION_KINDS);
-export const issueThreadInteractionResolverPolicySchema = z.enum(ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES);
+export const issueThreadInteractionCanonicalResolverPolicySchema = z
+  .enum(ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES)
+  .describe("Canonical resolver audience: anyone, not_creator, or human_only.");
+export const issueThreadInteractionResolverPolicySchema = z
+  .enum(ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES)
+  .describe(
+    "Resolver audience. Use anyone, not_creator, or human_only; board_or_agents and board_only are deprecated compatibility aliases.",
+  );
+export const issueThreadInteractionResolverPolicyProvenanceSchema = z
+  .enum(ISSUE_THREAD_INTERACTION_RESOLVER_POLICY_PROVENANCES);
+export const issueThreadInteractionEffectiveResolverPolicySourceSchema = z
+  .enum(ISSUE_THREAD_INTERACTION_EFFECTIVE_RESOLVER_POLICY_SOURCES);
 export const issueThreadInteractionContinuationPolicySchema = z.enum(
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
 );
@@ -1165,9 +1179,26 @@ export const requestItemVerdictsResultItemSchema = z.object({
   id: z.string().trim().min(1).max(120),
   verdict: requestItemVerdictValueSchema,
   reason: z.string().trim().max(4000).nullable().optional(),
-  resolvedByUserId: z.string().trim().min(1).max(255),
+  resolvedByUserId: z.string().trim().min(1).max(255).nullable().optional(),
+  resolvedByAgentId: z.string().uuid().nullable().optional(),
+  resolvedByRunId: z.string().uuid().nullable().optional(),
   resolvedAt: z.union([z.string().datetime(), z.date()]),
   commentId: z.string().uuid().nullable().optional(),
+}).superRefine((value, ctx) => {
+  if (!value.resolvedByUserId && !value.resolvedByAgentId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "a user or agent resolver is required",
+      path: ["resolvedByUserId"],
+    });
+  }
+  if (value.resolvedByAgentId && !value.resolvedByRunId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "resolvedByRunId is required for an agent resolver",
+      path: ["resolvedByRunId"],
+    });
+  }
 });
 
 export const requestItemVerdictsResultSchema = z.object({

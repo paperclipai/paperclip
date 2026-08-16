@@ -5,6 +5,7 @@ import { HttpError } from "../errors.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  getByIdForUpdate: vi.fn(),
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
@@ -265,6 +266,7 @@ describe.sequential("issue comment reopen routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockReset();
+    mockIssueService.getByIdForUpdate.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
     mockIssueService.update.mockReset();
     mockIssueService.addComment.mockReset();
@@ -316,6 +318,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDb.transaction.mockImplementation(async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx));
+    mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockHeartbeatService.wakeup.mockResolvedValue(undefined);
     mockHeartbeatService.reportRunActivity.mockResolvedValue(undefined);
     mockHeartbeatService.getRun.mockResolvedValue(null);

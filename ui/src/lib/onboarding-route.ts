@@ -135,6 +135,40 @@ export function shouldRouteAgentlessCompanyToOnboarding(params: {
   return !isOnboardingPath(params.pathname);
 }
 
+/**
+ * Whether the wizard's Back button is offered on the current step.
+ *
+ * A run never walks back behind the step it entered on: those steps either do
+ * not apply to it (an existing company is already named, and its mission is
+ * hydrated rather than asked for) or were completed elsewhere. Walking back
+ * into step 1 while holding a company is the sharpest case — that step creates
+ * a company, so it would make a second one.
+ */
+export function canGoBackFromOnboardingStep(params: {
+  currentStep: number;
+  entryStep: number;
+}): boolean {
+  return params.currentStep > 1 && params.currentStep > params.entryStep;
+}
+
+/**
+ * Whether a completed progress-bar segment can be clicked to jump back to it.
+ *
+ * Same bound as {@link canGoBackFromOnboardingStep}. The progress bar applies
+ * only the "already completed" half of the rule, which lets a run entered on
+ * an existing company jump to the name and mission steps the Back button
+ * deliberately withholds.
+ */
+export function canJumpToOnboardingStep(params: {
+  targetStep: number;
+  currentStep: number;
+  entryStep: number;
+}): boolean {
+  return (
+    params.targetStep < params.currentStep && params.targetStep >= params.entryStep
+  );
+}
+
 export function shouldRedirectCompanylessRouteToOnboarding(params: {
   pathname: string;
   hasCompanies: boolean;

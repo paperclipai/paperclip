@@ -25,8 +25,12 @@ import type {
   IssueWorkMode,
   ModelProfileKey,
   IssueThreadInteractionContinuationPolicy,
+  IssueThreadInteractionCanonicalResolverPolicy,
+  IssueThreadInteractionEffectiveResolverPolicySource,
   IssueThreadInteractionKind,
+  IssueThreadInteractionLegacyResolverPolicyAlias,
   IssueThreadInteractionResolverPolicy,
+  IssueThreadInteractionResolverPolicyProvenance,
   IssueThreadInteractionStatus,
   IssueStatus,
 } from "../constants.js";
@@ -396,6 +400,12 @@ export type IssueBlockerAttentionReason =
   | "attention_required"
   | null;
 
+export interface IssueBlockerAttentionIssueSummary {
+  id: string;
+  identifier: string | null;
+  title: string;
+}
+
 export interface IssueBlockerAttention {
   state: IssueBlockerAttentionState;
   reason: IssueBlockerAttentionReason;
@@ -408,8 +418,12 @@ export interface IssueBlockerAttention {
   sampleStalledBlockerIdentifier: string | null;
   /** True when a blocker or one of its open descendants is actively progressing. */
   blockingTreeLive?: boolean;
-  /** The sampled leaf blocker that requires action, rather than the blocked root. */
+  /** The direct blocker whose chain contains the sampled terminal blocker. */
+  directBlockerIssueId?: string | null;
+  /** The sampled blocker that requires action, rather than the blocked root. */
   terminalBlockerIssueId?: string | null;
+  /** Link-ready details for the sampled blocker, including non-terminal intermediate nodes. */
+  terminalBlocker?: IssueBlockerAttentionIssueSummary | null;
 }
 
 export type IssueReviewAttentionState = "none" | "covered" | "stalled";
@@ -1285,7 +1299,9 @@ export interface RequestItemVerdictsResultItem {
   id: string;
   verdict: RequestItemVerdictValue;
   reason?: string | null;
-  resolvedByUserId: string;
+  resolvedByUserId?: string | null;
+  resolvedByAgentId?: string | null;
+  resolvedByRunId?: string | null;
   resolvedAt: Date | string;
   commentId?: string | null;
 }
@@ -1313,9 +1329,16 @@ export interface IssueThreadInteractionBase extends IssueThreadInteractionActorF
   summary?: string | null;
   status: IssueThreadInteractionStatus;
   continuationPolicy: IssueThreadInteractionContinuationPolicy;
-  resolverPolicy: IssueThreadInteractionResolverPolicy;
-  requestedResolverPolicy: IssueThreadInteractionResolverPolicy;
-  effectiveResolverPolicy: IssueThreadInteractionResolverPolicy;
+  /** @deprecated Read requestedResolverPolicy. Kept for API compatibility. */
+  resolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
+  requestedResolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
+  effectiveResolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
+  resolverPolicyProvenance: IssueThreadInteractionResolverPolicyProvenance;
+  effectiveResolverPolicySource: IssueThreadInteractionEffectiveResolverPolicySource;
+  legacyResolverPolicyAliases: {
+    requested: IssueThreadInteractionLegacyResolverPolicyAlias | null;
+    effective: IssueThreadInteractionLegacyResolverPolicyAlias | null;
+  };
   createdAt: Date | string;
   updatedAt: Date | string;
   resolvedAt?: Date | string | null;

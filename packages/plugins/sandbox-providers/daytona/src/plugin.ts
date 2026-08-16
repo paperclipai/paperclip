@@ -132,6 +132,7 @@ interface DaytonaDriverConfig {
   image: string | null;
   language: string | null;
   timeoutMs: number;
+  livenessTimeoutMs: number;
   cpu: number | null;
   memory: number | null;
   disk: number | null;
@@ -196,6 +197,22 @@ const ARCHIVE_ON_RELEASE_AUTO_DELETE_MINUTES = 60;
 // RPC ceiling; callers always see an actionable error within this window.
 const GIT_NETWORK_TIMEOUT_MS = 120_000;
 
+// Per-call bound on the provider liveness read (`sandbox.refreshData()`). The
+// Daytona SDK gives this metadata read no timeout, so a silently unresponsive
+// sandbox connection leaves it pending with no error. The plugin then stalls
+// until the outer host-to-worker RPC backstop fires, which is a general ceiling,
+// not a fast, specific detector. This bound turns that silent hang into a fast,
+// clear error. It is configurable through `livenessTimeoutMs`; a value of 0 or
+// less disables the extra bound.
+const DEFAULT_LIVENESS_TIMEOUT_MS = 30_000;
+
+// Extra margin added to the SDK start/recover timeout when the plugin wraps
+// those lifecycle calls in its own per-call bound. The SDK call already carries
+// a `timeoutSeconds` deadline; the wrapper is a backstop for a connection-level
+// hang that the SDK deadline can miss. The margin lets the SDK deadline fire
+// first on a normal slow start, so the wrapper only fires on a true hang.
+const LIVENESS_START_TIMEOUT_MARGIN_MS = 5_000;
+
 // Noninteractive git credential defaults injected into every Daytona one-shot
 // command so that git operations never stall waiting for a terminal prompt.
 // Callers can override any of these via the env parameter.
@@ -227,6 +244,7 @@ function parseOptionalNumber(value: unknown): number | null {
 
 function parseDriverConfig(raw: Record<string, unknown>): DaytonaDriverConfig {
   const timeoutMs = Number(raw.timeoutMs ?? 300_000);
+  const livenessTimeoutMs = Number(raw.livenessTimeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS);
   return {
     apiKey: parseOptionalString(raw.apiKey),
     apiUrl: parseOptionalString(raw.apiUrl),
@@ -235,6 +253,7 @@ function parseDriverConfig(raw: Record<string, unknown>): DaytonaDriverConfig {
     image: parseOptionalString(raw.image),
     language: parseOptionalString(raw.language),
     timeoutMs: Number.isFinite(timeoutMs) ? Math.trunc(timeoutMs) : 300_000,
+    livenessTimeoutMs: Number.isFinite(livenessTimeoutMs) ? Math.trunc(livenessTimeoutMs) : DEFAULT_LIVENESS_TIMEOUT_MS,
     cpu: parseOptionalNumber(raw.cpu),
     memory: parseOptionalNumber(raw.memory),
     disk: parseOptionalNumber(raw.disk),
@@ -387,16 +406,57 @@ function isValidUrl(value: string): boolean {
   }
 }
 
+// A per-call liveness bound elapsed before the wrapped provider call returned.
+// The message names the operation and the bound so an operator sees at once
+// that the sandbox connection is unresponsive, not that the operation is slow.
+class SandboxLivenessTimeoutError extends Error {
+  constructor(operation: string, timeoutMs: number) {
+    super(
+      `Daytona sandbox liveness call "${operation}" did not respond within ${timeoutMs} ms; `
+        + "the sandbox connection is unresponsive.",
+    );
+    this.name = "SandboxLivenessTimeoutError";
+  }
+}
+
+// Race a provider call against a per-call deadline. A value of 0 or less turns
+// the bound off and runs the call unwrapped. The timer is always cleared, so a
+// call that resolves before the deadline leaks no pending timer. A call that
+// never resolves stays pending after the deadline rejects, but it holds no
+// timer and produces no unhandled rejection.
+async function withLivenessTimeout<T>(
+  operation: string,
+  timeoutMs: number,
+  run: () => Promise<T>,
+): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return run();
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new SandboxLivenessTimeoutError(operation, timeoutMs)), timeoutMs);
+  });
+  try {
+    return await Promise.race([run(), deadline]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 async function ensureSandboxStarted(sandbox: Sandbox, timeoutSeconds: number): Promise<void> {
   if (sandbox.state === "started") return;
+  // Bound the lifecycle call just past its own SDK deadline. A normal slow start
+  // finishes within `timeoutSeconds`; only a connection-level hang the SDK
+  // deadline misses reaches this wrapper bound.
+  const startBoundMs = timeoutSeconds * 1_000 + LIVENESS_START_TIMEOUT_MARGIN_MS;
   if (sandbox.state === "error") {
     if (sandbox.recoverable) {
-      await sandbox.recover(timeoutSeconds);
+      await withLivenessTimeout("sandbox.recover", startBoundMs, () => sandbox.recover(timeoutSeconds));
       return;
     }
     throw new Error(`Daytona sandbox ${sandbox.id} is in an unrecoverable error state: ${sandbox.errorReason ?? "unknown error"}`);
   }
-  await sandbox.start(timeoutSeconds);
+  await withLivenessTimeout("sandbox.start", startBoundMs, () => sandbox.start(timeoutSeconds));
 }
 
 async function resolveSandboxWorkingDirectory(sandbox: Sandbox): Promise<string> {
@@ -1117,7 +1177,9 @@ const sandboxHandleCache = (() => {
       const thresholdMs = staleHandleRefreshThresholdMs(scope.config.autoStopInterval);
       if (thresholdMs != null && handleFreshnessNow() - entry.verifiedAtMs >= thresholdMs) {
         try {
-          await sandbox.refreshData();
+          await withLivenessTimeout("sandbox.refreshData", scope.config.livenessTimeoutMs, () =>
+            sandbox.refreshData(),
+          );
         } catch (error) {
           entries.delete(key);
           throw error;
@@ -1813,6 +1875,11 @@ const plugin = definePlugin({
     }
     if (config.timeoutMs < 1 || config.timeoutMs > 86_400_000) {
       errors.push("timeoutMs must be between 1 and 86400000.");
+    }
+    // A value of 0 or less disables the extra bound on purpose; reject only a
+    // value above the outer RPC ceiling, which would make the bound useless.
+    if (config.livenessTimeoutMs > 86_400_000) {
+      errors.push("livenessTimeoutMs must be less than or equal to 86400000.");
     }
     if (config.autoStopInterval != null && config.autoStopInterval < 0) {
       errors.push("autoStopInterval must be greater than or equal to 0.");

@@ -23,7 +23,7 @@ The CLI exposes the same surface:
 
 ```sh
 pnpm paperclipai instance settings:experimental
-pnpm exec paperclipai instance settings:experimental:update --payload-json '{...}'
+npx paperclipai instance settings:experimental:update --payload-json '{...}'
 ```
 
 Those commands change the same opt-in settings that the UI manages.

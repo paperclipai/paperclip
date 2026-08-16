@@ -25,6 +25,10 @@ const mockCompany = vi.hoisted(() => ({
 const mockCompaniesApi = vi.hoisted(() => ({
   create: vi.fn(),
   update: vi.fn(),
+  // The gate fetches the list itself now, rather than reading the shared
+  // cache, so ownership cases are driven from here. `mockCompany.companies`
+  // below still feeds the *inner* wizard, which is a different question.
+  list: vi.fn(),
 }));
 const mockGoalsApi = vi.hoisted(() => ({
   create: vi.fn(),
@@ -113,6 +117,8 @@ vi.mock("./AsciiArtAnimation", () => ({ AsciiArtAnimation: () => null }));
 vi.mock("./FrontDoor", () => ({ FrontDoor: () => null }));
 vi.mock("./AgentCapsule", () => ({ AgentCapsule: () => null }));
 
+import { ApiError } from "../api/client";
+import { queryKeys } from "../lib/queryKeys";
 import { ONBOARDING_STORAGE_KEY, OnboardingWizard } from "./OnboardingWizard";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -144,6 +150,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockCompany.companies = [];
     mockCompany.loading = false;
     mockCompany.error = null;
+    mockCompaniesApi.list.mockResolvedValue([]);
     mockAdapterRegistry.list = [];
     mockAdapterRegistry.disabled = new Set<string>();
     mockCompaniesApi.create.mockResolvedValue({
@@ -186,6 +193,15 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockDialog.onboardingOptions = {};
     mockCompany.companies = [];
     mockCompany.loading = true;
+    // Deferred rather than swapped later: the gate's fetch fires on the first
+    // render, so replacing the mock afterwards would never reach it.
+    let resolveList: (companies: Array<{ id: string; name: string; issuePrefix: string }>) => void =
+      () => {};
+    mockCompaniesApi.list.mockReturnValue(
+      new Promise<Array<{ id: string; name: string; issuePrefix: string }>>((resolve) => {
+        resolveList = resolve;
+      }),
+    );
 
     const { container, root, queryClient } = render();
     const renderTree = () =>
@@ -208,6 +224,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     // Companies resolve asynchronously, owning the saved company.
     mockCompany.companies = [{ id: "c1", name: "Saved Co", issuePrefix: "SC" }];
     mockCompany.loading = false;
+    await act(async () => {
+      resolveList([{ id: "c1", name: "Saved Co", issuePrefix: "SC" }]);
+    });
 
     await renderTree();
     await flushReact();
@@ -242,6 +261,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     );
     mockCompany.companies = [{ id: "company-new", name: "My Co", issuePrefix: "MC" }];
     mockCompany.loading = false;
+    mockCompaniesApi.list.mockResolvedValue([
+      { id: "company-new", name: "My Co", issuePrefix: "MC" },
+    ]);
 
     const { root, queryClient } = render();
     await act(async () => {
@@ -281,6 +303,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockCompany.companies = [];
     mockCompany.loading = false;
     mockCompany.error = new Error("company list unavailable");
+    mockCompaniesApi.list.mockRejectedValue(new Error("company list unavailable"));
 
     const { root, queryClient } = render();
     await act(async () => {
@@ -371,6 +394,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockCompany.companies = [{ id: "c1", name: "Saved Co", issuePrefix: "SC" }];
     mockCompany.loading = false;
     mockCompany.error = new Error("refetch failed");
+    mockCompaniesApi.list.mockRejectedValue(new Error("refetch failed"));
 
     const { root, queryClient } = render();
     await act(async () => {
@@ -452,6 +476,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockCompany.companies = [];
     mockCompany.loading = false;
     mockCompany.error = new Error("company list unavailable");
+    mockCompaniesApi.list.mockRejectedValue(new Error("company list unavailable"));
 
     const { root, queryClient } = render();
     await act(async () => {
@@ -471,11 +496,15 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
   });
   it("does not hand one account's draft to the next when a refetch fails after a switch", async () => {
     // The attack path in full. Account A onboards and leaves a draft naming
-    // its company. A signs out — which does not clear the companies cache,
-    // because `useSignOut` invalidates only the session and health queries.
-    // B signs in and the companies refetch fails, so A's list is still in
+    // its company. The account then changes without this component's company
+    // cache being cleared, and the refetch fails, so A's list is still in
     // hand. A list that still contains A's company must not be read as proof
     // that B owns it.
+    //
+    // `useSignOut` now resets account-scoped caches, which closes the
+    // sign-out-button route into this state (see its own regression test). The
+    // gate is asserted here independently of that: it must hold for any route
+    // that leaves a stale list behind, not only the one that has been fixed.
     window.localStorage.setItem(
       ONBOARDING_STORAGE_KEY,
       JSON.stringify({
@@ -491,6 +520,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     mockCompany.companies = [{ id: "company-a", name: "Account A Co", issuePrefix: "AAC" }];
     mockCompany.loading = false;
     mockCompany.error = new Error("refetch failed for the new account");
+    mockCompaniesApi.list.mockRejectedValue(new Error("refetch failed for the new account"));
 
     const { root, queryClient } = render();
     await act(async () => {
@@ -508,6 +538,196 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       'input[placeholder="Chief of staff"]',
     ) as HTMLInputElement | null;
     expect(nameInput?.value ?? "").not.toBe("A's Lead");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+  it("does not judge ownership against a warm cache that never refetched", async () => {
+    // The door this whole change exists to shut, and the one the previous
+    // version missed. `main.tsx` sets `staleTime: 30_000`, so for thirty
+    // seconds after a sign-in the company list is served straight from cache
+    // with no request — and `Auth.tsx` invalidates on sign-in but invalidation
+    // keeps serving the old data while refetching. Either way account A's
+    // companies arrive with *no loading state and no error*, so a gate keyed
+    // on "not loading, no error" reads them as authoritative.
+    //
+    // Here the context reports exactly that healthy-looking stale state, and
+    // the fetch for this session has not answered. A's draft must not be
+    // restored on the strength of A's cached list.
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 3,
+        companyName: "Account A Co",
+        agentName: "A's Lead",
+        createdCompanyId: "company-a",
+      }),
+    );
+    // The shared cache still holds A's list, and looks entirely healthy.
+    mockCompany.companies = [{ id: "company-a", name: "Account A Co", issuePrefix: "AAC" }];
+    mockCompany.loading = false;
+    mockCompany.error = null;
+    // The list fetched for *this* session answers with B's companies, which
+    // do not include A's. Note the fetch must actually complete: leaving it
+    // pending would keep the wizard unmounted and the assertion below would
+    // hold for the wrong reason.
+    mockCompaniesApi.list.mockResolvedValue([
+      { id: "company-b", name: "Account B Co", issuePrefix: "BBC" },
+    ]);
+
+    const { root, queryClient } = render();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <OnboardingWizard />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    // Mounted — so this is a real observation, not an unmounted false pass.
+    expect(document.body.textContent).not.toBe("");
+    expect(document.body.textContent).not.toContain("A's Lead");
+    const nameInput = document.body.querySelector(
+      'input[placeholder="Chief of staff"]',
+    ) as HTMLInputElement | null;
+    expect(nameInput?.value ?? "").not.toBe("A's Lead");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not delete a draft when the company list comes back unauthorized", async () => {
+    // `companiesListQueryOptions` folds 401/403 into
+    // `{ companies: [], unauthorized: true }` rather than throwing, so an auth
+    // blip arrives as a successful fetch of an empty list — which reads as
+    // "this account owns nothing" and would delete the draft.
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({ step: 3, companyName: "Saved Co", createdCompanyId: "c1" }),
+    );
+    mockCompaniesApi.list.mockRejectedValue(
+      new ApiError("forbidden", 403, null),
+    );
+
+    const { root, queryClient } = render();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <OnboardingWizard />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)).not.toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+  it("does not restore against data retained from a failed post-mount refetch", async () => {
+    // The gate's weak point if it only asks "was there a fetch after mount,
+    // and is there data". React Query keeps the last successful `data` when a
+    // refetch fails — so after an account switch the retained value is the
+    // *previous* account's list, and accepting it restores their draft.
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 3,
+        companyName: "Account A Co",
+        agentName: "A's Lead",
+        createdCompanyId: "company-a",
+      }),
+    );
+    const { root, queryClient } = render();
+    // A's list, already in the cache from their session.
+    queryClient.setQueryData(queryKeys.companies.all, {
+      companies: [{ id: "company-a", name: "Account A Co", issuePrefix: "AAC" }],
+      unauthorized: false,
+    });
+    // B's session: the refetch fails, so A's data is retained.
+    mockCompaniesApi.list.mockRejectedValue(new Error("refetch failed"));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <OnboardingWizard />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    // Mounted, so this observes the real thing rather than an empty document.
+    expect(document.body.textContent).not.toBe("");
+    expect(document.body.textContent).not.toContain("A's Lead");
+    const nameInput = document.body.querySelector(
+      'input[placeholder="Chief of staff"]',
+    ) as HTMLInputElement | null;
+    expect(nameInput?.value ?? "").not.toBe("A's Lead");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+  it("does not mount undecided over a warm cache, which would overwrite the draft", async () => {
+    // The customer's own draft, their own companies already cached, and a
+    // refetch in flight. `isLoading` is false whenever retained data exists,
+    // so a gate keyed on it would mount the wizard while ownership was still
+    // undecidable — and with the wizard open, the persist effect writes the
+    // wizard's state back on every change, overwriting their draft with
+    // defaults before the answer arrives.
+    const draft = JSON.stringify({
+      step: 3,
+      companyName: "Saved Co",
+      agentName: "Ops Lead",
+      createdCompanyId: "c1",
+    });
+    window.localStorage.setItem(ONBOARDING_STORAGE_KEY, draft);
+    const { root, queryClient } = render();
+    queryClient.setQueryData(queryKeys.companies.all, {
+      companies: [{ id: "c1", name: "Saved Co", issuePrefix: "SC" }],
+      unauthorized: false,
+    });
+    mockCompaniesApi.list.mockReturnValue(new Promise(() => {}));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <OnboardingWizard />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    // Nothing mounted, so nothing could have written over the draft.
+    expect(document.body.textContent).toBe("");
+    expect(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)).toBe(draft);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+  it("clears an unreadable draft without waiting on the company endpoint", async () => {
+    // Junk is junk whoever owns what, so judging it must not queue behind a
+    // request that cannot change the answer — nor issue one at all.
+    window.localStorage.setItem(ONBOARDING_STORAGE_KEY, "{not json");
+    const { root, queryClient } = render();
+    mockCompaniesApi.list.mockReturnValue(new Promise(() => {}));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <OnboardingWizard />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)).toBeNull();
+    expect(mockCompaniesApi.list).not.toHaveBeenCalled();
 
     await act(async () => {
       root.unmount();
