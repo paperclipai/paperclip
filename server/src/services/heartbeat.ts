@@ -13331,17 +13331,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const useRecordedTeardown = isOrphanEphemeralLease || !environment;
 
       // Do not consume a finite cleanup attempt while the provider plugin is
-      // briefly unavailable. A plugin worker restart or a plugin reload makes the
-      // provider unavailable for a short window. A teardown in that window throws,
+      // briefly unavailable. A plugin worker restart, a plugin reload, or a
+      // plugin reinstall makes the provider unavailable for a short window. The
+      // plugin can be missing or not ready in that window. A teardown then throws,
       // and the atomic claim below would count that throw against the cap, so a
       // long restart or reload could exhaust the retries and strand a live
       // sandbox. So probe the provider first, and skip the lease this tick when
-      // the provider is not ready. A later sweep retries after the provider
-      // recovers. The probe reports ready for every persistent condition (a
-      // missing provider, a built-in provider, or no worker manager), so a
-      // genuine teardown failure still runs, throws, and counts toward the cap. A
-      // runtime with no probe method treats the lease as ready, so the sweep
-      // keeps its earlier behavior.
+      // the provider is not ready. The sweep preserves the pending_cleanup row,
+      // and a later sweep retries after the provider recovers. The probe reports
+      // ready only for a permanent condition (a missing provider string, a
+      // built-in provider, or no worker manager), so a genuine teardown failure
+      // still runs, throws, and counts toward the cap. A runtime with no probe
+      // method treats the lease as ready, so the sweep keeps its earlier
+      // behavior.
       const workerReady = environmentRuntime.isPendingCleanupWorkerReady
         ? await environmentRuntime.isPendingCleanupWorkerReady({ environment, lease })
         : true;

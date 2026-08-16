@@ -1704,6 +1704,88 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     ).resolves.toBe(true);
   });
 
+  it("reports the plugin cleanup provider not ready while the plugin is missing, then ready after it returns", async () => {
+    // A pending_cleanup orphan targets a plugin-backed provider whose plugin row
+    // is gone. A plugin reinstall removes and re-adds the plugin row, so the row
+    // is missing for a short window. The sweep must not consume a finite retry
+    // attempt in that window. So the readiness probe reports "not ready" while no
+    // plugin row resolves the provider, and "ready" after the plugin returns.
+    const pluginId = randomUUID();
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Cleanup Plugin Missing",
+      config: { provider: "fake-plugin-missing", image: "fake:test", reuseLease: false },
+    });
+
+    // The worker manager reports the plugin worker as running, so the probe
+    // result depends on the missing plugin row alone, not on a down worker.
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async () => {
+        throw new Error("call must not run during a readiness probe");
+      }),
+    } as unknown as PluginWorkerManager;
+
+    const orphan = await environmentService(db).insertPendingCleanupLease({
+      companyId,
+      environmentId: environment.id,
+      executionWorkspaceId: null,
+      issueId: null,
+      heartbeatRunId: runId,
+      provider: "fake-plugin-missing",
+      providerLeaseId: "plugin-lease-missing",
+      metadata: { provider: "fake-plugin-missing", driver: "sandbox", reuseLease: false },
+      failureReason: "acquire_rejected_teardown_failed",
+    });
+    const lease = (await environmentService(db).getLeaseById(orphan.id))!;
+
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    // No plugin row resolves the provider, so the probe reports not ready. The
+    // sweep skips the lease without a claim, so no attempt burns while the plugin
+    // reinstall is in flight.
+    await expect(
+      runtimeWithPlugin.isPendingCleanupWorkerReady({ environment, lease }),
+    ).resolves.toBe(false);
+    expect((workerManager.call as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+
+    // The plugin reinstall completes, so a ready plugin row now resolves the
+    // provider and the probe reports ready.
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "paperclip.fake-plugin-missing-sandbox-provider",
+      packageName: "@paperclipai/plugin-fake-missing-sandbox",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "paperclip.fake-plugin-missing-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Fake Plugin Missing Sandbox Provider",
+        description: "Test fake plugin provider missing readiness",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin-missing",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin Missing",
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    await expect(
+      runtimeWithPlugin.isPendingCleanupWorkerReady({ environment, lease }),
+    ).resolves.toBe(true);
+  });
+
   it("records an orphan with a null reference when a delete already removed the environment", async () => {
     // Ordering: a delete removes the environment before the acquire records the
     // orphan. The environment foreign key must not fail the insert. The record

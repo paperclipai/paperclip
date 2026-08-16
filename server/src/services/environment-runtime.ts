@@ -1906,18 +1906,22 @@ function createSandboxEnvironmentDriver(
       // teardown runs, throws its own "no worker manager" error, and counts
       // toward the cap.
       if (!pluginWorkerManager) return true;
-      // Resolve the installed plugin without a wait. A plugin that is not
-      // installed at all is a permanent condition, because an uninstall removed
-      // it. Report ready, so the teardown runs, throws, and counts toward the
-      // cap. A capped lease stays in pending_cleanup and is discoverable for
-      // manual cleanup.
+      // Resolve the installed plugin without a wait. A plugin reload or a plugin
+      // reinstall can remove the plugin row for a short window, so a missing
+      // plugin is a transient condition, not a permanent one. Report not ready,
+      // so the sweep skips the lease without a claim, and a later sweep retries
+      // after the plugin returns. A teardown while the plugin is missing only
+      // throws and burns a finite attempt, so a long reload could exhaust the
+      // retries and strand the sandbox. A permanent uninstall also cannot tear
+      // the sandbox down, because there is no worker to call, so the preserved
+      // pending_cleanup row still holds the durable cleanup state for later.
       const installed = await resolvePluginSandboxProviderDriverByKey({
         db,
         driverKey: recordedProvider,
         workerManager: pluginWorkerManager,
         requireRunning: false,
       });
-      if (!installed) return true;
+      if (!installed) return false;
       // The plugin is installed but not ready yet. A plugin reload or a plugin
       // reinstall moves the plugin through this state, so it is a transient
       // window, not a permanent condition. Report not ready, so the sweep skips
