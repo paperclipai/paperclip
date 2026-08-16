@@ -47,7 +47,9 @@ import { latestSameRunHandoffTimestamp } from "@/lib/issue-chat-messages";
 import { isLiveIssueRun, isTerminalIssueStatus } from "@/lib/liveIssueIds";
 import {
   resolveTaskChatBlockers,
+  resolveTaskChatLiveWork,
   TaskChatBlockerLinks,
+  TaskChatLiveWorkLinks,
 } from "@/components/task-chat/TaskChatBlockerLinks";
 
 function toMs(value: Date | string | null | undefined): number {
@@ -61,6 +63,7 @@ function toMs(value: Date | string | null | undefined): number {
 // off to (e.g. a stopped run with no tool activity). Normal completions hand off
 // well within this as soon as the settled turn/comment lands.
 const SETTLING_TAIL_MAX_MS = 15_000;
+const EMPTY_LIVE_ISSUE_IDS: ReadonlySet<string> = new Set<string>();
 
 export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread>;
 
@@ -132,10 +135,18 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     interruptingQueuedRunId,
     blockedBy = [],
     blockerAttention,
+    liveIssueIds,
   } = props;
 
+  const liveWorkLinks = useMemo(
+    () => issueStatus === "blocked" && blockerAttention?.state === "covered"
+      ? resolveTaskChatLiveWork(blockedBy, liveIssueIds ?? EMPTY_LIVE_ISSUE_IDS, blockerAttention.terminalBlocker)
+      : null,
+    [blockedBy, blockerAttention?.state, blockerAttention?.terminalBlocker, issueStatus, liveIssueIds],
+  );
+
   const blockerLinks = useMemo(
-    () => issueStatus === "blocked"
+    () => issueStatus === "blocked" && !liveWorkLinks
       ? resolveTaskChatBlockers(
           blockedBy,
           blockerAttention?.terminalBlockerIssueId,
@@ -149,13 +160,16 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       blockerAttention?.terminalBlocker,
       blockerAttention?.terminalBlockerIssueId,
       issueStatus,
+      liveWorkLinks,
     ],
   );
 
-  const threadHeaderWithBlockers = threadHeader || blockerLinks ? (
+  const threadHeaderWithBlockers = threadHeader || blockerLinks || liveWorkLinks ? (
     <>
       {threadHeader}
-      {blockerLinks ? (
+      {liveWorkLinks ? (
+        <TaskChatLiveWorkLinks liveWork={liveWorkLinks} placement="top" />
+      ) : blockerLinks ? (
         <TaskChatBlockerLinks
           directBlocker={blockerLinks.directBlocker}
           ultimateBlocker={blockerLinks.ultimateBlocker}
@@ -165,7 +179,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     </>
   ) : undefined;
 
-  const bottomBlockerLinks = blockerLinks ? (
+  const bottomBlockerLinks = liveWorkLinks ? (
+    <TaskChatLiveWorkLinks liveWork={liveWorkLinks} placement="bottom" />
+  ) : blockerLinks ? (
     <TaskChatBlockerLinks
       directBlocker={blockerLinks.directBlocker}
       ultimateBlocker={blockerLinks.ultimateBlocker}
@@ -483,7 +499,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   }, tailEntries.length);
   const blockerContentKey = blockerLinks
     ? `${blockerLinks.directBlocker.id}:${blockerLinks.ultimateBlocker?.id ?? ""}`
-    : "";
+    : liveWorkLinks
+      ? `live:${liveWorkLinks.steps.map((step) => `${step.blocker.id}:${step.status}`).join(",")}:${liveWorkLinks.nowRunning.map((blocker) => blocker.id).join(",")}`
+      : "";
   const threadContentKey = `${taskChatContentKey(items)}:${tailContentKey}:${blockerContentKey}`;
 
   // Status-pill inputs for the tail (PAP-461, A1): the run's start, its finish

@@ -15,7 +15,11 @@ import { formatMonitorOffset } from "../lib/issue-monitor";
 import { useRetryNowMutation } from "../hooks/useRetryNowMutation";
 import { IssueLinkQuicklook } from "./IssueLinkQuicklook";
 import { RetryErrorBand } from "./IssueScheduledRetryCard";
-import { isAssignedBacklogBlocker } from "../lib/issue-blockers";
+import {
+  isAssignedBacklogBlocker,
+  orderWaitingBlockers,
+  type WaitingBlockerStatus,
+} from "../lib/issue-blockers";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -114,27 +118,6 @@ function SuccessfulRunRetryNowControl({
 
 const EMPTY_LIVE_IDS: ReadonlySet<string> = new Set<string>();
 
-type WaitingStepStatus = "done" | "running" | "queued";
-
-function classifyWaitingStep(
-  blocker: IssueRelationIssueSummary,
-  liveIds: ReadonlySet<string>,
-): WaitingStepStatus {
-  // A resolved blocker (done/cancelled) is a completed step; a blocker with a
-  // live run is the one currently being worked; everything else is queued.
-  if (blocker.status === "done" || blocker.status === "cancelled") return "done";
-  if (liveIds.has(blocker.id)) return "running";
-  return "queued";
-}
-
-// Ordering heuristic (plan §3): done → running → queued, tie-break by identifier
-// (P1…Pn plan naming). The payload doesn't carry explicit chain order.
-const WAITING_STEP_RANK: Record<WaitingStepStatus, number> = {
-  done: 0,
-  running: 1,
-  queued: 2,
-};
-
 function waitingTaskStatusLabel(status: string): string {
   return status.replace(/_/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
 }
@@ -171,7 +154,7 @@ function WaitingChipLink({
   );
 }
 
-function WaitingStepGlyph({ status }: { status: WaitingStepStatus }) {
+function WaitingStepGlyph({ status }: { status: WaitingBlockerStatus }) {
   if (status === "done") {
     return <CheckCircle2 className="h-3.5 w-3.5 text-blue-500 dark:text-blue-400" aria-hidden />;
   }
@@ -255,15 +238,7 @@ function WaitingOnLiveWorkNotice({
   parkedBlockers: IssueRelationIssueSummary[];
   renderParkedChip: (blocker: IssueRelationIssueSummary) => ReactNode;
 }) {
-  const steps = chainBlockers
-    .map((blocker) => ({ blocker, status: classifyWaitingStep(blocker, liveIds) }))
-    .sort((a, b) => {
-      const rank = WAITING_STEP_RANK[a.status] - WAITING_STEP_RANK[b.status];
-      if (rank !== 0) return rank;
-      const aKey = a.blocker.identifier ?? a.blocker.id;
-      const bKey = b.blocker.identifier ?? b.blocker.id;
-      return aKey.localeCompare(bKey, undefined, { numeric: true });
-    });
+  const steps = orderWaitingBlockers(chainBlockers, liveIds);
   const total = steps.length;
   const doneCount = steps.filter((step) => step.status === "done").length;
   const runningCount = steps.filter((step) => step.status === "running").length;

@@ -196,6 +196,123 @@ describe("TaskChatThread blocker links", () => {
     expect(container.textContent).not.toContain("This task resumes automatically");
   });
 
+  it("shows the ordered live-work queue at the top and bottom", () => {
+    const terminalBlocker = {
+      id: "terminal-running",
+      identifier: "PAP-17426",
+      title: "Restore live alias projection",
+      status: "in_progress" as const,
+      priority: "high" as const,
+      assigneeAgentId: "agent-3",
+      assigneeUserId: null,
+    };
+
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="blocked"
+        liveIssueIds={new Set(["direct-running", "terminal-running"])}
+        blockerAttention={{
+          state: "covered",
+          reason: "active_dependency",
+          unresolvedBlockerCount: 2,
+          coveredBlockerCount: 2,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 0,
+          sampleBlockerIdentifier: "PAP-17426",
+          sampleStalledBlockerIdentifier: null,
+          blockingTreeLive: true,
+          directBlockerIssueId: "direct-running",
+          terminalBlockerIssueId: terminalBlocker.id,
+          terminalBlocker,
+        }}
+        blockedBy={[
+          {
+            id: "direct-queued",
+            identifier: "PAP-17427",
+            title: "Verify the completed projection",
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: "agent-4",
+            assigneeUserId: null,
+          },
+          {
+            id: "direct-running",
+            identifier: "PAP-17425",
+            title: "Verify the live projection",
+            status: "in_progress",
+            priority: "medium",
+            assigneeAgentId: "agent-2",
+            assigneeUserId: null,
+            terminalBlockers: [terminalBlocker],
+          },
+          {
+            id: "direct-done",
+            identifier: "PAP-17424",
+            title: "Run the guarded cutover",
+            status: "done",
+            priority: "medium",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+          },
+        ]}
+      />,
+    );
+
+    const notices = container.querySelectorAll('[data-testid="task-chat-live-work-links"]');
+    expect(notices).toHaveLength(2);
+    expect(notices[0]?.getAttribute("data-placement")).toBe("top");
+    expect(notices[1]?.getAttribute("data-placement")).toBe("bottom");
+    for (const notice of notices) {
+      expect(notice.textContent).toContain("Waiting on live work");
+      const orderedLinks = [...notice.querySelectorAll('[data-testid="task-chat-live-work-step"] a')]
+        .map((link) => link.textContent);
+      expect(orderedLinks).toEqual([
+        "PAP-17424Run the guarded cutover",
+        "PAP-17425Verify the live projection",
+        "PAP-17427Verify the completed projection",
+      ]);
+      expect(notice.textContent).toContain("Now runningPAP-17426Restore live alias projection");
+      expect(notice.querySelector('a[href="/issues/PAP-17426"]')).not.toBeNull();
+    }
+    expect(container.querySelector('[data-testid="task-chat-blocker-links"]')).toBeNull();
+  });
+
+  it("keeps the compact blocker rows when covered work is no longer live", () => {
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="blocked"
+        liveIssueIds={new Set()}
+        blockerAttention={{
+          state: "covered",
+          reason: "active_dependency",
+          unresolvedBlockerCount: 1,
+          coveredBlockerCount: 1,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 0,
+          sampleBlockerIdentifier: "PAP-500",
+          sampleStalledBlockerIdentifier: null,
+          blockingTreeLive: false,
+        }}
+        blockedBy={[{
+          id: "direct-1",
+          identifier: "PAP-500",
+          title: "Direct dependency",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: "agent-1",
+          assigneeUserId: null,
+        }]}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="task-chat-live-work-links"]')).toBeNull();
+    expect(container.querySelectorAll('[data-testid="task-chat-blocker-links"]')).toHaveLength(2);
+  });
+
   it("shows only the direct row when the blocker has no deeper unresolved leaf", () => {
     render(
       <TaskChatThread
