@@ -9,6 +9,21 @@ import { readProcessStartedAt } from "./hot-restart.js";
 
 const execFileAsync = promisify(execFile);
 
+type ProcessCommandRunner = (command: string, args: string[]) => Promise<string>;
+
+function runProcessCommand(command: string, args: string[]) {
+  return execFileAsync(command, args).then(({ stdout }) => stdout);
+}
+
+async function runPowerShell(script: string, runCommand: ProcessCommandRunner) {
+  const args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script];
+  try {
+    return await runCommand("powershell.exe", args);
+  } catch {
+    return await runCommand("pwsh.exe", args);
+  }
+}
+
 export interface LocalServiceRegistryRecord {
   version: 1;
   serviceKey: string;
@@ -306,6 +321,17 @@ export async function readLocalServiceProcessGroupId(pid: number) {
   }
 }
 
+async function readProcessGroupId(pid: number) {
+  if (process.platform === "win32") return isPidAlive(pid) ? pid : null;
+  try {
+    const { stdout } = await execFileAsync("ps", ["-o", "pgid=", "-p", String(pid)]);
+    const parsed = Number.parseInt(stdout.trim(), 10);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function isLocalServiceProcessOwnedBy(pid: number, ownerProcessId: number) {
   if (pid === ownerProcessId) return true;
   if (process.platform !== "win32") {
@@ -339,10 +365,23 @@ export async function isLocalServiceProcessOwnedBy(pid: number, ownerProcessId: 
   }
 }
 
-async function readLocalServiceProcessCommand(pid: number) {
-  if (process.platform === "win32") return null;
+export async function readLocalServiceProcessCommand(
+  pid: number,
+  options: {
+    platform?: NodeJS.Platform;
+    runCommand?: ProcessCommandRunner;
+  } = {},
+) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  const platform = options.platform ?? process.platform;
+  const runCommand = options.runCommand ?? runProcessCommand;
   try {
-    const { stdout } = await execFileAsync("ps", ["-o", "command=", "-p", String(pid)]);
+    const stdout = platform === "win32"
+      ? await runPowerShell(
+        `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" -ErrorAction Stop).CommandLine`,
+        runCommand,
+      )
+      : await runCommand("ps", ["-o", "command=", "-p", String(pid)]);
     return stdout.trim() || null;
   } catch {
     return null;
@@ -531,10 +570,82 @@ export async function readLocalServicePortOwner(port: number) {
   }
 }
 
-export async function readLocalServiceProcessCwd(pid: number) {
-  if (!Number.isInteger(pid) || pid <= 0 || process.platform !== "linux") return null;
+export async function readLocalServiceProcessCwd(
+  pid: number,
+  options: {
+    platform?: NodeJS.Platform;
+    readLink?: (target: string) => Promise<string>;
+    runCommand?: ProcessCommandRunner;
+  } = {},
+) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  const platform = options.platform ?? process.platform;
+  const readLink = options.readLink ?? fs.readlink;
+  const runCommand = options.runCommand ?? runProcessCommand;
   try {
-    return await fs.readlink(`/proc/${pid}/cwd`);
+    if (platform === "linux") return await readLink(`/proc/${pid}/cwd`);
+    if (platform === "darwin") {
+      const stdout = await runCommand("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"]);
+      return stdout
+        .split("\n")
+        .find((line) => line.startsWith("n"))
+        ?.slice(1)
+        .trim() || null;
+    }
+    if (platform === "win32") {
+      const script = [
+        "$source = @'",
+        "using System;",
+        "using System.ComponentModel;",
+        "using System.Runtime.InteropServices;",
+        "using System.Text;",
+        "public static class PaperclipProcessCwd {",
+        "  [StructLayout(LayoutKind.Sequential)]",
+        "  private struct ProcessBasicInformation {",
+        "    public IntPtr Reserved1; public IntPtr PebBaseAddress;",
+        "    public IntPtr Reserved2_0; public IntPtr Reserved2_1;",
+        "    public IntPtr UniqueProcessId; public IntPtr Reserved3;",
+        "  }",
+        "  [DllImport(\"ntdll.dll\")] private static extern int NtQueryInformationProcess(IntPtr handle, int infoClass, ref ProcessBasicInformation info, int size, out int returned);",
+        "  [DllImport(\"kernel32.dll\", SetLastError = true)] private static extern IntPtr OpenProcess(int access, bool inherit, int processId);",
+        "  [DllImport(\"kernel32.dll\", SetLastError = true)] private static extern bool ReadProcessMemory(IntPtr process, IntPtr address, byte[] buffer, int size, out IntPtr read);",
+        "  [DllImport(\"kernel32.dll\")] private static extern bool CloseHandle(IntPtr handle);",
+        "  private static byte[] Read(IntPtr process, IntPtr address, int count) {",
+        "    var buffer = new byte[count]; IntPtr read;",
+        "    if (!ReadProcessMemory(process, address, buffer, count, out read) || read.ToInt64() != count) throw new Win32Exception(Marshal.GetLastWin32Error());",
+        "    return buffer;",
+        "  }",
+        "  public static string Get(int processId) {",
+        "    const int QueryInformation = 0x0400; const int VmRead = 0x0010;",
+        "    var process = OpenProcess(QueryInformation | VmRead, false, processId);",
+        "    if (process == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());",
+        "    try {",
+        "      var info = new ProcessBasicInformation(); int returned;",
+        "      var status = NtQueryInformationProcess(process, 0, ref info, Marshal.SizeOf(info), out returned);",
+        "      if (status != 0) throw new InvalidOperationException(\"NtQueryInformationProcess failed: \" + status);",
+        "      var is64 = IntPtr.Size == 8;",
+        "      var parametersOffset = is64 ? 0x20 : 0x10;",
+        "      var currentDirectoryOffset = is64 ? 0x38 : 0x24;",
+        "      var pointerOffset = is64 ? 8 : 4;",
+        "      var pointerBytes = Read(process, IntPtr.Add(info.PebBaseAddress, parametersOffset), IntPtr.Size);",
+        "      var parameters = is64 ? new IntPtr(BitConverter.ToInt64(pointerBytes, 0)) : new IntPtr(BitConverter.ToInt32(pointerBytes, 0));",
+        "      if (parameters == IntPtr.Zero) throw new InvalidOperationException(\"Process parameters unavailable\");",
+        "      var unicode = Read(process, IntPtr.Add(parameters, currentDirectoryOffset), pointerOffset + IntPtr.Size);",
+        "      var length = BitConverter.ToUInt16(unicode, 0);",
+        "      var buffer = is64 ? new IntPtr(BitConverter.ToInt64(unicode, pointerOffset)) : new IntPtr(BitConverter.ToInt32(unicode, pointerOffset));",
+        "      if (length == 0 || buffer == IntPtr.Zero) throw new InvalidOperationException(\"Current directory unavailable\");",
+        "      return Encoding.Unicode.GetString(Read(process, buffer, length));",
+        "    } finally { CloseHandle(process); }",
+        "  }",
+        "}",
+        "'@",
+        "Add-Type -TypeDefinition $source -ErrorAction Stop",
+        `[PaperclipProcessCwd]::Get(${pid})`,
+      ].join("\n");
+      const stdout = await runPowerShell(script, runCommand);
+      return stdout.trim() || null;
+    }
+    return null;
   } catch {
     return null;
   }

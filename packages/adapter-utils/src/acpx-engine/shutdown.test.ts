@@ -9,7 +9,7 @@ import {
 } from "./execute.js";
 
 describe("ACP engine shutdown", () => {
-  it("awaits and removes every retained warm runtime", async () => {
+  it("quarantines and awaits every retained warm runtime", async () => {
     let releaseClose!: () => void;
     const closeBlocked = new Promise<void>((resolve) => {
       releaseClose = resolve;
@@ -40,7 +40,7 @@ describe("ACP engine shutdown", () => {
     });
     await Promise.resolve();
 
-    expect(handles.size).toBe(1);
+    expect(handles.size).toBe(0);
     expect(settled).toBe(false);
     releaseClose();
     await expect(shutdown).resolves.toEqual({ closedWarmHandles: 1 });
@@ -52,10 +52,11 @@ describe("ACP engine shutdown", () => {
     });
   });
 
-  it("fails closed and retains ownership when a runtime cannot be closed", async () => {
+  it("fails closed and retains failed runtimes in the shutdown quarantine", async () => {
     const closeError = new Error("runtime close failed");
+    const close = vi.fn().mockRejectedValue(closeError);
     const entry = {
-      runtime: { close: vi.fn().mockRejectedValue(closeError) } as never,
+      runtime: { close } as never,
       handle: { sessionId: "session" } as never,
       childStderrState: { pendingLiveLine: "" } as never,
       processIdentitySink: { current: undefined, latest: null },
@@ -65,7 +66,9 @@ describe("ACP engine shutdown", () => {
     const handles = new Map<string, RuntimeCacheEntry>([["session", entry]]);
 
     await expect(closeAcpxEngineRuntimesForShutdown({ warmHandles: handles })).rejects.toBe(closeError);
-    expect(handles.get("session")).toBe(entry);
+    expect(handles.size).toBe(0);
+    await expect(closeAcpxEngineRuntimesForShutdown({ warmHandles: handles })).rejects.toBe(closeError);
+    expect(close).toHaveBeenCalledTimes(2);
   });
 
   it("waits for every concurrent close failure before returning ownership to the retry path", async () => {
@@ -75,8 +78,9 @@ describe("ACP engine shutdown", () => {
     const slowClose = vi.fn(() => new Promise<void>((_resolve, reject) => {
       rejectSlow = reject;
     }));
+    const fastClose = vi.fn().mockRejectedValue(fastError);
     const fastEntry = {
-      runtime: { close: vi.fn().mockRejectedValue(fastError) } as never,
+      runtime: { close: fastClose } as never,
       handle: { sessionId: "fast" } as never,
       childStderrState: { pendingLiveLine: "" } as never,
       processIdentitySink: { current: undefined, latest: null },
@@ -106,8 +110,11 @@ describe("ACP engine shutdown", () => {
     expect(settled).toBe(false);
     rejectSlow(slowError);
     await expect(shutdown).rejects.toBeInstanceOf(AggregateError);
-    expect(handles.get("fast")).toBe(fastEntry);
-    expect(handles.get("slow")).toBe(slowEntry);
+    expect(handles.size).toBe(0);
+    slowClose.mockRejectedValueOnce(slowError);
+    await expect(closeAcpxEngineRuntimesForShutdown({ warmHandles: handles })).rejects.toBeInstanceOf(AggregateError);
+    expect(fastClose).toHaveBeenCalledTimes(2);
+    expect(slowClose).toHaveBeenCalledTimes(2);
   });
 
   it("keeps an idle-close failure visible to shutdown", async () => {
@@ -151,9 +158,10 @@ describe("ACP engine shutdown", () => {
       } as never);
       await vi.waitFor(() => expect(close).toHaveBeenCalled(), { timeout: 1_000 });
 
-      expect(warmHandles.size).toBe(1);
+      expect(warmHandles.size).toBe(0);
       await expect(closeAcpxEngineRuntimesForShutdown({ warmHandles })).rejects.toBe(closeError);
-      expect(warmHandles.size).toBe(1);
+      expect(warmHandles.size).toBe(0);
+      expect(close).toHaveBeenCalledTimes(2);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
