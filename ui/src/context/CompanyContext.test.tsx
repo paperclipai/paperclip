@@ -413,6 +413,37 @@ describe("CompanyProvider", () => {
       expect(seen).toEqual([null, "company-1", null, "company-2"]);
     });
 
+    // The failure flag must not outlive the failure. A later success — a focus
+    // refetch, an invalidation from anywhere — settles the question, including
+    // when the honest answer is an empty list. Otherwise an account that owns
+    // nothing reads as "couldn't load", behind a retry that cannot change it.
+    it("stops reporting the list as unavailable once any fetch succeeds", async () => {
+      const seen: Array<string | null> = [];
+      await bootWithFirstAccount(seen);
+
+      mockCompaniesApi.list.mockRejectedValue(new Error("network down"));
+      await act(async () => {
+        queryClient.setQueryData(queryKeys.auth.session, sessionFor("user-2"));
+      });
+      await flushReact();
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 1200));
+      });
+      await flushReact();
+
+      expect(captured?.companyListUnavailable).toBe(true);
+
+      // This account genuinely owns no companies, and the request says so.
+      mockCompaniesApi.list.mockResolvedValue([]);
+      await act(async () => {
+        await queryClient.refetchQueries({ queryKey: queryKeys.companies.all });
+      });
+      await flushReact();
+
+      expect(captured?.companies).toEqual([]);
+      expect(captured?.companyListUnavailable).toBe(false);
+    });
+
     it("leaves the selection alone when the same account is observed again", async () => {
       const seen: Array<string | null> = [];
       await bootWithFirstAccount(seen);

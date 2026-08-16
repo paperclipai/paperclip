@@ -103,8 +103,12 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   const [selectionSource, setSelectionSource] = useState<CompanySelectionSource>("bootstrap");
   const [selectedCompanyId, setSelectedCompanyIdState] = useState<string | null>(null);
 
-  const { data: companiesResult = { companies: [], unauthorized: false }, isLoading, error } =
-    useQuery<CompanyListResult>(companiesListQueryOptions);
+  const {
+    data: companiesResult = { companies: [], unauthorized: false },
+    isLoading,
+    error,
+    dataUpdatedAt: companiesUpdatedAt,
+  } = useQuery<CompanyListResult>(companiesListQueryOptions);
   const companies = companiesResult.companies;
   const companyListUnauthorized = companiesResult.unauthorized;
   const sidebarCompanies = useMemo(
@@ -127,6 +131,17 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   const observedUserIdRef = useRef<string | null | undefined>(undefined);
   const [awaitingAccountScopedList, setAwaitingAccountScopedList] = useState(false);
   const [accountScopedListFailed, setAccountScopedListFailed] = useState(false);
+
+  // Any successful list answers the question the failed replacement fetch could
+  // not, whoever asked it — a focus refetch, an invalidation from elsewhere. The
+  // flag is otherwise cleared only by another account change or by an explicit
+  // retry, so it would outlive the failure: an account that legitimately owns
+  // nothing would keep reading as "couldn't load", behind a Try again that can
+  // never change the answer. `dataUpdatedAt` moves on every successful fetch and
+  // is 0 on the fresh query left by the removal above.
+  useEffect(() => {
+    if (companiesUpdatedAt > 0) setAccountScopedListFailed(false);
+  }, [companiesUpdatedAt]);
 
   useEffect(() => {
     // Until the session settles the account is unknown, not changed.
