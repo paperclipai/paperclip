@@ -189,6 +189,25 @@ describe("issue execution policy transitions", () => {
         returnAssignee: { type: "agent", agentId: coderAgentId },
       });
       expect(result.decision).toBeUndefined();
+      expect((result.patch.executionState as any).reviewRoundId).toMatch(/^[0-9a-f-]{36}$/);
+    });
+
+    it("preserves the review round while repairing the same pending stage", () => {
+      const reviewStageId = policy.stages[0].id;
+      const reviewRoundId = "77777777-7777-4777-8777-777777777777";
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review", assigneeAgentId: coderAgentId, assigneeUserId: null, executionPolicy: policy,
+          executionState: {
+            status: "pending", currentStageId: reviewStageId, currentStageIndex: 0, currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId }, reviewRoundId,
+            completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+          },
+        },
+        policy, requestedAssigneePatch: {}, actor: { agentId: coderAgentId },
+      });
+      expect((result.patch.executionState as any).reviewRoundId).toBe(reviewRoundId);
     });
 
     it("carries loose review instructions on the pending handoff", () => {
@@ -430,6 +449,7 @@ describe("issue execution policy transitions", () => {
     });
 
     it("executor re-submits after changes → returns to same review stage", () => {
+      const priorRoundId = "88888888-8888-4888-8888-888888888888";
       const result = applyIssueExecutionPolicyTransition({
         issue: {
           status: "in_progress",
@@ -443,6 +463,7 @@ describe("issue execution policy transitions", () => {
             currentStageType: "review",
             currentParticipant: { type: "agent", agentId: qaAgentId },
             returnAssignee: { type: "agent", agentId: coderAgentId },
+            reviewRoundId: priorRoundId,
             completedStageIds: [],
             lastDecisionId: null,
             lastDecisionOutcome: "changes_requested",
@@ -463,6 +484,8 @@ describe("issue execution policy transitions", () => {
         currentStageType: "review",
         currentParticipant: { type: "agent", agentId: qaAgentId },
       });
+      expect((result.patch.executionState as any).reviewRoundId).not.toBe(priorRoundId);
+      expect((result.patch.executionState as any).reviewRoundId).toMatch(/^[0-9a-f-]{36}$/);
     });
   });
 
@@ -1876,8 +1899,9 @@ describe("review round circuit breaker", () => {
   });
 
   it("escalates the pending stage to the responsible human at the round cap", () => {
+    const reviewRoundId = "99999999-9999-4999-8999-999999999999";
     const result = applyIssueExecutionPolicyTransition({
-      issue: reviewPendingIssue({}, { changesRequestedCount: 2 }),
+      issue: reviewPendingIssue({}, { changesRequestedCount: 2, reviewRoundId }),
       policy,
       requestedStatus: "in_progress",
       requestedAssigneePatch: {},
@@ -1896,6 +1920,7 @@ describe("review round circuit breaker", () => {
       currentStageId: reviewStageId,
       currentParticipant: { type: "user", userId: boardUserId },
       changesRequestedCount: 3,
+      reviewRoundId,
     });
   });
 

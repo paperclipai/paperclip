@@ -122,6 +122,7 @@ function blankExecutionState(): IssueExecutionState {
     currentStageType: null,
     currentParticipant: null,
     returnAssignee: null,
+    reviewRoundId: null,
     reviewRequest: null,
     completedStageIds: [],
     lastDecisionId: null,
@@ -579,6 +580,10 @@ function buildPendingState(input: {
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
   changesRequestedCount?: number;
 }): IssueExecutionState {
+  const preserveReviewRound =
+    input.stage.type === "review" &&
+    input.previous?.status === PENDING_STATUS &&
+    input.previous.currentStageId === input.stage.id;
   return {
     status: PENDING_STATUS,
     currentStageId: input.stage.id,
@@ -586,6 +591,9 @@ function buildPendingState(input: {
     currentStageType: input.stage.type,
     currentParticipant: input.participant,
     returnAssignee: input.returnAssignee,
+    reviewRoundId: input.stage.type === "review"
+      ? (preserveReviewRound ? input.previous?.reviewRoundId ?? randomUUID() : randomUUID())
+      : null,
     reviewRequest: input.reviewRequest ?? null,
     completedStageIds: input.previous?.completedStageIds ?? [],
     lastDecisionId: input.previous?.lastDecisionId ?? null,

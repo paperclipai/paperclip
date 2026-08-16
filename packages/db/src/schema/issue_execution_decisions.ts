@@ -1,4 +1,4 @@
-import { index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
 import { agents } from "./agents.js";
@@ -17,11 +17,17 @@ export const issueExecutionDecisions = pgTable(
     outcome: text("outcome").notNull(),
     body: text("body").notNull(),
     createdByRunId: uuid("created_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
+    reviewRoundId: uuid("review_round_id"),
+    idempotencyKey: text("idempotency_key"),
+    payloadHash: text("payload_hash"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     companyIssueIdx: index("issue_execution_decisions_company_issue_idx").on(table.companyId, table.issueId),
     stageIdx: index("issue_execution_decisions_stage_idx").on(table.issueId, table.stageId, table.createdAt),
+    reviewRoundIdx: uniqueIndex("issue_execution_decisions_review_round_uq").on(table.issueId, table.reviewRoundId),
+    reviewerRunIdempotencyIdx: uniqueIndex("issue_execution_decisions_reviewer_run_idempotency_uq")
+      .on(table.createdByRunId, table.idempotencyKey),
   }),
 );

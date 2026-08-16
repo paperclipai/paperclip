@@ -284,6 +284,7 @@ export const issueExecutionStateSchema = z.object({
   currentStageType: z.enum(ISSUE_EXECUTION_STAGE_TYPES).nullable(),
   currentParticipant: issueExecutionStagePrincipalSchema.nullable(),
   returnAssignee: issueExecutionStagePrincipalSchema.nullable(),
+  reviewRoundId: z.string().uuid().nullable().optional().default(null),
   reviewRequest: issueReviewRequestSchema.nullable().optional().default(null),
   completedStageIds: z.array(z.string().uuid()).default([]),
   lastDecisionId: z.string().uuid().nullable(),
@@ -581,6 +582,15 @@ export const stalledReviewDecisionSchema = z.object({
 });
 
 export type StalledReviewDecision = z.infer<typeof stalledReviewDecisionSchema>;
+
+export const reviewDecisionSchema = z.object({
+  outcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES),
+  reasoning: multilineTextSchema.pipe(z.string().trim().min(24).max(20000)),
+  expectedUpdatedAt: z.string().datetime(),
+  idempotencyKey: z.string().trim().min(1).max(200),
+}).strict();
+
+export type ReviewDecision = z.infer<typeof reviewDecisionSchema>;
 
 export const checkoutIssueSchema = z.object({
   agentId: z.string().uuid(),

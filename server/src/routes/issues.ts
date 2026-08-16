@@ -60,6 +60,7 @@ import {
   rejectIssueThreadInteractionSchema,
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
+  reviewDecisionSchema,
   stalledReviewDecisionSchema,
   submitIssueThreadInteractionVerdictsSchema,
   updateIssueWorkProductSchema,
@@ -330,6 +331,7 @@ type ExecutionStageWakeContext = {
   stageType: ParsedExecutionState["currentStageType"];
   currentParticipant: ParsedExecutionState["currentParticipant"];
   returnAssignee: ParsedExecutionState["returnAssignee"];
+  reviewRoundId: string | null;
   reviewRequest: ParsedExecutionState["reviewRequest"];
   lastDecisionOutcome: ParsedExecutionState["lastDecisionOutcome"];
   allowedActions: string[];
@@ -1695,6 +1697,7 @@ function buildExecutionStageWakeContext(input: {
     stageType: input.state.currentStageType,
     currentParticipant: input.state.currentParticipant,
     returnAssignee: input.state.returnAssignee,
+    reviewRoundId: input.state.reviewRoundId ?? null,
     reviewRequest: input.state.reviewRequest ?? null,
     lastDecisionOutcome: input.state.lastDecisionOutcome,
     allowedActions: input.allowedActions,
@@ -2348,6 +2351,20 @@ const ISSUE_LIST_STORM_WINDOW_MS = 500;
 const ISSUE_LIST_STORM_THRESHOLD = 4;
 const ISSUE_LIST_MAX_ACTOR_CLIENT_INFLIGHT = 8;
 
+type ReviewDecisionIdempotencyPayload = {
+  issueId: string;
+  reviewRoundId: string | null;
+  stageId: string;
+  reviewerRunId: string;
+  outcome: "approved" | "changes_requested";
+  reasoning: string;
+  expectedUpdatedAt: string;
+};
+
+function hashReviewDecisionIdempotencyPayload(payload: ReviewDecisionIdempotencyPayload) {
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+}
+
 type IssueListPreparedResponse =
   | {
       kind: "compact";
@@ -2713,6 +2730,12 @@ export function issueRoutes(
       agentId: string,
       options: Parameters<ReturnType<typeof heartbeatService>["wakeup"]>[1],
     ) => ReturnType<ReturnType<typeof heartbeatService>["wakeup"]>;
+    reviewDecisionEnqueueWakeup?: (
+      agentId: string,
+      options: Parameters<ReturnType<typeof heartbeatService>["wakeup"]>[1],
+    ) => ReturnType<ReturnType<typeof heartbeatService>["wakeup"]>;
+    reviewDecisionBeforeTransaction?: (input: { issueId: string; runId: string }) => Promise<void>;
+    reviewDecisionBeforeCommit?: (input: { issueId: string; decisionId: string }) => Promise<void>;
     issueListDiagnostics?: IssueListDiagnostics;
     approveToolActionRequest?: (input: {
       companyId: string;
@@ -2731,6 +2754,7 @@ export function issueRoutes(
     pluginWorkerManager: opts.pluginWorkerManager,
   });
   const enqueueStalledReviewDecisionWakeup = opts.stalledReviewDecisionEnqueueWakeup ?? heartbeat.wakeup;
+  const enqueueReviewDecisionWakeup = opts.reviewDecisionEnqueueWakeup ?? heartbeat.wakeup;
   const enqueueRecoveryActionWakeup = opts.recoveryActionEnqueueWakeup ?? heartbeat.wakeup;
   const feedback = feedbackService(db);
   const companiesSvc = companyService(db);
@@ -8614,6 +8638,203 @@ export function issueRoutes(
     res.json(result);
   });
 
+  router.post("/issues/:id/review-decisions", validate(reviewDecisionSchema), async (req, res) => {
+    if (req.actor.type !== "agent") throw forbidden("Agent authentication required");
+    const actor = getActorInfo(req);
+    if (!actor.agentId || !actor.runId) throw forbidden("A run-scoped reviewer identity is required");
+    const issueId = req.params.id as string;
+    const companyId = req.actor.companyId;
+    if (!companyId) throw forbidden("Agent company context is required");
+    const reasoning = req.body.reasoning.trim();
+    const expectedUpdatedAt = new Date(req.body.expectedUpdatedAt);
+
+    const validateContext = (
+      issue: typeof issueRows.$inferSelect,
+      run: typeof heartbeatRuns.$inferSelect,
+    ) => {
+      if (run.companyId !== req.actor.companyId || run.agentId !== actor.agentId || run.status !== "running") {
+        throw forbidden("Reviewer run is not current for this agent and company");
+      }
+      const state = parseIssueExecutionState(issue.executionState);
+      const policy = normalizeIssueExecutionPolicy(issue.executionPolicy);
+      const context = run.contextSnapshot ?? {};
+      const executionStage = context.executionStage && typeof context.executionStage === "object"
+        ? context.executionStage as Record<string, unknown> : null;
+      const wakeReason = state?.currentStageType === "approval" ? "execution_approval_requested" : "execution_review_requested";
+      const wakeRole = state?.currentStageType === "approval" ? "approver" : "reviewer";
+      if (
+        issue.status !== "in_review" || !state || state.status !== "pending" || !state.currentStageId ||
+        !state.currentStageType || !policy ||
+        !policy.stages.some((stage) => stage.id === state.currentStageId && stage.type === state.currentStageType &&
+          stage.participants.some((participant) => participant.type === "agent" && participant.agentId === actor.agentId)) ||
+        state.currentParticipant?.type !== "agent" || state.currentParticipant.agentId !== actor.agentId ||
+        !state.returnAssignee ||
+        (state.returnAssignee.type === "agent" && (!state.returnAssignee.agentId || state.returnAssignee.agentId === actor.agentId)) ||
+        (state.returnAssignee.type === "user" && !state.returnAssignee.userId) ||
+        (context.issueId ?? context.taskId) !== issueId || context.source !== "issue.execution_stage" ||
+        context.wakeReason !== wakeReason || executionStage?.stageId !== state.currentStageId ||
+        executionStage?.stageType !== state.currentStageType || executionStage?.wakeRole !== wakeRole ||
+        (state.reviewRoundId != null && executionStage?.reviewRoundId !== state.reviewRoundId)
+      ) throw conflict("Reviewer run is not authorized for the active review stage");
+      return { state, policy };
+    };
+    const validateReplayContext = (
+      run: typeof heartbeatRuns.$inferSelect,
+      replay: typeof issueExecutionDecisions.$inferSelect,
+    ) => {
+      const context = run.contextSnapshot ?? {};
+      const executionStage = context.executionStage && typeof context.executionStage === "object"
+        ? context.executionStage as Record<string, unknown> : null;
+      const expectedWakeRole = replay.stageType === "approval" ? "approver" : "reviewer";
+      const expectedWakeReason = replay.stageType === "approval"
+        ? "execution_approval_requested"
+        : "execution_review_requested";
+      if (
+        run.companyId !== req.actor.companyId || run.agentId !== actor.agentId ||
+        (context.issueId ?? context.taskId) !== replay.issueId || context.source !== "issue.execution_stage" ||
+        context.wakeReason !== expectedWakeReason || executionStage?.stageId !== replay.stageId ||
+        executionStage?.stageType !== replay.stageType || executionStage?.wakeRole !== expectedWakeRole ||
+        (replay.reviewRoundId != null && executionStage?.reviewRoundId != null &&
+          executionStage.reviewRoundId !== replay.reviewRoundId)
+      ) throw conflict("Reviewer run is not authorized to replay this review decision");
+    };
+
+    const preflightRun = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, actor.runId))
+      .then((rows) => rows[0] ?? null);
+    if (!preflightRun || preflightRun.companyId !== req.actor.companyId || preflightRun.agentId !== actor.agentId) {
+      throw forbidden("Reviewer run is not current for this agent and company");
+    }
+    const preflightIssue = await db.select().from(issueRows).where(and(
+      eq(issueRows.id, issueId), eq(issueRows.companyId, preflightRun.companyId), isNull(issueRows.hiddenAt),
+    )).then((rows) => rows[0] ?? null);
+    if (!preflightIssue) throw notFound("Issue not found");
+    const preflightReplay = await db.select().from(issueExecutionDecisions).where(and(
+      eq(issueExecutionDecisions.createdByRunId, preflightRun.id),
+      eq(issueExecutionDecisions.idempotencyKey, req.body.idempotencyKey),
+    )).then((rows) => rows[0] ?? null);
+    if (preflightReplay) validateReplayContext(preflightRun, preflightReplay);
+    else {
+      if (preflightRun.status !== "running") throw conflict("Reviewer run is not running");
+      validateContext(preflightIssue, preflightRun);
+    }
+
+    await opts.reviewDecisionBeforeTransaction?.({ issueId, runId: preflightRun.id });
+
+    const result = await db.transaction(async (tx) => {
+      const issue = await tx.select().from(issueRows).where(and(
+        eq(issueRows.id, issueId), eq(issueRows.companyId, companyId), isNull(issueRows.hiddenAt),
+      )).for("update").then((rows) => rows[0] ?? null);
+      if (!issue) throw notFound("Issue not found");
+
+      const run = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, actor.runId!)).for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!run || run.companyId !== req.actor.companyId || run.agentId !== actor.agentId) {
+        throw forbidden("Reviewer run is not current for this agent and company");
+      }
+
+      const replay = await tx.select().from(issueExecutionDecisions).where(and(
+        eq(issueExecutionDecisions.createdByRunId, run.id),
+        eq(issueExecutionDecisions.idempotencyKey, req.body.idempotencyKey),
+      )).then((rows) => rows[0] ?? null);
+      if (replay) {
+        validateReplayContext({ ...run, status: "running" }, replay);
+        const replayHash = hashReviewDecisionIdempotencyPayload({
+          issueId,
+          reviewRoundId: replay.reviewRoundId,
+          stageId: replay.stageId,
+          reviewerRunId: run.id,
+          outcome: req.body.outcome,
+          reasoning,
+          expectedUpdatedAt: req.body.expectedUpdatedAt,
+        });
+        if (replay.issueId !== issueId || replay.payloadHash !== replayHash) {
+          throw conflict("Idempotency key is already bound to a different review decision");
+        }
+        return { decision: replay, issue, previousState: parseIssueExecutionState(issue.executionState), replayed: true };
+      }
+
+      if (run.status !== "running" || issue.executionRunId !== run.id) {
+        throw conflict("Reviewer run violates the authoritative execution-stage run invariant");
+      }
+      const { state, policy } = validateContext(issue, run);
+
+      // A decision always receives a durable round key, including legacy and
+      // approval states whose persisted execution state has no review round.
+      // The transition owns the next state's round (or null) independently.
+      const reviewRoundId = state.reviewRoundId ?? randomUUID();
+      const payloadHash = hashReviewDecisionIdempotencyPayload({
+        issueId,
+        reviewRoundId,
+        stageId: state.currentStageId!,
+        reviewerRunId: run.id,
+        outcome: req.body.outcome,
+        reasoning,
+        expectedUpdatedAt: req.body.expectedUpdatedAt,
+      });
+      if (issue.updatedAt.getTime() !== expectedUpdatedAt.getTime()) throw conflict("Issue compare-and-swap failed");
+      const prior = await tx.select({ id: issueExecutionDecisions.id }).from(issueExecutionDecisions).where(and(
+        eq(issueExecutionDecisions.issueId, issueId), eq(issueExecutionDecisions.reviewRoundId, reviewRoundId),
+      )).then((rows) => rows[0] ?? null);
+      if (prior) throw conflict("This review round already has a decision");
+
+      const transition = applyIssueExecutionPolicyTransition({
+        issue: { ...issue, executionState: { ...state, reviewRoundId } },
+        policy,
+        requestedStatus: req.body.outcome === "approved" ? "done" : "in_progress",
+        requestedAssigneePatch: {}, actor: { agentId: actor.agentId, userId: null }, commentBody: reasoning,
+      });
+      if (!transition.decision || transition.decision.outcome !== req.body.outcome) {
+        throw conflict("Persisted review state cannot accept this decision");
+      }
+      const decisionId = randomUUID();
+      const nextState = transition.patch.executionState as Record<string, unknown> | null;
+      const nextStatus = typeof transition.patch.status === "string"
+        ? transition.patch.status
+        : req.body.outcome === "approved" ? "done" : "in_progress";
+      const updated = await tx.update(issueRows).set({
+        ...transition.patch,
+        status: nextStatus,
+        executionState: nextState ? { ...nextState, lastDecisionId: decisionId } : nextState,
+        updatedAt: new Date(),
+      }).where(and(eq(issueRows.id, issueId), eq(issueRows.status, "in_review"), eq(issueRows.updatedAt, expectedUpdatedAt)))
+        .returning().then((rows) => rows[0] ?? null);
+      if (!updated) throw conflict("Issue review decision lost its compare-and-swap race");
+
+      const comment = await tx.insert(issueComments).values({
+        companyId: updated.companyId, issueId, authorAgentId: actor.agentId, authorType: "agent",
+        createdByRunId: run.id, body: reasoning,
+      }).returning().then((rows) => rows[0]!);
+      const decision = await tx.insert(issueExecutionDecisions).values({
+        id: decisionId, companyId: updated.companyId, issueId, stageId: state.currentStageId!,
+        stageType: state.currentStageType!, actorAgentId: actor.agentId, outcome: req.body.outcome,
+        body: reasoning, createdByRunId: run.id, reviewRoundId, idempotencyKey: req.body.idempotencyKey, payloadHash,
+      }).returning().then((rows) => rows[0]!);
+      await logActivity(tx as unknown as Db, {
+        companyId: updated.companyId, actorType: "agent", actorId: actor.agentId, agentId: actor.agentId,
+        runId: run.id, action: "issue.review_decided", entityType: "issue", entityId: issueId, issueId,
+        details: { decisionId, commentId: comment.id, reviewRoundId, stageId: state.currentStageId, outcome: req.body.outcome },
+      });
+      await opts.reviewDecisionBeforeCommit?.({ issueId, decisionId });
+      return { decision, issue: updated, previousState: state, replayed: false };
+    });
+    if (!result.replayed) {
+      const wake = buildExecutionStageWakeup({
+        issueId,
+        previousState: result.previousState,
+        nextState: parseIssueExecutionState(result.issue.executionState),
+        interruptedRunId: null,
+        requestedByActorType: "agent",
+        requestedByActorId: actor.agentId,
+      });
+      if (wake) {
+        void enqueueReviewDecisionWakeup(wake.agentId, wake.wakeup).catch((error) => {
+          logger.warn({ error, issueId, decisionId: result.decision.id }, "Failed to enqueue atomic review decision wakeup");
+        });
+      }
+    }
+    res.status(result.replayed ? 200 : 201).json(result);
+  });
+
   router.post(
     "/issues/:id/stalled-review-decision",
     validate(stalledReviewDecisionSchema),
@@ -8760,6 +8981,15 @@ export function issueRoutes(
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
+    const activeReviewState = parseIssueExecutionState(existing.executionState);
+    if (
+      req.actor.type === "agent" && existing.status === "in_review" &&
+      activeReviewState?.status === "pending" &&
+      (activeReviewState.currentStageType === "review" || activeReviewState.currentStageType === "approval") &&
+      typeof req.body.status === "string" && req.body.status !== "in_review"
+    ) {
+      throw conflict("Agent review-stage decisions must use POST /api/issues/:id/review-decisions");
+    }
     const isClosed = isClosedIssueStatus(existing.status);
     const isBlocked = existing.status === "blocked";
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(

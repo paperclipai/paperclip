@@ -1,4 +1,82 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { test, expect, request as pwRequest, type APIRequestContext } from "@playwright/test";
+import {
+  bindAtomicReviewDecision,
+  executorRunSucceeded,
+  formatLifecycleTimeoutDiagnostics,
+  matchesAuthoritativeStageRun,
+  matchesExecutorRun,
+  resolveAuthoritativeRunIssue,
+  type ExpectedExecutorRun,
+  type ExpectedStageRun,
+} from "../../server/src/test-support/signoff-policy-run-binding.js";
+
+const LIFECYCLE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-signoff-lifecycle-"));
+const LIFECYCLE_SCRIPT = path.join(LIFECYCLE_DIR, "fixture-run.cjs");
+fs.writeFileSync(LIFECYCLE_SCRIPT, [
+  "const fs = require('node:fs');",
+  "const path = require('node:path');",
+  "const role = process.argv[2];",
+  "const dir = process.argv[3];",
+  "const runId = process.env.PAPERCLIP_RUN_ID;",
+  "if (!runId) process.exit(2);",
+  "const api = String(process.env.PAPERCLIP_API_URL || '').replace(/\\/$/, '');",
+  "const resolveIssueId = async () => {",
+  "  const bindingPath = path.join(dir, 'binding-' + runId + '.json');",
+  "  if (!fs.existsSync(bindingPath)) return '';",
+  "  let expected;",
+  "  try { expected = JSON.parse(fs.readFileSync(bindingPath, 'utf8')); } catch { return ''; }",
+  "  const response = await fetch(api + '/api/heartbeat-runs/' + runId, { headers: { authorization: 'Bearer ' + process.env.PAPERCLIP_API_KEY } });",
+  "  if (!response.ok) return '';",
+  "  let run;",
+  "  try { run = await response.json(); } catch { return ''; }",
+  "  const context = run && typeof run.contextSnapshot === 'object' && run.contextSnapshot !== null ? run.contextSnapshot : null;",
+  "  if (!context || run.id !== runId || run.companyId !== expected.companyId || run.agentId !== expected.agentId || run.invocationSource === 'timer') return '';",
+  "  if (context.issueId !== expected.issueId || context.taskId !== expected.issueId) return '';",
+  "  return expected.issueId;",
+  "};",
+  "const release = path.join(dir, 'release-' + runId);",
+  "const submit = path.join(dir, 'submit-' + runId);",
+  "process.stdout.write(JSON.stringify({ role, runId }) + '\\n');",
+  "const deadline = Date.now() + 55000;",
+  "const wait = async () => {",
+  "  if (role === 'executor' && fs.existsSync(submit)) {",
+  "    const resolvedIssueId = await resolveIssueId();",
+  "    if (!resolvedIssueId) process.exit(5);",
+  "    const response = await fetch(api + '/api/issues/' + resolvedIssueId, {",
+  "      method: 'PATCH',",
+  "      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + process.env.PAPERCLIP_API_KEY, 'x-paperclip-run-id': runId },",
+  "      body: JSON.stringify({ status: 'done', comment: 'Executor fixture completed verified work.' }),",
+  "    });",
+  "    process.stdout.write(JSON.stringify({ patchStatus: response.status, body: await response.text() }) + '\\n');",
+  "    process.exit(response.ok ? 0 : 4);",
+  "  }",
+  "  if (role !== 'executor' && fs.existsSync(release)) process.exit(0);",
+  "  if (Date.now() >= deadline) process.exit(3);",
+  "  setTimeout(() => void wait(), 25);",
+  "};",
+  "void wait();",
+].join("\n"), { mode: 0o700 });
+
+interface LifecycleRecord {
+  kind: "executor" | "reviewer" | "approver";
+  issueId: string;
+  runId: string;
+  runStateAtDecision: string | null;
+  stageId: string | null;
+  stageType: string | null;
+  reviewRoundId: string | null;
+  expectedUpdatedAt: string | null;
+  decisionId: string | null;
+  httpStatus: number | null;
+  resultingStatus: string | null;
+  resultingAssigneeAgentId: string | null;
+  cleanup: string;
+}
+
+const lifecycleRecords: LifecycleRecord[] = [];
 
 /**
  * E2E: Signoff execution policy flow.
@@ -47,6 +125,230 @@ interface IssueRunLockState {
   assigneeAgentId: string | null;
   checkoutRunId: string | null;
   executionRunId: string | null;
+}
+
+interface ReviewStageIssue {
+  id: string;
+  companyId: string;
+  status: string;
+  updatedAt: string;
+  assigneeAgentId: string | null;
+  executionState: {
+    status: string;
+    currentStageId: string;
+    currentStageType: "review" | "approval";
+    reviewRoundId: string | null;
+    currentParticipant: { type: "agent"; agentId: string } | { type: "user"; userId: string } | null;
+    returnAssignee?: { type: "agent"; agentId: string } | { type: "user"; userId: string } | null;
+    completedStageIds?: string[];
+    lastDecisionOutcome?: string | null;
+  } | null;
+}
+
+async function getIssue(board: APIRequestContext, issueId: string): Promise<ReviewStageIssue> {
+  const res = await board.get(`${BASE_URL}/api/issues/${issueId}`);
+  expect(res.ok()).toBe(true);
+  return res.json();
+}
+
+function expectedStageRun(issue: ReviewStageIssue, agentId: string): ExpectedStageRun | null {
+  const state = issue.executionState;
+  if (
+    issue.status !== "in_review" ||
+    state?.status !== "pending" ||
+    !state.currentStageId ||
+    (state.currentStageType !== "review" && state.currentStageType !== "approval") ||
+    state.currentParticipant?.type !== "agent" ||
+    state.currentParticipant.agentId !== agentId
+  ) return null;
+  return {
+    companyId: issue.companyId,
+    issueId: issue.id,
+    agentId,
+    stageId: state.currentStageId,
+    stageType: state.currentStageType,
+    reviewRoundId: state.reviewRoundId ?? null,
+  };
+}
+
+async function recentDetailedRuns(
+  board: APIRequestContext,
+  companyId: string,
+  agentId: string,
+): Promise<unknown[]> {
+  const runsRes = await board.get(
+    `${BASE_URL}/api/companies/${companyId}/heartbeat-runs?agentId=${agentId}&limit=30`,
+  );
+  expect(runsRes.ok()).toBe(true);
+  const summaries = await runsRes.json();
+  const detailed: unknown[] = [];
+  for (const summary of Array.isArray(summaries) ? summaries : []) {
+    if (typeof summary?.id !== "string") continue;
+    const runRes = await board.get(`${BASE_URL}/api/heartbeat-runs/${summary.id}`);
+    if (runRes.ok()) detailed.push(await runRes.json());
+  }
+  return detailed;
+}
+
+function writeFixtureRunBinding(runValue: unknown, expected: {
+  companyId: string;
+  agentId: string;
+  issueId: string;
+}): string | null {
+  const run = runValue as { id?: unknown };
+  if (typeof run.id !== "string") return null;
+  const resolved = resolveAuthoritativeRunIssue(runValue, { runId: run.id, ...expected });
+  if (!resolved) return null;
+  fs.writeFileSync(
+    path.join(LIFECYCLE_DIR, `binding-${run.id}.json`),
+    `${JSON.stringify(expected)}\n`,
+    { mode: 0o600 },
+  );
+  return run.id;
+}
+
+async function waitForAuthoritativeStageRun(
+  board: APIRequestContext,
+  expected: ExpectedStageRun,
+  timeoutMs = 10_000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let candidates: unknown[] = [];
+  do {
+    candidates = await recentDetailedRuns(board, expected.companyId, expected.agentId);
+    const selected = candidates.find((run) => matchesAuthoritativeStageRun(run, expected));
+    const selectedId = selected ? writeFixtureRunBinding(selected, expected) : null;
+    if (selectedId) return selectedId;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } while (Date.now() < deadline);
+  const issue = await getIssue(board, expected.issueId);
+  throw new Error(
+    `No authoritative stage run appeared within ${timeoutMs}ms: ${formatLifecycleTimeoutDiagnostics({ issue, expected, candidates })}`,
+  );
+}
+
+async function waitForActiveExecutorRun(
+  board: APIRequestContext,
+  expected: ExpectedExecutorRun,
+  timeoutMs = 10_000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let candidates: unknown[] = [];
+  do {
+    candidates = await recentDetailedRuns(board, expected.companyId, expected.agentId);
+    const selected = candidates.find((runValue) => {
+      const run = runValue as { status?: unknown; finishedAt?: unknown };
+      return matchesExecutorRun(runValue, expected) && run.status === "running" && run.finishedAt == null;
+    });
+    const selectedId = selected ? writeFixtureRunBinding(selected, expected) : null;
+    if (selectedId) return selectedId;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } while (Date.now() < deadline);
+  const issue = await getIssue(board, expected.issueId);
+  throw new Error(
+    `No active executor run appeared within ${timeoutMs}ms: ${formatLifecycleTimeoutDiagnostics({ issue, expected, candidates })}`,
+  );
+}
+
+async function waitForExecutorSuccess(
+  board: APIRequestContext,
+  expected: ExpectedExecutorRun,
+  timeoutMs = 10_000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let candidates: unknown[] = [];
+  do {
+    candidates = await recentDetailedRuns(board, expected.companyId, expected.agentId);
+    const selected = candidates.find((run) => executorRunSucceeded(run, expected)) as { id?: unknown } | undefined;
+    if (typeof selected?.id === "string") return selected.id;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } while (Date.now() < deadline);
+  const issue = await getIssue(board, expected.issueId);
+  throw new Error(
+    `Executor did not reach terminal success within ${timeoutMs}ms: ${formatLifecycleTimeoutDiagnostics({ issue, expected, candidates })}`,
+  );
+}
+
+async function waitForStageTransition(
+  board: APIRequestContext,
+  issueId: string,
+  agentId: string,
+  timeoutMs = 10_000,
+): Promise<{ issue: ReviewStageIssue; expected: ExpectedStageRun }> {
+  const deadline = Date.now() + timeoutMs;
+  let issue = await getIssue(board, issueId);
+  do {
+    const expected = expectedStageRun(issue, agentId);
+    if (expected) return { issue, expected };
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    issue = await getIssue(board, issueId);
+  } while (Date.now() < deadline);
+  throw new Error(`Authoritative stage transition did not appear within ${timeoutMs}ms: ${JSON.stringify(issue)}`);
+}
+
+function releaseFixtureRun(runId: string): void {
+  fs.writeFileSync(path.join(LIFECYCLE_DIR, `release-${runId}`), "release\n");
+}
+
+async function waitForRunTerminal(
+  board: APIRequestContext,
+  runId: string,
+  timeoutMs = 10_000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let status = "unknown";
+  do {
+    const res = await board.get(`${BASE_URL}/api/heartbeat-runs/${runId}`);
+    if (res.ok()) {
+      const run = await res.json();
+      status = run.status;
+      if (!["queued", "running"].includes(status)) return status;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } while (Date.now() < deadline);
+  throw new Error(`Fixture run ${runId} did not finish after release; last status=${status}`);
+}
+
+async function completeExecutorAndAwaitTransition(
+  board: APIRequestContext,
+  executor: AgentAuth,
+  issueId: string,
+  nextAgentId: string,
+  options: { wakeReason?: "issue_assigned" | "execution_changes_requested"; stageId?: string; reviewRoundId?: string | null } = {},
+): Promise<{ executorRunId: string; stage: { issue: ReviewStageIssue; expected: ExpectedStageRun } }> {
+  const wakeReason = options.wakeReason ?? "issue_assigned";
+  const issue = await getIssue(board, issueId);
+  const expected: ExpectedExecutorRun = {
+    companyId: issue.companyId,
+    issueId,
+    agentId: executor.agentId,
+    wakeReason,
+    stageId: options.stageId,
+    reviewRoundId: options.reviewRoundId,
+  };
+  const executorRunId = await waitForActiveExecutorRun(board, expected);
+  fs.writeFileSync(path.join(LIFECYCLE_DIR, `submit-${executorRunId}`), "submit\n");
+  const succeededRunId = await waitForExecutorSuccess(board, expected);
+  expect(succeededRunId).toBe(executorRunId);
+  const stage = await waitForStageTransition(board, issueId, nextAgentId);
+  lifecycleRecords.push({
+    kind: "executor",
+    issueId,
+    runId: executorRunId,
+    runStateAtDecision: "succeeded",
+    stageId: stage.expected.stageId,
+    stageType: stage.expected.stageType,
+    reviewRoundId: stage.expected.reviewRoundId,
+    expectedUpdatedAt: null,
+    decisionId: null,
+    httpStatus: 200,
+    resultingStatus: stage.issue.status,
+    resultingAssigneeAgentId: stage.issue.executionState?.currentParticipant?.type === "agent"
+      ? stage.issue.executionState.currentParticipant.agentId
+      : null,
+    cleanup: "terminal_succeeded",
+  });
+  return { executorRunId, stage };
 }
 
 /** Create an authenticated APIRequestContext for an agent (token set, no run ID yet). */
@@ -184,7 +486,69 @@ async function agentPatch(
     maxBackoffMs = 500,
   }: { maxAttempts?: number; backoffMs?: number; maxBackoffMs?: number } = {},
 ) {
-  const runId = await invokeHeartbeat(board, agent.agentId, issueId);
+  const initialIssue = await getIssue(board, issueId);
+  const stageExpectation = expectedStageRun(initialIssue, agent.agentId);
+  const runId = stageExpectation
+    ? await waitForAuthoritativeStageRun(board, stageExpectation)
+    : await invokeHeartbeat(board, agent.agentId, issueId);
+  const currentIssue = await getIssue(board, issueId);
+  const executionState = currentIssue.executionState ?? null;
+  if (
+    stageExpectation &&
+    currentIssue.status === "in_review" &&
+    executionState?.status === "pending" &&
+    executionState?.currentParticipant?.type === "agent" &&
+    executionState.currentParticipant.agentId === agent.agentId &&
+    (data.status === "done" || data.status === "in_progress")
+  ) {
+    const binding = bindAtomicReviewDecision(currentIssue, runId, stageExpectation);
+    if (!binding) {
+      throw new Error(`Fresh issue state no longer matches selected stage run: ${JSON.stringify({ currentIssue, runId, stageExpectation })}`);
+    }
+    const runBefore = await board.get(`${BASE_URL}/api/heartbeat-runs/${runId}`);
+    expect(runBefore.ok()).toBe(true);
+    expect((await runBefore.json()).status).toBe("running");
+    const reasoning = typeof data.comment === "string" && data.comment.trim().length > 0
+      ? data.comment.trim().length >= 24
+        ? data.comment.trim()
+        : `${data.comment.trim()} Verified against the execution policy.`
+      : data.comment;
+    const decisionRes = await agent.request.post(`${BASE_URL}/api/issues/${issueId}/review-decisions`, {
+      headers: { "X-Paperclip-Run-Id": binding.reviewerRunId },
+      data: {
+        outcome: data.status === "done" ? "approved" : "changes_requested",
+        reasoning,
+        expectedUpdatedAt: binding.expectedUpdatedAt,
+        idempotencyKey: `e2e:${issueId}:${binding.stageId}:${binding.reviewRoundId ?? "null"}:${runId}`,
+      },
+    });
+    let decisionBody: Record<string, any> | null = null;
+    if (decisionRes.ok()) decisionBody = await decisionRes.json();
+    const resultingIssue = decisionRes.ok()
+      ? await getIssue(board, issueId)
+      : currentIssue;
+    if (decisionRes.ok()) {
+      releaseFixtureRun(runId);
+      const terminalStatus = await waitForRunTerminal(board, runId);
+      lifecycleRecords.push({
+        kind: stageExpectation.stageType === "approval" ? "approver" : "reviewer",
+        issueId,
+        runId,
+        runStateAtDecision: "running",
+        stageId: binding.stageId,
+        stageType: stageExpectation.stageType,
+        reviewRoundId: binding.reviewRoundId,
+        expectedUpdatedAt: binding.expectedUpdatedAt,
+        decisionId: typeof decisionBody?.decision?.id === "string" ? decisionBody.decision.id : null,
+        httpStatus: decisionRes.status(),
+        resultingStatus: resultingIssue.status,
+        resultingAssigneeAgentId: (resultingIssue as any).assigneeAgentId ?? null,
+        cleanup: terminalStatus,
+      });
+    }
+    if (!decisionRes.ok()) return decisionRes;
+    return board.get(`${BASE_URL}/api/issues/${issueId}`);
+  }
   const patchWith = (patchRunId: string) =>
     agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
       headers: { "X-Paperclip-Run-Id": patchRunId },
@@ -311,7 +675,9 @@ async function setupCompany(boardRequest: APIRequestContext): Promise<TestContex
         adapterType: "process",
         adapterConfig: {
           command: process.execPath,
-          args: ["-e", "process.stdout.write('done\\n')"],
+          args: [LIFECYCLE_SCRIPT, role === "engineer" ? "executor" : role === "qa" ? "reviewer" : "approver", LIFECYCLE_DIR],
+          timeoutSec: 58,
+          graceSec: 1,
         },
       },
     });
@@ -402,6 +768,19 @@ test.describe("Signoff execution policy", () => {
     }
     await board.delete(`${BASE_URL}/api/companies/${ctx.companyId}`).catch(() => {});
     await board.dispose();
+
+    const ledgerPath = process.env.PAPERCLIP_E2E_LEDGER_PATH;
+    if (ledgerPath) {
+      fs.writeFileSync(
+        ledgerPath,
+        `${JSON.stringify({
+          isolationId: process.env.PAPERCLIP_E2E_RUN_ID ?? null,
+          baseUrl: BASE_URL,
+          companyId: ctx.companyId,
+          lifecycleRecords,
+        }, null, 2)}\n`,
+      );
+    }
   });
 
   test("happy path: executor → review → approval → done", async ({ page }) => {
@@ -414,13 +793,12 @@ test.describe("Signoff execution policy", () => {
     expect(issue.executionPolicy.stages[0].type).toBe("review");
     expect(issue.executionPolicy.stages[1].type).toBe("approval");
 
-    // Step 1: Executor marks done → should route to reviewer
-    const step1Res = await agentCheckoutAndPatch(
-      ctx.boardRequest, ctx.executor, issueId, ["in_progress"],
-      { status: "done", comment: "Implemented the feature, ready for review." },
+    // Step 1: The assignment wake starts the executor. The executor marks done
+    // from inside its own authoritative run and must finish before stage wake.
+    const { stage: step1Stage } = await completeExecutorAndAwaitTransition(
+      ctx.boardRequest, ctx.executor, issueId, ctx.reviewer.agentId,
     );
-    expect(step1Res.ok()).toBe(true);
-    const step1Issue = await step1Res.json();
+    const step1Issue = step1Stage.issue;
 
     expect(step1Issue.status).toBe("in_review");
     expect(step1Issue.assigneeAgentId).toBe(ctx.reviewer.agentId);
@@ -472,13 +850,11 @@ test.describe("Signoff execution policy", () => {
     const issue = await createIssueWithPolicy(ctx, "Signoff changes requested");
     const issueId = issue.id;
 
-    // Executor marks done → routes to reviewer
-    const doneRes = await agentCheckoutAndPatch(
-      ctx.boardRequest, ctx.executor, issueId, ["in_progress"],
-      { status: "done", comment: "Ready for review." },
+    // Assignment starts the authoritative executor run. Complete it from
+    // inside that exact run before entering review.
+    await completeExecutorAndAwaitTransition(
+      ctx.boardRequest, ctx.executor, issueId, ctx.reviewer.agentId,
     );
-    expect(doneRes.ok()).toBe(true);
-    expect((await doneRes.json()).status).toBe("in_review");
 
     // Reviewer requests changes → returns to executor
     const changesRes = await agentPatch(
@@ -493,13 +869,20 @@ test.describe("Signoff execution policy", () => {
     expect(changesIssue.executionState.status).toBe("changes_requested");
     expect(changesIssue.executionState.lastDecisionOutcome).toBe("changes_requested");
 
-    // Executor re-submits → goes back to reviewer (same stage)
-    const resubmitRes = await agentCheckoutAndPatch(
-      ctx.boardRequest, ctx.executor, issueId, ["in_progress"],
-      { status: "done", comment: "Fixed the edge cases." },
+    // Executor re-submits through the exact changes-requested wake run and
+    // returns to the same reviewer stage.
+    const { stage: resubmitStage } = await completeExecutorAndAwaitTransition(
+      ctx.boardRequest,
+      ctx.executor,
+      issueId,
+      ctx.reviewer.agentId,
+      {
+        wakeReason: "execution_changes_requested",
+        stageId: changesIssue.executionState.currentStageId,
+        reviewRoundId: changesIssue.executionState.reviewRoundId,
+      },
     );
-    expect(resubmitRes.ok()).toBe(true);
-    const resubmitIssue = await resubmitRes.json();
+    const resubmitIssue = resubmitStage.issue;
 
     expect(resubmitIssue.status).toBe("in_review");
     expect(resubmitIssue.assigneeAgentId).toBe(ctx.reviewer.agentId);
@@ -511,13 +894,12 @@ test.describe("Signoff execution policy", () => {
     const issue = await createIssueWithPolicy(ctx, "Signoff comment required");
     const issueId = issue.id;
 
-    // Executor marks done → routes to reviewer
-    const doneRes = await agentCheckoutAndPatch(
-      ctx.boardRequest, ctx.executor, issueId, ["in_progress"],
-      { status: "done", comment: "Done." },
+    // Assignment creates the authoritative executor run; let it complete and
+    // enter review before asserting missing-decision-reasoning validation.
+    const { stage: doneStage } = await completeExecutorAndAwaitTransition(
+      ctx.boardRequest, ctx.executor, issueId, ctx.reviewer.agentId,
     );
-    expect(doneRes.ok()).toBe(true);
-    const doneIssue = await doneRes.json();
+    const doneIssue = doneStage.issue;
     expect(doneIssue.status).toBe("in_review");
     expect(doneIssue.assigneeAgentId).toBe(ctx.reviewer.agentId);
 
@@ -528,19 +910,17 @@ test.describe("Signoff execution policy", () => {
     );
     expect(noCommentRes.ok()).toBe(false);
     const errorBody = await noCommentRes.json();
-    expect(JSON.stringify(errorBody)).toContain("comment");
+    expect(JSON.stringify(errorBody)).toMatch(/comment|reasoning|Required/i);
   });
 
   test("non-participant cannot advance stage", async () => {
     const issue = await createIssueWithPolicy(ctx, "Signoff access control");
     const issueId = issue.id;
 
-    // Executor marks done → routes to reviewer
-    const doneRes = await agentCheckoutAndPatch(
-      ctx.boardRequest, ctx.executor, issueId, ["in_progress"],
-      { status: "done", comment: "Done." },
+    // Assignment wake starts the authoritative executor run.
+    await completeExecutorAndAwaitTransition(
+      ctx.boardRequest, ctx.executor, issueId, ctx.reviewer.agentId,
     );
-    expect(doneRes.ok()).toBe(true);
 
     // Verify issue is in_review with reviewer
     const issueRes = await ctx.boardRequest.get(`${BASE_URL}/api/issues/${issueId}`);
@@ -563,13 +943,10 @@ test.describe("Signoff execution policy", () => {
       { type: "review", participants: [{ type: "agent", agentId: ctx.reviewer.agentId }] },
     ]);
 
-    // Executor marks done → routes to reviewer
-    const doneRes = await agentCheckoutAndPatch(
-      ctx.boardRequest, ctx.executor, issue.id, ["in_progress"],
-      { status: "done", comment: "Ready for review." },
+    // Assignment wake starts the authoritative executor run.
+    await completeExecutorAndAwaitTransition(
+      ctx.boardRequest, ctx.executor, issue.id, ctx.reviewer.agentId,
     );
-    expect(doneRes.ok()).toBe(true);
-    expect((await doneRes.json()).status).toBe("in_review");
 
     // Reviewer approves → should complete immediately (no approval stage)
     const approveRes = await agentPatch(

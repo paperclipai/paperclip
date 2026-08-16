@@ -27,6 +27,7 @@ import {
   createIssueSchema,
   updateIssueSchema,
   stalledReviewDecisionSchema,
+  reviewDecisionSchema,
   createIssueLabelSchema,
   addIssueCommentSchema,
   checkoutIssueSchema,
@@ -1225,6 +1226,23 @@ registry.registerPath({
   tags: ["companies"],
   summary: "List companies",
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/review-decisions",
+  tags: ["issues"],
+  summary: "Atomically record a run-scoped agent review decision",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(reviewDecisionSchema) },
+  responses: {
+    200: r.ok(),
+    201: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
 });
 
 registry.registerPath({
