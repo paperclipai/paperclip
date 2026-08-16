@@ -101,9 +101,12 @@ async function renderAppAt(container: HTMLElement, path: string) {
 }
 
 async function waitForRoute(container: HTMLElement, text: string) {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  // Route rendering can wait on asynchronous module evaluation. Poll against
+  // a wall-clock deadline so loaded CI runners are not limited to three ticks.
+  const deadline = Date.now() + 4_000;
+  while (Date.now() < deadline) {
     if (container.textContent?.includes(text)) return;
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    await new Promise((resolve) => window.setTimeout(resolve, 10));
   }
   expect(container.textContent).toContain(text);
 }
