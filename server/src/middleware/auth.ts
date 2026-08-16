@@ -46,7 +46,11 @@ function pruneCloudTenantWriteDebounce(
 }
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
-import { forbidden, unprocessable } from "../errors.js";
+import { forbidden, HttpError, unprocessable } from "../errors.js";
+import {
+  authenticateCompanyWorkProjectionCredential,
+  isCompanyWorkProjectionCredentialToken,
+} from "../services/company-work-projection-credentials.js";
 
 export { isCloudManagedInstance } from "../services/cloud-instance.js";
 
@@ -265,6 +269,32 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
+    if (isCompanyWorkProjectionCredentialToken(token)) {
+      // Reserved projection tokens replace local_trusted's implicit board
+      // actor. Malformed, unknown, revoked, and future versions must not fall
+      // through to a more powerful authentication path.
+      req.actor = { type: "none", source: "none" };
+      try {
+        const credential = await authenticateCompanyWorkProjectionCredential(db, token);
+        if (credential) {
+          req.actor = {
+            type: "none",
+            companyId: credential.companyId,
+            credentialId: credential.credentialId,
+            source: "none",
+          };
+        }
+        next();
+      } catch {
+        next(
+          new HttpError(503, "Work projection authentication is unavailable", {
+            code: "WORK_PROJECTION_UNAVAILABLE",
+          }),
+        );
+      }
+      return;
+    }
+
     const boardKey = await boardAuth.findBoardApiKeyByToken(token);
     if (boardKey) {
       const access = await boardAuth.resolveBoardAccess(boardKey.userId);
@@ -375,7 +405,12 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .where(eq(agents.id, key.agentId))
       .then((rows) => rows[0] ?? null);
 
-    if (!agentRecord || agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
+    if (
+      !agentRecord ||
+      agentRecord.companyId !== key.companyId ||
+      agentRecord.status === "terminated" ||
+      agentRecord.status === "pending_approval"
+    ) {
       next();
       return;
     }

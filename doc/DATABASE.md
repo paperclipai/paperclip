@@ -274,3 +274,44 @@ pnpm secrets:migrate-inline-env --apply
 ```
 
 Hosted AWS provider notes live in [SECRETS-AWS-PROVIDER.md](./SECRETS-AWS-PROVIDER.md).
+
+## Company work projection
+
+`company_work_projection_revisions` stores the materialized current revision.
+`company_work_projection_source_witnesses` and its immutable source-event rows
+form the independent monotonic integrity boundary; they are excluded from a
+counter/history-only restore. `issue_work_projection_versions` is an append-only
+history of only the issue fields and reference-validity facts approved for the
+machine read projection. Source and reference capture triggers append a version
+or tombstone in the same transaction as every eligible issue, project, agent,
+or membership change. The projection read compares the counter, witness,
+current source event, and current history token through indexed lookups and
+executes under a PostgreSQL read-only transaction. Dedicated hashes live in
+`company_work_projection_credentials`, never `agent_api_keys`; required
+creation/revocation activity references make credential mutations auditable in
+the same transaction.
+
+`company_work_projection_issue_heads` keeps one indexed routing row per issue
+lifetime, so historical pages walk at most `pageSize + 1` heads and perform one
+indexed history lookup per head instead of reconstructing accumulated history.
+`company_work_projection_verifications` stores the epoch-bound offline recovery
+receipt. Reads also require that receipt to match the current counter, witness,
+history count, and event count.
+
+Migration `0218` holds `SHARE ROW EXCLUSIVE` locks on `public.companies`,
+`public.issues`, `public.projects`, `public.agents`, and
+`public.company_memberships` across witness/counter seeding, trigger
+installation, and the complete backfill. The lock blocks affected source writes
+for the duration of the migration and its O(visible issue count) backfill, head
+construction, full verification, and statistics refresh, so large installations
+should estimate visible issue volume and schedule a maintenance window. Existing
+and future companies receive explicit revision-zero counter/witness tokens;
+missing rows are corruption, not an empty collection. A full-database
+point-in-time restore can reset source and witness together and therefore
+requires the new-database-epoch procedure in the full contract. Partial
+projection-table restore requires a committed receipt invalidation before
+maintenance and a successful full continuity verification before reads can
+resume.
+
+The full authority, pagination, failure, upgrade, and rollback contract is in
+[company-work-projection-contract.md](./company-work-projection-contract.md).

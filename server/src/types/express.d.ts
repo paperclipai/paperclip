@@ -26,6 +26,7 @@ declare global {
         }>;
         isInstanceAdmin?: boolean;
         keyId?: string;
+        credentialId?: string;
         keyScope?: AgentApiKeyScope;
         runId?: string;
         onBehalfOfUserId?: string | null;

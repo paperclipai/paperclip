@@ -9,6 +9,7 @@ import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import { isCompanyWorkProjectionCredentialToken } from "../services/company-work-projection-credentials.js";
 
 interface WsSocket {
   readyState: number;
@@ -134,6 +135,15 @@ async function authorizeUpgrade(
 ): Promise<UpgradeContext | null> {
   const queryToken = url.searchParams.get("token")?.trim() ?? "";
   const authToken = parseBearerToken(req.headers.authorization);
+  // Projection credentials never authorize live observation. Inspect both
+  // transports before any database lookup, last_used_at mutation, upgrade, or
+  // event subscription so a standard token cannot mask a projection token.
+  if (
+    (authToken && isCompanyWorkProjectionCredentialToken(authToken)) ||
+    (queryToken && isCompanyWorkProjectionCredentialToken(queryToken))
+  ) {
+    return null;
+  }
   const token = authToken ?? (queryToken.length > 0 ? queryToken : null);
 
   // Browser board context has no bearer token in local_trusted and authenticated modes.
