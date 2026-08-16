@@ -199,6 +199,93 @@ describe("effective run config fingerprints", () => {
     expect(versionChanged.sessionFingerprint.fingerprint).not.toBe(v7.sessionFingerprint.fingerprint);
   });
 
+  it("changes the fingerprint when a secret value fingerprint changes under the same version", () => {
+    const manifestEntry = (valueFingerprint: string) => ({
+      configPath: "env.OPENAI_API_KEY",
+      envKey: "OPENAI_API_KEY",
+      secretId: "secret-1",
+      bindingId: "binding-1",
+      version: 7,
+      provider: "local_encrypted",
+      providerVersionRef: "provider-version-7",
+      outcome: "success" as const,
+      valueFingerprint,
+    });
+    const session = {
+      adapterConfig: { env: { OPENAI_API_KEY: "resolved-secret-value" } },
+    };
+
+    const original = createEffectiveRunConfigFingerprints({
+      session,
+      secretManifest: [manifestEntry("sha256:aaaa")],
+    });
+    // In-place re-encryption keeps the SAME version number but changes the value.
+    const reencrypted = createEffectiveRunConfigFingerprints({
+      session,
+      secretManifest: [manifestEntry("sha256:bbbb")],
+    });
+    // Identical value fingerprint must NOT cause a spurious reset.
+    const unchanged = createEffectiveRunConfigFingerprints({
+      session,
+      secretManifest: [manifestEntry("sha256:aaaa")],
+    });
+
+    expect(reencrypted.sessionFingerprint.fingerprint).not.toBe(
+      original.sessionFingerprint.fingerprint,
+    );
+    expect(unchanged.sessionFingerprint.fingerprint).toBe(
+      original.sessionFingerprint.fingerprint,
+    );
+    // The non-reversible fingerprint may be included, but never the raw value.
+    expect(original.sessionFingerprint.canonicalJson).not.toContain("resolved-secret-value");
+  });
+
+  it("changes the LEASE fingerprint when a secret value fingerprint changes under the same version", () => {
+    // The reusable-sandbox lease fingerprint carries the resolved secret manifest
+    // both as lease.secrets and as the secret manifest. An in-place re-encryption
+    // that keeps the SAME version number must still invalidate the lease so a stale
+    // sandbox is never reused with a rotated credential.
+    const leaseSecret = (valueFingerprint: string) => ({
+      configPath: "apiKey",
+      envKey: null,
+      secretId: "secret-1",
+      version: 7,
+      provider: "local_encrypted",
+      providerVersionRef: "provider-version-7",
+      valueFingerprint,
+      outcome: "success" as const,
+    });
+    const lease = (valueFingerprint: string) => ({
+      companyId: "company-1",
+      environment: { id: "env-1", driver: "sandbox" },
+      provider: "secure-plugin",
+      secrets: [leaseSecret(valueFingerprint)],
+    });
+
+    const original = createEffectiveRunConfigFingerprints({
+      lease: lease("sha256:aaaa"),
+      secretManifest: [leaseSecret("sha256:aaaa")],
+    });
+    const reencrypted = createEffectiveRunConfigFingerprints({
+      lease: lease("sha256:bbbb"),
+      secretManifest: [leaseSecret("sha256:bbbb")],
+    });
+    const unchanged = createEffectiveRunConfigFingerprints({
+      lease: lease("sha256:aaaa"),
+      secretManifest: [leaseSecret("sha256:aaaa")],
+    });
+
+    expect(reencrypted.leaseFingerprint.fingerprint).not.toBe(
+      original.leaseFingerprint.fingerprint,
+    );
+    // Identical value fingerprint must NOT cause spurious lease churn.
+    expect(unchanged.leaseFingerprint.fingerprint).toBe(
+      original.leaseFingerprint.fingerprint,
+    );
+    // The non-reversible fingerprint is included in canonical form.
+    expect(original.leaseFingerprint.canonicalJson).toContain("sha256:aaaa");
+  });
+
   it("detects plain env value drift without storing raw values", () => {
     const base = createEffectiveRunConfigFingerprints({
       session: {
