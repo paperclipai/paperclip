@@ -4,12 +4,13 @@ import { promisify } from "node:util";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   agents,
   approvals,
+  issueStatusEvents,
   companyMemberships,
   documents,
   executionWorkspaces,
@@ -6452,6 +6453,45 @@ export function issueRoutes(
       identicalInFlightCount: coordinated.identicalInFlightCount,
     });
     res.json(coordinated.response.body);
+  });
+
+  // TSMC-20879: status-transition digest from the trigger-written event log.
+  // The ONLY truthful closure-count source — daily summaries and closure
+  // reporting read THIS, never updated_at heuristics (the 2026-08-15 proxy
+  // defect inflated closures 25%). Returns per-to_status counts in the window.
+  router.get("/companies/:companyId/issues/status-events/digest", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const sinceRaw = req.query.since as string | undefined;
+    const untilRaw = req.query.until as string | undefined;
+    const since = sinceRaw ? new Date(sinceRaw) : new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const until = untilRaw ? new Date(untilRaw) : new Date();
+    if (Number.isNaN(since.getTime()) || Number.isNaN(until.getTime())) {
+      res.status(400).json({ error: "since/until must be ISO timestamps" });
+      return;
+    }
+    const rows = await db
+      .select({
+        toStatus: issueStatusEvents.toStatus,
+        count: sql<number>`count(*)::int`,
+        distinctIssues: sql<number>`count(distinct ${issueStatusEvents.issueId})::int`,
+      })
+      .from(issueStatusEvents)
+      .where(
+        and(
+          eq(issueStatusEvents.companyId, companyId),
+          gte(issueStatusEvents.createdAt, since),
+          lt(issueStatusEvents.createdAt, until),
+        ),
+      )
+      .groupBy(issueStatusEvents.toStatus);
+    res.json({
+      companyId,
+      since: since.toISOString(),
+      until: until.toISOString(),
+      transitions: rows,
+      note: "trigger-written event log (migration 9012); count = transitions, distinctIssues = unique issues reaching each status in the window",
+    });
   });
 
   router.get("/companies/:companyId/issues/count", async (req, res) => {

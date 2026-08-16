@@ -1478,6 +1478,13 @@
       "when": 1785890400000,
       "tag": "9011_board_token_exceptions",
       "breakpoints": true
+    },
+    {
+      "idx": 210,
+      "version": "7",
+      "when": 1786013700000,
+      "tag": "9012_issue_status_events",
+      "breakpoints": true
     }
   ]
 }
