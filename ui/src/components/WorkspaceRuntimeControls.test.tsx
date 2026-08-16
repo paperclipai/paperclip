@@ -47,6 +47,7 @@ function createRuntimeService(overrides: Partial<WorkspaceRuntimeService> = {}):
     stoppedAt: overrides.stoppedAt ?? null,
     stopPolicy: overrides.stopPolicy ?? null,
     healthStatus: overrides.healthStatus ?? "unknown",
+    exposure: overrides.exposure ?? null,
     configIndex: overrides.configIndex ?? null,
     createdAt: overrides.createdAt ?? new Date("2026-04-12T00:00:00.000Z"),
     updatedAt: overrides.updatedAt ?? new Date("2026-04-12T00:00:00.000Z"),
@@ -626,6 +627,98 @@ describe("buildWorkspaceServiceControlEntries", () => {
 
     expect(entries[0].state).toBe("failed");
     expect(entries[0].failureDetail).toMatch(/^Service failed · /);
+  });
+
+  it("surfaces HTTPS failure independently while the backend remains running", () => {
+    const running = createRuntimeService({
+      status: "running",
+      healthStatus: "healthy",
+      port: 42000,
+      url: null,
+      exposure: {
+        provider: "tailscale_https",
+        state: "failed",
+        publicUrl: null,
+        hostname: "runner.tail123.ts.net",
+        listeners: [{ purpose: "app", publicPort: 42000, targetPort: 42000 }],
+        brokerRef: "service-1",
+        lastError: "cli_error",
+        updatedAt: "2026-08-11T00:00:00.000Z",
+      },
+    });
+    const built = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: { commands: [{ id: "web", name: "web", kind: "service", command: "pnpm dev" }] },
+      runtimeServices: [running],
+      canStartServices: true,
+    });
+    const [entry] = buildWorkspaceServiceControlEntries({ sections: built, runtimeServices: [running] });
+
+    expect(entry.state).toBe("running");
+    expect(entry.exposureState).toBe("failed");
+    expect(entry.exposureDetail).toMatch(/^HTTPS unavailable/);
+    expect(entry.exposureDetail).not.toContain("cli_error");
+  });
+
+  it("carries the verified HTTPS URL into the launch entry, and no HTTP fallback while pending", () => {
+    // PAP-17158: the workspace/project/issue launch links are rendered from these
+    // entries, so the tailnet HTTPS URL has to survive the mapping intact — and a
+    // service whose exposure is not yet verified must offer no URL at all rather
+    // than the loopback backend it is really listening on.
+    const httpsUrl = "https://paperclip-dev.tail29c1aa.ts.net:42010";
+    const buildEntry = (service: ReturnType<typeof createRuntimeService>) => {
+      const sections = buildWorkspaceRuntimeControlSections({
+        runtimeConfig: { commands: [{ id: "web", name: "web", kind: "service", command: "pnpm dev" }] },
+        runtimeServices: [service],
+        canStartServices: true,
+      });
+      return buildWorkspaceServiceControlEntries({ sections, runtimeServices: [service] })[0];
+    };
+
+    const ready = buildEntry(createRuntimeService({
+      status: "running",
+      healthStatus: "healthy",
+      port: 42_010,
+      url: httpsUrl,
+      exposure: {
+        provider: "tailscale_https",
+        state: "ready",
+        publicUrl: httpsUrl,
+        hostname: "paperclip-dev.tail29c1aa.ts.net",
+        listeners: [
+          { purpose: "app", publicPort: 42_010, targetPort: 42_010 },
+          { purpose: "vite_hmr", publicPort: 52_010, targetPort: 52_010 },
+        ],
+        brokerRef: "service-1",
+        lastError: null,
+        updatedAt: "2026-08-12T00:00:00.000Z",
+      },
+    }));
+    expect(ready.state).toBe("running");
+    expect(ready.url).toBe(httpsUrl);
+    expect(ready.exposureState).toBe("ready");
+    // A ready exposure reports plainly and never as a remediation prompt.
+    expect(ready.exposureDetail).toBe("HTTPS ready");
+    expect(ready.exposureDetail).not.toMatch(/unavailable|cleanup|Check the/i);
+
+    const pending = buildEntry(createRuntimeService({
+      status: "running",
+      healthStatus: "healthy",
+      port: 42_020,
+      url: null,
+      exposure: {
+        provider: "tailscale_https",
+        state: "pending",
+        publicUrl: null,
+        hostname: "paperclip-dev.tail29c1aa.ts.net",
+        listeners: [],
+        brokerRef: null,
+        lastError: null,
+        updatedAt: "2026-08-12T00:00:00.000Z",
+      },
+    }));
+    expect(pending.url ?? null).toBeNull();
+    expect(pending.exposureDetail).toBe("Provisioning HTTPS…");
+    expect(JSON.stringify(pending)).not.toContain("http://");
   });
 });
 

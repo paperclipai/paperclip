@@ -818,9 +818,23 @@ export async function startServer(): Promise<StartedServer> {
 
   void reconcilePersistedRuntimeServicesOnStartup(db as any)
     .then((result) => {
-      if (result.reconciled > 0) {
+      if (
+        result.reconciled > 0
+        || result.restarted > 0
+        || result.restartFailed > 0
+        || result.backfilled > 0
+      ) {
         logger.warn(
-          { reconciled: result.reconciled },
+          {
+            reconciled: result.reconciled,
+            adopted: result.adopted,
+            stopped: result.stopped,
+            // Managed HTTP-only services taken down so they come back on a
+            // verified HTTPS origin (PAP-17158).
+            httpsBackfilled: result.backfilled,
+            restarted: result.restarted,
+            restartFailed: result.restartFailed,
+          },
           "reconciled persisted runtime services from a previous server process",
         );
       }

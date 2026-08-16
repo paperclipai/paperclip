@@ -981,6 +981,7 @@ function toRuntimeService(
     stoppedAt: row.stoppedAt ?? null,
     stopPolicy: (row.stopPolicy as Record<string, unknown> | null) ?? null,
     healthStatus: row.healthStatus as WorkspaceRuntimeService["healthStatus"],
+    exposure: (row.exposure as WorkspaceRuntimeService["exposure"]) ?? null,
     configIndex: row.configIndex ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -1059,6 +1060,7 @@ function toWorkspaceOverviewPrimaryService(
     url: service.url,
     port: service.port,
     healthStatus: service.healthStatus,
+    exposure: service.exposure ?? null,
     updatedAt: service.updatedAt,
   };
 }

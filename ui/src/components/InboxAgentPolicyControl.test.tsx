@@ -51,7 +51,7 @@ function policy(overrides: Partial<InboxAgentPolicy> = {}): InboxAgentPolicy {
     userId: "user-1",
     mode: "open",
     allowedAgentIds: [],
-    materialized: false,
+    materialized: true,
     createdAt: null,
     updatedAt: null,
     ...overrides,
@@ -122,6 +122,40 @@ describe("InboxAgentPolicyControl", () => {
       expect(optionByTitle(container, "Off")).toBeTruthy();
       expect(optionByTitle(container, "Off")?.getAttribute("aria-checked")).toBe("true");
       expect(optionByTitle(container, "Any of my agents")?.getAttribute("aria-checked")).toBe("false");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("enables saving an unmaterialized open policy and marks it unsaved until persistence", async () => {
+    mockInboxAgentPolicyApi.getMine.mockResolvedValue(policy({ materialized: false }));
+    const root = render(container);
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Not saved yet. Agents cannot manage your inbox until you save.");
+      const save = Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("Save"),
+      );
+      expect(save?.disabled).toBe(false);
+    });
+
+    const saveButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Save"),
+    );
+    expect(saveButton).toBeTruthy();
+    await act(async () => saveButton!.click());
+    await flush();
+
+    expect(mockInboxAgentPolicyApi.updateMine).toHaveBeenCalledWith("company-1", {
+      mode: "open",
+      allowedAgentIds: [],
+    });
+
+    await waitForAssertion(() => {
+      expect(container.textContent).not.toContain("Not saved yet");
+      expect(container.textContent).toContain("Saved");
+      expect(saveButton!.disabled).toBe(true);
     });
 
     act(() => root.unmount());

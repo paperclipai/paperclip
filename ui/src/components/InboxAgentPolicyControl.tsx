@@ -94,7 +94,10 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
   });
 
   const isDirty = Boolean(
-    draft && policy && policyKey(draft.mode, draft.allowedAgentIds) !== policyKey(policy.mode, policy.allowedAgentIds),
+    draft &&
+      policy &&
+      (!policy.materialized ||
+        policyKey(draft.mode, draft.allowedAgentIds) !== policyKey(policy.mode, policy.allowedAgentIds)),
   );
 
   if (policyQuery.error) {
@@ -105,7 +108,7 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
     );
   }
 
-  if (policyQuery.isLoading || !draft) {
+  if (policyQuery.isLoading || !policy || !draft) {
     return <div className="text-sm text-muted-foreground">Loading inbox agent policy…</div>;
   }
 
@@ -139,6 +142,12 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
         options={MODE_OPTIONS}
         className="max-w-2xl"
       />
+
+      {!policy.materialized ? (
+        <p className="max-w-2xl text-sm text-muted-foreground" role="status">
+          Not saved yet. Agents cannot manage your inbox until you save.
+        </p>
+      ) : null}
 
       {draft.mode === "allowlist" ? (
         <div className="max-w-2xl space-y-2 rounded-md border border-border p-3">
