@@ -912,8 +912,11 @@ export const issueClosedRequestConfirmationInteraction =
     id: "interaction-confirmation-issue-closed",
     title: "Expired: confirm the migration cutover",
     status: "expired",
-    resolvedAt: new Date("2026-04-20T15:12:00.000Z"),
-    updatedAt: new Date("2026-04-20T15:12:00.000Z"),
+    // Local, not UTC. The expiry footer renders this in the machine's timezone,
+    // and 15:12Z on the 20th is already the 21st at UTC+9, which breaks the
+    // "Apr 20" assertion in IssueThreadInteractionCard.test.tsx.
+    resolvedAt: new Date(2026, 3, 20, 15, 12, 0, 0),
+    updatedAt: new Date(2026, 3, 20, 15, 12, 0, 0),
     result: {
       version: 1,
       outcome: "issue_closed",
