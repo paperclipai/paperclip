@@ -101,6 +101,10 @@ describe("local service liveness probes", () => {
       const script = args.at(-1) ?? "";
       if (script.includes("Get-CimInstance")) return "sh -lc pnpm dev\r\n";
       expect(script).toContain("NtQueryInformationProcess");
+      expect(script).toContain("IsWow64Process");
+      expect(script).toContain("targetIsWow64");
+      expect(script).toContain("process, 26, out peb");
+      expect(script).toContain("var pointerSize = targetIsWow64");
       expect(script).toContain("[PaperclipProcessCwd]::Get(4242)");
       return "C:\\workspace\\paperclip\r\n";
     });
