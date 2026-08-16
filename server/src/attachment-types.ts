@@ -202,6 +202,22 @@ export function isAllowedContentType(contentType: string): boolean {
 export const MAX_ATTACHMENT_BYTES =
   Number(process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
 
+/**
+ * Full-body UTF-8 validation requires buffering the whole object into memory
+ * (see `isValidUtf8Buffer`). Reuse the upload-time size cap as the buffering
+ * cap too, so a textual attachment can never force more than `MAX_ATTACHMENT_BYTES`
+ * into memory on read - anything larger (or of unknown size) is served unlabeled
+ * instead of buffered, matching the pre-existing streaming behavior for binary content.
+ */
+export function canBufferForUtf8Validation(knownSizeBytes: number | null | undefined): boolean {
+  return (
+    typeof knownSizeBytes === "number" &&
+    Number.isFinite(knownSizeBytes) &&
+    knownSizeBytes >= 0 &&
+    knownSizeBytes <= MAX_ATTACHMENT_BYTES
+  );
+}
+
 export function normalizeIssueAttachmentMaxBytes(value: number | null | undefined): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     return Math.min(DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES, MAX_ATTACHMENT_BYTES);

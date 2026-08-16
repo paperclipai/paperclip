@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  canBufferForUtf8Validation,
   DEFAULT_ALLOWED_TYPES,
   INLINE_ATTACHMENT_TYPES,
   inferOfficeAttachmentContentTypeFromFilename,
@@ -7,6 +8,7 @@ import {
   isTextualAttachmentContentType,
   isValidUtf8Buffer,
   matchesContentType,
+  MAX_ATTACHMENT_BYTES,
   normalizeContentType,
   normalizeUploadAttachmentContentType,
   parseAllowedTypes,
@@ -293,5 +295,25 @@ describe("isValidUtf8Buffer", () => {
 
   it("treats an empty buffer as valid", () => {
     expect(isValidUtf8Buffer(Buffer.alloc(0))).toBe(true);
+  });
+});
+
+describe("canBufferForUtf8Validation", () => {
+  it("allows sizes at or below the attachment max-bytes cap", () => {
+    expect(canBufferForUtf8Validation(0)).toBe(true);
+    expect(canBufferForUtf8Validation(1024)).toBe(true);
+    expect(canBufferForUtf8Validation(MAX_ATTACHMENT_BYTES)).toBe(true);
+  });
+
+  it("rejects sizes above the attachment max-bytes cap", () => {
+    expect(canBufferForUtf8Validation(MAX_ATTACHMENT_BYTES + 1)).toBe(false);
+    expect(canBufferForUtf8Validation(MAX_ATTACHMENT_BYTES * 100)).toBe(false);
+  });
+
+  it("rejects unknown or invalid sizes so unbounded streams are never buffered", () => {
+    expect(canBufferForUtf8Validation(null)).toBe(false);
+    expect(canBufferForUtf8Validation(undefined)).toBe(false);
+    expect(canBufferForUtf8Validation(Number.NaN)).toBe(false);
+    expect(canBufferForUtf8Validation(-1)).toBe(false);
   });
 });

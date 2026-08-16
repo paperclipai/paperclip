@@ -386,4 +386,31 @@ describe("GET /api/assets/:assetId/content", () => {
     expect(res.headers["content-type"]).toBe("text/plain; charset=utf-8");
     expect(Buffer.compare(Buffer.from(res.body as Buffer), utf8Body)).toBe(0);
   });
+
+  it("streams a text asset larger than the attachment max-bytes cap unlabeled instead of buffering it", async () => {
+    // Valid ASCII/UTF-8 content, so the only reason this should stay unlabeled
+    // is that the known size exceeds the buffering cap and full-body UTF-8
+    // validation is skipped in favor of streaming.
+    const oversizedBody = Buffer.alloc(MAX_ATTACHMENT_BYTES + 1, "a");
+    const storage = createStorageService();
+    (storage.getObject as ReturnType<typeof vi.fn>).mockResolvedValue({
+      stream: Readable.from(oversizedBody),
+      contentType: "text/plain",
+      contentLength: oversizedBody.length,
+    });
+    getAssetByIdMock.mockResolvedValue({
+      ...createAsset(),
+      contentType: "text/plain",
+      byteSize: oversizedBody.length,
+    });
+
+    const app = await createApp(storage);
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get("/api/assets/asset-1/content").buffer(true).responseType("blob"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("text/plain");
+    expect(Buffer.compare(Buffer.from(res.body as Buffer), oversizedBody)).toBe(0);
+  });
 });

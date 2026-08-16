@@ -163,6 +163,7 @@ import {
 } from "./workspace-command-authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
+  canBufferForUtf8Validation,
   GENERIC_ATTACHMENT_CONTENT_TYPES,
   isInlineAttachmentContentType,
   isTextualAttachmentContentType,
@@ -12761,7 +12762,10 @@ export function issueRoutes(
     let bufferedBody: Buffer | null = null;
     let responseHeaderContentType = responseContentType;
     if (isTextualAttachmentContentType(responseContentType)) {
-      if (range.kind === "range") {
+      if (range.kind === "range" || !canBufferForUtf8Validation(contentLength ?? object.contentLength)) {
+        // A range request only sees a slice of the bytes, which can't be validated
+        // reliably. An attachment too large (or of unknown size) to safely buffer
+        // for UTF-8 validation is streamed unlabeled instead, same as binary content.
         responseHeaderContentType = withUtf8CharsetIfTextual(responseContentType, { validatedUtf8: false });
       } else {
         try {

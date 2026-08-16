@@ -7,6 +7,7 @@ import { createAssetImageMetadataSchema } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
 import {
+  canBufferForUtf8Validation,
   isAllowedContentType,
   isTextualAttachmentContentType,
   isValidUtf8Buffer,
@@ -330,7 +331,10 @@ export function assetRoutes(db: Db, storage: StorageService) {
     // confirmed to actually be valid UTF-8.
     let bufferedBody: Buffer | null = null;
     let responseHeaderContentType = responseContentType;
-    if (isTextualAttachmentContentType(responseContentType)) {
+    if (
+      isTextualAttachmentContentType(responseContentType) &&
+      canBufferForUtf8Validation(asset.byteSize ?? object.contentLength)
+    ) {
       try {
         const chunks: Buffer[] = [];
         for await (const chunk of object.stream) {
@@ -345,7 +349,9 @@ export function assetRoutes(db: Db, storage: StorageService) {
         validatedUtf8: isValidUtf8Buffer(bufferedBody),
       });
     } else {
-      responseHeaderContentType = withUtf8CharsetIfTextual(responseContentType);
+      // Textual content too large (or of unknown size) to safely buffer for
+      // UTF-8 validation is streamed unlabeled instead, same as binary content.
+      responseHeaderContentType = withUtf8CharsetIfTextual(responseContentType, { validatedUtf8: false });
     }
 
     res.setHeader("Content-Type", responseHeaderContentType);
