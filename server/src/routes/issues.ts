@@ -2,10 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, like, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   approvals,
   companyMemberships,
@@ -88,6 +89,8 @@ import {
   type IssueWakeDiagnosticWakeFailureClass,
   type IssueWakeDiagnosticWakeRequest,
   type IssueWakeDiagnosticsResponse,
+  type IssueFeedbackDeliveryRetryResponse,
+  type IssueCommentMetadata,
   type IssueRelationIssueSummary,
   type IssueReviewPolicy,
   type IssueThreadInteractionCanonicalResolverPolicy,
@@ -104,6 +107,18 @@ import {
   type IssueWriteDenialContext,
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
+import {
+  buildFeedbackDeliveryManualRetryIdempotencyKey,
+  FEEDBACK_DELIVERY_MAX_AUTOMATIC_RETRIES,
+  FEEDBACK_DELIVERY_RECOVERY_ACTION_KIND,
+  FEEDBACK_DELIVERY_RECOVERY_CAUSE,
+  FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
+  FEEDBACK_DELIVERY_WAKE_COMMENT_IDS_KEY,
+  nextFeedbackDeliveryManualRetryAttempt,
+  remainingFeedbackDispositionCommentIds,
+  readFeedbackDeliveryRunContext,
+} from "../services/recovery/feedback-delivery.js";
+import { evaluateAgentInvokabilityFromDb } from "../services/agent-invokability.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { isUniqueViolation } from "../db-errors.js";
 import type { StorageService } from "../storage/types.js";
@@ -2756,6 +2771,15 @@ export function issueRoutes(
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
+  const feedbackDeliveryStateFactory = Object.prototype.hasOwnProperty.call(
+    serviceIndex,
+    "feedbackDeliveryCommentStateService",
+  )
+    ? serviceIndex.feedbackDeliveryCommentStateService
+    : undefined;
+  const feedbackDeliveryStatesSvc = feedbackDeliveryStateFactory?.(db) ?? {
+    listForIssue: async () => new Map(),
+  };
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
@@ -4958,6 +4982,74 @@ export function issueRoutes(
       },
     });
     return false;
+  }
+
+  async function resolveFeedbackDispositionMetadata(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string },
+  ): Promise<{ ok: true; metadata: IssueCommentMetadata | null } | { ok: false }> {
+    const requested = req.body.feedbackDisposition as { handledCommentIds: string[] } | undefined;
+    if (!requested) return { ok: true, metadata: null };
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.runId) {
+      res.status(403).json({ error: "Feedback dispositions require an authenticated agent run" });
+      return { ok: false };
+    }
+    const actorAgentId = req.actor.agentId;
+    const actorRunId = req.actor.runId;
+
+    const run = await db
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+        scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+      })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.id, actorRunId),
+        eq(heartbeatRuns.companyId, issue.companyId),
+        eq(heartbeatRuns.agentId, actorAgentId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    const delivery = run ? readFeedbackDeliveryRunContext({ companyId: issue.companyId, run }) : null;
+    if (!delivery || delivery.issueId !== issue.id) {
+      res.status(422).json({ error: "The current run is not a feedback-delivery run for this issue" });
+      return { ok: false };
+    }
+
+    const handledCommentIds = [...new Set(requested.handledCommentIds)];
+    if (remainingFeedbackDispositionCommentIds({
+      deliveryCommentIds: delivery.commentIds,
+      handledCommentIds,
+    }) === null) {
+      res.status(422).json({
+        error: "Feedback disposition must cover at least one comment in the current run's feedback batch and no others",
+      });
+      return { ok: false };
+    }
+
+    return {
+      ok: true,
+      metadata: {
+        version: 1,
+        feedbackDisposition: {
+          kind: "feedback_delivery",
+          rootWakeupRequestId: delivery.rootWakeupRequestId,
+          handledCommentIds,
+        },
+        sections: [{
+          title: "Feedback disposition",
+          rows: [
+            { type: "key_value", label: "Root wake", value: delivery.rootWakeupRequestId },
+            { type: "key_value", label: "Handled comments", value: handledCommentIds.join(", ") },
+          ],
+        }],
+      },
+    };
   }
 
   async function assertExplicitResumeIntentAllowed(
@@ -10763,7 +10855,202 @@ export function issueRoutes(
       order,
       limit,
     });
-    res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, comments));
+    // Operator surfaces only: an agent reading its own thread has no delivery
+    // banner to act on, and the run reference stays gated behind the same
+    // board/user authority that guards run detail.
+    const isOperatorViewer = req.actor.type !== "agent";
+    const feedbackDeliveryByComment = await feedbackDeliveryStatesSvc.listForIssue({
+      companyId: issue.companyId,
+      issueId: issue.id,
+      viewerCanRetry: isOperatorViewer,
+      viewerCanReadRuns: isOperatorViewer,
+    });
+    const withFeedbackDelivery = feedbackDeliveryByComment.size === 0
+      ? comments
+      : comments.map((comment) => {
+        const feedbackDelivery = feedbackDeliveryByComment.get(comment.id) ?? null;
+        return feedbackDelivery ? { ...comment, feedbackDelivery } : comment;
+      });
+    res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, withFeedbackDelivery));
+  });
+
+  /**
+   * Explicit operator "Retry delivery" for a human comment whose automatic
+   * replay budget is exhausted. Board-only: this is the operator escape hatch
+   * from the exhausted-needs-attention state, not an agent-callable API.
+   *
+   * The recovery action stays open. It is discharged by the normal
+   * revalidation path once the replay actually produces a disposition, which is
+   * what turns the banner into the recovered notice — a retry request alone must
+   * not clear the attention item.
+   */
+  router.post("/issues/:id/feedback-delivery/retry", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
+
+    const actor = getActorInfo(req);
+    const readStates = () =>
+      feedbackDeliveryStatesSvc.listForIssue({
+        companyId: issue.companyId,
+        issueId: issue.id,
+        viewerCanRetry: true,
+        viewerCanReadRuns: true,
+      });
+
+    const activeAction = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id);
+    const isFeedbackDeliveryAction =
+      activeAction?.kind === FEEDBACK_DELIVERY_RECOVERY_ACTION_KIND
+      && activeAction.cause === FEEDBACK_DELIVERY_RECOVERY_CAUSE;
+    if (!activeAction || !isFeedbackDeliveryAction) {
+      const states = await readStates();
+      res.json({
+        outcome: "not_exhausted",
+        reason: null,
+        message: "This task has no exhausted feedback delivery to retry.",
+        feedbackDelivery: states.values().next().value ?? null,
+      } satisfies IssueFeedbackDeliveryRetryResponse);
+      return;
+    }
+
+    const evidence = (typeof activeAction.evidence === "object" && activeAction.evidence !== null
+      ? activeAction.evidence
+      : {}) as Record<string, unknown>;
+    const rootWakeupRequestId = typeof evidence.rootWakeupRequestId === "string"
+      ? evidence.rootWakeupRequestId
+      : null;
+    const outstandingCommentIds = Array.isArray(evidence.outstandingCommentIds)
+      ? evidence.outstandingCommentIds.filter((entry): entry is string => typeof entry === "string")
+      : [];
+    // The original assignee owns the feedback: hand the replay back to it rather
+    // than to whichever manager the recovery ladder parked the action on.
+    const targetAgentId = activeAction.returnOwnerAgentId
+      ?? activeAction.previousOwnerAgentId
+      ?? issue.assigneeAgentId;
+    if (!targetAgentId || !rootWakeupRequestId) {
+      res.json({
+        outcome: "no_invokable_assignee",
+        reason: "missing",
+        message: "This delivery has no agent to retry against. Reassign the task first.",
+        feedbackDelivery: (await readStates()).get(outstandingCommentIds[0] ?? "") ?? null,
+      } satisfies IssueFeedbackDeliveryRetryResponse);
+      return;
+    }
+
+    const targetAgent = await db
+      .select({
+        id: agents.id,
+        companyId: agents.companyId,
+        name: agents.name,
+        reportsTo: agents.reportsTo,
+        status: agents.status,
+      })
+      .from(agents)
+      .where(and(eq(agents.id, targetAgentId), eq(agents.companyId, issue.companyId)))
+      .then((rows) => rows[0] ?? null);
+    const invokability = await evaluateAgentInvokabilityFromDb(db, targetAgent);
+    if (!invokability.invokable) {
+      const message = invokability.reason === "paused"
+        ? "This delivery's agent is paused. Unpause the agent before retrying."
+        : invokability.reason === "pending_approval"
+          ? "This delivery's agent is waiting for approval. Approve or reassign the agent before retrying."
+          : "This delivery has no invokable agent to retry against. Reassign the task first.";
+      res.json({
+        outcome: "no_invokable_assignee",
+        reason: invokability.reason,
+        message,
+        feedbackDelivery: (await readStates()).get(outstandingCommentIds[0] ?? "") ?? null,
+      } satisfies IssueFeedbackDeliveryRetryResponse);
+      return;
+    }
+
+    const statesBefore = await readStates();
+    const alreadyInFlight = outstandingCommentIds.some(
+      (commentId) => statesBefore.get(commentId)?.retryInFlight === true,
+    );
+    if (alreadyInFlight) {
+      res.json({
+        outcome: "already_queued",
+        reason: null,
+        message: "A delivery retry is already queued.",
+        feedbackDelivery: statesBefore.get(outstandingCommentIds[0] ?? "") ?? null,
+      } satisfies IssueFeedbackDeliveryRetryResponse);
+      return;
+    }
+
+    const latestCommentId = outstandingCommentIds.at(-1) ?? null;
+    const manualRetryKeyPrefix = `${activeAction.fingerprint}:manual:`;
+    const priorManualRetryKeys = await db
+      .select({ idempotencyKey: agentWakeupRequests.idempotencyKey })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, issue.companyId),
+        like(agentWakeupRequests.idempotencyKey, `${manualRetryKeyPrefix}%`),
+      ));
+    const manualRetryAttempt = nextFeedbackDeliveryManualRetryAttempt({
+      fingerprint: activeAction.fingerprint,
+      existingIdempotencyKeys: priorManualRetryKeys.map((row) => row.idempotencyKey),
+    });
+    const deliveryContext = {
+      issueId: issue.id,
+      taskId: issue.id,
+      feedbackDeliveryRootWakeupRequestId: rootWakeupRequestId,
+      feedbackDeliveryRetryGeneration: FEEDBACK_DELIVERY_MAX_AUTOMATIC_RETRIES,
+      feedbackDeliveryOperatorRequested: true,
+      [FEEDBACK_DELIVERY_WAKE_COMMENT_IDS_KEY]: outstandingCommentIds,
+      ...(latestCommentId ? { commentId: latestCommentId, wakeCommentId: latestCommentId } : {}),
+    };
+    await heartbeat.wakeup(targetAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
+      payload: deliveryContext,
+      idempotencyKey: buildFeedbackDeliveryManualRetryIdempotencyKey({
+        fingerprint: activeAction.fingerprint,
+        attempt: manualRetryAttempt,
+      }),
+      requestedByActorType: actor.actorType === "user" ? "user" : "system",
+      requestedByActorId: actor.actorId,
+      contextSnapshot: {
+        ...deliveryContext,
+        wakeReason: FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
+        source: "issue.operator_feedback_delivery_retry",
+        instruction:
+          "An operator asked Paperclip to deliver human feedback on this task again. Handle the outstanding "
+          + "comment(s) now and record a valid disposition.",
+      },
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: targetAgentId,
+      action: "issue.feedback_delivery_retry_requested",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        recoveryActionId: activeAction.id,
+        rootWakeupRequestId,
+        sourceCommentIds: outstandingCommentIds,
+        attempt: (activeAction.attemptCount ?? 0) + 1,
+      },
+    });
+
+    const statesAfter = await readStates();
+    const projected = latestCommentId ? statesAfter.get(latestCommentId) ?? null : null;
+    res.json({
+      outcome: "queued",
+      reason: null,
+      message: "Retrying feedback delivery.",
+      // Deferred behind a live run still reads as in-flight to the operator, so
+      // fall back to a synthetic in-flight projection rather than reporting a
+      // state that would re-enable the button it just disabled.
+      feedbackDelivery: projected
+        ? { ...projected, retryInFlight: true, canRetry: false }
+        : null,
+    } satisfies IssueFeedbackDeliveryRetryResponse);
   });
 
   router.get("/issues/:id/interactions", async (req, res) => {
@@ -11634,6 +11921,8 @@ export function issueRoutes(
       presentation: req.body.presentation,
       metadata: req.body.metadata,
     })) return;
+    const feedbackDisposition = await resolveFeedbackDispositionMetadata(req, res, issue);
+    if (!feedbackDisposition.ok) return;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
 
     const actor = getActorInfo(req);
@@ -11897,7 +12186,7 @@ export function issueRoutes(
       const commentOptions = {
         authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
         presentation: commentPresentation,
-        metadata: req.body.metadata ?? null,
+        metadata: req.body.metadata ?? feedbackDisposition.metadata,
         sourceTrust,
       };
       let txResult: { comment: Awaited<ReturnType<typeof svc.addComment>>; issue: NonNullable<Awaited<ReturnType<typeof svc.update>>> };
@@ -11988,7 +12277,7 @@ export function issueRoutes(
       }, {
         authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
         presentation: commentPresentation,
-        metadata: req.body.metadata ?? null,
+        metadata: req.body.metadata ?? feedbackDisposition.metadata,
         authorizationReason: commentAuthorizationReason,
         sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
       });

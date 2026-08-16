@@ -1255,6 +1255,54 @@ describeEmbeddedPostgres("attention service", () => {
     expect(items[0]).toMatchObject({ sourceKind: "blocker_attention", whyNow: "Approve the exception" });
   });
 
+  it("surfaces an agent-owned exhausted feedback delivery, deep-linked to the comment banner", async () => {
+    const { companyId, workerId } = await seedCompany("ATF");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "ATF-1",
+      title: "Feedback never landed",
+      status: "in_review",
+      assigneeAgentId: workerId,
+    });
+    await db.insert(issueRecoveryActions).values({
+      id: randomUUID(),
+      companyId,
+      sourceIssueId: issueId,
+      kind: "feedback_delivery",
+      status: "active",
+      // Agent-owned: the wake policy is manual_repair_required, so no agent will
+      // ever act on it. Without the operator row this is invisible from the inbox.
+      ownerType: "agent",
+      ownerAgentId: workerId,
+      ownerUserId: null,
+      cause: "feedback_delivery_exhausted",
+      fingerprint: `feedback_delivery:${companyId}:${issueId}:${workerId}:root-wake-1`,
+      evidence: { outstandingCommentIds: ["comment-a", "comment-b"] },
+      nextAction: "Handle the outstanding human feedback comment(s).",
+      createdAt: new Date("2026-07-23T18:30:00.000Z"),
+      updatedAt: new Date("2026-07-23T18:30:00.000Z"),
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const items = feed.items.filter((item) => item.sourceKind === "recovery_action");
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.subject.title).toBe("Feedback delivery needs attention");
+    expect(items[0]?.whyNow).toContain("Paperclip stopped retrying");
+    const detail = items[0]?.detail;
+    const summaryExcerpt = detail && "summaryExcerpt" in detail ? detail.summaryExcerpt : null;
+    expect(summaryExcerpt).toContain("The agent may not have received your comment.");
+    // One row per feedback batch, with the rollup stated rather than split into
+    // an inbox entry per comment.
+    expect(summaryExcerpt).toContain("Covers 2 comments.");
+    expect(items[0]?.subject.href).toContain("#feedback-delivery-comment-a");
+    expect(items[0]?.subject.metadata).toMatchObject({
+      sourceLabel: "Feedback delivery",
+      sourceCommentId: "comment-a",
+      outstandingCommentCount: 2,
+    });
+  });
+
   it("keeps legacy blocker attention visible for pre-rollout blocked issues", async () => {
     const { companyId } = await seedCompany("ATP");
     const issueId = await insertIssue({

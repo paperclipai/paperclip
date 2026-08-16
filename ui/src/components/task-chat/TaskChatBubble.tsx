@@ -6,6 +6,11 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { AgentIcon } from "@/components/AgentIconPicker";
 import { CommentAttributionChip } from "@/components/CommentAttributionChip";
 import {
+  FeedbackDeliveryFooterStatus,
+  FeedbackDeliveryNotice,
+  useFeedbackDeliveryTransientSuccess,
+} from "@/components/FeedbackDeliveryState";
+import {
   Attachment,
   AttachmentContent,
   AttachmentDescription,
@@ -36,6 +41,10 @@ interface TaskChatBubbleProps {
    * so this bubble skips them. Human/system bubbles pass nothing.
    */
   actions?: ReactNode;
+  onRetryFeedbackDelivery?: (commentId: string) => Promise<void> | void;
+  retryingFeedbackDeliveryCommentId?: string | null;
+  failedFeedbackDeliveryRetryCommentId?: string | null;
+  feedbackDeliveryRetryErrorMessage?: string | null;
 }
 
 function initialsForName(name: string) {
@@ -63,10 +72,20 @@ function galleryItemForImage(src: string, name?: string): GalleryMediaItem {
   };
 }
 
-export function TaskChatBubble({ item, queuedAction, attachedTurn, actions }: TaskChatBubbleProps) {
+export function TaskChatBubble({
+  item,
+  queuedAction,
+  attachedTurn,
+  actions,
+  onRetryFeedbackDelivery,
+  retryingFeedbackDeliveryCommentId,
+  failedFeedbackDeliveryRetryCommentId,
+  feedbackDeliveryRetryErrorMessage,
+}: TaskChatBubbleProps) {
   // Clicking an embedded image opens the full-screen lightbox (with download);
   // arrow keys walk across the other images in the same bubble.
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  const showTransientDeliverySuccess = useFeedbackDeliveryTransientSuccess(item.feedbackDelivery);
   if (item.interstitial) {
     // Interstitial updates are ephemeral (PAP-361): while streaming the text
     // lives on the live parent row's line (TaskChatStatusItem.selfTalk), and
@@ -202,6 +221,26 @@ export function TaskChatBubble({ item, queuedAction, attachedTurn, actions }: Ta
         <span className="px-1 text-(length:--text-micro) text-muted-foreground">
           {item.timestamp}
         </span>
+      ) : null}
+      <FeedbackDeliveryFooterStatus
+        delivery={item.feedbackDelivery}
+        showTransientSuccess={showTransientDeliverySuccess}
+        align={isHuman ? "end" : "start"}
+      />
+      {item.feedbackDelivery ? (
+        <FeedbackDeliveryNotice
+          className="mt-1"
+          delivery={item.feedbackDelivery}
+          onRetry={onRetryFeedbackDelivery}
+          retryPending={
+            retryingFeedbackDeliveryCommentId === item.feedbackDelivery.sourceCommentId
+          }
+          retryError={
+            failedFeedbackDeliveryRetryCommentId === item.feedbackDelivery.sourceCommentId
+              ? feedbackDeliveryRetryErrorMessage ?? true
+              : false
+          }
+        />
       ) : null}
       {lightboxSrc !== null && lightboxIndex >= 0 ? (
         <ImageGalleryModal

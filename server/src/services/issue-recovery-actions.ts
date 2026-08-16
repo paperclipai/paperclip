@@ -16,6 +16,17 @@ type IssueRecoveryActionRow = typeof issueRecoveryActions.$inferSelect;
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type DbOrTransaction = Db | DbTransaction;
 
+/**
+ * Recovery evidence is returned on company-visible issue APIs, so raw adapter
+ * failure text must never cross this service boundary. Keep the exact denylist
+ * here as defense in depth for rows written before the producer was fixed.
+ */
+function sanitizeEvidence(evidence: Record<string, unknown>): Record<string, unknown> {
+  const sanitized = { ...evidence };
+  delete sanitized.lastFailureReason;
+  return sanitized;
+}
+
 export type UpsertIssueRecoveryActionInput = {
   companyId: string;
   sourceIssueId: string;
@@ -64,7 +75,7 @@ function toReadModel(row: IssueRecoveryActionRow): IssueRecoveryAction {
     returnOwnerAgentId: row.returnOwnerAgentId,
     cause: row.cause,
     fingerprint: row.fingerprint,
-    evidence: row.evidence,
+    evidence: sanitizeEvidence(row.evidence),
     nextAction: row.nextAction,
     wakePolicy: row.wakePolicy,
     monitorPolicy: row.monitorPolicy,
@@ -195,7 +206,7 @@ export function issueRecoveryActionService(db: Db) {
           returnOwnerAgentId: input.returnOwnerAgentId ?? existing.returnOwnerAgentId,
           cause: input.cause,
           fingerprint: input.fingerprint,
-          evidence: input.evidence ?? existing.evidence,
+          evidence: sanitizeEvidence(input.evidence ?? existing.evidence),
           nextAction: input.nextAction,
           wakePolicy: input.wakePolicy ?? null,
           monitorPolicy: input.monitorPolicy ?? null,
@@ -237,7 +248,7 @@ export function issueRecoveryActionService(db: Db) {
           returnOwnerAgentId: input.returnOwnerAgentId ?? null,
           cause: input.cause,
           fingerprint: input.fingerprint,
-          evidence: input.evidence ?? {},
+          evidence: sanitizeEvidence(input.evidence ?? {}),
           nextAction: input.nextAction,
           wakePolicy: input.wakePolicy ?? null,
           monitorPolicy: input.monitorPolicy ?? null,

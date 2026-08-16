@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -50,6 +50,7 @@ import type {
 } from "@paperclipai/shared";
 import { badRequest } from "../errors.js";
 import { PRODUCTIVITY_REVIEW_ORIGIN_KIND } from "./productivity-review.js";
+import { FEEDBACK_DELIVERY_RECOVERY_ACTION_KIND } from "./recovery/feedback-delivery.js";
 import { budgetService } from "./budgets.js";
 import {
   BLOCKER_ATTENTION_MAX_DEPTH,
@@ -106,6 +107,49 @@ const PENDING_INTERACTION_STATUSES = ["pending"] as const;
 const OPEN_RECOVERY_STATUSES = ["active", "escalated"] as const;
 const HUMAN_RECOVERY_OWNER_TYPES = ["user", "board"] as const;
 const PRODUCTIVITY_REVIEW_TERMINAL_STATUSES = ["done", "cancelled"] as const;
+
+/**
+ * Operator-facing copy for an exhausted feedback delivery. Plain language on
+ * purpose: "wake request", "adapter", and transport codes are meaningless to
+ * the person who just wrote a comment and is waiting for an answer.
+ */
+const FEEDBACK_DELIVERY_ATTENTION_SOURCE_LABEL = "Feedback delivery";
+const FEEDBACK_DELIVERY_ATTENTION_TITLE = "Feedback delivery needs attention";
+const FEEDBACK_DELIVERY_ATTENTION_DETAIL = "The agent may not have received your comment.";
+const FEEDBACK_DELIVERY_ATTENTION_WHY_NOW =
+  "Paperclip stopped retrying delivery of a human comment on this task.";
+
+/**
+ * Shapes the attention row for an exhausted feedback delivery.
+ *
+ * One row per feedback batch (the recovery action's fingerprint), deep-linked to
+ * the banner anchor of the first outstanding comment. A batched wake can cover
+ * several comments; they stay individually actionable in the thread while the
+ * queue keeps one entry, so a single lost wake cannot flood the inbox.
+ */
+function readFeedbackDeliveryAttentionRow(
+  recovery: { evidence: unknown },
+  sourceIssueHref: string | null,
+) {
+  const evidence = typeof recovery.evidence === "object" && recovery.evidence !== null
+    ? (recovery.evidence as Record<string, unknown>)
+    : {};
+  const commentIds = Array.isArray(evidence.outstandingCommentIds)
+    ? evidence.outstandingCommentIds.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  const sourceCommentId = commentIds[0] ?? null;
+  return {
+    title: FEEDBACK_DELIVERY_ATTENTION_TITLE,
+    detail: commentIds.length > 1
+      ? `${FEEDBACK_DELIVERY_ATTENTION_DETAIL} Covers ${commentIds.length} comments.`
+      : FEEDBACK_DELIVERY_ATTENTION_DETAIL,
+    sourceCommentId,
+    outstandingCommentCount: commentIds.length,
+    href: sourceIssueHref && sourceCommentId
+      ? `${sourceIssueHref}#feedback-delivery-${sourceCommentId}`
+      : sourceIssueHref,
+  };
+}
 const FAILED_RUN_STATUSES = ["failed", "timed_out"] as const;
 const DETAIL_EXCERPT_LENGTH = 160;
 const DETAIL_IMAGE_LIMIT = 3;
@@ -1391,7 +1435,15 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         .where(and(
           eq(issueRecoveryActions.companyId, companyId),
           inArray(issueRecoveryActions.status, [...OPEN_RECOVERY_STATUSES]),
-          inArray(issueRecoveryActions.ownerType, [...HUMAN_RECOVERY_OWNER_TYPES]),
+          or(
+            inArray(issueRecoveryActions.ownerType, [...HUMAN_RECOVERY_OWNER_TYPES]),
+            // An exhausted feedback delivery carries a `manual_repair_required`
+            // wake policy, so no agent owner will ever act on it even when the
+            // action is nominally agent-owned. Without this the only surface is
+            // the task thread, and an operator cannot find the task from the
+            // inbox at all.
+            eq(issueRecoveryActions.kind, FEEDBACK_DELIVERY_RECOVERY_ACTION_KIND),
+          ),
         ))
         .orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id));
       const [recoveryIssueMap, recoveryImageMap] = await Promise.all([
@@ -1407,6 +1459,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         const sourceIssue = recoveryIssueMap.get(recovery.sourceIssueId) ?? null;
         const recoveryIssue = recovery.recoveryIssueId ? recoveryIssueMap.get(recovery.recoveryIssueId) ?? null : null;
         const dedupKey = `recovery:${recovery.kind}:${recovery.sourceIssueId}:${recovery.cause}:${recovery.fingerprint}`;
+        const feedbackDelivery = recovery.kind === FEEDBACK_DELIVERY_RECOVERY_ACTION_KIND
+          ? readFeedbackDeliveryAttentionRow(recovery, sourceIssue ? issueHref(prefix, sourceIssue) : null)
+          : null;
         add(createItem({
           companyId,
           sourceKind: "recovery_action",
@@ -1414,10 +1469,12 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             kind: "recovery_action",
             id: recovery.id,
             companyId,
-            title: recovery.nextAction,
+            title: feedbackDelivery?.title ?? recovery.nextAction,
             identifier: null,
             status: recovery.status,
-            href: recoveryIssue ? issueHref(prefix, recoveryIssue) : sourceIssue ? issueHref(prefix, sourceIssue) : null,
+            href: feedbackDelivery
+              ? feedbackDelivery.href
+              : recoveryIssue ? issueHref(prefix, recoveryIssue) : sourceIssue ? issueHref(prefix, sourceIssue) : null,
             metadata: {
               kind: recovery.kind,
               cause: recovery.cause,
@@ -1425,9 +1482,18 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
               ownerUserId: recovery.ownerUserId,
               sourceIssueId: recovery.sourceIssueId,
               recoveryIssueId: recovery.recoveryIssueId,
+              ...(feedbackDelivery
+                ? {
+                  sourceLabel: FEEDBACK_DELIVERY_ATTENTION_SOURCE_LABEL,
+                  sourceCommentId: feedbackDelivery.sourceCommentId,
+                  outstandingCommentCount: feedbackDelivery.outstandingCommentCount,
+                }
+                : {}),
             },
           },
-          whyNow: recovery.status === "escalated"
+          whyNow: feedbackDelivery
+            ? FEEDBACK_DELIVERY_ATTENTION_WHY_NOW
+            : recovery.status === "escalated"
             ? "Recovery action escalated to a human owner."
             : "Recovery action is assigned to a human owner.",
           decisionVerbs: decisionVerbs(
@@ -1445,7 +1511,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           updatedAt: toIso(recovery.updatedAt),
           relatedIssue: sourceIssue ? issueSubject(prefix, sourceIssue) : null,
           ...issueContext(sourceIssue),
-          detail: genericDetail(recovery.nextAction, issueImages(recoveryImageMap, recovery.sourceIssueId)),
+          detail: genericDetail(
+            feedbackDelivery?.detail ?? recovery.nextAction,
+            issueImages(recoveryImageMap, recovery.sourceIssueId),
+          ),
         }));
       }
 

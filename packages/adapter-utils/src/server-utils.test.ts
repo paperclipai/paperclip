@@ -1115,6 +1115,7 @@ describe("renderPaperclipWakePrompt", () => {
     expect(commentPrompt).toContain("Only fetch the API thread");
     expect(commentPrompt).toContain("- pending comments: 1/1");
     expect(commentPrompt).toContain("- latest comment id: comment-1");
+    expect(commentPrompt).toContain("`feedbackDisposition.handledCommentIds`");
 
     const fallbackPrompt = renderPaperclipWakePrompt({ ...base, fallbackFetchNeeded: true });
     expect(fallbackPrompt).toContain("Only fetch the API thread");

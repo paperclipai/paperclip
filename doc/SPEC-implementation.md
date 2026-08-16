@@ -598,6 +598,13 @@ Every issue PATCH emits an `issue.updated` activity receipt containing the
 actor, responsible user, run, authorization reason, and field-level before/after
 changes so both agent and board edits are visible in the issue activity stream.
 
+Local-agent run JWTs are valid only while their exact persisted heartbeat run is
+`running` and has no completion timestamp. The server revalidates that lifecycle
+state on every authenticated request. Moving the run to any terminal status
+revokes the run JWT immediately; there is no post-terminal grace window for
+agent API reads or writes. Server-owned finalization and recovery bookkeeping
+uses internal authority rather than the terminated run's credential.
+
 ## 9.4 Permission Terminology and Default Visibility Rule
 
 Paperclip V1 keeps a company-scoped visibility model as the default because centralized authorization and scoped work-object controls are not yet a core V1 control surface.

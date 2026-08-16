@@ -425,6 +425,9 @@ function withAgentCommentAuthorizationMetadata(
   return {
     version: 1,
     ...(metadata?.sourceRunId !== undefined ? { sourceRunId: metadata.sourceRunId } : {}),
+    ...(metadata?.feedbackDisposition !== undefined
+      ? { feedbackDisposition: metadata.feedbackDisposition }
+      : {}),
     authorizationReason: reason,
     sections: metadata?.sections.length
       ? metadata.sections

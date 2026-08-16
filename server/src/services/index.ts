@@ -49,6 +49,7 @@ export { issueTreeControlService } from "./issue-tree-control.js";
 export { issueApprovalService } from "./issue-approvals.js";
 export { issueReferenceService } from "./issue-references.js";
 export { issueRecoveryActionService } from "./issue-recovery-actions.js";
+export { feedbackDeliveryCommentStateService } from "./feedback-delivery-comment-states.js";
 export {
   stalledReviewDecisionService,
   type DecideStalledReviewInput,

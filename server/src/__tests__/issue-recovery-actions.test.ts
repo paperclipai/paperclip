@@ -66,6 +66,79 @@ function makeRecoveryActionRow(overrides: Record<string, unknown> = {}) {
 }
 
 describe("issueRecoveryActionService", () => {
+  it("redacts raw failure text from existing recovery-action rows", async () => {
+    const existingRow = makeRecoveryActionRow({
+      evidence: {
+        sourceRunId: "run-1",
+        lastFailureReason: "Error: ECONNREFUSED /home/agent/.secret/token.json",
+      },
+    });
+    const fakeDb = {
+      select: vi.fn(() => ({
+        from() {
+          return this;
+        },
+        where() {
+          return this;
+        },
+        orderBy() {
+          return this;
+        },
+        limit: vi.fn(async () => [existingRow]),
+      })),
+    };
+
+    const result = await issueRecoveryActionService(fakeDb as never).getActiveForIssue(
+      "company-1",
+      "source-1",
+    );
+
+    expect(result?.evidence).toEqual({ sourceRunId: "run-1" });
+  });
+
+  it("does not persist raw failure text in new recovery actions", async () => {
+    let insertedValues: Record<string, unknown> | null = null;
+    const fakeDb = {
+      select: vi.fn(() => ({
+        from() {
+          return this;
+        },
+        where() {
+          return this;
+        },
+        orderBy() {
+          return this;
+        },
+        limit: vi.fn(async () => []),
+      })),
+      insert: vi.fn(() => ({
+        values: vi.fn((values: Record<string, unknown>) => {
+          insertedValues = values;
+          return {
+            returning: vi.fn(async () => [makeRecoveryActionRow({ evidence: values.evidence })]),
+          };
+        }),
+      })),
+    };
+
+    const result = await issueRecoveryActionService(fakeDb as never).upsertSourceScoped({
+      companyId: "company-1",
+      sourceIssueId: "source-1",
+      kind: "missing_disposition",
+      ownerAgentId: "agent-1",
+      cause: "successful_run_missing_issue_disposition",
+      fingerprint: "missing-disposition:fingerprint",
+      evidence: {
+        sourceRunId: "run-1",
+        lastFailureReason: "Process lost -- child pid 3026905 is no longer running",
+      },
+      nextAction: "Choose a valid issue disposition.",
+    });
+
+    expect(insertedValues).toMatchObject({ evidence: { sourceRunId: "run-1" } });
+    expect(result.evidence).toEqual({ sourceRunId: "run-1" });
+  });
+
   it("does not reactivate an action resolved between the active read and update", async () => {
     const existingRow = makeRecoveryActionRow({ id: "existing-action", attemptCount: 1 });
     const createdRow = makeRecoveryActionRow({ id: "new-action", attemptCount: 1 });
@@ -1287,10 +1360,30 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       ownerAgentId: managerId,
       cause: "successful_run_missing_issue_disposition",
       fingerprint: "missing-disposition:fingerprint",
-      evidence: { sourceRunId: "run-1" },
+      evidence: {
+        sourceRunId: "run-1",
+        lastFailureReason: "Error: ECONNREFUSED /home/agent/.secret/token.json",
+      },
       nextAction: "Choose a valid issue disposition.",
       wakePolicy: { type: "wake_owner" },
     });
+    const [storedAction] = await db
+      .select({ evidence: issueRecoveryActions.evidence })
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(storedAction?.evidence).toEqual({ sourceRunId: "run-1" });
+
+    // Emulate an action persisted before storage sanitization shipped. Every
+    // recovery-action read model must still remove the raw failure text.
+    await db
+      .update(issueRecoveryActions)
+      .set({
+        evidence: {
+          sourceRunId: "run-1",
+          lastFailureReason: "Process lost -- child pid 3026905 is no longer running; retrying once",
+        },
+      })
+      .where(eq(issueRecoveryActions.id, action.id));
     const app = createApp();
 
     const detail = await request(app).get(`/api/issues/${sourceIssueId}`).expect(200);
@@ -1300,10 +1393,14 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       kind: "missing_disposition",
       ownerAgentId: managerId,
     });
+    expect(detail.body.activeRecoveryAction.evidence).toEqual({ sourceRunId: "run-1" });
+    expect(JSON.stringify(detail.body)).not.toContain("3026905");
 
     const list = await request(app).get(`/api/issues/${sourceIssueId}/recovery-actions`).expect(200);
     expect(list.body.active).toMatchObject({ id: action.id });
     expect(list.body.actions).toHaveLength(1);
+    expect(list.body.active.evidence).toEqual({ sourceRunId: "run-1" });
+    expect(JSON.stringify(list.body)).not.toContain("3026905");
   });
 
   it("projects recovery action metadata into the structured wake payload", async () => {

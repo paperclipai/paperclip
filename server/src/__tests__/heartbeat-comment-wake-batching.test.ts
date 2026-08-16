@@ -490,14 +490,27 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       });
 
       expect(firstRun).not.toBeNull();
+      if (!firstRun?.wakeupRequestId) throw new Error("Expected first feedback run to retain its wake request");
       await waitFor(() => gateway.getAgentPayloads().length === 1);
 
       await db.insert(issueComments).values({
         companyId,
         issueId,
         authorAgentId: agentId,
-        createdByRunId: firstRun?.id ?? null,
+        createdByRunId: firstRun.id,
         body: "Heartbeat acknowledged",
+        metadata: {
+          version: 1,
+          feedbackDisposition: {
+            kind: "feedback_delivery",
+            rootWakeupRequestId: firstRun.wakeupRequestId,
+            handledCommentIds: [comment1.id],
+          },
+          sections: [{
+            title: "Feedback disposition",
+            rows: [{ type: "key_value", label: "Handled comment", value: comment1.id }],
+          }],
+        },
       });
 
       const comment2 = await db
@@ -691,7 +704,28 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       });
 
       expect(firstRun).not.toBeNull();
+      if (!firstRun?.wakeupRequestId) throw new Error("Expected first feedback run to retain its wake request");
       await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: firstRun.id,
+        body: "Initial feedback handled before cancellation.",
+        metadata: {
+          version: 1,
+          feedbackDisposition: {
+            kind: "feedback_delivery",
+            rootWakeupRequestId: firstRun.wakeupRequestId,
+            handledCommentIds: [comment1.id],
+          },
+          sections: [{
+            title: "Feedback disposition",
+            rows: [{ type: "key_value", label: "Handled comment", value: comment1.id }],
+          }],
+        },
+      });
 
       const queuedComment = await db
         .insert(issueComments)
@@ -741,6 +775,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       await waitFor(() => gateway.getAgentPayloads().length === 2);
       const promotedPayload = gateway.getAgentPayloads()[1] ?? {};
+      const promotedRunId = typeof promotedPayload.idempotencyKey === "string"
+        ? promotedPayload.idempotencyKey
+        : null;
+      if (!promotedRunId) throw new Error("Expected promoted gateway payload to include its run id");
       expect(promotedPayload.paperclip).toBeUndefined();
       const promotedWake = parseWakePayloadFromMessage(promotedPayload.message);
       expect(promotedWake).toMatchObject({
@@ -755,7 +793,9 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
       await waitFor(async () => {
         const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => ["cancelled", "succeeded"].includes(run.status));
+        const statusesByRunId = new Map(runs.map((run) => [run.id, run.status]));
+        return statusesByRunId.get(firstRun.id) === "cancelled"
+          && statusesByRunId.get(promotedRunId) === "succeeded";
       }, 90_000);
     } finally {
       gateway.releaseFirstWait();

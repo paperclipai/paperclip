@@ -258,6 +258,19 @@ describe("issue validators", () => {
     expect(parsed.body).toBe("Progress update\n\nNext action.");
   });
 
+  it("accepts an explicit feedback disposition comment batch", () => {
+    const handledCommentIds = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+    ];
+    const parsed = addIssueCommentSchema.parse({
+      body: "Applied both requested changes.",
+      feedbackDisposition: { handledCommentIds },
+    });
+
+    expect(parsed.feedbackDisposition?.handledCommentIds).toEqual(handledCommentIds);
+  });
+
   it("accepts structured issue comment presentation and metadata", () => {
     const parsed = addIssueCommentSchema.parse({
       body: "Paperclip needs a disposition before this issue can continue.",

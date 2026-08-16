@@ -675,6 +675,11 @@ export const issueCommentMetadataSchema = z.object({
   version: z.literal(1),
   sourceRunId: z.string().uuid().nullable().optional(),
   authorizationReason: z.string().trim().min(1).max(160).nullable().optional(),
+  feedbackDisposition: z.object({
+    kind: z.literal("feedback_delivery"),
+    rootWakeupRequestId: z.string().uuid(),
+    handledCommentIds: z.array(z.string().uuid()).min(1).max(50),
+  }).strict().nullable().optional(),
   sections: z.array(issueCommentMetadataSectionSchema).min(1).max(20),
 }).strict();
 
@@ -686,6 +691,9 @@ export const addIssueCommentSchema = z.object({
   authorType: issueCommentAuthorTypeSchema.optional(),
   presentation: issueCommentPresentationSchema.nullable().optional(),
   metadata: issueCommentMetadataSchema.nullable().optional(),
+  feedbackDisposition: z.object({
+    handledCommentIds: z.array(z.string().uuid()).min(1).max(50),
+  }).strict().optional(),
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),

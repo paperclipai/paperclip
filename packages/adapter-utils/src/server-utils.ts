@@ -1557,6 +1557,7 @@ export function renderPaperclipWakePrompt(
       ? [
           `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
           `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
+          "- feedback disposition: when your issue comment handles this feedback batch, include `feedbackDisposition.handledCommentIds` with every handled comment id; an ordinary comment does not acknowledge delivery",
         ]
       : []),
     `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,

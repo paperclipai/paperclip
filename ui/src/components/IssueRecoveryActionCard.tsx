@@ -115,6 +115,7 @@ export interface IssueRecoveryActionCardProps {
 }
 
 const KIND_LABEL: Record<IssueRecoveryActionKind, string> = {
+  feedback_delivery: "Feedback Delivery",
   missing_disposition: "Missing Disposition",
   stranded_assigned_issue: "Stranded Task",
   workspace_validation: "Workspace Validation",
@@ -124,6 +125,11 @@ const KIND_LABEL: Record<IssueRecoveryActionKind, string> = {
 };
 
 const KIND_HEADLINE: Record<IssueRecoveryActionKind, string> = {
+  // Surfaces on the run page only. In the task thread the same action is
+  // rendered as a compact banner under the comment it belongs to, so the
+  // operator never sees this card and that banner at the same time.
+  feedback_delivery:
+    "Paperclip stopped retrying delivery of a human comment on this task. The agent may not have seen it. Retry delivery from the comment in the task thread, or choose another next step.",
   missing_disposition:
     "This task's run finished, but no next step was chosen. Choose what happens next — try the task again, mark it done, or send it for review.",
   stranded_assigned_issue:

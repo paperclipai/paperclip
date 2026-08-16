@@ -100,12 +100,18 @@ vi.mock("../adapters/index.ts", async () => {
 });
 
 import {
+  FEEDBACK_DELIVERY_RETRY_REASON,
+  FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   heartbeatService,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
   redactSuccessfulRunHandoffEvidence,
 } from "../services/heartbeat.ts";
+import {
+  buildFeedbackDeliveryFingerprint,
+  buildFeedbackDeliveryRetryIdempotencyKey,
+} from "../services/recovery/feedback-delivery.ts";
 import {
   readHotRestartIntent,
   resolveLegacyHotRestartIntentPath,
@@ -569,6 +575,69 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
 
+  async function prepareFeedbackWake(
+    fixture: Awaited<ReturnType<typeof seedRunFixture>>,
+    input?: {
+      commentId?: string;
+      retryGeneration?: number;
+      rootWakeupRequestId?: string;
+      issueStatus?: "in_progress" | "in_review" | "done";
+    },
+  ) {
+    const commentId = input?.commentId ?? randomUUID();
+    const rootWakeupRequestId = input?.rootWakeupRequestId ?? fixture.wakeupRequestId;
+    const retryGeneration = input?.retryGeneration ?? 0;
+    const createdAt = new Date("2026-03-19T00:00:01.000Z");
+
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      authorType: "user",
+      authorUserId: "responsible-user",
+      body: "Please incorporate this review feedback.",
+      createdAt,
+      updatedAt: createdAt,
+    });
+    await db
+      .update(agentWakeupRequests)
+      .set({
+        source: "automation",
+        triggerDetail: "user",
+        reason: retryGeneration > 0 ? FEEDBACK_DELIVERY_RETRY_WAKE_REASON : "issue_commented",
+        payload: { issueId: fixture.issueId, commentId },
+        requestedByActorType: "user",
+        requestedByActorId: "responsible-user",
+      })
+      .where(eq(agentWakeupRequests.id, rootWakeupRequestId));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId: fixture.issueId,
+          taskId: fixture.issueId,
+          wakeReason: retryGeneration > 0 ? FEEDBACK_DELIVERY_RETRY_WAKE_REASON : "issue_commented",
+          commentId,
+          wakeCommentId: commentId,
+          wakeCommentIds: [commentId],
+          ...(retryGeneration > 0
+            ? {
+                retryReason: FEEDBACK_DELIVERY_RETRY_REASON,
+                feedbackDeliveryRootWakeupRequestId: rootWakeupRequestId,
+                feedbackDeliveryRetryGeneration: retryGeneration,
+              }
+            : {}),
+        },
+      })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    await db
+      .update(issues)
+      .set({ status: input?.issueStatus ?? "in_progress" })
+      .where(eq(issues.id, fixture.issueId));
+
+    return { commentId, rootWakeupRequestId };
+  }
+
   async function seedEnvironmentLeaseFixture(input: {
     companyId: string;
     runId: string;
@@ -909,6 +978,195 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
 
     return { companyId, agentId, runId, wakeupRequestId, issueId, stageId };
+  }
+
+  /**
+   * PAP-17302: the exact shape immediate terminalization missed on PAP-17271 —
+   * agent-assigned `in_review` whose only review path was a Board comment wake,
+   * whose confirmation the comment expired, and whose comment run failed
+   * pre-launch leaving no participant, interaction, run, wake, or recovery path.
+   */
+  async function seedStrandedFeedbackReviewFixture(input?: {
+    retryGeneration?: number;
+    rootWakeActorType?: "user" | "agent" | "system";
+    agentStatus?: "idle" | "paused";
+    assignToUser?: boolean;
+    monitorNextCheckAt?: Date | null;
+    interactionStatus?: "pending" | "expired" | null;
+    runStatus?: "failed" | "succeeded";
+    typedReviewParticipant?: boolean;
+  }) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const rootWakeupRequestId = randomUUID();
+    const issueId = randomUUID();
+    const commentId = randomUUID();
+    const interactionId = randomUUID();
+    const now = new Date("2026-03-19T00:00:00.000Z");
+    const finishedAt = new Date("2026-03-19T00:05:00.000Z");
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const retryGeneration = input?.retryGeneration ?? 0;
+    const replayWakeupRequestId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoderPro",
+      role: "engineer",
+      status: input?.agentStatus ?? "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(agentWakeupRequests).values({
+      id: rootWakeupRequestId,
+      companyId,
+      agentId,
+      source: "on_demand",
+      triggerDetail: "callback",
+      reason: "issue_commented",
+      payload: { issueId, commentId },
+      status: "failed",
+      runId: retryGeneration === 0 ? runId : null,
+      requestedByActorType: input?.rootWakeActorType ?? "user",
+      requestedByActorId: "responsible-user",
+      requestedAt: now,
+      claimedAt: now,
+      finishedAt,
+      updatedAt: finishedAt,
+    });
+
+    if (retryGeneration > 0) {
+      // The generation-1 replay wake the immediate lane already queued and which
+      // itself failed; it keeps the original user wake id in its context.
+      await db.insert(agentWakeupRequests).values({
+        id: replayWakeupRequestId,
+        companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "feedback_delivery_retry",
+        payload: { issueId, rootWakeupRequestId, commentIds: [commentId] },
+        status: "failed",
+        runId,
+        requestedByActorType: "system",
+        requestedAt: finishedAt,
+        claimedAt: finishedAt,
+        finishedAt: new Date("2026-03-19T00:10:00.000Z"),
+        updatedAt: new Date("2026-03-19T00:10:00.000Z"),
+      });
+    }
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "on_demand",
+      triggerDetail: "callback",
+      status: input?.runStatus ?? "failed",
+      wakeupRequestId: retryGeneration === 0 ? rootWakeupRequestId : replayWakeupRequestId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: retryGeneration === 0 ? "issue_commented" : "feedback_delivery_retry",
+        wakeCommentIds: [commentId],
+        commentId,
+        wakeCommentId: commentId,
+        ...(retryGeneration > 0
+          ? {
+            feedbackDeliveryRootWakeupRequestId: rootWakeupRequestId,
+            feedbackDeliverySourceRunId: randomUUID(),
+            feedbackDeliveryRetryGeneration: retryGeneration,
+            retryReason: "feedback_delivery_retry",
+          }
+          : {}),
+      },
+      startedAt: now,
+      finishedAt,
+      updatedAt: finishedAt,
+      errorCode: input?.runStatus === "succeeded" ? null : "process_lost",
+      error: input?.runStatus === "succeeded" ? null : "Process lost -- server may have restarted",
+      // Pre-launch loss: no process identity was ever persisted.
+      processPid: null,
+      processGroupId: null,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Plan feedback never reached the assignee",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: input?.assignToUser ? null : agentId,
+      assigneeUserId: input?.assignToUser ? "user-1" : null,
+      executionRunId: null,
+      monitorNextCheckAt: input?.monitorNextCheckAt ?? null,
+      responsibleUserId: "responsible-user",
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      startedAt: now,
+      ...(input?.typedReviewParticipant
+        ? {
+          executionState: {
+            status: "pending",
+            currentStageId: randomUUID(),
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId, userId: null },
+            returnAssignee: { type: "agent", agentId, userId: null },
+            reviewRequest: null,
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        }
+        : {}),
+    });
+
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorType: "user",
+      authorUserId: "responsible-user",
+      body: "Please revise the plan before I approve it.",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    if (input?.interactionStatus) {
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: input.interactionStatus,
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Approve the plan?",
+          target: { type: "issue_document", issueId, key: "plan" },
+        },
+        createdByAgentId: agentId,
+        sourceRunId: runId,
+        ...(input.interactionStatus === "expired"
+          ? { resolvedAt: now, result: { version: 1, outcome: "superseded_by_comment" } }
+          : {}),
+      });
+    }
+
+    return { companyId, agentId, runId, rootWakeupRequestId, issueId, commentId, interactionId };
   }
 
   async function seedAssignedTodoNoRunFixture(input?: {
@@ -1305,6 +1563,67 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(0);
   });
 
+  it("deduplicates concurrent issue wakes with the same feedback-delivery key", async () => {
+    let releaseAdapter: (() => void) | null = null;
+    const adapterStarted = new Promise<void>((resolve) => {
+      mockAdapterExecute.mockImplementationOnce(async () => {
+        resolve();
+        await new Promise<void>((release) => {
+          releaseAdapter = release;
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Handled one idempotent feedback wake.",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+    });
+    const fixture = await seedAssignedTodoNoRunFixture();
+    const heartbeat = heartbeatService(db);
+    const idempotencyKey = `feedback_delivery:${fixture.companyId}:${fixture.issueId}:${fixture.agentId}:manual:1`;
+    const wakeOptions = {
+      source: "on_demand" as const,
+      triggerDetail: "manual" as const,
+      reason: FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
+      idempotencyKey,
+      requestedByActorType: "user" as const,
+      requestedByActorId: "responsible-user",
+      contextSnapshot: {
+        issueId: fixture.issueId,
+        taskId: fixture.issueId,
+        feedbackDeliveryOperatorRequested: true,
+      },
+    };
+
+    const [first, second] = await Promise.all([
+      heartbeat.wakeup(fixture.agentId, wakeOptions),
+      heartbeat.wakeup(fixture.agentId, wakeOptions),
+    ]);
+    await Promise.race([
+      adapterStarted,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("feedback wake did not start")), 3_000)),
+    ]);
+
+    expect(first?.id).toBeTruthy();
+    expect(second?.id).toBe(first?.id);
+    expect(await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, idempotencyKey))).toHaveLength(1);
+    expect(await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, fixture.agentId))).toHaveLength(1);
+
+    if (!releaseAdapter) throw new Error("feedback wake did not reach the adapter");
+    releaseAdapter();
+    await heartbeat.waitForRunExecutionDrain(first?.id ?? "");
+  });
+
   it("queues exactly one retry when the recorded local pid is dead", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "idle",
@@ -1366,6 +1685,595 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
     // Terminal run cleanup releases the checkout lock so future checkout 409s only mean a live owner exists.
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
+  });
+
+  it("replays a user feedback wake once when restart loses it before process identity exists", async () => {
+    let releaseAdapter: (() => void) | null = null;
+    const adapterStarted = new Promise<void>((resolve) => {
+      mockAdapterExecute.mockImplementationOnce(async () => {
+        resolve();
+        await new Promise<void>((release) => {
+          releaseAdapter = release;
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Handled the recovered feedback.",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+    });
+    const fixture = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+    });
+    const { commentId } = await prepareFeedbackWake(fixture);
+    const heartbeat = heartbeatService(db);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [fixture.runId] });
+    await Promise.race([
+      adapterStarted,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("feedback retry did not start")), 3_000)),
+    ]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, fixture.agentId));
+    expect(runs).toHaveLength(2);
+    const retryRun = runs.find((run) => run.id !== fixture.runId);
+    expect(retryRun).toMatchObject({
+      retryOfRunId: fixture.runId,
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: FEEDBACK_DELIVERY_RETRY_REASON,
+    });
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      issueId: fixture.issueId,
+      wakeReason: FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
+      retryReason: FEEDBACK_DELIVERY_RETRY_REASON,
+      feedbackDeliveryRootWakeupRequestId: fixture.wakeupRequestId,
+      feedbackDeliverySourceRunId: fixture.runId,
+      feedbackDeliveryRetryGeneration: 1,
+      wakeCommentIds: [commentId],
+    });
+
+    const retryWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.runId, retryRun?.id ?? ""))
+      .then((rows) => rows[0] ?? null);
+    expect(retryWake).toMatchObject({
+      reason: FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
+      requestedByActorType: "system",
+    });
+    const auditRows = await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.runId, fixture.runId),
+        eq(activityLog.action, "issue.feedback_retry_queued"),
+      ));
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0]?.details).toMatchObject({
+      rootWakeupRequestId: fixture.wakeupRequestId,
+      sourceCommentIds: [commentId],
+      retryRunId: retryRun?.id,
+      retryGeneration: 1,
+    });
+
+    if (!retryRun || !releaseAdapter) throw new Error("feedback retry did not reach the adapter");
+    const recoveryActionId = randomUUID();
+    await db.insert(issueRecoveryActions).values({
+      id: recoveryActionId,
+      companyId: fixture.companyId,
+      sourceIssueId: fixture.issueId,
+      kind: "feedback_delivery",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: fixture.agentId,
+      previousOwnerAgentId: fixture.agentId,
+      returnOwnerAgentId: fixture.agentId,
+      cause: "feedback_delivery_exhausted",
+      fingerprint: buildFeedbackDeliveryFingerprint({
+        companyId: fixture.companyId,
+        issueId: fixture.issueId,
+        agentId: fixture.agentId,
+        rootWakeupRequestId: fixture.wakeupRequestId,
+      }),
+      evidence: {
+        rootWakeupRequestId: fixture.wakeupRequestId,
+        outstandingCommentIds: [commentId],
+      },
+      nextAction: "Retry feedback delivery manually.",
+      wakePolicy: { type: "manual_repair_required" },
+    });
+    await db.insert(issueComments).values({
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      authorType: "agent",
+      authorAgentId: fixture.agentId,
+      createdByRunId: retryRun.id,
+      body: "Applied the requested feedback.",
+      metadata: {
+        version: 1,
+        feedbackDisposition: {
+          kind: "feedback_delivery",
+          rootWakeupRequestId: fixture.wakeupRequestId,
+          handledCommentIds: [commentId],
+        },
+        sections: [{
+          title: "Feedback disposition",
+          rows: [{ type: "key_value", label: "Handled comment", value: commentId }],
+        }],
+      },
+    });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, fixture.issueId));
+    releaseAdapter();
+    expect((await waitForRunToSettle(heartbeat, retryRun.id, 5_000))?.status).toBe("succeeded");
+    await heartbeat.waitForRunExecutionDrain(retryRun.id);
+
+    const finalRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, fixture.agentId));
+    expect(finalRuns).toHaveLength(2);
+    const resolvedAction = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, recoveryActionId))
+      .then((rows) => rows[0] ?? null);
+    expect(resolvedAction).toMatchObject({
+      status: "resolved",
+      outcome: "restored",
+    });
+    expect(resolvedAction?.resolvedAt).toBeTruthy();
+    const resolutionActivity = await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.entityId, fixture.issueId),
+        eq(activityLog.runId, retryRun.id),
+        eq(activityLog.action, "issue.recovery_action_resolved"),
+      ));
+    expect(resolutionActivity).toHaveLength(1);
+    expect(resolutionActivity[0]?.details).toMatchObject({
+      source: "successful_feedback_delivery",
+      recoveryActionId,
+      rootWakeupRequestId: fixture.wakeupRequestId,
+      sourceRunId: retryRun.id,
+      outcome: "restored",
+    });
+  });
+
+  it("retries only the unhandled comments after a partial feedback disposition", async () => {
+    let releaseAdapter: (() => void) | null = null;
+    const adapterStarted = new Promise<void>((resolve) => {
+      mockAdapterExecute.mockImplementationOnce(async () => {
+        resolve();
+        await new Promise<void>((release) => {
+          releaseAdapter = release;
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Handled the remaining feedback.",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+    });
+    const fixture = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+    });
+    const { commentId: handledCommentId } = await prepareFeedbackWake(fixture);
+    const outstandingCommentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: outstandingCommentId,
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      authorType: "user",
+      authorUserId: "responsible-user",
+      body: "Please also handle this follow-up.",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId: fixture.issueId,
+          taskId: fixture.issueId,
+          wakeReason: "issue_commented",
+          commentId: outstandingCommentId,
+          wakeCommentId: outstandingCommentId,
+          wakeCommentIds: [handledCommentId, outstandingCommentId],
+        },
+      })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    await db.insert(issueComments).values({
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      authorType: "agent",
+      authorAgentId: fixture.agentId,
+      createdByRunId: fixture.runId,
+      body: "Handled the first part of the feedback batch.",
+      metadata: {
+        version: 1,
+        feedbackDisposition: {
+          kind: "feedback_delivery",
+          rootWakeupRequestId: fixture.wakeupRequestId,
+          handledCommentIds: [handledCommentId],
+        },
+        sections: [{
+          title: "Feedback disposition",
+          rows: [{ type: "key_value", label: "Handled comment", value: handledCommentId }],
+        }],
+      },
+    });
+
+    const heartbeat = heartbeatService(db);
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [fixture.runId] });
+    await Promise.race([
+      adapterStarted,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("feedback retry did not start")), 3_000)),
+    ]);
+
+    const retryRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.agentId, fixture.agentId),
+        eq(heartbeatRuns.retryOfRunId, fixture.runId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      feedbackDeliveryRootWakeupRequestId: fixture.wakeupRequestId,
+      feedbackDeliveryRetryGeneration: 1,
+      wakeCommentIds: [outstandingCommentId],
+      commentId: outstandingCommentId,
+      wakeCommentId: outstandingCommentId,
+    });
+
+    if (!releaseAdapter) throw new Error("feedback retry did not reach the adapter");
+    releaseAdapter();
+    if (retryRun) await heartbeat.waitForRunExecutionDrain(retryRun.id);
+  });
+
+  it("keeps feedback exhausted when a successful replay posts an ordinary run comment", async () => {
+    let releaseAdapter: (() => void) | null = null;
+    const adapterStarted = new Promise<void>((resolve) => {
+      mockAdapterExecute.mockImplementationOnce(async () => {
+        resolve();
+        await new Promise<void>((release) => {
+          releaseAdapter = release;
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+    });
+    const fixture = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+    });
+    const { commentId } = await prepareFeedbackWake(fixture);
+    const heartbeat = heartbeatService(db);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [fixture.runId] });
+    await Promise.race([
+      adapterStarted,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("feedback retry did not start")), 3_000)),
+    ]);
+
+    const retryRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.agentId, fixture.agentId),
+        sql`${heartbeatRuns.id} <> ${fixture.runId}`,
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (!retryRun || !releaseAdapter) throw new Error("feedback retry did not reach the adapter");
+
+    await db.insert(issueComments).values({
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      authorType: "agent",
+      authorAgentId: fixture.agentId,
+      createdByRunId: retryRun.id,
+      body: "Unrelated status update.",
+    });
+
+    releaseAdapter();
+    expect((await waitForRunToSettle(heartbeat, retryRun.id, 5_000))?.status).toBe("succeeded");
+    await heartbeat.waitForRunExecutionDrain(retryRun.id);
+
+    const recovery = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(recovery).toMatchObject({
+      kind: "feedback_delivery",
+      status: "active",
+      cause: "feedback_delivery_exhausted",
+      evidence: {
+        rootWakeupRequestId: fixture.wakeupRequestId,
+        outstandingCommentIds: [commentId],
+        retryGeneration: 1,
+      },
+    });
+    expect(await db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.runId, retryRun.id),
+        eq(activityLog.action, "issue.recovery_action_resolved"),
+      ))).toHaveLength(0);
+  });
+
+  it("creates one source-scoped recovery action when the feedback replay is exhausted", async () => {
+    const fixture = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+    });
+    const { commentId } = await prepareFeedbackWake(fixture, { retryGeneration: 1 });
+    const heartbeat = heartbeatService(db);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [fixture.runId] });
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, fixture.agentId));
+    expect(runs).toHaveLength(1);
+    const recoveryRows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId));
+    expect(recoveryRows).toHaveLength(1);
+    expect(recoveryRows[0]).toMatchObject({
+      kind: "feedback_delivery",
+      status: "active",
+      ownerAgentId: fixture.agentId,
+      cause: "feedback_delivery_exhausted",
+      maxAttempts: 1,
+    });
+    expect(recoveryRows[0]?.evidence).toMatchObject({
+      rootWakeupRequestId: fixture.wakeupRequestId,
+      outstandingCommentIds: [commentId],
+      retryGeneration: 1,
+    });
+    const recoveryAudits = await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.runId, fixture.runId),
+        eq(activityLog.action, "issue.feedback_recovery_exhausted"),
+      ));
+    expect(recoveryAudits).toHaveLength(1);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 0, runIds: [] });
+    expect(await db
+      .select({ id: issueRecoveryActions.id })
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))).toHaveLength(1);
+  });
+
+  it("preserves terminal issue gates instead of replaying stale feedback", async () => {
+    const fixture = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+    });
+    await prepareFeedbackWake(fixture, { issueStatus: "done" });
+    const heartbeat = heartbeatService(db);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [fixture.runId] });
+
+    expect(await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, fixture.agentId))).toHaveLength(1);
+    expect(await db
+      .select({ id: issueRecoveryActions.id })
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))).toHaveLength(0);
+    const issue = await db
+      .select({ status: issues.status, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, fixture.issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue).toEqual({ status: "done", executionRunId: null });
+  });
+
+  it("preserves pause gates and records recovery instead of invoking the agent", async () => {
+    const fixture = await seedRunFixture({
+      agentStatus: "paused",
+      processPid: null,
+      processGroupId: null,
+    });
+    await prepareFeedbackWake(fixture);
+    const heartbeat = heartbeatService(db);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [fixture.runId] });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect(await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, fixture.agentId))).toHaveLength(1);
+    const recovery = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(recovery).toMatchObject({
+      kind: "feedback_delivery",
+      cause: "feedback_delivery_exhausted",
+      evidence: {
+        gateErrorCode: "agent_not_invokable",
+      },
+    });
+  });
+
+  it("defers a recovered feedback wake behind a newer queued comment from another root", async () => {
+    let releaseAdapter: (() => void) | null = null;
+    const adapterStarted = new Promise<void>((resolve) => {
+      mockAdapterExecute.mockImplementationOnce(async () => {
+        resolve();
+        await new Promise<void>((release) => {
+          releaseAdapter = release;
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Handled the coalesced feedback.",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+    });
+    const fixture = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+    });
+    const first = await prepareFeedbackWake(fixture);
+    const secondCommentId = randomUUID();
+    const secondWakeId = randomUUID();
+    const secondRunId = randomUUID();
+    const secondCreatedAt = new Date("2026-03-19T00:00:02.000Z");
+    await db.insert(issueComments).values({
+      id: secondCommentId,
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      authorType: "user",
+      authorUserId: "responsible-user",
+      body: "One more adjustment after the first review.",
+      createdAt: secondCreatedAt,
+      updatedAt: secondCreatedAt,
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: secondWakeId,
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      source: "automation",
+      triggerDetail: "user",
+      reason: "issue_commented",
+      payload: { issueId: fixture.issueId, commentId: secondCommentId },
+      status: "queued",
+      runId: secondRunId,
+      requestedByActorType: "user",
+      requestedByActorId: "responsible-user",
+      requestedAt: secondCreatedAt,
+      updatedAt: secondCreatedAt,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: secondRunId,
+      companyId: fixture.companyId,
+      agentId: fixture.agentId,
+      invocationSource: "automation",
+      triggerDetail: "user",
+      status: "queued",
+      wakeupRequestId: secondWakeId,
+      contextSnapshot: {
+        issueId: fixture.issueId,
+        taskId: fixture.issueId,
+        wakeReason: "issue_commented",
+        commentId: secondCommentId,
+        wakeCommentId: secondCommentId,
+        wakeCommentIds: [secondCommentId],
+      },
+      createdAt: secondCreatedAt,
+      updatedAt: secondCreatedAt,
+    });
+    await db
+      .update(issues)
+      .set({ executionRunId: secondRunId, updatedAt: secondCreatedAt })
+      .where(eq(issues.id, fixture.issueId));
+    const heartbeat = heartbeatService(db);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [fixture.runId] });
+    await Promise.race([
+      adapterStarted,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("newer comment run did not start")), 3_000)),
+    ]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, fixture.agentId));
+    expect(runs).toHaveLength(2);
+    const newerCommentRun = runs.find((run) => run.id === secondRunId);
+    expect(newerCommentRun?.contextSnapshot).toMatchObject({
+      wakeCommentIds: [secondCommentId],
+      commentId: secondCommentId,
+      wakeCommentId: secondCommentId,
+    });
+    expect(newerCommentRun?.contextSnapshot).not.toHaveProperty("feedbackDeliveryRootWakeupRequestId");
+    const deferredRetry = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, fixture.companyId),
+        eq(agentWakeupRequests.agentId, fixture.agentId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    const deferredContext = (
+      deferredRetry?.payload as Record<string, unknown> | null
+    )?._paperclipWakeContext as Record<string, unknown> | undefined;
+    expect(deferredContext).toMatchObject({
+      feedbackDeliveryRootWakeupRequestId: fixture.wakeupRequestId,
+      feedbackDeliveryRetryGeneration: 1,
+      wakeCommentIds: [first.commentId],
+      commentId: first.commentId,
+      wakeCommentId: first.commentId,
+    });
+    const auditRows = await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.runId, fixture.runId),
+        eq(activityLog.action, "issue.feedback_retry_queued"),
+      ));
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0]?.details).toMatchObject({
+      retryRunId: secondRunId,
+      retryWakeupRequestId: deferredRetry?.id,
+      disposition: "deferred",
+      sourceCommentIds: [first.commentId],
+    });
+
+    if (!releaseAdapter) throw new Error("newer comment run did not reach the adapter");
+    await db.insert(issueComments).values({
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      authorType: "agent",
+      authorAgentId: fixture.agentId,
+      createdByRunId: secondRunId,
+      body: "Applied the newer feedback comment.",
+    });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, fixture.issueId));
+    releaseAdapter();
+    expect((await waitForRunToSettle(heartbeat, secondRunId, 5_000))?.status).toBe("succeeded");
+    await heartbeat.waitForRunExecutionDrain(secondRunId);
   });
 
   it("restores one lost monitor dispatch before escalating a second process loss", async () => {
@@ -5343,6 +6251,287 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       interactionContinuationPolicy: "wake_assignee_on_accept",
       interactionResolvedAt: resolvedAt.toISOString(),
     });
+  });
+
+  it("requeues one normal-model recovery for stranded in-review feedback and never loops", async () => {
+    const { companyId, agentId, issueId, runId, rootWakeupRequestId, commentId } =
+      await seedStrandedFeedbackReviewFixture({ interactionStatus: "expired" });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.strandedFeedbackRequeued).toBe(1);
+    expect(result.strandedFeedbackRecoveryActions).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const replayRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), sql`${heartbeatRuns.id} <> ${runId}`));
+    expect(replayRuns).toHaveLength(1);
+    expect(replayRuns[0]).toMatchObject({ retryOfRunId: runId });
+    expect(replayRuns[0]?.contextSnapshot).toMatchObject({
+      issueId,
+      taskId: issueId,
+      wakeReason: FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
+      retryReason: FEEDBACK_DELIVERY_RETRY_REASON,
+      source: "issue.stranded_feedback_delivery_backstop",
+      feedbackDeliveryRootWakeupRequestId: rootWakeupRequestId,
+      feedbackDeliveryRetryGeneration: 1,
+      feedbackDeliveryBackstop: true,
+      wakeCommentIds: [commentId],
+      commentId,
+    });
+    // Recovery must be a normal-model replay, not a cheap status-only nudge.
+    expect((replayRuns[0]?.contextSnapshot as Record<string, unknown>).modelProfile).toBeUndefined();
+
+    const replayWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.reason, FEEDBACK_DELIVERY_RETRY_WAKE_REASON),
+      ));
+    expect(replayWake).toHaveLength(1);
+
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.feedback_retry_queued")));
+    expect(activity).toHaveLength(1);
+    expect(activity[0]?.details).toMatchObject({
+      detectedBy: "issue.stranded_feedback_delivery_backstop",
+      rootWakeupRequestId,
+      sourceCommentIds: [commentId],
+      retryGeneration: 1,
+    });
+
+    // Bounded: a second sweep while the replay is still live must not open a
+    // parallel lane, and no recovery action is created yet.
+    const second = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(second.strandedFeedbackRequeued).toBe(0);
+    expect(second.strandedFeedbackRecoveryActions).toBe(0);
+    const runsAfter = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runsAfter).toHaveLength(2);
+    const actionsAfter = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(actionsAfter).toHaveLength(0);
+  });
+
+  it("opens one explicit recovery action when stranded feedback replay is exhausted", async () => {
+    const { companyId, agentId, issueId, runId, rootWakeupRequestId, commentId } =
+      await seedStrandedFeedbackReviewFixture({ retryGeneration: 1, interactionStatus: "expired" });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.strandedFeedbackRequeued).toBe(0);
+    expect(result.strandedFeedbackRecoveryActions).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    // Exhaustion must not queue another replay run.
+    const runs = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(runId);
+
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      companyId,
+      kind: "feedback_delivery",
+      cause: "feedback_delivery_exhausted",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: agentId,
+      previousOwnerAgentId: agentId,
+      returnOwnerAgentId: agentId,
+      fingerprint: buildFeedbackDeliveryFingerprint({
+        companyId,
+        issueId,
+        agentId,
+        rootWakeupRequestId,
+      }),
+    });
+    expect(actions[0]?.nextAction).toContain("CodexCoderPro");
+    expect(actions[0]?.nextAction).toContain("record a valid disposition");
+    expect(actions[0]?.evidence).toMatchObject({
+      detectedBy: "issue.stranded_feedback_delivery_backstop",
+      backstopReason: "retry_exhausted",
+      rootWakeupRequestId,
+      outstandingCommentIds: [commentId],
+      retryGeneration: 1,
+    });
+    expect(actions[0]?.wakePolicy).toMatchObject({ type: "manual_repair_required" });
+
+    // The issue stays in_review with the recovery action as its explicit path.
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+    expect(issue?.status).toBe("in_review");
+
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.feedback_recovery_exhausted")));
+    expect(activity).toHaveLength(1);
+
+    // No loop: repeated sweeps neither duplicate the action nor add a replay.
+    const second = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(second.strandedFeedbackRecoveryActions).toBe(0);
+    expect(second.strandedFeedbackRequeued).toBe(0);
+    const actionsAfter = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(actionsAfter).toHaveLength(1);
+    expect(actionsAfter[0]?.id).toBe(actions[0]?.id);
+    const activityAfter = await db
+      .select({ id: activityLog.id })
+      .from(activityLog)
+      .where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.feedback_recovery_exhausted")));
+    expect(activityAfter).toHaveLength(1);
+  });
+
+  it("does not open a second feedback lane when immediate terminalization already queued the replay", async () => {
+    const { companyId, agentId, issueId, rootWakeupRequestId } =
+      await seedStrandedFeedbackReviewFixture({ interactionStatus: "expired" });
+    // Immediate lane already claimed generation 1 with the shared key.
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
+      payload: { issueId },
+      status: "skipped",
+      requestedByActorType: "system",
+      idempotencyKey: buildFeedbackDeliveryRetryIdempotencyKey({
+        fingerprint: buildFeedbackDeliveryFingerprint({
+          companyId,
+          issueId,
+          agentId,
+          rootWakeupRequestId,
+        }),
+        generation: 1,
+      }),
+      finishedAt: new Date("2026-03-19T00:06:00.000Z"),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.strandedFeedbackRequeued).toBe(0);
+    expect(result.strandedFeedbackRecoveryActions).toBe(0);
+    expect(result.issueIds).not.toContain(issueId);
+  });
+
+  it("does not open a second feedback lane when a recovery action already owns the issue", async () => {
+    const { companyId, agentId, issueId, rootWakeupRequestId } =
+      await seedStrandedFeedbackReviewFixture({ retryGeneration: 1, interactionStatus: "expired" });
+    const existingActionId = randomUUID();
+    await db.insert(issueRecoveryActions).values({
+      id: existingActionId,
+      companyId,
+      sourceIssueId: issueId,
+      kind: "feedback_delivery",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: agentId,
+      cause: "feedback_delivery_exhausted",
+      fingerprint: buildFeedbackDeliveryFingerprint({
+        companyId,
+        issueId,
+        agentId,
+        rootWakeupRequestId,
+      }),
+      evidence: {},
+      nextAction: "Immediate lane already owns this feedback batch.",
+      attemptCount: 1,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.strandedFeedbackRequeued).toBe(0);
+    expect(result.strandedFeedbackRecoveryActions).toBe(0);
+
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]?.id).toBe(existingActionId);
+    expect(actions[0]?.attemptCount).toBe(1);
+  });
+
+  it.each([
+    ["a pending Board confirmation", { interactionStatus: "pending" as const }],
+    ["a human-owned review", { assignToUser: true }],
+    ["a monitor wait", {
+      interactionStatus: "expired" as const,
+      monitorNextCheckAt: new Date("2036-03-19T00:00:00.000Z"),
+    }],
+    ["a paused assignee", { interactionStatus: "expired" as const, agentStatus: "paused" as const }],
+    ["a system-originated wake", { interactionStatus: "expired" as const, rootWakeActorType: "agent" as const }],
+    ["a successful latest run", { interactionStatus: "expired" as const, runStatus: "succeeded" as const }],
+  ])("leaves stranded-feedback lookalikes untouched: %s", async (_label, overrides) => {
+    const { issueId } = await seedStrandedFeedbackReviewFixture(overrides);
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.strandedFeedbackRequeued).toBe(0);
+    expect(result.issueIds).not.toContain(issueId);
+
+    const actions = await db
+      .select({ id: issueRecoveryActions.id, kind: issueRecoveryActions.kind })
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(actions.filter((action) => action.kind === "feedback_delivery")).toHaveLength(0);
+  });
+
+  it("leaves an in-review issue with a typed participant to the existing participant lane", async () => {
+    const { issueId } = await seedStrandedFeedbackReviewFixture({
+      interactionStatus: "expired",
+      typedReviewParticipant: true,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.strandedFeedbackRequeued).toBe(0);
+    expect(result.strandedFeedbackRecoveryActions).toBe(0);
+    // The pre-existing execution-review participant lane still owns the issue.
+    expect(result.reviewParticipantRequeued).toBe(1);
+
+    const actions = await db
+      .select({ kind: issueRecoveryActions.kind })
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(actions.filter((action) => action.kind === "feedback_delivery")).toHaveLength(0);
+  });
+
+  it.each([
+    ["done", "done"],
+    ["cancelled", "cancelled"],
+  ])("leaves %s issues with stranded feedback context untouched", async (_label, status) => {
+    const { issueId } = await seedStrandedFeedbackReviewFixture({ interactionStatus: "expired" });
+    await db.update(issues).set({ status }).where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.strandedFeedbackRequeued).toBe(0);
+    expect(result.strandedFeedbackRecoveryActions).toBe(0);
+
+    const actions = await db
+      .select({ id: issueRecoveryActions.id })
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(actions).toHaveLength(0);
   });
 
   it("escalates accepted interaction continuation recovery after three review-park cancellations", async () => {

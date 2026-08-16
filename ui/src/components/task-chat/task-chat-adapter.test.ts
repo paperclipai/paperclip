@@ -3,6 +3,38 @@ import type { IssueChatComment } from "@/lib/issue-chat-messages";
 import { commentsToTaskChatItems } from "./task-chat-adapter";
 
 describe("commentsToTaskChatItems", () => {
+  it("carries feedback delivery state from a human comment into the bubble model", () => {
+    const feedbackDelivery = {
+      state: "exhausted_needs_attention" as const,
+      sourceCommentId: "comment-feedback",
+      attempt: 3,
+      maxAttempts: 3,
+      nextAttemptAt: null,
+      lastAttemptAt: "2026-08-14T12:00:00.000Z",
+      deliveredAt: null,
+      targetRunId: null,
+      targetRunAgentId: null,
+      canRetry: true,
+      retryInFlight: false,
+      safeFailureReason: "The agent could not be reached.",
+      batchedCommentCount: 1,
+    };
+    const comments = [{
+      id: "comment-feedback",
+      body: "Please use the updated requirements.",
+      authorType: "user",
+      authorAgentId: null,
+      authorUserId: "user-1",
+      feedbackDelivery,
+      createdAt: "2026-08-14T12:00:00.000Z",
+    } as unknown as IssueChatComment];
+
+    const [item] = commentsToTaskChatItems(comments);
+
+    if (item.kind !== "message") throw new Error("expected message item");
+    expect(item.feedbackDelivery).toEqual(feedbackDelivery);
+  });
+
   it("never tags posted comments interstitial — the run's final reply keeps its bubble", () => {
     const comments = [
       {
