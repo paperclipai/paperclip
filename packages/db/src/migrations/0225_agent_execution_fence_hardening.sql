@@ -13,32 +13,26 @@ BEGIN
         AND "started_at" is not null
         AND "execution_finalized_at" is null
       )
-      OR (
-        "started_at" is not null
-        AND "execution_finalized_at" is null
-        AND (
-          "process_pid" is not null
-          OR "process_group_id" is not null
-          OR EXISTS (
-            SELECT 1
-            FROM "issues" issue
-            WHERE issue."execution_run_id" = "heartbeat_runs"."id"
-              OR issue."checkout_run_id" = "heartbeat_runs"."id"
-          )
-          OR EXISTS (
-            SELECT 1
-            FROM "environment_leases" lease
-            WHERE lease."heartbeat_run_id" = "heartbeat_runs"."id"
-              AND lease."status" = 'active'
-          )
-          OR EXISTS (
-            SELECT 1
-            FROM "workspace_runtime_services" runtime_service
-            WHERE runtime_service."started_by_run_id" = "heartbeat_runs"."id"
-              AND runtime_service."lifecycle" = 'ephemeral'
-              AND runtime_service."status" IN ('provisioning', 'starting', 'running')
-          )
-        )
+      OR "process_pid" is not null
+      OR "process_group_id" is not null
+      OR EXISTS (
+        SELECT 1
+        FROM "issues" issue
+        WHERE issue."execution_run_id" = "heartbeat_runs"."id"
+          OR issue."checkout_run_id" = "heartbeat_runs"."id"
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM "environment_leases" lease
+        WHERE lease."heartbeat_run_id" = "heartbeat_runs"."id"
+          AND lease."status" = 'active'
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM "workspace_runtime_services" runtime_service
+        WHERE runtime_service."started_by_run_id" = "heartbeat_runs"."id"
+          AND runtime_service."lifecycle" = 'ephemeral'
+          AND runtime_service."status" IN ('provisioning', 'starting', 'running')
       )
   ) OR EXISTS (
     SELECT 1
@@ -92,16 +86,19 @@ BEGIN
   END IF;
 
   IF TG_OP = 'UPDATE'
-    AND OLD."execution_finalizer_completed_at" is not null
+    AND (
+      OLD."execution_finalizer_completed_at" is not null
+      OR OLD."execution_finalization_required" = false
+    )
     AND (
       OLD."process_pid" is distinct from NEW."process_pid"
       OR OLD."process_group_id" is distinct from NEW."process_group_id"
       OR OLD."process_ownership_released_at" is distinct from NEW."process_ownership_released_at"
     )
   THEN
-    RAISE EXCEPTION 'Heartbeat run % already completed its finalizer', NEW."id"
+    RAISE EXCEPTION 'Heartbeat run % already completed its finalizer or is already exempt from finalization tracking', NEW."id"
       USING ERRCODE = '55000',
-            HINT = 'Execution process metadata cannot change after durable finalizer completion.';
+            HINT = 'Execution process metadata cannot change after durable finalizer completion or legacy cutover exemption.';
   END IF;
 
   IF TG_OP = 'UPDATE'
@@ -137,7 +134,7 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 DECLARE
-  finalized_run_id uuid;
+  closed_run_id uuid;
 BEGIN
   IF NEW."execution_run_id" is null AND NEW."checkout_run_id" is null THEN
     RETURN NEW;
@@ -150,17 +147,20 @@ BEGIN
   FOR UPDATE;
 
   SELECT run."id"
-  INTO finalized_run_id
+  INTO closed_run_id
   FROM "heartbeat_runs" run
   WHERE run."id" IN (NEW."execution_run_id", NEW."checkout_run_id")
-    AND run."execution_finalizer_completed_at" is not null
+    AND (
+      run."execution_finalizer_completed_at" is not null
+      OR run."execution_finalization_required" = false
+    )
   ORDER BY run."id"
   LIMIT 1;
 
-  IF finalized_run_id is not null THEN
-    RAISE EXCEPTION 'Heartbeat run % already completed its finalizer', finalized_run_id
+  IF closed_run_id is not null THEN
+    RAISE EXCEPTION 'Heartbeat run % already completed its finalizer or is already exempt from finalization tracking', closed_run_id
       USING ERRCODE = '55000',
-            HINT = 'Execution resources cannot be attached after durable finalizer completion.';
+            HINT = 'Execution resources cannot be attached after durable finalizer completion or legacy cutover exemption.';
   END IF;
 
   RETURN NEW;
@@ -170,4 +170,61 @@ DROP TRIGGER IF EXISTS "issues_finalized_run_guard" ON "issues";--> statement-br
 CREATE TRIGGER "issues_finalized_run_guard"
 BEFORE INSERT OR UPDATE OF "execution_run_id", "checkout_run_id" ON "issues"
 FOR EACH ROW
-EXECUTE FUNCTION "guard_finalized_run_issue_attachment"();
+EXECUTE FUNCTION "guard_finalized_run_issue_attachment"();--> statement-breakpoint
+CREATE OR REPLACE FUNCTION "guard_finalized_run_environment_lease_attachment"()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  finalizer_completed_at timestamp with time zone;
+  finalization_required boolean;
+BEGIN
+  IF NEW."heartbeat_run_id" is null OR NEW."status" <> 'active' THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT run."execution_finalizer_completed_at", run."execution_finalization_required"
+  INTO finalizer_completed_at, finalization_required
+  FROM "heartbeat_runs" run
+  WHERE run."id" = NEW."heartbeat_run_id"
+  FOR UPDATE;
+
+  IF finalizer_completed_at is not null OR finalization_required = false THEN
+    RAISE EXCEPTION 'Heartbeat run % already completed its finalizer or is already exempt from finalization tracking', NEW."heartbeat_run_id"
+      USING ERRCODE = '55000',
+            HINT = 'Execution resources cannot be attached after durable finalizer completion or legacy cutover exemption.';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;--> statement-breakpoint
+CREATE OR REPLACE FUNCTION "guard_finalized_run_runtime_service_attachment"()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  finalizer_completed_at timestamp with time zone;
+  finalization_required boolean;
+BEGIN
+  IF NEW."started_by_run_id" is null
+    OR NEW."lifecycle" <> 'ephemeral'
+    OR NEW."status" NOT IN ('provisioning', 'starting', 'running')
+  THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT run."execution_finalizer_completed_at", run."execution_finalization_required"
+  INTO finalizer_completed_at, finalization_required
+  FROM "heartbeat_runs" run
+  WHERE run."id" = NEW."started_by_run_id"
+  FOR UPDATE;
+
+  IF finalizer_completed_at is not null OR finalization_required = false THEN
+    RAISE EXCEPTION 'Heartbeat run % already completed its finalizer or is already exempt from finalization tracking', NEW."started_by_run_id"
+      USING ERRCODE = '55000',
+            HINT = 'Execution resources cannot be attached after durable finalizer completion or legacy cutover exemption.';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;

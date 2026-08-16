@@ -76,6 +76,7 @@ describeEmbeddedPostgres("agent execution fence forward migration", () => {
     const wakeupRequestId = randomUUID();
     const legacyRunId = randomUUID();
     const resourceOwningRunId = randomUUID();
+    const unstartedResourceRunId = randomUUID();
     await sql`
       INSERT INTO "companies" ("id", "name", "issue_prefix")
       VALUES (${companyId}, 'Fence Migration', 'FNC')
@@ -106,6 +107,13 @@ describeEmbeddedPostgres("agent execution fence forward migration", () => {
         ${resourceOwningRunId}, ${companyId}, ${agentId}, 'failed', now() - interval '1 minute', now(), 424242
       )
     `;
+    await sql`
+      INSERT INTO "heartbeat_runs" (
+        "id", "company_id", "agent_id", "status", "process_pid"
+      ) VALUES (
+        ${unstartedResourceRunId}, ${companyId}, ${agentId}, 'failed', 424243
+      )
+    `;
 
     await expect(applyPendingMigrations(database.connectionString)).rejects.toThrow(
       /requires zero admitted executions/i,
@@ -115,14 +123,62 @@ describeEmbeddedPostgres("agent execution fence forward migration", () => {
       SET "process_pid" = null
       WHERE "id" = ${resourceOwningRunId}
     `;
+    await expect(applyPendingMigrations(database.connectionString)).rejects.toThrow(
+      /requires zero admitted executions/i,
+    );
+    await sql`
+      UPDATE "heartbeat_runs"
+      SET "process_pid" = null
+      WHERE "id" = ${unstartedResourceRunId}
+    `;
     await expect(applyPendingMigrations(database.connectionString)).resolves.toBeUndefined();
 
-    const [legacy] = await sql<{ execution_finalization_required: boolean }[]>`
-      SELECT "execution_finalization_required"
+    const [legacy] = await sql<{
+      execution_finalization_required: boolean;
+      execution_finalizer_completed_at: Date | null;
+      execution_finalized_at: Date | null;
+    }[]>`
+      SELECT
+        "execution_finalization_required",
+        "execution_finalizer_completed_at",
+        "execution_finalized_at"
       FROM "heartbeat_runs"
       WHERE "id" = ${legacyRunId}
     `;
-    expect(legacy?.execution_finalization_required).toBe(false);
+    expect(legacy).toEqual({
+      execution_finalization_required: false,
+      execution_finalizer_completed_at: null,
+      execution_finalized_at: null,
+    });
+
+    await expect(sql`
+      UPDATE "heartbeat_runs"
+      SET "process_pid" = 424244
+      WHERE "id" = ${legacyRunId}
+    `).rejects.toThrow(/already exempt from finalization tracking/i);
+
+    await expect(sql`
+      INSERT INTO "issues" ("id", "company_id", "title", "identifier", "execution_run_id")
+      VALUES (${randomUUID()}, ${companyId}, 'Legacy attachment', 'FNC-LEGACY', ${legacyRunId})
+    `).rejects.toThrow(/already exempt from finalization tracking/i);
+
+    const environmentId = randomUUID();
+    await sql`
+      INSERT INTO "environments" ("id", "name", "driver")
+      VALUES (${environmentId}, ${`Legacy Fence ${environmentId}`}, 'sandbox')
+    `;
+    await expect(sql`
+      INSERT INTO "environment_leases" ("id", "company_id", "environment_id", "heartbeat_run_id", "status")
+      VALUES (${randomUUID()}, ${companyId}, ${environmentId}, ${legacyRunId}, 'active')
+    `).rejects.toThrow(/already exempt from finalization tracking/i);
+
+    await expect(sql`
+      INSERT INTO "workspace_runtime_services" (
+        "id", "company_id", "scope_type", "service_name", "status", "lifecycle", "provider", "started_by_run_id"
+      ) VALUES (
+        ${randomUUID()}, ${companyId}, 'run', 'legacy-service', 'running', 'ephemeral', 'local', ${legacyRunId}
+      )
+    `).rejects.toThrow(/already exempt from finalization tracking/i);
 
     const newRunId = randomUUID();
     await sql`

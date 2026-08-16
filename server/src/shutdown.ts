@@ -59,6 +59,24 @@ type ShutdownSignalTarget = {
   removeListener(eventName: string, listener: (...args: any[]) => void): unknown;
 };
 
+type ClosableHttpServer = {
+  close(callback: (error?: Error) => void): unknown;
+  closeIdleConnections?: () => void;
+};
+
+export async function closeHttpServerForShutdown(server: ClosableHttpServer): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+    server.closeIdleConnections?.();
+  });
+}
+
 /**
  * Some dependencies eagerly install process signal handlers as an import side
  * effect. Paperclip must remain the sole owner of SIGINT/SIGTERM ordering: its
@@ -170,4 +188,19 @@ export async function drainExecutionOwnershipForShutdown<TDrain, TRetained>(inpu
     drain: drain as TDrain,
     retainedRuntimes: retainedRuntimes as TRetained,
   };
+}
+
+export async function runShutdownAndExit(input: {
+  shutdown: () => Promise<void>;
+  exit: (code: 0 | 1) => void;
+  onFailure: (error: unknown) => void;
+}): Promise<void> {
+  try {
+    await input.shutdown();
+  } catch (error) {
+    input.onFailure(error);
+    input.exit(1);
+    return;
+  }
+  input.exit(0);
 }

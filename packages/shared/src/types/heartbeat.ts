@@ -74,6 +74,9 @@ export interface HeartbeatRun {
   responsibleUserId: string | null;
   startedAt: Date | null;
   finishedAt: Date | null;
+  executionFinalizationRequired: boolean;
+  executionFinalizerCompletedAt: Date | null;
+  executionFinalizedAt: Date | null;
   error: string | null;
   wakeupRequestId: string | null;
   exitCode: number | null;
@@ -94,6 +97,7 @@ export interface HeartbeatRun {
   processPid: number | null;
   processGroupId?: number | null;
   processStartedAt: Date | null;
+  processOwnershipReleasedAt: Date | null;
   lastOutputAt: Date | null;
   lastOutputSeq: number;
   lastOutputStream: "stdout" | "stderr" | null;

@@ -17257,7 +17257,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : candidateIssues[0]) ?? null;
 
       if (!issue) return null;
-      if (issue.executionRunId !== run.id && issue.checkoutRunId !== run.id) return null;
       if (issue.executionRunId && issue.executionRunId !== run.id) return null;
 
       // Workspace-validation recovery: if the finalizing run failed workspace

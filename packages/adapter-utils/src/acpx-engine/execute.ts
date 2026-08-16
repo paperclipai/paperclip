@@ -2937,28 +2937,27 @@ async function closeWarmHandle(input: {
   discardPersistentState?: boolean;
   suppressCloseErrors?: boolean;
 }) {
-  const owned = input.handles.get(input.key) === input.entry;
-  if (owned) {
-    input.handles.delete(input.key);
-  }
   clearWarmHandleTimer(input.entry);
+  const closePromise = input.entry.closePromise ?? Promise.resolve().then(() => input.entry.runtime.close({
+    handle: input.entry.handle,
+    reason: input.reason,
+    discardPersistentState: input.discardPersistentState ?? false,
+  }));
+  input.entry.closePromise = closePromise;
   try {
-    const close = input.entry.runtime.close({
-      handle: input.entry.handle,
-      reason: input.reason,
-      discardPersistentState: input.discardPersistentState ?? false,
-    });
-    if (input.suppressCloseErrors === false) {
-      await close;
-    } else {
-      await close.catch(() => {});
+    await closePromise;
+    if (input.handles.get(input.key) === input.entry) {
+      input.handles.delete(input.key);
     }
   } catch (error) {
-    if (owned && !input.handles.has(input.key)) {
+    if (!input.handles.has(input.key)) {
       input.handles.set(input.key, input.entry);
     }
-    throw error;
+    if (input.suppressCloseErrors === false) throw error;
   } finally {
+    if (input.entry.closePromise === closePromise) {
+      input.entry.closePromise = undefined;
+    }
     flushChildStderr(input.entry.childStderrState);
   }
 }
@@ -2968,13 +2967,20 @@ export async function closeAcpxEngineRuntimesForShutdown(input: {
 } = {}) {
   const warmHandles = input.warmHandles ?? defaultWarmHandles;
   const retained = [...warmHandles.entries()];
-  await Promise.all(retained.map(([key, entry]) => closeWarmHandle({
+  const results = await Promise.allSettled(retained.map(([key, entry]) => closeWarmHandle({
     handles: warmHandles,
     key,
     entry,
     reason: "paperclip server shutdown",
     suppressCloseErrors: false,
   })));
+  const errors = results
+    .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+    .map((result) => result.reason);
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "Multiple retained ACP runtimes failed to close");
+  }
   return { closedWarmHandles: retained.length };
 }
 

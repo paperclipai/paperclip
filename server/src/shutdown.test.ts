@@ -1,10 +1,12 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import {
+  closeHttpServerForShutdown,
   coordinateHeartbeatSchedulerShutdown,
   finalizeServerShutdown,
   drainExecutionOwnershipForShutdown,
   loadWithoutCoordinatedShutdownSignalHooks,
+  runShutdownAndExit,
 } from "./shutdown.js";
 
 function deferred<T = void>() {
@@ -134,6 +136,33 @@ describe("finalizeServerShutdown", () => {
     expect(shutdownAppServices).toHaveBeenCalledOnce();
     expect(shutdownInstrumentation).toHaveBeenCalledOnce();
     expect(log.info).not.toHaveBeenCalled();
+  });
+});
+
+describe("closeHttpServerForShutdown", () => {
+  it("awaits and propagates an HTTP listener close failure", async () => {
+    const closeError = new Error("listener close failed");
+    let reportClose!: (error?: Error) => void;
+    const closeIdleConnections = vi.fn();
+    const server = {
+      close: vi.fn((callback: (error?: Error) => void) => {
+        reportClose = callback;
+      }),
+      closeIdleConnections,
+    };
+
+    let settled = false;
+    const closing = closeHttpServerForShutdown(server).finally(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+
+    expect(server.close).toHaveBeenCalledOnce();
+    expect(closeIdleConnections).toHaveBeenCalledOnce();
+    expect(settled).toBe(false);
+
+    reportClose(closeError);
+    await expect(closing).rejects.toBe(closeError);
   });
 });
 
@@ -362,5 +391,47 @@ describe("drainExecutionOwnershipForShutdown", () => {
       retainedRuntimeCloseAttempts: 3,
     })).rejects.toBe(closeError);
     expect(closeRetainedRuntimes).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("runShutdownAndExit", () => {
+  it("exits non-zero when work after the HTTP close fails", async () => {
+    const events: string[] = [];
+    const error = new Error("post-listener shutdown failed");
+
+    await runShutdownAndExit({
+      shutdown: async () => {
+        events.push("http_closed");
+        throw error;
+      },
+      onFailure: (caught) => {
+        expect(caught).toBe(error);
+        events.push("failure_recorded");
+      },
+      exit: (code) => {
+        events.push(`exit_${code}`);
+      },
+    });
+
+    expect(events).toEqual(["http_closed", "failure_recorded", "exit_1"]);
+  });
+
+  it("exits zero only after all shutdown work succeeds", async () => {
+    const events: string[] = [];
+
+    await runShutdownAndExit({
+      shutdown: async () => {
+        events.push("http_closed");
+        events.push("drained");
+      },
+      onFailure: () => {
+        events.push("unexpected_failure");
+      },
+      exit: (code) => {
+        events.push(`exit_${code}`);
+      },
+    });
+
+    expect(events).toEqual(["http_closed", "drained", "exit_0"]);
   });
 });

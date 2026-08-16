@@ -91,10 +91,11 @@ import { closeAcpxEngineRuntimesForShutdown } from "@paperclipai/adapter-utils/a
 import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
 import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
 import {
+  closeHttpServerForShutdown,
   coordinateHeartbeatSchedulerShutdown,
-  finalizeServerShutdown,
   drainExecutionOwnershipForShutdown,
   loadWithoutCoordinatedShutdownSignalHooks,
+  runShutdownAndExit,
 } from "./shutdown.js";
 import { systemdNotify } from "./services/systemd-notify.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
@@ -1619,91 +1620,89 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
-      await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
-      heartbeatSchedulerStopped = true;
-      if (heartbeatSchedulerInterval) {
-        clearInterval(heartbeatSchedulerInterval);
-        heartbeatSchedulerInterval = null;
-      }
-      server.close((err) => {
-        if (err) logger.error({ err, signal }, "HTTP listener failed to close cleanly");
+      await runShutdownAndExit({
+        shutdown: async () => {
+          await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
+          heartbeatSchedulerStopped = true;
+          if (heartbeatSchedulerInterval) {
+            clearInterval(heartbeatSchedulerInterval);
+            heartbeatSchedulerInterval = null;
+          }
+          await Promise.all([
+            closeHttpServerForShutdown(server),
+            heartbeat?.closeAdmissionsForShutdown(),
+          ]);
+
+          const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
+            signal,
+            prepareHotRestartShutdown,
+            waitForHeartbeatSchedulerIdle,
+          });
+          const skipHeartbeatDrain = heartbeatShutdown.hotRestart?.skipDrain === true;
+          const selectiveDrainRunIds = heartbeatShutdown.hotRestart?.drainRunIds ?? null;
+          if (skipHeartbeatDrain) {
+            logger.info(
+              { signal, hotRestart: heartbeatShutdown.hotRestart },
+              "hot-restart shutdown prepared after scheduler quiescence; skipping graceful run drain",
+            );
+          } else if (heartbeatShutdown.preparationError) {
+            logger.error(
+              { err: heartbeatShutdown.preparationError, signal },
+              "hot-restart shutdown preparation failed; falling back to graceful heartbeat run drain",
+            );
+          }
+
+          const telemetryClient = getTelemetryClient();
+          if (telemetryClient) {
+            telemetryClient.stop();
+            await telemetryClient.flush();
+          }
+
+          const { drain, retainedRuntimes } = await drainExecutionOwnershipForShutdown({
+            drainHeartbeatRuns: async () => !skipHeartbeatDrain && drainHeartbeatRunsForShutdown
+              ? drainHeartbeatRunsForShutdown(signal, selectiveDrainRunIds)
+              : null,
+            closeRetainedRuntimes: closeAcpxEngineRuntimesForShutdown,
+          });
+          logger.info(
+            { signal, drain, heartbeatDrainSkipped: skipHeartbeatDrain, retainedRuntimes },
+            "shutdown heartbeat and retained-runtime drain complete",
+          );
+
+          // Whatever the drain did not finalize (timed-out runs, the hot-restart
+          // skip path) still has a local-only tail when the in-flight run-log
+          // mirror is enabled; upload those tails now so an orderly restart
+          // never loses run output. No-op when the mirror is off.
+          try {
+            await flushInFlightRunLogMirrors();
+          } catch (err) {
+            logger.error({ err, signal }, "run-log in-flight mirror flush failed");
+          }
+
+          const appShutdown = (app as { locals?: { paperclipShutdown?: () => void } }).locals?.paperclipShutdown;
+          appShutdown?.();
+
+          if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+            logger.info({ signal }, "Stopping embedded PostgreSQL");
+            try {
+              await embeddedPostgresSupervisor?.shutdown() ?? embeddedPostgres.stop();
+            } catch (err) {
+              logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
+            }
+          }
+
+          // Flush buffered OTel spans before the process goes away; without this
+          // await the exporter's final batch is dropped on exit.
+          await shutdownInstrumentation();
+        },
+        onFailure: (err) => {
+          logger.error(
+            { err, signal },
+            "shutdown failed after signal receipt; exiting non-zero so the supervisor terminates the process group",
+          );
+        },
+        exit: (code) => process.exit(code),
       });
-      server.closeIdleConnections?.();
-      await heartbeat?.closeAdmissionsForShutdown();
-
-      const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
-        signal,
-        prepareHotRestartShutdown,
-        waitForHeartbeatSchedulerIdle,
-      });
-      const skipHeartbeatDrain = heartbeatShutdown.hotRestart?.skipDrain === true;
-      const selectiveDrainRunIds = heartbeatShutdown.hotRestart?.drainRunIds ?? null;
-      if (skipHeartbeatDrain) {
-        logger.info(
-          { signal, hotRestart: heartbeatShutdown.hotRestart },
-          "hot-restart shutdown prepared after scheduler quiescence; skipping graceful run drain",
-        );
-      } else if (heartbeatShutdown.preparationError) {
-        logger.error(
-          { err: heartbeatShutdown.preparationError, signal },
-          "hot-restart shutdown preparation failed; falling back to graceful heartbeat run drain",
-        );
-      }
-
-      const telemetryClient = getTelemetryClient();
-      if (telemetryClient) {
-        telemetryClient.stop();
-        await telemetryClient.flush();
-      }
-
-      try {
-        const { drain, retainedRuntimes } = await drainExecutionOwnershipForShutdown({
-          drainHeartbeatRuns: async () => !skipHeartbeatDrain && drainHeartbeatRunsForShutdown
-            ? drainHeartbeatRunsForShutdown(signal, selectiveDrainRunIds)
-            : null,
-          closeRetainedRuntimes: closeAcpxEngineRuntimesForShutdown,
-        });
-        logger.info(
-          { signal, drain, heartbeatDrainSkipped: skipHeartbeatDrain, retainedRuntimes },
-          "shutdown heartbeat and retained-runtime drain complete",
-        );
-      } catch (err) {
-        logger.error(
-          { err, signal },
-          "shutdown execution ownership drain failed; exiting non-zero so the supervisor terminates the process group",
-        );
-        process.exit(1);
-      }
-
-      // Whatever the drain did not finalize (timed-out runs, the hot-restart
-      // skip path) still has a local-only tail when the in-flight run-log
-      // mirror is enabled; upload those tails now so an orderly restart
-      // never loses run output. No-op when the mirror is off.
-      try {
-        await flushInFlightRunLogMirrors();
-      } catch (err) {
-        logger.error({ err, signal }, "run-log in-flight mirror flush failed");
-      }
-
-      const appShutdown = (app as { locals?: { paperclipShutdown?: () => Promise<void> } }).locals
-        ?.paperclipShutdown;
-      const stopEmbeddedPostgres = embeddedPostgres && embeddedPostgresStartedByThisProcess
-        ? () => embeddedPostgresSupervisor?.shutdown() ?? embeddedPostgres!.stop()
-        : null;
-
-      // Await the ordered application teardown before the process exits. A live
-      // setup-token login session must stop and release its sandbox lease before
-      // the database and the provider stop, so an orderly shutdown never leaves a
-      // sandbox lease or confidential login state alive past the process exit.
-      await finalizeServerShutdown({
-        signal,
-        shutdownAppServices: appShutdown,
-        stopEmbeddedPostgres,
-        shutdownInstrumentation,
-        log: logger,
-      });
-
-      process.exit(0);
     };
 
     process.once("SIGINT", () => {
