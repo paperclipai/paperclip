@@ -357,7 +357,7 @@ afterEach(async () => {
   delete process.env.PAPERCLIP_INSTANCE_ID;
   delete process.env.PAPERCLIP_WORKTREES_DIR;
   delete process.env.DATABASE_URL;
-  await resetRuntimeServicesForTests();
+  await resetRuntimeServicesForTests({ terminateProcesses: true });
 });
 
 describe("sanitizeRuntimeServiceBaseEnv", () => {
@@ -5493,7 +5493,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
   });
 
   afterEach(async () => {
-    await resetRuntimeServicesForTests();
+    await resetRuntimeServicesForTests({ terminateProcesses: true });
     await db.delete(workspaceRuntimeServices);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
