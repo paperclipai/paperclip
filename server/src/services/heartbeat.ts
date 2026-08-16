@@ -146,6 +146,7 @@ import {
   persistAdapterManagedRuntimeServices,
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
+  releaseTerminalRuntimeServicesForRun,
   type ExecutionWorkspaceInput,
   type RealizedExecutionWorkspace,
   type RuntimeServiceRef,
@@ -6812,6 +6813,43 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           eq(agentWakeupRequests.status, "claimed"),
         ),
       );
+  }
+  async function recoverTerminalRunFinalizerOwnership(
+    run: typeof heartbeatRuns.$inferSelect,
+  ) {
+    if (!isHeartbeatRunTerminalStatus(run.status)) return;
+
+    const processAlive =
+      isProcessAlive(run.processPid) || isProcessGroupAlive(run.processGroupId);
+    if (processAlive && !run.processOwnershipReleasedAt) {
+      await terminateHeartbeatRunProcess({
+        pid: run.processPid,
+        processGroupId: run.processGroupId,
+      });
+    }
+
+    await revokeHeartbeatRunGatewayTokens({
+      db,
+      companyId: run.companyId,
+      runId: run.id,
+    }).catch((error) => {
+      logger.warn(
+        { err: error, runId: run.id, companyId: run.companyId },
+        "failed to revoke heartbeat-run MCP gateway tokens during terminal recovery",
+      );
+    });
+    await reconcileClaimedWakeupForTerminalRun(run);
+    await releaseEnvironmentLeasesForRun({
+      runId: run.id,
+      companyId: run.companyId,
+      agentId: run.agentId,
+      status: run.status,
+      failureReason: run.error,
+    });
+    await releaseTerminalRuntimeServicesForRun(db, run.id);
+    await releaseIssueExecutionAndPromote(run, {
+      suppressImmediateRecovery: true,
+    });
   }
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
@@ -13717,13 +13755,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       );
     for (const run of missedFinalizers) {
       if (liveRunExecutions.has(run.id)) continue;
-      await reconcileClaimedWakeupForTerminalRun(run);
-      await acknowledgeRunFinalizationReliably(run.id).catch((error) => {
-        logger.warn(
-          { err: error, runId: run.id },
-          "deferred reconciliation could not complete terminal run finalization",
-        );
-      });
+      await recoverTerminalRunFinalizerOwnership(run)
+        .then(() => acknowledgeRunFinalizationReliably(run.id))
+        .catch((error) => {
+          logger.warn(
+            { err: error, runId: run.id },
+            "deferred reconciliation could not complete terminal run finalization",
+          );
+        });
     }
 
     // Only a durable finalizer-completed marker authorizes deferred

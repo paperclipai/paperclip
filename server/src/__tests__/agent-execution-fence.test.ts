@@ -23,6 +23,7 @@ import { agentExecutionFenceService } from "../services/agent-execution-fence.js
 import { agentService } from "../services/agents.js";
 import { budgetService } from "../services/budgets.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
+import { environmentService } from "../services/environments.js";
 import {
   __resetHeartbeatShutdownAdmissionsForTests,
   heartbeatService,
@@ -863,6 +864,72 @@ describePostgres("agent execution fence", () => {
       pendingRunIds: [],
     });
     await expect(fences.release(agent.id, acquired.fenceId)).resolves.toBeDefined();
+  });
+
+  it("replays terminal ownership cleanup before recovering a missed finalizer", async () => {
+    const { company, agent } = await seedAgent("idle");
+    const run = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: company.id,
+        agentId: agent.id,
+        status: "failed",
+        startedAt: new Date(Date.now() - 60_000),
+        finishedAt: new Date(Date.now() - 30_000),
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const issue = await db
+      .insert(issues)
+      .values({
+        companyId: company.id,
+        title: "Missed finalizer ownership",
+        checkoutRunId: run.id,
+        executionRunId: run.id,
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const environment = await environmentService(db).ensureLocalEnvironment();
+    const lease = await db
+      .insert(environmentLeases)
+      .values({
+        companyId: company.id,
+        environmentId: environment.id,
+        heartbeatRunId: run.id,
+        status: "active",
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const runtimeServiceId = randomUUID();
+    await db.insert(workspaceRuntimeServices).values({
+      id: runtimeServiceId,
+      companyId: company.id,
+      scopeType: "run",
+      serviceName: "missed-finalizer-ephemeral-service",
+      status: "running",
+      lifecycle: "ephemeral",
+      provider: "local",
+      startedByRunId: run.id,
+    });
+
+    await expect(heartbeatService(db, { runtimeEnv: {} }).reapOrphanedRuns()).resolves.toMatchObject({
+      reaped: 0,
+    });
+
+    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)).then((rows) => rows[0]!))
+      .resolves.toMatchObject({
+        executionFinalizerCompletedAt: expect.any(Date),
+        executionFinalizedAt: expect.any(Date),
+      });
+    await expect(db.select().from(issues).where(eq(issues.id, issue.id)).then((rows) => rows[0]!))
+      .resolves.toMatchObject({ checkoutRunId: null, executionRunId: null });
+    await expect(db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id)).then((rows) => rows[0]!))
+      .resolves.toMatchObject({ status: "failed", releasedAt: expect.any(Date) });
+    await expect(
+      db.select().from(workspaceRuntimeServices)
+        .where(eq(workspaceRuntimeServices.id, runtimeServiceId))
+        .then((rows) => rows[0]!),
+    ).resolves.toMatchObject({ status: "stopped", stoppedAt: expect.any(Date) });
   });
 
   it("retries acknowledgement only after durable finalizer completion exists", async () => {

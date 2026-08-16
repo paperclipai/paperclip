@@ -7205,6 +7205,72 @@ export async function releaseRuntimeServicesForRun(runId: string) {
   }
 }
 
+export async function releaseTerminalRuntimeServicesForRun(db: Db, runId: string) {
+  await releaseRuntimeServicesForRun(runId);
+
+  const stranded = await db
+    .select()
+    .from(workspaceRuntimeServices)
+    .where(
+      and(
+        eq(workspaceRuntimeServices.startedByRunId, runId),
+        eq(workspaceRuntimeServices.lifecycle, "ephemeral"),
+        inArray(workspaceRuntimeServices.status, ["provisioning", "starting", "running"]),
+      ),
+    );
+
+  for (const row of stranded) {
+    const retained = runtimeServicesById.get(row.id);
+    if (retained) {
+      await stopRuntimeService(row.id);
+      continue;
+    }
+
+    if (row.provider !== "local" && row.provider !== "local_process") {
+      throw new Error(
+        `Cannot recover ephemeral runtime service ${row.id}: unsupported provider ${row.provider}`,
+      );
+    }
+
+    const registryRecord = await findLocalServiceRegistryRecordByRuntimeServiceId({
+      runtimeServiceId: row.id,
+      profileKind: "workspace-runtime",
+    });
+    if (registryRecord) {
+      await terminateLocalService({
+        pid: registryRecord.pid,
+        processGroupId: registryRecord.processGroupId ?? null,
+      });
+      await removeLocalServiceRegistryRecord(registryRecord.serviceKey);
+    } else if (row.providerRef) {
+      const pid = Number.parseInt(row.providerRef, 10);
+      if (!Number.isInteger(pid) || pid <= 0) {
+        throw new Error(
+          `Cannot recover ephemeral runtime service ${row.id}: invalid local process reference`,
+        );
+      }
+      await terminateLocalService({ pid, processGroupId: null });
+    }
+
+    const now = new Date();
+    await db
+      .update(workspaceRuntimeServices)
+      .set({
+        status: "stopped",
+        healthStatus: "unknown",
+        stoppedAt: now,
+        lastUsedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(workspaceRuntimeServices.id, row.id),
+          inArray(workspaceRuntimeServices.status, ["provisioning", "starting", "running"]),
+        ),
+      );
+  }
+}
+
 export async function stopRuntimeServicesForExecutionWorkspace(input: {
   db?: Db;
   executionWorkspaceId: string;

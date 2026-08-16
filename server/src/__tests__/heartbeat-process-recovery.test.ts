@@ -357,6 +357,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     cleanupPids.clear();
     await cancelActiveRunsForCleanup(db, 5_000);
+    await heartbeatService(db).drainActiveRunExecutions();
+    await cancelActiveRunsForCleanup(db, 5_000);
     let idlePolls = 0;
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const runs = await db
@@ -1356,6 +1358,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retryRun?.processLossRetryCount).toBe(1);
     expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
 
+    const settledRetry = await waitForRunToSettle(heartbeat, retryRun!.id);
+    expect(settledRetry?.status).toBe("succeeded");
+    const finalizedRetry = await waitForValue(async () => {
+      const current = await heartbeat.getRun(retryRun!.id);
+      return current?.executionFinalizedAt ? current : null;
+    });
+    expect(finalizedRetry?.executionFinalizedAt).toBeInstanceOf(Date);
+
     const issue = await waitForValue(async () =>
       db
         .select()
@@ -1407,6 +1417,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     const settledFirstRetry = await waitForRunToSettle(heartbeat, firstRetry!.id);
     expect(settledFirstRetry?.status).toBe("succeeded");
+    const finalizedFirstRetry = await waitForValue(async () => {
+      const current = await heartbeat.getRun(firstRetry!.id);
+      return current?.executionFinalizedAt ? current : null;
+    });
+    expect(finalizedFirstRetry?.executionFinalizedAt).toBeInstanceOf(Date);
 
     const secondAttempt = await seedRunFixture({
       adapterType: "openclaw_gateway",
@@ -2119,6 +2134,30 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await expect(waitForPidExit(child.pid)).resolves.toBe(true);
     await heartbeat.reapOrphanedRuns();
     expect((await listHeartbeatRunScratch()).some((entry) => entry.metadata.runId === runId)).toBe(false);
+  });
+
+  it("terminates a stranded child before recovering a terminal run finalizer", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeGreaterThan(0);
+    const { runId } = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "failed",
+      processPid: child.pid ?? null,
+      processGroupId: null,
+      includeIssue: false,
+      runError: "terminal status persisted before cleanup",
+    });
+    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+
+    await heartbeat.reapOrphanedRuns();
+
+    await expect(waitForPidExit(child.pid!)).resolves.toBe(true);
+    await expect(heartbeat.getRun(runId)).resolves.toMatchObject({
+      status: "failed",
+      executionFinalizerCompletedAt: expect.any(Date),
+      executionFinalizedAt: expect.any(Date),
+    });
   });
 
   it("reports adopted hot-restart runs before startup reap can mark them process_lost", async () => {

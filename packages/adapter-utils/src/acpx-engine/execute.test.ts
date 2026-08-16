@@ -1470,6 +1470,61 @@ describe("shared ACPX engine runtime behavior", () => {
     await expect(fs.readFile(path.join(stateDir, "run-stderr", "run-warm-2.log"), "utf8")).resolves.toContain("current-run-stderr");
   });
 
+  it("does not let a failed stale-runtime close block an unrelated execution", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const warmHandles = new Map();
+    const closeError = new Error("stale runtime close failed");
+    let currentNow = 0;
+    let runtimeCount = 0;
+    const execute = createAcpxEngineExecutor({
+      warmHandles,
+      now: () => currentNow,
+      createRuntime: () => {
+        runtimeCount += 1;
+        const runtime = buildRuntime();
+        return {
+          ...runtime,
+          close: runtimeCount === 1
+            ? async () => { throw closeError; }
+            : async () => {},
+        } as never;
+      },
+    });
+    const baseConfig = {
+      agent: "custom",
+      agentCommand: "node ./fake-acp.js",
+      stateDir,
+      mode: "persistent",
+      warmHandleIdleMs: 60_000,
+    };
+
+    const first = await execute({
+      runId: "run-stale-close-1",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { ...baseConfig, env: { FINGERPRINT: "first" } },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+    currentNow = 61_000;
+
+    await expect(execute({
+      runId: "run-stale-close-2",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { ...baseConfig, env: { FINGERPRINT: "second" } },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never)).resolves.toMatchObject({ exitCode: 0 });
+
+    expect(first.exitCode).toBe(0);
+    expect(runtimeCount).toBe(2);
+    expect(warmHandles.size).toBe(2);
+  });
+
   it("passes Paperclip env through ACPX session options instead of process.env", async () => {
     let observedSessionEnv: Record<string, string> | undefined;
     const execute = createAcpxEngineExecutor({
