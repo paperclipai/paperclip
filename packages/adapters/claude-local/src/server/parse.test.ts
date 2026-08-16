@@ -33,6 +33,36 @@ describe("detectClaudeLoginRequired", () => {
       }).requiresLogin,
     ).toBe(false);
   });
+
+  it("classifies an unrefreshable OAuth session as auth required", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: {
+          result:
+            "Failed to authenticate: OAuth session expired and could not be refreshed",
+          is_error: true,
+        },
+        stdout: "",
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(true);
+  });
+
+  it("does not classify a run that merely reports on an OAuth outage", () => {
+    expect(
+      detectClaudeLoginRequired({
+        parsed: {
+          result: [
+            "## Finding: the host was down for ~3.3 days",
+            "997 of 997 runs in the window died on an expired OAuth session,",
+            "so the credential — not the agents — was at fault.",
+          ].join("\n"),
+        },
+        stdout: "",
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(false);
+  });
 });
 
 describe("isClaudeModelNotFoundError", () => {
