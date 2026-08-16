@@ -35,6 +35,7 @@ export type UpsertIssueRecoveryActionInput = {
   maxAttempts?: number | null;
   timeoutAt?: Date | null;
   lastAttemptAt?: Date | null;
+  attemptCount?: number;
 };
 
 export type ResolveIssueRecoveryActionInput = {
@@ -123,8 +124,12 @@ export function issueRecoveryActionService(db: Db) {
     }
   }
 
-  async function getActiveForIssue(companyId: string, sourceIssueId: string): Promise<IssueRecoveryAction | null> {
-    const row = await db
+  async function getActiveForIssue(
+    companyId: string,
+    sourceIssueId: string,
+    dbOrTx: DbOrTransaction = db,
+  ): Promise<IssueRecoveryAction | null> {
+    const row = await dbOrTx
       .select()
       .from(issueRecoveryActions)
       .where(
@@ -199,7 +204,7 @@ export function issueRecoveryActionService(db: Db) {
           nextAction: input.nextAction,
           wakePolicy: input.wakePolicy ?? null,
           monitorPolicy: input.monitorPolicy ?? null,
-          attemptCount: existing.attemptCount + 1,
+          attemptCount: input.attemptCount ?? existing.attemptCount + 1,
           maxAttempts: input.maxAttempts ?? null,
           timeoutAt: input.timeoutAt ?? null,
           lastAttemptAt: input.lastAttemptAt ?? now,
@@ -241,7 +246,7 @@ export function issueRecoveryActionService(db: Db) {
           nextAction: input.nextAction,
           wakePolicy: input.wakePolicy ?? null,
           monitorPolicy: input.monitorPolicy ?? null,
-          attemptCount: 1,
+          attemptCount: input.attemptCount ?? 1,
           maxAttempts: input.maxAttempts ?? null,
           timeoutAt: input.timeoutAt ?? null,
           lastAttemptAt: input.lastAttemptAt ?? now,

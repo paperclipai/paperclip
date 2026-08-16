@@ -10,6 +10,7 @@ export type BlockedReasonVariant =
   | "stalled"
   | "needs_attention"
   | "recovery_required"
+  | "recovery_in_progress"
   | "external_wait"
   | "owner_paused";
 
@@ -33,6 +34,7 @@ export const BLOCKED_REASON_VARIANT_ORDER: BlockedReasonVariant[] = [
   "stalled",
   "needs_attention",
   "recovery_required",
+  "recovery_in_progress",
   "external_wait",
   "owner_paused",
 ];
@@ -42,6 +44,7 @@ export const BLOCKED_VARIANT_LABELS: Record<BlockedReasonVariant, string> = {
   stalled: "Blocked chain stalled",
   needs_attention: "Needs attention",
   recovery_required: "Recovery required",
+  recovery_in_progress: "Recovery in progress",
   external_wait: "External wait",
   owner_paused: "Owner paused",
 };
@@ -70,7 +73,20 @@ const SEVERITY_RANK: Record<IssueBlockedInboxSeverity, number> = {
 
 export type BlockedInboxBadgeTone = "muted" | "amber" | "red";
 
-export function blockedReasonVariant(reason: IssueBlockedInboxReason): BlockedReasonVariant {
+export function blockedReasonVariant(
+  reason: IssueBlockedInboxReason,
+  options?: {
+    /**
+     * The task's recovery action is already owned by a live/queued runner (or has
+     * been folded to observation). An open recovery issue in that state is
+     * progress, not an operator request, so it drops to the recessed variant.
+     */
+    recoveryRecessed?: boolean;
+  },
+): BlockedReasonVariant {
+  if (reason === "open_recovery_issue" && options?.recoveryRecessed) {
+    return "recovery_in_progress";
+  }
   return VARIANT_BY_REASON[reason] ?? "needs_attention";
 }
 

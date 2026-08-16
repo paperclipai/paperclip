@@ -1,4 +1,4 @@
-import { AlertTriangle, Clock, Pause, User, Wrench } from "lucide-react";
+import { AlertTriangle, Clock, Pause, RefreshCw, User, Wrench } from "lucide-react";
 import type { ComponentType } from "react";
 import type { IssueBlockedInboxSeverity } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
@@ -12,6 +12,8 @@ import type { IssueBlockedInboxReason } from "@paperclipai/shared";
 interface BlockedReasonChipProps {
   reason: IssueBlockedInboxReason;
   severity: IssueBlockedInboxSeverity;
+  /** Recovery is already owned by a live/queued runner — render the recessed variant. */
+  recoveryRecessed?: boolean;
   compact?: boolean;
   className?: string;
 }
@@ -23,6 +25,7 @@ const VARIANT_STYLES: Record<BlockedReasonVariant, string> = {
     "border-violet-300/70 bg-violet-50 text-violet-800 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-300",
   recovery_required:
     "border-cyan-300/70 bg-cyan-50 text-cyan-800 dark:border-cyan-500/30 dark:bg-cyan-500/10 dark:text-cyan-300",
+  recovery_in_progress: "border-border bg-muted text-muted-foreground",
   stalled:
     "border-amber-400/70 bg-amber-100 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/15 dark:text-amber-200",
   needs_attention:
@@ -36,6 +39,7 @@ const VARIANT_STYLES: Record<BlockedReasonVariant, string> = {
 const VARIANT_ICONS: Record<BlockedReasonVariant, IconComponent> = {
   needs_decision: Clock,
   recovery_required: Wrench,
+  recovery_in_progress: RefreshCw,
   stalled: AlertTriangle,
   needs_attention: AlertTriangle,
   external_wait: User,
@@ -50,10 +54,11 @@ const SEVERITY_DOT: Partial<Record<IssueBlockedInboxSeverity, string>> = {
 export function BlockedReasonChip({
   reason,
   severity,
+  recoveryRecessed = false,
   compact = false,
   className,
 }: BlockedReasonChipProps) {
-  const variant = blockedReasonVariant(reason);
+  const variant = blockedReasonVariant(reason, { recoveryRecessed });
   const label = blockedVariantLabel(variant);
   const Icon = VARIANT_ICONS[variant];
   const dotClass = SEVERITY_DOT[severity];

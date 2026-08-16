@@ -646,6 +646,62 @@ describe("IssueBlockedNotice", () => {
     expect(indicator?.textContent).toContain("Recovery needed");
   });
 
+  it("recesses the blocker recovery indicator while the blocker itself is live", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        liveIssueIds={new Set(["blocker-1"])}
+        blockers={[
+          {
+            id: "blocker-1",
+            identifier: "PAP-123",
+            title: "Build still red",
+            status: "in_progress",
+            priority: "medium",
+            assigneeAgentId: "agent-cto",
+            assigneeUserId: null,
+            activeRecoveryAction: {
+              id: "rec-1",
+              companyId: "co-1",
+              sourceIssueId: "blocker-1",
+              recoveryIssueId: null,
+              kind: "missing_disposition",
+              status: "active",
+              ownerType: "agent",
+              ownerAgentId: "agent-cto",
+              ownerUserId: null,
+              previousOwnerAgentId: null,
+              returnOwnerAgentId: null,
+              cause: "successful_run_missing_state",
+              fingerprint: "fp-1",
+              evidence: {},
+              nextAction: "choose disposition",
+              wakePolicy: { type: "wake_owner" },
+              monitorPolicy: null,
+              attemptCount: 1,
+              maxAttempts: 3,
+              timeoutAt: null,
+              lastAttemptAt: null,
+              outcome: null,
+              resolutionNote: null,
+              resolvedAt: null,
+              createdAt: "2026-05-01T00:00:00.000Z",
+              updatedAt: "2026-05-01T00:00:00.000Z",
+            },
+          },
+        ]}
+      />,
+    );
+
+    const indicator = node.querySelector(
+      '[data-testid="issue-blocked-notice-recovery-indicator"]',
+    );
+    expect(indicator?.getAttribute("data-recovery-state")).toBe("in_progress");
+    expect(indicator?.textContent).toContain("Recovery in progress");
+    expect(indicator?.textContent).not.toContain("Recovery needed");
+    expect(indicator?.className).not.toMatch(/amber|red/);
+  });
+
   it("labels a workspace_validation blocker recovery distinctly", () => {
     const node = render(
       <IssueBlockedNotice

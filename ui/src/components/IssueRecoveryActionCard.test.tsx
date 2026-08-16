@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import type { AnchorHTMLAttributes, ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ISSUE_RECOVERY_ACTION_KINDS } from "@paperclipai/shared";
 import type { Agent, IssueRecoveryAction } from "@paperclipai/shared";
 import { IssueRecoveryActionCard, deriveRecoveryCardState } from "./IssueRecoveryActionCard";
 
@@ -166,6 +167,30 @@ describe("IssueRecoveryActionCard", () => {
     expect(node.textContent).toContain(
       "The active run has been silent. Recovery is observing without interrupting it.",
     );
+  });
+
+  // PAP-17058: PAP-17057 added a recovery action kind without a UI label, which
+  // only surfaced as a tsc failure once both branches met. Assert every kind in
+  // the shared union renders its own copy so a new kind cannot land unlabelled
+  // or silently share another kind's headline.
+  it("gives every shared recovery action kind a distinct label and headline", () => {
+    const headlines = new Map<string, string>();
+    for (const kind of ISSUE_RECOVERY_ACTION_KINDS) {
+      const node = render(<IssueRecoveryActionCard action={buildAction({ kind })} />);
+      const text = node.textContent ?? "";
+      expect(text.trim(), `${kind} rendered no copy`).not.toBe("");
+      headlines.set(kind, text);
+      act(() => root?.unmount());
+      container?.remove();
+      root = null;
+      container = null;
+    }
+    expect(headlines.size).toBe(ISSUE_RECOVERY_ACTION_KINDS.length);
+    const deliberateWait = headlines.get("deliberate_wait_without_target") ?? "";
+    expect(deliberateWait).toContain("Waiting On Nothing");
+    expect(deliberateWait).toContain("no reviewer, blocker, or open subtask to wait on");
+    // The generic missing_disposition copy must not be what a named kind shows.
+    expect(deliberateWait).not.toContain("no next step was chosen");
   });
 
   it("explains issue_graph_liveness in plain language", () => {

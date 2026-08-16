@@ -503,6 +503,162 @@ describe("IssueRow", () => {
     });
   });
 
+  describe("recovery indicator", () => {
+    const recoveryAction = {
+      id: "recovery-1",
+      companyId: "company-1",
+      sourceIssueId: "issue-1",
+      recoveryIssueId: null,
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: "cto-agent",
+      ownerUserId: null,
+      previousOwnerAgentId: null,
+      returnOwnerAgentId: null,
+      cause: "stranded_assigned_issue",
+      fingerprint: "fp",
+      evidence: {},
+      nextAction: "Choose what happens next.",
+      wakePolicy: null,
+      monitorPolicy: null,
+      attemptCount: 1,
+      maxAttempts: 3,
+      timeoutAt: null,
+      lastAttemptAt: null,
+      outcome: null,
+      resolutionNote: null,
+      resolvedAt: null,
+      createdAt: new Date("2026-08-11T00:00:00.000Z"),
+      updatedAt: new Date("2026-08-11T00:00:00.000Z"),
+    } as unknown as NonNullable<Issue["activeRecoveryAction"]>;
+
+    function renderRow(issue: Issue) {
+      const root = createRoot(container);
+      act(() => {
+        root.render(<IssueRow issue={issue} />);
+      });
+      const chip = container.querySelector('[data-testid="issue-row-recovery-indicator"]');
+      const result = { state: chip?.getAttribute("data-recovery-state"), text: chip?.textContent };
+      act(() => {
+        root.unmount();
+      });
+      return result;
+    }
+
+    it("warns when no owner is running the recovery", () => {
+      expect(
+        renderRow(createIssue({ activeRecoveryAction: recoveryAction })),
+      ).toEqual({ state: "needed", text: "Recovery needed" });
+    });
+
+    it("recesses to in-progress while the recovery owner holds the execution lock", () => {
+      expect(
+        renderRow(
+          createIssue({
+            status: "in_progress",
+            executionRunId: "run-1",
+            assigneeAgentId: "cto-agent",
+            activeRecoveryAction: recoveryAction,
+          }),
+        ),
+      ).toEqual({ state: "in_progress", text: "Recovery in progress" });
+    });
+
+    it("recesses to observation when a different owner is live on the task", () => {
+      expect(
+        renderRow(
+          createIssue({
+            status: "in_progress",
+            executionRunId: "run-1",
+            assigneeAgentId: "coder-agent",
+            activeRecoveryAction: recoveryAction,
+          }),
+        ),
+      ).toEqual({ state: "observe_only", text: "Observing active run" });
+    });
+
+    it("recesses to in-progress while a wake is queued", () => {
+      expect(
+        renderRow(
+          createIssue({
+            activeRecoveryAction: recoveryAction,
+            scheduledRetry: {
+              runId: "run-2",
+              status: "scheduled_retry",
+              agentId: "cto-agent",
+              agentName: "CTO",
+              retryOfRunId: null,
+              scheduledRetryAt: null,
+              scheduledRetryAttempt: 1,
+              scheduledRetryReason: null,
+            },
+          }),
+        ),
+      ).toEqual({ state: "in_progress", text: "Recovery in progress" });
+    });
+
+    // PAP-17070: the chip was painted twice on mobile — once in the `sm:hidden`
+    // leading cluster and again beside the identifier, whose copy had no desktop
+    // gate. Because badges are `whitespace-nowrap shrink-0`, that duplicate
+    // pushed a 390px document out to 403px. Exactly one copy may be visible at
+    // any one breakpoint.
+    it.each([
+      ["needed", {}],
+      [
+        "in_progress",
+        { status: "in_progress", executionRunId: "run-1", assigneeAgentId: "cto-agent" },
+      ],
+      [
+        "observe_only",
+        { status: "in_progress", executionRunId: "run-1", assigneeAgentId: "coder-agent" },
+      ],
+      ["escalated", { activeRecoveryAction: { ...recoveryAction, status: "escalated" } }],
+    ] as const)("renders one %s chip per breakpoint, never two at once", (state, overrides) => {
+      const root = createRoot(container);
+      act(() => {
+        root.render(
+          <IssueRow
+            issue={createIssue({
+              activeRecoveryAction: recoveryAction,
+              ...(overrides as Partial<Issue>),
+            })}
+          />,
+        );
+      });
+
+      const chips = Array.from(
+        container.querySelectorAll('[data-testid="issue-row-recovery-indicator"]'),
+      );
+      expect(chips.map((chip) => chip.getAttribute("data-recovery-state"))).toEqual([state, state]);
+
+      // Classify each copy by the breakpoint gate on its ancestors.
+      const visibility = chips.map((chip) => {
+        let node = chip.parentElement;
+        while (node && node !== container) {
+          const classes = node.className;
+          if (typeof classes === "string") {
+            if (classes.includes("sm:hidden")) return "mobile";
+            if (classes.includes("hidden") && classes.includes("sm:inline-flex")) return "desktop";
+          }
+          node = node.parentElement;
+        }
+        return "always";
+      });
+      expect(visibility.sort()).toEqual(["desktop", "mobile"]);
+
+      // A hard width ceiling is the backstop for a long label in either slot.
+      chips.forEach((chip) => {
+        expect(chip.className).toContain("max-w-(--sz-12rem)");
+        expect(chip.querySelector("span")?.className).toContain("truncate");
+      });
+
+      act(() => {
+        root.unmount();
+      });
+    });
+  });
+
   it("keeps the hover wash on the row root while the overlay link stays a bare positioning layer", () => {
     const root = createRoot(container);
 

@@ -8,6 +8,10 @@ import { accessApi } from "../api/access";
 import { queryKeys } from "../lib/queryKeys";
 import { useToastActions } from "../context/ToastContext";
 import {
+  deriveRecoveryDisplayState,
+  recoveryLivenessFromIssue,
+} from "@/lib/recovery-display";
+import {
   IssueRecoveryActionCard,
   type RecoveryReissueRequest,
   type RecoveryResolveOutcome,
@@ -252,6 +256,14 @@ export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
   if (!isWorkspaceValidationFailure || !issueId) return null;
   if (!recoveryAction || recoveryAction.kind !== "workspace_validation") return null;
 
+  // The failed run is history. If the source task has since gone live again —
+  // the recovery owner picked it up, or a newer owner took over — the divergence
+  // is already being handled, so this surface reports instead of warning.
+  const displayState = deriveRecoveryDisplayState(
+    recoveryAction,
+    recoveryLivenessFromIssue(issue),
+  );
+
   return (
     <div className="space-y-2" data-testid="run-workspace-recovery-surface">
       <div className="flex items-center justify-between gap-2">
@@ -271,6 +283,7 @@ export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
       </div>
       <IssueRecoveryActionCard
         action={recoveryAction}
+        forcedState={displayState}
         variant="compact"
         onResolve={handleResolve}
         onReissueIsolated={handleReissue}

@@ -1,10 +1,16 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { ReactNode } from "react";
 import type { IssueRecoveryAction, IssueRelationIssueSummary } from "@paperclipai/shared";
-import { Eye, ExternalLink, OctagonAlert, RefreshCw, TriangleAlert } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import { IssueRecoveryActionCard } from "@/components/IssueRecoveryActionCard";
+import { RecoveryProgressLine } from "@/components/RecoveryProgressLine";
 import { IssueRow } from "@/components/IssueRow";
 import { IssueBlockedNotice } from "@/components/IssueBlockedNotice";
+import {
+  RECOVERY_CHIP_DEFAULT_TONE,
+  type ActiveRecoveryDisplayState,
+} from "@/lib/recovery-display";
+import { cn } from "@/lib/utils";
 import { storybookAgentMap, storybookAgents, createIssue } from "../fixtures/paperclipData";
 
 const claudeAgent = storybookAgents.find((agent) => agent.name.toLowerCase().startsWith("claude")) ?? storybookAgents[0]!;
@@ -250,37 +256,26 @@ function BlockerNoticePanel() {
   );
 }
 
-type RunCardRecoveryState = "needed" | "in_progress" | "observe_only" | "escalated";
+type RunCardRecoveryState = ActiveRecoveryDisplayState;
 
-const RUN_CARD_RECOVERY_TONE: Record<RunCardRecoveryState, { icon: typeof TriangleAlert; label: string; className: string }> = {
-  needed: {
-    icon: TriangleAlert,
-    label: "Recovery needed",
-    className: "border-amber-500/60 bg-amber-500/15 text-amber-700 dark:text-amber-300",
-  },
-  in_progress: {
-    icon: RefreshCw,
-    label: "Recovery in progress",
-    className: "border-sky-500/60 bg-sky-500/15 text-sky-700 dark:text-sky-300",
-  },
-  observe_only: {
-    icon: Eye,
-    label: "Observing active run",
-    className: "border-border bg-muted text-muted-foreground",
-  },
-  escalated: {
-    icon: OctagonAlert,
-    label: "Recovery escalated",
-    className: "border-red-500/60 bg-red-500/15 text-red-700 dark:text-red-300",
-  },
-};
-
+// This mock deliberately holds NO tone table of its own. It used to keep a
+// hand-copied one, which silently drifted off `RECOVERY_CHIP_DEFAULT_TONE`:
+// when PAP-17083 moved the recessed chip onto the AA-safe neutral, this story
+// kept rendering the old `text-muted-foreground` on `bg-muted` and axe still
+// measured 4.34:1 here (and 4.41:1 on the amber `needed` chip) after the real
+// components were fixed. Reading the shared table is what makes this story
+// evidence rather than decoration.
 function ActiveRunRecoveryChip({ state }: { state: RunCardRecoveryState }) {
-  const tone = RUN_CARD_RECOVERY_TONE[state];
+  const tone = RECOVERY_CHIP_DEFAULT_TONE[state];
   const Icon = tone.icon;
   return (
     <span
-      className={`inline-flex shrink-0 items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${tone.className}`}
+      className={cn(
+        "inline-flex shrink-0 items-center gap-0.5 rounded-full border px-1.5 py-0.5 font-medium",
+        // Token type scale, not an arbitrary `text-[10px]`.
+        "text-(length:--text-nano)",
+        tone.className,
+      )}
       role="status"
       aria-label={tone.label}
     >
@@ -362,6 +357,10 @@ function ActiveRunPanel() {
 
 function InboxRowPanel() {
   const baseIssue = createIssue();
+  // Liveness now decides the chip, so each row pins the signals for the state it
+  // is meant to demonstrate: an ownerless task with no live run reads `needed`,
+  // the recovery owner holding the live run reads `in_progress`, and a live run
+  // owned by somebody else folds down to `observe_only`.
   return (
     <div className="rounded-lg border border-border/70 bg-background/80">
       <IssueRow
@@ -370,6 +369,20 @@ function InboxRowPanel() {
           identifier: "PAP-9065",
           title: "Add full company search page",
           status: "in_progress",
+          executionRunId: null,
+          scheduledRetry: null,
+          activeRecoveryAction: buildAction(),
+        }}
+      />
+      <IssueRow
+        issue={{
+          ...baseIssue,
+          id: "issue-recovery-in-progress",
+          identifier: "PAP-9101",
+          title: "Owner is live on the source task — recessed in-progress chip",
+          status: "in_progress",
+          assigneeAgentId: claudeAgent.id,
+          executionRunId: "run-recovery-owner-live",
           activeRecoveryAction: buildAction(),
         }}
       />
@@ -400,6 +413,11 @@ function InboxRowPanel() {
           identifier: "PAP-10409",
           title: "Phase 6 follow-up failed: git workspace lost",
           status: "blocked",
+          // No live run, so this keeps the `needed` state and its longer
+          // "Workspace recovery needed" label — the widest chip the row has to
+          // survive at 390px.
+          executionRunId: null,
+          scheduledRetry: null,
           activeRecoveryAction: buildAction({
             kind: "workspace_validation",
             cause: "workspace_validation_failed",
@@ -464,6 +482,76 @@ export const ActiveRunPanelRecoveryChips: Story = {
       description="Active run cards on the dashboard expose recovery state on the linked source issue."
     >
       <ActiveRunPanel />
+    </StoryFrame>
+  ),
+};
+
+function LivenessAwarePanel() {
+  return (
+    <div className="space-y-6">
+      <section className="space-y-2">
+        <h2 className="text-sm font-semibold">Recovery owner is live or queued</h2>
+        <p className="text-sm text-muted-foreground">
+          The recessed line replaces the prominent card. It names the owner, folds all evidence
+          behind one disclosure, and never claims recovery is “needed” while someone is on it.
+        </p>
+        <div className="rounded-lg border border-border/60 bg-background p-2">
+          <RecoveryProgressLine
+            state="in_progress"
+            ownerName={claudeAgent.name}
+            action={buildAction({ kind: "stranded_assigned_issue" })}
+            agentMap={storybookAgentMap}
+            onResolve={() => undefined}
+          />
+        </div>
+      </section>
+
+      <section className="space-y-2">
+        <h2 className="text-sm font-semibold">Expanded — evidence stays inspectable</h2>
+        <div className="rounded-lg border border-border/60 bg-background p-2">
+          <RecoveryProgressLine
+            state="in_progress"
+            ownerName={claudeAgent.name}
+            defaultOpen
+            action={buildAction({ kind: "stranded_assigned_issue" })}
+            agentMap={storybookAgentMap}
+            onResolve={() => undefined}
+          />
+        </div>
+      </section>
+
+      <section className="space-y-2">
+        <h2 className="text-sm font-semibold">A newer owner took the task over</h2>
+        <div className="rounded-lg border border-border/60 bg-background p-2">
+          <RecoveryProgressLine
+            state="observe_only"
+            action={buildAction()}
+            agentMap={storybookAgentMap}
+            onResolve={() => undefined}
+          />
+        </div>
+      </section>
+
+      <section className="space-y-2">
+        <h2 className="text-sm font-semibold">No owner, no path — prominence is earned</h2>
+        <IssueRecoveryActionCard
+          action={buildAction({ ownerType: "system", ownerAgentId: null })}
+          agentMap={storybookAgentMap}
+          forcedState="needed"
+          onResolve={() => undefined}
+        />
+      </section>
+    </div>
+  );
+}
+
+export const LivenessAwareRecovery: Story = {
+  render: () => (
+    <StoryFrame
+      title="Liveness-aware recovery"
+      description="A live or queued recovery owner renders as a recessed, expandable line — prominent amber/red is reserved for an ownerless action or a true escalation."
+    >
+      <LivenessAwarePanel />
     </StoryFrame>
   ),
 };

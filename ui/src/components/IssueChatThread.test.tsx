@@ -3869,4 +3869,92 @@ describe("IssueChatThread", () => {
       avatarUrl: "/avatars/alice.png",
     });
   });
+
+  it("renders a live recovery owner as a recessed line and keeps the card when nothing is live", () => {
+    const recoveryAction = {
+      id: "recovery-1",
+      companyId: "company-1",
+      sourceIssueId: "issue-1",
+      recoveryIssueId: null,
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: "cto-agent",
+      ownerUserId: null,
+      previousOwnerAgentId: null,
+      returnOwnerAgentId: null,
+      cause: "stranded_assigned_issue",
+      fingerprint: "fp",
+      evidence: {},
+      nextAction: "Choose what happens next.",
+      wakePolicy: null,
+      monitorPolicy: null,
+      attemptCount: 1,
+      maxAttempts: 3,
+      timeoutAt: null,
+      lastAttemptAt: null,
+      outcome: null,
+      resolutionNote: null,
+      resolvedAt: null,
+      createdAt: "2026-08-11T00:00:00.000Z",
+      updatedAt: "2026-08-11T00:00:00.000Z",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+
+    const renderThread = (liveRuns: unknown[]) => {
+      const root = createRoot(container);
+      act(() => {
+        root.render(
+          <MemoryRouter>
+            <IssueChatThread
+              comments={[]}
+              linkedRuns={[]}
+              timelineEvents={[]}
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              liveRuns={liveRuns as any}
+              issueId="issue-1"
+              issueStatus="in_progress"
+              recoveryAction={recoveryAction}
+              onResolveRecoveryAction={() => {}}
+              onAdd={async () => {}}
+              enableLiveTranscriptPolling={false}
+            />
+          </MemoryRouter>,
+        );
+      });
+      const line = container.querySelector('[data-testid="recovery-progress-line"]');
+      const card = container.querySelector("[data-recovery-state][role='status']");
+      const result = {
+        lineState: line?.getAttribute("data-recovery-state") ?? null,
+        cardState: card?.getAttribute("data-recovery-state") ?? null,
+        text: container.textContent ?? "",
+      };
+      act(() => {
+        root.unmount();
+      });
+      return result;
+    };
+
+    const live = renderThread([
+      {
+        id: "run-1",
+        status: "running",
+        agentId: "cto-agent",
+        agentName: "CTO",
+        createdAt: "2026-08-11T00:00:00.000Z",
+        startedAt: "2026-08-11T00:00:00.000Z",
+        finishedAt: null,
+        issueId: "issue-1",
+      },
+    ]);
+    expect(live.lineState).toBe("in_progress");
+    expect(live.cardState).toBeNull();
+    expect(live.text).toContain("Recovery in progress \u00b7 CTO");
+    expect(live.text).not.toContain("RECOVERY NEEDED");
+
+    const idle = renderThread([]);
+    expect(idle.lineState).toBeNull();
+    expect(idle.cardState).toBe("needed");
+    expect(idle.text).toContain("RECOVERY NEEDED");
+  });
 });

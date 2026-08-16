@@ -832,7 +832,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     }));
   });
 
-  it("blocks a cross-agent review participant with incomplete configuration", async () => {
+  it("blocks a cross-agent review participant without taking source ownership", async () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     const stageId = randomUUID();
     await db.update(issues).set({
@@ -882,7 +882,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
     expect(updatedIssue).toMatchObject({
       status: "blocked",
-      assigneeAgentId: managerId,
+      assigneeAgentId: coderId,
     });
     const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(updatedRun?.errorCode).toBe("configuration_incomplete");
@@ -1412,7 +1412,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     await db
       .update(issues)
-      .set({ status: "blocked", assigneeAgentId: managerId })
+      .set({ status: "blocked", assigneeAgentId: coderId })
       .where(eq(issues.id, sourceIssueId));
     const recoveryActionSvc = issueRecoveryActionService(db);
     const action = await recoveryActionSvc.upsertSourceScoped({
@@ -1832,7 +1832,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
-  it("allows the named recovery owner to resolve a board-owned source recovery action", async () => {
+  it("rejects the named recovery owner completing a board-owned source recovery action", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     await db
       .update(issues)
@@ -1874,18 +1874,20 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         sourceIssueStatus: "done",
         resolutionNote: "Recovery owner verified the work was intentionally completed.",
       })
-      .expect(200);
+      .expect(403);
 
-    expect(resolved.body.issue).toMatchObject({
-      id: sourceIssueId,
-      status: "done",
-      activeRecoveryAction: null,
+    expect(resolved.body.details).toMatchObject({
+      code: "recovery_source_authority_required",
+      issueId: sourceIssueId,
+      actorAgentId: managerId,
     });
-    expect(resolved.body.recoveryAction).toMatchObject({
-      id: action.id,
-      status: "resolved",
-      outcome: "owner_completed",
-    });
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(sourceIssue).toMatchObject({ status: "blocked", assigneeAgentId: null });
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({ status: "active", outcome: null, resolvedAt: null });
   });
 
   it("rejects blocked recovery resolution when the source issue has no first-class blockers", async () => {

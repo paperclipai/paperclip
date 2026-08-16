@@ -185,6 +185,8 @@ import {
   type RecoveryReissueRequest,
   type RecoveryResolveOutcome,
 } from "./IssueRecoveryActionCard";
+import { RecoveryProgressLine } from "./RecoveryProgressLine";
+import { deriveRecoveryPresentation } from "../lib/recovery-display";
 import { SourceTrustBadge } from "./SourceTrustBadge";
 import { CommentAttributionChip } from "./CommentAttributionChip";
 import { resolveCommentAttribution } from "../lib/comment-attribution";
@@ -4503,6 +4505,33 @@ export function IssueChatThread({
     const liveNow = activeRunIds.size > 0 || Boolean(issueId && liveIssueIds?.has(issueId));
     return liveNow ? { ...successfulRunHandoff, hasLiveContinuation: true } : successfulRunHandoff;
   }, [successfulRunHandoff, activeRunIds, issueId, liveIssueIds]);
+  // Liveness-aware recovery presentation: a recovery owner that is already live
+  // or queued reads as recessed progress, and a newer source-owner run folds the
+  // action down to observation. Only a genuinely ownerless or escalated action
+  // keeps the prominent card.
+  const recoveryDisplay = useMemo(
+    () =>
+      deriveRecoveryPresentation({
+        action: recoveryAction,
+        liveRuns: displayLiveRuns,
+        issueId,
+        liveIssueIds,
+        issueAssigneeAgentId,
+        scheduledRetry,
+        successfulRunHandoff: successfulRunHandoffWithLiveness,
+        resolveAgentName: (agentId) => agentMap?.get(agentId)?.name,
+      }),
+    [
+      agentMap,
+      displayLiveRuns,
+      issueAssigneeAgentId,
+      issueId,
+      liveIssueIds,
+      recoveryAction,
+      scheduledRetry,
+      successfulRunHandoffWithLiveness,
+    ],
+  );
   const clearLatestSettleTimeouts = useCallback(() => {
     for (const timeout of latestSettleTimeoutsRef.current) {
       window.clearTimeout(timeout);
@@ -5102,21 +5131,42 @@ export function IssueChatThread({
                     onResume={onResumeFromBacklog}
                     resuming={resumeFromBacklogPending}
                   />
-                  {recoveryAction ? (
-                    <IssueRecoveryActionCard
-                      action={recoveryAction}
-                      agentMap={agentMap}
-                      onResolve={onResolveRecoveryAction}
-                      onReissueIsolated={onReissueIsolatedRecoveryAction}
-                      reissuePending={reissueIsolatedRecoveryActionPending}
-                      onReconcileForward={onReconcileForwardRecoveryAction}
-                      onBreakGlassOverride={onBreakGlassOverrideRecoveryAction}
-                      onQuarantineRestore={onQuarantineRestoreRecoveryAction}
-                      quarantineRestorePending={quarantineRestoreRecoveryActionPending}
-                      canBreakGlass={canBreakGlassRecoveryAction}
-                      reconcilePending={reconcileRecoveryActionPending}
-                      canFalsePositive={canFalsePositiveRecoveryAction}
-                    />
+                  {recoveryAction && recoveryDisplay ? (
+                    recoveryDisplay.state === "in_progress" ||
+                    recoveryDisplay.state === "observe_only" ? (
+                      <RecoveryProgressLine
+                        state={recoveryDisplay.state}
+                        ownerName={recoveryDisplay.ownerName}
+                        action={recoveryAction}
+                        agentMap={agentMap}
+                        onResolve={onResolveRecoveryAction}
+                        onReissueIsolated={onReissueIsolatedRecoveryAction}
+                        reissuePending={reissueIsolatedRecoveryActionPending}
+                        onReconcileForward={onReconcileForwardRecoveryAction}
+                        onBreakGlassOverride={onBreakGlassOverrideRecoveryAction}
+                        onQuarantineRestore={onQuarantineRestoreRecoveryAction}
+                        quarantineRestorePending={quarantineRestoreRecoveryActionPending}
+                        canBreakGlass={canBreakGlassRecoveryAction}
+                        reconcilePending={reconcileRecoveryActionPending}
+                        canFalsePositive={canFalsePositiveRecoveryAction}
+                      />
+                    ) : (
+                      <IssueRecoveryActionCard
+                        action={recoveryAction}
+                        agentMap={agentMap}
+                        forcedState={recoveryDisplay.state}
+                        onResolve={onResolveRecoveryAction}
+                        onReissueIsolated={onReissueIsolatedRecoveryAction}
+                        reissuePending={reissueIsolatedRecoveryActionPending}
+                        onReconcileForward={onReconcileForwardRecoveryAction}
+                        onBreakGlassOverride={onBreakGlassOverrideRecoveryAction}
+                        onQuarantineRestore={onQuarantineRestoreRecoveryAction}
+                        quarantineRestorePending={quarantineRestoreRecoveryActionPending}
+                        canBreakGlass={canBreakGlassRecoveryAction}
+                        reconcilePending={reconcileRecoveryActionPending}
+                        canFalsePositive={canFalsePositiveRecoveryAction}
+                      />
+                    )
                   ) : null}
                   {legacyRecoverySourceIssue ? (
                     <SystemNotice

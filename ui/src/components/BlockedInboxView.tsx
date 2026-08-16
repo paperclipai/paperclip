@@ -18,6 +18,11 @@ import {
   type BlockedInboxSort,
 } from "../lib/blockedInbox";
 import { BlockedReasonChip } from "./BlockedReasonChip";
+import {
+  deriveRecoveryDisplayState,
+  isRecessedRecoveryState,
+  recoveryLivenessFromIssue,
+} from "../lib/recovery-display";
 import { IssueGroupHeader } from "./IssueGroupHeader";
 import { IssueRow } from "./IssueRow";
 import { Identity } from "./Identity";
@@ -302,10 +307,23 @@ function BlockedInboxRow({
 }: BlockedInboxRowProps) {
   const { label: ownerName, isAgent } = resolveOwnerName(row, agentNameById, userLabelById);
   const stoppedAge = formatStoppedAge(row.attention.stoppedSinceAt);
+  const isLive = liveIssueIds.has(row.issue.id);
   const blockerAttention = resolveInboxIssueBlockerAttention(row.issue, {
-    isLive: liveIssueIds.has(row.issue.id),
+    isLive,
     loadedSubtreeLiveCount: subtreeLiveCounts.get(row.issue.id) ?? 0,
   });
+  // An open recovery issue whose owner is already live/queued is progress, not a
+  // request for the operator — the chip drops to its recessed variant.
+  const recoveryState = row.issue.activeRecoveryAction
+    ? deriveRecoveryDisplayState(
+        row.issue.activeRecoveryAction,
+        recoveryLivenessFromIssue(row.issue, {
+          sourceHasLiveRun: isLive || Boolean(row.issue.executionRunId),
+          sourceLiveRunAgentId: row.issue.assigneeAgentId ?? null,
+        }),
+      )
+    : null;
+  const recoveryRecessed = recoveryState !== null && isRecessedRecoveryState(recoveryState);
 
   const desktopTrailing = (
     <span className="flex shrink-0 items-center gap-3 text-xs">
@@ -316,6 +334,7 @@ function BlockedInboxRow({
         <BlockedReasonChip
           reason={row.attention.reason}
           severity={row.attention.severity}
+          recoveryRecessed={recoveryRecessed}
           className="max-w-full"
         />
       </span>
@@ -377,6 +396,7 @@ function BlockedInboxRow({
         <BlockedReasonChip
           reason={row.attention.reason}
           severity={row.attention.severity}
+          recoveryRecessed={recoveryRecessed}
           className="ml-2 max-w-(--sz-12rem) align-middle sm:hidden"
         />
       }

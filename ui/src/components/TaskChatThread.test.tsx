@@ -294,3 +294,99 @@ describe("TaskChatThread live transcript", () => {
     expect(container.textContent).toContain("Worked");
   });
 });
+
+describe("TaskChatThread recovery presentation", () => {
+  const recoveryAction = {
+    id: "recovery-1",
+    companyId: "company-1",
+    sourceIssueId: "issue-1",
+    recoveryIssueId: null,
+    kind: "stranded_assigned_issue",
+    status: "active",
+    ownerType: "agent",
+    ownerAgentId: "cto-agent",
+    ownerUserId: null,
+    previousOwnerAgentId: null,
+    returnOwnerAgentId: null,
+    cause: "stranded_assigned_issue",
+    fingerprint: "fp",
+    evidence: {},
+    nextAction: "Choose what happens next.",
+    wakePolicy: null,
+    monitorPolicy: null,
+    attemptCount: 1,
+    maxAttempts: 3,
+    timeoutAt: null,
+    lastAttemptAt: null,
+    outcome: null,
+    resolutionNote: null,
+    resolvedAt: null,
+    createdAt: "2026-08-11T00:00:00.000Z",
+    updatedAt: "2026-08-11T00:00:00.000Z",
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any;
+
+  const liveOwnerRun = {
+    id: "run-1",
+    status: "running",
+    agentId: "cto-agent",
+    agentName: "CTO",
+    createdAt: "2026-08-11T00:00:00.000Z",
+    startedAt: "2026-08-11T00:00:00.000Z",
+    finishedAt: null,
+    issueId: "issue-1",
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any;
+
+  it("renders a live recovery owner as a recessed, expandable line", () => {
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueId="issue-1"
+        issueStatus="in_progress"
+        recoveryAction={recoveryAction}
+        liveRuns={[liveOwnerRun]}
+        onResolveRecoveryAction={() => {}}
+      />,
+    );
+
+    const line = container.querySelector('[data-testid="recovery-progress-line"]');
+    expect(line).not.toBeNull();
+    expect(line?.getAttribute("data-recovery-state")).toBe("in_progress");
+    expect(container.textContent).toContain("Recovery in progress · CTO");
+    expect(container.textContent).not.toContain("Recovery needed");
+    // Folded by default — no second, prominent recovery surface.
+    expect(container.querySelector('[data-testid="recovery-progress-line-details"]')).toBeNull();
+
+    const toggle = container.querySelector('[data-testid="recovery-progress-line-toggle"]');
+    flushSync(() => {
+      toggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="recovery-progress-line-details"]')).not.toBeNull();
+    expect(container.querySelectorAll("[data-recovery-state][role='status']").length).toBe(1);
+  });
+
+  it("keeps the prominent card when no owner is live or queued", () => {
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueId="issue-1"
+        issueStatus="todo"
+        recoveryAction={recoveryAction}
+        onResolveRecoveryAction={() => {}}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="recovery-progress-line"]')).toBeNull();
+    const card = container.querySelector("[data-recovery-state][role='status']");
+    expect(card?.getAttribute("data-recovery-state")).toBe("needed");
+    expect(container.textContent).toContain("RECOVERY NEEDED");
+  });
+
+  it("renders nothing when there is no recovery action", () => {
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueId="issue-1" />);
+    expect(container.querySelector('[data-testid="task-chat-recovery-notice"]')).toBeNull();
+  });
+});

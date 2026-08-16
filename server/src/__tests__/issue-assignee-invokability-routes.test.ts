@@ -48,6 +48,7 @@ vi.mock("../services/cross-issue-influence-limit.js", async (importOriginal) => 
 }));
 
 vi.mock("../services/index.js", () => ({
+  budgetService: () => ({}),
   companyService: () => ({
     getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
   }),

@@ -34,6 +34,7 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  --color-recessed-foreground: var(--recessed-foreground);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
@@ -84,6 +85,19 @@
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.97 0 0);
   --muted-foreground: oklch(0.556 0 0);
+  /* WCAG-tuned sibling of --muted-foreground, for subordinate text that sits on
+     a TINTED or MUTED surface rather than on --background (PAP-17083).
+     --muted-foreground is only just AA on paper (4.73:1) and drops BELOW it the
+     moment the surface stops being white: 4.34:1 on solid --muted, 4.39:1 on
+     bg-red-50/85, 4.57:1 on bg-muted/40. Recovery chips and card microcopy
+     render at --text-nano/--text-micro, so 4.5:1 is the requirement, not 3:1.
+     0.48 clears AA on every surface those two sizes are used on:
+       --background 6.54:1 · --muted 5.99:1 · muted/40 6.32:1
+       red-50/85 6.07:1 · amber-50/85 6.34:1 · emerald-50/80 6.28:1
+     Dark mode deliberately keeps the --muted-foreground value: it already
+     measures 5.83:1 on dark --muted, so the token is a light-mode-only
+     correction and dark renders identically. */
+  --recessed-foreground: oklch(0.48 0 0);
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
@@ -299,6 +313,10 @@
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
   --muted-foreground: oklch(0.708 0 0);
+  /* Same value as --muted-foreground on purpose — see the light-mode comment.
+     Dark surfaces are already AA (5.83:1 on --muted, 7.03:1 on muted/40), so
+     darkening here would only flatten the hierarchy for no accessibility gain. */
+  --recessed-foreground: oklch(0.708 0 0);
   --accent: oklch(0.269 0 0);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.637 0.237 25.331); /* Gallery feedback round 1: user preferred master's original dark destructive red over the preset's softer 0.704 0.191 22.216. */

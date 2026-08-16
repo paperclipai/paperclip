@@ -40,6 +40,9 @@ import { TaskChatThreadView, taskChatContentKey } from "@/components/task-chat/T
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
 import { useWindowAutoFollow } from "@/components/task-chat/useWindowAutoFollow";
 import { useSidebar } from "@/context/SidebarContext";
+import { IssueRecoveryActionCard } from "@/components/IssueRecoveryActionCard";
+import { RecoveryProgressLine } from "@/components/RecoveryProgressLine";
+import { deriveRecoveryPresentation } from "@/lib/recovery-display";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
@@ -126,7 +129,57 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     draftKey,
     onInterruptQueued,
     interruptingQueuedRunId,
+    liveIssueIds,
+    scheduledRetry,
+    successfulRunHandoff,
+    recoveryAction,
+    onResolveRecoveryAction,
+    onReissueIsolatedRecoveryAction,
+    reissueIsolatedRecoveryActionPending,
+    onReconcileForwardRecoveryAction,
+    onBreakGlassOverrideRecoveryAction,
+    onQuarantineRestoreRecoveryAction,
+    quarantineRestoreRecoveryActionPending,
+    canBreakGlassRecoveryAction,
+    reconcileRecoveryActionPending,
+    canFalsePositiveRecoveryAction,
   } = props;
+
+  // Recovery in the chat shell. A live or queued recovery owner renders as the
+  // same recessed one-liner the classic thread uses (in the register of
+  // TaskChatSystemNotice), so the chat never shouts "Recovery needed" over an
+  // owner who is already working. Only an ownerless or escalated action gets the
+  // prominent card.
+  const recoveryDisplay = useMemo(
+    () =>
+      deriveRecoveryPresentation({
+        action: recoveryAction,
+        liveRuns: [
+          ...(liveRuns ?? []).filter((run) => isLiveIssueRun(run, issueStatus)),
+          ...(activeRun && isLiveIssueRun(activeRun, issueStatus)
+            ? [{ agentId: activeRun.agentId, agentName: activeRun.agentName, status: activeRun.status }]
+            : []),
+        ],
+        issueId,
+        liveIssueIds,
+        issueAssigneeAgentId,
+        scheduledRetry,
+        successfulRunHandoff,
+        resolveAgentName: (agentId) => agentMap?.get(agentId)?.name,
+      }),
+    [
+      activeRun,
+      agentMap,
+      issueAssigneeAgentId,
+      issueId,
+      issueStatus,
+      liveIssueIds,
+      liveRuns,
+      recoveryAction,
+      scheduledRetry,
+      successfulRunHandoff,
+    ],
+  );
 
   const linkedRunMetaById = useMemo(() => {
     const map = new Map<string, NonNullable<TaskChatThreadProps["linkedRuns"]>[number]>();
@@ -655,6 +708,45 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 bg-background/80 px-4 pb-2 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60 md:w-(--pct-80)",
           )}
         >
+          {recoveryAction && recoveryDisplay ? (
+            <div data-testid="task-chat-recovery-notice">
+              {recoveryDisplay.state === "in_progress" ||
+              recoveryDisplay.state === "observe_only" ? (
+                <RecoveryProgressLine
+                  state={recoveryDisplay.state}
+                  ownerName={recoveryDisplay.ownerName}
+                  action={recoveryAction}
+                  agentMap={agentMap}
+                  onResolve={onResolveRecoveryAction}
+                  onReissueIsolated={onReissueIsolatedRecoveryAction}
+                  reissuePending={reissueIsolatedRecoveryActionPending}
+                  onReconcileForward={onReconcileForwardRecoveryAction}
+                  onBreakGlassOverride={onBreakGlassOverrideRecoveryAction}
+                  onQuarantineRestore={onQuarantineRestoreRecoveryAction}
+                  quarantineRestorePending={quarantineRestoreRecoveryActionPending}
+                  canBreakGlass={canBreakGlassRecoveryAction}
+                  reconcilePending={reconcileRecoveryActionPending}
+                  canFalsePositive={canFalsePositiveRecoveryAction}
+                />
+              ) : (
+                <IssueRecoveryActionCard
+                  action={recoveryAction}
+                  agentMap={agentMap}
+                  forcedState={recoveryDisplay.state}
+                  onResolve={onResolveRecoveryAction}
+                  onReissueIsolated={onReissueIsolatedRecoveryAction}
+                  reissuePending={reissueIsolatedRecoveryActionPending}
+                  onReconcileForward={onReconcileForwardRecoveryAction}
+                  onBreakGlassOverride={onBreakGlassOverrideRecoveryAction}
+                  onQuarantineRestore={onQuarantineRestoreRecoveryAction}
+                  quarantineRestorePending={quarantineRestoreRecoveryActionPending}
+                  canBreakGlass={canBreakGlassRecoveryAction}
+                  reconcilePending={reconcileRecoveryActionPending}
+                  canFalsePositive={canFalsePositiveRecoveryAction}
+                />
+              )}
+            </div>
+          ) : null}
           {composerAccessory}
           <TaskChatComposer
             onAdd={onAdd}

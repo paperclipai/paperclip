@@ -82,4 +82,29 @@ describe("BlockedReasonChip", () => {
       root.unmount();
     });
   });
+
+  it("recesses an open recovery issue whose owner is already running", () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <BlockedReasonChip reason="open_recovery_issue" severity="medium" recoveryRecessed />,
+      );
+    });
+
+    const chip = container.querySelector('[data-testid="blocked-reason-chip"]');
+    expect(chip?.getAttribute("data-variant")).toBe("recovery_in_progress");
+    expect(chip?.textContent).toContain("Recovery in progress");
+    expect(chip?.className).not.toMatch(/amber|red|cyan/);
+  });
+
+  it("keeps the recovery-required treatment when no owner is running", () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(<BlockedReasonChip reason="open_recovery_issue" severity="medium" />);
+    });
+
+    const chip = container.querySelector('[data-testid="blocked-reason-chip"]');
+    expect(chip?.getAttribute("data-variant")).toBe("recovery_required");
+    expect(chip?.textContent).toContain("Recovery required");
+  });
 });

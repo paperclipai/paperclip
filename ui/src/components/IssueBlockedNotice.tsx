@@ -22,11 +22,18 @@ import {
   deriveActiveRecoveryDisplayState,
   RECOVERY_CHIP_DEFAULT_TONE,
   recoveryChipLabel,
+  type RecoveryLivenessSignals,
 } from "../lib/recovery-display";
 import { StatusGlyph } from "./StatusGlyph";
 
-function BlockerRecoveryIndicator({ action }: { action: IssueRecoveryAction }) {
-  const state = deriveActiveRecoveryDisplayState(action);
+function BlockerRecoveryIndicator({
+  action,
+  signals,
+}: {
+  action: IssueRecoveryAction;
+  signals?: RecoveryLivenessSignals;
+}) {
+  const state = deriveActiveRecoveryDisplayState(action, signals);
   if (!state) return null;
   const tone = RECOVERY_CHIP_DEFAULT_TONE[state];
   const Icon = tone.icon;
@@ -480,6 +487,13 @@ export function IssueBlockedNotice({
   const renderBlockerChip = (blocker: IssueRelationIssueSummary) => {
     const issuePathId = blocker.identifier ?? blocker.id;
     const recoveryAction = blocker.activeRecoveryAction ?? null;
+    // A blocker summary carries no run fields, so its liveness comes from the
+    // live-issue set the thread already resolved.
+    const blockerIsLive = (liveIssueIds ?? EMPTY_LIVE_IDS).has(blocker.id);
+    const recoverySignals: RecoveryLivenessSignals = {
+      sourceHasLiveRun: blockerIsLive,
+      sourceLiveRunAgentId: blockerIsLive ? blocker.assigneeAgentId ?? null : null,
+    };
     return (
       <IssueLinkQuicklook
         key={blocker.id}
@@ -491,7 +505,9 @@ export function IssueBlockedNotice({
         <span className="max-w-(--sz-18rem) truncate font-sans text-(length:--text-micro) text-amber-800 dark:text-amber-200">
           {blocker.title}
         </span>
-        {recoveryAction ? <BlockerRecoveryIndicator action={recoveryAction} /> : null}
+        {recoveryAction ? (
+          <BlockerRecoveryIndicator action={recoveryAction} signals={recoverySignals} />
+        ) : null}
       </IssueLinkQuicklook>
     );
   };

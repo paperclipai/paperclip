@@ -862,7 +862,14 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       contextSnapshot: {},
     });
 
-    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    const services = buildHostServices(
+      db,
+      "plugin-record-id",
+      "paperclip.gateway",
+      createEventBusStub(),
+      undefined,
+      { heartbeatRuntimeEnv: {} },
+    );
     const comment = await services.issues.createComment({
       issueId,
       companyId,

@@ -9,6 +9,8 @@ import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
 import {
   deriveActiveRecoveryDisplayState,
+  recoveryChipLabel,
+  recoveryLivenessFromIssue,
   RECOVERY_CHIP_DEFAULT_TONE,
 } from "../lib/recovery-display";
 import { ExternalLink } from "lucide-react";
@@ -18,25 +20,46 @@ import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 import { Badge } from "@/components/ui/badge";
 
-function RunCardRecoveryChip({ action }: { action: IssueRecoveryAction }) {
-  const state = deriveActiveRecoveryDisplayState(action);
+function RunCardRecoveryChip({
+  action,
+  issue,
+  run,
+}: {
+  action: IssueRecoveryAction;
+  issue: Issue | undefined;
+  run: LiveRunForIssue;
+}) {
+  // The card is already rendering the run, so it is the strongest liveness
+  // evidence available here: a running/queued run owned by the recovery owner
+  // means recovery is in progress, not needed.
+  const state = deriveActiveRecoveryDisplayState(
+    action,
+    recoveryLivenessFromIssue(issue, {
+      ownerRun: { agentId: run.agentId, status: run.status },
+    }),
+  );
   if (!state) return null;
   const tone = RECOVERY_CHIP_DEFAULT_TONE[state];
   const Icon = tone.icon;
+  const label = recoveryChipLabel(state, action.kind, { ownerName: run.agentName });
   return (
     <Badge variant="outline"
       data-testid="active-agent-run-recovery-indicator"
       data-recovery-state={state}
       role="status"
-      aria-label={tone.label}
-      title={`${tone.label} — open the source task to act.`}
+      aria-label={label}
+      title={
+        tone.recessed
+          ? `${label} — open the source task to inspect it.`
+          : `${label} — open the source task to act.`
+      }
       className={cn(
         "gap-0.5 px-1.5 text-(length:--text-nano)",
         tone.className,
       )}
     >
       <Icon className="h-2.5 w-2.5" aria-hidden />
-      {tone.label}
+      {label}
     </Badge>
   );
 }
@@ -230,7 +253,7 @@ const AgentRunCard = memo(function AgentRunCard({
             </Link>
             {issue?.activeRecoveryAction ? (
               <div className="mt-1.5">
-                <RunCardRecoveryChip action={issue.activeRecoveryAction} />
+                <RunCardRecoveryChip action={issue.activeRecoveryAction} issue={issue} run={run} />
               </div>
             ) : null}
           </div>
