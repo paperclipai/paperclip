@@ -264,7 +264,11 @@ describe("CompanyProvider", () => {
 
   it("replaces a stale stored company id with the first loaded company", async () => {
     localStorage.setItem("paperclip.selectedCompanyId", "stale-company");
-    queryClient.setQueryData(queryKeys.companies.all, {
+    // Signed out, and *known* to be: the list is keyed by account, so it cannot
+    // resolve before the session does. Seeding the answer is how this test says
+    // the account lookup has already happened.
+    queryClient.setQueryData(queryKeys.auth.session, null);
+    queryClient.setQueryData(queryKeys.companies.list(null), {
       companies: [makeCompany("company-1")],
       unauthorized: false,
     });
@@ -292,7 +296,7 @@ describe("CompanyProvider", () => {
   describe("when the account changes in this tab", () => {
     async function bootWithFirstAccount(seen: Array<string | null>) {
       mockAuthApi.getSession.mockResolvedValue(sessionFor("user-1"));
-      queryClient.setQueryData(queryKeys.companies.all, {
+      queryClient.setQueryData(queryKeys.companies.list("user-1"), {
         companies: [makeCompany("company-1")],
         unauthorized: false,
       });
@@ -332,7 +336,12 @@ describe("CompanyProvider", () => {
 
       // Nothing from the previous account is exposed while the new list loads.
       expect(seen).toEqual([null, "company-1", null]);
-      expect(queryClient.getQueryData(queryKeys.companies.all)).toBeUndefined();
+      expect(queryClient.getQueryData(queryKeys.companies.list("user-2"))).toBeUndefined();
+      // The previous account's entry may still sit in the cache; keying by
+      // account is what makes that harmless, since nothing reads it now.
+      expect(queryClient.getQueryData(queryKeys.companies.list("user-1"))).toMatchObject({
+        companies: [{ id: "company-1" }],
+      });
       expect(resolveSecondList).not.toBeNull();
       // The replacement fetch must not be coalesced into a `/companies` request
       // issued under the previous session.
@@ -436,12 +445,38 @@ describe("CompanyProvider", () => {
       // This account genuinely owns no companies, and the request says so.
       mockCompaniesApi.list.mockResolvedValue([]);
       await act(async () => {
-        await queryClient.refetchQueries({ queryKey: queryKeys.companies.all });
+        await queryClient.refetchQueries({ queryKey: queryKeys.companies.list("user-2") });
       });
       await flushReact();
 
       expect(captured?.companies).toEqual([]);
       expect(captured?.companyListUnavailable).toBe(false);
+    });
+
+    // The guarantee the account-keyed entry buys, stated directly: a list sitting
+    // in the cache for another account is not merely distrusted, it is not
+    // reachable. No gate, no freshness check, no refetch stands between the two —
+    // they are different entries.
+    it("cannot read another account's cached list at all", async () => {
+      const seen: Array<string | null> = [];
+      await bootWithFirstAccount(seen);
+
+      // user-2's list is slow. If the entries were shared, the cached user-1
+      // list would answer in the meantime — which is the whole bug.
+      mockCompaniesApi.list.mockImplementation(() => new Promise(() => {}));
+
+      await act(async () => {
+        queryClient.setQueryData(queryKeys.auth.session, sessionFor("user-2"));
+      });
+      await flushReact();
+
+      expect(captured?.companies).toEqual([]);
+      expect(captured?.selectedCompanyId).toBeNull();
+      expect(captured?.loading).toBe(true);
+      // Still cached, still keyed to whom it belongs, still unread.
+      expect(queryClient.getQueryData(queryKeys.companies.list("user-1"))).toMatchObject({
+        companies: [{ id: "company-1" }],
+      });
     });
 
     it("leaves the selection alone when the same account is observed again", async () => {

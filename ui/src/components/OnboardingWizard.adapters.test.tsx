@@ -49,7 +49,11 @@ vi.mock("../context/CompanyContext", () => ({
 // `createdCompanyId`, so there is no ownership question — but the fetch has to
 // succeed for the gate to treat the draft as decidable at all.
 vi.mock("../api/companies", () => ({
-  companiesApi: { create: vi.fn(), list: vi.fn().mockResolvedValue([]) },
+  companiesApi: {
+    create: vi.fn(),
+    list: vi.fn().mockResolvedValue([]),
+    detachInflightList: vi.fn(),
+  },
 }));
 vi.mock("../adapters", () => ({
   listUIAdapters: () => mockAdapterRegistry.list,
@@ -83,6 +87,7 @@ vi.mock("./AsciiArtAnimation", () => ({ AsciiArtAnimation: () => null }));
 vi.mock("./FrontDoor", () => ({ FrontDoor: () => null }));
 vi.mock("./AgentCapsule", () => ({ AgentCapsule: () => null }));
 
+import { queryKeys } from "../lib/queryKeys";
 import { OnboardingWizard } from "./OnboardingWizard";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -101,6 +106,12 @@ async function mount() {
   const root = createRoot(container);
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
+  });
+  // The company list is keyed by account, so it holds until the session is
+  // known. Seeding it is how this test says "signed in".
+  queryClient.setQueryData(queryKeys.auth.session, {
+    session: { id: "session-1", userId: "user-1" },
+    user: { id: "user-1", name: "Example", email: "user-1@example.com", image: null },
   });
   await act(async () => {
     root.render(
