@@ -74,7 +74,7 @@ If `PAPERCLIP_WAKE_PAYLOAD_JSON` is present, inspect that payload before calling
 Use comments incrementally:
 
 - if `PAPERCLIP_WAKE_COMMENT_ID` is set, fetch that exact comment first with `GET /api/issues/{issueId}/comments/{commentId}`
-- if you already know the thread and only need updates, use `GET /api/issues/{issueId}/comments?after={last-seen-comment-id}&order=asc`
+- if you already know the thread and only need updates, use `GET /api/issues/{issueId}/comments?after={last-seen-comment-id}&order=asc` — the cursor is exclusive: the response contains only comments that sort strictly after the cursor, so the boundary comment is never re-delivered
 - use the full `GET /api/issues/{issueId}/comments` route only when cold-starting or when incremental isn't enough
 
 Read enough ancestor/comment context to understand _why_ the task exists and what changed. Do not reflexively reload the whole thread on every heartbeat.
