@@ -103,12 +103,8 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   const [selectionSource, setSelectionSource] = useState<CompanySelectionSource>("bootstrap");
   const [selectedCompanyId, setSelectedCompanyIdState] = useState<string | null>(null);
 
-  const {
-    data: companiesResult = { companies: [], unauthorized: false },
-    isLoading,
-    error,
-    dataUpdatedAt: companiesUpdatedAt,
-  } = useQuery<CompanyListResult>(companiesListQueryOptions);
+  const { data: companiesResult = { companies: [], unauthorized: false }, isLoading, error } =
+    useQuery<CompanyListResult>(companiesListQueryOptions);
   const companies = companiesResult.companies;
   const companyListUnauthorized = companiesResult.unauthorized;
   const sidebarCompanies = useMemo(
@@ -130,18 +126,6 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   const sessionUserId = session?.user.id ?? null;
   const observedUserIdRef = useRef<string | null | undefined>(undefined);
   const [awaitingAccountScopedList, setAwaitingAccountScopedList] = useState(false);
-  const [accountScopedListFailed, setAccountScopedListFailed] = useState(false);
-
-  // Any successful list answers the question the failed replacement fetch could
-  // not, whoever asked it — a focus refetch, an invalidation from elsewhere. The
-  // flag is otherwise cleared only by another account change or by an explicit
-  // retry, so it would outlive the failure: an account that legitimately owns
-  // nothing would keep reading as "couldn't load", behind a Try again that can
-  // never change the answer. `dataUpdatedAt` moves on every successful fetch and
-  // is 0 on the fresh query left by the removal above.
-  useEffect(() => {
-    if (companiesUpdatedAt > 0) setAccountScopedListFailed(false);
-  }, [companiesUpdatedAt]);
 
   useEffect(() => {
     // Until the session settles the account is unknown, not changed.
@@ -185,22 +169,16 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
     // (measured: two attempts either way). Adding retries here only buys extra
     // failed round trips before a real outage is reported, and the outage is
     // what needs a way out — see `companyListUnavailable` below.
+    // The rejection is caught only to keep it from going unhandled — it is not
+    // lost. `fetchQuery` records it on the query itself, so it arrives as
+    // `error` below, which is where `companyListUnavailable` reads it from.
+    // Carrying a second copy in component state is what let the two fall out of
+    // step: the copy outlived the failure and kept reporting "couldn't load"
+    // over a later, honest empty list.
     let cancelled = false;
-    setAccountScopedListFailed(false);
     void queryClient
       .fetchQuery({ ...companiesListQueryOptions, staleTime: 0 })
-      .then(
-        () => {
-          if (!cancelled) setAccountScopedListFailed(false);
-        },
-        // Deliberately recorded rather than swallowed. The selection stays
-        // undecided either way (see the effect below), but a swallowed
-        // rejection is indistinguishable from "this account owns nothing",
-        // which is what left the dead end with no way out of it.
-        () => {
-          if (!cancelled) setAccountScopedListFailed(true);
-        },
-      )
+      .catch(() => undefined)
       .finally(() => {
         if (!cancelled) setAwaitingAccountScopedList(false);
       });
@@ -265,27 +243,26 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   }, [queryClient]);
 
   // The way out of the dead end. Not `reloadCompanies`: invalidation refetches
-  // only through a mounted observer and leaves the failure flag standing, so the
-  // recovery affordance would keep telling the customer the list is unavailable
-  // after a retry had already succeeded.
+  // only through a mounted observer, and it leaves an errored query reporting
+  // its old error, so the recovery affordance would keep telling the customer
+  // the list is unavailable after a retry had already succeeded.
   const retryCompanies = useCallback(async () => {
     setAwaitingAccountScopedList(true);
     try {
       await queryClient.fetchQuery({ ...companiesListQueryOptions, staleTime: 0 });
-      setAccountScopedListFailed(false);
     } catch {
-      setAccountScopedListFailed(true);
+      // Recorded on the query, same as the replacement fetch above.
     } finally {
       setAwaitingAccountScopedList(false);
     }
   }, [queryClient]);
 
   // Empty because we could not find out, as opposed to empty because the account
-  // owns nothing. `error` covers a failed first load; `accountScopedListFailed`
-  // covers the replacement fetch above, whose rejection never reaches the query
-  // when it exhausts its retries against an already-removed entry.
-  const companyListUnavailable =
-    companies.length === 0 && (accountScopedListFailed || Boolean(error));
+  // owns nothing. Derived from the query rather than tracked alongside it: the
+  // query is the only thing that knows whether the last attempt succeeded, and a
+  // second copy of that answer drifts — it did, reporting a failure over a later
+  // empty list that was simply the truth.
+  const companyListUnavailable = companies.length === 0 && Boolean(error);
 
   const createMutation = useMutation({
     mutationFn: (data: {
