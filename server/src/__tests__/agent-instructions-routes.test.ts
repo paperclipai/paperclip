@@ -472,7 +472,11 @@ describe("agent instructions bundle routes", () => {
       id,
       role: "engineer",
     }));
-    mockAccessService.hasPermission.mockResolvedValue(false);
+    mockAccessService.decide.mockResolvedValue({
+      allowed: false,
+      reason: "deny_no_grant",
+      explanation: "Agent-authenticated callers cannot modify instruction files",
+    });
 
     const res = await requestApp(
       await createApp({
@@ -506,6 +510,11 @@ describe("agent instructions bundle routes", () => {
         };
       }
       return makeAgent();
+    });
+    mockAccessService.decide.mockResolvedValue({
+      allowed: false,
+      reason: "deny_no_grant",
+      explanation: "Agent-authenticated callers cannot modify instructions path or bundle configuration",
     });
 
     const res = await requestApp(
