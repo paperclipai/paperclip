@@ -13314,26 +13314,58 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? await environmentsSvc.getById(row.environmentId)
         : null;
       const lease = await environmentsSvc.getLeaseById(row.id);
-      if (!environment || !lease) continue;
+      if (!lease) continue;
+
+      // An orphan ephemeral lease keeps its provider, its provider lease id, and
+      // its sandbox config in the lease row. A failed acquire records it, and its
+      // environment row may be gone or foreign-bound. So the orphan teardown reads
+      // the recorded data and accepts a null environment. A reuse_by_environment
+      // lease still needs the environment row for the destroy, so the sweep skips
+      // it when the environment row is gone.
+      const isOrphanEphemeralLease = lease.leasePolicy === "ephemeral";
+      if (!isOrphanEphemeralLease && !environment) continue;
 
       // Atomically claim the attempt before the retry. Only the winning sweep
-      // increments the count and destroys the lease, so an overlapping sweep
-      // never destroys the same lease twice or exceeds the attempt cap. The
+      // increments the count and tears the sandbox down, so an overlapping sweep
+      // never tears the same sandbox down twice or exceeds the attempt cap. The
       // claim records the attempt before the retry, so a thrown driver error
       // still counts against the cap.
       const claimed = await claimPendingCleanupRetryAttempt(row.id, attempts);
       if (!claimed) continue;
 
       try {
-        const result = await environmentRuntime.destroyRunLease({
-          environment,
-          lease,
-          failureReason: "pending_cleanup_retry",
-        });
-        if (result && result.status !== "pending_cleanup") {
+        if (isOrphanEphemeralLease) {
+          // Tear the orphan sandbox down from the recorded provider config and
+          // the cleanup-authorized secret versions. The teardown returns no value
+          // and throws on failure, so the sweep releases the lease itself.
+          await environmentRuntime.retryPendingSandboxTeardown({ environment, lease });
+          await environmentsSvc.releaseLease(lease.id, "expired", {
+            cleanupStatus: "success",
+            failureReason: "pending_cleanup_retry",
+          });
           destroyed += 1;
+        } else if (environment) {
+          const result = await environmentRuntime.destroyRunLease({
+            environment,
+            lease,
+            failureReason: "pending_cleanup_retry",
+          });
+          if (result && result.status !== "pending_cleanup") {
+            destroyed += 1;
+          }
         }
       } catch {
+        // The orphan teardown throws on failure, so revert the lease to
+        // pending_cleanup for a later sweep. The claimed attempt still counts
+        // against the cap, so the retries stay bounded. The reuse_by_environment
+        // destroy reverts the lease itself, so this revert only runs for the
+        // orphan path.
+        if (isOrphanEphemeralLease) {
+          await environmentsSvc.releaseLease(lease.id, "pending_cleanup", {
+            cleanupStatus: "failed",
+            failureReason: "pending_cleanup_retry",
+          });
+        }
         // Log a constant errorKind only. The exception can carry a credential in
         // its name, code, message, cause, or stack, so the sweep never reads it.
         logger.warn(

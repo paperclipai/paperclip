@@ -995,20 +995,32 @@ export async function startServer(): Promise<StartedServer> {
   // The retry backstop for orphan sandboxes. An acquire that rejects a
   // foreign-company insert tears the provisioned sandbox down. If that teardown
   // also fails, the acquire records a lease-less `pending_cleanup` lease row. No
-  // other path releases that sandbox, so this sweep retries the provider
-  // teardown and releases the orphan. The sweep runs on startup and on the
-  // scheduler interval.
+  // other path releases that sandbox, so the master pending-cleanup sweep retries
+  // the provider teardown and releases the orphan. The sweep runs on startup and
+  // on the scheduler interval.
   //
   // This backstop is independent of the heartbeat scheduler toggle. A leaked
   // provider sandbox costs money whether or not the instance schedules
   // heartbeats, so both the enabled and the disabled path run the sweep. A
   // disabled heartbeat scheduler must not strand a paid sandbox forever.
-  const environmentLeaseCleanupRuntime = environmentRuntimeService(db as any, { pluginWorkerManager });
-  const runEnvironmentLeaseCleanupSweep = () =>
-    environmentLeaseCleanupRuntime
-      .sweepPendingSandboxCleanups()
+  //
+  // The master pending-cleanup sweep is the single owner of these rows. Its
+  // atomic per-attempt claim makes two overlapping sweeps safe, so the enabled
+  // path can also run the sweep from the orphaned-run reaper without a second
+  // teardown. The heartbeat scheduler owns the sweep when it is enabled; the
+  // disabled path creates its own runtime to own the same sweep.
+  // The interval sweep waits this long after a lease's last write before it
+  // retries the teardown. The window matches the orphaned-run reaper staleness,
+  // so a just-failed lease does not draw a retry on every tick. The startup
+  // sweep passes zero, so a restart retries a stranded orphan at once.
+  const ENVIRONMENT_LEASE_CLEANUP_SWEEP_BACKOFF_MS = 5 * 60 * 1000;
+  const environmentLeaseCleanupHeartbeat =
+    heartbeat ?? heartbeatService(db as any, { pluginWorkerManager });
+  const runEnvironmentLeaseCleanupSweep = (backoffMs: number) =>
+    environmentLeaseCleanupHeartbeat
+      .sweepPendingCleanupLeases({ backoffMs })
       .then((result) => {
-        if (result.cleaned > 0 || result.failed > 0) {
+        if (result.destroyed > 0 || result.capped > 0) {
           logger.info(result, "environment lease cleanup sweep retried orphan sandbox teardowns");
         }
       })
@@ -1017,7 +1029,7 @@ export async function startServer(): Promise<StartedServer> {
       });
   const scheduleEnvironmentLeaseCleanupSweep = () => {
     if (heartbeatSchedulerStopped) return;
-    trackHeartbeatSchedulerWork(runEnvironmentLeaseCleanupSweep());
+    trackHeartbeatSchedulerWork(runEnvironmentLeaseCleanupSweep(ENVIRONMENT_LEASE_CLEANUP_SWEEP_BACKOFF_MS));
   };
 
   if (heartbeat) {
@@ -1255,7 +1267,7 @@ export async function startServer(): Promise<StartedServer> {
 
     // Retry any orphan sandbox teardown left by a failed acquire before a server
     // restart, so a leaked sandbox does not stay allocated across the restart.
-    await runEnvironmentLeaseCleanupSweep();
+    await runEnvironmentLeaseCleanupSweep(0);
 
     const runRetentionSweep = async () => {
       const activeCompanies = await db.select({ id: companies.id }).from(companies).where(eq(companies.status, "active"));
@@ -1458,7 +1470,7 @@ export async function startServer(): Promise<StartedServer> {
     // is still required. A failed acquire can leak a paid provider sandbox, so
     // this path retries the teardown at startup and on the interval, exactly as
     // the enabled path does.
-    await runEnvironmentLeaseCleanupSweep();
+    await runEnvironmentLeaseCleanupSweep(0);
     startHeartbeatSchedulerInterval(() => {
       scheduleExternalObjectRefreshSweep(new Date());
       scheduleEnvironmentLeaseCleanupSweep();

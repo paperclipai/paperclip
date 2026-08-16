@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, eq, inArray, isNotNull, lt, or } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companySecrets, companySecretVersions, environmentLeases } from "@paperclipai/db";
 import type {
@@ -463,17 +463,6 @@ export interface EnvironmentRuntimeDriver {
    */
   retryPendingSandboxTeardown?(input: { environment: Environment | null; lease: EnvironmentLease }): Promise<void>;
 }
-
-/** The default page size a single pending-sandbox-cleanup sweep processes. */
-const DEFAULT_PENDING_SANDBOX_CLEANUP_SWEEP_PAGE = 20;
-
-/**
- * The age after which the sweep reclaims a `pending` cleanup row. A previous
- * sweep sets the row to `pending` before it retries the teardown. If that sweep
- * crashes before it finishes, the row stays `pending`. After this window a later
- * sweep reclaims the row, so a crash never strands the orphan forever.
- */
-const DEFAULT_PENDING_SANDBOX_CLEANUP_STALE_MS = 5 * 60_000;
 
 /**
  * The acquire provisioned a remote sandbox, the lease insert rejected it, the
@@ -2770,115 +2759,25 @@ export function environmentRuntimeService(
       return released;
     },
 
-    // The retry backstop for orphan sandboxes. An acquire that rejects a
-    // foreign-company insert tears the provisioned sandbox down. If that teardown
-    // also fails, the acquire records a lease-less `pending_cleanup` row with the
-    // provider lease id. No other path releases that sandbox, so this sweep
-    // consumes the record: it claims each row atomically, retries the provider
-    // teardown, and marks the row cleaned. A retry failure keeps the row for a
-    // later sweep. The company and provider filters keep the sweep inside a
-    // caller-chosen scope.
-    async sweepPendingSandboxCleanups(options?: {
-      limit?: number;
-      companyId?: string;
-      provider?: string;
-      stalePendingReclaimMs?: number;
-    }): Promise<{ scanned: number; cleaned: number; failed: number; skipped: number }> {
-      const limit = options?.limit ?? DEFAULT_PENDING_SANDBOX_CLEANUP_SWEEP_PAGE;
-      const stalePendingReclaimMs = options?.stalePendingReclaimMs ?? DEFAULT_PENDING_SANDBOX_CLEANUP_STALE_MS;
-      const staleBefore = new Date(Date.now() - stalePendingReclaimMs);
-
-      // A lease-less orphan holds status `pending_cleanup` with cleanup status
-      // `failed`. A `pending` row that passed the stale window means a previous
-      // sweep claimed it and then crashed, so reclaim it too. The `ephemeral`
-      // policy and the provider lease id filter to rows a teardown retry acts on.
-      const reclaimable = or(
-        eq(environmentLeases.cleanupStatus, "failed"),
-        and(eq(environmentLeases.cleanupStatus, "pending"), lt(environmentLeases.updatedAt, staleBefore)),
-      );
-      const candidates = await db
-        .select()
-        .from(environmentLeases)
-        .where(
-          and(
-            eq(environmentLeases.status, "pending_cleanup"),
-            eq(environmentLeases.leasePolicy, "ephemeral"),
-            isNotNull(environmentLeases.providerLeaseId),
-            options?.companyId ? eq(environmentLeases.companyId, options.companyId) : undefined,
-            options?.provider ? eq(environmentLeases.provider, options.provider) : undefined,
-            reclaimable,
-          ),
-        )
-        .orderBy(asc(environmentLeases.updatedAt))
-        .limit(limit);
-
-      let cleaned = 0;
-      let failed = 0;
-      let skipped = 0;
-      for (const row of candidates) {
-        const now = new Date();
-        // Claim the row with a conditional update, so two concurrent sweeps never
-        // tear the same sandbox down twice. Only the sweep that flips the cleanup
-        // status to `pending` owns the retry; a lost claim returns no row.
-        const claimed = await db
-          .update(environmentLeases)
-          .set({ cleanupStatus: "pending", lastUsedAt: now, updatedAt: now })
-          .where(
-            and(
-              eq(environmentLeases.id, row.id),
-              eq(environmentLeases.status, "pending_cleanup"),
-              or(
-                eq(environmentLeases.cleanupStatus, "failed"),
-                and(eq(environmentLeases.cleanupStatus, "pending"), lt(environmentLeases.updatedAt, staleBefore)),
-              ),
-            ),
-          )
-          .returning();
-        if (claimed.length === 0) {
-          skipped += 1;
-          continue;
-        }
-
-        const leaseSnapshot = toEnvironmentLeaseSnapshot(claimed[0]!);
-        // The environment row may be gone: a delete removed it and set the
-        // lease reference to null, or the acquire recorded the orphan after the
-        // delete with a null reference. The teardown reads the immutable
-        // provider metadata on the row, so it runs without the environment row.
-        const environment = leaseSnapshot.environmentId
-          ? await environmentsSvc.getById(leaseSnapshot.environmentId)
-          : null;
-
-        const driver = getDriver(getLeaseDriverKey(leaseSnapshot, environment));
-        if (!driver?.retryPendingSandboxTeardown) {
-          // No driver can retry this teardown, so revert the row for a later
-          // sweep or an operator.
-          await environmentsSvc.releaseLease(leaseSnapshot.id, "pending_cleanup", {
-            cleanupStatus: "failed",
-            failureReason: "pending_cleanup_no_driver",
-          });
-          failed += 1;
-          continue;
-        }
-
-        try {
-          await driver.retryPendingSandboxTeardown({ environment, lease: leaseSnapshot });
-          await environmentsSvc.releaseLease(leaseSnapshot.id, "expired", {
-            cleanupStatus: "success",
-            failureReason: "acquire_rejected_teardown_cleaned",
-          });
-          cleaned += 1;
-        } catch {
-          // The retry failed, so revert the row to `failed`, so a later sweep
-          // retries it. The revert keeps the orphan visible and bounded.
-          await environmentsSvc.releaseLease(leaseSnapshot.id, "pending_cleanup", {
-            cleanupStatus: "failed",
-            failureReason: "acquire_rejected_teardown_failed",
-          });
-          failed += 1;
-        }
+    // Tear an orphan ephemeral sandbox down from its recorded provider config.
+    // A failed acquire records the orphan as a `pending_cleanup` lease. The row
+    // keeps the provider, the provider lease id, and the sandbox config, so this
+    // teardown runs without the environment row and accepts a null environment.
+    // The teardown resolves the recorded secret refs through the durable orphan
+    // record, so a deleted or foreign-bound environment never strands it. The
+    // caller owns the lease release; this dispatcher only runs the provider
+    // teardown and throws when the driver teardown throws.
+    async retryPendingSandboxTeardown(input: {
+      environment: Environment | null;
+      lease: EnvironmentLease;
+    }): Promise<void> {
+      const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
+      if (!driver.retryPendingSandboxTeardown) {
+        throw new Error(
+          `Environment driver "${driver.driver}" does not support orphan sandbox teardown.`,
+        );
       }
-
-      return { scanned: candidates.length, cleaned, failed, skipped };
+      await driver.retryPendingSandboxTeardown(input);
     },
 
     async destroyReusableSandboxLeases(input: {

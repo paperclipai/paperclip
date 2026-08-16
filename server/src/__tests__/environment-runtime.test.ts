@@ -1191,7 +1191,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(rows[0]?.cleanupStatus).toBe("failed");
   });
 
-  it("retries the built-in teardown for a pending-cleanup orphan and marks it cleaned", async () => {
+  it("tears the recorded built-in provider lease down for a pending-cleanup orphan", async () => {
     const { companyId, environment, runId } = await seedEnvironment({
       driver: "sandbox",
       name: "Cleanup Retry Built-in",
@@ -1242,31 +1242,20 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       expect(orphan.status).toBe("pending_cleanup");
       const providerLeaseId = orphan.providerLeaseId;
 
-      const result = await runtime.sweepPendingSandboxCleanups({ companyId });
-      expect(result).toMatchObject({ scanned: 1, cleaned: 1, failed: 0, skipped: 0 });
+      // The teardown accepts a null environment and reads the recorded provider
+      // lease, so a delete or a provider change never strands it.
+      const lease = await environmentService(db).getLeaseById(orphan.id);
+      await runtime.retryPendingSandboxTeardown({ environment: null, lease: lease! });
       // The retry called the provider teardown a second time with the orphan
       // provider lease id.
       expect(destroySpy).toHaveBeenCalledTimes(2);
       expect(destroySpy).toHaveBeenLastCalledWith(expect.objectContaining({ providerLeaseId }));
-
-      const cleaned = await db
-        .select()
-        .from(environmentLeases)
-        .where(eq(environmentLeases.id, orphan.id))
-        .then((r) => r[0]!);
-      expect(cleaned.status).toBe("expired");
-      expect(cleaned.cleanupStatus).toBe("success");
-
-      // A second sweep finds no orphan, so the teardown never runs twice.
-      const second = await runtime.sweepPendingSandboxCleanups({ companyId });
-      expect(second).toMatchObject({ scanned: 0, cleaned: 0 });
-      expect(destroySpy).toHaveBeenCalledTimes(2);
     } finally {
       destroySpy.mockRestore();
     }
   });
 
-  it("keeps the pending-cleanup orphan when the teardown retry fails and honors the sweep scope", async () => {
+  it("throws and keeps the pending-cleanup orphan when the teardown retry fails", async () => {
     const { companyId, environment, runId } = await seedEnvironment({
       driver: "sandbox",
       name: "Cleanup Retry Scope",
@@ -1313,17 +1302,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         .then((r) => r[0]!);
       expect(orphan.status).toBe("pending_cleanup");
 
-      // A sweep scoped to another company skips the orphan.
-      const otherScope = await runtime.sweepPendingSandboxCleanups({ companyId: otherCompanyId });
-      expect(otherScope).toMatchObject({ scanned: 0, cleaned: 0, failed: 0, skipped: 0 });
-      // A sweep scoped to another provider skips it too.
-      const providerScope = await runtime.sweepPendingSandboxCleanups({ companyId, provider: "other-provider" });
-      expect(providerScope).toMatchObject({ scanned: 0, cleaned: 0 });
-
-      // The in-scope sweep retries, but the teardown still fails, so the orphan
-      // stays pending for a later sweep.
-      const result = await runtime.sweepPendingSandboxCleanups({ companyId });
-      expect(result).toMatchObject({ scanned: 1, cleaned: 0, failed: 1, skipped: 0 });
+      // The teardown retries, but the provider destroy still fails, so the
+      // teardown throws. The caller keeps the orphan pending for a later sweep.
+      const lease = await environmentService(db).getLeaseById(orphan.id);
+      await expect(
+        runtime.retryPendingSandboxTeardown({ environment: null, lease: lease! }),
+      ).rejects.toThrow();
 
       const still = await db
         .select()
@@ -1397,19 +1381,11 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       // driver. The orphan teardown must not depend on this current config.
       await environmentService(db).update(environment.id, { driver: "local", config: {} });
 
-      const result = await runtime.sweepPendingSandboxCleanups({ companyId });
-      expect(result).toMatchObject({ scanned: 1, cleaned: 1, failed: 0, skipped: 0 });
-      // The retry tore the recorded provider lease down, so the sweep never
-      // reads the re-pointed environment provider.
+      // The teardown tears the recorded provider lease down, so it never reads
+      // the re-pointed environment provider.
+      const lease = await environmentService(db).getLeaseById(orphan.id);
+      await runtime.retryPendingSandboxTeardown({ environment: null, lease: lease! });
       expect(destroySpy).toHaveBeenLastCalledWith(expect.objectContaining({ providerLeaseId }));
-
-      const cleaned = await db
-        .select()
-        .from(environmentLeases)
-        .where(eq(environmentLeases.id, orphan.id))
-        .then((r) => r[0]!);
-      expect(cleaned.status).toBe("expired");
-      expect(cleaned.cleanupStatus).toBe("success");
     } finally {
       destroySpy.mockRestore();
     }
@@ -1445,19 +1421,13 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
       .mockResolvedValue(undefined);
     try {
-      const result = await runtime.sweepPendingSandboxCleanups({ companyId });
-      expect(result).toMatchObject({ scanned: 1, cleaned: 1, failed: 0, skipped: 0 });
+      // The recorded metadata drives the teardown, so a null environment tears
+      // the orphan down.
+      const lease = await environmentService(db).getLeaseById(orphan.id);
+      await runtime.retryPendingSandboxTeardown({ environment: null, lease: lease! });
       expect(destroySpy).toHaveBeenCalledWith(
         expect.objectContaining({ providerLeaseId: "sandbox://fake/delete-before-record" }),
       );
-
-      const cleaned = await db
-        .select()
-        .from(environmentLeases)
-        .where(eq(environmentLeases.id, orphan.id))
-        .then((r) => r[0]!);
-      expect(cleaned.status).toBe("expired");
-      expect(cleaned.cleanupStatus).toBe("success");
     } finally {
       destroySpy.mockRestore();
     }
@@ -1498,19 +1468,13 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
       .mockResolvedValue(undefined);
     try {
-      const result = await runtime.sweepPendingSandboxCleanups({ companyId });
-      expect(result).toMatchObject({ scanned: 1, cleaned: 1, failed: 0, skipped: 0 });
+      // The recorded metadata drives the teardown, so a null environment tears
+      // the orphan down after the delete set the reference null.
+      const lease = await environmentService(db).getLeaseById(orphan.id);
+      await runtime.retryPendingSandboxTeardown({ environment: null, lease: lease! });
       expect(destroySpy).toHaveBeenCalledWith(
         expect.objectContaining({ providerLeaseId: "sandbox://fake/delete-after-record" }),
       );
-
-      const cleaned = await db
-        .select()
-        .from(environmentLeases)
-        .where(eq(environmentLeases.id, orphan.id))
-        .then((r) => r[0]!);
-      expect(cleaned.status).toBe("expired");
-      expect(cleaned.cleanupStatus).toBe("success");
     } finally {
       destroySpy.mockRestore();
     }
@@ -1637,21 +1601,13 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const { workerManager, destroyConfigs } = createDestroyRecordingWorkerManager(pluginId);
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
-    const result = await runtimeWithPlugin.sweepPendingSandboxCleanups({ companyId });
-    expect(result).toMatchObject({ scanned: 1, cleaned: 1, failed: 0, skipped: 0 });
+    const lease = await environmentService(db).getLeaseById(orphan.id);
+    await runtimeWithPlugin.retryPendingSandboxTeardown({ environment: null, lease: lease! });
     expect(destroyConfigs).toHaveLength(1);
     // The recorded secret ref resolved to the old credential, and the resolved
     // value reached the provider teardown instead of the secret ref.
     expect(destroyConfigs[0]).toMatchObject({ apiKey: "old-provider-api-key" });
     expect(destroyConfigs[0]?.apiKey).not.toBe(secretId);
-
-    const cleaned = await db
-      .select()
-      .from(environmentLeases)
-      .where(eq(environmentLeases.id, orphan.id))
-      .then((r) => r[0]!);
-    expect(cleaned.status).toBe("expired");
-    expect(cleaned.cleanupStatus).toBe("success");
   });
 
   it("tears down a secret-backed plugin orphan after the environment is deleted", async () => {
@@ -1704,18 +1660,10 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const { workerManager, destroyConfigs } = createDestroyRecordingWorkerManager(pluginId);
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
-    const result = await runtimeWithPlugin.sweepPendingSandboxCleanups({ companyId });
-    expect(result).toMatchObject({ scanned: 1, cleaned: 1, failed: 0, skipped: 0 });
+    const lease = await environmentService(db).getLeaseById(orphan.id);
+    await runtimeWithPlugin.retryPendingSandboxTeardown({ environment: null, lease: lease! });
     expect(destroyConfigs).toHaveLength(1);
     expect(destroyConfigs[0]).toMatchObject({ apiKey: "old-provider-api-key" });
-
-    const cleaned = await db
-      .select()
-      .from(environmentLeases)
-      .where(eq(environmentLeases.id, orphan.id))
-      .then((r) => r[0]!);
-    expect(cleaned.status).toBe("expired");
-    expect(cleaned.cleanupStatus).toBe("success");
   });
 
   it("tears down a secret-backed plugin orphan with the recorded credential after the provider is reconfigured", async () => {
@@ -1768,25 +1716,17 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const { workerManager, destroyConfigs } = createDestroyRecordingWorkerManager(pluginId);
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
-    const result = await runtimeWithPlugin.sweepPendingSandboxCleanups({ companyId });
-    expect(result).toMatchObject({ scanned: 1, cleaned: 1, failed: 0, skipped: 0 });
+    const lease = await environmentService(db).getLeaseById(orphan.id);
+    await runtimeWithPlugin.retryPendingSandboxTeardown({ environment: null, lease: lease! });
     expect(destroyConfigs).toHaveLength(1);
     // The teardown resolved the OLD recorded credential, not the new binding.
     expect(destroyConfigs[0]).toMatchObject({ apiKey: "old-provider-api-key" });
     expect(destroyConfigs[0]?.apiKey).not.toBe("new-provider-api-key");
 
-    const cleaned = await db
-      .select()
-      .from(environmentLeases)
-      .where(eq(environmentLeases.id, orphan.id))
-      .then((r) => r[0]!);
-    expect(cleaned.status).toBe("expired");
-    expect(cleaned.cleanupStatus).toBe("success");
-
     await environmentService(db).update(environment.id, { driver: "local", config: {} });
   });
 
-  it("retries the plugin teardown for a pending-cleanup orphan and marks it cleaned", async () => {
+  it("tears the recorded plugin provider lease down for a pending-cleanup orphan", async () => {
     const pluginId = randomUUID();
     const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
     const pluginConfig = { provider: "fake-plugin", image: "fake:test", reuseLease: false };
@@ -1855,6 +1795,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     let destroyAttempts = 0;
     const workerManager = {
       isRunning: vi.fn((id: string) => id === pluginId),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentDestroyLease"] })),
       call: vi.fn(async (_pluginId: string, method: string) => {
         if (method === "environmentAcquireLease") {
           return {
@@ -1893,21 +1834,13 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(orphan.status).toBe("pending_cleanup");
     expect(orphan.providerLeaseId).toBe("plugin-lease-3");
 
-    const result = await runtimeWithPlugin.sweepPendingSandboxCleanups({ companyId });
-    expect(result).toMatchObject({ scanned: 1, cleaned: 1, failed: 0, skipped: 0 });
+    const lease = await environmentService(db).getLeaseById(orphan.id);
+    await runtimeWithPlugin.retryPendingSandboxTeardown({ environment: null, lease: lease! });
     expect(destroyAttempts).toBe(2);
     const destroyCall = (workerManager.call as unknown as ReturnType<typeof vi.fn>).mock.calls
       .filter((callArgs) => callArgs[1] === "environmentDestroyLease")
       .at(-1);
     expect(destroyCall?.[2]).toMatchObject({ providerLeaseId: "plugin-lease-3" });
-
-    const cleaned = await db
-      .select()
-      .from(environmentLeases)
-      .where(eq(environmentLeases.id, orphan.id))
-      .then((r) => r[0]!);
-    expect(cleaned.status).toBe("expired");
-    expect(cleaned.cleanupStatus).toBe("success");
 
     await environmentService(db).update(environment.id, { driver: "local", config: {} });
   });

@@ -128,6 +128,34 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     return { destroyRunLease } as unknown as HeartbeatEnvironmentRuntime;
   }
 
+  // An orphan ephemeral lease that a failed acquire records. The sweep tears it
+  // down through retryPendingSandboxTeardown, not through destroyRunLease.
+  async function insertOrphanEphemeralLease(input: {
+    companyId: string;
+    environmentId: string | null;
+    updatedAt: Date;
+    metadata?: Record<string, unknown>;
+  }): Promise<string> {
+    const id = randomUUID();
+    await db.insert(environmentLeases).values({
+      id,
+      companyId: input.companyId,
+      environmentId: input.environmentId,
+      status: "pending_cleanup",
+      leasePolicy: "ephemeral",
+      provider: "fake",
+      providerLeaseId: `sandbox://fake/${id}`,
+      cleanupStatus: "failed",
+      metadata: { driver: "sandbox", provider: "fake", ...(input.metadata ?? {}) },
+      acquiredAt: input.updatedAt,
+      lastUsedAt: input.updatedAt,
+      releasedAt: input.updatedAt,
+      createdAt: input.updatedAt,
+      updatedAt: input.updatedAt,
+    });
+    return id;
+  }
+
   it("test_pending_cleanup_sweep_retries_and_destroys_lease", async () => {
     const { companyId, environmentId } = await seedCompanyAndEnvironment();
     const leaseId = await insertPendingCleanupLease({
@@ -299,6 +327,66 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
       .then((rows) => rows[0]);
     expect((metadata?.metadata as Record<string, unknown> | null)?.[ATTEMPTS_KEY]).toBe(1);
     expect(metadata?.status).toBe("pending_cleanup");
+  });
+
+  // Two unified sweeps can overlap on one orphan ephemeral lease. The master
+  // sweep is the single owner of the pending_cleanup rows. Its atomic per-attempt
+  // claim must let only one sweep tear the sandbox down, and the winning sweep
+  // must leave the lease in a final successful state.
+  it("test_concurrent_unified_sweeps_tear_an_orphan_down_once", async () => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+    const leaseId = await insertOrphanEphemeralLease({
+      companyId,
+      environmentId,
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    // The orphan teardown succeeds and does not release the lease; the sweep
+    // releases it. The counter records how many sweeps reached the teardown.
+    let teardownCount = 0;
+    const retryPendingSandboxTeardown = vi.fn(async () => {
+      teardownCount += 1;
+    });
+    const runtime = { retryPendingSandboxTeardown } as unknown as HeartbeatEnvironmentRuntime;
+
+    // Two sweeps run on two separate database clients, so they truly overlap.
+    // A single client serializes the queries on one connection and hides the
+    // race. The second client connects to the same embedded database.
+    const dbB = createDb(tempDb!.connectionString);
+    try {
+      // Warm up the second connection first, so the two sweeps start together.
+      await dbB.select({ id: environmentLeases.id }).from(environmentLeases).limit(1);
+
+      const heartbeatA = heartbeatService(db, { environmentRuntime: runtime });
+      const heartbeatB = heartbeatService(dbB, { environmentRuntime: runtime });
+
+      const backoffMs = 5 * 60 * 1000;
+      const [first, second] = await Promise.all([
+        heartbeatA.sweepPendingCleanupLeases({ backoffMs }),
+        heartbeatB.sweepPendingCleanupLeases({ backoffMs }),
+      ]);
+
+      // Only one sweep claimed the attempt and tore the sandbox down.
+      expect(teardownCount).toBe(1);
+      expect(first.destroyed + second.destroyed).toBe(1);
+    } finally {
+      await (dbB as unknown as { $client: { end: () => Promise<void> } }).$client.end();
+    }
+
+    // The winning sweep left the lease in a final successful state and advanced
+    // the attempt count by exactly one.
+    const finalRow = await db
+      .select({
+        status: environmentLeases.status,
+        cleanupStatus: environmentLeases.cleanupStatus,
+        metadata: environmentLeases.metadata,
+      })
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, leaseId))
+      .then((rows) => rows[0]);
+    expect(finalRow?.status).toBe("expired");
+    expect(finalRow?.cleanupStatus).toBe("success");
+    expect((finalRow?.metadata as Record<string, unknown> | null)?.[ATTEMPTS_KEY]).toBe(1);
   });
 
   // Read the current retry attempt count from a lease's metadata.
