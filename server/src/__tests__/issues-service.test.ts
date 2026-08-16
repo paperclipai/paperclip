@@ -2713,6 +2713,52 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       taskId: issueId,
     });
   });
+
+  it("checkout does not lock the issue when the heartbeat run belongs to another agent", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const issueId = randomUUID();
+    const checkoutRunId = randomUUID();
+
+    await db.insert(agents).values([
+      agentRow(companyId, { id: agentId, name: "CheckoutCoder" }),
+      agentRow(companyId, { id: otherAgentId, name: "OtherCheckoutCoder" }),
+    ]);
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId: otherAgentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Checkout run owned by another agent",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(svc.checkout(issueId, agentId, ["todo"], checkoutRunId)).rejects.toMatchObject({
+      status: 409,
+    });
+
+    const issue = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(issue?.status).toBe("todo");
+    expect(issue?.checkoutRunId).toBeNull();
+    expect(issue?.executionRunId).toBeNull();
+  });
 });
 
 describeEmbeddedPostgres("issueService.findOpenAncestorCreatedByAgent", () => {

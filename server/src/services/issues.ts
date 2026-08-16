@@ -5466,7 +5466,7 @@ export function issueService(db: Db) {
     checkoutRunId: string,
     dbOrTx: any = db,
   ) {
-    await dbOrTx
+    const updated = await dbOrTx
       .update(heartbeatRuns)
       .set({
         contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || jsonb_build_object(
@@ -5479,7 +5479,17 @@ export function issueService(db: Db) {
           eq(heartbeatRuns.id, checkoutRunId),
           eq(heartbeatRuns.agentId, agentId),
         ),
-      );
+      )
+      .returning({ id: heartbeatRuns.id })
+      .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+
+    if (!updated) {
+      throw conflict("Heartbeat run for checkout was not found or is not owned by this agent", {
+        checkoutRunId,
+        agentId,
+        issueId,
+      });
+    }
   }
 
   async function updateIssueAndSetCheckoutRunContext(
