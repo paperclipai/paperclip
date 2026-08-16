@@ -128,7 +128,10 @@ export interface EnvironmentDeleteBlastRadius {
 export interface EnvironmentLease {
   id: string;
   companyId: string;
-  environmentId: string;
+  // Null only for an orphan `pending_cleanup` lease whose environment a delete
+  // removed. The cleanup sweep tears the orphan down from the row's immutable
+  // provider metadata, so it needs no environment row.
+  environmentId: string | null;
   executionWorkspaceId: string | null;
   issueId: string | null;
   heartbeatRunId: string | null;

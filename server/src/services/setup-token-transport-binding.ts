@@ -502,7 +502,9 @@ export function createProductionSetupTokenSandboxProvider(
       // the release is idempotent and the reaper may drop the cleanup record.
       return;
     }
-    const environment = await deps.environments.getById(lease.environmentId);
+    const environment = lease.environmentId
+      ? await deps.environments.getById(lease.environmentId)
+      : null;
     if (!environment) {
       // The lease resolves but its environment is gone, so no driver can tear down
       // the remote sandbox. Fail loud, so the reaper keeps the cleanup record.

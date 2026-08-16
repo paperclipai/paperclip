@@ -453,10 +453,14 @@ export interface EnvironmentRuntimeDriver {
   /**
    * Retry the provider teardown for an orphan sandbox that an earlier acquire
    * provisioned but could not tear down. The pending-cleanup lease row carries
-   * the provider lease id and the resolution metadata. The method throws when
-   * the teardown fails, so the cleanup sweep keeps the row for a later retry.
+   * the provider, the provider lease id, and the immutable config metadata, so
+   * the retry resolves the teardown from the row alone. It never reads the
+   * current environment provider, so a provider change or an environment delete
+   * cannot strand the teardown. `environment` is null when a delete already
+   * removed the environment row. The method throws when the teardown fails, so
+   * the cleanup sweep keeps the row for a later retry.
    */
-  retryPendingSandboxTeardown?(input: { environment: Environment; lease: EnvironmentLease }): Promise<void>;
+  retryPendingSandboxTeardown?(input: { environment: Environment | null; lease: EnvironmentLease }): Promise<void>;
 }
 
 /** The default page size a single pending-sandbox-cleanup sweep processes. */
@@ -516,9 +520,15 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function getLeaseDriverKey(lease: Pick<EnvironmentLease, "metadata">, environment: Pick<Environment, "driver">): string {
+function getLeaseDriverKey(
+  lease: Pick<EnvironmentLease, "metadata">,
+  environment: Pick<Environment, "driver"> | null,
+): string {
   const leaseDriver = typeof lease.metadata?.driver === "string" ? lease.metadata.driver : null;
-  return leaseDriver ?? environment.driver;
+  // An orphan `pending_cleanup` row whose environment a delete removed keeps its
+  // driver in the metadata, so the sweep still finds the sandbox driver. Fall
+  // back to "sandbox" because only sandbox leases record orphan cleanup.
+  return leaseDriver ?? environment?.driver ?? "sandbox";
 }
 
 function toEnvironmentLeaseSnapshot(row: typeof environmentLeases.$inferSelect): EnvironmentLease {
@@ -1054,7 +1064,7 @@ function createSandboxEnvironmentDriver(
   }
 
   async function resolvePluginSandboxRuntimeConfig(input: {
-    environment: Environment;
+    environment: Pick<Environment, "id" | "driver" | "config">;
     lease: EnvironmentLease;
     provider: string;
   }): Promise<Record<string, unknown>> {
@@ -1720,45 +1730,63 @@ function createSandboxEnvironmentDriver(
     },
 
     async retryPendingSandboxTeardown(input) {
-      // Resolve the provider config from the environment under the orphan's
-      // company scope. The orphan lease row keeps the company id, so the retry
-      // resolves the same connection secrets the failed acquire used. The
-      // provider check keeps the retry inside the recorded provider scope.
-      const parsed = await resolveEnvironmentDriverConfigForRuntime(db, input.lease.companyId, input.environment, {
-        issueId: input.lease.issueId,
-        heartbeatRunId: input.lease.heartbeatRunId,
-      });
-      if (parsed.driver !== "sandbox") {
-        throw new Error(`Expected sandbox environment config for lease "${input.lease.id}".`);
+      // Resolve the teardown from the immutable orphan lease row, not from the
+      // current environment. The row keeps the provider, the provider lease id,
+      // and the sandbox config in its metadata. A provider change re-points the
+      // environment, and an environment delete removes it, but neither must
+      // strand this teardown. So the retry reads the recorded provider and the
+      // recorded config, and never the current environment provider.
+      const recordedProvider =
+        input.lease.provider ??
+        (typeof input.lease.metadata?.provider === "string" ? input.lease.metadata.provider : null);
+      if (!recordedProvider) {
+        throw new Error(`Pending-cleanup lease "${input.lease.id}" has no recorded provider for teardown.`);
       }
-      if (input.lease.provider && parsed.config.provider !== input.lease.provider) {
-        throw new Error(
-          `Pending-cleanup provider "${input.lease.provider}" does not match environment provider "${parsed.config.provider}".`,
-        );
-      }
+
+      // Build the config from the lease metadata under the orphan's company
+      // scope, so the retry resolves the same connection secrets the failed
+      // acquire used. A synthetic environment stands in when a delete already
+      // removed the real one; it carries the recorded config, so secret and
+      // config resolution still succeed.
+      const metadataConfig = sandboxConfigFromLeaseMetadataLoose(input.lease);
+      const environmentForTeardown: Pick<Environment, "id" | "driver" | "config"> = {
+        id: input.environment?.id ?? input.lease.environmentId ?? "",
+        driver: "sandbox",
+        // The recorded config wins over the current environment config, so a
+        // provider change never re-points the teardown.
+        config: (metadataConfig as Record<string, unknown> | null) ?? input.environment?.config ?? {},
+      };
 
       // Plugin-backed provider path. The Claude login runs on a plugin-backed
       // sandbox, so this path tears down the login orphan.
-      if (!isBuiltinSandboxProvider(parsed.config.provider)) {
+      if (!isBuiltinSandboxProvider(recordedProvider)) {
         if (!pluginWorkerManager) {
           throw new Error(
-            `Sandbox provider "${parsed.config.provider}" needs a plugin worker manager for cleanup, but none is available.`,
+            `Sandbox provider "${recordedProvider}" needs a plugin worker manager for cleanup, but none is available.`,
           );
         }
-        const pluginProvider = await resolveSandboxProviderPlugin({ provider: parsed.config.provider });
+        const pluginProvider = await resolveSandboxProviderPlugin({ provider: recordedProvider });
         if (pluginProvider.state !== "running") {
           throw new Error(
-            `Sandbox provider plugin for "${parsed.config.provider}" is ${pluginProvider.state}, so the cleanup teardown cannot run yet.`,
+            `Sandbox provider plugin for "${recordedProvider}" is ${pluginProvider.state}, so the cleanup teardown cannot run yet.`,
           );
         }
-        const workerConfig = stripSandboxProviderEnvelope(parsed.config);
+        const config = await resolvePluginSandboxRuntimeConfig({
+          environment: environmentForTeardown,
+          lease: input.lease,
+          provider: recordedProvider,
+        });
+        const workerConfig = stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig);
         await pluginWorkerManager.call(
           pluginProvider.resolved.plugin.id,
           "environmentDestroyLease",
           {
-            driverKey: parsed.config.provider,
+            driverKey: recordedProvider,
             companyId: input.lease.companyId,
-            environmentId: input.environment.id,
+            // The provider teardown keys on the provider lease id. The
+            // environment id is only context, and it is empty when a delete
+            // removed the environment before this orphan was recorded.
+            environmentId: input.lease.environmentId ?? input.environment?.id ?? "",
             issueId: input.lease.issueId,
             config: workerConfig,
             providerLeaseId: input.lease.providerLeaseId,
@@ -1769,7 +1797,22 @@ function createSandboxEnvironmentDriver(
         return;
       }
 
-      // Built-in provider path.
+      // Built-in provider path. Resolve the built-in config from the recorded
+      // metadata so the teardown targets the recorded provider, not the current
+      // environment provider.
+      if (!metadataConfig || metadataConfig.provider !== recordedProvider) {
+        throw new Error(
+          `Pending-cleanup lease "${input.lease.id}" has no recorded config for provider "${recordedProvider}".`,
+        );
+      }
+      const parsed = await resolveEnvironmentDriverConfigForRuntime(db, input.lease.companyId, {
+        id: input.lease.environmentId ?? input.environment?.id ?? undefined,
+        driver: "sandbox",
+        config: sandboxConfigForLeaseMetadata(metadataConfig),
+      });
+      if (parsed.driver !== "sandbox") {
+        throw new Error(`Expected sandbox environment config for lease "${input.lease.id}".`);
+      }
       await destroySandboxProviderLease({
         config: parsed.config,
         providerLeaseId: input.lease.providerLeaseId,
@@ -2696,7 +2739,9 @@ export function environmentRuntimeService(
       const released: EnvironmentRuntimeLeaseRecord[] = [];
       for (const leaseRow of leaseRows) {
         try {
-          const environment = await environmentsSvc.getById(leaseRow.environmentId);
+          const environment = leaseRow.environmentId
+            ? await environmentsSvc.getById(leaseRow.environmentId)
+            : null;
           if (!environment) continue;
 
           const leaseSnapshot = toEnvironmentLeaseSnapshot(leaseRow);
@@ -2797,18 +2842,13 @@ export function environmentRuntimeService(
         }
 
         const leaseSnapshot = toEnvironmentLeaseSnapshot(claimed[0]!);
-        const environment = await environmentsSvc.getById(leaseSnapshot.environmentId);
-        if (!environment) {
-          // The environment row is gone, so a cascade already removed the
-          // provider connection. Mark the orphan cleaned, so no sweep retries an
-          // unreachable teardown.
-          await environmentsSvc.releaseLease(leaseSnapshot.id, "expired", {
-            cleanupStatus: "success",
-            failureReason: "pending_cleanup_environment_removed",
-          });
-          cleaned += 1;
-          continue;
-        }
+        // The environment row may be gone: a delete removed it and set the
+        // lease reference to null, or the acquire recorded the orphan after the
+        // delete with a null reference. The teardown reads the immutable
+        // provider metadata on the row, so it runs without the environment row.
+        const environment = leaseSnapshot.environmentId
+          ? await environmentsSvc.getById(leaseSnapshot.environmentId)
+          : null;
 
         const driver = getDriver(getLeaseDriverKey(leaseSnapshot, environment));
         if (!driver?.retryPendingSandboxTeardown) {
@@ -2869,7 +2909,9 @@ export function environmentRuntimeService(
 
       const destroyed: EnvironmentRuntimeLeaseRecord[] = [];
       for (const leaseRow of leaseRows) {
-        const environment = await environmentsSvc.getById(leaseRow.environmentId);
+        const environment = leaseRow.environmentId
+          ? await environmentsSvc.getById(leaseRow.environmentId)
+          : null;
         if (!environment) continue;
         const leaseSnapshot = toEnvironmentLeaseSnapshot(leaseRow);
         const driver = getDriver(getLeaseDriverKey(leaseSnapshot, environment));

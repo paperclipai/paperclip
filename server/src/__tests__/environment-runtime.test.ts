@@ -1337,6 +1337,185 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     }
   });
 
+  it("tears the recorded provider down after the environment provider changes", async () => {
+    // Ordering: an acquire provisions a sandbox with provider A, the lease
+    // insert rejects a foreign-company binding, and the compensating teardown
+    // fails, so the acquire records an orphan for provider A. A provider change
+    // then re-points the environment before the sweep runs. The sweep must tear
+    // the orphan down from the recorded provider metadata, not the current
+    // environment provider, so the change cannot strand the teardown.
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Provider Change Vs Orphan",
+      config: { provider: "fake", image: "ubuntu:24.04", reuseLease: false },
+    });
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other Co Provider Change",
+      issuePrefix: "OTP",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(builtInManagedResources).values({
+      companyId: otherCompanyId,
+      bundleKey: "managed-environment",
+      resourceKind: "environment",
+      resourceKey: "managed-sandbox",
+      resourceId: environment.id,
+      stockVersion: "1",
+      stockHash: "hash",
+    });
+
+    const destroySpy = vi
+      .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
+      .mockRejectedValueOnce(new Error("teardown failed"))
+      .mockResolvedValue(undefined);
+    try {
+      await expect(
+        runtime.acquireRunLease({
+          companyId,
+          environment,
+          issueId: null,
+          heartbeatRunId: runId,
+          persistedExecutionWorkspace: null,
+          assertCompanyBinding: true,
+        }),
+      ).rejects.toMatchObject({ status: 403, details: { code: "environment_company_mismatch" } });
+
+      const orphan = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.environmentId, environment.id))
+        .then((r) => r[0]!);
+      expect(orphan.status).toBe("pending_cleanup");
+      expect(orphan.provider).toBe("fake");
+      const providerLeaseId = orphan.providerLeaseId;
+
+      // The provider-target mutation re-points the environment to a different
+      // driver. The orphan teardown must not depend on this current config.
+      await environmentService(db).update(environment.id, { driver: "local", config: {} });
+
+      const result = await runtime.sweepPendingSandboxCleanups({ companyId });
+      expect(result).toMatchObject({ scanned: 1, cleaned: 1, failed: 0, skipped: 0 });
+      // The retry tore the recorded provider lease down, so the sweep never
+      // reads the re-pointed environment provider.
+      expect(destroySpy).toHaveBeenLastCalledWith(expect.objectContaining({ providerLeaseId }));
+
+      const cleaned = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.id, orphan.id))
+        .then((r) => r[0]!);
+      expect(cleaned.status).toBe("expired");
+      expect(cleaned.cleanupStatus).toBe("success");
+    } finally {
+      destroySpy.mockRestore();
+    }
+  });
+
+  it("records an orphan with a null reference when a delete already removed the environment", async () => {
+    // Ordering: a delete removes the environment before the acquire records the
+    // orphan. The environment foreign key must not fail the insert. The record
+    // persists with a null reference and its immutable provider metadata, so a
+    // later sweep still tears the orphan down.
+    const { companyId, environment } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Delete Before Orphan Record",
+      config: { provider: "fake", image: "ubuntu:24.04", reuseLease: false },
+    });
+
+    // Remove the environment row first, so the record happens after the delete.
+    await environmentService(db).remove(environment.id);
+
+    const orphan = await environmentService(db).insertPendingCleanupLease({
+      companyId,
+      environmentId: environment.id,
+      provider: "fake",
+      providerLeaseId: "sandbox://fake/delete-before-record",
+      metadata: { provider: "fake", image: "ubuntu:24.04", driver: "sandbox" },
+      failureReason: "acquire_rejected_teardown_failed",
+    });
+    // The insert kept no environment reference, so the delete did not fail it.
+    expect(orphan.environmentId).toBeNull();
+    expect(orphan.status).toBe("pending_cleanup");
+
+    const destroySpy = vi
+      .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
+      .mockResolvedValue(undefined);
+    try {
+      const result = await runtime.sweepPendingSandboxCleanups({ companyId });
+      expect(result).toMatchObject({ scanned: 1, cleaned: 1, failed: 0, skipped: 0 });
+      expect(destroySpy).toHaveBeenCalledWith(
+        expect.objectContaining({ providerLeaseId: "sandbox://fake/delete-before-record" }),
+      );
+
+      const cleaned = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.id, orphan.id))
+        .then((r) => r[0]!);
+      expect(cleaned.status).toBe("expired");
+      expect(cleaned.cleanupStatus).toBe("success");
+    } finally {
+      destroySpy.mockRestore();
+    }
+  });
+
+  it("keeps the orphan and tears it down after the environment is deleted", async () => {
+    // Ordering: an orphan is recorded, then the environment is deleted. The
+    // foreign key sets the reference null instead of cascading the row away, so
+    // the orphan survives. The sweep tears it down from the recorded metadata.
+    const { companyId, environment } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Delete After Orphan Record",
+      config: { provider: "fake", image: "ubuntu:24.04", reuseLease: false },
+    });
+
+    const orphan = await environmentService(db).insertPendingCleanupLease({
+      companyId,
+      environmentId: environment.id,
+      provider: "fake",
+      providerLeaseId: "sandbox://fake/delete-after-record",
+      metadata: { provider: "fake", image: "ubuntu:24.04", driver: "sandbox" },
+      failureReason: "acquire_rejected_teardown_failed",
+    });
+    expect(orphan.environmentId).toBe(environment.id);
+
+    // Delete the environment row directly. The foreign key sets the lease
+    // reference null, so the orphan survives instead of being cascaded away.
+    await environmentService(db).remove(environment.id);
+    const survived = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, orphan.id))
+      .then((r) => r[0]!);
+    expect(survived.environmentId).toBeNull();
+    expect(survived.status).toBe("pending_cleanup");
+
+    const destroySpy = vi
+      .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
+      .mockResolvedValue(undefined);
+    try {
+      const result = await runtime.sweepPendingSandboxCleanups({ companyId });
+      expect(result).toMatchObject({ scanned: 1, cleaned: 1, failed: 0, skipped: 0 });
+      expect(destroySpy).toHaveBeenCalledWith(
+        expect.objectContaining({ providerLeaseId: "sandbox://fake/delete-after-record" }),
+      );
+
+      const cleaned = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.id, orphan.id))
+        .then((r) => r[0]!);
+      expect(cleaned.status).toBe("expired");
+      expect(cleaned.cleanupStatus).toBe("success");
+    } finally {
+      destroySpy.mockRestore();
+    }
+  });
+
   it("retries the plugin teardown for a pending-cleanup orphan and marks it cleaned", async () => {
     const pluginId = randomUUID();
     const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();

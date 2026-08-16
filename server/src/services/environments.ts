@@ -1404,6 +1404,19 @@ export function environmentService(db: Db) {
      * intermediate state that no sweep finds. The insert skips the company
      * binding assertion, so it records the orphan even for a foreign-bound
      * environment.
+     *
+     * The insert runs in a transaction that first locks the environment row with
+     * `for update`. The delete path (`removeIfDeletable`) refuses a delete while a
+     * `pending_cleanup` lease exists, so this lock serializes the two writes:
+     *
+     * - The environment still exists: the insert records the orphan with the
+     *   environment reference. A concurrent delete blocks on the lock, then its
+     *   `not exists (pending_cleanup)` predicate fails, so the delete refuses.
+     * - The environment is already gone (a delete won the race before this
+     *   insert): the insert records the orphan with a null environment
+     *   reference. The row carries the immutable provider metadata the sweep
+     *   needs, so the teardown still runs. This closes the window the finding
+     *   describes, where the foreign-key insert fails after a delete.
      */
     insertPendingCleanupLease: async (input: {
       companyId: string;
@@ -1417,30 +1430,41 @@ export function environmentService(db: Db) {
       failureReason: string;
     }): Promise<EnvironmentLease> => {
       const now = new Date();
-      const row = await db
-        .insert(environmentLeases)
-        .values({
-          companyId: input.companyId,
-          environmentId: input.environmentId,
-          executionWorkspaceId: input.executionWorkspaceId ?? null,
-          issueId: input.issueId ?? null,
-          heartbeatRunId: input.heartbeatRunId ?? null,
-          status: "pending_cleanup" as const,
-          leasePolicy: "ephemeral",
-          provider: input.provider ?? null,
-          providerLeaseId: input.providerLeaseId ?? null,
-          acquiredAt: now,
-          lastUsedAt: now,
-          expiresAt: null,
-          releasedAt: now,
-          failureReason: input.failureReason,
-          cleanupStatus: "failed",
-          metadata: input.metadata ?? null,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const row = await db.transaction(async (tx) => {
+        // Lock the environment row so a concurrent delete cannot commit between
+        // this read and the insert. An absent row means a delete already removed
+        // the environment, so record the orphan with a null reference.
+        const environmentRows = await tx
+          .select({ id: environments.id })
+          .from(environments)
+          .where(eq(environments.id, input.environmentId))
+          .for("update");
+        const environmentIdForRow = environmentRows[0]?.id ?? null;
+        return tx
+          .insert(environmentLeases)
+          .values({
+            companyId: input.companyId,
+            environmentId: environmentIdForRow,
+            executionWorkspaceId: input.executionWorkspaceId ?? null,
+            issueId: input.issueId ?? null,
+            heartbeatRunId: input.heartbeatRunId ?? null,
+            status: "pending_cleanup" as const,
+            leasePolicy: "ephemeral",
+            provider: input.provider ?? null,
+            providerLeaseId: input.providerLeaseId ?? null,
+            acquiredAt: now,
+            lastUsedAt: now,
+            expiresAt: null,
+            releasedAt: now,
+            failureReason: input.failureReason,
+            cleanupStatus: "failed",
+            metadata: input.metadata ?? null,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning()
+          .then((rows) => rows[0] ?? null);
+      });
       if (!row) {
         throw new Error("Failed to record pending sandbox cleanup lease");
       }
