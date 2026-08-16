@@ -2703,8 +2703,23 @@ registry.registerPath({
   path: "/api/projects/{id}",
   tags: ["projects"],
   summary: "Delete a project",
-  request: { params: z.object({ id: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({ deleteFiles: z.enum(["true", "false", "1", "0"]).optional() }),
+  },
+  responses: {
+    200: r.ok(
+      z
+        .object({
+          id: z.string(),
+          companyId: z.string(),
+          name: z.string(),
+          fileCleanup: z.enum(["not_requested", "succeeded", "failed"]),
+        })
+        .passthrough(),
+    ),
+    401: r.unauthorized,
+  },
 });
 
 registry.registerPath({

@@ -1,3 +1,5 @@
+import { rm } from "node:fs/promises";
+import path from "node:path";
 import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -31,7 +33,46 @@ import {
 import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
-import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { resolveManagedProjectWorkspaceDir, resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { logger } from "../middleware/logger.js";
+
+export type FileCleanupStatus = "not_requested" | "succeeded" | "failed";
+
+const SAFE_PATH_SEGMENT = /^[a-zA-Z0-9_-]+$/;
+
+function isPathInside(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+export async function removeProjectManagedFiles(input: {
+  companyId: string;
+  projectId: string;
+  workspaceCwds: string[];
+}): Promise<void> {
+  if (!SAFE_PATH_SEGMENT.test(input.companyId) || !SAFE_PATH_SEGMENT.test(input.projectId)) {
+    throw new Error("Invalid company or project id for managed-file cleanup");
+  }
+
+  const managedProjectRoot = path.dirname(
+    resolveManagedProjectWorkspaceDir({
+      companyId: input.companyId,
+      projectId: input.projectId,
+      repoName: "_default",
+    }),
+  );
+  const targets = new Set([managedProjectRoot]);
+  for (const cwd of input.workspaceCwds) {
+    const resolved = path.resolve(cwd);
+    if (isPathInside(managedProjectRoot, resolved)) targets.add(resolved);
+  }
+
+  const results = await Promise.allSettled(
+    [...targets].map((target) => rm(target, { recursive: true, force: true })),
+  );
+  const failure = results.find((result) => result.status === "rejected");
+  if (failure?.status === "rejected") throw failure.reason;
+}
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -540,7 +581,16 @@ async function ensureSinglePrimaryWorkspace(
     );
 }
 
-export function projectService(db: Db) {
+export function projectService(
+  db: Db,
+  options: {
+    removeManagedFiles?: (input: {
+      companyId: string;
+      projectId: string;
+      workspaceCwds: string[];
+    }) => Promise<void>;
+  } = {},
+) {
   const createProject = async (
     companyId: string,
     data: Omit<typeof projects.$inferInsert, "companyId"> & { goalIds?: string[] },
@@ -865,16 +915,48 @@ export function projectService(db: Db) {
       return cleared;
     },
 
-    remove: (id: string) =>
-      db
-        .delete(projects)
-        .where(eq(projects.id, id))
-        .returning()
-        .then((rows) => {
-          const row = rows[0] ?? null;
-          if (!row) return null;
-          return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
-        }),
+    remove: async (id: string, removeOptions: { deleteFiles?: boolean } = {}) => {
+      const result = await db.transaction(async (tx) => {
+        const workspaceRows = removeOptions.deleteFiles
+          ? await tx
+              .select({ cwd: projectWorkspaces.cwd })
+              .from(projectWorkspaces)
+              .where(eq(projectWorkspaces.projectId, id))
+          : [];
+        const rows = await tx.delete(projects).where(eq(projects.id, id)).returning();
+        return {
+          row: rows[0] ?? null,
+          workspaceCwds: workspaceRows
+            .map(({ cwd }) => cwd)
+            .filter((cwd): cwd is string => typeof cwd === "string" && cwd.length > 0),
+        };
+      });
+      if (!result.row) return null;
+
+      let fileCleanup: FileCleanupStatus = "not_requested";
+      if (removeOptions.deleteFiles) {
+        try {
+          await (options.removeManagedFiles ?? removeProjectManagedFiles)({
+            companyId: result.row.companyId,
+            projectId: result.row.id,
+            workspaceCwds: result.workspaceCwds,
+          });
+          fileCleanup = "succeeded";
+        } catch (err) {
+          fileCleanup = "failed";
+          logger.warn(
+            { err, companyId: result.row.companyId, projectId: result.row.id },
+            "project deleted but managed-file cleanup failed",
+          );
+        }
+      }
+
+      return {
+        ...result.row,
+        urlKey: deriveProjectUrlKey(result.row.name, result.row.id),
+        fileCleanup,
+      };
+    },
 
     listWorkspaces: async (projectId: string): Promise<ProjectWorkspace[]> => {
       const rows = await db
