@@ -76,8 +76,12 @@ async function flushReact() {
   });
 }
 
+let captured: ReturnType<typeof useCompany> | null = null;
+
 function Probe({ onSelectedCompanyId }: { onSelectedCompanyId: (companyId: string | null) => void }) {
-  const { selectedCompanyId } = useCompany();
+  const company = useCompany();
+  captured = company;
+  const { selectedCompanyId } = company;
   useEffect(() => {
     onSelectedCompanyId(selectedCompanyId);
   }, [onSelectedCompanyId, selectedCompanyId]);
@@ -194,6 +198,7 @@ describe("CompanyProvider", () => {
 
   beforeEach(() => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    captured = null;
     localStorage.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -341,6 +346,71 @@ describe("CompanyProvider", () => {
 
       expect(seen).toEqual([null, "company-1", null, "company-2"]);
       expect(localStorage.getItem("paperclip.selectedCompanyId")).toBe("company-2");
+    });
+
+    // The replacement fetch is the only thing standing between the account
+    // change and a usable app: the cache entry has already been removed, so a
+    // failure here leaves the tab with no list and no selection. It must not
+    // also leave it with no way out.
+    it("recovers the list when the replacement fetch fails and is retried", async () => {
+      const seen: Array<string | null> = [];
+      await bootWithFirstAccount(seen);
+
+      mockCompaniesApi.list.mockRejectedValue(new Error("network down"));
+
+      await act(async () => {
+        queryClient.setQueryData(queryKeys.auth.session, sessionFor("user-2"));
+      });
+      await flushReact();
+      // Past the bounded retries, so the failure has actually settled.
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 1200));
+      });
+      await flushReact();
+
+      // The previous account's company is gone and nothing took its place.
+      expect(seen).toEqual([null, "company-1", null]);
+      // Reported as unavailable, not as an account that owns nothing. Without
+      // this the switcher renders "No companies", which is a false claim.
+      expect(captured?.companyListUnavailable).toBe(true);
+      expect(captured?.companies).toEqual([]);
+
+      // The recovery path actually recovers.
+      mockCompaniesApi.list.mockResolvedValue([makeCompany("company-2")]);
+      await act(async () => {
+        await captured?.retryCompanies();
+      });
+      await flushReact();
+
+      expect(captured?.companyListUnavailable).toBe(false);
+      expect(seen).toEqual([null, "company-1", null, "company-2"]);
+      expect(localStorage.getItem("paperclip.selectedCompanyId")).toBe("company-2");
+    });
+
+    // A transient blip must not need the customer to notice and click anything.
+    // Nothing configures a retry — the second attempt is the observer's own,
+    // issued when it rebinds to a fresh query after the removal above. This
+    // pins that, so the recovery affordance stays reserved for real outages
+    // rather than becoming the only way back from a one-off blip.
+    it("rides out a single failed replacement request without help", async () => {
+      const seen: Array<string | null> = [];
+      await bootWithFirstAccount(seen);
+
+      mockCompaniesApi.list
+        .mockRejectedValueOnce(new Error("blip"))
+        .mockResolvedValue([makeCompany("company-2")]);
+
+      await act(async () => {
+        queryClient.setQueryData(queryKeys.auth.session, sessionFor("user-2"));
+      });
+      await flushReact();
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 1200));
+      });
+      await flushReact();
+
+      expect(captured?.companyListUnavailable).toBe(false);
+      expect(seen).toEqual([null, "company-1", null, "company-2"]);
     });
 
     it("leaves the selection alone when the same account is observed again", async () => {

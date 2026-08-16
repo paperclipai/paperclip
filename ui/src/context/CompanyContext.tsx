@@ -24,6 +24,14 @@ interface CompanyContextValue {
   selectionSource: CompanySelectionSource;
   loading: boolean;
   error: Error | null;
+  /**
+   * There is no usable company list *and* the reason is a failed request rather
+   * than an account that owns nothing. Consumers need the two apart: an empty
+   * list is a fact to render, this is a dead end to offer a way out of.
+   */
+  companyListUnavailable: boolean;
+  /** Re-fetches the list for the account signed in now. Pairs with the flag above. */
+  retryCompanies: () => Promise<void>;
   setSelectedCompanyId: (companyId: string, options?: CompanySelectionOptions) => void;
   reloadCompanies: () => Promise<void>;
   createCompany: (data: {
@@ -118,6 +126,7 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   const sessionUserId = session?.user.id ?? null;
   const observedUserIdRef = useRef<string | null | undefined>(undefined);
   const [awaitingAccountScopedList, setAwaitingAccountScopedList] = useState(false);
+  const [accountScopedListFailed, setAccountScopedListFailed] = useState(false);
 
   useEffect(() => {
     // Until the session settles the account is unknown, not changed.
@@ -152,12 +161,31 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
 
     // Drive the replacement fetch here rather than leaning on observer refetch
     // semantics, so the gate below lifts exactly when a list for this account
-    // has landed. A failure is not swallowed: it lands on the query itself, so
-    // `error` below holds the selection undecided and the context exposes it.
+    // has landed.
+    //
+    // No `retry` override, though `companiesListQueryOptions` sets
+    // `retry: false`. A transient blip already gets a second attempt: the
+    // observer above rebinds to a fresh query on the render these state updates
+    // schedule and issues its own request, so a single failure self-heals
+    // (measured: two attempts either way). Adding retries here only buys extra
+    // failed round trips before a real outage is reported, and the outage is
+    // what needs a way out — see `companyListUnavailable` below.
     let cancelled = false;
+    setAccountScopedListFailed(false);
     void queryClient
       .fetchQuery({ ...companiesListQueryOptions, staleTime: 0 })
-      .catch(() => undefined)
+      .then(
+        () => {
+          if (!cancelled) setAccountScopedListFailed(false);
+        },
+        // Deliberately recorded rather than swallowed. The selection stays
+        // undecided either way (see the effect below), but a swallowed
+        // rejection is indistinguishable from "this account owns nothing",
+        // which is what left the dead end with no way out of it.
+        () => {
+          if (!cancelled) setAccountScopedListFailed(true);
+        },
+      )
       .finally(() => {
         if (!cancelled) setAwaitingAccountScopedList(false);
       });
@@ -221,6 +249,29 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
     await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
   }, [queryClient]);
 
+  // The way out of the dead end. Not `reloadCompanies`: invalidation refetches
+  // only through a mounted observer and leaves the failure flag standing, so the
+  // recovery affordance would keep telling the customer the list is unavailable
+  // after a retry had already succeeded.
+  const retryCompanies = useCallback(async () => {
+    setAwaitingAccountScopedList(true);
+    try {
+      await queryClient.fetchQuery({ ...companiesListQueryOptions, staleTime: 0 });
+      setAccountScopedListFailed(false);
+    } catch {
+      setAccountScopedListFailed(true);
+    } finally {
+      setAwaitingAccountScopedList(false);
+    }
+  }, [queryClient]);
+
+  // Empty because we could not find out, as opposed to empty because the account
+  // owns nothing. `error` covers a failed first load; `accountScopedListFailed`
+  // covers the replacement fetch above, whose rejection never reaches the query
+  // when it exhausts its retries against an already-removed entry.
+  const companyListUnavailable =
+    companies.length === 0 && (accountScopedListFailed || Boolean(error));
+
   const createMutation = useMutation({
     mutationFn: (data: {
       name: string;
@@ -258,6 +309,8 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
       selectionSource,
       loading: isLoading,
       error: error as Error | null,
+      companyListUnavailable,
+      retryCompanies,
       setSelectedCompanyId,
       reloadCompanies,
       createCompany,
@@ -269,6 +322,8 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
       selectionSource,
       isLoading,
       error,
+      companyListUnavailable,
+      retryCompanies,
       setSelectedCompanyId,
       reloadCompanies,
       createCompany,
