@@ -50,7 +50,7 @@ import type {
   PrincipalType,
   EnvSecretRefBinding,
 } from "@paperclipai/shared";
-import type { PluginPerformActionContext } from "./protocol.js";
+import type { PluginGetDataContext, PluginPerformActionContext } from "./protocol.js";
 
 // ---------------------------------------------------------------------------
 // Re-exports from @paperclipai/shared (plugin authors import from one place)
@@ -956,7 +956,10 @@ export interface PluginDataClient {
    * @param key - Stable string identifier for this data type (e.g. `"sync-health"`)
    * @param handler - Async function that receives request params and returns JSON-serializable data
    */
-  register(key: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void;
+  register(
+    key: string,
+    handler: (params: Record<string, unknown>, context: PluginGetDataContext) => Promise<unknown>,
+  ): void;
 }
 
 /**

@@ -38,6 +38,22 @@ HTTP API.
   `reindex-search` action rebuilds the cache from disk (disk stays truth).
 - **Revision recovery** (migration `006_revision_attribution.sql`): page
   revisions now store contents plus `author_kind`/`author_id`/`author_run_id`.
+- **Second-brain model** (migration `007_second_brain.sql`): Markdown frontmatter,
+  aliases, tags, wikilinks, ordinary local Markdown links, accepted AI link
+  suggestions, and Canvas edges share one normalized relationship graph.
+- **Obsidian-style workspaces**: company, project-space, and depth-limited local
+  graphs sit alongside a durable visual Canvas with note/text cards, typed
+  connections, autosave, undo/redo, revision history, and rollback. This is a
+  Paperclip-native model; it does not claim Obsidian `.canvas` compatibility.
+- **Privacy and traceability**: notes and canvases are either company-visible or
+  owner-private. The owning human and same-company agents can work with private
+  knowledge; other humans cannot discover it. Every mutation stores human/agent,
+  run, revision, and activity metadata. Semantic links proposed by agents remain
+  pending until a signed-in human accepts them, and acceptance never rewrites the
+  source Markdown.
+- **Recoverable lifecycle**: notes can be moved/renamed, archived to Wiki trash,
+  restored, or rolled back to a content snapshot. Graph references and Canvas
+  note cards follow a rename.
 - **Maintenance activation**: the `activate-wiki-maintenance` action resumes
   the Wiki Maintainer, activates the three maintenance routines, and warns when
   the maintainer has no monthly budget.
@@ -117,6 +133,11 @@ Remaining alpha gaps:
 
 
 ## Install Into Paperclip
+
+The production image builds and validates the Wiki bundle and defaults
+`PAPERCLIP_BUNDLED_PLUGINS=llm-wiki`, so a missing or previously errored Wiki is
+provisioned during startup before plugin workers load. Other deployments can use
+the same comma-separated environment variable explicitly.
 
 ```bash
 curl -X POST http://127.0.0.1:3100/api/plugins/install \

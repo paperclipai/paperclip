@@ -721,6 +721,7 @@ describe("LLM Wiki plugin scaffold", () => {
       "wiki_update_index",
       "wiki_list_backlinks",
       "wiki_list_pages",
+      "wiki_suggest_relation",
     ]);
     expect(manifest.ui?.slots?.map((slot) => slot.type)).toEqual([
       "sidebar",
@@ -1084,7 +1085,7 @@ Duplicate headings receive stable suffixes.
     }
     expect(markup).toContain("Local wiki folder");
     expect(markup).toContain("Choose");
-    expect(markup).toContain("Apply path");
+    expect(markup).toContain("Repair &amp; bootstrap");
     expect(markup).not.toContain("AGENTS.md, IDEA.md");
     expect(markup).not.toContain("Ready</span>");
     expect(markup).not.toContain("Needs attention</span>");

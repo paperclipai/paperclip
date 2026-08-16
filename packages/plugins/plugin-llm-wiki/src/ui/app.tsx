@@ -361,6 +361,10 @@ type WikiPageRow = {
   sourceCount: number;
   contentHash: string | null;
   updatedAt: string;
+  visibility?: "company" | "private";
+  ownerUserId?: string | null;
+  aliases?: string[];
+  tags?: string[];
 };
 
 type WikiSourceRow = {
@@ -459,6 +463,52 @@ type PageContentData = {
   sourceRefs: Array<Record<string, unknown> | string>;
   updatedAt: string | null;
   hash: string;
+  visibility: "company" | "private";
+  ownerUserId: string | null;
+  aliases: string[];
+  tags: string[];
+};
+
+type WikiPageContextData = {
+  page: { id: string; path: string; visibility: "company" | "private"; ownerUserId: string | null; deletedAt: string | null } | null;
+  incoming: Array<Record<string, unknown>>;
+  outgoing: Array<Record<string, unknown>>;
+  revisions: Array<Record<string, unknown>>;
+  unlinkedMentions: Array<Record<string, unknown>>;
+};
+
+type WikiCanvasNode = {
+  id: string;
+  type: "note" | "text" | "entity";
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  title?: string;
+  text?: string;
+  pagePath?: string;
+  pageSpaceId?: string;
+  entityKind?: string;
+  entityId?: string;
+};
+
+type WikiCanvasEdge = { id: string; fromNode: string; toNode: string; relationType: string; label?: string; directed?: boolean };
+type WikiCanvasDocument = { nodes: WikiCanvasNode[]; edges: WikiCanvasEdge[] };
+type WikiCanvas = {
+  id: string; wikiId: string; spaceId: string; spaceSlug: string | null; title: string;
+  visibility: "company" | "private"; ownerUserId: string | null; document: WikiCanvasDocument;
+  revisionNumber: number; createdAt: string; updatedAt: string; deletedAt: string | null;
+};
+type WikiCanvasesData = { canvases: WikiCanvas[] };
+type WikiCanvasData = { canvas: WikiCanvas; revisions: Array<Record<string, unknown>> };
+type WikiSuggestionsData = { suggestions: Array<Record<string, unknown>> };
+type WikiUnresolvedRelationsData = { relations: Array<Record<string, unknown>> };
+type WikiArchivedNotesData = {
+  notes: Array<{
+    id: string; path: string; title: string | null; visibility: "company" | "private";
+    ownerUserId: string | null; currentRevisionId: string | null; deletedAt: string;
+    updatedAt: string; spaceSlug: string; spaceName: string;
+  }>;
 };
 
 type WikiOperationRow = {
@@ -905,6 +955,24 @@ function useKnowledgeGraph(companyId: string | null, opts: { spaceSlug?: string 
   return usePluginData<KnowledgeGraphData>("knowledge-graph", params);
 }
 
+function useSecondBrainGraph(companyId: string | null, opts: {
+  spaceSlug?: string | null;
+  scope?: "company" | "space" | "local";
+  focusPath?: string | null;
+  focusSpaceSlug?: string | null;
+  depth?: number;
+} = {}) {
+  const params = useMemo(() => companyId ? {
+    companyId,
+    spaceSlug: opts.spaceSlug ?? null,
+    scope: opts.scope ?? "company",
+    focusPath: opts.focusPath ?? null,
+    focusSpaceSlug: opts.focusSpaceSlug ?? null,
+    depth: opts.depth ?? 1,
+  } : undefined, [companyId, opts.depth, opts.focusPath, opts.focusSpaceSlug, opts.scope, opts.spaceSlug]);
+  return usePluginData<KnowledgeGraphData>("second-brain-graph", params);
+}
+
 function useSpaces(companyId: string | null) {
   const params = useMemo(() => companyId ? { companyId } : undefined, [companyId]);
   return usePluginData<WikiSpacesData>("spaces", params);
@@ -934,6 +1002,36 @@ function usePageContent(companyId: string | null, path: string | null, spaceSlug
     return next;
   }, [companyId, path, spaceSlug]);
   return usePluginData<PageContentData>("page-content", params);
+}
+
+function usePageContext(companyId: string | null, path: string | null, spaceSlug?: string | null) {
+  const params = useMemo(() => companyId && path ? { companyId, path, spaceSlug: spaceSlug ?? DEFAULT_SPACE_SLUG } : undefined, [companyId, path, spaceSlug]);
+  return usePluginData<WikiPageContextData>("page-context", params);
+}
+
+function useCanvases(companyId: string | null, spaceSlug?: string | null) {
+  const params = useMemo(() => companyId ? { companyId, spaceSlug: spaceSlug ?? null } : undefined, [companyId, spaceSlug]);
+  return usePluginData<WikiCanvasesData>("canvases", params);
+}
+
+function useCanvas(companyId: string | null, canvasId: string | null) {
+  const params = useMemo(() => companyId && canvasId ? { companyId, canvasId } : undefined, [canvasId, companyId]);
+  return usePluginData<WikiCanvasData>("canvas", params);
+}
+
+function useLinkSuggestions(companyId: string | null) {
+  const params = useMemo(() => companyId ? { companyId, status: "pending" } : undefined, [companyId]);
+  return usePluginData<WikiSuggestionsData>("link-suggestions", params);
+}
+
+function useUnresolvedRelations(companyId: string | null) {
+  const params = useMemo(() => companyId ? { companyId } : undefined, [companyId]);
+  return usePluginData<WikiUnresolvedRelationsData>("unresolved-relations", params);
+}
+
+function useArchivedNotes(companyId: string | null) {
+  const params = useMemo(() => companyId ? { companyId } : undefined, [companyId]);
+  return usePluginData<WikiArchivedNotesData>("archived-notes", params);
 }
 
 function useOperations(companyId: string | null, filter: { operationType?: string | null; status?: string | null; spaceSlug?: string | null } = {}) {
@@ -1344,6 +1442,16 @@ const FolderOpenIcon = makeLucideIcon(
   </>,
 );
 
+const TrashIcon = makeLucideIcon(
+  <>
+    <path d="M3 6h18" />
+    <path d="M8 6V4h8v2" />
+    <path d="M19 6l-1 14H6L5 6" />
+    <path d="M10 11v5" />
+    <path d="M14 11v5" />
+  </>,
+);
+
 const ActivityIcon = makeLucideIcon(
   <path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.5.5 0 0 1-.96 0L9.24 3.18a.5.5 0 0 0-.96 0l-2.35 8.36A2 2 0 0 1 4 13H2" />,
 );
@@ -1641,7 +1749,7 @@ export function ProjectWikiTab({ context }: PluginDetailTabProps) {
 // accepted as a compatibility fallback.
 // ---------------------------------------------------------------------------
 
-type SectionKey = "browse" | "graph" | "ingest" | "query" | "lint" | "history" | "settings";
+type SectionKey = "browse" | "graph" | "canvas" | "suggestions" | "ingest" | "query" | "lint" | "history" | "trash" | "settings";
 
 const SECTIONS: ReadonlyArray<{
   key: SectionKey;
@@ -1651,15 +1759,18 @@ const SECTIONS: ReadonlyArray<{
 }> = [
   { key: "browse", label: "Wiki", Icon: BookOpenIcon, description: "Open wiki pages and raw sources from the sidebar." },
   { key: "graph", label: "Graph", Icon: NetworkIcon, description: "Visualize wiki pages and source files as a connected graph." },
+  { key: "canvas", label: "Canvas", Icon: SparklesIcon, description: "Arrange notes and ideas on a saved visual mind map." },
+  { key: "suggestions", label: "Connections", Icon: ListChecksIcon, description: "Review evidence-backed semantic links proposed by company agents." },
   { key: "query", label: "Ask", Icon: MessageSquareTextIcon, description: "Ask the Wiki Maintainer agent a cited question against the local wiki." },
   { key: "ingest", label: "Add Content", Icon: PlusCircleIcon, description: "Capture a new source into the active space and queue an ingest operation." },
   { key: "lint", label: "Lint", Icon: ListChecksIcon, description: "Run structural checks for orphan pages, missing backlinks, and stale provenance." },
   { key: "history", label: "History", Icon: HistoryIcon, description: "Inspect recent LLM Wiki operation issues." },
+  { key: "trash", label: "Trash", Icon: TrashIcon, description: "Restore archived notes without losing their revision history." },
   { key: "settings", label: "Settings", Icon: SlidersHorizontalIcon, description: "Folder, agent, project, and routine configuration scoped to this company." },
 ];
 
-const TOP_TOOL_KEYS: ReadonlySet<SectionKey> = new Set<SectionKey>(["graph", "query", "ingest"]);
-const BOTTOM_TOOL_KEYS: ReadonlySet<SectionKey> = new Set<SectionKey>(["history", "settings"]);
+const TOP_TOOL_KEYS: ReadonlySet<SectionKey> = new Set<SectionKey>(["graph", "canvas", "suggestions", "query", "ingest"]);
+const BOTTOM_TOOL_KEYS: ReadonlySet<SectionKey> = new Set<SectionKey>(["history", "trash", "settings"]);
 const TOP_TOOL_SECTIONS = SECTIONS.filter((section) => TOP_TOOL_KEYS.has(section.key));
 const BOTTOM_TOOL_SECTIONS = SECTIONS.filter((section) => BOTTOM_TOOL_KEYS.has(section.key));
 const SECTION_KEYS: ReadonlySet<SectionKey> = new Set(SECTIONS.map((s) => s.key));
@@ -3389,13 +3500,82 @@ function GraphTab({ context }: { context: { companyId: string | null } }) {
   const hostNavigation = useHostNavigation();
   const { pathname } = useHostLocation();
   const activeSpaceSlug = useMemo(() => readActiveSpaceSlugFromLocation(pathname), [pathname]);
-  const graph = useKnowledgeGraph(context.companyId, { spaceSlug: activeSpaceSlug });
+  const pages = usePages(context.companyId, { includeRaw: false, spaceSlug: activeSpaceSlug });
+  const [scope, setScope] = useState<"company" | "space" | "local">("company");
+  const [focusPath, setFocusPath] = useState<string | null>(null);
+  const [depth, setDepth] = useState(1);
+  const [tagFilter, setTagFilter] = useState("");
+  const [onlyOrphans, setOnlyOrphans] = useState(false);
+  const graph = useSecondBrainGraph(context.companyId, {
+    spaceSlug: activeSpaceSlug,
+    scope,
+    focusPath,
+    focusSpaceSlug: activeSpaceSlug,
+    depth,
+  });
   const isMobile = useIsMobileLayout();
+  const tagOptions = useMemo(() => {
+    const tags = new Set<string>();
+    for (const node of graph.data?.nodes ?? []) {
+      const values = node.metadata.tags;
+      if (Array.isArray(values)) values.forEach((value) => { if (typeof value === "string" && value.trim()) tags.add(value); });
+    }
+    return [...tags].sort((a, b) => a.localeCompare(b));
+  }, [graph.data]);
+  const filteredGraph = useMemo(() => {
+    if (!graph.data || (!tagFilter && !onlyOrphans)) return graph.data;
+    const connected = new Set(graph.data.edges.filter((edge) => edge.kind === "wiki_link").flatMap((edge) => [edge.from, edge.to]));
+    const pageIds = new Set(graph.data.nodes.filter((node) => {
+      if (node.kind !== "wiki_page") return false;
+      const tags = Array.isArray(node.metadata.tags) ? node.metadata.tags : [];
+      if (tagFilter && !tags.includes(tagFilter)) return false;
+      return !onlyOrphans || !connected.has(node.id);
+    }).map((node) => node.id));
+    const spaceIds = new Set(graph.data.edges.filter((edge) => edge.kind === "contains" && pageIds.has(edge.to)).map((edge) => edge.from));
+    const visibleIds = new Set([...pageIds, ...spaceIds]);
+    const nodes = graph.data.nodes.filter((node) => visibleIds.has(node.id));
+    const edges = graph.data.edges.filter((edge) => visibleIds.has(edge.from) && visibleIds.has(edge.to));
+    return { ...graph.data, nodes, edges, stats: { ...graph.data.stats, nodes: nodes.length, edges: edges.length, wikiPages: pageIds.size } };
+  }, [graph.data, onlyOrphans, tagFilter]);
 
   return (
     <div style={{ flex: 1, minWidth: 0, overflow: isMobile ? "visible" : "auto" }}>
+      <div style={{ padding: isMobile ? "12px 16px 0" : "14px 28px 0", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, color: tokens.muted }}>Scope</span>
+        {(["company", "space", "local"] as const).map((value) => (
+          <Button key={value} size="sm" variant={scope === value ? "primary" : "default"} onClick={() => setScope(value)}>
+            {value === "company" ? "Company" : value === "space" ? "Project / space" : "Local graph"}
+          </Button>
+        ))}
+        {scope === "local" ? (
+          <>
+            <select
+              aria-label="Local graph center note"
+              value={focusPath ?? ""}
+              onChange={(event) => setFocusPath(event.currentTarget.value || null)}
+              style={{ minWidth: 220, padding: "6px 9px", borderRadius: 7, border: `1px solid ${tokens.border}`, background: tokens.card, color: tokens.fg }}
+            >
+              <option value="">Choose center note…</option>
+              {(pages.data?.pages ?? []).map((page) => <option key={page.path} value={page.path}>{page.title ?? page.path}</option>)}
+            </select>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: tokens.muted }}>
+              Depth
+              <select value={depth} onChange={(event) => setDepth(Number(event.currentTarget.value))} style={{ padding: "6px 8px", borderRadius: 7, border: `1px solid ${tokens.border}`, background: tokens.card, color: tokens.fg }}>
+                {[1, 2, 3, 4].map((value) => <option key={value} value={value}>{value}</option>)}
+              </select>
+            </label>
+          </>
+        ) : null}
+        <select aria-label="Filter graph by tag" value={tagFilter} onChange={(event) => setTagFilter(event.currentTarget.value)} style={{ padding: "6px 8px", borderRadius: 7, border: `1px solid ${tokens.border}`, background: tokens.card, color: tokens.fg }}>
+          <option value="">All tags</option>
+          {tagOptions.map((tag) => <option key={tag} value={tag}>#{tag}</option>)}
+        </select>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: tokens.muted }}>
+          <input type="checkbox" checked={onlyOrphans} onChange={(event) => setOnlyOrphans(event.currentTarget.checked)} /> Orphans only
+        </label>
+      </div>
       <KnowledgeGraphView
-        data={graph.data}
+        data={filteredGraph}
         loading={graph.loading}
         error={graph.error ?? null}
         onOpenNode={(node) => {
@@ -3408,6 +3588,426 @@ function GraphTab({ context }: { context: { companyId: string | null } }) {
           hostNavigation.navigate(node.href);
         }}
       />
+    </div>
+  );
+}
+
+function LinkSuggestionsTab({ context }: { context: { companyId: string | null } }) {
+  const suggestions = useLinkSuggestions(context.companyId);
+  const unresolved = useUnresolvedRelations(context.companyId);
+  const review = usePluginAction("review-link-suggestion");
+  const toast = usePluginToast();
+  const hostNavigation = useHostNavigation();
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const rows = suggestions.data?.suggestions ?? [];
+
+  async function decide(id: string, decision: "accepted" | "rejected") {
+    if (!context.companyId || busyId) return;
+    setBusyId(id);
+    try {
+      await review({ companyId: context.companyId, suggestionId: id, decision });
+      toast({ tone: "success", title: decision === "accepted" ? "Connection accepted" : "Suggestion rejected" });
+      suggestions.refresh();
+    } catch (error) {
+      toast({ tone: "error", title: "Review failed", body: errorMessage(error) });
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <div style={{ flex: 1, overflow: "auto", padding: 24, display: "grid", gap: 14, alignContent: "start" }}>
+      <header style={{ display: "grid", gap: 4 }}>
+        <h1 style={{ margin: 0, fontSize: 20 }}>Suggested connections</h1>
+        <Tiny>Company agents can propose semantic links with evidence. Nothing changes the graph until a human accepts it, and Markdown is never rewritten.</Tiny>
+      </header>
+      {suggestions.loading && !suggestions.data ? <Tiny>Loading suggestions…</Tiny> : null}
+      {suggestions.error ? <Callout tone="danger">{suggestions.error.message}</Callout> : null}
+      {!suggestions.loading && rows.length === 0 ? <Callout>No semantic connections are waiting for review.</Callout> : null}
+      {rows.map((row) => {
+        const id = String(row.id);
+        const confidence = typeof row.confidence === "number" ? `${Math.round(row.confidence * 100)}%` : "Unscored";
+        return (
+          <Card key={id}>
+            <CardHeader
+              title={`${String(row.source_path)} → ${String(row.target_path)}`}
+              badges={<><Badge>{String(row.relation_type)}</Badge><Badge>{confidence}</Badge></>}
+            />
+            <CardBody>
+              <div style={{ display: "grid", gap: 12 }}>
+                <div style={{ fontSize: 13, lineHeight: 1.6 }}>{String(row.evidence ?? "No evidence supplied")}</div>
+                <Tiny>Proposed by agent <Mono>{String(row.proposed_by_agent_id ?? "unknown")}</Mono>{row.proposed_by_run_id ? <> · run <Mono>{String(row.proposed_by_run_id)}</Mono></> : null}</Tiny>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <Button size="sm" variant="primary" loading={busyId === id} onClick={() => decide(id, "accepted")}>Accept connection</Button>
+                  <Button size="sm" variant="ghost" disabled={Boolean(busyId)} onClick={() => decide(id, "rejected")}>Reject</Button>
+                </div>
+              </div>
+            </CardBody>
+          </Card>
+        );
+      })}
+      <header style={{ display: "grid", gap: 4, marginTop: 10 }}>
+        <h2 style={{ margin: 0, fontSize: 16 }}>Unresolved links</h2>
+        <Tiny>These Markdown links do not currently resolve to a note by path, title, or alias. Open the source note to repair the target.</Tiny>
+      </header>
+      {unresolved.loading && !unresolved.data ? <Tiny>Checking unresolved links…</Tiny> : null}
+      {unresolved.error ? <Callout tone="danger">{unresolved.error.message}</Callout> : null}
+      {!unresolved.loading && (unresolved.data?.relations.length ?? 0) === 0 ? <Callout>No unresolved links.</Callout> : null}
+      {(unresolved.data?.relations ?? []).map((relation) => {
+        const id = metadataString(relation, "id") ?? `${String(relation.source_path)}:${String(relation.target_ref)}`;
+        const sourcePath = String(relation.source_path);
+        const sourceSpace = metadataString(relation, "source_space_slug") ?? DEFAULT_SPACE_SLUG;
+        return (
+          <Card key={id}>
+            <CardBody>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <button type="button" onClick={() => hostNavigation.navigate(buildPageHref(sourcePath, sourceSpace))} style={{ border: 0, background: "transparent", color: tokens.fg, padding: 0, cursor: "pointer", textAlign: "left" }}>
+                  <Mono>{sourcePath}</Mono>
+                </button>
+                <span style={{ color: tokens.muted }}>→</span>
+                <Mono>{String(relation.target_ref ?? relation.target_path ?? "unknown")}</Mono>
+                <Badge>{String(relation.relation_type ?? "related")}</Badge>
+              </div>
+            </CardBody>
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+function TrashTab({ context }: { context: { companyId: string | null } }) {
+  const archived = useArchivedNotes(context.companyId);
+  const restoreNote = usePluginAction("restore-note");
+  const toast = usePluginToast();
+  const hostNavigation = useHostNavigation();
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const notes = archived.data?.notes ?? [];
+
+  async function restore(note: WikiArchivedNotesData["notes"][number]) {
+    if (!context.companyId || busyId) return;
+    setBusyId(note.id);
+    try {
+      await restoreNote({ companyId: context.companyId, spaceSlug: note.spaceSlug, path: note.path });
+      toast({ tone: "success", title: `${note.path} restored` });
+      await archived.refresh();
+      hostNavigation.navigate(buildPageHref(note.path, note.spaceSlug));
+    } catch (error) {
+      toast({ tone: "error", title: "Restore failed", body: errorMessage(error) });
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <div style={{ flex: 1, overflow: "auto", padding: 24, display: "grid", gap: 14, alignContent: "start" }}>
+      <header style={{ display: "grid", gap: 4 }}>
+        <h1 style={{ margin: 0, fontSize: 20 }}>Wiki trash</h1>
+        <Tiny>Archived notes keep their content snapshots and audit trail. Restore puts the latest saved content back in its original space.</Tiny>
+      </header>
+      {archived.loading && !archived.data ? <Tiny>Loading archived notes…</Tiny> : null}
+      {archived.error ? <Callout tone="danger">{archived.error.message}</Callout> : null}
+      {!archived.loading && notes.length === 0 ? <Callout>Trash is empty.</Callout> : null}
+      {notes.map((note) => (
+        <Card key={note.id}>
+          <CardHeader title={note.title ?? basename(note.path)} badges={<><Badge>{note.spaceName}</Badge><Badge>{note.visibility}</Badge></>} />
+          <CardBody>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <Mono>{note.path}</Mono>
+              <Tiny style={{ flex: 1 }}>Archived {formatTimestamp(note.deletedAt)}</Tiny>
+              <Button size="sm" variant="primary" loading={busyId === note.id} onClick={() => void restore(note)}>Restore note</Button>
+            </div>
+          </CardBody>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+type CanvasDragState = { nodeId: string; pointerId: number; startX: number; startY: number; originX: number; originY: number };
+
+function CanvasTab({ context }: { context: { companyId: string | null } }) {
+  const { pathname } = useHostLocation();
+  const activeSpaceSlug = useMemo(() => readActiveSpaceSlugFromLocation(pathname), [pathname]);
+  const canvases = useCanvases(context.companyId, activeSpaceSlug);
+  const createCanvas = usePluginAction("create-canvas");
+  const toast = usePluginToast();
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const rows = canvases.data?.canvases ?? [];
+
+  useEffect(() => {
+    if (selectedId && rows.some((canvas) => canvas.id === selectedId)) return;
+    setSelectedId(rows[0]?.id ?? null);
+  }, [rows, selectedId]);
+
+  async function create() {
+    if (!context.companyId || creating) return;
+    const title = typeof window === "undefined" ? "Untitled canvas" : window.prompt("Canvas name", "New mind map")?.trim();
+    if (!title) return;
+    setCreating(true);
+    try {
+      const result = await createCanvas({ companyId: context.companyId, spaceSlug: activeSpaceSlug, title, visibility: "company", document: { nodes: [], edges: [] } }) as { canvas?: WikiCanvas };
+      toast({ tone: "success", title: "Canvas created" });
+      canvases.refresh();
+      if (result.canvas?.id) setSelectedId(result.canvas.id);
+    } catch (error) {
+      toast({ tone: "error", title: "Canvas creation failed", body: errorMessage(error) });
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  return (
+    <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: "grid", gridTemplateColumns: "220px minmax(0, 1fr)", overflow: "hidden" }}>
+      <aside style={{ borderRight: `1px solid ${tokens.border}`, padding: 12, overflow: "auto", display: "grid", gap: 8, alignContent: "start" }}>
+        <Button size="sm" variant="primary" loading={creating} onClick={create}><PlusIcon size={13} /> New canvas</Button>
+        {canvases.loading && rows.length === 0 ? <Tiny>Loading canvases…</Tiny> : null}
+        {rows.map((canvas) => (
+          <button
+            key={canvas.id}
+            type="button"
+            onClick={() => setSelectedId(canvas.id)}
+            style={{ border: `1px solid ${selectedId === canvas.id ? tokens.primary : tokens.border}`, borderRadius: 7, background: selectedId === canvas.id ? tokens.accent : "transparent", color: tokens.fg, padding: "9px 10px", textAlign: "left", cursor: "pointer" }}
+          >
+            <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis" }}>{canvas.title}</div>
+            <Tiny>{canvas.document.nodes.length} cards · {canvas.visibility}</Tiny>
+          </button>
+        ))}
+      </aside>
+      {selectedId ? <CanvasEditor companyId={context.companyId} canvasId={selectedId} onArchived={() => { setSelectedId(null); void canvases.refresh(); }} /> : (
+        <div style={{ display: "grid", placeItems: "center", color: tokens.muted }}>Create a canvas to start mapping ideas.</div>
+      )}
+    </div>
+  );
+}
+
+function CanvasEditor({ companyId, canvasId, onArchived }: { companyId: string | null; canvasId: string; onArchived: () => void }) {
+  const canvasQuery = useCanvas(companyId, canvasId);
+  const pages = usePages(companyId, { includeRaw: false, spaceSlug: canvasQuery.data?.canvas.spaceSlug ?? null });
+  const updateCanvas = usePluginAction("update-canvas");
+  const archiveCanvas = usePluginAction("archive-canvas");
+  const restoreCanvasRevision = usePluginAction("restore-canvas-revision");
+  const toast = usePluginToast();
+  const navigation = useHostNavigation();
+  const [title, setTitle] = useState("");
+  const [visibility, setVisibility] = useState<"company" | "private">("company");
+  const [document, setDocument] = useState<WikiCanvasDocument>({ nodes: [], edges: [] });
+  const [revision, setRevision] = useState(0);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [drag, setDrag] = useState<CanvasDragState | null>(null);
+  const [connectFrom, setConnectFrom] = useState<string | null>(null);
+  const undoStack = useRef<WikiCanvasDocument[]>([]);
+  const redoStack = useRef<WikiCanvasDocument[]>([]);
+  const loadedId = useRef<string | null>(null);
+
+  useEffect(() => {
+    const canvas = canvasQuery.data?.canvas;
+    if (!canvas || loadedId.current === `${canvas.id}:${canvas.revisionNumber}`) return;
+    loadedId.current = `${canvas.id}:${canvas.revisionNumber}`;
+    setTitle(canvas.title);
+    setVisibility(canvas.visibility);
+    setDocument(canvas.document);
+    setRevision(canvas.revisionNumber);
+    setDirty(false);
+    undoStack.current = [];
+    redoStack.current = [];
+  }, [canvasQuery.data?.canvas]);
+
+  const mutate = useCallback((next: WikiCanvasDocument | ((current: WikiCanvasDocument) => WikiCanvasDocument)) => {
+    setDocument((current) => {
+      undoStack.current.push(current);
+      if (undoStack.current.length > 80) undoStack.current.shift();
+      redoStack.current = [];
+      return typeof next === "function" ? next(current) : next;
+    });
+    setDirty(true);
+  }, []);
+
+  const save = useCallback(async (quiet = false) => {
+    if (!companyId || !dirty || saving) return;
+    setSaving(true);
+    try {
+      const result = await updateCanvas({ companyId, canvasId, title, visibility, document, expectedRevision: revision, summary: "Updated canvas" }) as { canvas?: WikiCanvas };
+      const nextRevision = result.canvas?.revisionNumber ?? revision + 1;
+      setRevision(nextRevision);
+      setDirty(false);
+      loadedId.current = `${canvasId}:${nextRevision}`;
+      if (!quiet) toast({ tone: "success", title: "Canvas saved" });
+    } catch (error) {
+      if (!quiet) toast({ tone: "error", title: "Canvas save failed", body: errorMessage(error) });
+    } finally {
+      setSaving(false);
+    }
+  }, [canvasId, companyId, dirty, document, revision, saving, title, toast, updateCanvas, visibility]);
+
+  useEffect(() => {
+    if (!dirty || saving) return;
+    const timer = window.setTimeout(() => void save(true), 1200);
+    return () => window.clearTimeout(timer);
+  }, [dirty, save, saving]);
+
+  function undo() {
+    const previous = undoStack.current.pop();
+    if (!previous) return;
+    redoStack.current.push(document);
+    setDocument(previous);
+    setDirty(true);
+  }
+
+  function redo() {
+    const next = redoStack.current.pop();
+    if (!next) return;
+    undoStack.current.push(document);
+    setDocument(next);
+    setDirty(true);
+  }
+
+  function addText() {
+    const text = typeof window === "undefined" ? "New thought" : window.prompt("Text card", "New thought")?.trim();
+    if (!text) return;
+    const index = document.nodes.length;
+    mutate((current) => ({ ...current, nodes: [...current.nodes, { id: crypto.randomUUID(), type: "text", x: 80 + (index % 4) * 270, y: 80 + Math.floor(index / 4) * 180, width: 230, height: 120, text, title: text.slice(0, 48) }] }));
+  }
+
+  function addNote() {
+    const choices = pages.data?.pages ?? [];
+    const input = typeof window === "undefined" ? null : window.prompt(`Note path\n${choices.slice(0, 12).map((page) => page.path).join("\n")}`, choices[0]?.path ?? "wiki/index.md")?.trim();
+    const page = choices.find((entry) => entry.path === input);
+    if (!page) {
+      if (input) toast({ tone: "error", title: "Note not found", body: "Choose an indexed note path from this space." });
+      return;
+    }
+    const index = document.nodes.length;
+    mutate((current) => ({ ...current, nodes: [...current.nodes, { id: crypto.randomUUID(), type: "note", x: 80 + (index % 4) * 270, y: 80 + Math.floor(index / 4) * 180, width: 230, height: 130, title: page.title ?? page.path, pagePath: page.path, pageSpaceId: canvasQuery.data?.canvas.spaceId }] }));
+  }
+
+  function selectForConnection(nodeId: string) {
+    if (!connectFrom) {
+      setConnectFrom(nodeId);
+      return;
+    }
+    if (connectFrom === nodeId) {
+      setConnectFrom(null);
+      return;
+    }
+    const label = typeof window === "undefined" ? "related" : window.prompt("Relationship label", "related")?.trim() || "related";
+    mutate((current) => ({ ...current, edges: [...current.edges, { id: crypto.randomUUID(), fromNode: connectFrom, toNode: nodeId, relationType: label.toLowerCase().replace(/\s+/g, "_"), label, directed: true }] }));
+    setConnectFrom(null);
+  }
+
+  async function restoreRevision(revisionId: string) {
+    if (!companyId || !revisionId || restoring) return;
+    if (dirty && typeof window !== "undefined" && !window.confirm("Discard unsaved canvas changes and restore this revision?")) return;
+    setRestoring(true);
+    try {
+      await restoreCanvasRevision({ companyId, canvasId, revisionId });
+      loadedId.current = null;
+      await canvasQuery.refresh();
+      toast({ tone: "success", title: "Canvas revision restored" });
+    } catch (error) {
+      toast({ tone: "error", title: "Canvas restore failed", body: errorMessage(error) });
+    } finally {
+      setRestoring(false);
+    }
+  }
+
+  if (canvasQuery.loading && !canvasQuery.data) return <div style={{ padding: 24, color: tokens.muted }}>Loading canvas…</div>;
+  if (canvasQuery.error) return <div style={{ padding: 24 }}><Callout tone="danger">{canvasQuery.error.message}</Callout></div>;
+
+  const nodeById = new Map(document.nodes.map((node) => [node.id, node]));
+  return (
+    <div style={{ minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      <header style={{ padding: "10px 14px", borderBottom: `1px solid ${tokens.border}`, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <TextInput value={title} onChange={(event) => { setTitle(event.currentTarget.value); setDirty(true); }} style={{ width: 220, fontWeight: 650 }} />
+        <select value={visibility} onChange={(event) => { setVisibility(event.currentTarget.value as "company" | "private"); setDirty(true); }} style={{ padding: "6px 8px", borderRadius: 7, border: `1px solid ${tokens.border}`, background: tokens.card, color: tokens.fg }}>
+          <option value="company">Company</option>
+          <option value="private">Private</option>
+        </select>
+        <Button size="sm" onClick={addNote}>Add note</Button>
+        <Button size="sm" onClick={addText}>Add text</Button>
+        <Button size="sm" variant={connectFrom ? "primary" : "default"} onClick={() => setConnectFrom(null)}>{connectFrom ? "Pick target…" : "Connect cards"}</Button>
+        <Button size="sm" variant="ghost" disabled={undoStack.current.length === 0} onClick={undo}>Undo</Button>
+        <Button size="sm" variant="ghost" disabled={redoStack.current.length === 0} onClick={redo}>Redo</Button>
+        <select
+          aria-label="Restore canvas revision"
+          value=""
+          disabled={restoring}
+          onChange={(event) => void restoreRevision(event.currentTarget.value)}
+          style={{ padding: "6px 8px", borderRadius: 7, border: `1px solid ${tokens.border}`, background: tokens.card, color: tokens.fg }}
+        >
+          <option value="">{restoring ? "Restoring…" : "Revision history…"}</option>
+          {(canvasQuery.data?.revisions ?? []).map((item) => {
+            const id = metadataString(item, "id");
+            const number = typeof item.revision_number === "number" ? item.revision_number : String(item.revision_number ?? "?");
+            const summary = metadataString(item, "summary") ?? "Saved canvas";
+            const author = metadataString(item, "author_kind") ?? "system";
+            return id ? <option key={id} value={id}>r{number} · {summary} · {author}</option> : null;
+          })}
+        </select>
+        <span style={{ marginLeft: "auto" }}><Tiny>{saving ? "Saving…" : dirty ? "Unsaved" : `Saved · r${revision}`}</Tiny></span>
+        <Button size="sm" variant="primary" disabled={!dirty} loading={saving} onClick={() => void save(false)}>Save</Button>
+        <Button size="sm" variant="destructive" onClick={async () => {
+          if (!companyId || (typeof window !== "undefined" && !window.confirm("Archive this canvas?"))) return;
+          await archiveCanvas({ companyId, canvasId });
+          toast({ tone: "success", title: "Canvas archived" });
+          onArchived();
+        }}>Archive</Button>
+      </header>
+      <div style={{ flex: 1, overflow: "auto", background: "radial-gradient(circle, var(--border) 1px, transparent 1px)", backgroundSize: "24px 24px" }}>
+        <div
+          style={{ position: "relative", width: 2400, height: 1500 }}
+          onPointerMove={(event) => {
+            if (!drag || drag.pointerId !== event.pointerId) return;
+            const dx = event.clientX - drag.startX;
+            const dy = event.clientY - drag.startY;
+            setDocument((current) => ({ ...current, nodes: current.nodes.map((node) => node.id === drag.nodeId ? { ...node, x: drag.originX + dx, y: drag.originY + dy } : node) }));
+            setDirty(true);
+          }}
+          onPointerUp={(event) => {
+            if (drag?.pointerId === event.pointerId) setDrag(null);
+          }}
+          onPointerCancel={() => setDrag(null)}
+        >
+          <svg width="2400" height="1500" style={{ position: "absolute", inset: 0, pointerEvents: "none" }} aria-hidden>
+            <defs><marker id="pc-wiki-canvas-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill={tokens.muted} /></marker></defs>
+            {document.edges.map((edge) => {
+              const from = nodeById.get(edge.fromNode);
+              const to = nodeById.get(edge.toNode);
+              if (!from || !to) return null;
+              const x1 = from.x + from.width / 2; const y1 = from.y + from.height / 2;
+              const x2 = to.x + to.width / 2; const y2 = to.y + to.height / 2;
+              return <g key={edge.id}><line x1={x1} y1={y1} x2={x2} y2={y2} stroke={tokens.muted} strokeWidth="2" markerEnd={edge.directed === false ? undefined : "url(#pc-wiki-canvas-arrow)"} /><text x={(x1 + x2) / 2} y={(y1 + y2) / 2 - 6} fill={tokens.muted} fontSize="12" textAnchor="middle">{edge.label ?? edge.relationType}</text></g>;
+            })}
+          </svg>
+          {document.nodes.map((node) => (
+            <article
+              key={node.id}
+              onPointerDown={(event) => {
+                if ((event.target as HTMLElement).closest("button")) return;
+                event.currentTarget.setPointerCapture(event.pointerId);
+                setDrag({ nodeId: node.id, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: node.x, originY: node.y });
+              }}
+              onDoubleClick={() => node.type === "note" && node.pagePath ? navigation.navigate(buildPageHref(node.pagePath, canvasQuery.data?.canvas.spaceSlug ?? DEFAULT_SPACE_SLUG)) : undefined}
+              style={{ position: "absolute", left: node.x, top: node.y, width: node.width, minHeight: node.height, border: `1px solid ${connectFrom === node.id ? tokens.primary : tokens.border}`, borderRadius: 9, background: tokens.card, boxShadow: "0 8px 24px oklch(0 0 0 / 0.25)", padding: 12, cursor: drag?.nodeId === node.id ? "grabbing" : "grab", display: "grid", gap: 8, alignContent: "start" }}
+            >
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <Badge>{node.type}</Badge>
+                <strong style={{ fontSize: 13, flex: 1, overflowWrap: "anywhere" }}>{node.title ?? node.pagePath ?? "Card"}</strong>
+              </div>
+              {node.text ? <div style={{ fontSize: 12, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{node.text}</div> : null}
+              {node.pagePath ? <Tiny><Mono>{node.pagePath}</Mono></Tiny> : null}
+              <div style={{ display: "flex", gap: 6, marginTop: "auto" }}>
+                <Button size="sm" variant={connectFrom ? "primary" : "ghost"} onClick={() => selectForConnection(node.id)}>{connectFrom ? "Link here" : "Connect"}</Button>
+                {node.type === "note" && node.pagePath ? <Button size="sm" variant="ghost" onClick={() => navigation.navigate(buildPageHref(node.pagePath!, canvasQuery.data?.canvas.spaceSlug ?? DEFAULT_SPACE_SLUG))}>Open</Button> : null}
+                <Button size="sm" variant="ghost" onClick={() => mutate((current) => ({ nodes: current.nodes.filter((entry) => entry.id !== node.id), edges: current.edges.filter((edge) => edge.fromNode !== node.id && edge.toNode !== node.id) }))}>Remove</Button>
+              </div>
+            </article>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -3526,6 +4126,10 @@ export function WikiPage({ context }: PluginPageProps) {
           <BrowseTab context={context} />
         ) : section === "graph" ? (
           <GraphTab context={context} />
+        ) : section === "canvas" ? (
+          <CanvasTab context={context} />
+        ) : section === "suggestions" ? (
+          <LinkSuggestionsTab context={context} />
         ) : section === "ingest" ? (
           <IngestTab context={context} refreshOverview={overview.refresh} />
         ) : section === "query" ? (
@@ -3534,6 +4138,8 @@ export function WikiPage({ context }: PluginPageProps) {
           <SettingsTab context={context} initialSection="lint" />
         ) : section === "history" ? (
           <HistoryTab context={context} overview={overview.data} />
+        ) : section === "trash" ? (
+          <TrashTab context={context} />
         ) : (
           <SettingsTab context={context} initialSection={settingsSection} />
         )}
@@ -5087,9 +5693,11 @@ function BrowseTab({ context }: { context: { companyId: string | null } }) {
   const { pathname, search } = useHostLocation();
   const activeSpaceSlug = useMemo(() => readActiveSpaceSlugFromLocation(pathname), [pathname]);
   const pages = usePages(context.companyId, { includeRaw: true, spaceSlug: activeSpaceSlug });
-  const graph = useKnowledgeGraph(context.companyId, { spaceSlug: activeSpaceSlug });
+  const graph = useSecondBrainGraph(context.companyId, { spaceSlug: activeSpaceSlug, scope: "space" });
   const isMobile = useIsMobileLayout();
   const [viewMode, setViewMode] = useState<"page" | "graph">("page");
+  const createNote = usePluginAction("create-note");
+  const toast = usePluginToast();
   const selectedTreePath = readSelectedTreePathFromLocation(pathname, search) ?? firstSelectableTreePath(pages.data);
   const selected = contentPathFromTreePath(selectedTreePath);
 
@@ -5105,6 +5713,20 @@ function BrowseTab({ context }: { context: { companyId: string | null } }) {
         padding: isMobile ? "12px 16px 0" : "14px 28px 0",
         background: tokens.bg,
       }}>
+        <Button size="sm" onClick={async () => {
+          if (!context.companyId || typeof window === "undefined") return;
+          const title = window.prompt("Note title")?.trim();
+          if (!title) return;
+          const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "untitled";
+          const path = `wiki/${slug}.md`;
+          try {
+            await createNote({ companyId: context.companyId, spaceSlug: activeSpaceSlug, path, title, visibility: "company" });
+            pages.refresh();
+            hostNavigation.navigate(buildPageHref(path, activeSpaceSlug), { state: wikiSidebarNavigationState(path) });
+          } catch (error) {
+            toast({ tone: "error", title: "Could not create note", body: errorMessage(error) });
+          }
+        }}><PlusIcon size={13} /> New note</Button>
         <Button size="sm" variant={viewMode === "page" ? "primary" : "default"} onClick={() => setViewMode("page")}>Page</Button>
         <Button size="sm" variant={viewMode === "graph" ? "primary" : "default"} onClick={() => setViewMode("graph")}>Graph</Button>
       </div>
@@ -5137,7 +5759,12 @@ function BrowseTab({ context }: { context: { companyId: string | null } }) {
 
 function PageDetail({ context, path, spaceSlug }: { context: { companyId: string | null }; path: string | null; spaceSlug?: string }) {
   const content = usePageContent(context.companyId, path, spaceSlug ?? null);
+  const pageContext = usePageContext(context.companyId, path, spaceSlug ?? null);
   const writePage = usePluginAction("write-page");
+  const moveNote = usePluginAction("move-note");
+  const setNoteVisibility = usePluginAction("set-note-visibility");
+  const archiveNote = usePluginAction("archive-note");
+  const restoreRevision = usePluginAction("restore-note-revision");
   const toast = usePluginToast();
   const hostNavigation = useHostNavigation();
   const isMobile = useIsMobileLayout();
@@ -5235,6 +5862,47 @@ function PageDetail({ context, path, spaceSlug }: { context: { companyId: string
     if (typeof result.hash === "string") setSavedHash(result.hash);
   }, [context.companyId, content.data, editable, path, savedHash, writePage, spaceSlug]);
 
+  const handleVisibilityChange = useCallback(async (visibility: "company" | "private") => {
+    if (!context.companyId || !content.data || !path) return;
+    await setNoteVisibility({
+      companyId: context.companyId,
+      wikiId: content.data.wikiId,
+      spaceSlug: spaceSlug ?? null,
+      path,
+      visibility,
+    });
+    toast({ tone: "success", title: visibility === "private" ? "Note is now private" : "Note is now shared with the company" });
+    await Promise.all([content.refresh(), pageContext.refresh()]);
+  }, [context.companyId, content, pageContext, path, setNoteVisibility, spaceSlug, toast]);
+
+  const handleArchive = useCallback(async () => {
+    if (!context.companyId || !content.data || !path) return;
+    if (typeof window !== "undefined" && !window.confirm(`Move ${path} to the Wiki trash?`)) return;
+    await archiveNote({ companyId: context.companyId, wikiId: content.data.wikiId, spaceSlug: spaceSlug ?? null, path });
+    toast({ tone: "success", title: `${path} moved to trash` });
+    hostNavigation.navigate(buildPageHref("", spaceSlug ?? DEFAULT_SPACE_SLUG));
+  }, [archiveNote, context.companyId, content.data, hostNavigation, path, spaceSlug, toast]);
+
+  const handleMove = useCallback(async () => {
+    if (!context.companyId || !content.data || !path || typeof window === "undefined") return;
+    const newPath = window.prompt("Move or rename note", path)?.trim();
+    if (!newPath || newPath === path) return;
+    try {
+      await moveNote({ companyId: context.companyId, wikiId: content.data.wikiId, spaceSlug: spaceSlug ?? null, path, newPath });
+      toast({ tone: "success", title: `Note moved to ${newPath}` });
+      hostNavigation.navigate(buildPageHref(newPath, spaceSlug ?? DEFAULT_SPACE_SLUG));
+    } catch (error) {
+      toast({ tone: "error", title: "Move failed", body: errorMessage(error) });
+    }
+  }, [context.companyId, content.data, hostNavigation, moveNote, path, spaceSlug, toast]);
+
+  const handleRestoreRevision = useCallback(async (revisionId: string) => {
+    if (!context.companyId || !content.data || !path) return;
+    await restoreRevision({ companyId: context.companyId, wikiId: content.data.wikiId, spaceSlug: spaceSlug ?? null, path, revisionId });
+    toast({ tone: "success", title: "Revision restored" });
+    await Promise.all([content.refresh(), pageContext.refresh()]);
+  }, [context.companyId, content, pageContext, path, restoreRevision, spaceSlug, toast]);
+
   if (!path) return <div style={{ padding: isMobile ? 16 : 28, color: tokens.muted, fontSize: 13 }}>Pick a page from the tree.</div>;
   if (content.loading) return <div style={{ padding: isMobile ? 16 : 28, color: tokens.muted, fontSize: 13 }}>Loading {path}…</div>;
   if (content.error && path.startsWith("raw/")) {
@@ -5255,7 +5923,7 @@ function PageDetail({ context, path, spaceSlug }: { context: { companyId: string
   const folderPath = dirname(path);
 
   const isDistilledProjectPage = path.startsWith("wiki/projects/");
-  const showToc = !editing && tocHeadings.length > 0;
+  const showContextPane = !editing && editable;
   const displaySourceRefs = sourceRefs
     .map((ref, index) => ({
       id: sourceRefIdentity(ref, index),
@@ -5279,7 +5947,20 @@ function PageDetail({ context, path, spaceSlug }: { context: { companyId: string
               </Button>
             ) : null}
             {editable && !editing ? (
-              <Button size="sm" onClick={() => { setSavedHash(hash); setEditing(true); }}>Edit page</Button>
+              <>
+                <select
+                  aria-label="Note visibility"
+                  value={content.data.visibility}
+                  onChange={(event) => void handleVisibilityChange(event.currentTarget.value as "company" | "private")}
+                  style={{ padding: "6px 8px", borderRadius: 7, border: `1px solid ${tokens.border}`, background: tokens.card, color: tokens.fg, fontSize: 12 }}
+                >
+                  <option value="company">Company</option>
+                  <option value="private">Private</option>
+                </select>
+                <Button size="sm" onClick={() => { setSavedHash(hash); setEditing(true); }}>Edit page</Button>
+                <Button size="sm" variant="ghost" onClick={() => void handleMove()}>Move / rename</Button>
+                <Button size="sm" variant="ghost" onClick={() => void handleArchive()} title="Move note to trash"><TrashIcon size={12} /></Button>
+              </>
             ) : editable ? (
               <Button size="sm" variant="ghost" onClick={() => { setEditing(false); content.refresh(); }}>Done</Button>
             ) : (
@@ -5311,8 +5992,8 @@ function PageDetail({ context, path, spaceSlug }: { context: { companyId: string
           data-testid="llm-wiki-page-content-layout"
           style={{
             display: "grid",
-            gridTemplateColumns: showToc && !isMobile ? `minmax(0, 1fr) ${tocOpen ? "minmax(180px, 240px)" : "36px"}` : "minmax(0, 1fr)",
-            gap: showToc && !isMobile ? (tocOpen ? 24 : 10) : 0,
+            gridTemplateColumns: showContextPane && !isMobile ? `minmax(0, 1fr) ${tocOpen ? "minmax(210px, 270px)" : "36px"}` : "minmax(0, 1fr)",
+            gap: showContextPane && !isMobile ? (tocOpen ? 24 : 10) : 0,
             alignItems: "start",
             minWidth: 0,
           }}
@@ -5337,7 +6018,7 @@ function PageDetail({ context, path, spaceSlug }: { context: { companyId: string
               ) : null}
             </div>
           </div>
-          {showToc ? (
+          {showContextPane ? (
             <OnThisPagePane
               headings={tocHeadings}
               activeHeadingId={activeTocId}
@@ -5345,6 +6026,10 @@ function PageDetail({ context, path, spaceSlug }: { context: { companyId: string
               onToggle={() => setTocOpen((current) => !current)}
               onHeadingClick={handleTocClick}
               mobile={isMobile}
+              pageContext={pageContext.data ?? null}
+              contextLoading={pageContext.loading}
+              contextError={pageContext.error?.message ?? null}
+              onRestoreRevision={handleRestoreRevision}
             />
           ) : null}
         </div>
@@ -5380,6 +6065,10 @@ function OnThisPagePane({
   onToggle,
   onHeadingClick,
   mobile,
+  pageContext,
+  contextLoading,
+  contextError,
+  onRestoreRevision,
 }: {
   headings: WikiTocHeading[];
   activeHeadingId: string | null;
@@ -5387,10 +6076,15 @@ function OnThisPagePane({
   onToggle: () => void;
   onHeadingClick: (event: React.MouseEvent<HTMLAnchorElement>, id: string) => void;
   mobile: boolean;
+  pageContext: WikiPageContextData | null;
+  contextLoading: boolean;
+  contextError: string | null;
+  onRestoreRevision: (revisionId: string) => Promise<void>;
 }) {
   const contentId = "llm-wiki-on-this-page";
   const currentHeadingId = activeHeadingId ?? headings[0]?.id ?? null;
   const shellRef = useRef<HTMLElement | null>(null);
+  const hostNavigation = useHostNavigation();
   const [fixedFrame, setFixedFrame] = useState<{ left: number; top: number; width: number } | null>(null);
 
   useEffect(() => {
@@ -5486,14 +6180,16 @@ function OnThisPagePane({
             textAlign: "left",
           }}
         >
-          {open ? <span>On this page</span> : null}
+          {open ? <span>Note context</span> : null}
           <span aria-hidden="true" style={{ color: tokens.muted, transform: open ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 120ms ease" }}>
             <ChevronLeftIcon size={13} />
           </span>
         </button>
         {open ? (
-          <nav id={contentId} style={{ display: "grid", gap: 2 }}>
-            {headings.map((heading) => {
+          <div id={contentId} style={{ display: "grid", gap: 14 }}>
+            {headings.length > 0 ? <nav style={{ display: "grid", gap: 2 }}>
+              <Tiny style={{ marginBottom: 3, fontWeight: 700 }}>On this page</Tiny>
+              {headings.map((heading) => {
               const active = heading.id === currentHeadingId;
               return (
                 <a
@@ -5516,10 +6212,97 @@ function OnThisPagePane({
                 </a>
               );
             })}
-          </nav>
+            </nav> : null}
+            {contextLoading && !pageContext ? <Tiny>Loading connections…</Tiny> : null}
+            {contextError ? <Tiny style={{ color: tokens.destructive }}>{contextError}</Tiny> : null}
+            {pageContext ? (
+              <>
+                <ContextLinkSection
+                  title="Links to this note"
+                  rows={pageContext.incoming}
+                  pathKey="source_path"
+                  spaceKey="source_space_slug"
+                  onOpen={(targetPath, targetSpace) => hostNavigation.navigate(buildPageHref(targetPath, targetSpace ?? DEFAULT_SPACE_SLUG))}
+                />
+                <ContextLinkSection
+                  title="Links from this note"
+                  rows={pageContext.outgoing}
+                  pathKey="target_path"
+                  spaceKey="target_space_slug"
+                  onOpen={(targetPath, targetSpace) => hostNavigation.navigate(buildPageHref(targetPath, targetSpace ?? DEFAULT_SPACE_SLUG))}
+                />
+                <ContextLinkSection
+                  title="Unlinked mentions"
+                  rows={pageContext.unlinkedMentions}
+                  pathKey="path"
+                  spaceKey="space_slug"
+                  onOpen={(targetPath, targetSpace) => hostNavigation.navigate(buildPageHref(targetPath, targetSpace ?? DEFAULT_SPACE_SLUG))}
+                />
+                <section style={{ display: "grid", gap: 6 }}>
+                  <Tiny style={{ fontWeight: 700 }}>Revision history</Tiny>
+                  {pageContext.revisions.length === 0 ? <Tiny>No saved revisions yet.</Tiny> : pageContext.revisions.slice(0, 12).map((revision) => {
+                    const revisionId = metadataString(revision, "id");
+                    const summary = metadataString(revision, "summary") ?? "Saved revision";
+                    const authorKind = metadataString(revision, "author_kind") ?? "system";
+                    const authorId = metadataString(revision, "author_id");
+                    const runId = metadataString(revision, "author_run_id");
+                    const createdAt = metadataString(revision, "created_at");
+                    const restorable = revision.restorable !== false;
+                    return (
+                      <div key={revisionId ?? `${createdAt}:${summary}`} style={{ padding: "7px 8px", border: `1px solid ${tokens.border}`, borderRadius: 7, display: "grid", gap: 4 }}>
+                        <span style={{ fontSize: 12, overflowWrap: "anywhere" }}>{summary}</span>
+                        <Tiny>{authorKind}{authorId ? ` · ${authorId.slice(0, 8)}` : ""}{runId ? ` · run ${runId.slice(0, 8)}` : ""}</Tiny>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                          <Tiny>{createdAt ? formatTimestamp(createdAt) : "—"}</Tiny>
+                          {revisionId && restorable ? <Button size="sm" variant="ghost" onClick={() => void onRestoreRevision(revisionId)}>Restore</Button> : null}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </section>
+              </>
+            ) : null}
+          </div>
         ) : null}
       </div>
     </aside>
+  );
+}
+
+function ContextLinkSection({
+  title,
+  rows,
+  pathKey,
+  spaceKey,
+  onOpen,
+}: {
+  title: string;
+  rows: Array<Record<string, unknown>>;
+  pathKey: string;
+  spaceKey: string;
+  onOpen: (path: string, spaceSlug: string | null) => void;
+}) {
+  return (
+    <section style={{ display: "grid", gap: 4 }}>
+      <Tiny style={{ fontWeight: 700 }}>{title} <span style={{ color: tokens.muted }}>({rows.length})</span></Tiny>
+      {rows.length === 0 ? <Tiny>None.</Tiny> : rows.slice(0, 12).map((row, index) => {
+        const path = metadataString(row, pathKey);
+        const titleLabel = metadataString(row, "title") ?? metadataString(row, "label") ?? path ?? "Untitled note";
+        const spaceSlug = metadataString(row, spaceKey);
+        const relationType = metadataString(row, "relation_type");
+        if (!path) return null;
+        return (
+          <button
+            key={`${spaceSlug ?? "wiki"}:${path}:${index}`}
+            type="button"
+            onClick={() => onOpen(path, spaceSlug)}
+            style={{ border: 0, background: "transparent", color: tokens.fg, padding: "3px 0", textAlign: "left", cursor: "pointer", fontSize: 12, overflowWrap: "anywhere" }}
+          >
+            {titleLabel}{relationType ? <Tiny style={{ display: "block" }}>{relationType}</Tiny> : null}
+          </button>
+        );
+      })}
+    </section>
   );
 }
 

@@ -7,6 +7,8 @@ import {
   DEFAULT_BUNDLED_CATALOG_ROOT,
   SELF_HOSTED_AUTO_INSTALL_KEYS,
   ensureBundledPlugins,
+  purgeRetiredFirstPartyPlugins,
+  readBundledPluginKeysEnv,
   resolveBundledCatalogRoot,
   resolveBundledPluginInstalls,
   type BundledPluginProvisionerDeps,
@@ -192,6 +194,16 @@ describe("resolveBundledCatalogRoot", () => {
   });
 });
 
+describe("readBundledPluginKeysEnv", () => {
+  it("parses and deduplicates a comma-separated deployment list", () => {
+    expect(readBundledPluginKeysEnv({ PAPERCLIP_BUNDLED_PLUGINS: "llm-wiki, kubernetes, llm-wiki" })).toEqual(["llm-wiki", "kubernetes"]);
+  });
+
+  it("returns no keys when deployment provisioning is unset", () => {
+    expect(readBundledPluginKeysEnv({})).toEqual([]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // ensureBundledPlugins (fail-safe installer)
 // ---------------------------------------------------------------------------
@@ -217,7 +229,7 @@ function makeDeps(overrides?: {
       getByKey: vi.fn(async (pluginKey: string) => installedRows.get(pluginKey) ?? null),
     },
     loader: { installPlugin } as unknown as BundledPluginProvisionerDeps["loader"],
-    lifecycle: { load: vi.fn(async () => undefined) },
+    lifecycle: { load: vi.fn(async () => undefined), enable: vi.fn(async () => undefined), unload: vi.fn(async () => undefined) },
     logger: { info: vi.fn(), error: vi.fn() },
     bundleManifestExists: overrides?.bundleManifestExists ?? (() => true),
   };
@@ -234,6 +246,22 @@ const DAYTONA: ResolvedBundledPlugin = {
   pluginKey: "paperclip.daytona-sandbox-provider",
   localPath: path.join(CATALOG_ROOT, "sandbox-providers/daytona"),
 };
+
+describe("purgeRetiredFirstPartyPlugins", () => {
+  it("hard-purges the fixed retired Operator Assistant key", async () => {
+    const { deps } = makeDeps({
+      rows: {
+        "paperclipai.plugin-operator-assistant": {
+          id: "operator-plugin-id",
+          pluginKey: "paperclipai.plugin-operator-assistant",
+          status: "disabled",
+        },
+      },
+    });
+    await purgeRetiredFirstPartyPlugins(deps);
+    expect(deps.lifecycle.unload).toHaveBeenCalledWith("operator-plugin-id", true);
+  });
+});
 
 describe("ensureBundledPlugins", () => {
   it("installs and loads a missing bundled plugin", async () => {
@@ -256,6 +284,15 @@ describe("ensureBundledPlugins", () => {
       expect(installPlugin).not.toHaveBeenCalled();
       expect(deps.lifecycle.load).not.toHaveBeenCalled();
     }
+  });
+
+  it("recovers an errored controlled bundle only when its built manifest exists", async () => {
+    const { deps, installPlugin } = makeDeps({
+      rows: { [K8S.pluginKey]: { id: "row-error", pluginKey: K8S.pluginKey, status: "error" } },
+    });
+    await ensureBundledPlugins([K8S], deps, { reinstallUninstalled: true, recoverErrored: true });
+    expect(installPlugin).not.toHaveBeenCalled();
+    expect(deps.lifecycle.enable).toHaveBeenCalledWith("row-error");
   });
 
   it("reinstalls a soft-uninstalled plugin in managed mode", async () => {

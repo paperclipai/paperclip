@@ -73,6 +73,45 @@ describe("createTestHarness action context", () => {
   });
 });
 
+describe("createTestHarness data context", () => {
+  it("passes immutable authenticated actor context and host company scope to reads", async () => {
+    const harness = createTestHarness({ manifest });
+    harness.ctx.data.register("inspect", async (params, context) => ({
+      paramsCompanyId: params.companyId,
+      actor: context.actor,
+      companyId: context.companyId,
+      contextFrozen: Object.isFrozen(context),
+      actorFrozen: Object.isFrozen(context.actor),
+    }));
+
+    const result = await harness.getData<Record<string, unknown>>(
+      "inspect",
+      { companyId: "spoofed-company" },
+      { companyId: "host-company", actor: { type: "user", userId: "reader-1" } },
+    );
+
+    expect(result).toMatchObject({
+      paramsCompanyId: "host-company",
+      companyId: "host-company",
+      contextFrozen: true,
+      actorFrozen: true,
+      actor: {
+        type: "user",
+        userId: "reader-1",
+        agentId: null,
+        runId: null,
+        companyId: "host-company",
+      },
+    });
+  });
+
+  it("keeps existing one-argument data handlers compatible", async () => {
+    const harness = createTestHarness({ manifest });
+    harness.ctx.data.register("legacy", async (params) => ({ ok: params.ok }));
+    await expect(harness.getData("legacy", { ok: true })).resolves.toEqual({ ok: true });
+  });
+});
+
 describe("createTestHarness managed routines", () => {
   it("preserves declared activity gate settings", async () => {
     const harness = createTestHarness({

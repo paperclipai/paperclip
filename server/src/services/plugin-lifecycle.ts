@@ -541,6 +541,7 @@ export function pluginLifecycleManager(
       // If already uninstalled and removeData, hard-delete
       if (plugin.status === "uninstalled") {
         if (removeData) {
+          await pluginLoaderInstance.cleanupPersistentData(plugin);
           await pluginLoaderInstance.cleanupInstallArtifacts(plugin);
           const deleted = await registry.uninstall(pluginId, true);
           log.info(
@@ -561,6 +562,9 @@ export function pluginLifecycleManager(
       }
 
       await deactivatePluginRuntime(pluginId, plugin.pluginKey);
+      if (removeData) {
+        await pluginLoaderInstance.cleanupPersistentData(plugin);
+      }
       await pluginLoaderInstance.cleanupInstallArtifacts(plugin);
 
       // Perform the uninstall via registry (handles soft/hard delete)

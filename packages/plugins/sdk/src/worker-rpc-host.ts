@@ -332,7 +332,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   const eventHandlers: EventRegistration[] = [];
   const jobHandlers = new Map<string, (job: PluginJobContext) => Promise<void>>();
   const launcherRegistrations = new Map<string, PluginLauncherRegistration>();
-  const dataHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
+  const dataHandlers = new Map<string, (
+    params: Record<string, unknown>,
+    context: PluginPerformActionContext,
+  ) => Promise<unknown>>();
   const actionHandlers = new Map<
     string,
     (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>
@@ -1321,7 +1324,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       data: {
-        register(key: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void {
+        register(
+          key: string,
+          handler: (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>,
+        ): void {
           dataHandlers.set(key, handler);
         },
       },
@@ -1796,11 +1802,20 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (!handler) {
       throw new Error(`No data handler registered for key "${params.key}"`);
     }
-    return handler({
-      ...params.params,
-      ...(params.companyId === undefined ? {} : { companyId: params.companyId }),
-      ...(params.renderEnvironment === undefined ? {} : { renderEnvironment: params.renderEnvironment }),
-    });
+    return handler(
+      {
+        ...params.params,
+        ...(params.companyId === undefined ? {} : { companyId: params.companyId }),
+        ...(params.renderEnvironment === undefined ? {} : { renderEnvironment: params.renderEnvironment }),
+      },
+      actionContextFromParams({
+        key: params.key,
+        companyId: params.companyId,
+        params: params.params,
+        actorContext: params.actorContext,
+        renderEnvironment: params.renderEnvironment,
+      }),
+    );
   }
 
   function stringOrNull(value: unknown): string | null {

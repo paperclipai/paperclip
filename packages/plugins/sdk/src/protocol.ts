@@ -409,6 +409,8 @@ export interface GetDataParams {
   params: Record<string, unknown>;
   /** Optional launcher/container metadata from the host render environment. */
   renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
+  /** Immutable authenticated actor context resolved by the host. */
+  actorContext?: PluginPerformActionActorContext | null;
 }
 
 /**
@@ -437,6 +439,9 @@ export interface PluginPerformActionContext {
   /** Convenience alias for `actor.companyId`. */
   companyId: string | null;
 }
+
+/** Authenticated read context supplied to plugin data handlers. */
+export type PluginGetDataContext = PluginPerformActionContext;
 
 export interface PerformActionParams {
   /** Plugin-defined action key (e.g. `"resync"`). */

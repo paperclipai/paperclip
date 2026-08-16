@@ -71,6 +71,28 @@ import {
   updateSpace,
   writeTemplate,
   writeWikiPage,
+  actorFromAction,
+  archiveWikiCanvas,
+  archiveWikiNote,
+  createWikiCanvas,
+  createWikiNote,
+  getSecondBrainGraph,
+  getWikiCanvas,
+  getWikiPageContext,
+  listWikiCanvases,
+  listArchivedWikiNotes,
+  listWikiSuggestions,
+  listUnresolvedWikiRelations,
+  moveWikiNote,
+  proposeWikiRelation,
+  reindexSecondBrain,
+  restoreWikiNote,
+  restoreWikiRevision,
+  restoreWikiCanvasRevision,
+  reviewWikiSuggestion,
+  setWikiNoteVisibility,
+  updateWikiCanvas,
+  writeWikiNoteContents,
 } from "./wiki.js";
 
 function stringField(value: unknown): string | null {
@@ -411,6 +433,35 @@ const plugin = definePlugin({
   async setup(ctx) {
     activeContext = ctx;
     await registerWikiTools(ctx);
+    ctx.tools.register("wiki_suggest_relation", {
+      displayName: "Suggest wiki relationship",
+      description: "Propose an evidence-backed semantic connection between two wiki notes for human review. This never changes either Markdown note.",
+      parametersSchema: {
+        type: "object",
+        properties: {
+          sourcePath: { type: "string" },
+          targetPath: { type: "string" },
+          sourceSpaceSlug: { type: "string" },
+          targetSpaceSlug: { type: "string" },
+          relationType: { type: "string" },
+          label: { type: "string" },
+          evidence: { type: "string" },
+          confidence: { type: "number", minimum: 0, maximum: 1 },
+        },
+        required: ["sourcePath", "targetPath", "evidence"],
+      },
+    }, async (raw, runContext) => {
+      const params = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+      const result = await proposeWikiRelation(ctx, {
+        companyId: runContext.companyId,
+        sourceSpaceSlug: stringField(params.sourceSpaceSlug), targetSpaceSlug: stringField(params.targetSpaceSlug),
+        sourcePath: stringField(params.sourcePath) ?? "", targetPath: stringField(params.targetPath) ?? "",
+        relationType: stringField(params.relationType), label: stringField(params.label),
+        evidence: stringField(params.evidence) ?? "", confidence: typeof params.confidence === "number" ? params.confidence : null,
+        actor: { type: "agent", userId: null, agentId: runContext.agentId, runId: runContext.runId },
+      });
+      return { content: `Semantic wiki link suggestion queued for human review (${result.suggestionId}).`, data: result };
+    });
 
     for (const eventName of PAPERCLIP_EVENT_INGESTION_EVENTS) {
       ctx.events.on(eventName, async (event) => {
@@ -486,11 +537,14 @@ const plugin = definePlugin({
               };
               if (!(await ctx.state.get(backfillKey))) {
                 const summary = await reindexWikiSearch(ctx, { companyId: company.id });
+                const secondBrain = await reindexSecondBrain(ctx, { companyId: company.id });
                 await ctx.state.set(backfillKey, {
                   at: new Date().toISOString(),
                   pages: summary.pages,
                   sources: summary.sources,
                   warnings: summary.warnings.length,
+                  secondBrainIndexed: secondBrain.indexed,
+                  secondBrainWarnings: secondBrain.warnings.length,
                 });
               }
             } catch (error) {
@@ -539,10 +593,15 @@ const plugin = definePlugin({
     });
 
     ctx.actions.register("reindex-search", async (params) => {
-      return reindexWikiSearch(ctx, {
+      const search = await reindexWikiSearch(ctx, {
         companyId: readCompanyIdFromParams(params),
         wikiId: stringField(params.wikiId),
       });
+      const secondBrain = await reindexSecondBrain(ctx, {
+        companyId: readCompanyIdFromParams(params),
+        wikiId: stringField(params.wikiId),
+      });
+      return { ...search, secondBrain };
     });
 
     ctx.actions.register("activate-wiki-maintenance", async (params) => {
@@ -672,8 +731,8 @@ const plugin = definePlugin({
       });
     });
 
-    ctx.actions.register("write-page", async (params) => {
-      return writeWikiPage(ctx, {
+    ctx.actions.register("write-page", async (params, actionContext) => {
+      return writeWikiNoteContents(ctx, {
         companyId: readCompanyIdFromParams(params),
         wikiId: stringField(params.wikiId),
         spaceSlug: stringField(params.spaceSlug),
@@ -682,9 +741,81 @@ const plugin = definePlugin({
         expectedHash: stringField(params.expectedHash),
         summary: stringField(params.summary),
         sourceRefs: params.sourceRefs,
-        writer: "board_ui",
+        actor: actorFromAction(actionContext),
       });
     });
+
+    ctx.actions.register("create-note", async (params, actionContext) => createWikiNote(ctx, {
+      companyId: readCompanyIdFromParams(params),
+      wikiId: stringField(params.wikiId),
+      spaceSlug: stringField(params.spaceSlug),
+      path: stringField(params.path) ?? "",
+      title: stringField(params.title),
+      contents: typeof params.contents === "string" ? params.contents : null,
+      visibility: params.visibility === "private" ? "private" : "company",
+      actor: actorFromAction(actionContext),
+    }));
+
+    ctx.actions.register("move-note", async (params, actionContext) => moveWikiNote(ctx, {
+      companyId: readCompanyIdFromParams(params), wikiId: stringField(params.wikiId),
+      spaceSlug: stringField(params.spaceSlug), path: stringField(params.path) ?? "",
+      newPath: stringField(params.newPath) ?? "", actor: actorFromAction(actionContext),
+    }));
+
+    ctx.actions.register("set-note-visibility", async (params, actionContext) => setWikiNoteVisibility(ctx, {
+      companyId: readCompanyIdFromParams(params),
+      wikiId: stringField(params.wikiId),
+      spaceSlug: stringField(params.spaceSlug),
+      path: stringField(params.path) ?? "",
+      visibility: params.visibility === "private" ? "private" : "company",
+      actor: actorFromAction(actionContext),
+    }));
+
+    ctx.actions.register("archive-note", async (params, actionContext) => archiveWikiNote(ctx, {
+      companyId: readCompanyIdFromParams(params), wikiId: stringField(params.wikiId),
+      spaceSlug: stringField(params.spaceSlug), path: stringField(params.path) ?? "",
+      actor: actorFromAction(actionContext),
+    }));
+
+    ctx.actions.register("restore-note", async (params, actionContext) => restoreWikiNote(ctx, {
+      companyId: readCompanyIdFromParams(params), wikiId: stringField(params.wikiId),
+      spaceSlug: stringField(params.spaceSlug), path: stringField(params.path) ?? "",
+      actor: actorFromAction(actionContext),
+    }));
+
+    ctx.actions.register("restore-note-revision", async (params, actionContext) => restoreWikiRevision(ctx, {
+      companyId: readCompanyIdFromParams(params), wikiId: stringField(params.wikiId),
+      spaceSlug: stringField(params.spaceSlug), path: stringField(params.path) ?? "",
+      revisionId: stringField(params.revisionId) ?? "", actor: actorFromAction(actionContext),
+    }));
+
+    ctx.actions.register("create-canvas", async (params, actionContext) => createWikiCanvas(ctx, {
+      companyId: readCompanyIdFromParams(params), wikiId: stringField(params.wikiId),
+      spaceSlug: stringField(params.spaceSlug), title: stringField(params.title),
+      visibility: params.visibility === "private" ? "private" : "company",
+      document: params.document, actor: actorFromAction(actionContext),
+    }));
+
+    ctx.actions.register("update-canvas", async (params, actionContext) => updateWikiCanvas(ctx, {
+      companyId: readCompanyIdFromParams(params), canvasId: stringField(params.canvasId) ?? "",
+      title: stringField(params.title), visibility: params.visibility === "private" ? "private" : params.visibility === "company" ? "company" : undefined,
+      document: params.document, expectedRevision: typeof params.expectedRevision === "number" ? params.expectedRevision : null,
+      summary: stringField(params.summary), actor: actorFromAction(actionContext),
+    }));
+
+    ctx.actions.register("archive-canvas", async (params, actionContext) => archiveWikiCanvas(ctx, {
+      companyId: readCompanyIdFromParams(params), canvasId: stringField(params.canvasId) ?? "", actor: actorFromAction(actionContext),
+    }));
+
+    ctx.actions.register("restore-canvas-revision", async (params, actionContext) => restoreWikiCanvasRevision(ctx, {
+      companyId: readCompanyIdFromParams(params), canvasId: stringField(params.canvasId) ?? "",
+      revisionId: stringField(params.revisionId) ?? "", actor: actorFromAction(actionContext),
+    }));
+
+    ctx.actions.register("review-link-suggestion", async (params, actionContext) => reviewWikiSuggestion(ctx, {
+      companyId: readCompanyIdFromParams(params), suggestionId: stringField(params.suggestionId) ?? "",
+      decision: params.decision === "rejected" ? "rejected" : "accepted", actor: actorFromAction(actionContext),
+    }));
 
     ctx.actions.register("write-template", async (params) => {
       return writeTemplate(ctx, {
@@ -1182,7 +1313,7 @@ const plugin = definePlugin({
       );
     });
 
-    ctx.data.register("pages", async (params) => {
+    ctx.data.register("pages", async (params, readContext) => {
       const companyId = readCompanyIdFromParams(params);
       return listPages(ctx, {
         companyId,
@@ -1191,6 +1322,7 @@ const plugin = definePlugin({
         pageType: stringField(params.pageType),
         includeRaw: params.includeRaw === true || params.includeRaw === "true",
         limit: typeof params.limit === "number" ? params.limit : null,
+        actor: actorFromAction(readContext),
       });
     });
 
@@ -1209,12 +1341,55 @@ const plugin = definePlugin({
       });
     });
 
-    ctx.data.register("page-content", async (params) => {
+    ctx.data.register("second-brain-graph", async (params, readContext) => getSecondBrainGraph(ctx, {
+      companyId: readCompanyIdFromParams(params), wikiId: stringField(params.wikiId),
+      spaceSlug: stringField(params.spaceSlug),
+      scope: params.scope === "space" || params.scope === "project" || params.scope === "local" ? params.scope : "company",
+      focusPath: stringField(params.focusPath), focusSpaceSlug: stringField(params.focusSpaceSlug),
+      depth: typeof params.depth === "number" ? params.depth : null,
+      actor: actorFromAction(readContext),
+    }));
+
+    ctx.data.register("page-content", async (params, readContext) => {
       const companyId = readCompanyIdFromParams(params);
       const path = stringField(params.path);
       if (!path) throw new Error("path is required");
-      return readWikiPage(ctx, { companyId, wikiId: stringField(params.wikiId), spaceSlug: stringField(params.spaceSlug), path });
+      return readWikiPage(ctx, { companyId, wikiId: stringField(params.wikiId), spaceSlug: stringField(params.spaceSlug), path, actor: actorFromAction(readContext) });
     });
+
+    ctx.data.register("page-context", async (params, readContext) => {
+      const path = stringField(params.path);
+      if (!path) throw new Error("path is required");
+      return getWikiPageContext(ctx, {
+        companyId: readCompanyIdFromParams(params), wikiId: stringField(params.wikiId),
+        spaceSlug: stringField(params.spaceSlug), path, actor: actorFromAction(readContext),
+      });
+    });
+
+    ctx.data.register("archived-notes", async (params, readContext) => listArchivedWikiNotes(ctx, {
+      companyId: readCompanyIdFromParams(params), wikiId: stringField(params.wikiId),
+      spaceSlug: stringField(params.spaceSlug), actor: actorFromAction(readContext),
+    }));
+
+    ctx.data.register("canvases", async (params, readContext) => listWikiCanvases(ctx, {
+      companyId: readCompanyIdFromParams(params), wikiId: stringField(params.wikiId),
+      spaceSlug: stringField(params.spaceSlug), includeArchived: params.includeArchived === true,
+      actor: actorFromAction(readContext),
+    }));
+
+    ctx.data.register("canvas", async (params, readContext) => getWikiCanvas(ctx, {
+      companyId: readCompanyIdFromParams(params), canvasId: stringField(params.canvasId) ?? "",
+      actor: actorFromAction(readContext),
+    }));
+
+    ctx.data.register("link-suggestions", async (params, readContext) => listWikiSuggestions(ctx, {
+      companyId: readCompanyIdFromParams(params), wikiId: stringField(params.wikiId),
+      status: stringField(params.status), actor: actorFromAction(readContext),
+    }));
+
+    ctx.data.register("unresolved-relations", async (params, readContext) => listUnresolvedWikiRelations(ctx, {
+      companyId: readCompanyIdFromParams(params), wikiId: stringField(params.wikiId), actor: actorFromAction(readContext),
+    }));
 
     ctx.data.register("template", async (params) => {
       const companyId = readCompanyIdFromParams(params);

@@ -31,7 +31,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import type { Db } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
+import { pluginManagedResources, type Db } from "@paperclipai/db";
 import { PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import type {
   PaperclipPluginManifestV1,
@@ -51,6 +52,7 @@ import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import { pluginDatabaseService } from "./plugin-database.js";
 import { resolveBundledCatalogRoot } from "./bundled-plugins.js";
+import { agentService } from "./agents.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -553,6 +555,9 @@ export interface PluginLoader {
    * source checkouts outside that directory are intentionally left alone.
    */
   cleanupInstallArtifacts(plugin: PluginRecord): Promise<void>;
+
+  /** Remove the plugin namespace and plugin-managed agents before a hard purge. */
+  cleanupPersistentData(plugin: PluginRecord): Promise<void>;
 
   /**
    * Get the local plugin directory this loader is configured to use.
@@ -1856,6 +1861,28 @@ export function pluginLoader(
 
     isSupportedApiVersion(apiVersion: number): boolean {
       return manifestValidator.getSupportedVersions().includes(apiVersion);
+    },
+
+    // -----------------------------------------------------------------------
+    // cleanupPersistentData
+    // -----------------------------------------------------------------------
+
+    async cleanupPersistentData(plugin: PluginRecord): Promise<void> {
+      const managedResources = await db
+        .select({ resourceKind: pluginManagedResources.resourceKind, resourceId: pluginManagedResources.resourceId })
+        .from(pluginManagedResources)
+        .where(eq(pluginManagedResources.pluginId, plugin.id));
+
+      // Managed agents are plugin-created control-plane resources, not plugin
+      // namespace data. Use the normal removal service so assignments, sessions,
+      // keys, runs, and hierarchy references are cleaned consistently.
+      for (const resource of managedResources) {
+        if (resource.resourceKind === "agent") {
+          await agentService(db).remove(resource.resourceId);
+        }
+      }
+
+      await pluginDatabaseService(db).purgeNamespace(plugin.id);
     },
 
     // -----------------------------------------------------------------------

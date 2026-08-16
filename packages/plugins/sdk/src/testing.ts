@@ -127,7 +127,7 @@ export interface TestHarness {
   /** Execute a previously-registered scheduled job handler. */
   runJob(jobKey: string, partial?: Partial<PluginJobContext>): Promise<void>;
   /** Invoke a `ctx.data.register(...)` handler by key. */
-  getData<T = unknown>(key: string, params?: Record<string, unknown>): Promise<T>;
+  getData<T = unknown>(key: string, params?: Record<string, unknown>, options?: TestHarnessPerformActionOptions): Promise<T>;
   /** Invoke a `ctx.actions.register(...)` handler by key. */
   performAction<T = unknown>(
     key: string,
@@ -573,7 +573,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const events: EventRegistration[] = [];
   const jobs = new Map<string, (job: PluginJobContext) => Promise<void>>();
   const launchers = new Map<string, PluginLauncherRegistration>();
-  const dataHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
+  const dataHandlers = new Map<string, (
+    params: Record<string, unknown>,
+    context: PluginPerformActionContext,
+  ) => Promise<unknown>>();
   const actionHandlers = new Map<
     string,
     (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>
@@ -2599,10 +2602,11 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         scheduledAt: partial.scheduledAt ?? new Date().toISOString(),
       });
     },
-    async getData<T = unknown>(key: string, params: Record<string, unknown> = {}) {
+    async getData<T = unknown>(key: string, params: Record<string, unknown> = {}, options?: TestHarnessPerformActionOptions) {
       const handler = dataHandlers.get(key);
       if (!handler) throw new Error(`No data handler registered for '${key}'`);
-      return await handler(params) as T;
+      const context = actionContextFor(params, options);
+      return await handler(paramsWithHostCompanyScope(params, context, options), context) as T;
     },
     async performAction<T = unknown>(
       key: string,

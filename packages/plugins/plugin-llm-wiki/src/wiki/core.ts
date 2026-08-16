@@ -23,6 +23,7 @@ import {
   REQUIRED_WIKI_DIRECTORIES,
   REQUIRED_WIKI_FILES,
 } from "../templates.js";
+import { syncPageKnowledgeIndex } from "./second-brain-model.js";
 
 export const DEFAULT_WIKI_ID = "default";
 export const DEFAULT_SPACE_SLUG = "default";
@@ -2008,10 +2009,10 @@ async function listLocalFiles(ctx: PluginContext, input: { companyId: string; sp
   }
 }
 
-function mergeLocalPageRows(pages: WikiPageRow[], entries: PluginLocalFolderEntry[]): WikiPageRow[] {
+function mergeLocalPageRows(pages: WikiPageRow[], entries: PluginLocalFolderEntry[], indexedPaths: ReadonlySet<string> = new Set()): WikiPageRow[] {
   const byPath = new Map(pages.map((page) => [page.path, page]));
   for (const entry of entries) {
-    if (!entry.path.endsWith(".md") || byPath.has(entry.path)) continue;
+    if (!entry.path.endsWith(".md") || byPath.has(entry.path) || indexedPaths.has(entry.path)) continue;
     byPath.set(entry.path, {
       path: entry.path,
       title: null,
@@ -2021,6 +2022,10 @@ function mergeLocalPageRows(pages: WikiPageRow[], entries: PluginLocalFolderEntr
       sourceCount: 0,
       contentHash: null,
       updatedAt: entry.modifiedAt ?? new Date(0).toISOString(),
+      visibility: "company",
+      ownerUserId: null,
+      aliases: [],
+      tags: [],
     });
   }
   return [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path));
@@ -2225,6 +2230,15 @@ async function upsertPageMetadata(ctx: PluginContext, input: {
     title,
     contents: input.contents,
     contentHash: hash,
+  });
+
+  await syncPageKnowledgeIndex(ctx, {
+    companyId: input.companyId,
+    wikiId: input.wikiId,
+    spaceId: input.spaceId,
+    path: input.path,
+    contents: input.contents,
+    author: input.author ?? null,
   });
 
   return { title, pageType, backlinks, hash, revisionId };
@@ -4566,7 +4580,7 @@ export async function registerWikiTools(ctx: PluginContext) {
     displayName: "Search Wiki",
     description: "Search indexed wiki page and source metadata.",
     parametersSchema: ctx.manifest.tools?.find((tool) => tool.name === "wiki_search")?.parametersSchema ?? { type: "object" },
-  }, async (params: unknown): Promise<ToolResult> => {
+  }, async (params: unknown, runCtx): Promise<ToolResult> => {
     const input = params as ToolParams;
     const companyId = requireString(input.companyId, "companyId");
     const wikiId = normalizeWikiId(input.wikiId);
@@ -4615,7 +4629,7 @@ export async function registerWikiTools(ctx: PluginContext) {
     displayName: "Write Wiki Page",
     description: "Atomically write a markdown wiki page after plugin path validation.",
     parametersSchema: ctx.manifest.tools?.find((tool) => tool.name === "wiki_write_page")?.parametersSchema ?? { type: "object" },
-  }, async (params: unknown): Promise<ToolResult> => {
+  }, async (params: unknown, runCtx): Promise<ToolResult> => {
     const input = params as ToolParams;
     const result = await writeWikiPage(ctx, {
       companyId: requireString(input.companyId, "companyId"),
@@ -4626,6 +4640,7 @@ export async function registerWikiTools(ctx: PluginContext) {
       expectedHash: stringField(input.expectedHash),
       summary: stringField(input.summary),
       sourceRefs: input.sourceRefs,
+      author: { kind: "agent", id: runCtx.agentId, runId: runCtx.runId },
     });
     return { content: `Wrote ${result.path}`, data: result };
   });
@@ -5087,7 +5102,24 @@ export type WikiPageRow = {
   sourceCount: number;
   contentHash: string | null;
   updatedAt: string;
+  visibility: "company" | "private";
+  ownerUserId: string | null;
+  aliases: string[];
+  tags: string[];
 };
+
+export type WikiReadActor = {
+  type: "user" | "agent" | "system";
+  userId?: string | null;
+  agentId?: string | null;
+  runId?: string | null;
+};
+
+function canReadWikiPage(actor: WikiReadActor | null | undefined, visibility: unknown, ownerUserId: unknown): boolean {
+  if (visibility !== "private") return true;
+  if (actor?.type === "agent" || actor?.type === "system") return true;
+  return Boolean(actor?.type === "user" && actor.userId && actor.userId === ownerUserId);
+}
 
 export type WikiSourceRow = {
   rawPath: string;
@@ -5345,6 +5377,7 @@ export async function listPages(ctx: PluginContext, input: {
   pageType?: string | null;
   includeRaw?: boolean;
   limit?: number | null;
+  actor?: WikiReadActor | null;
 }): Promise<{ pages: WikiPageRow[]; sources: WikiSourceRow[] }> {
   const wikiId = normalizeWikiId(input.wikiId);
   const space = await resolveSpace(ctx, { companyId: input.companyId, wikiId, spaceSlug: input.spaceSlug });
@@ -5365,15 +5398,21 @@ export async function listPages(ctx: PluginContext, input: {
     source_refs: unknown;
     content_hash: string | null;
     updated_at: string;
+    visibility: string;
+    owner_user_id: string | null;
+    aliases: unknown;
+    tags: unknown;
   }>(
-    `SELECT path, title, page_type, backlinks, source_refs, content_hash, updated_at::text AS updated_at
+    `SELECT path, title, page_type, backlinks, source_refs, content_hash, visibility, owner_user_id, aliases, tags,
+            updated_at::text AS updated_at
        FROM ${tableName(ctx.db.namespace, "wiki_pages")}
-      WHERE company_id = $1 AND wiki_id = $2 AND space_id = $3${pageFilter}
+      WHERE company_id = $1 AND wiki_id = $2 AND space_id = $3 AND deleted_at IS NULL${pageFilter}
       ORDER BY path
       LIMIT $${limitIndex}`,
     params,
   );
-  const readablePageRows = await filterReadableRows(ctx, input.companyId, space, pageRows, (row) => row.path);
+  const visiblePageRows = pageRows.filter((row) => canReadWikiPage(input.actor, row.visibility, row.owner_user_id));
+  const readablePageRows = await filterReadableRows(ctx, input.companyId, space, visiblePageRows, (row) => row.path);
   const pages: WikiPageRow[] = readablePageRows.map((row) => ({
     path: row.path,
     title: row.title,
@@ -5383,11 +5422,17 @@ export async function listPages(ctx: PluginContext, input: {
     sourceCount: Array.isArray(row.source_refs) ? row.source_refs.length : 0,
     contentHash: row.content_hash,
     updatedAt: row.updated_at,
+    visibility: row.visibility === "private" ? "private" : "company",
+    ownerUserId: row.owner_user_id,
+    aliases: Array.isArray(row.aliases) ? row.aliases.filter((value): value is string => typeof value === "string") : [],
+    tags: Array.isArray(row.tags) ? row.tags.filter((value): value is string => typeof value === "string") : [],
   }));
   let pagesWithLocalFiles = pages;
   if (!input.pageType) {
     const wikiFiles = await listLocalFiles(ctx, { companyId: input.companyId, space, relativePath: "wiki" });
-    pagesWithLocalFiles = mergeLocalPageRows(pages, wikiFiles);
+    // Files are the durable source of note contents, but indexed private pages
+    // must not be reintroduced as anonymous company-visible rows after ACL filtering.
+    pagesWithLocalFiles = mergeLocalPageRows(pages, wikiFiles, new Set(pageRows.map((row) => row.path)));
   }
 
   let sources: WikiSourceRow[] = [];
@@ -5989,10 +6034,25 @@ export async function getKnowledgeGraph(ctx: PluginContext, input: {
   };
 }
 
-export async function readWikiPage(ctx: PluginContext, input: { companyId: string; wikiId?: string | null; spaceSlug?: string | null; path: string }) {
+export async function readWikiPage(ctx: PluginContext, input: { companyId: string; wikiId?: string | null; spaceSlug?: string | null; path: string; actor?: WikiReadActor | null }) {
   const wikiId = normalizeWikiId(input.wikiId);
   const space = await resolveSpace(ctx, { companyId: input.companyId, wikiId, spaceSlug: input.spaceSlug });
   const path = assertWikiPath(input.path);
+  const meta = await ctx.db.query<{
+    title: string | null; page_type: string | null; backlinks: unknown; source_refs: unknown; updated_at: string;
+    visibility: string; owner_user_id: string | null; aliases: unknown; tags: unknown; deleted_at: string | null;
+  }>(
+    `SELECT title, page_type, backlinks, source_refs, visibility, owner_user_id, aliases, tags,
+            deleted_at::text AS deleted_at, updated_at::text AS updated_at
+       FROM ${tableName(ctx.db.namespace, "wiki_pages")}
+      WHERE company_id = $1 AND wiki_id = $2 AND space_id = $4 AND path = $3
+      LIMIT 1`,
+    [input.companyId, wikiId, path, space.id],
+  );
+  const row = meta[0] ?? null;
+  if (row?.deleted_at || (row && !canReadWikiPage(input.actor, row.visibility, row.owner_user_id))) {
+    throw new WikiPageNotFoundError(path);
+  }
   let contents: string;
   try {
     contents = await ctx.localFolders.readText(input.companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, path));
@@ -6013,14 +6073,6 @@ export async function readWikiPage(ctx: PluginContext, input: { companyId: strin
       throw error;
     }
   }
-  const meta = await ctx.db.query<{ title: string | null; page_type: string | null; backlinks: unknown; source_refs: unknown; updated_at: string }>(
-    `SELECT title, page_type, backlinks, source_refs, updated_at::text AS updated_at
-       FROM ${tableName(ctx.db.namespace, "wiki_pages")}
-      WHERE company_id = $1 AND wiki_id = $2 AND space_id = $4 AND path = $3
-      LIMIT 1`,
-    [input.companyId, wikiId, path, space.id],
-  );
-  const row = meta[0] ?? null;
   return {
     wikiId,
     spaceSlug: space.slug,
@@ -6032,6 +6084,10 @@ export async function readWikiPage(ctx: PluginContext, input: { companyId: strin
     sourceRefs: Array.isArray(row?.source_refs) ? row?.source_refs : [],
     updatedAt: row?.updated_at ?? null,
     hash: contentHash(contents),
+    visibility: row?.visibility === "private" ? "private" : "company",
+    ownerUserId: row?.owner_user_id ?? null,
+    aliases: Array.isArray(row?.aliases) ? row.aliases.filter((value): value is string => typeof value === "string") : [],
+    tags: Array.isArray(row?.tags) ? row.tags.filter((value): value is string => typeof value === "string") : [],
   };
 }
 

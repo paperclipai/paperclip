@@ -490,6 +490,25 @@ const manifest: PaperclipPluginManifestV1 = {
         },
         required: ["companyId", "wikiId"]
       }
+    },
+    {
+      name: "wiki_suggest_relation",
+      displayName: "Suggest Wiki Relationship",
+      description: "Propose an evidence-backed semantic connection between two wiki notes. The suggestion requires human review and never rewrites Markdown.",
+      parametersSchema: {
+        type: "object",
+        properties: {
+          sourcePath: { type: "string" },
+          targetPath: { type: "string" },
+          sourceSpaceSlug: { type: "string" },
+          targetSpaceSlug: { type: "string" },
+          relationType: { type: "string" },
+          label: { type: "string" },
+          evidence: { type: "string" },
+          confidence: { type: "number", minimum: 0, maximum: 1 }
+        },
+        required: ["sourcePath", "targetPath", "evidence"]
+      }
     }
   ],
   apiRoutes: [

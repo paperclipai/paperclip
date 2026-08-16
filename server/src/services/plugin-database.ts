@@ -566,6 +566,21 @@ export function pluginDatabaseService(db: PluginDatabaseRootClient) {
 
     getRuntimeNamespace,
 
+    async purgeNamespace(pluginId: string): Promise<{ namespaceName: string } | null> {
+      const plugin = await getPluginRecord(pluginId);
+      const namespace = await getNamespace(pluginId);
+      if (!namespace) return null;
+      const expectedNamespace = derivePluginDatabaseNamespace(
+        plugin.pluginKey,
+        plugin.manifestJson.database?.namespaceSlug,
+      );
+      if (namespace.namespaceName !== expectedNamespace) {
+        throw new Error(`Refusing to purge unexpected plugin namespace: ${namespace.namespaceName}`);
+      }
+      await db.execute(sql.raw(`DROP SCHEMA IF EXISTS ${quoteIdentifier(namespace.namespaceName)} CASCADE`));
+      return { namespaceName: namespace.namespaceName };
+    },
+
     async query<T = Record<string, unknown>>(pluginId: string, statement: string, params?: unknown[]): Promise<T[]> {
       const plugin = await getPluginRecord(pluginId);
       const namespace = await getRuntimeNamespace(pluginId);

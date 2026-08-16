@@ -79,6 +79,8 @@ import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader, type PluginLoader } from "./ser
 import {
   SELF_HOSTED_AUTO_INSTALL_KEYS,
   ensureBundledPlugins,
+  purgeRetiredFirstPartyPlugins,
+  readBundledPluginKeysEnv,
   resolveBundledCatalogRoot,
   resolveBundledPluginInstalls,
 } from "./services/bundled-plugins.js";
@@ -333,18 +335,24 @@ export async function createApp(
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
   const managedAutoInstallKeys = opts.managedPluginAutoInstall ?? null;
+  const environmentAutoInstallKeys = readBundledPluginKeysEnv(process.env);
+  const controlledBundledProvisioning = managedAutoInstallKeys !== null || environmentAutoInstallKeys.length > 0;
+  const bundledPluginKeys = [...new Set([
+    ...(managedAutoInstallKeys ?? SELF_HOSTED_AUTO_INSTALL_KEYS),
+    ...environmentAutoInstallKeys,
+  ])];
   const bundledCatalogRoot =
     opts.bundledPluginCatalogRoot ?? resolveBundledCatalogRoot(process.env);
   const bundledPluginInstalls = resolveBundledPluginInstalls(
-    managedAutoInstallKeys ?? SELF_HOSTED_AUTO_INSTALL_KEYS,
+    bundledPluginKeys,
     {
       catalogRoot: bundledCatalogRoot,
       env: process.env,
-      enforceCatalogRoot: managedAutoInstallKeys !== null,
+      enforceCatalogRoot: controlledBundledProvisioning,
     },
   );
   const managedBundledPluginKeys =
-    managedAutoInstallKeys !== null
+    controlledBundledProvisioning
       ? bundledPluginInstalls.map((install) => install.pluginKey)
       : [];
   let runtimePluginLoader: Pick<PluginLoader, "loadSingle"> | null = null;
@@ -353,7 +361,7 @@ export async function createApp(
   // loadAll() pass. The capabilities route may recover only those managed
   // bundles by starting their ready-but-unstarted worker lazily.
   const recoverManagedBundledPluginWorker =
-    managedAutoInstallKeys !== null
+    controlledBundledProvisioning
       ? createManagedBundledPluginWorkerRecovery({
           managedBundledPluginKeys,
           workerManager,
@@ -796,14 +804,19 @@ export async function createApp(
   // that must not outrun plugin availability — managed sandbox environments
   // (`applyManagedEnvironments`) run before the heartbeat resumes queued
   // runs — can sequence on it. It never rejects.
-  const bundledPluginsStartup = ensureBundledPlugins(
-    bundledPluginInstalls,
-    { registry: pluginRegistry, loader, lifecycle, logger },
-    // Managed mode reinstalls soft-uninstalled bundles (the control plane
-    // owns provisioning); self-hosted leaves an operator's uninstall alone.
-    // Operator-DISABLED plugins are never touched in either mode.
-    { reinstallUninstalled: managedAutoInstallKeys !== null },
-  )
+  const bundledPluginDeps = { registry: pluginRegistry, loader, lifecycle, logger };
+  const bundledPluginsStartup = purgeRetiredFirstPartyPlugins(bundledPluginDeps)
+    .then(() => ensureBundledPlugins(
+      bundledPluginInstalls,
+      bundledPluginDeps,
+      // Managed mode reinstalls soft-uninstalled bundles (the control plane
+      // owns provisioning); self-hosted leaves an operator's uninstall alone.
+      // Operator-DISABLED plugins are never touched in either mode.
+      {
+        reinstallUninstalled: controlledBundledProvisioning,
+        recoverErrored: controlledBundledProvisioning,
+      },
+    ))
     .then(() => loader.loadAll())
     .then((result) => {
     if (!result) return;

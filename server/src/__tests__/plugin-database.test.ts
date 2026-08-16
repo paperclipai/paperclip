@@ -458,6 +458,22 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
     expect(migrations).toHaveLength(2);
   });
 
+  it("drops only the host-derived namespace during a hard purge", async () => {
+    const pluginManifest = manifest("paperclip.dbtest");
+    const namespace = derivePluginDatabaseNamespace(pluginManifest.id);
+    const packageRoot = await createPluginPackage(
+      pluginManifest,
+      `CREATE TABLE ${namespace}.purge_probe (id uuid PRIMARY KEY);`,
+    );
+    const pluginId = await installPluginRecord(pluginManifest);
+    const service = pluginDatabaseService(db);
+    await service.applyMigrations(pluginId, pluginManifest, packageRoot);
+
+    await expect(service.purgeNamespace(pluginId)).resolves.toEqual({ namespaceName: namespace });
+    const rows = await db.execute(sql`SELECT to_regnamespace(${namespace}) AS namespace_name`);
+    expect(Array.from(rows as Iterable<{ namespace_name: string | null }>)[0]?.namespace_name).toBeNull();
+  });
+
   it("applies the bundled LLM Wiki migrations through the production validator", async () => {
     const pluginManifest = llmWikiManifest();
     const repoRoot = path.basename(process.cwd()) === "server" ? path.resolve(process.cwd(), "..") : process.cwd();

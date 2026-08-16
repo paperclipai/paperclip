@@ -27,8 +27,8 @@ import fs from "node:fs";
  *    crash loop across a fleet.
  *
  * Removal of a key from `autoInstall` stops future installs but never
- * auto-uninstalls: there is intentionally no uninstall
- * path anywhere in this module.
+ * auto-uninstalls. Product-wide retirement is a separate fixed allowlist;
+ * deployment configuration cannot request destructive removal.
  */
 
 /** Default location of the bundled plugin catalog inside the release image. */
@@ -38,6 +38,7 @@ export const DEFAULT_BUNDLED_CATALOG_ROOT = "/app/packages/plugins";
  * Env var that relocates the bundled catalog root (dev images, tests).
  */
 export const BUNDLED_CATALOG_ROOT_ENV_VAR = "PAPERCLIP_BUNDLED_PLUGIN_ROOT";
+export const BUNDLED_PLUGIN_KEYS_ENV_VAR = "PAPERCLIP_BUNDLED_PLUGINS";
 
 export interface BundledPluginCatalogEntry {
   /** Key the managed config's `plugins.autoInstall` list uses. */
@@ -60,6 +61,11 @@ export interface BundledPluginCatalogEntry {
  * regardless of what the managed config document says.
  */
 export const BUNDLED_PLUGIN_CATALOG: readonly BundledPluginCatalogEntry[] = [
+  {
+    key: "llm-wiki",
+    pluginKey: "paperclipai.plugin-llm-wiki",
+    relativePath: "plugin-llm-wiki",
+  },
   {
     key: "cloudflare",
     pluginKey: "paperclip.cloudflare-sandbox-provider",
@@ -104,6 +110,13 @@ export const BUNDLED_PLUGIN_CATALOG: readonly BundledPluginCatalogEntry[] = [
  * auto-installed when its bundle is present, nothing else.
  */
 export const SELF_HOSTED_AUTO_INSTALL_KEYS: readonly string[] = ["kubernetes"];
+export const RETIRED_FIRST_PARTY_PLUGIN_KEYS: readonly string[] = ["paperclipai.plugin-operator-assistant"];
+
+export function readBundledPluginKeysEnv(env: Record<string, string | undefined>): string[] {
+  const value = env[BUNDLED_PLUGIN_KEYS_ENV_VAR]?.trim();
+  if (!value) return [];
+  return [...new Set(value.split(",").map((key) => key.trim()).filter(Boolean))];
+}
 
 export function resolveBundledCatalogRoot(
   env: Record<string, string | undefined>,
@@ -203,6 +216,8 @@ export interface BundledPluginProvisionerDeps {
   };
   lifecycle: {
     load(pluginId: string): Promise<unknown>;
+    enable(pluginId: string): Promise<unknown>;
+    unload(pluginId: string, removeData?: boolean): Promise<unknown>;
   };
   logger: {
     info(obj: unknown, msg?: string): void;
@@ -210,6 +225,26 @@ export interface BundledPluginProvisionerDeps {
   };
   /** Overridable for tests; defaults to checking `dist/manifest.js`. */
   bundleManifestExists?: (localPath: string) => boolean;
+}
+
+/**
+ * Permanently removes first-party plugins that have been retired from the
+ * product. This is intentionally a fixed code allowlist: deployment config
+ * cannot turn arbitrary plugin keys into destructive startup actions.
+ */
+export async function purgeRetiredFirstPartyPlugins(
+  deps: Pick<BundledPluginProvisionerDeps, "registry" | "lifecycle" | "logger">,
+): Promise<void> {
+  for (const pluginKey of RETIRED_FIRST_PARTY_PLUGIN_KEYS) {
+    try {
+      const existing = await deps.registry.getByKey(pluginKey);
+      if (!existing) continue;
+      await deps.lifecycle.unload(existing.id, true);
+      deps.logger.info({ pluginId: existing.id, pluginKey }, "purged retired first-party plugin");
+    } catch (err) {
+      deps.logger.error({ err, pluginKey }, "failed to purge retired first-party plugin; will retry on next boot");
+    }
+  }
 }
 
 function defaultBundleManifestExists(localPath: string): boolean {
@@ -235,12 +270,27 @@ function defaultBundleManifestExists(localPath: string): boolean {
 export async function ensureBundledPlugins(
   installs: readonly ResolvedBundledPlugin[],
   deps: BundledPluginProvisionerDeps,
-  opts: { reinstallUninstalled: boolean },
+  opts: { reinstallUninstalled: boolean; recoverErrored?: boolean },
 ): Promise<void> {
   const bundleManifestExists = deps.bundleManifestExists ?? defaultBundleManifestExists;
   for (const install of installs) {
     try {
       const existing = await deps.registry.getByKey(install.pluginKey);
+      if (existing?.status === "error" && opts.recoverErrored) {
+        if (!bundleManifestExists(install.localPath)) {
+          deps.logger.info(
+            { pluginKey: install.pluginKey, pluginPath: install.localPath },
+            "bundled plugin bundle not present; leaving errored plugin unchanged",
+          );
+          continue;
+        }
+        await deps.lifecycle.enable(existing.id);
+        deps.logger.info(
+          { pluginId: existing.id, pluginKey: existing.pluginKey },
+          "re-enabled errored managed bundled plugin for startup recovery",
+        );
+        continue;
+      }
       if (existing && (existing.status !== "uninstalled" || !opts.reinstallUninstalled)) {
         deps.logger.info(
           { pluginKey: install.pluginKey, status: existing.status },
