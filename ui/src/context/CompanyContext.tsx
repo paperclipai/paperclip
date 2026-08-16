@@ -67,7 +67,24 @@ export function shouldClearStoredCompanySelection(input: {
   companies: Array<Pick<Company, "id">>;
   isLoading: boolean;
   unauthorized: boolean;
+  /**
+   * Whether the company request failed. An error is not an answer, and this
+   * branch is destructive.
+   *
+   * `companiesListQueryOptions` sets `retry: false`, and a request that fails
+   * before ever succeeding leaves `data` undefined - which the provider
+   * defaults to `{ companies: [], unauthorized: false }`. That is
+   * indistinguishable from "this account was asked, and owns nothing", so a
+   * single failed request on a cold load would clear the customer's stored
+   * company and drop them onto whichever company sorts first next time.
+   *
+   * Not clearing costs nothing: a stored id that no longer resolves is
+   * ignored by {@link resolveBootstrapCompanySelection}, which checks it
+   * against the current list before using it.
+   */
+  errored: boolean;
 }) {
+  if (input.errored) return false;
   return !input.isLoading && !input.unauthorized && input.companies.length === 0;
 }
 
@@ -89,7 +106,12 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (isLoading) return;
     if (companies.length === 0) {
-      if (shouldClearStoredCompanySelection({ companies, isLoading: false, unauthorized: companyListUnauthorized })) {
+      if (shouldClearStoredCompanySelection({
+        companies,
+        isLoading: false,
+        unauthorized: companyListUnauthorized,
+        errored: error !== null,
+      })) {
         if (selectedCompanyId !== null) {
           setSelectedCompanyIdState(null);
         }
@@ -108,7 +130,7 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
     setSelectedCompanyIdState(next);
     setSelectionSource("bootstrap");
     localStorage.setItem(STORAGE_KEY, next);
-  }, [companies, companyListUnauthorized, isLoading, selectedCompanyId, sidebarCompanies]);
+  }, [companies, companyListUnauthorized, error, isLoading, selectedCompanyId, sidebarCompanies]);
 
   const setSelectedCompanyId = useCallback((companyId: string, options?: CompanySelectionOptions) => {
     setSelectedCompanyIdState(companyId);

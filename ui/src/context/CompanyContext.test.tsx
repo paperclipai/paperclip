@@ -137,6 +137,7 @@ describe("shouldClearStoredCompanySelection", () => {
       companies: [],
       isLoading: false,
       unauthorized: true,
+      errored: false,
     })).toBe(false);
   });
 
@@ -145,7 +146,22 @@ describe("shouldClearStoredCompanySelection", () => {
       companies: [],
       isLoading: false,
       unauthorized: false,
+      errored: false,
     })).toBe(true);
+  });
+
+  it("does not clear the stored company selection when the request failed", () => {
+    // `companiesListQueryOptions` sets `retry: false`, and a failure before any
+    // success leaves `data` undefined — which the provider defaults to an empty
+    // list. That is indistinguishable from "asked, and owns nothing", so
+    // without this a single failed request on a cold load would drop the
+    // customer's stored company.
+    expect(shouldClearStoredCompanySelection({
+      companies: [],
+      isLoading: false,
+      unauthorized: false,
+      errored: true,
+    })).toBe(false);
   });
 });
 
@@ -174,6 +190,30 @@ describe("CompanyProvider", () => {
     queryClient.clear();
     container.remove();
     vi.clearAllMocks();
+  });
+
+  it("keeps the stored company when the company request fails", async () => {
+    // The seam the predicate test above cannot reach: the provider defaults a
+    // failed request to an empty list, so the effect has to be told the
+    // request errored or it reads that as "asked, and owns nothing" and clears
+    // the customer's stored company.
+    localStorage.setItem("paperclip.selectedCompanyId", "company-a");
+    mockCompaniesApi.list.mockRejectedValue(new Error("companies unavailable"));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanyProvider>
+            <Probe onSelectedCompanyId={() => {}} />
+          </CompanyProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(localStorage.getItem("paperclip.selectedCompanyId")).toBe("company-a");
   });
 
   it("does not expose a stale stored company id before companies load", async () => {
