@@ -1093,11 +1093,18 @@ export function environmentRoutes(
         }),
     });
     assertNoClientPlatformProvisionedMarkers(req.body.metadata);
-    // A `pending_cleanup` lease holds the only durable provider reference for an
-    // orphan sandbox that a teardown retry must destroy. A driver or config
-    // change re-points the environment provider, so the sweep can no longer
-    // reach the original sandbox. Block a provider change while such a lease
-    // exists, so the operator resolves the cleanup first.
+    // The durable `pending_cleanup` lease row stores the provider, the provider
+    // lease id, and the immutable config metadata for an orphan sandbox. The
+    // teardown retry reads that row alone and never reads the current environment
+    // provider. So a provider change or an environment delete after the record
+    // lands cannot strand the teardown. That immutable record is the correctness
+    // invariant.
+    //
+    // This pre-transaction check is a best-effort fast-fail only. It rejects a
+    // provider change while a known `pending_cleanup` lease exists, so the
+    // operator resolves the cleanup first. An orphan record that lands after this
+    // check still carries its own immutable teardown context, so the
+    // time-of-check-to-time-of-use window here cannot strand a sandbox.
     const changesProviderTarget =
       (req.body.driver !== undefined && req.body.driver !== existing.driver) ||
       req.body.config !== undefined;
