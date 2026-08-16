@@ -373,21 +373,37 @@ const PENDING_CLEANUP_CAP_WARNED_METADATA_KEY = "pendingCleanupRetryCapWarned";
 const PENDING_CLEANUP_RETRY_ERROR_KIND = "destroy_failed";
 const PENDING_CLEANUP_SWEEP_ERROR_KIND = "sweep_failed";
 
-// Read the stored retry attempt count as a safe integer, directly in SQL. A
+// Read the stored retry attempt count as a safe value, directly in SQL. A
 // provider can write a malformed value under the attempts key. The type guard
-// makes any non-number value read as zero, so the numeric cast never throws.
-// One malformed lease therefore never aborts the page sweep. This matches the
-// TypeScript reader `readPendingCleanupRetryAttempts`, which also accepts only a
-// JSON number.
+// makes any non-number value read as zero. The reader computes as numeric and
+// never casts to int, so a finite number outside the 32-bit range (for example
+// 1e300) never throws. The reader clamps a negative value to zero and a positive
+// value to the attempt cap. One malformed lease therefore never aborts the page
+// sweep. This matches the TypeScript reader `readPendingCleanupRetryAttempts`,
+// which clamps to the same range. The claim predicate compares the two readers,
+// so both must yield the same value for every input.
 function pendingCleanupAttemptsSql() {
-  return sql`coalesce(
+  return sql`
     case
       when jsonb_typeof(${environmentLeases.metadata} -> ${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY}) = 'number'
-        then floor((${environmentLeases.metadata} ->> ${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY})::numeric)::int
+        then least(
+          greatest(
+            floor((${environmentLeases.metadata} ->> ${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY})::numeric),
+            0
+          ),
+          ${PENDING_CLEANUP_SWEEP_ATTEMPT_CAP}
+        )
       else 0
-    end,
-    0
-  )`;
+    end`;
+}
+
+// Choose the `jsonb_set` target root. A provider can write a scalar or array
+// metadata root. `jsonb_set` fails on a non-object root, so the reader uses the
+// stored metadata only when its root is an object. A NULL, scalar, or array root
+// reads as an empty object. `jsonb_typeof(NULL)` is NULL, so the else branch also
+// covers a NULL root.
+function pendingCleanupMetadataObjectSql() {
+  return sql`case when jsonb_typeof(${environmentLeases.metadata}) = 'object' then ${environmentLeases.metadata} else '{}'::jsonb end`;
 }
 
 // Read the stored cap-warned flag as a safe boolean, directly in SQL. A
@@ -13169,10 +13185,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  // Clamp the stored attempt count to the range [0, cap]. The SQL reader
+  // `pendingCleanupAttemptsSql` clamps to the same range, so both readers yield
+  // the same value for every input. The claim predicate compares the two values,
+  // so this alignment lets the claim match for a malformed lease.
   function readPendingCleanupRetryAttempts(metadata: Record<string, unknown>): number {
     const value = metadata[PENDING_CLEANUP_ATTEMPTS_METADATA_KEY];
     if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return 0;
-    return Math.floor(value);
+    return Math.min(Math.floor(value), PENDING_CLEANUP_SWEEP_ATTEMPT_CAP);
   }
 
   // Atomically claim one retry attempt on a pending_cleanup lease. The update
@@ -13195,7 +13215,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const claimed = await db
       .update(environmentLeases)
       .set({
-        metadata: sql`jsonb_set(coalesce(${environmentLeases.metadata}, '{}'::jsonb), array[${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY}], to_jsonb(${expectedAttempts + 1}::int), true)`,
+        metadata: sql`jsonb_set(${pendingCleanupMetadataObjectSql()}, array[${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY}], to_jsonb(${expectedAttempts + 1}::int), true)`,
         lastUsedAt: now,
         updatedAt: now,
       })
@@ -13226,7 +13246,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const claimed = await db
       .update(environmentLeases)
       .set({
-        metadata: sql`jsonb_set(coalesce(${environmentLeases.metadata}, '{}'::jsonb), array[${PENDING_CLEANUP_CAP_WARNED_METADATA_KEY}], to_jsonb(true), true)`,
+        metadata: sql`jsonb_set(${pendingCleanupMetadataObjectSql()}, array[${PENDING_CLEANUP_CAP_WARNED_METADATA_KEY}], to_jsonb(true), true)`,
         updatedAt: now,
       })
       .where(

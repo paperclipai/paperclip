@@ -716,4 +716,226 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     const belowCapMetadata = await readMetadata(belowCapLeaseId);
     expect(belowCapMetadata?.[CAP_WARNED_KEY]).not.toBe(true);
   });
+
+  // Override a lease metadata root with a raw JSON value. The insert helper
+  // always writes an object root, so a scalar or array root test needs a raw
+  // update. The value binds as text and casts to jsonb, so `"5"` writes a number
+  // scalar root and `"[1,2,3]"` writes an array root.
+  async function setRawMetadataRoot(leaseId: string, rawJson: string): Promise<void> {
+    await db
+      .update(environmentLeases)
+      .set({ metadata: sql`${rawJson}::jsonb` })
+      .where(eq(environmentLeases.id, leaseId));
+  }
+
+  // A provider can write a negative attempt count. The SQL reader and the
+  // TypeScript reader both clamp a negative value to zero, so the claim predicate
+  // matches. The lease still claims one attempt and the destroy still runs.
+  it("test_pending_cleanup_negative_attempts_metadata_normalizes_and_lease_still_destroys", async () => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+
+    // The negative-attempts lease sorts first. A thrown or mismatched claim would
+    // strand it before the sweep reaches the healthy lease.
+    const negativeLeaseId = await insertPendingCleanupLease({
+      companyId,
+      environmentId,
+      updatedAt: new Date(Date.now() - 120 * 60 * 1000),
+      metadata: { [ATTEMPTS_KEY]: -3 },
+    });
+    const healthyLeaseId = await insertPendingCleanupLease({
+      companyId,
+      environmentId,
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    // The destroy succeeds and moves each lease out of pending_cleanup.
+    const destroyedLeaseIds: string[] = [];
+    const destroyRunLease = vi.fn(async ({ lease }: { lease: { id: string } }) => {
+      destroyedLeaseIds.push(lease.id);
+      const now = new Date();
+      const row = await db
+        .update(environmentLeases)
+        .set({ status: "expired", cleanupStatus: "success", updatedAt: now })
+        .where(eq(environmentLeases.id, lease.id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return row ? { ...row, status: "expired" as const } : null;
+    });
+    const heartbeat = heartbeatService(db, {
+      environmentRuntime: fakeRuntime(
+        destroyRunLease as unknown as HeartbeatEnvironmentRuntime["destroyRunLease"],
+      ),
+    });
+
+    // The sweep resolves; the negative value does not strand the lease.
+    const result = await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 });
+    expect(result.swept).toBe(2);
+
+    // The negative-attempts lease claimed one attempt and destroyed.
+    expect(destroyedLeaseIds).toContain(negativeLeaseId);
+    expect(destroyedLeaseIds).toContain(healthyLeaseId);
+    expect(result.destroyed).toBe(2);
+
+    // The negative value normalized to zero, so the claim advanced it to one.
+    const negativeMetadata = await readMetadata(negativeLeaseId);
+    expect(negativeMetadata?.[ATTEMPTS_KEY]).toBe(1);
+
+    const negativeStatus = await db
+      .select({ status: environmentLeases.status })
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, negativeLeaseId))
+      .then((rows) => rows[0]?.status);
+    expect(negativeStatus).toBe("expired");
+  });
+
+  // A provider can write a finite number outside the 32-bit integer range. The
+  // SQL reader computes as numeric and clamps to the cap, so the `::int` cast
+  // never runs on the stored value. The sweep does not throw, and the malformed
+  // lease normalizes into the cap behavior.
+  it("test_pending_cleanup_out_of_range_attempts_metadata_does_not_abort_sweep", async () => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+
+    // The out-of-range lease sorts first. A thrown cast would abort before the
+    // sweep reaches the healthy lease.
+    const outOfRangeLeaseId = await insertPendingCleanupLease({
+      companyId,
+      environmentId,
+      updatedAt: new Date(Date.now() - 120 * 60 * 1000),
+      metadata: { [ATTEMPTS_KEY]: 1e300 },
+    });
+    const healthyLeaseId = await insertPendingCleanupLease({
+      companyId,
+      environmentId,
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    // The destroy fails, so the healthy lease stays pending_cleanup and the test
+    // can confirm the sweep reached it.
+    const destroyedLeaseIds: string[] = [];
+    const destroyRunLease = vi.fn(async ({ lease }: { lease: { id: string } }) => {
+      destroyedLeaseIds.push(lease.id);
+      return null;
+    });
+    const heartbeat = heartbeatService(db, {
+      environmentRuntime: fakeRuntime(
+        destroyRunLease as unknown as HeartbeatEnvironmentRuntime["destroyRunLease"],
+      ),
+    });
+
+    // The sweep resolves; the out-of-range value does not abort the page.
+    const result = await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 });
+    expect(result.swept).toBe(2);
+
+    // The value clamped to the cap, so the lease took the cap branch, not a
+    // destroy. The warn-once flag is set exactly once.
+    expect(result.capped).toBe(1);
+    expect(destroyedLeaseIds).not.toContain(outOfRangeLeaseId);
+    const outOfRangeMetadata = await readMetadata(outOfRangeLeaseId);
+    expect(outOfRangeMetadata?.[CAP_WARNED_KEY]).toBe(true);
+
+    // The sweep still processed the healthy lease.
+    expect(destroyedLeaseIds).toContain(healthyLeaseId);
+  });
+
+  // A provider can write a scalar metadata root. `jsonb_set` fails on a
+  // non-object root, so the reader falls back to an empty object. The sweep does
+  // not throw, and the lease still claims one attempt and destroys.
+  it("test_pending_cleanup_scalar_metadata_root_does_not_abort_sweep", async () => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+
+    // The scalar-root lease sorts first. A failed `jsonb_set` would abort before
+    // the sweep reaches the healthy lease.
+    const scalarLeaseId = await insertPendingCleanupLease({
+      companyId,
+      environmentId,
+      updatedAt: new Date(Date.now() - 120 * 60 * 1000),
+    });
+    await setRawMetadataRoot(scalarLeaseId, "5");
+    const healthyLeaseId = await insertPendingCleanupLease({
+      companyId,
+      environmentId,
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    // The destroy succeeds and moves each lease out of pending_cleanup.
+    const destroyedLeaseIds: string[] = [];
+    const destroyRunLease = vi.fn(async ({ lease }: { lease: { id: string } }) => {
+      destroyedLeaseIds.push(lease.id);
+      const now = new Date();
+      const row = await db
+        .update(environmentLeases)
+        .set({ status: "expired", cleanupStatus: "success", updatedAt: now })
+        .where(eq(environmentLeases.id, lease.id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return row ? { ...row, status: "expired" as const } : null;
+    });
+    const heartbeat = heartbeatService(db, {
+      environmentRuntime: fakeRuntime(
+        destroyRunLease as unknown as HeartbeatEnvironmentRuntime["destroyRunLease"],
+      ),
+    });
+
+    // The sweep resolves; the scalar root does not break the claim write.
+    const result = await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 });
+    expect(result.swept).toBe(2);
+    expect(result.destroyed).toBe(2);
+    expect(destroyedLeaseIds).toContain(scalarLeaseId);
+    expect(destroyedLeaseIds).toContain(healthyLeaseId);
+
+    // The claim replaced the scalar root with an object that holds one attempt.
+    const scalarMetadata = await readMetadata(scalarLeaseId);
+    expect(scalarMetadata?.[ATTEMPTS_KEY]).toBe(1);
+  });
+
+  // A provider can write an array metadata root. `jsonb_set` fails on a
+  // non-object root, so the reader falls back to an empty object. The sweep does
+  // not throw, and the lease still claims one attempt and destroys.
+  it("test_pending_cleanup_array_metadata_root_does_not_abort_sweep", async () => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+
+    // The array-root lease sorts first. A failed `jsonb_set` would abort before
+    // the sweep reaches the healthy lease.
+    const arrayLeaseId = await insertPendingCleanupLease({
+      companyId,
+      environmentId,
+      updatedAt: new Date(Date.now() - 120 * 60 * 1000),
+    });
+    await setRawMetadataRoot(arrayLeaseId, "[1, 2, 3]");
+    const healthyLeaseId = await insertPendingCleanupLease({
+      companyId,
+      environmentId,
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    // The destroy succeeds and moves each lease out of pending_cleanup.
+    const destroyedLeaseIds: string[] = [];
+    const destroyRunLease = vi.fn(async ({ lease }: { lease: { id: string } }) => {
+      destroyedLeaseIds.push(lease.id);
+      const now = new Date();
+      const row = await db
+        .update(environmentLeases)
+        .set({ status: "expired", cleanupStatus: "success", updatedAt: now })
+        .where(eq(environmentLeases.id, lease.id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return row ? { ...row, status: "expired" as const } : null;
+    });
+    const heartbeat = heartbeatService(db, {
+      environmentRuntime: fakeRuntime(
+        destroyRunLease as unknown as HeartbeatEnvironmentRuntime["destroyRunLease"],
+      ),
+    });
+
+    // The sweep resolves; the array root does not break the claim write.
+    const result = await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 });
+    expect(result.swept).toBe(2);
+    expect(result.destroyed).toBe(2);
+    expect(destroyedLeaseIds).toContain(arrayLeaseId);
+    expect(destroyedLeaseIds).toContain(healthyLeaseId);
+
+    // The claim replaced the array root with an object that holds one attempt.
+    const arrayMetadata = await readMetadata(arrayLeaseId);
+    expect(arrayMetadata?.[ATTEMPTS_KEY]).toBe(1);
+  });
 });
