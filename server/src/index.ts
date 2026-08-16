@@ -4,6 +4,11 @@
 // instrumentationReady before opening DB connections or constructing the
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
+// Load the Sentry gate at the first import position, next to the OTel bootstrap.
+// It is a no-op unless SENTRY_DSN is set. startServer() awaits sentryReady before
+// the first DB connection or the HTTP server, so error capture is active before
+// any work begins.
+import { captureException, flushSentry, highTrustWarning, sentryReady } from "./sentry.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
@@ -140,6 +145,14 @@ export async function startServer(): Promise<StartedServer> {
   // Tracing must be active (or have failed and logged) before the first DB
   // connection or the HTTP server exists — see instrumentation.ts.
   await instrumentationReady;
+  // Sentry must be initialized (or have failed and logged, or be off) before the
+  // server starts, for the same reason. When the operator selects the high-trust
+  // level, log one clear warning so they see which data categories now cross the
+  // boundary. The warning fires on the configured level, so an operator who sets
+  // the level sees it even before they set a DSN. It never prints the DSN value.
+  await sentryReady;
+  const sentryWarning = highTrustWarning();
+  if (sentryWarning) logger.warn(sentryWarning);
   ensureDecisionSigningSecret();
   let config = loadConfig();
   initTelemetry({ enabled: config.telemetryEnabled });
@@ -1561,9 +1574,10 @@ export async function startServer(): Promise<StartedServer> {
         }
       }
 
-      // Flush buffered OTel spans before the process goes away; without this
-      // await the exporter's final batch is dropped on exit.
+      // Flush buffered OTel spans and Sentry events before the process goes
+      // away; without these awaits the final batch is dropped on exit.
       await shutdownInstrumentation();
+      await flushSentry();
 
       process.exit(0);
     };
@@ -1596,8 +1610,13 @@ function isMainModule(metaUrl: string): boolean {
 }
 
 if (isMainModule(import.meta.url)) {
-  void startServer().catch((err) => {
+  void startServer().catch(async (err) => {
     logger.error({ err }, "Paperclip server failed to start");
+    // Capture the fatal startup error once, here at the main-module catch, and
+    // flush before exit. The inner rethrow catches do not capture, so a fatal
+    // error yields exactly one Sentry event.
+    captureException(err, { source: "startup-fatal" });
+    await flushSentry();
     process.exit(1);
   });
 }

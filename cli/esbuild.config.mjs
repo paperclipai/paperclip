@@ -54,6 +54,12 @@ for (const name of externalWorkspacePackages) {
   externals.add(name);
 }
 
+// @sentry/node is an optional dependency of @paperclipai/server. The server
+// dynamic-imports it only when SENTRY_DSN is set. The server package is external
+// here, but list @sentry/node explicitly so the CLI never bundles the optional
+// SDK even if a future import path reaches it.
+externals.add("@sentry/node");
+
 if (bundledCliNpmDependencies.has("embedded-postgres")) {
   const requireFromDb = createRequire(resolve(repoRoot, "packages/db/package.json"));
   const embeddedPostgresRoot = dirname(requireFromDb.resolve("embedded-postgres"));
