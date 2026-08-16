@@ -29,6 +29,7 @@ import {
 import type {
   CreateRoutine,
   CreateRoutineTrigger,
+  IssueBlockerAttention,
   Routine,
   RoutineDetail,
   RoutineDescriptionDocument,
@@ -266,6 +267,18 @@ function nextResultText(status: string, issueId?: string | null) {
   if (status === "completed") return "Execution issue completed";
   if (status === "failed") return "Execution failed";
   return status;
+}
+
+function blockedExecutionFailureReason(attention: IssueBlockerAttention | null) {
+  const sample = attention?.sampleStalledBlockerIdentifier ?? attention?.sampleBlockerIdentifier ?? null;
+  const suffix = sample ? ` (${sample})` : "";
+  if (attention?.state === "stalled") {
+    return `Execution issue blocked on a stalled dependency${suffix}`;
+  }
+  if (attention?.state === "needs_attention") {
+    return `Execution issue blocked on a dependency that needs attention${suffix}`;
+  }
+  return "Execution issue moved to blocked";
 }
 
 function normalizeWebhookTimestampMs(rawTimestamp: string) {
@@ -3136,7 +3149,14 @@ export function routineService(
       const issue = await db
         .select({
           id: issues.id,
+          companyId: issues.companyId,
+          parentId: issues.parentId,
+          identifier: issues.identifier,
+          title: issues.title,
           status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          executionRunId: issues.executionRunId,
           originKind: issues.originKind,
           originRunId: issues.originRunId,
         })
@@ -3147,13 +3167,34 @@ export function routineService(
       if (issue.status === "done") {
         return finalizeRun(issue.originRunId, {
           status: "completed",
+          failureReason: null,
           completedAt: new Date(),
         });
       }
-      if (issue.status === "blocked" || issue.status === "cancelled") {
+      if (issue.status === "cancelled") {
         return finalizeRun(issue.originRunId, {
           status: "failed",
-          failureReason: `Execution issue moved to ${issue.status}`,
+          failureReason: "Execution issue moved to cancelled",
+          completedAt: new Date(),
+        });
+      }
+      if (issue.status === "blocked") {
+        // A routine that delegates work parks its execution issue in `blocked`
+        // on purpose while the delegated issues run. That wait is the routine
+        // working as designed, so it must not be recorded as a run failure —
+        // otherwise every delegating routine reports a structural failure and
+        // real failures drown in it. Only a block that nobody is driving
+        // (`needs_attention` / `stalled`, which also covers a blocked issue
+        // with no live blocker at all) settles the run as failed; a covered
+        // wait leaves the run in flight so it can settle when the execution
+        // issue finally reaches `done` or `cancelled`.
+        const attention = await issueSvc
+          .listBlockerAttention(issue.companyId, [issue])
+          .then((map) => map.get(issue.id) ?? null);
+        if (attention?.state === "covered") return null;
+        return finalizeRun(issue.originRunId, {
+          status: "failed",
+          failureReason: blockedExecutionFailureReason(attention),
           completedAt: new Date(),
         });
       }
