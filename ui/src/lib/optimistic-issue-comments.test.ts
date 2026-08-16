@@ -642,6 +642,7 @@ describe("optimistic issue comments", () => {
           cleanupEligibleAt: null,
           cleanupReason: null,
           config: null,
+          effectiveRuntimeConfig: null,
           metadata: null,
           createdAt: new Date("2026-03-28T14:00:00.000Z"),
           updatedAt: new Date("2026-03-28T14:00:00.000Z"),

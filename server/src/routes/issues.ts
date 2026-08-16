@@ -5321,6 +5321,8 @@ export function issueRoutes(
       scopeId: service.scopeId,
       serviceName: service.serviceName,
       status: service.status,
+      actualState: service.actualState,
+      desiredState: service.desiredState,
       lifecycle: service.lifecycle,
       reuseKey: service.reuseKey,
       command: service.command,
@@ -5336,6 +5338,8 @@ export function issueRoutes(
       stoppedAt: service.stoppedAt,
       healthStatus: service.healthStatus,
       configIndex: service.configIndex ?? null,
+      workspaceCommandId: service.workspaceCommandId ?? null,
+      latestFailure: service.latestFailure,
     };
   }
 
@@ -5376,12 +5380,9 @@ export function issueRoutes(
             serviceStates: workspace.config.serviceStates,
           }
         : null,
+      effectiveRuntimeConfig: workspace.effectiveRuntimeConfig,
       metadata: null,
-      runtimeServices: (workspace.runtimeServices ?? [])
-        .filter((service) =>
-          service.status === "provisioning" || service.status === "starting" || service.status === "running"
-        )
-        .map(compactIssueRuntimeService),
+      runtimeServices: (workspace.runtimeServices ?? []).map(compactIssueRuntimeService),
       createdAt: workspace.createdAt,
       updatedAt: workspace.updatedAt,
     };

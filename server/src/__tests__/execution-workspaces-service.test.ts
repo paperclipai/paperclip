@@ -21,6 +21,7 @@ import {
   issues,
   projectWorkspaces,
   projects,
+  workspaceOperations,
   workspaceRuntimeServices,
 } from "@paperclipai/db";
 import {
@@ -39,6 +40,11 @@ import {
   readMetadataReopenPendingConsumptionSince,
 } from "../services/execution-workspaces.ts";
 import { issueService } from "../services/issues.ts";
+import { conflict } from "../errors.ts";
+import {
+  getWorkspaceOperationFailureEvidence,
+  workspaceOperationService,
+} from "../services/workspace-operations.ts";
 import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
@@ -285,6 +291,73 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("persists safe structured evidence and attaches its exact operation reference", async () => {
+    const companyId = randomUUID();
+    const logDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-operation-log-"));
+    tempDirs.add(logDir);
+    const previousLogBasePath = process.env.WORKSPACE_OPERATION_LOG_BASE_PATH;
+    process.env.WORKSPACE_OPERATION_LOG_BASE_PATH = logDir;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    let thrown: unknown;
+    try {
+      await workspaceOperationService(db).createRecorder({ companyId }).recordOperation({
+        phase: "workspace_provision",
+        command: "pnpm dev",
+        metadata: { action: "start", serviceIndex: 0, workspaceCommandId: "service:web" },
+        run: async () => {
+          throw conflict("No safe runtime port is available.", {
+            code: "workspace_runtime_port_allocation_exhausted",
+            port: 3100,
+            cwd: "/secret/workspace/path",
+            remediation: "Configure a different runtime service port.",
+          });
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    } finally {
+      if (previousLogBasePath === undefined) delete process.env.WORKSPACE_OPERATION_LOG_BASE_PATH;
+      else process.env.WORKSPACE_OPERATION_LOG_BASE_PATH = previousLogBasePath;
+    }
+
+    const evidence = getWorkspaceOperationFailureEvidence(thrown);
+    expect(evidence).toMatchObject({
+      operationLogPath: `/api/workspace-operations/${evidence?.operationId}/log`,
+      code: "workspace_runtime_port_allocation_exhausted",
+      message: "No safe runtime port is available.",
+      remediation: "Configure a different runtime service port.",
+      details: { port: 3100 },
+    });
+    expect(evidence?.details).not.toHaveProperty("cwd");
+
+    const [operation] = await db
+      .select()
+      .from(workspaceOperations)
+      .where(eq(workspaceOperations.id, evidence!.operationId));
+    expect(operation).toMatchObject({
+      status: "failed",
+      metadata: expect.objectContaining({
+        action: "start",
+        serviceIndex: 0,
+        workspaceCommandId: "service:web",
+        failureEvidence: expect.objectContaining({
+          operationId: evidence!.operationId,
+          operationLogPath: evidence!.operationLogPath,
+          code: "workspace_runtime_port_allocation_exhausted",
+          details: { port: 3100 },
+        }),
+      }),
+    });
+    expect(JSON.stringify(operation?.metadata)).not.toContain("/secret/workspace/path");
   });
 
   async function seedTerminalWorkspace(options: {
@@ -2526,6 +2599,13 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       providerRef: worktreePath,
       branchName: "feature/recorded",
       baseRef: "main",
+      metadata: {
+        config: {
+          workspaceRuntime: {
+            services: [{ name: "renamed-web", command: "pnpm renamed-dev" }],
+          },
+        },
+      },
     });
     await db.insert(workspaceRuntimeServices).values({
       id: runtimeServiceId,
@@ -3922,16 +4002,31 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     ]);
 
     const [workspace] = await svc.list(companyId);
+    expect(workspace?.effectiveRuntimeConfig).toEqual({
+      workspaceRuntime: {
+        services: [
+          { name: "web", command: "pnpm dev" },
+          { name: "worker", command: "pnpm worker", reuseScope: "execution_workspace" },
+        ],
+      },
+      source: { type: "project_workspace", id: projectWorkspaceId },
+      desiredState: "stopped",
+      serviceStates: null,
+    });
     expect(workspace?.runtimeServices).toEqual([
       expect.objectContaining({
         id: currentWebServiceId,
         serviceName: "web",
         configIndex: 0,
+        actualState: "stopped",
+        desiredState: "stopped",
       }),
       expect.objectContaining({
         id: currentWorkerServiceId,
         serviceName: "worker",
         configIndex: 1,
+        actualState: "running",
+        desiredState: "stopped",
       }),
     ]);
 
@@ -3946,6 +4041,182 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         status: "running",
       },
     });
+  });
+
+  it("projects one failed configured row with inherited config and company-scoped failure evidence", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const failedServiceId = randomUUID();
+    const failedOperationId = randomUUID();
+    const failedAt = new Date("2026-08-11T14:00:00.000Z");
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: "PAP",
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "OtherCo",
+        issuePrefix: "OTH",
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Inherited runtime projection",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      isPrimary: true,
+      cwd: "/tmp/inherited-runtime-projection",
+      metadata: {
+        runtimeConfig: {
+          workspaceRuntime: {
+            services: [{ name: "web", command: "pnpm dev", reuseScope: "execution_workspace" }],
+          },
+          desiredState: "stopped",
+        },
+      },
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Inherited isolated workspace",
+      status: "idle",
+      providerType: "git_worktree",
+      cwd: "/tmp/inherited-runtime-projection/isolated",
+      metadata: {
+        config: {
+          desiredState: "running",
+          serviceStates: { "0": "manual" },
+        },
+      },
+    });
+    await db.insert(workspaceRuntimeServices).values([
+      {
+        id: randomUUID(),
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        executionWorkspaceId,
+        scopeType: "execution_workspace",
+        scopeId: executionWorkspaceId,
+        serviceName: "web",
+        status: "stopped",
+        lifecycle: "shared",
+        reuseKey: "inherited-web",
+        command: "pnpm dev",
+        cwd: "/tmp/inherited-runtime-projection/isolated",
+        provider: "local_process",
+        healthStatus: "unknown",
+        updatedAt: new Date("2026-08-10T14:00:00.000Z"),
+      },
+      {
+        id: failedServiceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        executionWorkspaceId,
+        scopeType: "execution_workspace",
+        scopeId: executionWorkspaceId,
+        serviceName: "web",
+        status: "failed",
+        lifecycle: "shared",
+        reuseKey: "inherited-web",
+        command: "pnpm dev",
+        cwd: "/tmp/inherited-runtime-projection/isolated",
+        provider: "local_process",
+        healthStatus: "unhealthy",
+        updatedAt: failedAt,
+      },
+    ]);
+    await db.insert(workspaceOperations).values([
+      {
+        id: failedOperationId,
+        companyId,
+        executionWorkspaceId,
+        phase: "workspace_provision",
+        command: "pnpm dev",
+        status: "failed",
+        metadata: {
+          action: "start",
+          serviceIndex: 0,
+          workspaceCommandId: "service:web",
+          failureEvidence: {
+            code: "workspace_runtime_start_failed",
+            message: "Workspace runtime service failed to start.",
+            remediation: "Review the workspace operation log and retry.",
+            details: { port: 3100 },
+          },
+        },
+        startedAt: failedAt,
+        finishedAt: failedAt,
+      },
+      {
+        companyId: otherCompanyId,
+        executionWorkspaceId,
+        phase: "workspace_provision",
+        command: "pnpm dev",
+        status: "failed",
+        metadata: {
+          action: "start",
+          serviceIndex: 0,
+          workspaceCommandId: "service:web",
+          failureEvidence: {
+            code: "other_company_failure",
+            message: "Must not leak.",
+            remediation: "Must not leak.",
+          },
+        },
+        startedAt: new Date("2026-08-11T15:00:00.000Z"),
+        finishedAt: new Date("2026-08-11T15:00:00.000Z"),
+      },
+    ]);
+
+    const workspace = await svc.getById(executionWorkspaceId);
+
+    expect(workspace?.effectiveRuntimeConfig).toEqual({
+      workspaceRuntime: {
+        services: [{ name: "web", command: "pnpm dev", reuseScope: "execution_workspace" }],
+      },
+      source: { type: "project_workspace", id: projectWorkspaceId },
+      desiredState: "running",
+      serviceStates: { "0": "manual" },
+    });
+    expect(workspace?.runtimeServices).toEqual([
+      expect.objectContaining({
+        id: failedServiceId,
+        status: "failed",
+        actualState: "failed",
+        desiredState: "manual",
+        workspaceCommandId: "service:web",
+        latestFailure: {
+          operationId: failedOperationId,
+          operationLogPath: `/api/workspace-operations/${failedOperationId}/log`,
+          code: "workspace_runtime_start_failed",
+          message: "Workspace runtime service failed to start.",
+          remediation: "Review the workspace operation log and retry.",
+          details: { port: 3100 },
+          failedAt,
+        },
+      }),
+    ]);
   });
 
   it("returns a bounded company-scoped workspace overview with service and linked issue summaries", async () => {
@@ -4012,7 +4283,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         metadata: {
           config: {
             workspaceRuntime: {
-              services: [{ name: "web", command: "pnpm dev" }],
+              services: [{ name: "web", command: "pnpm dev", reuseScope: "execution_workspace" }],
             },
           },
         },
@@ -4148,7 +4419,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       projectUrlKey: "workspaces",
       projectName: "Workspaces",
       branchName: "paperclip/a",
-      serviceCount: 2,
+      serviceCount: 1,
       runningServiceCount: 1,
       primaryServiceUrl: "http://localhost:3100",
       primaryServiceUrlRunning: true,

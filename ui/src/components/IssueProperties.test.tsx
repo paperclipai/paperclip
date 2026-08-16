@@ -278,7 +278,6 @@ function createRuntimeService(overrides: Partial<WorkspaceRuntimeService> = {}):
     scopeType: "execution_workspace",
     scopeId: "workspace-1",
     serviceName: "web",
-    status: "running",
     lifecycle: "shared",
     reuseKey: null,
     command: "pnpm dev",
@@ -297,6 +296,10 @@ function createRuntimeService(overrides: Partial<WorkspaceRuntimeService> = {}):
     createdAt: new Date("2026-04-06T12:02:00.000Z"),
     updatedAt: new Date("2026-04-06T12:03:00.000Z"),
     ...overrides,
+    status: overrides.status ?? "running",
+    actualState: overrides.actualState ?? overrides.status ?? "running",
+    desiredState: overrides.desiredState ?? null,
+    latestFailure: overrides.latestFailure ?? null,
   };
 }
 
@@ -330,6 +333,7 @@ function createExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): 
     createdAt: new Date("2026-04-06T12:01:00.000Z"),
     updatedAt: new Date("2026-04-06T12:04:00.000Z"),
     ...overrides,
+    effectiveRuntimeConfig: overrides.effectiveRuntimeConfig ?? null,
   };
 }
 

@@ -328,6 +328,8 @@ function createRuntimeService(
     scopeId: overrides.scopeId ?? "execution-workspace-storybook",
     serviceName: overrides.serviceName ?? "storybook",
     status: overrides.status ?? "running",
+    actualState: overrides.actualState ?? overrides.status ?? "running",
+    desiredState: overrides.desiredState ?? null,
     lifecycle: overrides.lifecycle ?? "ephemeral",
     reuseKey: overrides.reuseKey ?? "storybook",
     command: overrides.command ?? "pnpm storybook",
@@ -344,6 +346,7 @@ function createRuntimeService(
     stopPolicy: overrides.stopPolicy ?? null,
     healthStatus: overrides.healthStatus ?? "healthy",
     configIndex: overrides.configIndex ?? 0,
+    latestFailure: overrides.latestFailure ?? null,
     createdAt: overrides.createdAt ?? recent(16),
     updatedAt: overrides.updatedAt ?? recent(4),
   };
@@ -522,6 +525,7 @@ export const storybookExecutionWorkspaces: ExecutionWorkspace[] = [
     cleanupEligibleAt: null,
     cleanupReason: null,
     config: null,
+    effectiveRuntimeConfig: null,
     metadata: null,
     runtimeServices: storybookProjectWorkspaces[0]!.runtimeServices,
     createdAt: recent(90),
@@ -558,6 +562,7 @@ export const storybookExecutionWorkspaces: ExecutionWorkspace[] = [
       desiredState: "stopped",
       serviceStates: { storybook: "stopped" },
     },
+    effectiveRuntimeConfig: null,
     metadata: { dirtyEntryCount: 3 },
     runtimeServices: [
       createRuntimeService({

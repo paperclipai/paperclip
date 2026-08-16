@@ -58,6 +58,41 @@ export type ExecutionWorkspaceCloseActionKind =
 export type WorkspaceRuntimeDesiredState = "running" | "stopped" | "manual";
 export type WorkspaceRuntimeServiceStateMap = Record<string, WorkspaceRuntimeDesiredState>;
 export type WorkspaceCommandKind = "service" | "job";
+export type WorkspaceRuntimeActualState =
+  | "provisioning"
+  | "starting"
+  | "running"
+  | "stopped"
+  | "failed";
+
+export interface WorkspaceRuntimeConfigSource {
+  type: "execution_workspace" | "project_workspace";
+  id: string;
+}
+
+export interface EffectiveWorkspaceRuntimeConfig {
+  workspaceRuntime: Record<string, unknown>;
+  source: WorkspaceRuntimeConfigSource;
+  desiredState: WorkspaceRuntimeDesiredState | null;
+  serviceStates: WorkspaceRuntimeServiceStateMap | null;
+}
+
+export interface WorkspaceRuntimeFailureDetails {
+  port?: number;
+  attemptedPortCount?: number;
+  conflictingExecutionWorkspaceId?: string;
+  conflictingProjectWorkspaceId?: string;
+}
+
+export interface WorkspaceRuntimeFailureEvidence {
+  operationId: string;
+  operationLogPath: string;
+  code: string;
+  message: string;
+  remediation: string;
+  details: WorkspaceRuntimeFailureDetails | null;
+  failedAt: Date;
+}
 
 export interface WorkspaceCommandSource {
   type: "paperclip";
@@ -273,6 +308,7 @@ export interface ExecutionWorkspace {
   cleanupEligibleAt: Date | null;
   cleanupReason: string | null;
   config: ExecutionWorkspaceConfig | null;
+  effectiveRuntimeConfig: EffectiveWorkspaceRuntimeConfig | null;
   metadata: Record<string, unknown> | null;
   runtimeServices?: WorkspaceRuntimeService[];
   createdAt: Date;
@@ -289,7 +325,10 @@ export interface WorkspaceRuntimeService {
   scopeType: "project_workspace" | "execution_workspace" | "run" | "agent";
   scopeId: string | null;
   serviceName: string;
-  status: "provisioning" | "starting" | "running" | "stopped" | "failed";
+  /** @deprecated Prefer actualState when comparing runtime intent with observed state. */
+  status: WorkspaceRuntimeActualState;
+  actualState: WorkspaceRuntimeActualState;
+  desiredState: WorkspaceRuntimeDesiredState | null;
   lifecycle: "shared" | "ephemeral";
   reuseKey: string | null;
   command: string | null;
@@ -306,6 +345,8 @@ export interface WorkspaceRuntimeService {
   stopPolicy: Record<string, unknown> | null;
   healthStatus: "unknown" | "healthy" | "unhealthy";
   configIndex?: number | null;
+  workspaceCommandId?: string | null;
+  latestFailure: WorkspaceRuntimeFailureEvidence | null;
   createdAt: Date;
   updatedAt: Date;
 }

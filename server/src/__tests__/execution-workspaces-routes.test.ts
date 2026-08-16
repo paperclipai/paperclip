@@ -2,7 +2,9 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../middleware/index.js";
+import { conflict } from "../errors.js";
 import { executionWorkspaceRoutes } from "../routes/execution-workspaces.js";
+import { attachWorkspaceOperationFailureEvidence } from "../services/workspace-operations.js";
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -61,6 +63,10 @@ vi.mock("../services/workspace-runtime.js", async (importActual) => {
   };
 });
 
+vi.mock("../routes/workspace-runtime-authz.js", () => ({
+  assertCanManageExecutionWorkspaceRuntimeServices: vi.fn(async () => undefined),
+}));
+
 function createApp(actor: Record<string, unknown> = {
   type: "board",
   userId: "local-board",
@@ -107,6 +113,9 @@ describe.sequential("execution workspace routes", () => {
     ]);
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
     mockExecutionWorkspaceService.reconcileExecutionWorkspaceBranch.mockResolvedValue(null);
+    mockWorkspaceOperationService.createRecorder.mockReturnValue({
+      recordOperation: vi.fn(),
+    });
     mockHeartbeatService.wakeup.mockResolvedValue(null);
   });
 
@@ -159,6 +168,141 @@ describe.sequential("execution workspace routes", () => {
 
     expect(res.status).toBe(422);
     expect(mockExecutionWorkspaceService.listOverview).not.toHaveBeenCalled();
+  });
+
+  it("returns effective inherited runtime config and the current failed service row", async () => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+      projectWorkspaceId: "project-workspace-1",
+      effectiveRuntimeConfig: {
+        workspaceRuntime: { services: [{ name: "web", command: "pnpm dev" }] },
+        source: { type: "project_workspace", id: "project-workspace-1" },
+        desiredState: "running",
+        serviceStates: null,
+      },
+      runtimeServices: [{
+        id: "service-1",
+        serviceName: "web",
+        status: "failed",
+        actualState: "failed",
+        desiredState: "running",
+        latestFailure: {
+          operationId: "operation-1",
+          operationLogPath: "/api/workspace-operations/operation-1/log",
+          code: "workspace_runtime_start_failed",
+          message: "Workspace runtime service failed to start.",
+          remediation: "Review the workspace operation log and retry.",
+          details: null,
+          failedAt: new Date("2026-08-11T12:00:00.000Z"),
+        },
+      }],
+    });
+
+    const res = await request(createApp()).get("/api/execution-workspaces/workspace-1");
+
+    expect(res.status).toBe(200);
+    expect(res.body.effectiveRuntimeConfig.source).toEqual({
+      type: "project_workspace",
+      id: "project-workspace-1",
+    });
+    expect(res.body.runtimeServices).toEqual([
+      expect.objectContaining({
+        id: "service-1",
+        actualState: "failed",
+        desiredState: "running",
+        latestFailure: expect.objectContaining({ operationId: "operation-1" }),
+      }),
+    ]);
+  });
+
+  it("does not expose workspace detail across company scope", async () => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+    });
+
+    const res = await request(createApp({
+      type: "board",
+      userId: "other-board",
+      companyIds: ["company-2"],
+      source: "session",
+      isInstanceAdmin: false,
+    })).get("/api/execution-workspaces/workspace-1");
+
+    expect(res.status).toBe(404);
+  });
+
+  it("returns a safe operation reference when runtime start fails", async () => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+      projectId: null,
+      projectWorkspaceId: null,
+      sourceIssueId: null,
+      name: "Runtime failure workspace",
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      cwd: "/tmp/runtime-failure-workspace",
+      repoUrl: null,
+      baseRef: "master",
+      branchName: "runtime-failure",
+      providerType: "git_worktree",
+      providerRef: "/tmp/runtime-failure-workspace",
+      config: {
+        workspaceRuntime: { services: [{ name: "web", command: "pnpm dev" }] },
+        desiredState: "running",
+        serviceStates: null,
+      },
+      effectiveRuntimeConfig: {
+        workspaceRuntime: { services: [{ name: "web", command: "pnpm dev" }] },
+        source: { type: "execution_workspace", id: "workspace-1" },
+        desiredState: "running",
+        serviceStates: null,
+      },
+      runtimeServices: [],
+      metadata: null,
+    });
+    const operationError = attachWorkspaceOperationFailureEvidence(
+      conflict("No safe automatically allocated runtime service port is available.", {
+        code: "workspace_runtime_port_allocation_exhausted",
+        attemptedPortCount: 10,
+        cwd: "/secret/workspace/path",
+        remediation: "Configure a different runtime service port.",
+      }),
+      {
+        operationId: "operation-1",
+        operationLogPath: "/api/workspace-operations/operation-1/log",
+        code: "workspace_runtime_port_allocation_exhausted",
+        message: "No safe automatically allocated runtime service port is available.",
+        remediation: "Configure a different runtime service port.",
+        details: { attemptedPortCount: 10 },
+        failedAt: "2026-08-11T12:00:00.000Z",
+      },
+    );
+    mockWorkspaceOperationService.createRecorder.mockReturnValue({
+      recordOperation: vi.fn(async () => {
+        throw operationError;
+      }),
+    });
+
+    const res = await request(createApp())
+      .post("/api/execution-workspaces/workspace-1/runtime-services/start")
+      .send({ workspaceCommandId: "service:web" });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({
+      error: "No safe automatically allocated runtime service port is available.",
+      details: {
+        code: "workspace_runtime_port_allocation_exhausted",
+        attemptedPortCount: 10,
+        remediation: "Configure a different runtime service port.",
+        operationId: "operation-1",
+        operationLogPath: "/api/workspace-operations/operation-1/log",
+        failedAt: "2026-08-11T12:00:00.000Z",
+      },
+    });
+    expect(JSON.stringify(res.body)).not.toContain("/secret/workspace/path");
   });
 
   it.each([

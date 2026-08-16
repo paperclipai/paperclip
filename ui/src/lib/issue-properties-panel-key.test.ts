@@ -108,6 +108,7 @@ describe("buildIssuePropertiesPanelKey", () => {
           cleanupEligibleAt: null,
           cleanupReason: null,
           config: null,
+          effectiveRuntimeConfig: null,
           metadata: null,
           runtimeServices: [],
           createdAt: new Date("2026-04-12T12:01:00.000Z"),

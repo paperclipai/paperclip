@@ -13,9 +13,11 @@ import {
   issues,
   projects,
   projectWorkspaces,
+  workspaceOperations,
   workspaceRuntimeServices,
 } from "@paperclipai/db";
 import type {
+  EffectiveWorkspaceRuntimeConfig,
   ExecutionWorkspace,
   ExecutionWorkspaceDeliveryState,
   ExecutionWorkspaceSummary,
@@ -27,6 +29,7 @@ import type {
   WorkspaceOverviewItem,
   WorkspaceOverviewLinkedIssue,
   WorkspaceRuntimeDesiredState,
+  WorkspaceRuntimeFailureEvidence,
   WorkspaceRuntimeService,
   WorkspaceOverviewPrimaryService,
   WorkspaceOverviewQuery,
@@ -62,10 +65,22 @@ import {
 
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
-type RuntimeServiceReadDb = Pick<Db, "select">;
+type RuntimeServiceReadDb = Pick<Db, "select" | "selectDistinctOn">;
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type ProjectedWorkspaceRuntimeServiceRow = WorkspaceRuntimeServiceRow & {
+  configIndex?: number | null;
+  workspaceCommandId?: string | null;
+  desiredState?: WorkspaceRuntimeDesiredState | null;
+  latestFailure?: WorkspaceRuntimeFailureEvidence | null;
+};
+type ProjectedWorkspaceRuntimeFailure = {
+  serviceIndex: number | null;
+  workspaceCommandId: string | null;
+  evidence: WorkspaceRuntimeFailureEvidence;
+};
 const execFileAsync = promisify(execFile);
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+const ACTIVE_RUNTIME_SERVICE_STATUSES = new Set(["provisioning", "starting", "running"]);
 const WORKSPACE_BRANCH_INCOHERENCE_REASON = "git_worktree_branch_incoherence";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 export const ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON = "issue_terminal";
@@ -628,7 +643,9 @@ function assertBranchReconcileRuntimeServicesStopped(input: {
   inspection: ExecutionWorkspaceBranchReconcileInspection;
   runtimeServices: WorkspaceRuntimeService[];
 }) {
-  const activeRuntimeServices = input.runtimeServices.filter((service) => service.status !== "stopped");
+  const activeRuntimeServices = input.runtimeServices.filter((service) =>
+    ACTIVE_RUNTIME_SERVICE_STATUSES.has(service.actualState)
+  );
   if (activeRuntimeServices.length > 0) {
     throw unprocessable("Execution workspace branch reconciliation requires all runtime services to be stopped", {
       inspection: input.inspection,
@@ -953,8 +970,9 @@ export function mergeExecutionWorkspaceConfig(
 }
 
 function toRuntimeService(
-  row: WorkspaceRuntimeServiceRow & { configIndex?: number | null },
+  row: ProjectedWorkspaceRuntimeServiceRow,
 ): WorkspaceRuntimeService {
+  const actualState = row.status as WorkspaceRuntimeService["actualState"];
   return {
     id: row.id,
     companyId: row.companyId,
@@ -965,7 +983,9 @@ function toRuntimeService(
     scopeType: row.scopeType as WorkspaceRuntimeService["scopeType"],
     scopeId: row.scopeId ?? null,
     serviceName: row.serviceName,
-    status: row.status as WorkspaceRuntimeService["status"],
+    status: actualState,
+    actualState,
+    desiredState: row.desiredState ?? null,
     lifecycle: row.lifecycle as WorkspaceRuntimeService["lifecycle"],
     reuseKey: row.reuseKey ?? null,
     command: row.command ?? null,
@@ -982,6 +1002,8 @@ function toRuntimeService(
     stopPolicy: (row.stopPolicy as Record<string, unknown> | null) ?? null,
     healthStatus: row.healthStatus as WorkspaceRuntimeService["healthStatus"],
     configIndex: row.configIndex ?? null,
+    workspaceCommandId: row.workspaceCommandId ?? null,
+    latestFailure: row.latestFailure ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -991,7 +1013,9 @@ function toExecutionWorkspace(
   row: ExecutionWorkspaceRow,
   runtimeServices: WorkspaceRuntimeService[] = [],
   deliveryState: ExecutionWorkspaceDeliveryState = "unknown",
+  effectiveRuntimeConfig?: EffectiveWorkspaceRuntimeConfig | null,
 ): ExecutionWorkspace {
+  const config = readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null);
   return {
     id: row.id,
     companyId: row.companyId,
@@ -1015,7 +1039,17 @@ function toExecutionWorkspace(
     closedAt: row.closedAt ?? null,
     cleanupEligibleAt: row.cleanupEligibleAt ?? null,
     cleanupReason: row.cleanupReason ?? null,
-    config: readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null),
+    config,
+    effectiveRuntimeConfig: effectiveRuntimeConfig === undefined
+      ? config?.workspaceRuntime
+        ? {
+            workspaceRuntime: config.workspaceRuntime,
+            source: { type: "execution_workspace", id: row.id },
+            desiredState: config.desiredState,
+            serviceStates: config.serviceStates ?? null,
+          }
+        : null
+      : effectiveRuntimeConfig,
     metadata: (row.metadata as Record<string, unknown> | null) ?? null,
     runtimeServices,
     createdAt: row.createdAt,
@@ -1076,6 +1110,11 @@ function usesInheritedProjectRuntimeServices(row: ExecutionWorkspaceRow) {
   return !readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null)?.workspaceRuntime;
 }
 
+function inheritsProjectRuntimeConfig(row: ExecutionWorkspaceRow) {
+  if (!row.projectWorkspaceId) return false;
+  return !readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null)?.workspaceRuntime;
+}
+
 function noActiveRuntimeServicesForWorkspaceCondition(row: ExecutionWorkspaceRow) {
   const inheritedProjectWorkspaceId = usesInheritedProjectRuntimeServices(row) ? row.projectWorkspaceId : null;
   const activeServiceConditions = inheritedProjectWorkspaceId
@@ -1088,14 +1127,116 @@ function noActiveRuntimeServicesForWorkspaceCondition(row: ExecutionWorkspaceRow
           ),
           eq(workspaceRuntimeServices.executionWorkspaceId, row.id),
         ),
-        ne(workspaceRuntimeServices.status, "stopped"),
+        inArray(workspaceRuntimeServices.status, [...ACTIVE_RUNTIME_SERVICE_STATUSES]),
       )
     : and(
         eq(workspaceRuntimeServices.companyId, row.companyId),
         eq(workspaceRuntimeServices.executionWorkspaceId, row.id),
-        ne(workspaceRuntimeServices.status, "stopped"),
+        inArray(workspaceRuntimeServices.status, [...ACTIVE_RUNTIME_SERVICE_STATUSES]),
       );
   return sql`not exists (select 1 from ${workspaceRuntimeServices} where ${activeServiceConditions})`;
+}
+
+function readWorkspaceRuntimeFailureEvidence(
+  operation: {
+    id: string;
+    metadata: Record<string, unknown> | null;
+    startedAt: Date;
+    finishedAt: Date | null;
+  },
+): WorkspaceRuntimeFailureEvidence {
+  const raw = isRecord(operation.metadata?.failureEvidence)
+    ? operation.metadata.failureEvidence
+    : null;
+  const rawDetails = isRecord(raw?.details) ? raw.details : null;
+  const details: NonNullable<WorkspaceRuntimeFailureEvidence["details"]> = {};
+  if (typeof rawDetails?.port === "number" && Number.isInteger(rawDetails.port)) details.port = rawDetails.port;
+  if (typeof rawDetails?.attemptedPortCount === "number" && Number.isInteger(rawDetails.attemptedPortCount)) {
+    details.attemptedPortCount = rawDetails.attemptedPortCount;
+  }
+  if (typeof rawDetails?.conflictingExecutionWorkspaceId === "string") {
+    details.conflictingExecutionWorkspaceId = rawDetails.conflictingExecutionWorkspaceId;
+  }
+  if (typeof rawDetails?.conflictingProjectWorkspaceId === "string") {
+    details.conflictingProjectWorkspaceId = rawDetails.conflictingProjectWorkspaceId;
+  }
+  return {
+    operationId: operation.id,
+    operationLogPath: `/api/workspace-operations/${operation.id}/log`,
+    code: typeof raw?.code === "string" ? raw.code : "workspace_runtime_start_failed",
+    message: typeof raw?.message === "string" ? raw.message : "Workspace runtime service failed to start.",
+    remediation: typeof raw?.remediation === "string"
+      ? raw.remediation
+      : "Review the workspace operation log, correct the runtime configuration or dependency, and retry.",
+    details: Object.keys(details).length > 0 ? details : null,
+    failedAt: operation.finishedAt ?? operation.startedAt,
+  };
+}
+
+async function loadLatestRuntimeFailuresByExecutionWorkspace(
+  db: RuntimeServiceReadDb,
+  companyId: string,
+  runtimeRowsByWorkspaceId: Map<string, ProjectedWorkspaceRuntimeServiceRow[]>,
+) {
+  const configuredRows = [...runtimeRowsByWorkspaceId.entries()].flatMap(([executionWorkspaceId, rows]) =>
+    rows.flatMap((row) => row.configIndex === undefined || row.configIndex === null
+      ? []
+      : [{ executionWorkspaceId, configIndex: row.configIndex }]),
+  );
+  if (configuredRows.length === 0) {
+    return new Map<string, ProjectedWorkspaceRuntimeFailure[]>();
+  }
+
+  const executionWorkspaceIds = [...new Set(configuredRows.map((row) => row.executionWorkspaceId))];
+  const serviceIndexes = [...new Set(configuredRows.map((row) => String(row.configIndex)))];
+  const serviceIndexExpression = sql<string | null>`${workspaceOperations.metadata}->>'serviceIndex'`;
+  const actionExpression = sql<string | null>`${workspaceOperations.metadata}->>'action'`;
+  const operations = await db
+    .selectDistinctOn(
+      [workspaceOperations.executionWorkspaceId, serviceIndexExpression],
+      {
+        id: workspaceOperations.id,
+        executionWorkspaceId: workspaceOperations.executionWorkspaceId,
+        serviceIndex: serviceIndexExpression,
+        workspaceCommandId: sql<string | null>`${workspaceOperations.metadata}->>'workspaceCommandId'`,
+        metadata: workspaceOperations.metadata,
+        startedAt: workspaceOperations.startedAt,
+        finishedAt: workspaceOperations.finishedAt,
+      },
+    )
+    .from(workspaceOperations)
+    .where(
+      and(
+        eq(workspaceOperations.companyId, companyId),
+        inArray(workspaceOperations.executionWorkspaceId, executionWorkspaceIds),
+        eq(workspaceOperations.status, "failed"),
+        inArray(actionExpression, ["start", "restart"]),
+        or(inArray(serviceIndexExpression, serviceIndexes), isNull(serviceIndexExpression)),
+      ),
+    )
+    .orderBy(
+      workspaceOperations.executionWorkspaceId,
+      serviceIndexExpression,
+      desc(workspaceOperations.startedAt),
+      desc(workspaceOperations.createdAt),
+    );
+
+  const result = new Map<string, ProjectedWorkspaceRuntimeFailure[]>();
+  for (const operation of operations) {
+    if (!operation.executionWorkspaceId) continue;
+    const serviceIndex = operation.serviceIndex === null
+      ? null
+      : Number.parseInt(operation.serviceIndex, 10);
+    if (serviceIndex !== null && !Number.isInteger(serviceIndex)) continue;
+    const existing = result.get(operation.executionWorkspaceId) ?? [];
+    existing.push({
+      serviceIndex,
+      workspaceCommandId: operation.workspaceCommandId,
+      evidence: readWorkspaceRuntimeFailureEvidence(operation),
+    });
+    result.set(operation.executionWorkspaceId, existing);
+  }
+  return result;
 }
 
 async function loadEffectiveRuntimeServicesByExecutionWorkspace(
@@ -1103,7 +1244,7 @@ async function loadEffectiveRuntimeServicesByExecutionWorkspace(
   companyId: string,
   rows: ExecutionWorkspaceRow[],
 ) {
-  const inheritedRows = rows.filter((row) => usesInheritedProjectRuntimeServices(row));
+  const inheritedRows = rows.filter((row) => inheritsProjectRuntimeConfig(row));
   const projectWorkspaceIds = inheritedRows
     .map((row) => row.projectWorkspaceId)
     .filter((value): value is string => Boolean(value));
@@ -1137,8 +1278,7 @@ async function loadEffectiveRuntimeServicesByExecutionWorkspace(
   const projectRuntimeConfigByWorkspaceId = new Map(
     projectWorkspaceRows.map((row) => [
       row.id,
-      readProjectWorkspaceRuntimeConfig((row.metadata as Record<string, unknown> | null) ?? null)?.workspaceRuntime
-        ?? null,
+      readProjectWorkspaceRuntimeConfig((row.metadata as Record<string, unknown> | null) ?? null),
     ]),
   );
   const effectiveProjectRuntimeServices = new Map(
@@ -1146,35 +1286,113 @@ async function loadEffectiveRuntimeServicesByExecutionWorkspace(
       projectWorkspaceId,
       selectConfiguredRuntimeServiceRows(
         projectRuntimeServices.get(projectWorkspaceId) ?? [],
-        projectRuntimeConfigByWorkspaceId.get(projectWorkspaceId) ?? null,
+        projectRuntimeConfigByWorkspaceId.get(projectWorkspaceId)?.workspaceRuntime ?? null,
+        projectRuntimeConfigByWorkspaceId.get(projectWorkspaceId)?.desiredState ?? null,
+        projectRuntimeConfigByWorkspaceId.get(projectWorkspaceId)?.serviceStates ?? null,
       ),
     ]),
   );
 
-  return new Map(
-    rows.map((row) => {
-      if (!usesInheritedProjectRuntimeServices(row)) {
-        return [row.id, executionRuntimeServices.get(row.id) ?? []] as const;
-      }
+  const runtimeRowsByWorkspaceId = new Map<string, ProjectedWorkspaceRuntimeServiceRow[]>();
+  const effectiveConfigByWorkspaceId = new Map<string, EffectiveWorkspaceRuntimeConfig | null>();
+  for (const row of rows) {
+    const localConfig = readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null);
+    const projectConfig = row.projectWorkspaceId
+      ? projectRuntimeConfigByWorkspaceId.get(row.projectWorkspaceId) ?? null
+      : null;
+    const workspaceRuntime = localConfig?.workspaceRuntime ?? projectConfig?.workspaceRuntime ?? null;
+    const desiredState = localConfig?.desiredState ?? projectConfig?.desiredState ?? null;
+    const serviceStates = localConfig?.serviceStates ?? projectConfig?.serviceStates ?? null;
+    effectiveConfigByWorkspaceId.set(
+      row.id,
+      workspaceRuntime
+        ? {
+            workspaceRuntime,
+            source: localConfig?.workspaceRuntime
+              ? { type: "execution_workspace", id: row.id }
+              : { type: "project_workspace", id: row.projectWorkspaceId! },
+            desiredState,
+            serviceStates,
+          }
+        : null,
+    );
 
-      const workspaceRuntime = projectRuntimeConfigByWorkspaceId.get(row.projectWorkspaceId!) ?? null;
-      const executionScopedRows = selectConfiguredRuntimeServiceRows(
-        (executionRuntimeServices.get(row.id) ?? []).filter(
-          (runtimeService) => runtimeService.scopeType !== "project_workspace",
+    if (!workspaceRuntime) {
+      runtimeRowsByWorkspaceId.set(
+        row.id,
+        usesInheritedProjectRuntimeServices(row)
+          ? []
+          : (executionRuntimeServices.get(row.id) ?? []).map((runtimeService) => ({
+              ...runtimeService,
+              desiredState,
+            })),
+      );
+      continue;
+    }
+
+    if (!usesInheritedProjectRuntimeServices(row)) {
+      runtimeRowsByWorkspaceId.set(
+        row.id,
+        selectConfiguredRuntimeServiceRows(
+          executionRuntimeServices.get(row.id) ?? [],
+          workspaceRuntime,
+          desiredState,
+          serviceStates,
         ),
-        workspaceRuntime,
       );
-      const effectiveRows = [
-        ...(effectiveProjectRuntimeServices.get(row.projectWorkspaceId!) ?? []),
-        ...executionScopedRows,
-      ].sort(
-        (left, right) =>
-          (left.configIndex ?? Number.MAX_SAFE_INTEGER) -
-          (right.configIndex ?? Number.MAX_SAFE_INTEGER),
-      );
-      return [row.id, effectiveRows] as const;
-    }),
+      continue;
+    }
+
+    const executionScopedRows = selectConfiguredRuntimeServiceRows(
+      (executionRuntimeServices.get(row.id) ?? []).filter(
+        (runtimeService) => runtimeService.scopeType !== "project_workspace",
+      ),
+      workspaceRuntime,
+      desiredState,
+      serviceStates,
+    );
+    const effectiveRows = [
+      ...(effectiveProjectRuntimeServices.get(row.projectWorkspaceId!) ?? []).map((runtimeService) => ({
+        ...runtimeService,
+        desiredState:
+          (runtimeService.configIndex === null || runtimeService.configIndex === undefined
+            ? null
+            : serviceStates?.[String(runtimeService.configIndex)])
+          ?? desiredState,
+      })),
+      ...executionScopedRows,
+    ].sort(
+      (left, right) =>
+        (left.configIndex ?? Number.MAX_SAFE_INTEGER) -
+        (right.configIndex ?? Number.MAX_SAFE_INTEGER),
+    );
+    runtimeRowsByWorkspaceId.set(row.id, effectiveRows);
+  }
+
+  const failuresByWorkspaceId = await loadLatestRuntimeFailuresByExecutionWorkspace(
+    db,
+    companyId,
+    runtimeRowsByWorkspaceId,
   );
+
+  return new Map(rows.map((row) => {
+    const failures = failuresByWorkspaceId.get(row.id) ?? [];
+    const runtimeServices = (runtimeRowsByWorkspaceId.get(row.id) ?? []).map((runtimeService) => {
+      if (runtimeService.configIndex === undefined || runtimeService.configIndex === null) return runtimeService;
+      const candidates = failures.filter((failure) =>
+        (failure.serviceIndex === runtimeService.configIndex || failure.serviceIndex === null)
+        && (!failure.workspaceCommandId || failure.workspaceCommandId === runtimeService.workspaceCommandId),
+      );
+      const latestFailure = candidates
+        .sort((left, right) => right.evidence.failedAt.getTime() - left.evidence.failedAt.getTime())[0]
+        ?.evidence ?? null;
+      return { ...runtimeService, latestFailure };
+    });
+    return [row.id, {
+      runtimeServices,
+      effectiveRuntimeConfig: effectiveConfigByWorkspaceId.get(row.id) ?? null,
+    }] as const;
+  }));
 }
 
 type WorkspaceOverviewPageRow = ExecutionWorkspaceRow & {
@@ -1377,11 +1595,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     }
   }
 
-  async function hydrateWorkspace(row: ExecutionWorkspaceRow, runtimeServices: WorkspaceRuntimeService[] = []) {
-    const workspace = toExecutionWorkspace(row, runtimeServices);
+  async function hydrateWorkspace(
+    row: ExecutionWorkspaceRow,
+    runtimeServices: WorkspaceRuntimeService[] = [],
+    effectiveRuntimeConfig?: EffectiveWorkspaceRuntimeConfig | null,
+  ) {
+    const workspace = toExecutionWorkspace(row, runtimeServices, "unknown", effectiveRuntimeConfig);
     const { git } = await inspectGitCloseReadiness(workspace);
     const assessment = await assessDelivery(row, git);
-    return toExecutionWorkspace(row, runtimeServices, assessment.deliveryState);
+    return toExecutionWorkspace(row, runtimeServices, assessment.deliveryState, effectiveRuntimeConfig);
   }
 
   async function workspaceHasActiveRun(workspace: Pick<ExecutionWorkspaceRow, "id" | "companyId" | "sourceIssueId">) {
@@ -1904,7 +2126,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       }
 
       const items: WorkspaceOverviewItem[] = pageRows.map((row) => {
-        const runtimeServices = (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService);
+        const runtimeProjection = runtimeServicesByWorkspaceId.get(row.id);
+        const runtimeServices = (runtimeProjection?.runtimeServices ?? []).map(toRuntimeService);
         const runningServiceCount = runtimeServices.filter((service) => service.status === "running").length;
         const primaryService = selectPrimaryOverviewService(runtimeServices);
         const config = readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null);
@@ -1972,12 +2195,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         .where(and(...conditions))
         .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.createdAt));
       const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, companyId, rows);
-      return Promise.all(rows.map((row) =>
-        hydrateWorkspace(
+      return Promise.all(rows.map((row) => {
+        const runtimeProjection = runtimeServicesByWorkspaceId.get(row.id);
+        return hydrateWorkspace(
           row,
-          (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService),
-        ),
-      ));
+          (runtimeProjection?.runtimeServices ?? []).map(toRuntimeService),
+          runtimeProjection?.effectiveRuntimeConfig ?? null,
+        );
+      }));
     },
 
     listSummaries: async (companyId: string, filters?: {
@@ -2131,9 +2356,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         .then((rows) => rows[0] ?? null);
       if (!row) return null;
       const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, row.companyId, [row]);
+      const runtimeProjection = runtimeServicesByWorkspaceId.get(row.id);
       return hydrateWorkspace(
         row,
-        (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService),
+        (runtimeProjection?.runtimeServices ?? []).map(toRuntimeService),
+        runtimeProjection?.effectiveRuntimeConfig ?? null,
       );
     },
 
@@ -2146,7 +2373,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       if (!workspace) return null;
 
       const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, workspace.companyId, [workspace]);
-      const runtimeServices = (runtimeServicesByWorkspaceId.get(workspace.id) ?? []).map(toRuntimeService);
+      const runtimeProjection = runtimeServicesByWorkspaceId.get(workspace.id);
+      const runtimeServices = (runtimeProjection?.runtimeServices ?? []).map(toRuntimeService);
 
       const linkedIssues = await db
         .select({
@@ -2241,7 +2469,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         warnings.push("This shared workspace session points at project workspace infrastructure. Archiving it only removes the session record.");
       }
 
-      if (runtimeServices.some((service) => service.status !== "stopped")) {
+      if (runtimeServices.some((service) => ACTIVE_RUNTIME_SERVICE_STATUSES.has(service.actualState))) {
         warnings.push(
           runtimeServices.length === 1
             ? "Closing this workspace will stop 1 attached runtime service."
@@ -2292,7 +2520,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         },
       ];
 
-      if (runtimeServices.some((service) => service.status !== "stopped")) {
+      if (runtimeServices.some((service) => ACTIVE_RUNTIME_SERVICE_STATUSES.has(service.actualState))) {
         plannedActions.push({
           kind: "stop_runtime_services",
           label: runtimeServices.length === 1 ? "Stop attached runtime service" : "Stop attached runtime services",
@@ -3251,7 +3479,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             );
             assertBranchReconcileRuntimeServicesStopped({
               inspection,
-              runtimeServices: (runtimeServicesByWorkspaceId.get(existing.id) ?? []).map(toRuntimeService),
+              runtimeServices: (
+                runtimeServicesByWorkspaceId.get(existing.id)?.runtimeServices ?? []
+              ).map(toRuntimeService),
             });
             // The git rescue has to happen before the DB transaction because the
             // transaction may be retried/rolled back, while git side effects cannot.
@@ -3329,8 +3559,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           lockedRow.companyId,
           [lockedRow],
         );
-        const lockedRuntimeServices = (lockedRuntimeServicesByWorkspaceId.get(lockedRow.id) ?? []).map(toRuntimeService);
-        const lockedWorkspace = toExecutionWorkspace(lockedRow, lockedRuntimeServices);
+        const lockedRuntimeProjection = lockedRuntimeServicesByWorkspaceId.get(lockedRow.id);
+        const lockedRuntimeServices = (lockedRuntimeProjection?.runtimeServices ?? []).map(toRuntimeService);
+        const lockedWorkspace = toExecutionWorkspace(
+          lockedRow,
+          lockedRuntimeServices,
+          "unknown",
+          lockedRuntimeProjection?.effectiveRuntimeConfig ?? null,
+        );
         if (!lockedWorkspace.sourceIssueId) {
           throw unprocessable("Execution workspace needs a source issue before Paperclip can audit branch reconciliation");
         }
@@ -3378,7 +3614,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               lockedRow.companyId,
               [lockedRow],
             );
-            const latestRuntimeServices = (latestRuntimeServicesByWorkspaceId.get(lockedRow.id) ?? []).map(toRuntimeService);
+            const latestRuntimeServices = (
+              latestRuntimeServicesByWorkspaceId.get(lockedRow.id)?.runtimeServices ?? []
+            ).map(toRuntimeService);
             assertBranchReconcileWorkspaceIsSafe({
               workspaceStatus: lockedWorkspace.status,
               inspection,

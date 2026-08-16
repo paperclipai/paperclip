@@ -167,6 +167,7 @@ function createExecutionWorkspace(): ExecutionWorkspace {
       workspaceRuntime: null,
       desiredState: null,
     },
+    effectiveRuntimeConfig: null,
     metadata: null,
     runtimeServices: [],
     createdAt: new Date("2026-04-02T00:00:00.000Z"),

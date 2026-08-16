@@ -24,11 +24,15 @@ import {
   type ProjectManagedByPlugin,
   type ProjectWorkspaceRuntimeConfig,
   type ProjectWorkspace,
+  type WorkspaceRuntimeDesiredState,
   type WorkspaceRuntimeService,
   type PluginManagedProjectDeclaration,
   type PluginManagedProjectResolution,
 } from "@paperclipai/shared";
-import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
+import {
+  listCurrentRuntimeServicesForProjectWorkspaces,
+  selectConfiguredRuntimeServiceRows,
+} from "./workspace-runtime-read-model.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
@@ -36,6 +40,11 @@ import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
+type ProjectedWorkspaceRuntimeServiceRow = WorkspaceRuntimeServiceRow & {
+  configIndex?: number | null;
+  workspaceCommandId?: string | null;
+  desiredState?: WorkspaceRuntimeDesiredState | null;
+};
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 type CreateWorkspaceInput = {
   name?: string | null;
@@ -117,7 +126,7 @@ async function attachGoals(db: Db, rows: ProjectRow[]): Promise<ProjectWithGoals
   });
 }
 
-function toRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeService {
+function toRuntimeService(row: ProjectedWorkspaceRuntimeServiceRow): WorkspaceRuntimeService {
   return {
     id: row.id,
     companyId: row.companyId,
@@ -129,6 +138,8 @@ function toRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeServ
     scopeId: row.scopeId ?? null,
     serviceName: row.serviceName,
     status: row.status as WorkspaceRuntimeService["status"],
+    actualState: row.status as WorkspaceRuntimeService["actualState"],
+    desiredState: row.desiredState ?? null,
     lifecycle: row.lifecycle as WorkspaceRuntimeService["lifecycle"],
     reuseKey: row.reuseKey ?? null,
     command: row.command ?? null,
@@ -144,9 +155,27 @@ function toRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeServ
     stoppedAt: row.stoppedAt ?? null,
     stopPolicy: (row.stopPolicy as Record<string, unknown> | null) ?? null,
     healthStatus: row.healthStatus as WorkspaceRuntimeService["healthStatus"],
+    configIndex: row.configIndex ?? null,
+    workspaceCommandId: row.workspaceCommandId ?? null,
+    latestFailure: null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
+}
+
+function projectWorkspaceRuntimeServices(
+  workspace: ProjectWorkspaceRow,
+  rows: WorkspaceRuntimeServiceRow[],
+) {
+  const runtimeConfig = readProjectWorkspaceRuntimeConfig(
+    (workspace.metadata as Record<string, unknown> | null) ?? null,
+  );
+  return selectConfiguredRuntimeServiceRows(
+    rows,
+    runtimeConfig?.workspaceRuntime ?? null,
+    runtimeConfig?.desiredState ?? null,
+    runtimeConfig?.serviceStates ?? null,
+  ).map(toRuntimeService);
 }
 
 function toWorkspace(
@@ -246,9 +275,12 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
     workspaceRows.map((workspace) => workspace.id),
   );
   const sharedRuntimeServicesByWorkspaceId = new Map(
-    Array.from(runtimeServicesByWorkspaceId.entries()).map(([workspaceId, services]) => [
-      workspaceId,
-      services.map(toRuntimeService),
+    workspaceRows.map((workspace) => [
+      workspace.id,
+      projectWorkspaceRuntimeServices(
+        workspace,
+        runtimeServicesByWorkspaceId.get(workspace.id) ?? [],
+      ),
     ]),
   );
 
@@ -891,7 +923,7 @@ export function projectService(db: Db) {
       return rows.map((row) =>
         toWorkspace(
           row,
-          (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService),
+          projectWorkspaceRuntimeServices(row, runtimeServicesByWorkspaceId.get(row.id) ?? []),
         ),
       );
     },

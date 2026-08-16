@@ -53,7 +53,7 @@ describe("selectConfiguredRuntimeServiceRows", () => {
     expect(selectConfiguredRuntimeServiceRows(historicalRows, null)).toEqual([]);
   });
 
-  it("selects the newest current row for each configured service and annotates its config index", () => {
+  it("selects the newest configured row including failed state and annotates effective intent", () => {
     const oldWeb = runtimeServiceRow({
       serviceName: "web",
       command: "pnpm dev",
@@ -62,6 +62,8 @@ describe("selectConfiguredRuntimeServiceRows", () => {
     const currentWeb = runtimeServiceRow({
       serviceName: "web",
       command: "pnpm dev",
+      status: "failed",
+      healthStatus: "unhealthy",
       updatedAt: new Date("2026-07-30T10:00:00.000Z"),
     });
     const removedWorker = runtimeServiceRow({
@@ -73,13 +75,57 @@ describe("selectConfiguredRuntimeServiceRows", () => {
     const selected = selectConfiguredRuntimeServiceRows(
       [removedWorker, currentWeb, oldWeb],
       { services: [{ name: "web", command: "pnpm dev" }] },
+      "stopped",
+      { "0": "running" },
     );
 
     expect(selected).toEqual([
       expect.objectContaining({
         id: currentWeb.id,
         serviceName: "web",
+        status: "failed",
         configIndex: 0,
+        workspaceCommandId: "service:web",
+        desiredState: "running",
+      }),
+    ]);
+  });
+
+  it("retains unmatched active rows as reconciliation safety evidence", () => {
+    const configuredWeb = runtimeServiceRow({
+      serviceName: "web",
+      command: "pnpm dev",
+    });
+    const removedActiveWorker = runtimeServiceRow({
+      serviceName: "worker",
+      command: "pnpm worker",
+      status: "running",
+      healthStatus: "healthy",
+    });
+    const removedStoppedJob = runtimeServiceRow({
+      serviceName: "job",
+      command: "pnpm job",
+      status: "stopped",
+    });
+
+    const selected = selectConfiguredRuntimeServiceRows(
+      [removedActiveWorker, removedStoppedJob, configuredWeb],
+      { services: [{ name: "web", command: "pnpm dev" }] },
+      "stopped",
+    );
+
+    expect(selected).toEqual([
+      expect.objectContaining({
+        id: configuredWeb.id,
+        configIndex: 0,
+        desiredState: "stopped",
+      }),
+      expect.objectContaining({
+        id: removedActiveWorker.id,
+        configIndex: null,
+        workspaceCommandId: null,
+        desiredState: null,
+        status: "running",
       }),
     ]);
   });
