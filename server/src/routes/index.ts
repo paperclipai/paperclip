@@ -12,9 +12,15 @@ export { agentRoutes } from "./agents.js";
 export { projectRoutes } from "./projects.js";
 export { issueRoutes } from "./issues.js";
 export { issueTreeControlRoutes } from "./issue-tree-control.js";
-export { fileResourceRoutes, createFileResourceLimiter } from "./file-resources.js";
+export {
+  fileResourceRoutes,
+  createFileResourceAvailabilityLimiter,
+  createFileResourceLimiter,
+  createFileResourceListLimiter,
+} from "./file-resources.js";
 export { routineRoutes } from "./routines.js";
 export { goalRoutes } from "./goals.js";
+export { onboardingSeedRoutes } from "./onboarding-seed.js";
 export { approvalRoutes } from "./approvals.js";
 export { secretRoutes } from "./secrets.js";
 export { toolAccessRoutes } from "./tool-access.js";

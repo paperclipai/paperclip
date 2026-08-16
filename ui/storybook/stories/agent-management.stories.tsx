@@ -297,8 +297,32 @@ const storybookSecrets: CompanySecret[] = [
 	    createdByAgentId: "agent-cto",
     createdByUserId: null,
     createdAt: recent(12_000),
-    updatedAt: recent(80),
-  },
+	    updatedAt: recent(80),
+	  },
+	  {
+	    id: "secret-prod-database",
+	    companyId: COMPANY_ID,
+	    scope: "company",
+	    ownerUserId: null,
+	    userSecretDefinitionId: null,
+	    key: "/paperclip-cloud/prod/database/url",
+	    name: "/paperclip-cloud/prod/database/url",
+	    provider: "local_encrypted",
+	    status: "active",
+	    managedMode: "paperclip_managed",
+	    externalRef: null,
+	    providerConfigId: null,
+	    providerMetadata: null,
+	    latestVersion: 2,
+	    description: "Production database URL grouped under its secret folder path.",
+	    lastResolvedAt: recent(30),
+	    lastRotatedAt: recent(8_000),
+	    deletedAt: null,
+	    createdByAgentId: "agent-cto",
+	    createdByUserId: null,
+	    createdAt: recent(8_000),
+	    updatedAt: recent(30),
+	  },
 ];
 
 const adapterFixtures: AdapterInfo[] = [
@@ -494,6 +518,28 @@ function AgentConfigFormStory() {
       onChange={(patch) => setValues((current) => ({ ...current, ...patch }))}
       sectionLayout="cards"
       showAdapterTestEnvironmentButton={false}
+    />
+  );
+}
+
+function AgentSecretsFormStory() {
+  return (
+    <AgentConfigForm
+      mode="edit"
+      agent={agentWith({
+        id: "agent-secrets-story",
+        adapterConfig: {
+          "access.OPENAI": {
+            type: "secret_ref",
+            secretId: "secret-openai",
+            version: "latest",
+          },
+        },
+      })}
+      onSave={() => undefined}
+      content="secrets"
+      sectionLayout="cards"
+      hideInlineSave
     />
   );
 }
@@ -740,6 +786,12 @@ function AgentManagementStories() {
           <Section eyebrow="AgentConfigForm" title="Adapter selection, runtime config, and env vars">
             <div className="max-w-4xl">
               <AgentConfigFormStory />
+            </div>
+          </Section>
+
+          <Section eyebrow="Agent Secrets tab" title="Searchable API-access secret bindings">
+            <div className="max-w-4xl">
+              <AgentSecretsFormStory />
             </div>
           </Section>
 

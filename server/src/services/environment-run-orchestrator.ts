@@ -432,6 +432,13 @@ export function environmentRunOrchestrator(
             SHELL: "/bin/bash",
           },
           timeoutMs: 300_000,
+          // The provision command runs before the run opens its trace root, so it
+          // carries no run parent. A sandbox provider that opens a persistent
+          // session on the first command must not open the session here, or the
+          // session-setup span loses its parent and the span backend drops it.
+          // Bypass the session for this command; the session opens on the first
+          // in-run command instead, whose setup span parents to the run trace.
+          bypassSession: true,
         });
         if (provisionResult.exitCode !== 0 || provisionResult.timedOut) {
           throw new Error(formatProvisionFailureDetail(provisionResult));
@@ -554,7 +561,11 @@ export function environmentRunOrchestrator(
 
     let releasedLeases: EnvironmentRuntimeLeaseRecord[];
     try {
-      releasedLeases = await environmentRuntime.releaseRunLeases(input.heartbeatRunId, status);
+      releasedLeases = await environmentRuntime.releaseRunLeases(
+        input.heartbeatRunId,
+        status,
+        (leaseId, error) => result.errors.push({ leaseId, error }),
+      );
     } catch (err) {
       result.errors.push({ leaseId: "*", error: err });
       return result;

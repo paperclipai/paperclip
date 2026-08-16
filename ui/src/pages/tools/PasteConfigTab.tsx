@@ -164,7 +164,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
       </p>
       <p className="text-xs text-muted-foreground">
         Just a URL?{" "}
-        <Link to="/apps/browse" className="text-primary hover:underline">
+        <Link to="/apps" className="text-primary hover:underline">
           Browse planned app connections
         </Link>{" "}
         instead.

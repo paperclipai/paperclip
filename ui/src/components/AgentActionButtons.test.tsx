@@ -126,7 +126,7 @@ describe("AgentActionButtons", () => {
   });
 
   function render(agent: Agent, props: Partial<ComponentProps<typeof AgentActionButtons>> = {}) {
-    root = createRoot(container);
+    root ??= createRoot(container);
     root.render(
       <QueryClientProvider client={queryClient}>
         <AgentActionButtons agent={agent} companyId="company-1" runLabel="Run Heartbeat" {...props} />
@@ -204,5 +204,65 @@ describe("AgentActionButtons", () => {
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "detail", "agent-1"] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "detail", "alpha"] });
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "company-1"] });
+  });
+
+  it("does not terminate when navigation away from a dirty detail page is rejected", async () => {
+    const onBeforeNavigate = vi.fn().mockReturnValue(false);
+    render(makeAgent(), { onBeforeNavigate, onTerminateSuccess: vi.fn() });
+    await flushReact();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')?.click();
+    });
+    await flushReact();
+
+    const terminateButton = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Terminate"));
+    await act(async () => {
+      terminateButton?.click();
+    });
+    await flushReact();
+
+    expect(onBeforeNavigate).toHaveBeenCalledOnce();
+    expect(mockAgentsApi.terminate).not.toHaveBeenCalled();
+  });
+
+  it("rechecks navigation when the form becomes dirty while termination is pending", async () => {
+    let resolveTermination!: (agent: Agent) => void;
+    mockAgentsApi.terminate.mockReturnValue(new Promise((resolve) => {
+      resolveTermination = resolve;
+    }));
+    const onBeforeNavigate = vi.fn().mockReturnValueOnce(true).mockReturnValue(false);
+    const onTerminateSuccess = vi.fn();
+    const agent = makeAgent();
+    render(agent, {
+      hasPendingNavigationChanges: false,
+      onBeforeNavigate,
+      onTerminateSuccess,
+    });
+    await flushReact();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')?.click();
+    });
+    await flushReact();
+    const terminateButton = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Terminate"));
+    await act(async () => {
+      terminateButton?.click();
+    });
+    await flushReact();
+
+    render(agent, {
+      hasPendingNavigationChanges: true,
+      onBeforeNavigate,
+      onTerminateSuccess,
+    });
+    await flushReact();
+    resolveTermination(makeAgent({ status: "terminated" }));
+    await flushReact();
+
+    expect(onBeforeNavigate).toHaveBeenCalledTimes(2);
+    expect(onTerminateSuccess).not.toHaveBeenCalled();
   });
 });

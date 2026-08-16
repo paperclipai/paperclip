@@ -13,9 +13,11 @@ import { formatAssigneeUserLabel } from "./assignees";
 import { isOperatorInterruptedRun } from "./interrupt-handoff";
 import {
   buildIssueThreadInteractionSummary,
+  shouldHideInteractionCard,
   type IssueThreadInteraction,
 } from "./issue-thread-interactions";
 import type { IssueTimelineEvent } from "./issue-timeline-events";
+import { isLiveIssueRun } from "./liveIssueIds";
 import {
   summarizeNotice,
 } from "./transcriptPresentation";
@@ -954,13 +956,15 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
 function normalizeLiveRuns(
   liveRuns: readonly LiveRunForIssue[],
   activeRun: ActiveRunForIssue | null | undefined,
-  issueId?: string,
+  issueId: string | undefined,
+  issueStatus: string | null | undefined,
 ) {
   const deduped = new Map<string, LiveRunForIssue>();
   for (const run of liveRuns) {
+    if (!isLiveIssueRun(run, issueStatus)) continue;
     deduped.set(run.id, run);
   }
-  if (activeRun) {
+  if (activeRun && isLiveIssueRun(activeRun, issueStatus)) {
     deduped.set(activeRun.id, {
       id: activeRun.id,
       status: activeRun.status,
@@ -1056,6 +1060,7 @@ export function buildIssueChatMessages(args: {
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
+  issueStatus?: string | null;
 }) {
   const {
     comments,
@@ -1073,6 +1078,7 @@ export function buildIssueChatMessages(args: {
     agentMap,
     currentUserId,
     userLabelMap,
+    issueStatus,
   } = args;
 
   const orderedMessages: MessageWithOrder[] = [];
@@ -1086,6 +1092,11 @@ export function buildIssueChatMessages(args: {
   }
 
   for (const interaction of sortByCreated(interactions)) {
+    // A card IssueThreadInteractionCard never renders — a degenerate
+    // `ask_user_questions` (e.g. the onboarding `Test / A` placeholder) or a
+    // stale sibling superseded by a newer question (PAP-437) — is skipped here so
+    // it leaves no empty message slot in the thread (PAP-424, plan from PAP-420).
+    if (shouldHideInteractionCard(interaction)) continue;
     const createdAtMs = toTimestamp(interaction.createdAt);
     const handoffAtMs = interaction.kind === "request_confirmation" && interaction.sourceRunId
       ? latestSameRunHandoffTimestamp({
@@ -1139,7 +1150,7 @@ export function buildIssueChatMessages(args: {
     });
   }
 
-  for (const run of normalizeLiveRuns(liveRuns, activeRun, issueId)) {
+  for (const run of normalizeLiveRuns(liveRuns, activeRun, issueId, issueStatus)) {
     orderedMessages.push({
       createdAtMs: toTimestamp(run.startedAt ?? run.createdAt),
       order: 3,

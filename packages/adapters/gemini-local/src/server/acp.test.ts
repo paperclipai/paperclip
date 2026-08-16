@@ -551,6 +551,68 @@ describe("gemini_local ACP lane", () => {
     expect(Object.keys(meta[0]?.env ?? {}).filter((key) => key.startsWith("XDG_"))).toEqual([]);
   });
 
+  it("test_gemini_acp_seam_registers_workspace_sync_back", async () => {
+    const root = await makeTempRoot("paperclip-gemini-acp-syncback-");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.writeFile(path.join(localCwd, "hello.txt"), "hi", "utf8");
+
+    // The runtime writes a NEW file into the in-sandbox workspace during the turn.
+    // The seam must register a workspace sync-back teardown, so the file lands in
+    // the host worktree after the run.
+    const runtime = new FakeRuntime({});
+    const startTurn = runtime.startTurn.bind(runtime);
+    runtime.startTurn = (input) => {
+      const turn = startTurn(input);
+      const remoteWorkspaceCwd = input.handle.cwd ?? remoteCwd;
+      return {
+        ...turn,
+        result: (async () => {
+          await fs.writeFile(path.join(remoteWorkspaceCwd, "from-sandbox.txt"), "synced", "utf8");
+          return await turn.result;
+        })(),
+      };
+    };
+
+    const execute = createGeminiAcpExecutor({
+      createRuntime: (options) => {
+        Object.assign(runtime.options, options);
+        return runtime as never;
+      },
+    });
+
+    const result = await execute(
+      buildContext(localCwd, {
+        config: {
+          engine: "acp",
+          cwd: localCwd,
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+          promptTemplate: "Do the assigned work.",
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner: createLocalSandboxRunner(),
+        } as never,
+        authToken: "real-run-jwt",
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    // The teardown fired `restoreWorkspace`, so the sandbox-authored file is now
+    // in the host worktree.
+    await expect(fs.readFile(path.join(localCwd, "from-sandbox.txt"), "utf8")).resolves.toBe("synced");
+  });
+
   it("does not persist an api-key auth selector from a host-only credential", async () => {
     const root = await makeTempRoot("paperclip-gemini-acp-hostkey-");
     const localCwd = path.join(root, "worktree");

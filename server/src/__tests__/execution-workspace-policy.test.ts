@@ -11,6 +11,7 @@ import {
   issueExecutionWorkspaceModeForPersistedWorkspace,
   parseIssueExecutionWorkspaceSettings,
   parseProjectExecutionWorkspacePolicy,
+  ManagedSandboxUnavailableError,
   resolveExecutionWorkspaceEnvironmentId,
   resolvePinnedIssueWorkspaceStrategyType,
   resolveExecutionWorkspaceMode,
@@ -412,6 +413,50 @@ describe("execution workspace policy helpers", () => {
       environmentId: "local-env",
       source: "default",
     });
+  });
+
+  it("redirects local-landing selections to the managed sandbox under managed-sandbox-only", () => {
+    // The default fallback and an explicit local selection both land on the
+    // managed environment; a non-local selection stays untouched.
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        agentDefaultEnvironmentId: null,
+        instanceDefaultEnvironmentId: null,
+        localDefaultEnvironmentId: "local-env",
+        managedSandboxOnly: true,
+        managedSandboxEnvironmentId: "managed-env",
+      }),
+    ).toEqual({ environmentId: "managed-env", source: "managed" });
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        agentDefaultEnvironmentId: "local-env",
+        instanceDefaultEnvironmentId: null,
+        localDefaultEnvironmentId: "local-env",
+        managedSandboxOnly: true,
+        managedSandboxEnvironmentId: "managed-env",
+      }),
+    ).toEqual({ environmentId: "managed-env", source: "managed" });
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        agentDefaultEnvironmentId: "ssh-env",
+        instanceDefaultEnvironmentId: null,
+        localDefaultEnvironmentId: "local-env",
+        managedSandboxOnly: true,
+        managedSandboxEnvironmentId: "managed-env",
+      }),
+    ).toEqual({ environmentId: "ssh-env", source: "agent" });
+  });
+
+  it("fails closed — never local — when managed-sandbox-only has no managed environment", () => {
+    expect(() =>
+      resolveExecutionWorkspaceEnvironmentId({
+        agentDefaultEnvironmentId: null,
+        instanceDefaultEnvironmentId: null,
+        localDefaultEnvironmentId: "local-env",
+        managedSandboxOnly: true,
+        managedSandboxEnvironmentId: null,
+      }),
+    ).toThrow(ManagedSandboxUnavailableError);
   });
 
   it("maps persisted execution workspace modes back to issue settings", () => {

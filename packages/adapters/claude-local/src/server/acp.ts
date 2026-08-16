@@ -181,7 +181,8 @@ export function resolveClaudeAcpBillingIdentity(
  * asset, materialize it into an in-sandbox config dir (copying the sandbox's own
  * `$HOME/.claude` credentials in), then repoint `CLAUDE_CONFIG_DIR` onto that
  * in-sandbox config dir. Claude has no credential copy-back (its CLI lane has
- * none — mirroring the CLI is the contract), so no teardown hook.
+ * none — mirroring the CLI is the contract). The teardown hook therefore only
+ * syncs the sandbox workspace back to the host; it does not touch credentials.
  *
  * An explicit `CLAUDE_CONFIG_DIR` (user-managed) is honored only if it can reach
  * the remote sandbox; a host-only path cannot, so we do NOT forward it verbatim
@@ -193,6 +194,25 @@ async function prepareClaudeRemoteManagedHome(
   input: AcpxRemoteManagedHomeContext,
 ): Promise<AcpxRemoteManagedHomeResult> {
   const { env, runId, onLog, executionTarget } = input;
+  // Fail-open workspace sync-back for every exit path (mirrors the Claude CLI
+  // lane's restore-hook finally and the Codex ACP seam's teardown). Claude has no
+  // credential copy-back, so the teardown only syncs the sandbox workspace back to
+  // the host. A restore miss is logged and never fails the run.
+  const registerWorkspaceSyncBack = (
+    stagedRuntime: AcpxRemoteManagedHomeResult["stagedRuntime"],
+  ): AcpxRemoteManagedHomeResult["teardown"] => async () => {
+    try {
+      await onLog("stdout", "[paperclip] Restoring workspace changes from the sandbox.\n");
+      await stagedRuntime.restoreWorkspace((line) => onLog("stdout", line));
+    } catch (err) {
+      await onLog(
+        "stderr",
+        `[paperclip] Claude ACP teardown workspace restore failed: ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      );
+    }
+  };
   const envConfig = parseObject(input.config.env);
   const explicitClaudeConfigDir =
     typeof envConfig.CLAUDE_CONFIG_DIR === "string" && envConfig.CLAUDE_CONFIG_DIR.trim().length > 0
@@ -228,7 +248,7 @@ async function prepareClaudeRemoteManagedHome(
         "stdout",
         `[paperclip] Remapped operator CLAUDE_CONFIG_DIR from host path ${explicitClaudeConfigDir} onto the in-sandbox workspace path ${remappedConfigDir} for the remote ACP run.\n`,
       );
-      return { stagedRuntime };
+      return { stagedRuntime, teardown: registerWorkspaceSyncBack(stagedRuntime) };
     }
     await onLog(
       "stderr",
@@ -266,7 +286,7 @@ async function prepareClaudeRemoteManagedHome(
   });
   // Repoint CLAUDE_CONFIG_DIR onto the in-sandbox config dir.
   env.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
-  return { stagedRuntime };
+  return { stagedRuntime, teardown: registerWorkspaceSyncBack(stagedRuntime) };
 }
 
 function withClaudeAcpDefaults(options: ClaudeAcpExecutorOptions): AcpxEngineExecutorOptions {

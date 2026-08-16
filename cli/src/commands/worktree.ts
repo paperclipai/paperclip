@@ -2218,10 +2218,13 @@ async function closeDb(db: ClosableDb): Promise<void> {
   await db.$client?.end?.({ timeout: 5 }).catch(() => undefined);
 }
 
-function resolveCurrentEndpoint(): ResolvedWorktreeEndpoint {
+export function resolveCurrentWorktreeEndpoint(): ResolvedWorktreeEndpoint {
+  const cwd = path.resolve(process.cwd());
+  const rootPath = detectGitWorkspaceInfo(cwd)?.root ?? cwd;
+  const localConfigPath = path.join(rootPath, ".paperclip", "config.json");
   return {
-    rootPath: path.resolve(process.cwd()),
-    configPath: resolveConfigPath(),
+    rootPath,
+    configPath: existsSync(localConfigPath) ? localConfigPath : resolveConfigPath(),
     label: "current",
     isCurrent: true,
   };
@@ -2233,7 +2236,7 @@ function resolveAttachmentLookupStorages(input: {
 }): ConfiguredStorage[] {
   const orderedConfigPaths = [
     input.sourceEndpoint.configPath,
-    resolveCurrentEndpoint().configPath,
+    resolveCurrentWorktreeEndpoint().configPath,
     input.targetEndpoint.configPath,
     ...toMergeSourceChoices(process.cwd())
       .filter((choice) => choice.hasPaperclipConfig)
@@ -2804,7 +2807,7 @@ export async function worktreeListCommand(opts: WorktreeListOptions): Promise<vo
 
 function resolveEndpointFromChoice(choice: MergeSourceChoice): ResolvedWorktreeEndpoint {
   if (choice.isCurrent) {
-    return resolveCurrentEndpoint();
+    return resolveCurrentWorktreeEndpoint();
   }
   return {
     rootPath: choice.worktree,
@@ -2824,7 +2827,7 @@ function resolveWorktreeEndpointFromSelector(
     throw new Error("Worktree selector cannot be empty.");
   }
 
-  const currentEndpoint = resolveCurrentEndpoint();
+  const currentEndpoint = resolveCurrentWorktreeEndpoint();
   if (allowCurrent && trimmed === "current") {
     return currentEndpoint;
   }
@@ -2866,7 +2869,7 @@ function resolveWorktreeEndpointFromSelector(
 
 async function promptForSourceEndpoint(excludeWorktreePath?: string): Promise<ResolvedWorktreeEndpoint> {
   const excluded = excludeWorktreePath ? path.resolve(excludeWorktreePath) : null;
-  const currentEndpoint = resolveCurrentEndpoint();
+  const currentEndpoint = resolveCurrentWorktreeEndpoint();
   const choices = toMergeSourceChoices(process.cwd())
     .filter((choice) => choice.hasPaperclipConfig || choice.isCurrent)
     .filter((choice) => path.resolve(choice.worktree) !== excluded)
@@ -3295,7 +3298,7 @@ export async function worktreeMergeHistoryCommand(sourceArg: string | undefined,
 
   const targetEndpoint = opts.to
     ? resolveWorktreeEndpointFromSelector(opts.to, { allowCurrent: true })
-    : resolveCurrentEndpoint();
+    : resolveCurrentWorktreeEndpoint();
   const sourceEndpoint = opts.from
     ? resolveWorktreeEndpointFromSelector(opts.from, { allowCurrent: true })
     : sourceArg
@@ -3400,7 +3403,7 @@ async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
 
   const targetEndpoint = opts.to
     ? resolveWorktreeEndpointFromSelector(opts.to, { allowCurrent: true })
-    : resolveCurrentEndpoint();
+    : resolveCurrentWorktreeEndpoint();
   const source = resolveWorktreeReseedSource(opts);
 
   if (path.resolve(source.configPath) === path.resolve(targetEndpoint.configPath)) {

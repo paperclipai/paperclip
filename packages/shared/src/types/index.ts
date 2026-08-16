@@ -250,6 +250,7 @@ export type {
 } from "./teams-catalog.js";
 export type {
   AgentSkillSyncMode,
+  AgentSkillAssignmentMode,
   AgentSkillState,
   AgentSkillOrigin,
   AgentDesiredSkillEntry,
@@ -276,6 +277,17 @@ export type {
   AdapterEnvironmentTestStatus,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
+  AdapterAuthSessionStatus,
+  AdapterAuthSessionInternalStatus,
+  AdapterAuthSessionFailure,
+  AdapterAuthSessionResponse,
+  AdapterAuthSessionPrompt,
+  AdapterAuthSessionOwnerResponse,
+  StartAdapterAuthSessionRequest,
+} from "./agent.js";
+export {
+  ADAPTER_AUTH_SESSION_STATUSES,
+  ADAPTER_AUTH_SESSION_INTERNAL_STATUSES,
 } from "./agent.js";
 export type {
   AgentEligibilityAgent,
@@ -299,6 +311,8 @@ export type {
   DocumentAnnotationThread,
   DocumentAnnotationThreadWithComments,
   PlanReviewContext,
+  DocumentReviewContext,
+  DocumentReviewContextDocument,
   PlanReviewContextAuthor,
   PlanReviewContextComment,
   PlanReviewContextThread,
@@ -383,6 +397,11 @@ export type {
   WorkspaceOperationStatus,
 } from "./workspace-operation.js";
 export type {
+  NormalizedWorkspaceFileAvailabilityQuery,
+  WorkspaceFileAvailabilityQuery,
+  WorkspaceFileAvailabilityRequest,
+  WorkspaceFileAvailabilityResponse,
+  WorkspaceFileAvailabilityResult,
   WorkspaceFileContent,
   WorkspaceFileContentEncoding,
   WorkspaceFileListDirectoryItem,
@@ -585,6 +604,7 @@ export type {
   IssueSubtreeDiagnosticEdge,
   IssueSubtreeDiagnosticsResponse,
   IssueBlockerAttention,
+  IssueBlockerAttentionIssueSummary,
   IssueBlockerAttentionReason,
   IssueBlockerAttentionState,
   IssueReviewAttention,

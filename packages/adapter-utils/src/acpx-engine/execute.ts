@@ -20,6 +20,7 @@ import {
   prepareAdapterExecutionTargetRuntime,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeout,
+  runAdapterExecutionTargetShellCommand,
   startAdapterExecutionTargetPaperclipBridge,
   startAdapterExecutionTargetProcessSessionBridge,
   type AdapterExecutionTarget,
@@ -84,12 +85,15 @@ import {
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "./constants.js";
 import {
+  createRuntimeSpanRunner,
   emitSkippedStartupStep,
+  getActiveStepContext,
   measureStartupStep,
   NOOP_STARTUP_SPAN,
   NOOP_STARTUP_TRACE_CONTEXT,
   runWithRuntimeParent,
   setSandboxRootSpanAttributes,
+  type RuntimeSpanRunner,
   type SandboxRootSpanContext,
   type StartupSpan,
   type StartupSpanContext,
@@ -1330,6 +1334,11 @@ async function stageAcpRemoteRuntime(input: {
   additionalSources?: SandboxAdditionalSource[];
   onLog: AdapterExecutionContext["onLog"];
   onRuntimeProgress: AdapterExecutionContext["onRuntimeProgress"];
+  // Optional host span runner for the workspace tarball build. It rides down to
+  // prepareSandboxManagedRuntime so the host pack time shows as one `pack` span.
+  // The caller passes a runner that parents to the active `stage.sync` step, so
+  // the `pack` span nests under `stage.sync`. The default is a no-op.
+  runtimeSpan?: RuntimeSpanRunner;
 }): Promise<PreparedAdapterExecutionTargetRuntime> {
   await input.onLog(
     "stdout",
@@ -1348,7 +1357,48 @@ async function stageAcpRemoteRuntime(input: {
       : {}),
     onProgress: (line) => input.onLog("stdout", line),
     onRuntimeProgress: input.onRuntimeProgress,
+    runtimeSpan: input.runtimeSpan,
   });
+}
+
+// Dispose a freshly staged in-sandbox runtime after a managed-home seam threw. The
+// seam shipped the workspace/home into the sandbox through `stage()` but threw
+// before it could return its `disposeStaged`, so the engine removes the managed
+// runtime root here — otherwise the abandoned in-sandbox managed home (with its
+// staged credentials) leaks in a persistent sandbox. Fail-open: a cleanup miss on
+// an already-failing run is logged and never re-thrown, so it cannot mask the seam
+// error.
+async function disposeFreshStagedRuntime(input: {
+  runId: string;
+  target: AdapterExecutionTarget;
+  stagedRuntime: PreparedAdapterExecutionTargetRuntime;
+  cwd: string;
+  timeoutSec: number;
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<void> {
+  const runtimeRootDir = input.stagedRuntime.runtimeRootDir;
+  if (!runtimeRootDir) return;
+  try {
+    await runAdapterExecutionTargetShellCommand(
+      input.runId,
+      input.target,
+      `rm -rf ${shellQuote(runtimeRootDir)}`,
+      {
+        cwd: input.cwd,
+        env: {},
+        timeoutSec: Math.max(input.timeoutSec, 15),
+        graceSec: 20,
+        onLog: input.onLog,
+      },
+    );
+  } catch (err) {
+    await input.onLog(
+      "stderr",
+      `[paperclip] Failed to dispose the fresh staged runtime after a managed-home seam error: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+  }
 }
 
 async function buildRuntime(input: {
@@ -1367,6 +1417,18 @@ async function buildRuntime(input: {
   // run closure passes the run-scoped getter here; when it is absent, each
   // bridge site keeps its earlier unparented run-time behavior.
   getRuntimeParentContext?: () => StartupSpanContext | undefined;
+  // Wrap each unit of bridge run-time work in its own named span.
+  // `buildRuntime` threads it into the two remote bridge factories, so the
+  // socket handler, the poll loop, and the callback worker each open a wrapper
+  // span per unit of work. The run closure passes the run-scoped runner here;
+  // when it is absent, each bridge site opens no wrapper span.
+  runtimeSpan?: RuntimeSpanRunner;
+  // Wrap the host workspace tarball build in one `pack` span. Unlike
+  // `runtimeSpan`, this runner parents each span to the active startup step, so
+  // the `pack` span nests under the `stage.sync` step that runs the staging
+  // seam. `buildRuntime` threads it into the staging seam. When it is absent, the
+  // staging seam opens no `pack` span.
+  stageRuntimeSpan?: RuntimeSpanRunner;
 }): Promise<AcpxPreparedRuntime> {
   const { runId, agent, config, context, authToken } = input.ctx;
   // Injectable monotonic clock for per-step startup timing. Hoisted above the
@@ -1684,6 +1746,13 @@ async function buildRuntime(input: {
     executionTarget.transport === "sandbox" &&
     Boolean(executionTarget.runner) &&
     Boolean(agentCommandShell);
+  // Stream the agent output through the persistent session log stream instead of
+  // the host output-file poll. Default OFF; an operator opts a sandbox
+  // environment in through the environment config.
+  const streamAgentSessionOutput =
+    executionTarget?.kind === "remote" &&
+    executionTarget.transport === "sandbox" &&
+    executionTarget.streamAgentSessionOutput === true;
   // The ACP `session/new` cwd and every cwd-keyed session-state site
   // (fingerprint, compat, persist, ensureSession, error) bind to THIS single
   // value so a warm/resumable session created with the in-sandbox cwd is reused
@@ -1838,8 +1907,12 @@ async function buildRuntime(input: {
         stagedRuntimes.delete(sessionKey);
         if (stale.dispose) await stale.dispose().catch(() => {});
       }
-      const stage = (assets: AdapterManagedRuntimeAsset[]) =>
-        stageAcpRemoteRuntime({
+      // Record each successful `stage()` result before the seam can fail. A seam
+      // that throws AFTER a successful stage never returns its `disposeStaged`, so
+      // the engine disposes the fresh staged runtime here (see the catch below).
+      let freshlyStagedRuntime: PreparedAdapterExecutionTargetRuntime | null = null;
+      const stage = async (assets: AdapterManagedRuntimeAsset[]) => {
+        const staged = await stageAcpRemoteRuntime({
           runId,
           target: remoteTarget,
           adapterKey: input.engine.adapterType,
@@ -1850,7 +1923,11 @@ async function buildRuntime(input: {
           additionalSources,
           onLog: input.ctx.onLog,
           onRuntimeProgress: input.ctx.onRuntimeProgress,
+          runtimeSpan: input.stageRuntimeSpan,
         });
+        freshlyStagedRuntime = staged;
+        return staged;
+      };
       // Snapshot env before the seam so we can capture exactly which keys it
       // repointed onto the in-sandbox home (e.g. `CODEX_HOME`) and replay them
       // verbatim on a later compatible resume. Add/change only — every seam sets
@@ -1871,19 +1948,37 @@ async function buildRuntime(input: {
         dispose: (() => Promise<void>) | null;
       }> => {
         if (input.deps.prepareRemoteManagedHome) {
-          const seeded = await input.deps.prepareRemoteManagedHome({
-            acpxAgent,
-            companyId: agent.companyId,
-            runId,
-            config,
-            executionTarget: remoteTarget,
-            workspaceLocalDir: cwd,
-            timeoutSec,
-            env,
-            onLog: input.ctx.onLog,
-            onRuntimeProgress: input.ctx.onRuntimeProgress,
-            stage,
-          });
+          let seeded: AcpxRemoteManagedHomeResult;
+          try {
+            seeded = await input.deps.prepareRemoteManagedHome({
+              acpxAgent,
+              companyId: agent.companyId,
+              runId,
+              config,
+              executionTarget: remoteTarget,
+              workspaceLocalDir: cwd,
+              timeoutSec,
+              env,
+              onLog: input.ctx.onLog,
+              onRuntimeProgress: input.ctx.onRuntimeProgress,
+              stage,
+            });
+          } catch (seamErr) {
+            // The seam failed after a possible successful stage. Dispose the fresh
+            // staged runtime so the abandoned in-sandbox managed home does not leak,
+            // then rethrow the seam error.
+            if (freshlyStagedRuntime) {
+              await disposeFreshStagedRuntime({
+                runId,
+                target: remoteTarget,
+                stagedRuntime: freshlyStagedRuntime,
+                cwd: sessionCwd,
+                timeoutSec,
+                onLog: input.ctx.onLog,
+              });
+            }
+            throw seamErr;
+          }
           return {
             stagedRuntime: seeded.stagedRuntime,
             teardown: seeded.teardown ?? null,
@@ -1963,6 +2058,7 @@ async function buildRuntime(input: {
           hostApiToken: env.PAPERCLIP_API_KEY,
           onLog: input.ctx.onLog,
           getRuntimeParentContext: input.getRuntimeParentContext,
+          runtimeSpan: input.runtimeSpan,
         }),
         concurrentBridgeStepMetrics,
       );
@@ -1994,6 +2090,8 @@ async function buildRuntime(input: {
           timeoutSec,
           onLog: input.ctx.onLog,
           getRuntimeParentContext: input.getRuntimeParentContext,
+          runtimeSpan: input.runtimeSpan,
+          streamOutputViaSession: streamAgentSessionOutput,
         }),
         concurrentBridgeStepMetrics,
       );
@@ -2026,8 +2124,21 @@ async function buildRuntime(input: {
     // abandoned, so its staged temp must be released — and release the per-session
     // staging lease so the abandoned run does not strand the next same-session run
     // (cleanupRemoteBridges, which normally releases it, is never reached here).
+    //
+    // Route the dispose through the same ownership-guarded removal
+    // `discardStagedRuntime` uses. When this run BORROWED the cached staged runtime
+    // (a compatible resume), the dispose releases the shared host staged-temp, so
+    // the map entry must go too — otherwise a later resume reuses an entry whose
+    // temp is already gone. The identity guard removes the entry only when the map
+    // still holds this exact staged runtime, so a fresh stage (no cache entry) and
+    // a concurrent run's entry are both left untouched.
     await remoteManagedHomeTeardown?.().catch(() => {});
-    await remoteStagingDispose?.().catch(() => {});
+    await releaseStagedRuntimeEntry({
+      handles: stagedRuntimes,
+      sessionKey,
+      stagedRuntime,
+      dispose: remoteStagingDispose,
+    });
     sessionStagingLeaseRelease?.();
     throw err;
   }
@@ -2193,20 +2304,25 @@ async function settleRemoteBridgeStarts(
 }
 
 async function cleanupRemoteBridges(prepared: AcpxPreparedRuntime): Promise<void> {
-  await Promise.allSettled([
-    prepared.processSessionBridge?.stop(),
-    prepared.paperclipBridge?.stop(),
-  ]);
-  // Runs AFTER the bridges stop (mirrors the CLI finally: stop bridge → restore
-  // workspace). Fires the codex auth copy-back via `restoreWorkspace()` and
-  // removes staged temp dirs. The seam logs and swallows its own failures — an
-  // unclean-teardown copy-back miss is the accepted, loud `refresh_token_reused`
-  // residual on the next host Codex use, never silent HOST-credential corruption
-  // — so a teardown fault never masks or fails the run result here.
-  if (prepared.remoteManagedHomeTeardown) {
-    await prepared.remoteManagedHomeTeardown().catch(() => {});
+  try {
+    await Promise.allSettled([
+      prepared.processSessionBridge?.stop(),
+      prepared.paperclipBridge?.stop(),
+    ]);
+    // Runs AFTER the bridges stop (mirrors the CLI finally: stop bridge → restore
+    // workspace). Fires the codex auth copy-back via `restoreWorkspace()` and
+    // removes staged temp dirs. The seam logs and swallows its own failures — an
+    // unclean-teardown copy-back miss is the accepted, loud `refresh_token_reused`
+    // residual on the next host Codex use, never silent HOST-credential corruption
+    // — so a teardown fault never masks or fails the run result here.
+    if (prepared.remoteManagedHomeTeardown) {
+      await prepared.remoteManagedHomeTeardown().catch(() => {});
+    }
+  } finally {
+    // Release the per-session staging lease in a finally, so an earlier teardown
+    // fault never strands it and deadlocks the next run of this session.
+    prepared.sessionStagingLeaseRelease?.();
   }
-  prepared.sessionStagingLeaseRelease?.();
 }
 
 function renderPaperclipEnvNote(env: Record<string, string>): string {
@@ -2523,7 +2639,12 @@ export function summarizeAcpxTurnUsage(input: {
   return { usage, usageDetail, costUsd, cumulativeCostUsd };
 }
 
-type AcpxExecutionPhase = "ensure_session" | "configure_session" | "turn";
+type AcpxExecutionPhase =
+  | "create_runtime"
+  | "ensure_session"
+  | "configure_session"
+  | "prepare_turn"
+  | "turn";
 
 function describeErrorDiagnostics(err: unknown): {
   errorName: string;
@@ -2760,11 +2881,35 @@ async function discardStagedRuntime(input: {
   prepared: AcpxPreparedRuntime;
 }): Promise<void> {
   const { handles, prepared } = input;
-  const existing = handles.get(prepared.sessionKey);
-  if (existing && prepared.stagedRuntime && existing.stagedRuntime === prepared.stagedRuntime) {
-    handles.delete(prepared.sessionKey);
+  await releaseStagedRuntimeEntry({
+    handles,
+    sessionKey: prepared.sessionKey,
+    stagedRuntime: prepared.stagedRuntime,
+    dispose: prepared.remoteStagingDispose,
+  });
+}
+
+// Ownership-guarded removal + dispose for a staged-runtime cache entry a run owns.
+// Shared by `discardStagedRuntime` (clean-run drop) and the partial-bring-up
+// rollback so both release a borrowed entry the same way:
+//   1. Delete the map entry ONLY when it still holds the exact staged runtime this
+//      run installed or reused (object identity). A concurrent run that replaced
+//      the entry with its own keeps it.
+//   2. Fire this run's own one-time host staged-temp dispose regardless. The
+//      dispose closure is idempotent, so a shared closure re-fired across a reuse
+//      chain is safe.
+async function releaseStagedRuntimeEntry(input: {
+  handles: Map<string, StagedRuntimeCacheEntry>;
+  sessionKey: string;
+  stagedRuntime: PreparedAdapterExecutionTargetRuntime | null;
+  dispose: (() => Promise<void>) | null;
+}): Promise<void> {
+  const { handles, sessionKey, stagedRuntime, dispose } = input;
+  const existing = handles.get(sessionKey);
+  if (existing && stagedRuntime && existing.stagedRuntime === stagedRuntime) {
+    handles.delete(sessionKey);
   }
-  if (prepared.remoteStagingDispose) await prepared.remoteStagingDispose().catch(() => {});
+  if (dispose) await dispose().catch(() => {});
 }
 
 // Per-`sessionKey` async lease: chains each caller after the previous one so
@@ -3131,6 +3276,22 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     // reads it through `getRuntimeParentContext` to parent to the live span.
     let currentRunParentContext: StartupSpanContext | undefined = runRootSpan.parentContext;
     const getRuntimeParentContext = (): StartupSpanContext | undefined => currentRunParentContext;
+    // Wrap each unit of bridge run-time work (one outbound ACP message, one poll
+    // tick, one callback request) in its own named span, parented to the live run
+    // span. The runner reads the run parent per call through
+    // `getRuntimeParentContext`, so a wrapper span always parents to the current
+    // run span. On a no-op trace context the runner opens no real span.
+    const runRuntimeSpan = createRuntimeSpanRunner(tracing, getRuntimeParentContext);
+    // Wrap the host workspace tarball build in one `pack` span. This runner
+    // parents each span to the ACTIVE startup step (not the run span), so the
+    // `pack` span nests under the `stage.sync` step that runs the staging seam.
+    // The staging seam runs inside `stage.sync`'s measured step, so
+    // `getActiveStepContext()` returns that step's child context at pack time.
+    // On a no-op trace context the runner opens no real span.
+    const runStageSpan = createRuntimeSpanRunner(
+      tracing,
+      () => getActiveStepContext()?.parentContext,
+    );
     // `runFailed` marks the run root span status at end time. It stays `true`
     // until the run reaches a clean completed turn, so every failure and every
     // early exit closes the span with error status.
@@ -3180,7 +3341,56 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           stepWallSumMs += wallMs;
         },
       };
-      let prepared: AcpxPreparedRuntime;
+      // `startupFailed` drives the sandbox.startup span end status. It stays true
+      // until the bring-up establishes a session handle. The one `finally` below
+      // ends the span exactly once, on every return and on every throw.
+      let startupFailed = true;
+      // `buildRuntimeSettled` marks that buildRuntime returned. A failure before it
+      // settled has nothing to settle here; a failure after it settled routes
+      // through the create_runtime handler below.
+      let buildRuntimeSettled = false;
+      // The bring-up assigns these. The turn and teardown paths read them after
+      // the sandbox.startup span closes, so they are declared here.
+      let prepared!: AcpxPreparedRuntime;
+      let runtime!: AcpRuntime;
+      let sessionHandle!: AcpRuntimeHandle;
+      let childStderrState!: ChildStderrState;
+      let processIdentitySink!: AcpxProcessIdentitySink;
+      let resumedSession = false;
+      let clearSession = false;
+      let referencedProjectStagingFailuresField:
+        | { referencedProjectStagingFailures: Array<{ projectId: string }> }
+        | Record<string, never> = {};
+      // One teardown policy for the run. `settleRunResources` stops the bridges,
+      // runs the managed-home copy-back, releases the staging lease (in a finally
+      // inside cleanupRemoteBridges), and flushes the child stderr. It runs at most
+      // once, records each step error, and never throws, so a result-emission
+      // failure or an earlier teardown fault never skips a later step.
+      let runResourcesSettled = false;
+      // `turnTeardownDone` marks that the turn path already closed the runtime and
+      // settled the staged runtime, so a result-mapping throw after the close does
+      // not run the turn teardown a second time.
+      let turnTeardownDone = false;
+      const recordTeardownError = async (step: string, teardownErr: unknown) => {
+        const reason = teardownErr instanceof Error ? teardownErr.message : String(teardownErr);
+        await ctx
+          .onLog("stderr", `[paperclip] ACPX teardown step "${step}" failed: ${reason}\n`)
+          .catch(() => {});
+      };
+      const settleRunResources = async () => {
+        if (runResourcesSettled) return;
+        runResourcesSettled = true;
+        try {
+          await cleanupRemoteBridges(prepared);
+        } catch (teardownErr) {
+          await recordTeardownError("cleanup-remote-bridges", teardownErr);
+        }
+        try {
+          if (childStderrState) flushChildStderr(childStderrState);
+        } catch (teardownErr) {
+          await recordTeardownError("flush-child-stderr", teardownErr);
+        }
+      };
       try {
         // Publish the `sandbox.startup` context to the runtime-parent store for
         // the whole bring-up. A startup-body exec that runs outside a measured
@@ -3190,239 +3400,307 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // parents to its step span. On a local or SSH target
         // `spanParent.parentContext` is a no-op token, so the wrap is inert.
         prepared = await runWithRuntimeParent(spanParent.parentContext, () =>
-          buildRuntime({ ctx, engine, deps, spanParent, getRuntimeParentContext }),
+          buildRuntime({ ctx, engine, deps, spanParent, getRuntimeParentContext, runtimeSpan: runRuntimeSpan, stageRuntimeSpan: runStageSpan }),
         );
-      } catch (err) {
-        rootSpan.end(true);
-        throw err;
-      }
-      // Per-project staging outcomes for the referenced (mentioned) projects, surfaced back to the
-      // server on the run result. A referenced project that failed to stage into the sandbox is a
-      // first-class, counted failure in the requested-vs-synced observability, not only a warning. The
-      // list is empty on a local target, on a transport that does not stage referenced projects, or
-      // when every staged referenced project succeeded, so the spread adds the field only when there
-      // is a failure to report.
-      const referencedProjectStagingFailures = (
-        prepared.stagedRuntime?.additionalSourceFailures ?? []
-      ).map((failure) => ({ projectId: failure.projectId }));
-      const referencedProjectStagingFailuresField =
-        referencedProjectStagingFailures.length > 0 ? { referencedProjectStagingFailures } : {};
-      // State the effective wall-clock timeout and its source up front so a
-      // later timeout is diagnosable from the run log alone. Goes to stderr:
-      // the acpx stdout log stream carries JSON acpx.* event payloads and must
-      // stay machine-parseable line by line.
-      await ctx.onLog(
-        "stderr",
-        `[paperclip] ${formatAdapterExecutionTimeoutStartLogLine(prepared.timeoutResolution)}\n`,
-      );
-      await cleanupIdleHandles({ handles: warmHandles, now: now(), idleMs: warmIdleMs });
-
-      const previousParams = parseObject(ctx.runtime.sessionParams);
-      const canResume = isCompatibleSession(previousParams, prepared);
-      const resumeSessionId = canResume ? asString(previousParams.acpSessionId, "") || undefined : undefined;
-      const cached = canResume ? warmHandles.get(prepared.sessionKey) : undefined;
-      const childStderrState = cached?.childStderrState ?? { logPath: null, pendingLiveLine: "" };
-      const processIdentitySink = cached?.processIdentitySink ?? {
-        current: ctx.onSpawn,
-        latest: null,
-      };
-      // ACPX runtimes can stay warm across heartbeat runs. Keep the callback
-      // target mutable so a later agent respawn records identity on the current
-      // heartbeat instead of the run that originally created the runtime.
-      processIdentitySink.current = ctx.onSpawn;
-      flushChildStderr(childStderrState);
-      childStderrState.logPath = prepared.childStderrLogPath;
-      const runtimeOptions: PaperclipAcpRuntimeOptions = {
-        cwd: prepared.cwd,
-        // Host-only spawn cwd for the relay proxy on the remote process-session
-        // lane; `undefined` elsewhere so acpx falls back to `cwd` (byte-identical).
-        // The advertised `session/new` cwd (`prepared.cwd` = `remoteCwd`) and the
-        // fingerprint / compat key are unaffected — this redirects ONLY the host
-        // `spawn()` `chdir`, not the in-sandbox data path.
-        spawnCwd: prepared.hostSpawnCwd,
-        sessionStore: createRuntimeStore({ stateDir: prepared.stateDir }),
-        agentRegistry: prepared.agentRegistry,
-        permissionMode: prepared.permissionMode,
-        nonInteractivePermissions: prepared.nonInteractivePermissions,
-        mcpServers: prepared.mcpServers,
-        timeoutMs: prepared.timeoutSec > 0 ? prepared.timeoutSec * 1000 : undefined,
-        // Scope ACPX runtime verbose logs to the claude agent only. Codex
-        // and custom agents already emit their own per-tool output and don't
-        // benefit from doubling the log volume.
-        verbose: prepared.acpxAgent === "claude",
-        onAgentStderr: prepared.childStderrLogPath
-          ? (chunk) => routeChildStderr(childStderrState, chunk)
-          : undefined,
-        onAgentSpawn: async (meta) => {
-          processIdentitySink.latest = meta;
-          await processIdentitySink.current?.({
-            pid: meta.pid,
-            processGroupId: null,
-            startedAt: meta.startedAt,
-          });
-        },
-        getRuntimeParentContext,
-      };
-      // Open Q2: split the ~7s `acp.handshake` into the two in-repo-observable
-      // sub-phases — the ACP runtime construction (`createRuntime`) vs the session
-      // establishment envelope (`ensureSession`). The patched spawn lifecycle
-      // hook records process identity, but the finer spawn/`initialize`/
-      // `session/new` timing split still lives inside external `acpx`.
-      // `createRuntime` runs once and only on a cold start; a warm-handle hit
-      // reuses `cached.runtime`, so `createRuntimeMs` stays undefined and the
-      // split reports nothing for it.
-      let createRuntimeMs: number | undefined;
-      let runtime: AcpRuntime;
-      // A warm handle reuses the running ACP runtime; a miss constructs one. The
-      // root span records this as `cold_start`.
-      coldStart = !cached?.runtime;
-      if (cached?.runtime) {
-        runtime = cached.runtime;
-      } else {
-        const createRuntimeStart = now();
-        runtime = createRuntime(runtimeOptions);
-        createRuntimeMs = now() - createRuntimeStart;
-      }
-      if (cached) clearWarmHandleTimer(cached);
-      if (!canResume && asString(previousParams.runtimeSessionName, "")) {
+        buildRuntimeSettled = true;
+        // Per-project staging outcomes for the referenced (mentioned) projects, surfaced back to the
+        // server on the run result. A referenced project that failed to stage into the sandbox is a
+        // first-class, counted failure in the requested-vs-synced observability, not only a warning. The
+        // list is empty on a local target, on a transport that does not stage referenced projects, or
+        // when every staged referenced project succeeded, so the spread adds the field only when there
+        // is a failure to report.
+        const referencedProjectStagingFailures = (
+          prepared.stagedRuntime?.additionalSourceFailures ?? []
+        ).map((failure) => ({ projectId: failure.projectId }));
+        referencedProjectStagingFailuresField =
+          referencedProjectStagingFailures.length > 0 ? { referencedProjectStagingFailures } : {};
+        // State the effective wall-clock timeout and its source up front so a
+        // later timeout is diagnosable from the run log alone. Goes to stderr:
+        // the acpx stdout log stream carries JSON acpx.* event payloads and must
+        // stay machine-parseable line by line.
         await ctx.onLog(
-          "stdout",
-          `[paperclip] ACPX session "${asString(previousParams.runtimeSessionName, "")}" does not match the current agent/cwd/mode/runtime identity; starting fresh in "${prepared.cwd}".\n`,
+          "stderr",
+          `[paperclip] ${formatAdapterExecutionTimeoutStartLogLine(prepared.timeoutResolution)}\n`,
         );
-      }
+        await cleanupIdleHandles({ handles: warmHandles, now: now(), idleMs: warmIdleMs });
 
-      let handle = cached?.handle ?? null;
-      let resumedSession = Boolean(handle ?? resumeSessionId);
-      let clearSession = false;
-
-      try {
-        if (!handle) {
-          try {
-            // Step 7 — acp.handshake: ACP session establishment (session/new or
-            // resume). A throwing handshake still reports its duration before the
-            // resume-retry path below runs. The createRuntime/ensureSession
-            // sub-split rides the step span as fixed, closed keys (Open Q2).
-            let ensureSessionMs: number | undefined;
-            handle = await measureStartupStep(ctx, now, "acp.handshake", async () => {
-              const ensureSessionStart = now();
-              const established = await runtime.ensureSession({
-                sessionKey: prepared.sessionKey,
-                agent: prepared.acpxAgent,
-                mode: prepared.mode,
-                cwd: prepared.cwd,
-                resumeSessionId,
-                sessionOptions: { env: prepared.env },
-              });
-              ensureSessionMs = now() - ensureSessionStart;
-              return established;
-            }, {
-              ...prepared.stepMetrics,
-              // The two sub-times ride the span as fixed, closed keys.
-              spanWallTimes: () => ({
-                createRuntime: createRuntimeMs,
-                ensureSession: ensureSessionMs,
-              }),
+        const previousParams = parseObject(ctx.runtime.sessionParams);
+        const canResume = isCompatibleSession(previousParams, prepared);
+        const resumeSessionId = canResume ? asString(previousParams.acpSessionId, "") || undefined : undefined;
+        const cached = canResume ? warmHandles.get(prepared.sessionKey) : undefined;
+        childStderrState = cached?.childStderrState ?? { logPath: null, pendingLiveLine: "" };
+        processIdentitySink = cached?.processIdentitySink ?? {
+          current: ctx.onSpawn,
+          latest: null,
+        };
+        // ACPX runtimes can stay warm across heartbeat runs. Keep the callback
+        // target mutable so a later agent respawn records identity on the current
+        // heartbeat instead of the run that originally created the runtime.
+        processIdentitySink.current = ctx.onSpawn;
+        flushChildStderr(childStderrState);
+        childStderrState.logPath = prepared.childStderrLogPath;
+        const runtimeOptions: PaperclipAcpRuntimeOptions = {
+          cwd: prepared.cwd,
+          // Host-only spawn cwd for the relay proxy on the remote process-session
+          // lane; `undefined` elsewhere so acpx falls back to `cwd` (byte-identical).
+          // The advertised `session/new` cwd (`prepared.cwd` = `remoteCwd`) and the
+          // fingerprint / compat key are unaffected — this redirects ONLY the host
+          // `spawn()` `chdir`, not the in-sandbox data path.
+          spawnCwd: prepared.hostSpawnCwd,
+          sessionStore: createRuntimeStore({ stateDir: prepared.stateDir }),
+          agentRegistry: prepared.agentRegistry,
+          permissionMode: prepared.permissionMode,
+          nonInteractivePermissions: prepared.nonInteractivePermissions,
+          mcpServers: prepared.mcpServers,
+          timeoutMs: prepared.timeoutSec > 0 ? prepared.timeoutSec * 1000 : undefined,
+          // Scope ACPX runtime verbose logs to the claude agent only. Codex
+          // and custom agents already emit their own per-tool output and don't
+          // benefit from doubling the log volume.
+          verbose: prepared.acpxAgent === "claude",
+          onAgentStderr: prepared.childStderrLogPath
+            ? (chunk) => routeChildStderr(childStderrState, chunk)
+            : undefined,
+          onAgentSpawn: async (meta) => {
+            processIdentitySink.latest = meta;
+            await processIdentitySink.current?.({
+              pid: meta.pid,
+              processGroupId: null,
+              startedAt: meta.startedAt,
             });
-          } catch (err) {
-            if (!resumeSessionId || !isResumeFailure(err)) throw err;
-            clearSession = true;
-            resumedSession = false;
-            await ctx.onLog(
-              "stdout",
-              `[paperclip] ACPX resume session "${resumeSessionId}" is unavailable; retrying with a fresh session.\n`,
-            );
-            // Fresh-session retry: the runtime was already constructed on the
-            // first attempt (never re-created), so this event reports only its
-            // own `ensureSessionMs` — no `createRuntimeMs`.
-            let retryEnsureSessionMs: number | undefined;
-            handle = await measureStartupStep(ctx, now, "acp.handshake", async () => {
-              const ensureSessionStart = now();
-              const established = await runtime.ensureSession({
-                sessionKey: prepared.sessionKey,
-                agent: prepared.acpxAgent,
-                mode: prepared.mode,
-                cwd: prepared.cwd,
-                sessionOptions: { env: prepared.env },
+          },
+          getRuntimeParentContext,
+        };
+        // Open Q2: split the ~7s `acp.handshake` into the two in-repo-observable
+        // sub-phases — the ACP runtime construction (`createRuntime`) vs the session
+        // establishment envelope (`ensureSession`). The patched spawn lifecycle
+        // hook records process identity, but the finer spawn/`initialize`/
+        // `session/new` timing split still lives inside external `acpx`.
+        // `createRuntime` runs once and only on a cold start; a warm-handle hit
+        // reuses `cached.runtime`, so `createRuntimeMs` stays undefined and the
+        // split reports nothing for it.
+        let createRuntimeMs: number | undefined;
+        // A warm handle reuses the running ACP runtime; a miss constructs one. The
+        // root span records this as `cold_start`.
+        coldStart = !cached?.runtime;
+        if (cached?.runtime) {
+          runtime = cached.runtime;
+        } else {
+          const createRuntimeStart = now();
+          runtime = createRuntime(runtimeOptions);
+          createRuntimeMs = now() - createRuntimeStart;
+        }
+        if (cached) clearWarmHandleTimer(cached);
+        if (!canResume && asString(previousParams.runtimeSessionName, "")) {
+          await ctx.onLog(
+            "stdout",
+            `[paperclip] ACPX session "${asString(previousParams.runtimeSessionName, "")}" does not match the current agent/cwd/mode/runtime identity; starting fresh in "${prepared.cwd}".\n`,
+          );
+        }
+
+        let handle = cached?.handle ?? null;
+        resumedSession = Boolean(handle ?? resumeSessionId);
+
+        try {
+          if (!handle) {
+            try {
+              // Step 7 — acp.handshake: ACP session establishment (session/new or
+              // resume). A throwing handshake still reports its duration before the
+              // resume-retry path below runs. The createRuntime/ensureSession
+              // sub-split rides the step span as fixed, closed keys (Open Q2).
+              let ensureSessionMs: number | undefined;
+              handle = await measureStartupStep(ctx, now, "acp.handshake", async () => {
+                const ensureSessionStart = now();
+                const established = await runtime.ensureSession({
+                  sessionKey: prepared.sessionKey,
+                  agent: prepared.acpxAgent,
+                  mode: prepared.mode,
+                  cwd: prepared.cwd,
+                  resumeSessionId,
+                  sessionOptions: { env: prepared.env },
+                });
+                ensureSessionMs = now() - ensureSessionStart;
+                return established;
+              }, {
+                ...prepared.stepMetrics,
+                // The two sub-times ride the span as fixed, closed keys.
+                spanWallTimes: () => ({
+                  createRuntime: createRuntimeMs,
+                  ensureSession: ensureSessionMs,
+                }),
               });
-              retryEnsureSessionMs = now() - ensureSessionStart;
-              return established;
-            }, {
-              ...prepared.stepMetrics,
-              // The retry reuses the runtime from the first attempt, so it reports
-              // only its own ensure-session sub-time on the span.
-              spanWallTimes: () => ({ ensureSession: retryEnsureSessionMs }),
+            } catch (err) {
+              if (!resumeSessionId || !isResumeFailure(err)) throw err;
+              clearSession = true;
+              resumedSession = false;
+              await ctx.onLog(
+                "stdout",
+                `[paperclip] ACPX resume session "${resumeSessionId}" is unavailable; retrying with a fresh session.\n`,
+              );
+              // Fresh-session retry: the runtime was already constructed on the
+              // first attempt (never re-created), so this event reports only its
+              // own `ensureSessionMs` — no `createRuntimeMs`.
+              let retryEnsureSessionMs: number | undefined;
+              handle = await measureStartupStep(ctx, now, "acp.handshake", async () => {
+                const ensureSessionStart = now();
+                const established = await runtime.ensureSession({
+                  sessionKey: prepared.sessionKey,
+                  agent: prepared.acpxAgent,
+                  mode: prepared.mode,
+                  cwd: prepared.cwd,
+                  sessionOptions: { env: prepared.env },
+                });
+                retryEnsureSessionMs = now() - ensureSessionStart;
+                return established;
+              }, {
+                ...prepared.stepMetrics,
+                // The retry reuses the runtime from the first attempt, so it reports
+                // only its own ensure-session sub-time on the span.
+                spanWallTimes: () => ({ ensureSession: retryEnsureSessionMs }),
+              });
+            }
+          } else {
+            // Warm-handle hit: a compatible cached handle reuses the running ACP
+            // agent, so the `acp.handshake` step does no work. Emit a step span and
+            // event with `outcome = skipped` and a zero wall time, so the trace and
+            // the run log show the skip as a distinct outcome, never a misleading
+            // zero-work `ok` step.
+            await emitSkippedStartupStep(ctx, "acp.handshake", {
+              tracer: prepared.stepMetrics.tracer,
+              parentContext: prepared.stepMetrics.parentContext,
             });
           }
-        } else {
-          // Warm-handle hit: a compatible cached handle reuses the running ACP
-          // agent, so the `acp.handshake` step does no work. Emit a step span and
-          // event with `outcome = skipped` and a zero wall time, so the trace and
-          // the run log show the skip as a distinct outcome, never a misleading
-          // zero-work `ok` step.
-          await emitSkippedStartupStep(ctx, "acp.handshake", {
-            tracer: prepared.stepMetrics.tracer,
-            parentContext: prepared.stepMetrics.parentContext,
-          });
+          // A compatible warm handle reuses the already-running ACP agent and does
+          // not emit another spawn event. Persist its known identity on this run
+          // before the next prompt starts so every running heartbeat is adoptable.
+          if (handle && cached && processIdentitySink.latest && ctx.onSpawn) {
+            await ctx.onSpawn({
+              pid: processIdentitySink.latest.pid,
+              processGroupId: null,
+              startedAt: processIdentitySink.latest.startedAt,
+            });
+          }
+        } catch (err) {
+          // Close the runtime on a pre-turn handshake failure and drop the matching
+          // warm entry, the same as the configuration failure path. A warm-hit
+          // reuse already cleared the idle timer before the handshake ran, so the
+          // failure must close and remove the entry, never re-arm it. The close and
+          // the staged-runtime drop run before the result emission, so a throwing
+          // emission never skips them; `settleRunResources` in the finally stops the
+          // bridges, releases the staging lease, and flushes the child stderr.
+          if (handle) {
+            await runtime.close({
+              handle,
+              reason: "paperclip handshake cleanup",
+              discardPersistentState: false,
+            }).catch((closeErr) => recordTeardownError("runtime-close", closeErr));
+            const existing = warmHandles.get(prepared.sessionKey);
+            if (warmHandleMatches(existing, runtime, handle) && existing) {
+              clearWarmHandleTimer(existing);
+              warmHandles.delete(prepared.sessionKey);
+            }
+          }
+          await discardStagedRuntime({ handles: stagedRuntimes, prepared });
+          try {
+            const { classified, message } = await emitAcpxFailure({
+              ctx,
+              prepared,
+              err,
+              phase: "ensure_session",
+            });
+            return {
+              exitCode: 1,
+              signal: null,
+              timedOut: false,
+              errorMessage: message,
+              ...classified,
+              ...billingFields,
+              ...referencedProjectStagingFailuresField,
+              model: prepared.requestedModel || null,
+              clearSession,
+              resultJson: { phase: "ensure_session" },
+              summary: message,
+            };
+          } finally {
+            await settleRunResources();
+          }
         }
-        // A compatible warm handle reuses the already-running ACP agent and does
-        // not emit another spawn event. Persist its known identity on this run
-        // before the next prompt starts so every running heartbeat is adoptable.
-        if (handle && cached && processIdentitySink.latest && ctx.onSpawn) {
-          await ctx.onSpawn({
-            pid: processIdentitySink.latest.pid,
-            processGroupId: null,
-            startedAt: processIdentitySink.latest.startedAt,
-          });
-        }
-      } catch (err) {
-        // Bring-up failed at the handshake — close the root span with error status.
-        rootSpan.end(true);
-        const { classified, message } = await emitAcpxFailure({
-          ctx,
-          prepared,
-          err,
-          phase: "ensure_session",
-        });
-        await discardStagedRuntime({ handles: stagedRuntimes, prepared });
-        await cleanupRemoteBridges(prepared);
-        return {
-          exitCode: 1,
-          signal: null,
-          timedOut: false,
-          errorMessage: message,
-          ...classified,
-          ...billingFields,
-          ...referencedProjectStagingFailuresField,
-          model: prepared.requestedModel || null,
-          clearSession,
-          resultJson: { phase: "ensure_session" },
-          summary: message,
-        };
-      }
 
-      if (!handle) {
-        // Bring-up produced no session handle — close the root span with error status.
-        rootSpan.end(true);
+        if (!handle) {
+          // ensureSession returned no session handle. Close the runtime the run
+          // constructed so its child process cannot leak. There is no established
+          // handle, so build a minimal one from the prepared identity; the close is
+          // best effort and never blocks the error result.
+          await runtime.close({
+            handle: {
+              sessionKey: prepared.sessionKey,
+              backend: prepared.acpxAgent,
+              runtimeSessionName: prepared.sessionKey,
+            },
+            reason: "paperclip missing-handle cleanup",
+            discardPersistentState: false,
+          }).catch((closeErr) => recordTeardownError("runtime-close", closeErr));
+          await discardStagedRuntime({ handles: stagedRuntimes, prepared });
+          try {
+            return {
+              exitCode: 1,
+              signal: null,
+              timedOut: false,
+              errorMessage: "ACPX did not return a runtime session handle.",
+              errorCode: "acpx_runtime_error",
+              ...billingFields,
+              ...referencedProjectStagingFailuresField,
+              model: prepared.requestedModel || null,
+              resultJson: { phase: "ensure_session" },
+              summary: "ACPX did not return a runtime session handle.",
+            };
+          } finally {
+            await settleRunResources();
+          }
+        }
+        sessionHandle = handle;
+        startupFailed = false;
+      } catch (err) {
+        if (!buildRuntimeSettled) {
+          // buildRuntime failed before it staged or bridged anything, so there is
+          // nothing to settle here. The finally below ends the sandbox.startup
+          // span; let the failure propagate.
+          throw err;
+        }
+        // The post-build runtime-creation window failed after buildRuntime returned
+        // live bridges and a held staging lease. Drop the staged runtime, then emit
+        // and settle: `settleRunResources` in the finally stops the bridges,
+        // releases the staging lease, and flushes the child stderr even if the
+        // emission throws.
         await discardStagedRuntime({ handles: stagedRuntimes, prepared });
-        await cleanupRemoteBridges(prepared);
-        return {
-          exitCode: 1,
-          signal: null,
-          timedOut: false,
-          errorMessage: "ACPX did not return a runtime session handle.",
-          errorCode: "acpx_runtime_error",
-          ...billingFields,
-          ...referencedProjectStagingFailuresField,
-          model: prepared.requestedModel || null,
-          resultJson: { phase: "ensure_session" },
-          summary: "ACPX did not return a runtime session handle.",
-        };
+        try {
+          const { classified, message } = await emitAcpxFailure({
+            ctx,
+            prepared,
+            err,
+            phase: "create_runtime",
+          });
+          return {
+            exitCode: 1,
+            signal: null,
+            timedOut: false,
+            errorMessage: message,
+            ...classified,
+            ...billingFields,
+            ...referencedProjectStagingFailuresField,
+            model: prepared.requestedModel || null,
+            clearSession,
+            resultJson: { phase: "create_runtime" },
+            summary: message,
+          };
+        } finally {
+          await settleRunResources();
+        }
+      } finally {
+        // End the sandbox.startup span exactly once, on every return and on every
+        // throw. It covers buildRuntime through acp.handshake and no further; the
+        // agent turn runs after and is out of the span's scope.
+        rootSpan.end(startupFailed);
       }
-      // Bring-up is complete: the session handle is established. Close the root
-      // span here, so it covers `buildRuntime` through `acp.handshake` and no
-      // further. The agent turn runs after and is out of the startup root's scope.
-      rootSpan.end(false);
-      const sessionHandle = handle;
       try {
         await applySessionConfigOptions({
           runtime,
@@ -3431,90 +3709,51 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           onLog: ctx.onLog,
         });
       } catch (err) {
-        const { classified, message } = await emitAcpxFailure({
-          ctx,
-          prepared,
-          err,
-          phase: "configure_session",
-        });
+        // Close the runtime and drop the matching warm entry and the staged runtime
+        // before the result emission, so a throwing emission never skips them.
+        // `settleRunResources` in the finally stops the bridges, releases the
+        // staging lease, and flushes the child stderr.
         await runtime.close({
           handle: sessionHandle,
           reason: "paperclip config cleanup",
           discardPersistentState: false,
-        }).catch(() => {});
+        }).catch((closeErr) => recordTeardownError("runtime-close", closeErr));
         const existing = warmHandles.get(prepared.sessionKey);
         if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
           clearWarmHandleTimer(existing);
           warmHandles.delete(prepared.sessionKey);
         }
         await discardStagedRuntime({ handles: stagedRuntimes, prepared });
-        await cleanupRemoteBridges(prepared);
-        return {
-          exitCode: 1,
-          signal: null,
-          timedOut: false,
-          errorMessage: message,
-          ...classified,
-          ...billingFields,
-          ...referencedProjectStagingFailuresField,
-          model: prepared.requestedModel || null,
-          clearSession,
-          resultJson: {
+        try {
+          const { classified, message } = await emitAcpxFailure({
+            ctx,
+            prepared,
+            err,
             phase: "configure_session",
-            agent: prepared.acpxAgent,
-            requestedModel: prepared.requestedModel || null,
-            requestedThinkingEffort: prepared.requestedThinkingEffort || null,
-            fastMode: prepared.fastMode,
-          },
-          summary: message,
-        };
+          });
+          return {
+            exitCode: 1,
+            signal: null,
+            timedOut: false,
+            errorMessage: message,
+            ...classified,
+            ...billingFields,
+            ...referencedProjectStagingFailuresField,
+            model: prepared.requestedModel || null,
+            clearSession,
+            resultJson: {
+              phase: "configure_session",
+              agent: prepared.acpxAgent,
+              requestedModel: prepared.requestedModel || null,
+              requestedThinkingEffort: prepared.requestedThinkingEffort || null,
+              fastMode: prepared.fastMode,
+            },
+            summary: message,
+          };
+        } finally {
+          await settleRunResources();
+        }
       }
-      const { prompt, promptMetrics, commandNotes } = await buildPrompt(ctx, resumedSession, prepared.env);
-      const runPrompt = joinPromptSections([prepared.skillPromptInstructions, prompt]);
-      await emitAcpxLog(ctx, {
-        type: "acpx.session",
-        agent: prepared.acpxAgent,
-        sessionId: sessionHandle.backendSessionId,
-        acpSessionId: sessionHandle.backendSessionId,
-        agentSessionId: sessionHandle.agentSessionId,
-        runtimeSessionName: sessionHandle.runtimeSessionName,
-        mode: prepared.mode,
-        permissionMode: prepared.permissionMode,
-        model: prepared.requestedModel || null,
-        thinkingEffort: prepared.requestedThinkingEffort || null,
-        fastMode: prepared.fastMode,
-      });
-      if (ctx.onMeta) {
-        await ctx.onMeta({
-          adapterType: engine.adapterType,
-          command: prepared.agentCommand ?? prepared.acpxAgent,
-          cwd: prepared.cwd,
-          commandNotes: [
-            `ACPX runtime embedded in Paperclip with ${prepared.mode} session mode.`,
-            `Effective ACPX permission mode: ${prepared.permissionMode}.`,
-            ...(prepared.requestedModel
-              ? [
-                  prepared.acpxAgent === "claude"
-                    ? `Requested ACPX model: ${prepared.requestedModel} (set via ANTHROPIC_MODEL env at startup).`
-                    : prepared.acpxAgent === "codex"
-                      ? `Requested ACPX model: ${prepared.requestedModel} (set via CODEX_CONFIG at startup).`
-                    : `Requested ACPX model: ${prepared.requestedModel}.`,
-                ]
-              : []),
-            ...(prepared.requestedThinkingEffort ? [`Requested ACPX thinking effort: ${prepared.requestedThinkingEffort}.`] : []),
-            ...(prepared.fastMode ? ["Requested ACPX Codex fast mode."] : []),
-            ...(Array.isArray(prepared.skillsIdentity.commandNotes)
-              ? prepared.skillsIdentity.commandNotes.filter((note): note is string => typeof note === "string")
-              : []),
-            ...commandNotes,
-          ],
-          env: prepared.loggedEnv,
-          prompt: runPrompt,
-          promptMetrics,
-          context: ctx.context,
-        });
-      }
-
       let cancelActiveTurn: ((reason: string) => Promise<void>) | null = null;
       let controller: AbortController | null = null;
       let timeout: NodeJS.Timeout | null = null;
@@ -3522,6 +3761,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       const textParts: string[] = [];
       let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
       let eventCostUsd: number | null = null;
+      // `turnStarted` separates a pre-turn preparation failure (prompt build or
+      // metadata emit) from a failure of the running turn, so the turn catch below
+      // reports the right phase and settles the runtime on both.
+      let turnStarted = false;
       // Open the agent turn span as a child of the run root span. It wraps the
       // whole turn: the executor holds `turnSpan.parentContext` for later exec
       // parenting, and the `finally` below ends the span once on every path. The
@@ -3532,6 +3775,54 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // `finally` resets the holder to the `task.run` token.
       currentRunParentContext = turnSpan.parentContext;
       try {
+        // Build the prompt and emit the run metadata inside the turn failure
+        // boundary. A failure here settles the runtime through the turn catch and
+        // returns an error result with phase `prepare_turn`.
+        const { prompt, promptMetrics, commandNotes } = await buildPrompt(ctx, resumedSession, prepared.env);
+        const runPrompt = joinPromptSections([prepared.skillPromptInstructions, prompt]);
+        await emitAcpxLog(ctx, {
+          type: "acpx.session",
+          agent: prepared.acpxAgent,
+          sessionId: sessionHandle.backendSessionId,
+          acpSessionId: sessionHandle.backendSessionId,
+          agentSessionId: sessionHandle.agentSessionId,
+          runtimeSessionName: sessionHandle.runtimeSessionName,
+          mode: prepared.mode,
+          permissionMode: prepared.permissionMode,
+          model: prepared.requestedModel || null,
+          thinkingEffort: prepared.requestedThinkingEffort || null,
+          fastMode: prepared.fastMode,
+        });
+        if (ctx.onMeta) {
+          await ctx.onMeta({
+            adapterType: engine.adapterType,
+            command: prepared.agentCommand ?? prepared.acpxAgent,
+            cwd: prepared.cwd,
+            commandNotes: [
+              `ACPX runtime embedded in Paperclip with ${prepared.mode} session mode.`,
+              `Effective ACPX permission mode: ${prepared.permissionMode}.`,
+              ...(prepared.requestedModel
+                ? [
+                    prepared.acpxAgent === "claude"
+                      ? `Requested ACPX model: ${prepared.requestedModel} (set via ANTHROPIC_MODEL env at startup).`
+                      : prepared.acpxAgent === "codex"
+                        ? `Requested ACPX model: ${prepared.requestedModel} (set via CODEX_CONFIG at startup).`
+                      : `Requested ACPX model: ${prepared.requestedModel}.`,
+                  ]
+                : []),
+              ...(prepared.requestedThinkingEffort ? [`Requested ACPX thinking effort: ${prepared.requestedThinkingEffort}.`] : []),
+              ...(prepared.fastMode ? ["Requested ACPX Codex fast mode."] : []),
+              ...(Array.isArray(prepared.skillsIdentity.commandNotes)
+                ? prepared.skillsIdentity.commandNotes.filter((note): note is string => typeof note === "string")
+                : []),
+              ...commandNotes,
+            ],
+            env: prepared.loggedEnv,
+            prompt: runPrompt,
+            promptMetrics,
+            context: ctx.context,
+          });
+        }
         // Snapshot pre-turn usage so cumulative agent-reported cost can be
         // attributed to this run alone.
         const preTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
@@ -3552,6 +3843,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           timeoutMs,
           signal: controller?.signal,
         });
+        turnStarted = true;
         cancelActiveTurn = async (reason: string) => {
           await turn.cancel({ reason });
         };
@@ -3645,6 +3937,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         } else {
           await discardStagedRuntime({ handles: stagedRuntimes, prepared });
         }
+        // The turn path has closed the runtime and settled the staged runtime. Mark
+        // it done so a result-mapping throw below runs the turn teardown once, not a
+        // second time through the catch.
+        turnTeardownDone = true;
 
         const errorMessage = timedOut
           ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
@@ -3656,6 +3952,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           stopReason: terminalStopReason,
           message: errorMessage,
         });
+        // Settle the run resources once: stop the bridges, run the copy-back,
+        // release the staging lease (in a finally inside cleanupRemoteBridges), and
+        // flush the child stderr. Mark them settled first so a result-mapping throw
+        // below does not run the teardown again through the turn catch.
+        runResourcesSettled = true;
         await cleanupRemoteBridges(prepared);
         flushChildStderr(childStderrState);
         // The one clean-completion path clears the run failure flag; every other
@@ -3693,47 +3994,62 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         };
       } catch (err) {
         if (timeout) clearTimeout(timeout);
+        // A failure before `startTurn` returned is a turn-preparation failure; a
+        // failure after it is a running-turn failure. The teardown is the same;
+        // only the reported phase differs.
+        const phase: AcpxExecutionPhase = turnStarted ? "turn" : "prepare_turn";
         const messageOverride = timedOut
           ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
           : undefined;
         const cancel = cancelActiveTurn as ((reason: string) => Promise<void>) | null;
         const preEmitMessage =
           messageOverride ?? (err instanceof Error ? err.message : String(err));
-        if (cancel) await cancel(preEmitMessage).catch(() => {});
-        await runtime.close({
-          handle: sessionHandle,
-          reason: timedOut ? "paperclip timeout cleanup" : "paperclip error cleanup",
-          discardPersistentState: timedOut,
-        }).catch(() => {});
-        const existing = warmHandles.get(prepared.sessionKey);
-        if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
-          clearWarmHandleTimer(existing);
-          warmHandles.delete(prepared.sessionKey);
+        // Skip the cancel, close, and staged-runtime drop when the success path
+        // already ran them: a result-mapping throw after the close reaches this
+        // catch, and the turn teardown must not run twice. The close records its
+        // error and never blocks the later teardown; `settleRunResources` in the
+        // finally stops the bridges, releases the staging lease, and flushes the
+        // child stderr even if the emission throws.
+        if (!turnTeardownDone) {
+          turnTeardownDone = true;
+          if (cancel) await cancel(preEmitMessage).catch(() => {});
+          await runtime.close({
+            handle: sessionHandle,
+            reason: timedOut ? "paperclip timeout cleanup" : "paperclip error cleanup",
+            discardPersistentState: timedOut,
+          }).catch((closeErr) => recordTeardownError("runtime-close", closeErr));
+          const existing = warmHandles.get(prepared.sessionKey);
+          if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
+            clearWarmHandleTimer(existing);
+            warmHandles.delete(prepared.sessionKey);
+          }
+          await discardStagedRuntime({ handles: stagedRuntimes, prepared });
         }
-        await discardStagedRuntime({ handles: stagedRuntimes, prepared });
-        const { classified, message } = await emitAcpxFailure({
-          ctx,
-          prepared,
-          err,
-          phase: "turn",
-          messageOverride,
-        });
-        await cleanupRemoteBridges(prepared);
-        flushChildStderr(childStderrState);
-        return {
-          exitCode: 1,
-          signal: timedOut ? "SIGTERM" : null,
-          timedOut,
-          errorMessage: message,
-          errorCode: timedOut ? "acpx_timeout" : classified.errorCode,
-          errorMeta: classified.errorMeta,
-          ...billingFields,
-          ...referencedProjectStagingFailuresField,
-          model: prepared.requestedModel || null,
-          clearSession: clearSession || timedOut,
-          resultJson: { phase: "turn" },
-          summary: message,
-        };
+        try {
+          const { classified, message } = await emitAcpxFailure({
+            ctx,
+            prepared,
+            err,
+            phase,
+            messageOverride,
+          });
+          return {
+            exitCode: 1,
+            signal: timedOut ? "SIGTERM" : null,
+            timedOut,
+            errorMessage: message,
+            errorCode: timedOut ? "acpx_timeout" : classified.errorCode,
+            errorMeta: classified.errorMeta,
+            ...billingFields,
+            ...referencedProjectStagingFailuresField,
+            model: prepared.requestedModel || null,
+            clearSession: clearSession || timedOut,
+            resultJson: { phase },
+            summary: message,
+          };
+        } finally {
+          await settleRunResources();
+        }
       } finally {
         // End the agent turn span exactly once, on every return and on a throw.
         // `runFailed` is `false` only on a completed, non-timed-out turn, so the

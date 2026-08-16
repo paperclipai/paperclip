@@ -38,6 +38,7 @@ import {
   issueTreeHolds,
   issueWorkProducts,
   issues,
+  plugins,
   projects,
   projectWorkspaces,
   workspaceOperations,
@@ -116,6 +117,7 @@ import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
+  noticeMetadataReferencesRecoveryAction,
 } from "../services/recovery/index.ts";
 import {
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
@@ -128,6 +130,11 @@ if (!embeddedPostgresSupport.supported) {
   console.warn(
     `Skipping embedded Postgres heartbeat recovery tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
+}
+
+function commentMetadataRows(comment: { metadata?: unknown } | null | undefined) {
+  const metadata = comment?.metadata as { sections?: Array<{ rows?: unknown[] }> } | null | undefined;
+  return (metadata?.sections ?? []).flatMap((section) => section.rows ?? []) as Array<Record<string, unknown>>;
 }
 
 function spawnAliveProcess() {
@@ -378,6 +385,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(workspaceOperations);
     await db.delete(environmentLeases);
     await db.delete(environments);
+    await db.delete(plugins);
     await db.delete(issuePlanDecompositions);
     await db.delete(issueThreadInteractions);
     await db.delete(documentAnnotationComments);
@@ -1195,6 +1203,40 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
+
+  it("persists the normalized failure when an adapter omits its diagnostic", async () => {
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      provider: "test",
+      model: "test-model",
+    });
+
+    const { agentId, runId } = await seedQueuedIssueRunFixture();
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    const run = await heartbeat.getRun(runId);
+    const runtime = await db
+      .select({ lastError: agentRuntimeState.lastError })
+      .from(agentRuntimeState)
+      .where(eq(agentRuntimeState.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+    const agent = await db
+      .select({ status: agents.status, errorReason: agents.errorReason })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(run).toMatchObject({ status: "failed", error: "Adapter failed" });
+    expect(runtime?.lastError).toBe("Adapter failed");
+    expect(agent).toEqual({ status: "error", errorReason: "Adapter failed" });
+  });
 
   it("keeps a local run active when the recorded pid is still alive", async () => {
     const child = spawnAliveProcess();
@@ -2489,8 +2531,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried continuation");
-    expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
-    expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
+    expect(comments[0]?.presentation).toMatchObject({ kind: "system_notice", tone: "danger" });
+    expect(noticeMetadataReferencesRecoveryAction(comments[0]?.metadata, recoveryAction.id)).toBe(true);
+    expect(commentMetadataRows(comments[0]).some((row) =>
+      row.type === "agent_link" && row.label === "Recovery owner" && row.name === "CodexCoder",
+    )).toBe(true);
   });
 
   it("blocks failed recovery work in place during immediate terminal-run cleanup", async () => {
@@ -2565,6 +2610,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("recovery issues do not create nested `stranded_issue_recovery` issues");
     expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
     expect(comments[0]?.body).not.toContain("sk-test-recovery-secret");
+    expect(JSON.stringify(comments[0]?.metadata)).not.toContain("sk-test-recovery-secret");
     expect(comments[0]?.presentation).toMatchObject({
       kind: "system_notice",
       tone: "warning",
@@ -2857,6 +2903,328 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     mockAdapterExecute.mockClear();
   });
 
+  it("schedules an infra retry for a setup failure caused by a transient sandbox provider worker restart", async () => {
+    // Reproduces the production incident: the "Kubernetes Sandbox" plugin
+    // worker was mid-restart when a run tried to acquire a lease. The lease
+    // acquisition fails BEFORE the adapter is ever dispatched (no call to
+    // mockAdapterExecute), so this hits the setup-failure catch (errorCode
+    // "setup_failed") rather than the adapter-failure catch. The condition is
+    // transient and self-healing, so it must be classified retryable
+    // infrastructure, not a terminal setup failure.
+    const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture();
+    const interactionId = randomUUID();
+    const pluginId = randomUUID();
+    const environmentId = randomUUID();
+
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "paperclip.kubernetes-sandbox-provider",
+      packageName: "@paperclipai/kubernetes-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "paperclip.kubernetes-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Kubernetes Sandbox Provider",
+        description: "Test Kubernetes sandbox provider whose worker is mid-restart",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "kubernetes",
+            kind: "sandbox_provider",
+            displayName: "Kubernetes Sandbox",
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    await db.insert(environments).values({
+      id: environmentId,
+      companyId,
+      name: "Kubernetes Sandbox",
+      driver: "sandbox",
+      status: "active",
+      config: {
+        provider: "kubernetes",
+        image: "fake:test",
+        timeoutMs: 1234,
+        reuseLease: false,
+      },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db
+      .update(agents)
+      .set({ defaultEnvironmentId: environmentId })
+      .where(eq(agents.id, agentId));
+
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee_on_accept",
+      createdByAgentId: agentId,
+      resolvedByUserId: "responsible-user",
+      resolvedAt: new Date("2026-03-19T00:00:00.000Z"),
+      payload: {
+        version: 1,
+        prompt: "Approve the plan?",
+        target: {
+          type: "issue_document",
+          issueId,
+          key: "plan",
+          revisionId: randomUUID(),
+        },
+      },
+      result: { version: 1, outcome: "accepted" },
+    });
+
+    await db
+      .update(agentWakeupRequests)
+      .set({
+        source: "automation",
+        reason: "issue_commented",
+        payload: {
+          issueId,
+          interactionId,
+          interactionKind: "request_confirmation",
+          interactionStatus: "accepted",
+          mutation: "interaction",
+        },
+      })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        invocationSource: "automation",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_commented",
+          mutation: "interaction",
+          interactionId,
+          interactionKind: "request_confirmation",
+          interactionStatus: "accepted",
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db
+      .update(issues)
+      .set({ status: "in_review" })
+      .where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+
+    const runs = await waitForValue(async () => {
+      const rows = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      return rows.length >= 2 ? rows : null;
+    });
+    expect(runs).toHaveLength(2);
+
+    const failedRun = runs?.find((row) => row.id === runId);
+    const retryRun = runs?.find((row) => row.id !== runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("setup_failed");
+    expect(failedRun?.error).toContain("worker is not running");
+    expect(retryRun).toMatchObject({
+      status: "scheduled_retry",
+      retryOfRunId: runId,
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+    });
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      issueId,
+      interactionId,
+      interactionStatus: "accepted",
+      retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+      wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+      scheduledRetryAttempt: 1,
+    });
+
+    // The lease never succeeded, so the adapter was never dispatched.
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    const issue = await db
+      .select({ status: issues.status, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue).toEqual({
+      status: "in_review",
+      executionRunId: retryRun?.id ?? null,
+    });
+
+    mockAdapterExecute.mockClear();
+  });
+
+  it("escalates (does not retry) an accepted-interaction-continuation setup failure whose message matches neither retryable pattern", async () => {
+    // Negative-case counterpart to "schedules an infra retry for a setup
+    // failure caused by a transient sandbox provider worker restart" above.
+    // The injected failure message is the real *permanent* "provider not
+    // installed" message plugin-environment-driver.ts throws (see :135 and
+    // :233): "... is not installed or its plugin worker is not running."
+    // That phrase is NOT the transient lease-failure phrasing this heartbeat
+    // classifier is meant to catch (environment-runtime.ts:808's "is
+    // installed via plugin ... but its worker is not running"), so a
+    // correctly narrow classifier must not treat it as retryable
+    // infrastructure: it must escalate straight to needs-attention at
+    // attempt 1, not schedule a retry. If the classifier's sandbox-worker
+    // regex over-matches on the coincidental "worker is not running"
+    // substring, this test fails by finding a scheduled_retry row instead.
+    const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture();
+    const interactionId = randomUUID();
+
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee_on_accept",
+      createdByAgentId: agentId,
+      resolvedByUserId: "responsible-user",
+      resolvedAt: new Date("2026-03-19T00:00:00.000Z"),
+      payload: {
+        version: 1,
+        prompt: "Approve the plan?",
+        target: {
+          type: "issue_document",
+          issueId,
+          key: "plan",
+          revisionId: randomUUID(),
+        },
+      },
+      result: { version: 1, outcome: "accepted" },
+    });
+
+    await db
+      .update(agentWakeupRequests)
+      .set({
+        source: "automation",
+        reason: "issue_commented",
+        payload: {
+          issueId,
+          interactionId,
+          interactionKind: "request_confirmation",
+          interactionStatus: "accepted",
+          mutation: "interaction",
+        },
+      })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        invocationSource: "automation",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_commented",
+          mutation: "interaction",
+          interactionId,
+          interactionKind: "request_confirmation",
+          interactionStatus: "accepted",
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db
+      .update(issues)
+      .set({ status: "in_review" })
+      .where(eq(issues.id, issueId));
+
+    mockAdapterExecute.mockRejectedValueOnce(
+      new Error('Sandbox provider "kubernetes" is not installed or its plugin worker is not running.'),
+    );
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+
+    const failedRun = await waitForValue(async () => {
+      const row = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return row?.status === "failed" ? row : null;
+    });
+    expect(failedRun?.errorCode).toBe("adapter_failed");
+    expect(failedRun?.error).toContain("is not installed or its plugin worker is not running");
+
+    const interaction = await waitForValue(async () => {
+      const row = await db
+        .select({ result: issueThreadInteractions.result })
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId))
+        .then((rows) => rows[0] ?? null);
+      const result = row?.result ?? null;
+      const resumeFailure = result && "resumeFailure" in result ? result.resumeFailure : null;
+      return resumeFailure?.status === "needs_attention" ? row : null;
+    });
+    expect(interaction?.result).toMatchObject({
+      version: 1,
+      outcome: "accepted",
+      resumeFailure: {
+        status: "needs_attention",
+        errorCode: "adapter_failed",
+        runId,
+      },
+    });
+
+    // No scheduled retry: the classifier's FALSE branch must not schedule
+    // one for this run. (A downstream, unrelated recovery reassignment run
+    // may still exist for the issue once it's escalated and rerouted; the
+    // test only cares that *this* run's failure was not classified as
+    // retryable infrastructure.)
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs.some((row) => row.retryOfRunId === runId)).toBe(false);
+    expect(
+      runs.some(
+        (row) => row.status === "scheduled_retry" && row.scheduledRetryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+      ),
+    ).toBe(false);
+
+    // Instead it escalates straight to needs-attention, same as the
+    // retry-exhausted path.
+    const issue = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    const recoveryAction = await db
+      .select({ status: issueRecoveryActions.status, sourceIssueId: issueRecoveryActions.sourceIssueId })
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(recoveryAction).toMatchObject({
+      status: "active",
+      sourceIssueId: issueId,
+    });
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toMatchObject({
+      authorType: "system",
+      body: expect.stringContaining("Agent failed to resume after approval: `adapter_failed` — needs attention"),
+    });
+
+    mockAdapterExecute.mockClear();
+  });
+
   it("escalates exhausted plan approval resume failures with a system comment and recovery action", async () => {
     const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     const interactionId = randomUUID();
@@ -2944,7 +3312,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       authorType: "system",
       body: expect.stringContaining("Agent failed to resume after approval: `adapter_failed` — needs attention"),
     });
-    expect(comments[0]?.body).toContain("Recovery action:");
+    expect(commentMetadataRows(comments[0]).some((row) => row.label === "Recovery action")).toBe(true);
 
     const interaction = await db
       .select({ result: issueThreadInteractions.result })
@@ -4697,7 +5065,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     const recoveryComment = comments.find((comment) =>
       comment.body.includes("pending execution-review participant once") &&
-        comment.body.includes(`Recovery action: \`${recoveryAction.id}\``),
+        noticeMetadataReferencesRecoveryAction(comment.metadata, recoveryAction.id),
     );
     expect(recoveryComment).toBeTruthy();
 
@@ -5511,25 +5879,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried dispatch");
-    expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
-    expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
-    expect(comments[0]?.body).toContain(`Recovery owner: [${longRecoveryOwnerName}]`);
-    expect(comments[0]?.presentation).toMatchObject({
-      kind: "system_notice",
-      tone: "warning",
-      title: `${`Recovery: retries exhausted — moved to blocked (owner: ${longRecoveryOwnerName})`.slice(0, 159)}…`,
-      density: "compact",
-    });
-    expect(comments[0]?.metadata).toMatchObject({
-      version: 1,
-      sections: [expect.objectContaining({
-        rows: expect.arrayContaining([
-          expect.objectContaining({ type: "key_value", label: "Recovery action", value: recoveryAction.id }),
-          expect.objectContaining({ type: "key_value", label: "Cause", value: "process_lost" }),
-          expect.objectContaining({ type: "agent_link", label: "Recovery owner", name: "R".repeat(160) }),
-        ]),
-      })],
-    });
+    expect(comments[0]?.body).not.toContain("sk-test-recovery-secret");
+    expect(JSON.stringify(comments[0]?.metadata)).not.toContain("sk-test-recovery-secret");
+    const failureSummary = commentMetadataRows(comments[0]).find((row) =>
+      row.type === "key_value" && row.label === "Failure summary"
+    );
+    expect(failureSummary).toMatchObject({ type: "key_value", label: "Failure summary" });
+    expect(failureSummary?.type === "key_value" ? failureSummary.value : "").toContain("Authorization");
+    expect(comments[0]?.presentation).toMatchObject({ kind: "system_notice", tone: "danger" });
+    expect(noticeMetadataReferencesRecoveryAction(comments[0]?.metadata, recoveryAction.id)).toBe(true);
+    expect(commentMetadataRows(comments[0]).some((row) =>
+      row.type === "agent_link" && row.label === "Recovery owner" && row.name === longRecoveryOwnerName.slice(0, 160),
+    )).toBe(true);
   });
 
   it("blocks an already stranded recovery issue without creating a recovery child", async () => {
@@ -5933,9 +6294,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried continuation");
-    expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
-    expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
-    expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
+    expect(comments[0]?.presentation).toMatchObject({ kind: "system_notice", tone: "danger" });
+    expect(noticeMetadataReferencesRecoveryAction(comments[0]?.metadata, recoveryAction.id)).toBe(true);
+    expect(commentMetadataRows(comments[0]).some((row) =>
+      row.type === "agent_link" && row.label === "Recovery owner" && row.name === "CodexCoder",
+    )).toBe(true);
   });
 
   it("redacts error-code-only stranded recovery failures in issue copy", async () => {
@@ -5966,8 +6329,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
+    // The short structured body carries no failure details; the normalized
+    // failure code surfaces only as a metadata row.
+    expect(comments[0]?.body).not.toContain("adapter_exit_code");
     expect(comments[0]?.body).not.toContain("- Failure: none recorded");
+    expect(commentMetadataRows(comments[0])).toContainEqual({
+      type: "key_value",
+      label: "Failure code",
+      value: "adapter_exit_code",
+    });
   });
 
   it("keeps retrying transient adapter_failed continuation runs before the cap", async () => {
@@ -6060,7 +6430,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried continuation");
     expect(comments[0]?.body).toContain("3× attempts");
-    expect(comments[0]?.body).toContain("Latest cause: `adapter_failed`");
+    expect(commentMetadataRows(comments[0])).toContainEqual({
+      type: "key_value",
+      label: "Failure code",
+      value: "adapter_failed",
+    });
   });
 
   it("does not count mixed-cause continuation failures toward the transient cap", async () => {
@@ -6687,8 +7061,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("automatically retried continuation");
     expect(comments[0]?.body).toContain("still has no live execution path");
-    expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
-    expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
+    expect(noticeMetadataReferencesRecoveryAction(comments[0]?.metadata, recoveryAction.id)).toBe(true);
+    expect(commentMetadataRows(comments[0]).some((row) =>
+      row.type === "agent_link" && row.label === "Recovery owner" && row.name === "CodexCoder",
+    )).toBe(true);
   });
 
   it("allows one productive-terminal recovery after regular continuation recovery made progress", async () => {

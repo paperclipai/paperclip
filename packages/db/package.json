@@ -42,7 +42,7 @@
     "build": "pnpm run check:migrations && tsc && cp -r src/migrations dist/migrations",
     "clean": "rm -rf dist",
     "typecheck": "pnpm run check:migrations && tsc --noEmit",
-    "generate": "pnpm run check:migrations && tsc -p tsconfig.json && drizzle-kit generate",
+    "generate": "pnpm run check:migrations && pnpm run clean && tsc -p tsconfig.json && drizzle-kit generate",
     "migrate": "pnpm run check:migrations && tsx src/migrate.ts",
     "seed": "tsx src/seed.ts"
   },

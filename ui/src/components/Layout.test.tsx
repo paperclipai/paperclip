@@ -217,6 +217,10 @@ vi.mock("../api/instanceSettings", () => ({
 
 vi.mock("../lib/company-selection", () => ({
   shouldSyncCompanySelectionFromRoute: () => false,
+  // No bounce in the shared harness: these tests exercise layout chrome, not
+  // archived-company routing (covered by company-selection unit tests and the
+  // archived-company-url e2e).
+  resolveArchivedCompanyBounce: () => null,
 }));
 
 vi.mock("../lib/main-content-focus", () => ({
@@ -530,7 +534,7 @@ describe("Layout", () => {
   });
 
   it("does not mount the Apps secondary sidebar while experimental apps are disabled", async () => {
-    currentPathname = "/PAP/apps/browse";
+    currentPathname = "/PAP/apps";
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: false });
     const root = createRoot(container);
     const queryClient = new QueryClient({
@@ -608,7 +612,7 @@ describe("Layout", () => {
 
   // Reserved Apps subroutes are not connection ids. They must keep the
   // top-level Apps sidebar, never mount a detail sidebar for a phantom app.
-  it.each(["browse", "review"])("keeps the Apps sidebar on the %s surface", async (route) => {
+  it.each(["browse", "connections", "review"])("keeps the Apps sidebar on the %s surface", async (route) => {
     currentPathname = `/PAP/apps/${route}`;
     const root = createRoot(container);
     const queryClient = new QueryClient({

@@ -1,6 +1,6 @@
 /**
- * Canonical state inventory for the Task Chat Redesign (flag:
- * enableTaskChatRedesign).
+ * Canonical state inventory for the chat-style task thread (the default task
+ * view; the classic legacy view sits behind enableClassicTaskInterface).
  *
  * This list is the single source of truth for:
  *   - the dev harness state switcher (/dev/task-chat-lab), and
@@ -24,6 +24,7 @@ export const TASK_CHAT_STATES = [
   "working",
   "running",
   "completed",
+  "activity-phases",
   "awaiting-approval",
   "plan-todo",
   "interrupted",
@@ -123,6 +124,13 @@ export const TASK_CHAT_STATE_META: Record<TaskChatStateId, TaskChatStateMeta> = 
     tier: "live",
     surface: "thread",
     protocol: "acpx.result (StopReason in subtype)",
+  },
+  "activity-phases": {
+    id: "activity-phases",
+    label: "Long-run activity phases",
+    tier: "live",
+    surface: "thread",
+    protocol: "assistant boundaries + chronological tool calls",
   },
   "awaiting-approval": {
     id: "awaiting-approval",

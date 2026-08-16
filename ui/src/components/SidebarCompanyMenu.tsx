@@ -1,12 +1,11 @@
 import { useCallback, useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   Check,
   ChevronsUpDown,
   GripVertical,
   LogOut,
   Plus,
-  Settings,
   UserPlus,
 } from "lucide-react";
 import {
@@ -37,6 +36,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useDialogActions } from "@/context/DialogContext";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useCompanyOrder } from "@/hooks/useCompanyOrder";
+import { useSignOut } from "@/hooks/useSignOut";
 import { navigateTopLevel } from "@/lib/browserNavigation";
 import { cloudStackCreateUrl, cloudStackEnterUrl } from "@/lib/cloudLinks";
 import { queryKeys } from "@/lib/queryKeys";
@@ -198,7 +198,6 @@ function SortableCompanyItem({
 export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompanyMenuProps = {}) {
   const [internalOpen, setInternalOpen] = useState(false);
   const [isEditingOrder, setIsEditingOrder] = useState(false);
-  const queryClient = useQueryClient();
   const { companies, selectedCompany, setSelectedCompanyId } = useCompany();
   const { openOnboarding } = useDialogActions();
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
@@ -257,15 +256,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
     ? currentStack?.displayName ?? cloud?.stackDisplayName ?? cloud?.stackSlug ?? null
     : selectedCompany?.name ?? null;
 
-  const signOutMutation = useMutation({
-    mutationFn: () => authApi.signOut(),
-    onSuccess: async () => {
-      setOpen(false);
-      if (isMobile) setSidebarOpen(false);
-      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.health });
-    },
-  });
+  const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });
 
   function handleOpenChange(nextOpen: boolean) {
     if (!nextOpen) setIsEditingOrder(false);
@@ -317,7 +308,10 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
       if (createStackUrl) navigateTopLevel(createStackUrl);
       return;
     }
-    openOnboarding();
+    // Skip the front-door "how would you like to get started?" choice and land
+    // directly on "Name your organization" — this entry point is unambiguously
+    // "create a new company" (PAP-431).
+    openOnboarding({ initialStep: 1 });
   }
 
   const handleDragEnd = useCallback(
@@ -459,7 +453,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
               disabled={isEditingOrder}
             >
               <Plus className="size-4" />
-              <span>{isCloud ? "Create new organization..." : "Create new company..."}</span>
+              <span>Create new organization...</span>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
           </>
@@ -479,21 +473,6 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
             <span className="truncate">
               {currentName ? `Invite people to ${currentName}` : "Invite people"}
             </span>
-          </Link>
-        </DropdownMenuItem>
-        <DropdownMenuItem asChild disabled={isEditingOrder}>
-          <Link
-            to="/company/settings"
-            onClick={(event) => {
-              if (isEditingOrder) {
-                event.preventDefault();
-                return;
-              }
-              closeNavigationChrome();
-            }}
-          >
-            <Settings className="size-4" />
-            <span>{isCloud ? "Organization settings" : "Company settings"}</span>
           </Link>
         </DropdownMenuItem>
         {session?.session ? (

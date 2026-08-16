@@ -1353,6 +1353,19 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         };
       })(),
 
+      execution: {
+        log(stream: "stdout" | "stderr", chunk: string): void {
+          // Emit one incremental output chunk of the active execute call.
+          // `notifyHost` stamps the active invocation id from the invocation
+          // context, so the host correlates the chunk to the host-owned execute
+          // route for that call. The notification carries no company id; the
+          // host binds the company from its own execute route. A chunk sent with
+          // no active invocation carries no id and the host drops it.
+          if (typeof chunk !== "string" || chunk.length === 0) return;
+          notifyHost("execute.log", { stream, chunk });
+        },
+      },
+
       tools: {
         register(
           name: string,

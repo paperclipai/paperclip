@@ -434,6 +434,9 @@ describe("claude execute", () => {
         onMeta: async () => {},
       });
       const captured = JSON.parse(await fs.readFile(capturePath, "utf-8"));
+      expect(captured.argv).toContain("--print");
+      expect(captured.argv).not.toContain("-");
+      expect(captured.prompt).toContain("Do work.");
       expect(captured.argv).toContain("--append-system-prompt-file");
     } finally {
       restore();

@@ -44,6 +44,7 @@ import {
   documentAnnotationComments,
   documentAnnotationThreads,
   documentRevisions,
+  environmentLeases,
   issueDocuments,
   executionWorkspaces,
   heartbeatRunEvents,
@@ -172,7 +173,7 @@ import {
   getIssueContinuationSummaryDocument,
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
-import { buildPlanReviewContext } from "./plan-review-context.js";
+import { buildDocumentReviewContext, buildPlanReviewContext } from "./plan-review-context.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService, type WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
@@ -224,6 +225,12 @@ import {
   readContinuationAttempt,
 } from "./recovery/index.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
+import {
+  buildConfigurationIncompleteRecoveryNoticeSeed,
+  buildExecutionReviewParticipantRecoveryNoticeSeed,
+  buildImmediateExecutionPathRecoveryNoticeSeed,
+  buildWorkspaceValidationRecoveryNoticeSeed,
+} from "./recovery/stranded-notice.js";
 import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
@@ -350,6 +357,67 @@ const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_AGENT_MESSAGE_KEY = "paperclipAgentMessage";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+// The reaper sweeps at most this many pending_cleanup leases per tick.
+const PENDING_CLEANUP_SWEEP_PAGE_SIZE = 20;
+// The reaper stops retrying a pending_cleanup lease after this many attempts.
+const PENDING_CLEANUP_SWEEP_ATTEMPT_CAP = 5;
+// The reaper stores its retry state under these keys in the lease metadata.
+const PENDING_CLEANUP_ATTEMPTS_METADATA_KEY = "pendingCleanupRetryAttempts";
+const PENDING_CLEANUP_CAP_WARNED_METADATA_KEY = "pendingCleanupRetryCapWarned";
+
+// A provider or plugin destroy rejection can carry a bearer credential, a
+// signed URL, or provider response detail in its name, code, message, cause, or
+// stack. The exception fields cross the server boundary, so they are not a
+// trusted enum. The pending_cleanup sweep logs never read the exception. Each
+// catch site logs a constant, locally generated `errorKind` instead.
+const PENDING_CLEANUP_RETRY_ERROR_KIND = "destroy_failed";
+const PENDING_CLEANUP_SWEEP_ERROR_KIND = "sweep_failed";
+
+// Read the stored retry attempt count as a safe value, directly in SQL. A
+// provider can write a malformed value under the attempts key. The type guard
+// makes any non-number value read as zero. The reader computes as numeric and
+// never casts to int, so a finite number outside the 32-bit range (for example
+// 1e300) never throws. The reader clamps a negative value to zero and a positive
+// value to the attempt cap. One malformed lease therefore never aborts the page
+// sweep. This matches the TypeScript reader `readPendingCleanupRetryAttempts`,
+// which clamps to the same range. The claim predicate compares the two readers,
+// so both must yield the same value for every input.
+function pendingCleanupAttemptsSql() {
+  return sql`
+    case
+      when jsonb_typeof(${environmentLeases.metadata} -> ${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY}) = 'number'
+        then least(
+          greatest(
+            floor((${environmentLeases.metadata} ->> ${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY})::numeric),
+            0
+          ),
+          ${PENDING_CLEANUP_SWEEP_ATTEMPT_CAP}
+        )
+      else 0
+    end`;
+}
+
+// Choose the `jsonb_set` target root. A provider can write a scalar or array
+// metadata root. `jsonb_set` fails on a non-object root, so the reader uses the
+// stored metadata only when its root is an object. A NULL, scalar, or array root
+// reads as an empty object. `jsonb_typeof(NULL)` is NULL, so the else branch also
+// covers a NULL root.
+function pendingCleanupMetadataObjectSql() {
+  return sql`case when jsonb_typeof(${environmentLeases.metadata}) = 'object' then ${environmentLeases.metadata} else '{}'::jsonb end`;
+}
+
+// Read the stored cap-warned flag as a safe boolean, directly in SQL. A
+// malformed value reads as false, so the boolean cast never throws.
+function pendingCleanupCapWarnedSql() {
+  return sql`coalesce(
+    case
+      when jsonb_typeof(${environmentLeases.metadata} -> ${PENDING_CLEANUP_CAP_WARNED_METADATA_KEY}) = 'boolean'
+        then (${environmentLeases.metadata} ->> ${PENDING_CLEANUP_CAP_WARNED_METADATA_KEY})::boolean
+      else false
+    end,
+    false
+  )`;
+}
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
@@ -613,6 +681,27 @@ function isSpawnLikeFailureMessage(value: unknown) {
   return /failed to start command|spawn\b|\bENOENT\b/i.test(value);
 }
 
+// A sandbox provider plugin's worker can be briefly down during its own
+// restart window (e.g. a rolling deploy of the plugin worker process). Lease
+// acquisition fails immediately in that window, but the condition is
+// transient and self-healing, so it must be treated as retryable
+// infrastructure rather than a terminal setup failure. See
+// resolveSandboxProviderPlugin's "worker_unavailable" message in
+// environment-runtime.ts (":808"), e.g. 'Sandbox provider "kubernetes" is
+// installed via plugin "acme.kubernetes-sandbox-provider", but its worker is
+// not running.'
+//
+// This is anchored on both "is installed via plugin" and "but its worker is
+// not running" so it does not also match plugin-environment-driver.ts's
+// unrelated, permanent "provider not installed" message ('Sandbox provider
+// "X" is not installed or its plugin worker is not running.'), which
+// coincidentally contains the same "worker is not running" substring but
+// describes a terminal condition that must not be retried.
+function isSandboxProviderWorkerUnavailableFailureMessage(value: unknown) {
+  if (typeof value !== "string") return false;
+  return /sandbox provider .* is installed via plugin .* but its worker is not running/i.test(value);
+}
+
 function isRetryableInteractionContinuationInfrastructureFailure(
   run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode" | "resultJson">,
 ) {
@@ -626,7 +715,10 @@ function isRetryableInteractionContinuationInfrastructureFailure(
   return (
     isSpawnLikeFailureMessage(run.error) ||
     isSpawnLikeFailureMessage(resultJson.errorMessage) ||
-    isSpawnLikeFailureMessage(resultJson.message)
+    isSpawnLikeFailureMessage(resultJson.message) ||
+    isSandboxProviderWorkerUnavailableFailureMessage(run.error) ||
+    isSandboxProviderWorkerUnavailableFailureMessage(resultJson.errorMessage) ||
+    isSandboxProviderWorkerUnavailableFailureMessage(resultJson.message)
   );
 }
 
@@ -1240,7 +1332,7 @@ async function resolveRunScopedMentionedSkillKeys(input: {
     .filter((skillKey): skillKey is string => Boolean(skillKey));
 }
 
-function leaseReleaseStatusForRunStatus(
+export function leaseReleaseStatusForRunStatus(
   status: string | null | undefined,
 ): Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed"> {
   if (status === "cancelled") return "expired";
@@ -1977,6 +2069,26 @@ export async function assertPushCapabilityCheckoutValid(input: {
       },
     },
   );
+}
+
+/**
+ * Reconcile the `projectWorkspaceId` for a reused execution workspace.
+ *
+ * A `reuse_existing` workspace can have been persisted with a null
+ * `projectWorkspaceId` (e.g. it was created before its project had a primary
+ * project workspace). When we later restore it for a run whose issue now
+ * expects a concrete project workspace, backfill the column so the launch
+ * guard (`persisted_workspace_missing_project_workspace_id`) stops rejecting
+ * it on every requeue — otherwise `reuse_existing` re-binds the same stale
+ * record forever and the run crash-loops. Prefer the existing binding when
+ * present so we never null out a good value or silently rebind a genuine
+ * mismatch (which the guard still surfaces).
+ */
+export function reconcileReusedExecutionWorkspaceProjectWorkspaceId(
+  existingProjectWorkspaceId: string | null | undefined,
+  resolvedProjectWorkspaceId: string | null | undefined,
+): string | null {
+  return existingProjectWorkspaceId ?? resolvedProjectWorkspaceId ?? null;
 }
 
 export async function assertGitSensitiveAdapterWorkspaceValid(input: {
@@ -3594,30 +3706,6 @@ export function summarizeHeartbeatRunListResultJson(input: {
   }
 
   return Object.keys(summary).length > 0 ? summary : null;
-}
-
-function summarizeRunFailureForIssueComment(
-  run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode"> | null | undefined,
-) {
-  if (!run) return null;
-
-  const errorCode = readNonEmptyString(run.errorCode)?.trim() ?? null;
-  const rawError = readNonEmptyString(run.error)?.trim() ?? null;
-  const apiMessageMatch = rawError?.match(/"message"\s*:\s*"([^"]+)"/);
-  const firstLine = rawError
-    ?.split(/\r?\n/)
-    .map((line) => line.trim())
-    .find(Boolean) ?? null;
-  const summarySource = apiMessageMatch?.[1] ?? firstLine;
-  const summary =
-    summarySource && summarySource.length > 240
-      ? `${summarySource.slice(0, 237)}...`
-      : summarySource;
-
-  if (errorCode && summary) return ` Latest retry failure: \`${errorCode}\` - ${summary}.`;
-  if (errorCode) return ` Latest retry failure: \`${errorCode}\`.`;
-  if (summary) return ` Latest retry failure: ${summary}.`;
-  return null;
 }
 
 function didAutomaticRecoveryFail(
@@ -5661,7 +5749,16 @@ export async function buildPaperclipWakePayload(input: {
       interactionId,
     })
     : null;
-  const payloadTruncated = truncated || issueDescriptionTruncated || planReviewContext?.truncated === true;
+  const documentReviewContext = issueId
+    ? await buildDocumentReviewContext({
+      db: input.db,
+      companyId: input.companyId,
+      issueId,
+      includeForIssueComment: commentIds.length > 0,
+      includeForAnnotationDelta: annotationDeltas.length > 0,
+    })
+    : null;
+  const payloadTruncated = truncated || issueDescriptionTruncated || planReviewContext?.truncated === true || documentReviewContext?.truncated === true;
   const recoveryActionId = readNonEmptyString(input.contextSnapshot.recoveryActionId);
   const recoveryCause = readNonEmptyString(input.contextSnapshot.recoveryCause);
   const recoveryAction = recoveryActionId
@@ -5773,6 +5870,7 @@ export async function buildPaperclipWakePayload(input: {
     comments,
     annotationDeltas,
     planReviewContext,
+    documentReviewContext,
     commentWindow: {
       requestedCount: commentIds.length,
       includedCount: comments.length,
@@ -8826,10 +8924,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
   ) {
+    return setRunStatusFromLive(runId, status, ["running"], patch);
+  }
+
+  // Move a run to a new status only when its current status is one of
+  // `fromStatuses`. The compare-and-set is a single conditional update, so a
+  // concurrent path can win the race. When this update matches nothing, the
+  // function reads the current row and reports updated=false, so the caller can
+  // keep the terminal outcome that another path already wrote.
+  async function setRunStatusFromLive(
+    runId: string,
+    status: string,
+    fromStatuses: string[],
+    patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+  ) {
     const updated = await db
       .update(heartbeatRuns)
       .set({ status, ...patch, updatedAt: new Date() })
-      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running")))
+      .where(and(eq(heartbeatRuns.id, runId), inArray(heartbeatRuns.status, fromStatuses)))
       .returning()
       .then((rows) => rows[0] ?? null);
 
@@ -8853,6 +8965,75 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
 
     return { run: current, updated: false as const };
+  }
+
+  // Invariant: when a run releases its environment lease, the run row must be
+  // terminal. The finalizer writes the terminal status in a step that is
+  // separate from the agent status=done PATCH. If the sandbox or the run
+  // process stops between the two steps, heartbeat_runs.status stays "running".
+  // The UI reads liveness from that row, so a finished task shows "Live"
+  // forever. This function closes the gap in the run teardown: when the run is
+  // still running or queued, it forces a terminal status before the lease is
+  // released. It never overwrites a status that another path already made
+  // terminal.
+  async function terminalizeRunOnLeaseRelease(
+    run: typeof heartbeatRuns.$inferSelect,
+  ): Promise<typeof heartbeatRuns.$inferSelect> {
+    if (isHeartbeatRunTerminalStatus(run.status)) return run;
+    if (run.status !== "running" && run.status !== "queued") return run;
+
+    // Choose the terminal status that reflects the true outcome. When the issue
+    // already reached a terminal status, the run reached its goal, so use the
+    // matching terminal run status. Otherwise the teardown cut the run short,
+    // so use "interrupted".
+    const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+    let terminalStatus: "succeeded" | "cancelled" | "interrupted" = "interrupted";
+    if (issueId) {
+      const issueStatus = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0]?.status ?? null);
+      if (issueStatus === "done") terminalStatus = "succeeded";
+      else if (issueStatus === "cancelled") terminalStatus = "cancelled";
+    }
+
+    const message =
+      `run terminalized on environment lease release: heartbeat_runs.status was still ${run.status} at teardown`;
+    // Match both "running" and "queued". A queued run has released its lease but
+    // never reached "running", so a running-only update would miss it and leave
+    // a phantom live run behind.
+    const write = await setRunStatusFromLive(run.id, terminalStatus, ["running", "queued"], {
+      finishedAt: run.finishedAt ?? new Date(),
+      error: run.error ?? (terminalStatus === "interrupted" ? message : null),
+      errorCode: run.errorCode ?? (terminalStatus === "interrupted" ? "lease_released_before_terminal" : null),
+    });
+    if (!write.updated) {
+      // Another path already finalized the run. Keep that terminal outcome.
+      return write.run ?? run;
+    }
+
+    const terminalRun = write.run;
+    if (terminalRun) {
+      await appendRunEvent(terminalRun, await nextRunEventSeq(terminalRun.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: terminalStatus === "interrupted" ? "warn" : "info",
+        message,
+        payload: {
+          previousStatus: run.status,
+          terminalStatus,
+          reason: "environment_lease_release",
+          ...(issueId ? { issueId } : {}),
+        },
+      }).catch((eventErr) => {
+        logger.warn(
+          { err: eventErr, runId: run.id },
+          "failed to append run event for lease-release terminalization",
+        );
+      });
+    }
+    return terminalRun ?? run;
   }
 
   function publishRunLifecyclePluginEvent(run: typeof heartbeatRuns.$inferSelect) {
@@ -13004,6 +13185,170 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  // Clamp the stored attempt count to the range [0, cap]. The SQL reader
+  // `pendingCleanupAttemptsSql` clamps to the same range, so both readers yield
+  // the same value for every input. The claim predicate compares the two values,
+  // so this alignment lets the claim match for a malformed lease.
+  function readPendingCleanupRetryAttempts(metadata: Record<string, unknown>): number {
+    const value = metadata[PENDING_CLEANUP_ATTEMPTS_METADATA_KEY];
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return 0;
+    return Math.min(Math.floor(value), PENDING_CLEANUP_SWEEP_ATTEMPT_CAP);
+  }
+
+  // Atomically claim one retry attempt on a pending_cleanup lease. The update
+  // only matches when the lease is still pending_cleanup and its stored attempt
+  // count still equals `expectedAttempts`. Two concurrent sweeps read the same
+  // count, but Postgres serializes the two updates on the row and only the first
+  // matches the guard. The loser gets zero rows and skips the lease. This bounds
+  // the retries to the cap and stops a second destroy of the same lease.
+  // Returns true only for the sweep that won the claim.
+  //
+  // The update writes only the attempts key with `jsonb_set`. It never writes a
+  // copied metadata object, so a concurrent write to an unrelated metadata key
+  // survives. The guard reads the stored count through the safe SQL reader, so a
+  // malformed value never throws.
+  async function claimPendingCleanupRetryAttempt(
+    leaseId: string,
+    expectedAttempts: number,
+  ): Promise<boolean> {
+    const now = new Date();
+    const claimed = await db
+      .update(environmentLeases)
+      .set({
+        metadata: sql`jsonb_set(${pendingCleanupMetadataObjectSql()}, array[${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY}], to_jsonb(${expectedAttempts + 1}::int), true)`,
+        lastUsedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(environmentLeases.id, leaseId),
+          eq(environmentLeases.status, "pending_cleanup"),
+          sql`${pendingCleanupAttemptsSql()} = ${expectedAttempts}`,
+        ),
+      )
+      .returning({ id: environmentLeases.id });
+    return claimed.length > 0;
+  }
+
+  // Atomically claim the one-time cap warning for a lease. The update only
+  // matches when the lease is still pending_cleanup, its stored attempt count is
+  // at or above the cap, and it has not yet carried the warned flag. Two
+  // concurrent sweeps that both reach the cap race here, but only one update
+  // sets the flag and returns a row. The loser skips the warning. This keeps the
+  // warning to one log line per lease.
+  //
+  // The status and cap predicates are the last line of defense. They stop a warn
+  // flag write to a lease that left pending_cleanup or dropped below the cap
+  // between the read and this claim. The update writes only the warned key with
+  // `jsonb_set`, so a concurrent write to an unrelated metadata key survives.
+  async function claimPendingCleanupCapWarning(leaseId: string): Promise<boolean> {
+    const now = new Date();
+    const claimed = await db
+      .update(environmentLeases)
+      .set({
+        metadata: sql`jsonb_set(${pendingCleanupMetadataObjectSql()}, array[${PENDING_CLEANUP_CAP_WARNED_METADATA_KEY}], to_jsonb(true), true)`,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(environmentLeases.id, leaseId),
+          eq(environmentLeases.status, "pending_cleanup"),
+          sql`${pendingCleanupAttemptsSql()} >= ${PENDING_CLEANUP_SWEEP_ATTEMPT_CAP}`,
+          sql`${pendingCleanupCapWarnedSql()} = false`,
+        ),
+      )
+      .returning({ id: environmentLeases.id });
+    return claimed.length > 0;
+  }
+
+  // Retry the leases stranded in "pending_cleanup". A failed destroy leaves a
+  // lease in that state forever without this sweep. The reaper tick runs the
+  // sweep. The backoff equals the reaper staleness threshold, so a lease waits
+  // for that period between attempts. The sweep reads and writes the attempt
+  // count in the lease metadata. It warns once when a lease reaches the attempt
+  // cap and then stops the retries for that lease.
+  async function sweepPendingCleanupLeases(opts?: { backoffMs?: number }): Promise<{
+    swept: number;
+    destroyed: number;
+    capped: number;
+  }> {
+    const backoffMs = opts?.backoffMs ?? 0;
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - backoffMs);
+
+    const rows = await db
+      .select()
+      .from(environmentLeases)
+      .where(
+        and(
+          eq(environmentLeases.status, "pending_cleanup"),
+          backoffMs > 0 ? lte(environmentLeases.updatedAt, cutoff) : undefined,
+        ),
+      )
+      .orderBy(asc(environmentLeases.updatedAt))
+      .limit(PENDING_CLEANUP_SWEEP_PAGE_SIZE);
+
+    let destroyed = 0;
+    let capped = 0;
+    for (const row of rows) {
+      const metadata = { ...(row.metadata ?? {}) } as Record<string, unknown>;
+      const attempts = readPendingCleanupRetryAttempts(metadata);
+
+      if (attempts >= PENDING_CLEANUP_SWEEP_ATTEMPT_CAP) {
+        capped += 1;
+        // Warn once, then leave the lease for manual cleanup. The atomic claim
+        // keeps the warning to one log line even when two sweeps overlap.
+        if (metadata[PENDING_CLEANUP_CAP_WARNED_METADATA_KEY] !== true) {
+          const warned = await claimPendingCleanupCapWarning(row.id);
+          if (warned) {
+            logger.warn(
+              { leaseId: row.id, environmentId: row.environmentId, attempts },
+              "environment lease reached the pending_cleanup retry cap; left for manual cleanup",
+            );
+          }
+        }
+        continue;
+      }
+
+      const environment = await environmentsSvc.getById(row.environmentId);
+      const lease = await environmentsSvc.getLeaseById(row.id);
+      if (!environment || !lease) continue;
+
+      // Atomically claim the attempt before the retry. Only the winning sweep
+      // increments the count and destroys the lease, so an overlapping sweep
+      // never destroys the same lease twice or exceeds the attempt cap. The
+      // claim records the attempt before the retry, so a thrown driver error
+      // still counts against the cap.
+      const claimed = await claimPendingCleanupRetryAttempt(row.id, attempts);
+      if (!claimed) continue;
+
+      try {
+        const result = await environmentRuntime.destroyRunLease({
+          environment,
+          lease,
+          failureReason: "pending_cleanup_retry",
+        });
+        if (result && result.status !== "pending_cleanup") {
+          destroyed += 1;
+        }
+      } catch {
+        // Log a constant errorKind only. The exception can carry a credential in
+        // its name, code, message, cause, or stack, so the sweep never reads it.
+        logger.warn(
+          {
+            errorKind: PENDING_CLEANUP_RETRY_ERROR_KIND,
+            leaseId: row.id,
+            environmentId: row.environmentId,
+            attempts: attempts + 1,
+          },
+          "pending_cleanup lease retry failed",
+        );
+      }
+    }
+
+    return { swept: rows.length, destroyed, capped };
+  }
+
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -13197,6 +13542,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (reaped.length > 0) {
       logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
     }
+
+    // Retry stranded pending_cleanup leases on the same tick. Isolate the sweep
+    // so its failure never hides the reaper result. The backoff equals the
+    // reaper staleness threshold.
+    try {
+      const sweep = await sweepPendingCleanupLeases({ backoffMs: staleThresholdMs });
+      if (sweep.destroyed > 0 || sweep.capped > 0) {
+        logger.warn(
+          { destroyed: sweep.destroyed, capped: sweep.capped, swept: sweep.swept },
+          "swept pending_cleanup environment leases",
+        );
+      }
+    } catch {
+      // Log a constant errorKind only. The exception can carry a credential in
+      // its name, code, message, cause, or stack, so the sweep never reads it.
+      logger.error(
+        { errorKind: PENDING_CLEANUP_SWEEP_ERROR_KIND },
+        "pending_cleanup lease sweep failed",
+      );
+    }
+
     return { reaped: reaped.length, runIds: reaped };
   }
 
@@ -13310,7 +13676,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         sessionId: session.legacySessionId,
         lastRunId: run.id,
         lastRunStatus: run.status,
-        lastError: result.errorMessage ?? null,
+        lastError: run.error ?? null,
         totalInputTokens: sql`${agentRuntimeState.totalInputTokens} + ${inputTokens}`,
         totalOutputTokens: sql`${agentRuntimeState.totalOutputTokens} + ${outputTokens}`,
         totalCachedInputTokens: sql`${agentRuntimeState.totalCachedInputTokens} + ${cachedInputTokens}`,
@@ -13875,14 +14241,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const requestedReusableExecutionWorkspaceConfig = reusableExistingExecutionWorkspace?.config ?? null;
     const localEnvironment = await environmentsSvc.ensureLocalEnvironment(agent.companyId);
     const resolvedInstanceSettings = await instanceSettings.get();
+    // Managed-sandbox-only policy: a run that would land on the local
+    // environment is redirected onto the platform-managed sandbox row, and
+    // with no active managed row the resolution fails closed
+    // (ManagedSandboxUnavailableError) — never local. Mirrors the forced
+    // kubernetes execution mode below, which takes precedence when both
+    // regimes are active.
+    const managedSandboxOnly =
+      (await instanceSettings.getExperimental()).enableManagedSandboxOnly === true;
+    const managedSandboxEnvironment = managedSandboxOnly
+      ? await environmentsSvc.findManagedSandboxEnvironment(agent.companyId)
+      : null;
     const environmentResolution = resolveExecutionWorkspaceEnvironmentId({
       agentDefaultEnvironmentId: agent.defaultEnvironmentId,
       instanceDefaultEnvironmentId: resolvedInstanceSettings.defaultEnvironmentId ?? null,
       localDefaultEnvironmentId: localEnvironment.id,
+      managedSandboxOnly,
+      managedSandboxEnvironmentId: managedSandboxEnvironment?.id ?? null,
     });
     const effectiveExecutionWorkspaceMode: ReturnType<typeof resolveExecutionWorkspaceMode> =
       requestedExecutionWorkspaceMode;
-    const executionPolicy = { executionMode: resolvedInstanceSettings.general.executionMode };
+    const executionPolicy = {
+      executionMode: resolvedInstanceSettings.general.executionMode,
+      // Backstop behind the resolver's local→managed redirect: the run-time
+      // allowlist below fails any run that still resolved to a `local`
+      // environment under managed-sandbox-only, so no selection path or
+      // tenant-set env var can land untrusted execution on the tenant
+      // container.
+      managedSandboxOnly,
+    };
     const executionForcedToKubernetes = isExecutionForcedToKubernetes(executionPolicy);
     let selectedEnvironmentId = environmentResolution.environmentId;
     if (executionForcedToKubernetes) {
@@ -14495,6 +14882,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "active",
             lastUsedAt: new Date(),
             metadata: nextExecutionWorkspaceMetadata,
+            projectWorkspaceId: reconcileReusedExecutionWorkspaceProjectWorkspaceId(
+              reusableExistingExecutionWorkspace.projectWorkspaceId,
+              resolvedProjectWorkspaceId,
+            ),
           })
         : resolvedProjectId
           ? await executionWorkspacesSvc.create({
@@ -15927,7 +16318,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ),
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
-              lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
+              lastError: runErrorMessage,
             });
           }
         }
@@ -15935,7 +16326,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await finalizeAgentStatus(
         agent.id,
         outcome,
-        outcome === "succeeded" ? null : (adapterResult.errorMessage ?? null),
+        runErrorMessage,
         {
           keepIdleOnFailure:
             outcome === "failed" &&
@@ -16193,7 +16584,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
           }
         } finally {
-          const latestRun = await getRun(run.id).catch(() => null);
+          let latestRun = await getRun(run.id).catch(() => null);
+          // Close the invariant "environment lease released implies the run is
+          // terminal". When the teardown reaches this point with the run still
+          // running or queued, force a terminal status before the lease is
+          // released, so the UI never shows a finished task as "Live".
+          if (latestRun) {
+            latestRun = await terminalizeRunOnLeaseRelease(latestRun).catch((terminalizeErr) => {
+              logger.error(
+                { err: terminalizeErr, runId: run.id },
+                "failed to terminalize run before environment lease release",
+              );
+              return latestRun;
+            });
+          }
           await releaseEnvironmentLeasesForRun({
             runId: run.id,
             companyId: run.companyId,
@@ -16257,73 +16661,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           activeRunExecutions.delete(run.id);
           await startNextQueuedRunForAgent(run.agentId);
         }
-  }
-
-  function buildImmediateExecutionPathRecoveryComment(input: {
-    status: "todo" | "in_progress";
-    latestRun: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode"> | null | undefined;
-  }) {
-    const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
-    if (input.status === "todo") {
-      return (
-        "Paperclip automatically retried dispatch for this assigned `todo` issue during terminal run recovery, " +
-        `but it still has no live execution path.${failureSummary ?? ""} ` +
-        "Moving it to `blocked` so it is visible for intervention."
-      );
-    }
-
-    return (
-      "Paperclip automatically retried continuation for this assigned `in_progress` issue during terminal run " +
-      `recovery, but it still has no live execution path.${failureSummary ?? ""} ` +
-      "Moving it to `blocked` so it is visible for intervention."
-    );
-  }
-
-  function buildWorkspaceValidationRecoveryComment(input: {
-    latestRun:
-      | Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode" | "resultJson">
-      | null
-      | undefined;
-  }) {
-    const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
-    const validationReason = readNonEmptyString(
-      readWorkspaceValidationPayloadFromRun(input.latestRun).reason,
-    );
-    if (validationReason === "git_worktree_base_materialization_failed") {
-      return (
-        "Paperclip stopped before launching the local adapter because the project workspace checkout could not be prepared " +
-        `(for example the repository clone failed).${failureSummary ?? ""} ` +
-        "Moving it to `blocked` with a source-scoped recovery action so the repository URL, clone access, or configured local cwd can be repaired before resuming."
-      );
-    }
-    return (
-      "Paperclip stopped before launching the local adapter because the issue workspace failed validation. " +
-      `This prevents git-sensitive adapters from running in an unrelated fallback cwd.${failureSummary ?? ""} ` +
-      "Moving it to `blocked` with a source-scoped recovery action so the workspace link, cwd, or git checkout can be repaired before resuming."
-    );
-  }
-
-  function buildConfigurationIncompleteRecoveryComment(input: {
-    latestRun: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode"> | null | undefined;
-  }) {
-    const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
-    return (
-      "Paperclip stopped before dispatching the adapter because required secret/env bindings are missing. " +
-      `Resolving them as a runtime failure would only produce repeated opaque setup failures.${failureSummary ?? ""} ` +
-      "Moving it to `blocked` with a source-scoped recovery action so an operator can bind the missing secret(s) before resuming."
-    );
-  }
-
-  function buildExecutionReviewParticipantRecoveryComment(input: {
-    latestRun: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode"> | null | undefined;
-  }) {
-    const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
-    return (
-      "Paperclip retried the pending execution-review participant once, but the review stage still has no completed decision " +
-      `or live reviewer run.${failureSummary ?? ""} ` +
-      "Moving it to `blocked` with a source-scoped recovery action so the recovery owner can repair the reviewer runtime, " +
-      "restore the review stage, or record an intentional manual resolution."
-    );
   }
 
   async function releaseIssueExecutionAndPromote(
@@ -16459,9 +16796,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           kind: "blocked" as const,
           issue,
           previousStatus: issue.status,
-          comment: configurationIncomplete
-            ? buildConfigurationIncompleteRecoveryComment({ latestRun: run })
-            : buildWorkspaceValidationRecoveryComment({ latestRun: run }),
+          notice: configurationIncomplete
+            ? buildConfigurationIncompleteRecoveryNoticeSeed()
+            : buildWorkspaceValidationRecoveryNoticeSeed(),
           recoveryCause: configurationIncomplete
             ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
             : WORKSPACE_VALIDATION_RECOVERY_CAUSE,
@@ -16805,7 +17142,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             kind: "blocked" as const,
             issue,
             previousStatus: issue.status,
-            comment: buildExecutionReviewParticipantRecoveryComment({ latestRun: run }),
+            notice: buildExecutionReviewParticipantRecoveryNoticeSeed(),
             recoveryCause: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE,
             recoveryOwnerAgentId: currentParticipant.agentId,
           };
@@ -16926,19 +17263,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (shouldBlockImmediately) {
         const workspaceValidationFailure = isWorkspaceValidationFailedRun(run);
         const configurationIncompleteFailure = isConfigurationIncompleteFailedRun(run);
-        const comment = workspaceValidationFailure
-          ? buildWorkspaceValidationRecoveryComment({ latestRun: run })
+        const notice = workspaceValidationFailure
+          ? buildWorkspaceValidationRecoveryNoticeSeed()
           : configurationIncompleteFailure
-            ? buildConfigurationIncompleteRecoveryComment({ latestRun: run })
-            : buildImmediateExecutionPathRecoveryComment({
+            ? buildConfigurationIncompleteRecoveryNoticeSeed()
+            : buildImmediateExecutionPathRecoveryNoticeSeed({
                 status: issue.status as "todo" | "in_progress",
-                latestRun: run,
               });
         return {
           kind: "blocked" as const,
           issue,
           previousStatus: issue.status,
-          comment,
+          notice,
           recoveryCause: workspaceValidationFailure
             ? WORKSPACE_VALIDATION_RECOVERY_CAUSE
             : configurationIncompleteFailure
@@ -17048,7 +17384,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issue: promotionResult.issue,
         previousStatus: promotionResult.previousStatus as "todo" | "in_progress" | "in_review",
         latestRun: run,
-        comment: promotionResult.comment,
+        notice: promotionResult.notice,
         recoveryCause:
           promotionResult.recoveryCause === WORKSPACE_VALIDATION_RECOVERY_CAUSE
             ? WORKSPACE_VALIDATION_RECOVERY_CAUSE
@@ -18903,6 +19239,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     prepareHotRestartShutdown,
     reconcileHotRestartAdoption,
     reapOrphanedRuns,
+    sweepPendingCleanupLeases,
     // Override-aware scheduling-suppression check (honors the worktree
     // run-execution experimental setting). Callers outside the service that
     // gate on suppression should prefer this over the env-only resolver.
@@ -18934,6 +19271,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     reconcileStrandedAssignedIssues,
+
+    terminalizeRunOnLeaseRelease,
+
+    releaseEnvironmentLeasesForRun,
 
     sweepStaleIssueLocks,
 

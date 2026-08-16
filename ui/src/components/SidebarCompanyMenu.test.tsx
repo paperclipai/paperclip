@@ -242,7 +242,7 @@ describe("SidebarCompanyMenu", () => {
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Create new company...");
+    expect(document.body.textContent).toContain("Create new organization...");
     expect(document.body.textContent).not.toContain("Add company...");
 
     act(() => {
@@ -281,9 +281,9 @@ describe("SidebarCompanyMenu", () => {
     expect(document.body.textContent).toContain("Edit");
     expect(document.body.textContent).toContain("Strata");
     expect(document.body.textContent).toContain("ANA");
-    expect(document.body.textContent).toContain("Create new company...");
+    expect(document.body.textContent).toContain("Create new organization...");
     expect(document.body.textContent).toContain("Invite people to Acme Labs");
-    expect(document.body.textContent).toContain("Company settings");
+    expect(document.body.textContent).not.toContain("Company settings");
     expect(document.body.textContent).toContain("Sign out");
 
     const signOutButton = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
@@ -296,6 +296,9 @@ describe("SidebarCompanyMenu", () => {
     await flushReact();
 
     expect(mockAuthApi.signOut).toHaveBeenCalledTimes(1);
+    expect(mockNavigateTopLevel).not.toHaveBeenCalled();
+    expect(queryClient.getQueryState(queryKeys.health)?.isInvalidated).toBe(true);
+    expect(document.body.textContent).not.toContain("Switch company");
 
     act(() => {
       root.unmount();
@@ -409,7 +412,7 @@ describe("SidebarCompanyMenu", () => {
     await openMenu("Open Acme Labs company switcher");
 
     const createItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
-      .find((element) => element.textContent?.includes("Create new company..."));
+      .find((element) => element.textContent?.includes("Create new organization..."));
     expect(createItem).toBeTruthy();
 
     act(() => {
@@ -456,6 +459,31 @@ describe("SidebarCompanyMenu", () => {
   });
 
   describe("in Paperclip Cloud", () => {
+    it("closes the menu and enters the Cloud logout flow without local sign-out", async () => {
+      const { root } = renderMenu({ cloud: true });
+      await flushReact();
+      await flushReact();
+      await openMenu("Open Acme Labs organization switcher");
+
+      const signOutItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
+        .find((element) => element.textContent?.includes("Sign out"));
+      expect(signOutItem).toBeTruthy();
+
+      act(() => {
+        signOutItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+
+      expect(mockAuthApi.signOut).not.toHaveBeenCalled();
+      expect(mockNavigateTopLevel).toHaveBeenCalledOnce();
+      expect(mockNavigateTopLevel).toHaveBeenCalledWith("/cloud/logout");
+      expect(document.body.textContent).not.toContain("Switch organization");
+
+      act(() => {
+        root.unmount();
+      });
+    });
+
     it("switches organizations instead of companies", async () => {
       const { root } = renderMenu({ cloud: true });
       await flushReact();
@@ -466,7 +494,7 @@ describe("SidebarCompanyMenu", () => {
 
       expect(document.body.textContent).toContain("Switch organization");
       expect(document.body.textContent).toContain("Create new organization...");
-      expect(document.body.textContent).toContain("Organization settings");
+      expect(document.body.textContent).not.toContain("Organization settings");
       expect(document.body.textContent).not.toContain("Switch company");
       expect(document.body.textContent).not.toContain("Create new company...");
       expect(document.body.textContent).not.toContain("Company settings");

@@ -14,6 +14,7 @@ const mockProjectService = vi.hoisted(() => ({
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
   listCompanyIds: vi.fn(),
+  getExperimental: vi.fn(),
 }));
 
 const mockEnvironmentService = vi.hoisted(() => ({
@@ -129,6 +130,8 @@ describe("environment instance routes", () => {
     mockIssueService.clearExecutionWorkspaceEnvironmentSelection.mockReset();
     mockProjectService.clearExecutionWorkspaceEnvironmentSelection.mockReset();
     mockInstanceSettingsService.listCompanyIds.mockReset();
+    mockInstanceSettingsService.getExperimental.mockReset();
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: false });
     mockEnvironmentService.list.mockReset();
     mockEnvironmentService.getById.mockReset();
     mockEnvironmentService.create.mockReset();

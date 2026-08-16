@@ -89,12 +89,12 @@ describe("TaskChatInteractionCard", () => {
       );
     });
     const buttons = Array.from(container.querySelectorAll("button"));
-    const confirm = buttons.find((button) => button.textContent === "Confirm");
-    const decline = buttons.find((button) => button.textContent === "Decline");
-    expect(confirm).not.toBeUndefined();
-    expect(decline).not.toBeUndefined();
-    const row = confirm?.parentElement;
-    expect(row).toBe(decline?.parentElement);
+    const approve = buttons.find((button) => button.textContent === "Approve");
+    const reject = buttons.find((button) => button.textContent === "Reject");
+    expect(approve).not.toBeUndefined();
+    expect(reject).not.toBeUndefined();
+    const row = approve?.parentElement;
+    expect(row).toBe(reject?.parentElement);
     expect(row?.className).toContain("flex-row-reverse");
   });
 
