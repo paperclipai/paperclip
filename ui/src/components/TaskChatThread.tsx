@@ -136,9 +136,20 @@ export function TaskChatThread(props: TaskChatThreadProps) {
 
   const blockerLinks = useMemo(
     () => issueStatus === "blocked"
-      ? resolveTaskChatBlockers(blockedBy, blockerAttention?.terminalBlockerIssueId)
+      ? resolveTaskChatBlockers(
+          blockedBy,
+          blockerAttention?.terminalBlockerIssueId,
+          blockerAttention?.directBlockerIssueId,
+          blockerAttention?.terminalBlocker,
+        )
       : null,
-    [blockedBy, blockerAttention?.terminalBlockerIssueId, issueStatus],
+    [
+      blockedBy,
+      blockerAttention?.directBlockerIssueId,
+      blockerAttention?.terminalBlocker,
+      blockerAttention?.terminalBlockerIssueId,
+      issueStatus,
+    ],
   );
 
   const threadHeaderWithBlockers = threadHeader || blockerLinks ? (
@@ -470,7 +481,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     if ("content" in entry) return total + entry.content.length;
     return total + entry.kind.length;
   }, tailEntries.length);
-  const threadContentKey = taskChatContentKey(items) + tailContentKey;
+  const blockerContentKey = blockerLinks
+    ? `${blockerLinks.directBlocker.id}:${blockerLinks.ultimateBlocker?.id ?? ""}`
+    : "";
+  const threadContentKey = `${taskChatContentKey(items)}:${tailContentKey}:${blockerContentKey}`;
 
   // Status-pill inputs for the tail (PAP-461, A1): the run's start, its finish
   // (once terminal), and the "called N tools" summary. Memoized on the

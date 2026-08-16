@@ -58,6 +58,22 @@ function render(ui: ReactElement) {
   flushSync(() => root!.render(<ThemeProvider>{ui}</ThemeProvider>));
 }
 
+function fakeScrollGeometry(
+  element: HTMLElement,
+  { scrollHeight = 1000, clientHeight = 400, scrollTop = 600 } = {},
+) {
+  let currentScrollTop = scrollTop;
+  Object.defineProperty(element, "scrollHeight", { value: scrollHeight, configurable: true });
+  Object.defineProperty(element, "clientHeight", { value: clientHeight, configurable: true });
+  Object.defineProperty(element, "scrollTop", {
+    get: () => currentScrollTop,
+    set: (value: number) => {
+      currentScrollTop = value;
+    },
+    configurable: true,
+  });
+}
+
 describe("TaskChatThread draft pass-through", () => {
   it("keeps the composer dock aligned with the thread's horizontal padding", () => {
     render(
@@ -201,6 +217,110 @@ describe("TaskChatThread blocker links", () => {
     expect(container.querySelectorAll('[data-testid="task-chat-blocker-links"]')).toHaveLength(2);
     expect(container.textContent).toContain("Blocked byPAP-500Direct dependency");
     expect(container.textContent).not.toContain("Ultimately blocked by");
+  });
+
+  it("keeps a server-selected intermediate blocker on its direct chain", () => {
+    const selectedIntermediate = {
+      id: "intermediate-2",
+      identifier: "PAP-650",
+      title: "Stalled intermediate review",
+    };
+    const selectedDirect = {
+      id: "direct-2",
+      identifier: "PAP-600",
+      title: "Selected dependency",
+      status: "blocked" as const,
+      priority: "medium" as const,
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      terminalBlockers: [{
+        id: "leaf-2",
+        identifier: "PAP-700",
+        title: "Deeper structural leaf",
+        status: "todo" as const,
+        priority: "medium" as const,
+        assigneeAgentId: "agent-2",
+        assigneeUserId: null,
+      }],
+    };
+
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="blocked"
+        blockedBy={[
+          {
+            id: "direct-1",
+            identifier: "PAP-500",
+            title: "Unrelated dependency",
+            status: "todo",
+            priority: "low",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+          },
+          selectedDirect,
+        ]}
+        blockerAttention={{
+          state: "stalled",
+          reason: "stalled_review",
+          unresolvedBlockerCount: 2,
+          coveredBlockerCount: 0,
+          stalledBlockerCount: 1,
+          attentionBlockerCount: 1,
+          sampleBlockerIdentifier: "PAP-650",
+          sampleStalledBlockerIdentifier: "PAP-650",
+          directBlockerIssueId: selectedDirect.id,
+          terminalBlockerIssueId: selectedIntermediate.id,
+          terminalBlocker: selectedIntermediate,
+        }}
+      />,
+    );
+
+    for (const notice of container.querySelectorAll('[data-testid="task-chat-blocker-links"]')) {
+      expect(notice.textContent).toContain("Blocked byPAP-600Selected dependency");
+      expect(notice.textContent).toContain("Ultimately blocked byPAP-650Stalled intermediate review");
+    }
+    expect(container.textContent).not.toContain("Unrelated dependency");
+    expect(container.textContent).not.toContain("Deeper structural leaf");
+  });
+
+  it("auto-follows the new bottom blocker row when a pinned thread becomes blocked", () => {
+    const comment = {
+      id: "comment-1",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorType: "user" as const,
+      authorAgentId: null,
+      authorUserId: "user-1",
+      body: "Waiting for the dependency.",
+      presentation: null,
+      metadata: null,
+      createdAt: new Date("2026-08-15T12:00:00.000Z"),
+      updatedAt: new Date("2026-08-15T12:00:00.000Z"),
+    };
+    const directBlocker = {
+      id: "direct-1",
+      identifier: "PAP-500",
+      title: "Direct dependency",
+      status: "in_progress" as const,
+      priority: "medium" as const,
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+    };
+    const baseProps = {
+      comments: [comment],
+      onAdd: async () => {},
+      blockedBy: [directBlocker],
+    };
+
+    render(<TaskChatThread {...baseProps} issueStatus="in_progress" />);
+    const scroller = container.querySelector<HTMLElement>('[data-testid="task-chat-scroller"]')!;
+    fakeScrollGeometry(scroller);
+
+    render(<TaskChatThread {...baseProps} issueStatus="blocked" />);
+
+    expect(scroller.scrollTop).toBe(scroller.scrollHeight);
   });
 
   it("does not show blocker rows outside the blocked state", () => {

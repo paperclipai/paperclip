@@ -1,4 +1,7 @@
-import type { IssueRelationIssueSummary } from "@paperclipai/shared";
+import type {
+  IssueBlockerAttentionIssueSummary,
+  IssueRelationIssueSummary,
+} from "@paperclipai/shared";
 import { createIssueDetailPath } from "@/lib/issueDetailBreadcrumb";
 import { Link } from "@/lib/router";
 
@@ -9,23 +12,41 @@ function isUnresolved(blocker: IssueRelationIssueSummary): boolean {
 export function resolveTaskChatBlockers(
   blockers: IssueRelationIssueSummary[],
   terminalBlockerIssueId?: string | null,
+  directBlockerIssueId?: string | null,
+  terminalBlocker?: IssueBlockerAttentionIssueSummary | null,
 ): {
-  directBlocker: IssueRelationIssueSummary;
-  ultimateBlocker: IssueRelationIssueSummary | null;
+  directBlocker: IssueRelationIssueSummary | IssueBlockerAttentionIssueSummary;
+  ultimateBlocker: IssueRelationIssueSummary | IssueBlockerAttentionIssueSummary | null;
 } | null {
   const unresolvedBlockers = blockers.filter(isUnresolved);
   if (unresolvedBlockers.length === 0) return null;
 
-  const directBlocker = terminalBlockerIssueId
-    ? unresolvedBlockers.find((blocker) => (
-        blocker.id === terminalBlockerIssueId
-        || blocker.terminalBlockers?.some((terminal) => terminal.id === terminalBlockerIssueId)
-      )) ?? unresolvedBlockers[0]
-    : unresolvedBlockers[0];
+  const directBlocker = directBlockerIssueId
+    ? unresolvedBlockers.find((blocker) => blocker.id === directBlockerIssueId)
+    : terminalBlockerIssueId
+      ? unresolvedBlockers.find((blocker) => (
+          blocker.id === terminalBlockerIssueId
+          || blocker.terminalBlockers?.some((terminal) => terminal.id === terminalBlockerIssueId)
+        ))
+      : unresolvedBlockers[0];
+
+  // A selected intermediate blocker is not part of `terminalBlockers`, which
+  // intentionally contains only structural leaves. If its direct path is not
+  // in this payload (for example a child-derived attention path), show the
+  // selected task itself instead of falling back to an unrelated blocker.
+  if (!directBlocker) {
+    if (!terminalBlocker) return null;
+    return {
+      directBlocker: terminalBlocker,
+      ultimateBlocker: null,
+    };
+  }
 
   const terminalBlockers = directBlocker.terminalBlockers?.filter(isUnresolved) ?? [];
   const ultimateBlocker = terminalBlockerIssueId
-    ? terminalBlockers.find((blocker) => blocker.id === terminalBlockerIssueId) ?? null
+    ? terminalBlocker?.id === terminalBlockerIssueId
+      ? terminalBlocker
+      : terminalBlockers.find((blocker) => blocker.id === terminalBlockerIssueId) ?? null
     : terminalBlockers[0] ?? null;
 
   return {
@@ -39,7 +60,7 @@ function BlockerRow({
   blocker,
 }: {
   label: string;
-  blocker: IssueRelationIssueSummary;
+  blocker: IssueRelationIssueSummary | IssueBlockerAttentionIssueSummary;
 }) {
   const issuePathId = blocker.identifier ?? blocker.id;
 
@@ -63,8 +84,8 @@ export function TaskChatBlockerLinks({
   ultimateBlocker,
   placement,
 }: {
-  directBlocker: IssueRelationIssueSummary;
-  ultimateBlocker: IssueRelationIssueSummary | null;
+  directBlocker: IssueRelationIssueSummary | IssueBlockerAttentionIssueSummary;
+  ultimateBlocker: IssueRelationIssueSummary | IssueBlockerAttentionIssueSummary | null;
   placement: "top" | "bottom";
 }) {
   return (
