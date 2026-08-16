@@ -106,4 +106,30 @@ describeEmbeddedPostgres("project rename resyncs its skill folder", () => {
     const thirdResync = await folderSvc.renameProjectFolder(companyId, "project-renamed", "Zeta");
     expect(thirdResync?.slug).toBe(firstResync?.slug);
   });
+
+  it("converges instead of drifting when two renamed projects both target the same slug", async () => {
+    const companyId = await seedCompany();
+    const folderSvc = folderService(db);
+
+    await folderSvc.ensureProjectFolder(companyId, "project-a", "Alpha");
+    await folderSvc.ensureProjectFolder(companyId, "project-b", "Beta");
+
+    // Both projects are renamed to the same desired name, so one keeps the
+    // clean slug and the other must resolve a stable, deterministic suffix.
+    const firstA = await folderSvc.renameProjectFolder(companyId, "project-a", "Zeta");
+    const firstB = await folderSvc.renameProjectFolder(companyId, "project-b", "Zeta");
+    expect(firstA?.slug).toBe("zeta");
+    expect(firstB?.slug).not.toBe("zeta");
+    expect(firstB?.slug?.startsWith("zeta-")).toBe(true);
+
+    // Repeated rescans, in either processing order, must not change either
+    // project's resolved slug: no drift, no flip-flopping which project holds
+    // the clean slug.
+    for (let i = 0; i < 3; i += 1) {
+      const rescanB = await folderSvc.renameProjectFolder(companyId, "project-b", "Zeta");
+      const rescanA = await folderSvc.renameProjectFolder(companyId, "project-a", "Zeta");
+      expect(rescanA?.slug).toBe(firstA?.slug);
+      expect(rescanB?.slug).toBe(firstB?.slug);
+    }
+  });
 });
