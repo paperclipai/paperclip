@@ -68,6 +68,7 @@ const {
     reconcileTaskWatchdogs: vi.fn(async () => ({ triggered: 0 })),
     scanSilentActiveRuns: vi.fn(async () => ({ created: 0, escalated: 0 })),
     sweepStaleIssueLocks: vi.fn(async () => ({ cleared: 0 })),
+    sweepPendingCleanupLeases: vi.fn(async () => ({ swept: 0, destroyed: 0, capped: 0 })),
     reconcileProductivityReviews: vi.fn(async () => ({ created: 0, updated: 0, failed: 0 })),
     sweepExpiredRuntimeStatuses: vi.fn(() => 0),
     tickTimers: vi.fn(async () => ({ checked: 0, enqueued: 0, skipped: 0 })),
@@ -522,7 +523,11 @@ describe("startServer feedback export wiring", () => {
     try {
       await startServer();
 
-      expect(heartbeatServiceFactoryMock).not.toHaveBeenCalled();
+      // The disabled path still creates one heartbeat runtime. This runtime owns
+      // the orphan-sandbox cleanup sweep, so a leaked provider sandbox is still
+      // reaped at startup and on the interval.
+      expect(heartbeatServiceFactoryMock).toHaveBeenCalledTimes(1);
+      expect(heartbeatServiceMock.sweepPendingCleanupLeases).toHaveBeenCalled();
       expect(intervalCallback).not.toBeNull();
       intervalCallback?.();
       await Promise.resolve();
