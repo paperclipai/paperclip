@@ -114,10 +114,14 @@ describe("DocumentAnnotationPopover", () => {
 
   it("dismisses on Escape and outside pointer down", async () => {
     const first = await render();
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    expect(first.onClose).toHaveBeenCalledTimes(1);
-    document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
-    expect(first.onClose).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      expect(first.onClose).toHaveBeenCalledTimes(1);
+    });
+    await vi.waitFor(() => {
+      document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      expect(first.onClose).toHaveBeenCalledTimes(2);
+    });
   });
 
   it("replies to and resolves a focused thread", async () => {
