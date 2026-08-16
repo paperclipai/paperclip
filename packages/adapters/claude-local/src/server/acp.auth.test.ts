@@ -151,7 +151,7 @@ describe("probeClaudeAcpSandboxLogin", () => {
     expect(checks).toEqual([]);
   });
 
-  it("fails safe and emits no checks when the probe cannot run", async () => {
+  it("emits a distinct warn check, not a silent pass, when the probe cannot run", async () => {
     probeResult.throwError = new Error("claude command not found");
 
     const checks = await probeClaudeAcpSandboxLogin({
@@ -159,10 +159,15 @@ describe("probeClaudeAcpSandboxLogin", () => {
       target: sandboxTarget,
     });
 
-    expect(checks).toEqual([]);
+    // A probe that cannot run must not report a success. It emits a distinct
+    // warn check that is NOT the login affordance code.
+    expect(checks).toHaveLength(1);
+    expect(checks[0]?.code).toBe("claude_acp_login_probe_unavailable");
+    expect(checks[0]?.level).toBe("warn");
+    expect(checks.some((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE)).toBe(false);
   });
 
-  it("fails safe and emits no checks when the probe times out", async () => {
+  it("emits a distinct warn check when the probe times out", async () => {
     probeResult.value = { exitCode: null as unknown as number, stdout: "", stderr: "", timedOut: true };
 
     const checks = await probeClaudeAcpSandboxLogin({
@@ -170,6 +175,29 @@ describe("probeClaudeAcpSandboxLogin", () => {
       target: sandboxTarget,
     });
 
-    expect(checks).toEqual([]);
+    expect(checks).toHaveLength(1);
+    expect(checks[0]?.code).toBe("claude_acp_login_probe_unavailable");
+    expect(checks[0]?.level).toBe("warn");
+    expect(checks.some((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE)).toBe(false);
+  });
+
+  it("emits a distinct warn check when the probe runs but does not complete", async () => {
+    // The probe ran, login is not detected, and the exit code is non-zero. This
+    // is not a healthy login, so it must not be a silent pass.
+    probeResult.value = {
+      exitCode: 1,
+      stdout: initLine,
+      stderr: "unexpected sandbox error",
+      timedOut: false,
+    };
+
+    const checks = await probeClaudeAcpSandboxLogin({
+      config: { engine: "acp" },
+      target: sandboxTarget,
+    });
+
+    expect(checks).toHaveLength(1);
+    expect(checks[0]?.code).toBe("claude_acp_login_probe_unavailable");
+    expect(checks[0]?.level).toBe("warn");
   });
 });

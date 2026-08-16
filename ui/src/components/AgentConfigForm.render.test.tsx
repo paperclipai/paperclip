@@ -970,6 +970,41 @@ describe("AgentConfigForm environment selector", () => {
     expect(findButton(result.container, "Log in")).toBeFalsy();
   });
 
+  it("hides the Login button for a Daytona sandbox while the capabilities report no setup-token support", async () => {
+    // Reproduces the reported defect: the Test carries the auth-missing check,
+    // but the capabilities endpoint reports `supportsSetupTokenLogin: false`
+    // for Daytona (a stale persisted plugin manifest). The gate hides the
+    // panel. The server-side fix refreshes the persisted manifest so the
+    // capability reports true and the panel shows (see the companion positive
+    // test above).
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(
+      getEnvironmentCapabilities(["claude_local", "codex_local"], {
+        sandboxProviders: {
+          daytona: { supportsSetupTokenLogin: false, displayName: "Daytona" },
+        },
+      }),
+    );
+    const result = await renderForm(
+      [
+        makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+        makeEnvironment({
+          id: "sandbox-1",
+          name: "Daytona",
+          driver: "sandbox",
+          config: { provider: "daytona" },
+        }),
+      ],
+      { adapterType: "claude_local", defaultEnvironmentId: "sandbox-1" },
+      { showAdapterTestEnvironmentButton: true },
+    );
+    roots.push(result.root);
+
+    await runTest(result.container);
+
+    expect(findButton(result.container, "Log in")).toBeFalsy();
+  });
+
   it("shows the Login button when a parent lifts the test feedback and renders the panel from the descriptor", async () => {
     // The create page hides the inline feedback branch and renders the test
     // result and the login panel itself. This harness mirrors that parent: it

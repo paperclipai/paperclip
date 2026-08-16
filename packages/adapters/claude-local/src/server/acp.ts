@@ -40,10 +40,12 @@ import {
 import {
   materializeRemoteClaudeConfig,
   prepareClaudeConfigSeed,
+  prepareSandboxClaudeProbeRuntime,
 } from "./claude-config.js";
 import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
 import { buildClaudeProbePermissionArgs } from "./permissions.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
+import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
@@ -514,25 +516,53 @@ function buildAcpSandboxAuthMissingChecks(loginUrl: string | null): AdapterEnvir
 }
 
 /**
+ * Build the check that tells the user a Claude login probe could not run on the
+ * ACP path. The check is a warn, not an info, so `summarizeStatus` never
+ * reports a pass. The check code is distinct from `adapter_auth_missing`, so the
+ * user interface never shows the login affordance for a probe that could not
+ * confirm the login state. Nicky's direction: a sandbox Test without available
+ * auth must not report a success.
+ */
+function buildAcpLoginProbeUnavailableCheck(message: string, detail?: string): AdapterEnvironmentCheck {
+  return {
+    code: "claude_acp_login_probe_unavailable",
+    level: "warn",
+    message,
+    ...(detail ? { detail } : {}),
+    hint: "Verify that the sandbox can run `claude` and retry the Test. Set engine=cli to use the Claude CLI lane.",
+  };
+}
+
+/**
  * Probe the stored Claude login inside a sandbox on the ACP path. The ACP engine
  * and the Claude CLI share the same stored Claude login, so the probe runs the
- * `claude` command with a short hello turn. When the probe reports that login is
- * required, the function returns the canonical auth-missing checks. The user
- * interface reads the canonical check to offer login on the default ACP path,
- * the same way it does for the Claude CLI path.
+ * `claude` command with a short hello turn. The caller passes the prepared
+ * `env`, so the probe reads the managed `CLAUDE_CONFIG_DIR` the same way the CLI
+ * lane does. When the probe reports that login is required, the function returns
+ * the canonical auth-missing checks. The user interface reads the canonical
+ * check to offer login on the default ACP path, the same way it does for the
+ * Claude CLI path.
  *
- * The function fails safe. When the probe cannot run or times out, it returns no
- * checks, so the Test never shows a false login affordance.
+ * The function keeps two signals distinct. It returns `adapter_auth_missing`
+ * only when the probe ran and login is required. It returns a separate warn
+ * check when the probe could not run, timed out, or did not complete. It never
+ * maps "probe could not run" to a silent pass.
  */
 export async function probeClaudeAcpSandboxLogin(input: {
   config: Record<string, unknown>;
   target: AdapterExecutionTarget;
+  env?: Record<string, string>;
 }): Promise<AdapterEnvironmentCheck[]> {
   const { config, target } = input;
-  const envConfig = parseObject(config.env);
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(envConfig)) {
-    if (typeof value === "string") env[key] = value;
+  let env: Record<string, string>;
+  if (input.env) {
+    env = input.env;
+  } else {
+    const envConfig = parseObject(config.env);
+    env = {};
+    for (const [key, value] of Object.entries(envConfig)) {
+      if (typeof value === "string") env[key] = value;
+    }
   }
   const command = "claude";
   const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
@@ -555,18 +585,33 @@ export async function probeClaudeAcpSandboxLogin(input: {
       stdin: "Respond with hello.",
       onLog: async () => {},
     });
-  } catch {
-    return [];
+  } catch (err) {
+    return [
+      buildAcpLoginProbeUnavailableCheck(
+        "The Claude login probe could not run in the sandbox.",
+        err instanceof Error ? err.message : String(err),
+      ),
+    ];
   }
-  if (probe.timedOut) return [];
+  if (probe.timedOut) {
+    return [buildAcpLoginProbeUnavailableCheck("The Claude login probe timed out.")];
+  }
   const parsedStream = parseClaudeStreamJson(probe.stdout);
   const loginMeta = detectClaudeLoginRequired({
     parsed: parsedStream.resultJson,
     stdout: probe.stdout,
     stderr: probe.stderr,
   });
-  if (!loginMeta.requiresLogin) return [];
-  return buildAcpSandboxAuthMissingChecks(loginMeta.loginUrl);
+  if (loginMeta.requiresLogin) {
+    return buildAcpSandboxAuthMissingChecks(loginMeta.loginUrl);
+  }
+  if ((probe.exitCode ?? 1) !== 0) {
+    const detail = firstNonEmptyString(probe.stderr, probe.stdout)?.replace(/\s+/g, " ").trim().slice(0, 240);
+    return [
+      buildAcpLoginProbeUnavailableCheck("The Claude login probe did not complete.", detail),
+    ];
+  }
+  return [];
 }
 
 export async function testClaudeAcpEnvironment(
@@ -674,16 +719,41 @@ export async function testClaudeAcpEnvironment(
 
   // A sandbox target can start a login flow, and subscription auth is the only
   // credential source left after the branches above rule out Bedrock and an
-  // API key. Probe the stored Claude login so the Test result carries the
-  // canonical adapter_auth_missing signal when login is required. The user
-  // interface reads that signal to offer login on the default ACP path.
+  // API key. Prepare the sandbox the same way the CLI lane does — install the
+  // Claude CLI when it is absent and materialize the managed CLAUDE_CONFIG_DIR
+  // — then probe the stored Claude login. The Test result carries the canonical
+  // adapter_auth_missing signal when login is required, and a distinct warn
+  // check when the probe cannot run. The user interface reads the canonical
+  // signal to offer login on the default ACP path.
   if (
     target?.kind === "remote" &&
     target.transport === "sandbox" &&
     !hasBedrock &&
     !isNonEmpty(configApiKey)
   ) {
-    checks.push(...(await probeClaudeAcpSandboxLogin({ config, target })));
+    const probeEnv: Record<string, string> = {};
+    for (const [key, value] of Object.entries(envConfig)) {
+      if (typeof value === "string") probeEnv[key] = value;
+    }
+    const runId = `claude-acp-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    checks.push(
+      ...(await prepareSandboxClaudeProbeRuntime({
+        runId,
+        target,
+        cwd,
+        companyId: ctx.companyId,
+        env: probeEnv,
+        installCommand: SANDBOX_INSTALL_COMMAND,
+        detectCommand: "claude",
+        targetIsRemote: true,
+        targetIsSandbox: true,
+        helloProbeTimeoutSec: asNumber(config.helloProbeTimeoutSec, 90),
+      })),
+    );
+    const canProbe = !checks.some((check) => check.code === "claude_managed_config_dir_failed");
+    if (canProbe) {
+      checks.push(...(await probeClaudeAcpSandboxLogin({ config, target, env: probeEnv })));
+    }
   }
 
   const mode = firstNonEmptyString(config.mode, config.acpMode) ?? DEFAULT_ACP_ENGINE_MODE;

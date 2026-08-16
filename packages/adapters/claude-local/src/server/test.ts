@@ -1,6 +1,3 @@
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
@@ -18,12 +15,9 @@ import {
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetDirectory,
-  maybeRunSandboxInstallCommand,
-  prepareAdapterExecutionTargetRuntime,
   runAdapterExecutionTargetProcess,
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
-  adapterExecutionTargetUsesManagedHome,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
   describeClaudeFailure,
@@ -35,7 +29,7 @@ import {
 import { claudeCommandLooksLike, claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
 import { isBedrockModelId } from "./models.js";
 import { buildClaudeProbePermissionArgs } from "./permissions.js";
-import { materializeRemoteClaudeConfig, prepareClaudeConfigSeed } from "./claude-config.js";
+import { prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveClaudeExecutionEngineForRun, testClaudeAcpEnvironment } from "./acp.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
@@ -153,77 +147,20 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
-  const installCheck = await maybeRunSandboxInstallCommand({
-    runId,
-    target,
-    adapterKey: "claude",
-    installCommand: SANDBOX_INSTALL_COMMAND,
-    detectCommand: command,
-    env,
-  });
-  if (installCheck) checks.push(installCheck);
-  const hasExplicitClaudeConfigDir = isNonEmpty(env.CLAUDE_CONFIG_DIR);
-  if (targetIsRemote && adapterExecutionTargetUsesManagedHome(target) && !hasExplicitClaudeConfigDir) {
-    let tempWorkspaceDir: string | null = null;
-    let preparedRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | null = null;
-    try {
-      const seedDir = await prepareClaudeConfigSeed(process.env, async () => {}, ctx.companyId);
-      const managedRemoteCwd = target?.kind === "remote" ? target.remoteCwd : cwd;
-      tempWorkspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-envtest-workspace-"));
-      preparedRuntime = await prepareAdapterExecutionTargetRuntime({
-        runId,
-        target,
-        adapterKey: "claude",
-        workspaceLocalDir: tempWorkspaceDir,
-        workspaceRemoteDir: managedRemoteCwd,
-        timeoutSec: Math.max(1, asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45)),
-        assets: [
-          {
-            key: "config-seed",
-            localDir: seedDir,
-            followSymlinks: true,
-          },
-        ],
-      });
-      const runtimeRootDir =
-        preparedRuntime.runtimeRootDir ?? path.posix.join(managedRemoteCwd, ".paperclip-runtime", "claude");
-      const remoteClaudeConfigSeedDir =
-        preparedRuntime.assetDirs["config-seed"] ?? path.posix.join(runtimeRootDir, "config-seed");
-      const remoteClaudeConfigDir = path.posix.join(runtimeRootDir, "config");
-      env.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
-      await materializeRemoteClaudeConfig({
-        runId,
-        target,
-        remoteClaudeConfigDir,
-        remoteClaudeConfigSeedDir,
-        options: {
-          cwd,
-          env,
-          timeoutSec: Math.max(15, asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45)),
-          graceSec: 5,
-          onLog: async () => {},
-        },
-      });
-      checks.push({
-        code: "claude_managed_config_dir",
-        level: "info",
-        message: "Sandbox probe is using Paperclip-managed Claude config materialization.",
-        detail: remoteClaudeConfigDir,
-      });
-    } catch (err) {
-      checks.push({
-        code: "claude_managed_config_dir_failed",
-        level: "error",
-        message: "Could not materialize Paperclip-managed Claude config for the sandbox probe.",
-        detail: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      await preparedRuntime?.restoreWorkspace().catch(() => undefined);
-      if (tempWorkspaceDir) {
-        await fs.rm(tempWorkspaceDir, { recursive: true, force: true }).catch(() => undefined);
-      }
-    }
-  }
+  checks.push(
+    ...(await prepareSandboxClaudeProbeRuntime({
+      runId,
+      target,
+      cwd,
+      companyId: ctx.companyId,
+      env,
+      installCommand: SANDBOX_INSTALL_COMMAND,
+      detectCommand: command,
+      targetIsRemote,
+      targetIsSandbox,
+      helloProbeTimeoutSec: asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
+    })),
+  );
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   try {
     await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
