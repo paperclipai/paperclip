@@ -1968,6 +1968,7 @@ export function environmentRuntimeService(
     async releaseRunLeases(
       heartbeatRunId: string,
       status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed"> = "released",
+      onLeaseReleaseError?: (leaseId: string, error: unknown) => void,
     ): Promise<EnvironmentRuntimeLeaseRecord[]> {
       const leaseRows = await db
         .select()
@@ -1982,31 +1983,39 @@ export function environmentRuntimeService(
         return [];
       }
 
+      // Release each lease in its own try/catch. One driver error must not stop
+      // the release of the later leases. The caller records each lease-specific
+      // error through `onLeaseReleaseError` for its log path. Keep the order
+      // serial.
       const released: EnvironmentRuntimeLeaseRecord[] = [];
       for (const leaseRow of leaseRows) {
-        const environment = await environmentsSvc.getById(leaseRow.environmentId);
-        if (!environment) continue;
+        try {
+          const environment = await environmentsSvc.getById(leaseRow.environmentId);
+          if (!environment) continue;
 
-        const leaseSnapshot = toEnvironmentLeaseSnapshot(leaseRow);
-        const driver = getDriver(getLeaseDriverKey(leaseSnapshot, environment));
-        const lease = driver
-          ? await driver.releaseRunLease({
-              environment,
-              lease: leaseSnapshot,
-              status,
-            })
-          : await environmentsSvc.releaseLease(leaseRow.id, status);
-        if (!lease) continue;
+          const leaseSnapshot = toEnvironmentLeaseSnapshot(leaseRow);
+          const driver = getDriver(getLeaseDriverKey(leaseSnapshot, environment));
+          const lease = driver
+            ? await driver.releaseRunLease({
+                environment,
+                lease: leaseSnapshot,
+                status,
+              })
+            : await environmentsSvc.releaseLease(leaseRow.id, status);
+          if (!lease) continue;
 
-        released.push({
-          environment,
-          lease,
-          leaseContext: {
-            executionWorkspaceId: lease.executionWorkspaceId,
-            executionWorkspaceMode:
-              (lease.metadata?.executionWorkspaceMode as ExecutionWorkspace["mode"] | null | undefined) ?? null,
-          },
-        });
+          released.push({
+            environment,
+            lease,
+            leaseContext: {
+              executionWorkspaceId: lease.executionWorkspaceId,
+              executionWorkspaceMode:
+                (lease.metadata?.executionWorkspaceMode as ExecutionWorkspace["mode"] | null | undefined) ?? null,
+            },
+          });
+        } catch (error) {
+          onLeaseReleaseError?.(leaseRow.id, error);
+        }
       }
 
       return released;

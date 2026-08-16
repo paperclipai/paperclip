@@ -172,6 +172,7 @@ describeEmbeddedPostgres("attention service", () => {
     unblockDescriptor?: { owner: { userId: string } | "board"; action: string } | null;
     blockedTransitionAt?: Date | null;
     harnessKind?: string | null;
+    reviewPolicy?: "anyone" | "not_creator" | "human_only" | null;
   }) {
     const id = input.id ?? randomUUID();
     await db.insert(issues).values({
@@ -181,6 +182,7 @@ describeEmbeddedPostgres("attention service", () => {
       title: input.title,
       status: input.status,
       priority: input.priority ?? "medium",
+      reviewPolicy: input.reviewPolicy ?? null,
       parentId: input.parentId ?? null,
       projectId: input.projectId ?? null,
       projectWorkspaceId: input.projectWorkspaceId ?? null,
@@ -314,6 +316,9 @@ describeEmbeddedPostgres("attention service", () => {
       title: "Stalled review blocker",
       status: "in_review",
       assigneeAgentId: reviewerId,
+      // PAP-16506: the /decisions review card states who may give the verdict,
+      // so the subject has to carry the issue's opt-in constraint.
+      reviewPolicy: "human_only",
       updatedAt: new Date("2026-07-09T12:05:00.000Z"),
     });
     await db.insert(issueRelations).values({
@@ -673,7 +678,10 @@ describeEmbeddedPostgres("attention service", () => {
       // A stalled review resolves in-row on the /decisions card (PAP-16080 §4.4).
       inlineResolvable: true,
       subject: expect.objectContaining({
-        metadata: expect.objectContaining({ reviewAttentionState: "stalled" }),
+        metadata: expect.objectContaining({
+          reviewAttentionState: "stalled",
+          reviewPolicy: "human_only",
+        }),
       }),
       decisionVerbs: expect.arrayContaining([
         expect.objectContaining({ id: "choose_review_path", label: "Choose review path" }),

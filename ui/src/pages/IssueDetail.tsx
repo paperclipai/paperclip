@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode, type Ref } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode, type Ref } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
@@ -40,6 +40,15 @@ import {
 } from "../lib/issueDetailBreadcrumb";
 import { resolveIssueActiveRun, shouldTrackIssueActiveRun } from "../lib/issueActiveRun";
 import { getIssueDetailQueryOptions } from "../lib/issueDetailCache";
+import {
+  beginIssueDetailNavigation,
+  ISSUE_DETAIL_CONTENT_MEASURE,
+  ISSUE_DETAIL_CONTENT_PAINT_MARK,
+  ISSUE_DETAIL_HEADER_MEASURE,
+  ISSUE_DETAIL_HEADER_PAINT_MARK,
+  reportIssueDetailWebVitals,
+  scheduleIssueDetailPaintMeasure,
+} from "../lib/issue-detail-performance";
 import {
   beginLocalInboxArchive,
   boundLocalInboxArchive,
@@ -92,7 +101,7 @@ import {
 } from "../components/IssueChatThread";
 import { TaskChatThread } from "../components/TaskChatThread";
 import type { TaskChatIssueBrief } from "../components/task-chat/TaskChatDescriptionBubble";
-import { useTaskChatRedesignEnabled } from "../hooks/useTaskChatRedesignEnabled";
+import { useClassicTaskInterfaceEnabled } from "../hooks/useClassicTaskInterfaceEnabled";
 import { workModeMetaFor } from "../lib/work-mode-meta";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
 import { IssueAttachmentsSection } from "../components/IssueAttachmentsSection";
@@ -125,6 +134,7 @@ import { IssueProperties } from "../components/IssueProperties";
 import { PauseAffectsSummaryView } from "../components/interrupt-handoff/InterruptHandoffViews";
 import { computePauseAffectsSummary } from "../lib/interrupt-handoff";
 import { useIssueExternalObjects } from "../hooks/useIssueExternalObjects";
+import { useIssuePlanDocument } from "../hooks/useIssuePlanDocument";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import type { MentionOption } from "../components/MarkdownEditor";
@@ -198,9 +208,9 @@ import {
 import { Badge } from "@/components/ui/badge";
 import {
   deriveOriginatingActor,
-  getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  ONBOARDING_FIRST_TASK_ORIGIN_KIND,
   type AskUserQuestionsAnswer,
   type AskUserQuestionsInteraction,
   type ActivityEvent,
@@ -222,6 +232,12 @@ import {
   type WorkspaceFileRef,
   workspaceFileRefSchema,
 } from "@paperclipai/shared";
+
+// Stable empty array for React Query `data` defaults. A literal `= []` default
+// creates a new array reference on every render while `data` is undefined
+// (loading/idle), which destabilizes downstream memos and panel keys that
+// depend on it. Reusing one shared reference keeps those values stable.
+const EMPTY_ISSUES: Issue[] = [];
 
 type StopAndFinalizeRunError = Error & {
   runCancelledBeforeStatusUpdateFailed?: boolean;
@@ -653,33 +669,76 @@ function IssueSectionSkeleton({
   );
 }
 
+/**
+ * One chat-bubble placeholder mirroring TaskChatBubble's anatomy: agent replies
+ * sit left under an avatar + name author row, human messages sit right with no
+ * header. The bubble reuses the real rounding (rounded-2xl with a squared tail
+ * corner) so the skeleton reads as a conversation, not a stack of cards.
+ */
+function ChatBubbleSkeleton({
+  side,
+  className,
+}: {
+  side: "agent" | "human";
+  className?: string;
+}) {
+  const isHuman = side === "human";
+  return (
+    <div className={cn("flex w-full flex-col gap-1", isHuman ? "items-end" : "items-start")}>
+      {isHuman ? null : (
+        <span className="flex items-center gap-2 px-1">
+          <Skeleton className="h-6 w-6 rounded-full" />
+          <Skeleton className="h-3 w-24" />
+        </span>
+      )}
+      <Skeleton
+        className={cn(
+          "max-w-(--pct-85)",
+          isHuman ? "rounded-2xl rounded-br-sm" : "rounded-2xl rounded-bl-sm",
+          className,
+        )}
+      />
+    </div>
+  );
+}
+
+/**
+ * Composer placeholder mirroring TaskChatComposer's docked card (a bordered
+ * rounded input area with a plus, a mode chip, and a send affordance) so the
+ * foot of the loading state matches the real chat shell.
+ */
+function IssueChatComposerSkeleton({ className }: { className?: string }) {
+  return (
+    <div
+      className={cn("rounded-xl border border-input bg-card p-2", className)}
+      data-testid="issue-chat-composer-skeleton"
+    >
+      <div className="min-h-(--sz-48px) space-y-2 px-1 py-1">
+        <Skeleton className="h-3 w-1/2" />
+        <Skeleton className="h-3 w-1/3" />
+      </div>
+      <div className="mt-1 flex items-center gap-2">
+        <Skeleton className="h-8 w-8 rounded-md" />
+        <Skeleton className="h-8 w-24 rounded-md" />
+        <div className="flex-1" />
+        <Skeleton className="h-8 w-8 rounded-md" />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Alternating chat-bubble placeholders for the thread body. Widths and heights
+ * vary so the skeleton mirrors a real back-and-forth (TaskChatThreadView)
+ * rather than the pre-chat bordered card it replaced.
+ */
 function IssueChatSkeleton() {
   return (
-    <div className="space-y-3 rounded-lg border border-border p-3">
-      <div className="space-y-2">
-        <div className="flex items-center gap-2">
-          <Skeleton className="h-8 w-8 rounded-full" />
-          <div className="space-y-2">
-            <Skeleton className="h-3 w-24" />
-            <Skeleton className="h-3 w-16" />
-          </div>
-        </div>
-        <Skeleton className="h-20 w-full rounded-xl" />
-      </div>
-      <div className="space-y-2">
-        <div className="flex items-center justify-end gap-2">
-          <div className="space-y-2 text-right">
-            <Skeleton className="ml-auto h-3 w-20" />
-            <Skeleton className="ml-auto h-3 w-14" />
-          </div>
-          <Skeleton className="h-8 w-8 rounded-full" />
-        </div>
-        <Skeleton className="ml-auto h-16 w-(--pct-85) rounded-xl" />
-      </div>
-      <div className="space-y-2 border-t border-border pt-3">
-        <Skeleton className="h-3 w-28" />
-        <Skeleton className="h-24 w-full rounded-xl" />
-      </div>
+    <div className="flex flex-col gap-3" data-testid="issue-chat-skeleton">
+      <ChatBubbleSkeleton side="agent" className="h-16 w-3/4" />
+      <ChatBubbleSkeleton side="human" className="h-9 w-1/2" />
+      <ChatBubbleSkeleton side="agent" className="h-24 w-4/5" />
+      <ChatBubbleSkeleton side="human" className="h-8 w-2/5" />
     </div>
   );
 }
@@ -690,7 +749,8 @@ function IssueDetailLoadingState({
   headerSeed: ReturnType<typeof readIssueDetailHeaderSeed>;
 }) {
   const identifier = headerSeed?.identifier ?? headerSeed?.id.slice(0, 8) ?? null;
-  const { enabled: taskChatShellEnabled } = useTaskChatRedesignEnabled();
+  const { enabled: classicTaskInterfaceEnabled } = useClassicTaskInterfaceEnabled();
+  const taskChatShellEnabled = !classicTaskInterfaceEnabled;
 
   return (
     <div
@@ -763,17 +823,29 @@ function IssueDetailLoadingState({
         )}
       </div>
 
-      <Skeleton className="h-28 w-full rounded-lg border border-border" />
-
-      <div className="space-y-3">
-        <div className="flex items-center gap-2">
-          <Skeleton className="h-8 w-20" />
-          <Skeleton className="h-8 w-20" />
+      {taskChatShellEnabled ? (
+        // Chat shell: the thread is the whole surface — alternating bubble
+        // placeholders followed by the docked composer, no tab strip or
+        // properties-card chrome (those don't exist in the chat layout).
+        <div className="space-y-6">
+          <IssueChatSkeleton />
+          <IssueChatComposerSkeleton />
         </div>
-        <IssueChatSkeleton />
-      </div>
+      ) : (
+        <>
+          <Skeleton className="h-28 w-full rounded-lg border border-border" />
 
-      <IssueSectionSkeleton titleWidth="w-24" rows={3} />
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Skeleton className="h-8 w-20" />
+              <Skeleton className="h-8 w-20" />
+            </div>
+            <IssueChatSkeleton />
+          </div>
+
+          <IssueSectionSkeleton titleWidth="w-24" rows={3} />
+        </>
+      )}
     </div>
   );
 }
@@ -915,14 +987,14 @@ type IssueDetailChatTabProps = {
   /** Optional node rendered inline directly above the reply composer (e.g. the monitor strip). */
   composerAccessory?: ReactNode;
   /**
-   * Issue header (title row, badges, plugin toolbars) that the redesigned
+   * Issue header (title row, badges, plugin toolbars) that the chat-style
    * thread renders inside its scroll viewport so it scrolls away with the
-   * messages (flag: enableTaskChatRedesign). Ignored by the legacy thread.
+   * messages. Ignored by the classic thread (flag: enableClassicTaskInterface).
    */
   threadHeader?: ReactNode;
   /**
    * The task description rendered as the requester's first chat bubble in the
-   * redesigned thread (PAP-375). Ignored by the legacy thread.
+   * chat-style thread (PAP-375). Ignored by the classic thread.
    */
   issueBrief?: TaskChatIssueBrief;
   footer?: ReactNode;
@@ -1056,11 +1128,12 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   externalReferences,
   linkCaseReferences,
 }: IssueDetailChatTabProps) {
-  // Seam for the Task Chat Redesign (flag: enableTaskChatRedesign). Flag OFF
-  // renders IssueChatThread verbatim — the flag-off branch is provably today's
-  // UI. Both components share one prop type, so no cast is needed.
-  const { enabled: taskChatRedesignEnabled } = useTaskChatRedesignEnabled();
-  const ThreadComponent = taskChatRedesignEnabled ? TaskChatThread : IssueChatThread;
+  // Seam for the Classic Task Interface (flag: enableClassicTaskInterface).
+  // Flag ON renders the legacy IssueChatThread verbatim; flag OFF (the
+  // default) renders the chat-style TaskChatThread. Both components share one
+  // prop type, so no cast is needed.
+  const { enabled: classicTaskInterfaceEnabled } = useClassicTaskInterfaceEnabled();
+  const ThreadComponent = classicTaskInterfaceEnabled ? IssueChatThread : TaskChatThread;
   const { data: activity } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
@@ -1153,7 +1226,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       if (followUpCommentIds.has(comment.id)) {
         nextComment.followUpRequested = true;
       }
-      const queuedTargetRunId = locallyQueuedCommentRunIds.get(comment.id) ?? null;
+      const queuedTargetRunId =
+        locallyQueuedCommentRunIds.get(comment.id) ?? nextComment.queueTargetRunId ?? null;
       const locallyQueuedComment = applyLocalQueuedIssueCommentState(nextComment, {
         queuedTargetRunId,
         targetRunIsLive: queuedTargetRunId ? liveRunIds.has(queuedTargetRunId) : false,
@@ -1161,6 +1235,12 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       });
       if (locallyQueuedComment !== nextComment) {
         return locallyQueuedComment;
+      }
+      // A queued target is fixed when the message is submitted. If that run
+      // settles while the request is still in flight, do not rebind the
+      // message's Interrupt action to an unrelated run that became live later.
+      if (queuedTargetRunId) {
+        return nextComment;
       }
       if (
         isQueuedIssueComment({
@@ -1176,7 +1256,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         return {
           ...nextComment,
           queueState: "queued" as const,
-          queueTargetRunId: interruptibleIssueRun?.id ?? nextComment.queueTargetRunId ?? null,
+          queueTargetRunId: interruptibleIssueRun?.id ?? null,
           queueReason: queuedCommentReason,
         };
       }
@@ -1215,18 +1295,27 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   ) : null;
 
   return (
-    <div className={taskChatRedesignEnabled ? "flex min-h-0 flex-1 flex-col" : "space-y-3"}>
-      {/* Redesign: the button rides inside the thread's scroll viewport with the
-          header so nothing sits above the thread in the page flow. */}
-      {taskChatRedesignEnabled ? null : loadOlderButton}
+    <div className={classicTaskInterfaceEnabled ? "space-y-3" : "flex min-h-0 flex-1 flex-col"}>
+      {/* Chat-style: the button rides inside the thread's scroll viewport with
+          the header so nothing sits above the thread in the page flow. */}
+      {classicTaskInterfaceEnabled ? loadOlderButton : null}
       {commentsInitialLoading && commentsWithRunMeta.length === 0 && interactions.length === 0 ? (
-        <IssueChatSkeleton />
+        classicTaskInterfaceEnabled ? (
+          <IssueChatSkeleton />
+        ) : (
+          // Chat shell: center the bubbles at the thread cap (mirrors
+          // TaskChatThreadView) and dock a composer placeholder beneath them.
+          <div className="mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-3 px-4 py-4">
+            <IssueChatSkeleton />
+            <IssueChatComposerSkeleton className="mt-3" />
+          </div>
+        )
       ) : (
       <ThreadComponent
         composerRef={composerRef}
         composerAccessory={composerAccessory}
         threadHeader={
-          taskChatRedesignEnabled && (threadHeader || loadOlderButton) ? (
+          !classicTaskInterfaceEnabled && (threadHeader || loadOlderButton) ? (
             <>
               {threadHeader}
               {loadOlderButton}
@@ -1604,15 +1693,16 @@ function IssueDetailActivityTab({
 export function IssueDetail() {
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId } = useCompany();
-  // Task Chat Redesign (flag: enableTaskChatRedesign): with the flag ON the
-  // thread owns the center column — the legacy title/description block,
-  // sub-tasks table, plan decompositions and Documents section are gated off
-  // (plan lives in the properties-pane Plan tab). Flag OFF renders the legacy
-  // page byte-identically.
-  const { enabled: taskChatShellEnabled } = useTaskChatRedesignEnabled();
-  // Flag ON the page wrapper spans the full center pane so the thread's scroll
-  // viewport (and its scrollbar) reaches the properties-pane border; every
-  // non-thread section re-centers itself at the 60rem shell cap instead.
+  // Classic Task Interface (flag: enableClassicTaskInterface): with the flag
+  // OFF (the default) the chat-style thread owns the center column — the
+  // legacy title/description block, sub-tasks table, plan decompositions and
+  // Documents section are gated off (plan lives in the properties-pane Plan
+  // tab). Flag ON restores the legacy page.
+  const { enabled: classicTaskInterfaceEnabled } = useClassicTaskInterfaceEnabled();
+  const taskChatShellEnabled = !classicTaskInterfaceEnabled;
+  // Chat-style: the page wrapper spans the full center pane so the thread's
+  // scroll viewport (and its scrollbar) reaches the properties-pane border;
+  // every non-thread section re-centers itself at the 60rem shell cap instead.
   const shellSectionClass = taskChatShellEnabled
     ? "mx-auto w-full max-w-(--tc-shell-max-w)"
     : undefined;
@@ -1675,12 +1765,16 @@ export function IssueDetail() {
   });
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
   const externalObjectsState = useIssueExternalObjects(issue?.id ?? null);
-  const commentComposerDisabledReason = useMemo(() => {
-    if (!issue?.currentExecutionWorkspace || !isClosedIsolatedExecutionWorkspace(issue.currentExecutionWorkspace)) {
-      return null;
-    }
-    return getClosedIsolatedExecutionWorkspaceMessage(issue.currentExecutionWorkspace);
-  }, [issue?.currentExecutionWorkspace]);
+  // A closed isolated workspace no longer blocks the composer. The server reopens
+  // the workspace when the next comment or resume arrives, so the composer stays
+  // enabled and a hint tells the user what happens.
+  const closedIsolatedWorkspaceReopenPending = useMemo(
+    () => Boolean(
+      issue?.currentExecutionWorkspace
+      && isClosedIsolatedExecutionWorkspace(issue.currentExecutionWorkspace),
+    ),
+    [issue?.currentExecutionWorkspace],
+  );
 
   const {
     data: commentPages,
@@ -1707,6 +1801,25 @@ export function IssueDetail() {
     () => flattenIssueCommentPages(commentPages?.pages),
     [commentPages?.pages],
   );
+
+  useLayoutEffect(() => {
+    beginIssueDetailNavigation();
+  }, [issueId]);
+
+  useEffect(() => {
+    if (!(import.meta.env.DEV || import.meta.env.MODE === "qa")) return;
+    return reportIssueDetailWebVitals();
+  }, [issueId]);
+
+  useEffect(() => {
+    if (!issue) return;
+    scheduleIssueDetailPaintMeasure(ISSUE_DETAIL_HEADER_PAINT_MARK, ISSUE_DETAIL_HEADER_MEASURE);
+  }, [issue?.id]);
+
+  useEffect(() => {
+    if (!issue || commentsLoading) return;
+    scheduleIssueDetailPaintMeasure(ISSUE_DETAIL_CONTENT_PAINT_MARK, ISSUE_DETAIL_CONTENT_MEASURE);
+  }, [commentsLoading, issue?.id]);
   const shouldPrefetchOlderComments = useMemo(
     () =>
       shouldAutoloadOlderIssueComments({
@@ -1769,7 +1882,7 @@ export function IssueDetail() {
     [issueId, location.state, location.search],
   );
 
-  const { data: rawChildIssues = [], isLoading: childIssuesLoading } = useQuery({
+  const { data: rawChildIssuesData, isLoading: childIssuesLoading } = useQuery({
     queryKey:
       issue?.id && resolvedCompanyId
         ? queryKeys.issues.listByDescendantRoot(resolvedCompanyId, issue.id)
@@ -1778,8 +1891,9 @@ export function IssueDetail() {
     enabled: !!resolvedCompanyId && !!issue?.id,
     placeholderData: keepPreviousDataForSameQueryTail<Issue[]>(issue?.id ?? "pending"),
   });
+  const rawChildIssues: Issue[] = rawChildIssuesData ?? EMPTY_ISSUES;
   const {
-    data: rawSiblingIssues = [],
+    data: rawSiblingIssuesData,
     isLoading: siblingIssuesLoading,
     isError: siblingIssuesError,
   } = useQuery({
@@ -1790,6 +1904,7 @@ export function IssueDetail() {
     queryFn: () => issuesApi.list(resolvedCompanyId!, { parentId: issue!.parentId!, includeBlockedBy: true }),
     enabled: !!resolvedCompanyId && !!issue?.parentId,
   });
+  const rawSiblingIssues: Issue[] = rawSiblingIssuesData ?? EMPTY_ISSUES;
   const companyLiveRunsQueryKey = resolvedCompanyId ? queryKeys.liveRuns(resolvedCompanyId) : ["live-runs", "pending"] as const;
   const sharedCompanyLiveRuns = useSharedPollingQuery<LiveRunForIssue[]>({
     companyId: resolvedCompanyId,
@@ -1996,6 +2111,27 @@ export function IssueDetail() {
     () => childIssues,
     [issuePanelKey],
   );
+  // Onboarding first task only: hide the Properties sidebar until a plan exists,
+  // then reveal it already on the Plan tab. We gate the panel *mount* (withhold
+  // the panel content) rather than flipping the global `panelVisible` preference
+  // — that preference persists to localStorage and would leak "hidden" into every
+  // other task. Every non-first task has originKind !== onboarding_first_task, so
+  // `suppressPanelForFirstTask` stays false and behavior is unchanged. The user
+  // can still opt in early via the "Show properties" header button, which sets a
+  // per-issue override (keyed on the issue id so it resets across navigations).
+  const isOnboardingFirstTask =
+    taskChatShellEnabled &&
+    issue?.originKind === ONBOARDING_FIRST_TASK_ORIGIN_KIND;
+  const { data: firstTaskPlanDoc } = useIssuePlanDocument(
+    isOnboardingFirstTask ? issue?.id : null,
+  );
+  const [firstTaskPanelOverrideIssueId, setFirstTaskPanelOverrideIssueId] = useState<
+    string | null
+  >(null);
+  const firstTaskPanelOverride =
+    firstTaskPanelOverrideIssueId !== null && firstTaskPanelOverrideIssueId === issue?.id;
+  const suppressPanelForFirstTask =
+    isOnboardingFirstTask && !firstTaskPlanDoc && !firstTaskPanelOverride;
   const showRichSubIssuesSection = shouldRenderRichSubIssuesSection(childIssuesLoading, childIssues.length);
   const siblingNavigation = useMemo(
     () => issue && !childIssuesLoading && !siblingIssuesLoading && !siblingIssuesError
@@ -2146,6 +2282,37 @@ export function IssueDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
     }
   }, [queryClient, selectedCompanyId]);
+  const undoInboxArchive = useCallback(async (
+    id: string,
+    companyId: string | undefined,
+    previousData: InboxIssueCacheSnapshot,
+  ) => {
+    if (companyId) {
+      await cancelInboxIssueQueries(queryClient, companyId);
+      clearLocalInboxArchive(companyId, id);
+      restoreIssueToInboxCaches(queryClient, previousData, id);
+    }
+
+    try {
+      await issuesApi.unarchiveFromInbox(id);
+      pushToast({ title: "Task restored to inbox", tone: "success" });
+    } catch (error) {
+      if (companyId) {
+        beginLocalInboxArchive(companyId, id);
+        removeIssueFromInboxCaches(queryClient, companyId, id);
+        boundLocalInboxArchive(companyId, id);
+      }
+      pushToast({
+        title: "Undo failed",
+        body: error instanceof Error ? error.message : "Unable to restore this task to the inbox",
+        tone: "error",
+      });
+    } finally {
+      if (companyId) {
+        await invalidateInboxIssueQueries(queryClient, companyId);
+      }
+    }
+  }, [pushToast, queryClient]);
   const upsertInteractionInCache = useCallback((interaction: IssueThreadInteraction) => {
     queryClient.setQueryData<IssueThreadInteraction[] | undefined>(
       queryKeys.issues.interactions(issueId!),
@@ -2461,7 +2628,49 @@ export function IssueDetail() {
   });
   const handleChildIssueUpdate = useCallback((id: string, data: Record<string, unknown>) => {
     updateChildIssue.mutate({ id, data });
-  }, [updateChildIssue]);
+  }, [updateChildIssue.mutate]);
+
+  // PAP-496: the chat shell keeps the full sub-task tree directly below the
+  // title in the center column. This is the tree's single chat-shell home; the
+  // Properties pane does not duplicate it. Classic mode keeps its existing
+  // center-column section below the header.
+  const subTasksTree = useMemo(
+    () =>
+      taskChatShellEnabled && issue && showRichSubIssuesSection ? (
+        <IssuesList
+          issues={childIssues}
+          isLoading={childIssuesLoading}
+          agents={agents}
+          projects={projects}
+          liveIssueIds={liveIssueIds}
+          projectId={issue.projectId ?? undefined}
+          viewStateKey={`paperclip:issue-detail:${issue.id}:subissues-view`}
+          issueLinkState={resolvedIssueDetailState ?? location.state}
+          searchFilters={{ descendantOf: issue.id, includeBlockedBy: true }}
+          searchWithinLoadedIssues
+          baseCreateIssueDefaults={buildSubIssueDefaultsForViewer(issue, currentUserId)}
+          createIssueLabel="Sub-task"
+          defaultSortField="workflow"
+          showProgressSummary
+          parentIssueIdForCostSummary={issue.id}
+          onUpdateIssue={handleChildIssueUpdate}
+        />
+      ) : null,
+    [
+      taskChatShellEnabled,
+      issue,
+      showRichSubIssuesSection,
+      childIssues,
+      childIssuesLoading,
+      agents,
+      projects,
+      liveIssueIds,
+      resolvedIssueDetailState,
+      location.state,
+      currentUserId,
+      handleChildIssueUpdate,
+    ],
+  );
 
   const checkIssueMonitorNow = useMutation({
     mutationFn: () => issuesApi.checkMonitorNow(issueId!),
@@ -3178,13 +3387,22 @@ export function IssueDetail() {
       removeIssueFromInboxCaches(queryClient, selectedCompanyId, id);
       return { companyId: selectedCompanyId, previousData };
     },
-    onSuccess: (_data, id) => {
+    onSuccess: (_data, id, context) => {
       if (selectedCompanyId) {
         removeIssueFromInboxCaches(queryClient, selectedCompanyId, id);
       }
       invalidateIssueCollections();
       navigate(sourceBreadcrumb.href.startsWith("/inbox") ? sourceBreadcrumb.href : "/inbox", { replace: true });
-      pushToast({ title: "Task archived from inbox", tone: "success" });
+      pushToast({
+        title: "Task archived from inbox",
+        tone: "success",
+        action: {
+          label: "Undo",
+          onClick: () => {
+            void undoInboxArchive(id, context?.companyId, context?.previousData ?? []);
+          },
+        },
+      });
     },
     onError: (err, id, context) => {
       if (context?.companyId) clearLocalInboxArchive(context.companyId, id);
@@ -3273,7 +3491,7 @@ export function IssueDetail() {
   }, [issue?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!panelIssue) {
+    if (!panelIssue || suppressPanelForFirstTask) {
       closePanel();
       return;
     }
@@ -3301,6 +3519,7 @@ export function IssueDetail() {
     openPanel,
     panelChildIssues,
     panelIssue,
+    suppressPanelForFirstTask,
     resolvedHasActiveRun,
     checkIssueMonitorNow.isPending,
     checkIssueMonitorNow.mutate,
@@ -4124,7 +4343,10 @@ export function IssueDetail() {
         : "Assign an agent to wake them for triage while the subtree remains paused."
     )
     : null;
-  const composerHint = pausedComposerHint;
+  const reopenComposerHint = closedIsolatedWorkspaceReopenPending
+    ? "This issue's isolated workspace was archived. Your next comment or resume reopens it and rebuilds the worktree."
+    : null;
+  const composerHint = pausedComposerHint ?? reopenComposerHint;
   const queuedCommentReason: "hold" | "active_run" | "other" = activePauseHold ? "hold" : "active_run";
   const canApplyTreeControl =
     Boolean(treeControlPreview)
@@ -4192,7 +4414,10 @@ export function IssueDetail() {
   );
 
   const issueHeaderBlock = (
-      <div className={cn("space-y-3", shellSectionClass)}>
+      <div
+        data-testid="issue-detail-header"
+        className={cn("space-y-3", shellSectionClass)}
+      >
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <StatusIcon
             status={issue.status}
@@ -4393,9 +4618,16 @@ export function IssueDetail() {
               size="icon-xs"
               className={cn(
                 "shrink-0 transition-opacity duration-200",
-                panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
+                panelVisible && !suppressPanelForFirstTask
+                  ? "opacity-0 pointer-events-none w-0 overflow-hidden"
+                  : "opacity-100",
               )}
-              onClick={() => setPanelVisible(true)}
+              onClick={() => {
+                if (suppressPanelForFirstTask && issue?.id) {
+                  setFirstTaskPanelOverrideIssueId(issue.id);
+                }
+                setPanelVisible(true);
+              }}
               title="Show properties"
             >
               <SlidersHorizontal className="h-4 w-4" />
@@ -4530,6 +4762,8 @@ export function IssueDetail() {
           className={taskChatShellEnabled ? "text-base font-semibold" : "text-xl font-bold"}
         />
 
+        {taskChatShellEnabled ? subTasksTree : null}
+
         <IssueMonitorBanner
           issue={issue}
           onCheckNow={() => checkIssueMonitorNow.mutate()}
@@ -4615,6 +4849,7 @@ export function IssueDetail() {
   return (
     <FileViewerProvider issueId={issue.id} enabled={fileViewerEnabled}>
     <div
+      data-task-chat-shell={taskChatShellEnabled ? "" : undefined}
       className={
         taskChatShellEnabled
           ? isMobile
@@ -4916,6 +5151,7 @@ export function IssueDetail() {
             (symmetric, so the centered column keeps the same axis) and the
             scrollbar sits flush against the properties-pane border. */}
         <TabsContent
+          data-testid="issue-detail-content"
           value="chat"
           className={
             taskChatShellEnabled
@@ -4929,7 +5165,11 @@ export function IssueDetail() {
             <IssueDetailChatTab
               threadHeader={taskChatThreadHeader}
               issueBrief={
-                taskChatShellEnabled
+                // Suppress the seeded-description bubble for the onboarding first
+                // task: its description is agent instructions, not something the
+                // user typed. The user lands on a seeded agent greeting instead.
+                taskChatShellEnabled &&
+                issue.originKind !== ONBOARDING_FIRST_TASK_ORIGIN_KIND
                   ? {
                       description: issue.description ?? "",
                       author: issue.createdByAgentId ? "agent" : "human",
@@ -5017,7 +5257,7 @@ export function IssueDetail() {
               currentAssigneeValue={actualAssigneeValue}
               suggestedAssigneeValue={suggestedAssigneeValue}
               mentions={mentionOptions}
-              composerDisabledReason={commentComposerDisabledReason}
+              composerDisabledReason={null}
               composerHint={composerHint}
               queuedCommentReason={queuedCommentReason}
               onVote={handleCommentVote}

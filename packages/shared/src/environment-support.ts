@@ -122,7 +122,9 @@ export function getEnvironmentCapabilities(
       supportsSavedProbe: true,
       supportsUnsavedProbe: true,
       supportsRunExecution: false,
-      supportsReusableLeases: true,
+      // The fake provider runtime declares false. The presentation must match
+      // it, so execution and presentation agree.
+      supportsReusableLeases: false,
       supportsInteractiveSetup: false,
       interactiveSetupConnectionTypes: [],
       supportsTemplateCapture: false,
@@ -137,7 +139,9 @@ export function getEnvironmentCapabilities(
       supportsSavedProbe: capability.supportsSavedProbe ?? true,
       supportsUnsavedProbe: capability.supportsUnsavedProbe ?? true,
       supportsRunExecution: capability.supportsRunExecution ?? true,
-      supportsReusableLeases: capability.supportsReusableLeases ?? true,
+      // Default absent to false. A manifest that does not declare reusable
+      // leases must present as false, so execution (=== true) agrees.
+      supportsReusableLeases: capability.supportsReusableLeases ?? false,
       supportsInteractiveSetup: capability.supportsInteractiveSetup ?? false,
       interactiveSetupConnectionTypes: capability.interactiveSetupConnectionTypes ?? [],
       supportsTemplateCapture: capability.supportsTemplateCapture ?? false,

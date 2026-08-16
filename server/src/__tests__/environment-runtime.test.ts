@@ -1575,6 +1575,180 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.anything(), 31234);
   });
 
+  it("throws a worker-not-running error once the readiness deadline is exhausted", async () => {
+    const pluginId = randomUUID();
+    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const providerConfig = {
+      provider: "fake-plugin",
+      image: "fake:test",
+      timeoutMs: 1234,
+      reuseLease: false,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Never Running Plugin Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.never-running-sandbox-provider",
+      packageName: "@acme/never-running-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.never-running-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Never Running Sandbox Provider",
+        description: "Test plugin worker that never comes online before the readiness deadline",
+        author: "Acme",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin",
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+
+    const workerManager = {
+      isRunning: vi.fn(() => false),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, {
+      pluginWorkerManager: workerManager,
+      pluginWorkerReadyTimeoutMs: 25,
+      pluginWorkerReadyPollMs: 1,
+    });
+
+    await expect(
+      runtimeWithPlugin.acquireRunLease({
+        companyId,
+        environment,
+        issueId: null,
+        heartbeatRunId: runId,
+        persistedExecutionWorkspace: null,
+      }),
+    ).rejects.toThrow(/worker is not running/);
+    // Confirms the loop actually polled repeatedly across the deadline window
+    // instead of giving up after a single check.
+    expect(workerManager.isRunning.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("keeps polling across a longer worker restart window and succeeds once the handle registers late", async () => {
+    const pluginId = randomUUID();
+    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const providerConfig = {
+      provider: "fake-plugin",
+      image: "fake:test",
+      timeoutMs: 1234,
+      reuseLease: false,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Registered Late Plugin Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.registered-late-sandbox-provider",
+      packageName: "@acme/registered-late-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.registered-late-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Registered Late Sandbox Provider",
+        description: "Test plugin worker handle that stays unregistered/starting for most of the readiness window",
+        author: "Acme",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin",
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+
+    // Simulates a worker process restart: the handle is absent (or "starting")
+    // for most of the readiness window and only reports running with several
+    // checks left before the deadline. A larger attempt count than the
+    // existing "waits briefly" sanity test, to prove the loop is bound by the
+    // deadline rather than by a small fixed number of attempts.
+    const readyAfterChecks = 8;
+    let checks = 0;
+    const workerManager = {
+      isRunning: vi.fn((id: string) => {
+        if (id !== pluginId) return false;
+        checks += 1;
+        return checks >= readyAfterChecks;
+      }),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "sandbox-registered-late",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: false,
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, {
+      pluginWorkerManager: workerManager,
+      pluginWorkerReadyTimeoutMs: 200,
+      pluginWorkerReadyPollMs: 1,
+    });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+
+    expect(acquired.lease.providerLeaseId).toBe("sandbox-registered-late");
+    expect(checks).toBe(readyAfterChecks);
+  });
+
   it("extends plugin-backed sandbox lease RPC timeouts from provider config", async () => {
     const pluginId = randomUUID();
     const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
@@ -3032,5 +3206,69 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(localRelease).toHaveBeenCalledTimes(1);
     expect(sshRelease).not.toHaveBeenCalled();
     expect(acquired.lease.metadata?.driver).toBe("local");
+  });
+
+  it("test_release_run_leases_continues_after_first_release_fails", async () => {
+    const { companyId, environment, runId } = await seedEnvironment();
+    const environmentsSvc = environmentService(db);
+
+    // Seed two active leases for one run. The first driver release throws; the
+    // second must still release.
+    const failingLease = await environmentsSvc.acquireLease({
+      companyId,
+      environmentId: environment.id,
+      heartbeatRunId: runId,
+      provider: "local",
+      providerLeaseId: "fail-release",
+      metadata: { driver: "local" },
+    });
+    const healthyLease = await environmentsSvc.acquireLease({
+      companyId,
+      environmentId: environment.id,
+      heartbeatRunId: runId,
+      provider: "local",
+      providerLeaseId: "healthy-release",
+      metadata: { driver: "local" },
+    });
+
+    const runtimeWithFailingDriver = environmentRuntimeService(db, {
+      drivers: [
+        {
+          driver: "local",
+          acquireRunLease: async () => {
+            throw new Error("acquire should not be called");
+          },
+          releaseRunLease: async ({ lease, status }) => {
+            if (lease.providerLeaseId === "fail-release") {
+              throw new Error("driver release failed");
+            }
+            return await environmentsSvc.releaseLease(lease.id, status);
+          },
+        },
+      ],
+    });
+
+    const errors: Array<{ leaseId: string; error: unknown }> = [];
+    const released = await runtimeWithFailingDriver.releaseRunLeases(
+      runId,
+      "released",
+      (leaseId, error) => errors.push({ leaseId, error }),
+    );
+
+    // The healthy lease released even though the first release failed.
+    expect(released).toHaveLength(1);
+    expect(released[0]?.lease.id).toBe(healthyLease.id);
+    expect(released[0]?.lease.status).toBe("released");
+
+    // The failed release reported one lease-specific error.
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.leaseId).toBe(failingLease.id);
+    expect((errors[0]?.error as Error).message).toBe("driver release failed");
+
+    // The database confirms the isolation. The healthy lease released; the
+    // failing lease stayed active.
+    const rows = await db.select().from(environmentLeases);
+    expect(rows.find((row) => row.id === healthyLease.id)?.status).toBe("released");
+    expect(rows.find((row) => row.id === failingLease.id)?.status).toBe("active");
   });
 });

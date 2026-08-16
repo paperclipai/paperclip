@@ -1,4 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation } from "@/lib/router";
+import {
+  onboardingStepForCompany,
+  shouldRouteAgentlessCompanyToOnboarding,
+} from "../lib/onboarding-route";
+import { useCompanyMission } from "../hooks/useCompanyMission";
+import { claimOnboardingOffer } from "../lib/onboarding-auto-open";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
@@ -41,6 +48,7 @@ function getRecentIssues(issues: Issue[]): Issue[] {
 export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
   const { openOnboarding } = useDialogActions();
+  const location = useLocation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
   const seenActivityIdsRef = useRef<Set<string>>(new Set());
@@ -52,6 +60,49 @@ export function Dashboard() {
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+
+  // A company with no agent cannot do anything — no runs, no tasks, nothing
+  // to show. The banner below already says so and offers a link; this takes
+  // the customer there instead of asking them to notice.
+  //
+  // It also closes the gap a Cloud-provisioned stack falls into. Cloud creates
+  // the company before the tenant boots, so the companyless redirect never
+  // fires and a seeded customer lands here, on an empty dashboard, straight
+  // out of signup.
+  //
+  // Opened as the dialog rather than navigated to: the wizard is already
+  // mounted globally, so there is no route to race and no redirect to loop.
+  // Placed with the other hooks — the early returns below mean anything
+  // further down would be called conditionally.
+  //
+  // The company and the step are both passed. Opening with empty options would
+  // start the wizard at the front door with no company, and the new-company
+  // path there would create a *second* company instead of giving this one an
+  // agent.
+  const { hasMission: companyHasMission, settled: missionSettled } =
+    useCompanyMission(selectedCompanyId);
+  const shouldOpenOnboarding = shouldRouteAgentlessCompanyToOnboarding({
+    pathname: location.pathname,
+    agentsLoaded: agents !== undefined,
+    agentCount: agents?.length ?? 0,
+  });
+  // Auto-open once per company. Every input to the effect sits behind a query,
+  // so a refetch re-runs it, and the customer can also navigate away and come
+  // back — both would otherwise call `openOnboarding` again and reopen a
+  // wizard that was deliberately closed. `claimOnboardingOffer` holds the
+  // companies already offered; see it for why that outlives this component.
+  useEffect(() => {
+    if (!shouldOpenOnboarding || !selectedCompanyId) return;
+    // Wait for the mission lookup to settle before opening: the wizard applies
+    // the step it is given once, so a step chosen before the answer is in is
+    // the step the customer is left on.
+    if (!missionSettled) return;
+    if (!claimOnboardingOffer(selectedCompanyId)) return;
+    openOnboarding({
+      companyId: selectedCompanyId,
+      initialStep: onboardingStepForCompany(companyHasMission),
+    });
+  }, [shouldOpenOnboarding, selectedCompanyId, missionSettled, companyHasMission, openOnboarding]);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Dashboard" }]);

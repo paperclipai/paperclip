@@ -66,7 +66,7 @@ test.describe("NUX Phase 4 visual QA", () => {
       await createCard.first().click();
     }
     await expect(
-      page.getByRole("heading", { name: "Name your company" }),
+      page.getByRole("heading", { name: "Name your organization" }),
     ).toBeVisible({ timeout: 15_000 });
     await page.getByPlaceholder("Acme Corp").fill("QA Robotics");
     await page.screenshot({ path: shot("02-create-name.png") });
@@ -120,7 +120,7 @@ test.describe("NUX Phase 4 visual QA", () => {
     await page.getByRole("button", { name: /Add agents to your org/ }).click();
     // The grow path shares step 1 (company name) before its step-2 intake.
     await expect(
-      page.getByRole("heading", { name: "Name your company" }),
+      page.getByRole("heading", { name: "Name your organization" }),
     ).toBeVisible({ timeout: 10_000 });
     await page.getByPlaceholder("Acme Corp").fill("QA Robotics Grow");
     await page.getByRole("button", { name: /^Next/ }).click();

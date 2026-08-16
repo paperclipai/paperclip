@@ -6,7 +6,6 @@ import {
   GripVertical,
   LogOut,
   Plus,
-  Settings,
   UserPlus,
 } from "lucide-react";
 import {
@@ -309,7 +308,10 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
       if (createStackUrl) navigateTopLevel(createStackUrl);
       return;
     }
-    openOnboarding();
+    // Skip the front-door "how would you like to get started?" choice and land
+    // directly on "Name your organization" — this entry point is unambiguously
+    // "create a new company" (PAP-431).
+    openOnboarding({ initialStep: 1 });
   }
 
   const handleDragEnd = useCallback(
@@ -451,7 +453,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
               disabled={isEditingOrder}
             >
               <Plus className="size-4" />
-              <span>{isCloud ? "Create new organization..." : "Create new company..."}</span>
+              <span>Create new organization...</span>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
           </>
@@ -471,21 +473,6 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
             <span className="truncate">
               {currentName ? `Invite people to ${currentName}` : "Invite people"}
             </span>
-          </Link>
-        </DropdownMenuItem>
-        <DropdownMenuItem asChild disabled={isEditingOrder}>
-          <Link
-            to="/company/settings"
-            onClick={(event) => {
-              if (isEditingOrder) {
-                event.preventDefault();
-                return;
-              }
-              closeNavigationChrome();
-            }}
-          >
-            <Settings className="size-4" />
-            <span>{isCloud ? "Organization settings" : "Company settings"}</span>
           </Link>
         </DropdownMenuItem>
         {session?.session ? (

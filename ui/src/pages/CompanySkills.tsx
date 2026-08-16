@@ -1084,7 +1084,7 @@ export function DiscoveryGrid({
   onImport: () => void;
   onImportFromProject: () => void;
   onBrowseCatalog: () => void;
-  onScan: () => void;
+  onScan: (projectId?: string) => void;
   scanPending: boolean;
   scanStatus: string | null;
   folderResult?: FolderListResult | null;
@@ -1138,7 +1138,15 @@ export function DiscoveryGrid({
   );
   // The nested folder tree owns the left rail whenever folders (reserved roots
   // or user folders) exist for the installed view.
-  const showFolderRail = Boolean(folderResult && folderResult.folders.length > 0 && onFolderSelect && folderActionsReady);
+  const showFolderRail = Boolean(
+    folderResult && folderResult.folders.length > 0 && onFolderSelect && folderActionsReady,
+  );
+  const activeProjectFolder = useMemo(() => {
+    if (!folderResult || folderSelection === "all" || folderSelection === "unfiled") return null;
+    const folder = folderResult.folders.find((candidate) => candidate.id === folderSelection);
+    return folder?.systemKey?.startsWith("project:") ? folder : null;
+  }, [folderResult, folderSelection]);
+  const activeProjectId = activeProjectFolder?.systemKey?.slice("project:".length) || null;
 
   return (
     // On desktop the store is bounded to the viewport so the category sidebar
@@ -1240,8 +1248,9 @@ export function DiscoveryGrid({
           <Button
             variant="ghost"
             size="icon-sm"
-            onClick={onScan}
+            onClick={() => onScan()}
             disabled={scanPending}
+            aria-label="Scan project workspaces for skills"
             title="Scan project workspaces for skills"
           >
             <RefreshCw className={cn("h-4 w-4", scanPending && "animate-spin")} />
@@ -1289,7 +1298,7 @@ export function DiscoveryGrid({
               />
             </div>
           ) : null}
-          {onCreateFolder ? (
+          {onCreateFolder && !showFolderRail ? (
             <Button variant="outline" size="sm" onClick={onCreateFolder}>
               <Plus className="mr-1 h-3.5 w-3.5" />
               New folder
@@ -1357,8 +1366,21 @@ export function DiscoveryGrid({
         <div className="min-h-0 flex-1 overflow-auto p-4">
           {scanStatus ? <p className="mb-3 text-xs text-muted-foreground">{scanStatus}</p> : null}
           {showFolderRail && onFolderSelect ? (
-            <div className="mb-4">
+            <div className="mb-4 flex items-center justify-between gap-2">
               <FolderBreadcrumb result={folderResult} selection={folderSelection} onSelect={onFolderSelect} />
+              {activeProjectFolder && activeProjectId ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onScan(activeProjectId)}
+                  disabled={scanPending}
+                  aria-label={`Refresh ${activeProjectFolder.name} project skills`}
+                  title={`Refresh skills from ${activeProjectFolder.name}`}
+                >
+                  <RefreshCw className={cn("h-3.5 w-3.5", scanPending && "animate-spin")} />
+                  Refresh
+                </Button>
+              ) : null}
             </div>
           ) : null}
           {folderNudgeStorageKey && onCreateFolder && folderResult && folderResult.folders.length === 0 && !loading && cards.length > 0 ? (
@@ -4278,13 +4300,21 @@ export function CompanySkills() {
   });
 
   const scanProjects = useMutation({
-    mutationFn: () => companySkillsApi.scanProjects(selectedCompanyId!),
-    onMutate: () => {
-      setScanStatusMessage("Scanning project workspaces for skills...");
+    mutationFn: (projectId?: string) => companySkillsApi.scanProjects(
+      selectedCompanyId!,
+      projectId ? { projectIds: [projectId] } : {},
+    ),
+    onMutate: (projectId) => {
+      setScanStatusMessage(
+        projectId ? "Refreshing project skills..." : "Scanning project workspaces for skills...",
+      );
     },
     onSuccess: async (result) => {
       setScanStatusMessage("Refreshing skills list...");
-      await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.folders.list(selectedCompanyId!, "skill") }),
+      ]);
       const summary = formatProjectScanSummary(result);
       setScanStatusMessage(summary);
       pushToast({
@@ -5308,7 +5338,7 @@ export function CompanySkills() {
           onImport={() => setImportDialogOpen(true)}
           onImportFromProject={() => setImportFromProjectOpen(true)}
           onBrowseCatalog={() => setDiscoveryTab("catalog")}
-          onScan={() => scanProjects.mutate()}
+          onScan={(projectId) => scanProjects.mutate(projectId)}
           scanPending={scanProjects.isPending}
           scanStatus={scanStatusMessage}
           folderResult={showInstalledFolders ? railSkillFolderResult : null}

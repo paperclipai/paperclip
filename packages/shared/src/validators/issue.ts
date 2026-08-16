@@ -491,13 +491,24 @@ const createIssueDuplicateGuardSchema = {
     .default(false),
 };
 
+// Narrow intent flag set by the onboarding wizard on the single first task. The
+// server owns the resulting origin kind (clients cannot set arbitrary origin
+// kinds) and uses it to seed the agent greeting instead of an LLM welcome step.
+const onboardingFirstTaskMarkerSchema = {
+  onboardingFirstTask: z.boolean().optional(),
+};
+
 export const createIssueInputSchema = createIssueBaseSchema.extend({
   status: createIssueBaseSchema.shape.status.optional(),
   ...createIssueDuplicateGuardSchema,
+  ...onboardingFirstTaskMarkerSchema,
 });
 
 export const createIssueSchema = withCreateIssueStatusDefault(
-  createIssueBaseSchema.extend(createIssueDuplicateGuardSchema),
+  createIssueBaseSchema.extend({
+    ...createIssueDuplicateGuardSchema,
+    ...onboardingFirstTaskMarkerSchema,
+  }),
 ).superRefine(requireBlockedStatusForUnblockDescriptor);
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
@@ -759,6 +770,12 @@ export const askUserQuestionsQuestionOptionSchema = z.object({
   id: z.string().trim().min(1).max(120),
   label: z.string().trim().min(1).max(120),
   description: z.string().trim().max(500).nullable().optional(),
+  freeText: z
+    .boolean()
+    .optional()
+    .describe(
+      "When true, selecting this option reveals an inline text field; the typed value is returned as the question's otherText. Use this for a real \"I'll describe it\" choice instead of authoring a dead option that does nothing. At most one free-text option per question.",
+    ),
 });
 
 export const askUserQuestionsQuestionSchema = z.object({
@@ -789,6 +806,7 @@ export const askUserQuestionsPayloadSchema = z.object({
     seenQuestionIds.add(question.id);
 
     const seenOptionIds = new Set<string>();
+    let freeTextOptionCount = 0;
     for (const [optionIndex, option] of question.options.entries()) {
       if (seenOptionIds.has(option.id)) {
         ctx.addIssue({
@@ -798,6 +816,16 @@ export const askUserQuestionsPayloadSchema = z.object({
         });
       }
       seenOptionIds.add(option.id);
+      if (option.freeText) {
+        freeTextOptionCount += 1;
+        if (freeTextOptionCount > 1) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "A question may declare at most one free-text option",
+            path: ["questions", questionIndex, "options", optionIndex, "freeText"],
+          });
+        }
+      }
     }
   }
 });
@@ -815,8 +843,11 @@ export const askUserQuestionsResultSchema = z.object({
   answers: z.array(askUserQuestionsAnswerSchema).max(20),
   cancelled: z.literal(true).optional(),
   cancellationReason: z.string().trim().max(4000).nullable().optional(),
-  expirationReason: z.literal("superseded_by_comment").optional(),
+  expirationReason: z.enum(["superseded_by_comment", "superseded_by_newer_interaction"]).optional(),
   commentId: z.string().uuid().nullable().optional(),
+  // Set alongside expirationReason "superseded_by_newer_interaction": the id of
+  // the newer sibling ask_user_questions that replaced this one (PAP-437).
+  supersededByInteractionId: z.string().uuid().nullable().optional(),
   summaryMarkdown: z.string().max(20000).nullable().optional(),
 });
 

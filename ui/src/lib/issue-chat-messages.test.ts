@@ -10,6 +10,8 @@ import {
   type IssueChatLinkedRun,
 } from "./issue-chat-messages";
 import type {
+  AskUserQuestionsInteraction,
+  AskUserQuestionsQuestion,
   RequestConfirmationInteraction,
   SuggestTasksInteraction,
 } from "./issue-thread-interactions";
@@ -717,6 +719,74 @@ describe("buildIssueChatMessages", () => {
         },
       },
     });
+  });
+
+  it("drops degenerate ask_user_questions interactions so they leave no empty slot (PAP-424)", () => {
+    function askInteraction(
+      id: string,
+      questions: AskUserQuestionsQuestion[],
+    ): AskUserQuestionsInteraction {
+      return {
+        id,
+        companyId: "company-1",
+        issueId: "issue-1",
+        kind: "ask_user_questions",
+        title: null,
+        summary: null,
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        createdByAgentId: "agent-1",
+        createdByUserId: null,
+        resolvedByAgentId: null,
+        resolvedByUserId: null,
+        createdAt: new Date("2026-04-06T12:02:00.000Z"),
+        updatedAt: new Date("2026-04-06T12:02:00.000Z"),
+        resolvedAt: null,
+        resolverPolicy: "board_only",
+        requestedResolverPolicy: "board_only",
+        effectiveResolverPolicy: "board_only",
+        payload: { version: 1, questions },
+        result: null,
+      } as AskUserQuestionsInteraction;
+    }
+
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          id: "comment-1",
+          createdAt: new Date("2026-04-06T12:01:00.000Z"),
+          updatedAt: new Date("2026-04-06T12:01:00.000Z"),
+        }),
+      ],
+      interactions: [
+        // A truly unanswerable card (no options, no free-text) — must be
+        // filtered out entirely.
+        askInteraction("interaction-degenerate", [
+          { id: "q1", prompt: "Anything?", selectionMode: "single", options: [] },
+        ]),
+        // A legitimate yes/no question survives.
+        askInteraction("interaction-legit", [
+          {
+            id: "q1",
+            prompt: "Ship it?",
+            selectionMode: "single",
+            options: [
+              { id: "yes", label: "Yes" },
+              { id: "no", label: "No" },
+            ],
+          },
+        ]),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      currentUserId: "user-1",
+    });
+
+    const ids = messages.map((message) => `${message.role}:${message.id}`);
+    // The legit card is present; the degenerate one leaves no message at all.
+    expect(ids).toEqual(["user:comment-1", "system:interaction:interaction-legit"]);
+    expect(ids).not.toContain("system:interaction:interaction-degenerate");
   });
 
   it("preserves ephemeral active-run status metadata for rendering", () => {

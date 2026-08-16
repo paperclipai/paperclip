@@ -6,7 +6,11 @@ import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import type {
+  NormalizedWorkspaceFileAvailabilityQuery,
   ResolvedWorkspaceResource,
+  WorkspaceFileAvailabilityRequestInput,
+  WorkspaceFileAvailabilityResponse,
+  WorkspaceFileAvailabilityResult,
   WorkspaceFileContent,
   WorkspaceFileListItem,
   WorkspaceFileListMode,
@@ -22,6 +26,7 @@ export const WORKSPACE_FILE_MEDIA_MAX_BYTES = 10 * 1024 * 1024;
 export const WORKSPACE_FILE_LIST_DEFAULT_LIMIT = 25;
 export const WORKSPACE_FILE_LIST_MAX_LIMIT = 100;
 export const WORKSPACE_FILE_LIST_MAX_SCANNED_ENTRIES = 5_000;
+export const WORKSPACE_FILE_AVAILABILITY_CONCURRENCY = 8;
 const MAX_RELATIVE_PATH_BYTES = 4096;
 const TEXT_SNIFF_BYTES = 4096;
 const MAX_LIST_DEPTH = 20;
@@ -147,10 +152,120 @@ type WorkspaceTargetInput = {
   workspaceId?: string | null;
 };
 
+type WorkspaceFileAvailabilityQueryInput = WorkspaceFileAvailabilityRequestInput["queries"][number];
+
+type PreparedAvailabilityQuery = {
+  query: NormalizedWorkspaceFileAvailabilityQuery;
+  normalizedPath: NormalizedPath | null;
+  directory: boolean;
+  key: string;
+  unavailableReason?: string;
+};
+
+type PreparedAvailabilityTarget =
+  | { candidate: WorkspaceCandidate; error?: never }
+  | { candidate?: never; error: HttpError };
+
 function previewCapForKind(kind: WorkspaceFilePreviewKind) {
   return kind === "image" || kind === "video" || kind === "pdf"
     ? WORKSPACE_FILE_MEDIA_MAX_BYTES
     : WORKSPACE_FILE_TEXT_MAX_BYTES;
+}
+
+function safeRejectedAvailabilityPath(input: string) {
+  const trimmed = input.trim();
+  const slashPath = trimmed.replaceAll("\\", "/");
+  if (path.posix.isAbsolute(slashPath) || /^[a-zA-Z]:/.test(trimmed) || /^file:\/\//i.test(trimmed)) {
+    return path.posix.basename(slashPath) || "[invalid path]";
+  }
+  return trimmed;
+}
+
+function prepareAvailabilityQuery(input: WorkspaceFileAvailabilityQueryInput): PreparedAvailabilityQuery {
+  const directory = input.path.trim().endsWith("/");
+  const baseQuery: NormalizedWorkspaceFileAvailabilityQuery = {
+    path: input.path.trim(),
+    workspace: input.workspace ?? "auto",
+    projectId: input.projectId ?? null,
+    workspaceId: input.workspaceId ?? null,
+  };
+  try {
+    const normalizedPath = normalizeWorkspaceRelativePath(input.path);
+    const query = {
+      ...baseQuery,
+      path: `${normalizedPath.relativePath}${directory ? "/" : ""}`,
+    };
+    return {
+      query,
+      normalizedPath,
+      directory,
+      key: JSON.stringify([query.workspace, query.projectId, query.workspaceId, query.path]),
+    };
+  } catch (error) {
+    const unavailableReason = expectedAvailabilityReason(error);
+    if (!unavailableReason) throw error;
+    const safePath = safeRejectedAvailabilityPath(input.path);
+    return {
+      query: { ...baseQuery, path: safePath },
+      normalizedPath: null,
+      directory,
+      key: JSON.stringify([baseQuery.workspace, baseQuery.projectId, baseQuery.workspaceId, baseQuery.path]),
+      unavailableReason,
+    };
+  }
+}
+
+function expectedAvailabilityReason(error: unknown): string | null {
+  if (!(error instanceof HttpError) || ![403, 404, 409, 422].includes(error.status)) return null;
+  if (error.details && typeof error.details === "object" && "code" in error.details) {
+    const code = (error.details as { code?: unknown }).code;
+    if (typeof code === "string" && code.length > 0) return code;
+  }
+  if (error.status === 403) return "forbidden";
+  if (error.status === 404) return "not_found";
+  if (error.status === 409) return "conflict";
+  return "unprocessable";
+}
+
+function availabilityResult(
+  query: NormalizedWorkspaceFileAvailabilityQuery,
+  resource: ResolvedWorkspaceResource,
+): WorkspaceFileAvailabilityResult {
+  const openable = resource.kind === "file"
+    ? resource.capabilities.preview
+    : resource.kind === "directory" && resource.capabilities.listChildren;
+  return {
+    query,
+    openable,
+    ...(openable ? {} : { unavailableReason: resource.denialReason ?? "unsupported_resource" }),
+    resource,
+  };
+}
+
+function unavailableAvailabilityResult(
+  query: NormalizedWorkspaceFileAvailabilityQuery,
+  unavailableReason: string,
+): WorkspaceFileAvailabilityResult {
+  return {
+    query,
+    openable: false,
+    unavailableReason,
+    resource: null,
+  };
+}
+
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, mapper: (item: T) => Promise<R>) {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index]!);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  return results;
 }
 
 function relativePathFromReal(rootReal: string, targetReal: string) {
@@ -994,6 +1109,51 @@ export function workspaceFileResourceService(db: Db) {
     return candidates;
   }
 
+  async function loadAvailabilityTargets(
+    issue: IssueRow,
+    queries: PreparedAvailabilityQuery[],
+  ): Promise<Map<string, PreparedAvailabilityTarget>> {
+    const targetQueries = queries.filter(
+      (item) => !item.unavailableReason && item.query.projectId && item.query.workspaceId,
+    );
+    const projectIds = [...new Set(targetQueries.map((item) => item.query.projectId!))];
+    const workspaceIds = [...new Set(targetQueries.map((item) => item.query.workspaceId!))];
+    const [projectRows, workspaceRows] = await Promise.all([
+      projectIds.length > 0
+        ? db.select().from(projects).where(inArray(projects.id, projectIds))
+        : Promise.resolve([]),
+      workspaceIds.length > 0
+        ? db.select().from(projectWorkspaces).where(inArray(projectWorkspaces.id, workspaceIds))
+        : Promise.resolve([]),
+    ]);
+    const projectById = new Map(projectRows.map((row) => [row.id, row]));
+    const workspaceById = new Map(workspaceRows.map((row) => [row.id, row]));
+    const targets = new Map<string, PreparedAvailabilityTarget>();
+
+    for (const item of targetQueries) {
+      const targetKey = `${item.query.projectId}:${item.query.workspaceId}`;
+      if (targets.has(targetKey)) continue;
+      const project = projectById.get(item.query.projectId!);
+      const workspace = workspaceById.get(item.query.workspaceId!);
+      if (!project || !workspace) {
+        targets.set(targetKey, { error: notFound("Project workspace not found") });
+      } else if (project.companyId !== issue.companyId || workspace.companyId !== issue.companyId) {
+        targets.set(targetKey, {
+          error: new HttpError(403, "Project workspace belongs to another company", { code: "cross_company_workspace" }),
+        });
+      } else if (workspace.projectId !== project.id) {
+        targets.set(targetKey, {
+          error: unprocessable("Workspace does not belong to the selected project", { code: "workspace_project_mismatch" }),
+        });
+      } else {
+        targets.set(targetKey, {
+          candidate: candidateFromProjectWorkspace(workspace, { id: project.id, name: project.name }),
+        });
+      }
+    }
+    return targets;
+  }
+
   async function sameCompanyProjectWorkspaceCandidates(
     issue: IssueRow,
     excludedWorkspaceIds: Set<string>,
@@ -1049,6 +1209,108 @@ export function workspaceFileResourceService(db: Db) {
       code: "ambiguous_workspace_path",
       matchCount: count,
     });
+  }
+
+  async function availability(
+    issueId: string,
+    input: WorkspaceFileAvailabilityRequestInput,
+    opts: { issue?: IssueRow } = {},
+  ): Promise<WorkspaceFileAvailabilityResponse> {
+    const issue = opts.issue ?? await getIssue(issueId);
+    const uniqueQueries = new Map<string, PreparedAvailabilityQuery>();
+    for (const inputQuery of input.queries) {
+      const prepared = prepareAvailabilityQuery(inputQuery);
+      if (!uniqueQueries.has(prepared.key)) uniqueQueries.set(prepared.key, prepared);
+    }
+    const queries = [...uniqueQueries.values()];
+    if (queries.length === 0) return { kind: "workspace_file_availability", results: [] };
+
+    const untargetedQueries = queries.filter(
+      (item) => !item.unavailableReason && !item.query.projectId && !item.query.workspaceId,
+    );
+    const initialCandidates = untargetedQueries.length > 0 ? await listCandidates(issue, "auto") : [];
+    const needsDiscovery = initialCandidates.some((candidate) => !candidate.remote)
+      && untargetedQueries.some((item) => item.query.workspace === "auto");
+    const discoveryCandidates = needsDiscovery
+      ? await sameCompanyProjectWorkspaceCandidates(issue, new Set(initialCandidates.map((candidate) => candidate.workspaceId)))
+      : [];
+    const explicitTargets = await loadAvailabilityTargets(issue, queries);
+
+    const results = await mapWithConcurrency(
+      queries,
+      WORKSPACE_FILE_AVAILABILITY_CONCURRENCY,
+      async (item): Promise<WorkspaceFileAvailabilityResult> => {
+        try {
+          if (item.unavailableReason || !item.normalizedPath) {
+            return unavailableAvailabilityResult(item.query, item.unavailableReason ?? "invalid_path");
+          }
+          const explicitTarget = item.query.projectId && item.query.workspaceId
+            ? explicitTargets.get(`${item.query.projectId}:${item.query.workspaceId}`)
+            : null;
+          if (explicitTarget?.error) throw explicitTarget.error;
+
+          const candidates = explicitTarget?.candidate
+            ? [explicitTarget.candidate]
+            : initialCandidates.filter((candidate) => {
+                if (item.query.workspace === "execution") return candidate.workspaceKind === "execution_workspace";
+                if (item.query.workspace === "project") return candidate.workspaceKind === "project_workspace";
+                return true;
+              });
+          if (candidates.length === 0) {
+            throw unprocessable("No workspace is available for this issue", { code: "no_workspace" });
+          }
+
+          const hasExplicitTarget = Boolean(explicitTarget?.candidate);
+          let lastNotFound: unknown = null;
+          for (const candidate of candidates) {
+            if (candidate.remote) {
+              if (hasExplicitTarget || item.query.workspace !== "auto") {
+                return availabilityResult(item.query, remoteResource(candidate, item.normalizedPath.relativePath));
+              }
+              continue;
+            }
+            try {
+              const resource = item.directory
+                ? (await statLocalDirectory(candidate, item.normalizedPath)).resource
+                : (await statLocalCandidate(candidate, item.normalizedPath)).resource;
+              return availabilityResult(item.query, resource);
+            } catch (error) {
+              if (!hasExplicitTarget && item.query.workspace === "auto" && isHttpStatus(error, 404)) {
+                lastNotFound = error;
+                continue;
+              }
+              throw error;
+            }
+          }
+
+          if (lastNotFound && !hasExplicitTarget && item.query.workspace === "auto") {
+            const matches: ResolvedWorkspaceResource[] = [];
+            for (const candidate of discoveryCandidates) {
+              if (candidate.remote) continue;
+              try {
+                matches.push(item.directory
+                  ? (await statLocalDirectory(candidate, item.normalizedPath)).resource
+                  : (await statLocalCandidate(candidate, item.normalizedPath)).resource);
+              } catch (error) {
+                if (isHttpStatus(error, 404)) continue;
+                throw error;
+              }
+              if (matches.length > 1) throwAmbiguousWorkspacePath(matches.length);
+            }
+            if (matches[0]) return availabilityResult(item.query, matches[0]);
+          }
+
+          if (lastNotFound) throw lastNotFound;
+          throw unprocessable("No local-readable workspace is available for this issue", { code: "no_local_workspace" });
+        } catch (error) {
+          const reason = expectedAvailabilityReason(error);
+          if (!reason) throw error;
+          return unavailableAvailabilityResult(item.query, reason);
+        }
+      },
+    );
+
+    return { kind: "workspace_file_availability", results };
   }
 
   async function resolve(issueId: string, input: {
@@ -1443,6 +1705,7 @@ export function workspaceFileResourceService(db: Db) {
 
   return {
     getIssue,
+    availability,
     list,
     resolve,
     readContent,

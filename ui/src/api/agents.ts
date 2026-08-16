@@ -8,6 +8,8 @@ import type {
   AgentInstructionsFileDetail,
   AgentSkillSnapshot,
   AdapterEnvironmentTestResult,
+  AdapterAuthSessionResponse,
+  AdapterAuthSessionOwnerResponse,
   AgentKeyCreated,
   AgentRuntimeState,
   AgentTaskSession,
@@ -237,6 +239,24 @@ export const agentsApi = {
   ) => api.post<AgentWakeupResponse>(agentPath(id, companyId, "/wakeup"), data),
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
+  startAdapterAuthLogin: (
+    companyId: string,
+    type: string,
+    data: { environmentId: string; ttlSeconds?: number },
+  ) =>
+    api.post<AdapterAuthSessionResponse>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions`,
+      data,
+    ),
+  getAdapterAuthLoginStatus: (companyId: string, type: string, sessionId: string) =>
+    api.get<AdapterAuthSessionOwnerResponse>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions/${encodeURIComponent(sessionId)}`,
+    ),
+  cancelAdapterAuthLogin: (companyId: string, type: string, sessionId: string) =>
+    api.post<AdapterAuthSessionOwnerResponse>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions/${encodeURIComponent(sessionId)}/cancel`,
+      {},
+    ),
   availableSkills: () =>
     api.get<{ skills: AvailableSkill[] }>("/skills/available"),
 };

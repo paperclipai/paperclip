@@ -96,6 +96,12 @@ const manifest: PaperclipPluginManifestV1 = {
             description: "Timeout for Daytona create/start/stop/execute operations in milliseconds.",
             default: 300000,
           },
+          livenessTimeoutMs: {
+            type: "number",
+            description:
+              "Per-call timeout in milliseconds for the sandbox liveness read (refreshData). A silently unresponsive sandbox connection surfaces as a fast error instead of stalling until the outer RPC ceiling. The start and recovery calls derive their own deadline from timeoutMs, not this bound. `0` or less disables the bound. Defaults to 30000 when unset.",
+            default: 30000,
+          },
           autoStopInterval: {
             type: "number",
             description:
