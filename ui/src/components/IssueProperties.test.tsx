@@ -2312,10 +2312,21 @@ describe("IssueProperties", () => {
   });
 
   it("renders scheduled, retrying, due, overdue, cleared, and empty monitor row states", async () => {
-    const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(new Date("2026-07-17T13:56:00.000Z").getTime());
+    // Anchored to a fixed *local* time, not a fixed UTC instant. The row renders
+    // these in the machine's timezone and labels them "Today" only while they
+    // share a local calendar day with `now`. Pinned to UTC, the pair straddles
+    // local midnight from UTC+8 to UTC+9:30 — the label becomes a date and every
+    // assertion below fails for a reason that has nothing to do with row states.
+    // Anchoring locally keeps them on one day everywhere, which also makes the
+    // rendered clock identical in every timezone, so the times below can stay
+    // exact rather than being relaxed to a pattern.
+    const NOW = new Date(2026, 6, 17, 13, 56, 0, 0);
+    const at = (minutesFromNow: number) =>
+      new Date(NOW.getTime() + minutesFromNow * 60_000).toISOString();
+    const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(NOW.getTime());
     const baseMonitorState = {
       status: "scheduled" as const,
-      nextCheckAt: "2026-07-17T16:08:00.000Z",
+      nextCheckAt: at(132),
       lastTriggeredAt: null,
       attemptCount: 1,
       notes: "Verify deployment",
@@ -2347,16 +2358,16 @@ describe("IssueProperties", () => {
     // this instant is 4:08 PM at UTC and 9:08 AM at UTC-7. What the row states
     // are actually about — the countdown and the attempt suffix — is asserted
     // exactly, and the countdown above is timezone-independent already.
-    expect(monitorRowText()).toMatch(/Today, \d{1,2}:\d{2} (AM|PM) · Attempt 1/);
+    expect(monitorRowText()).toContain("Today, 4:08 PM · Attempt 1");
 
     renderMonitor(createIssue({
-      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T18:08:00.000Z" } }),
-      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T16:08:00.000Z" } }),
-      monitorNextCheckAt: new Date("2026-07-17T17:08:00.000Z"),
+      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: at(252) } }),
+      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: at(132) } }),
+      monitorNextCheckAt: new Date(at(192)),
     }));
     await flush();
     expect(monitorRowText()).toContain("In 2h 12m");
-    expect(monitorRowText()).toMatch(/Today, \d{1,2}:\d{2} (AM|PM)/);
+    expect(monitorRowText()).toContain("Today, 4:08 PM");
 
     renderMonitor(createIssue({
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, serviceName: "vercel-deploy" } }),
@@ -2367,20 +2378,20 @@ describe("IssueProperties", () => {
     expect(monitorRowText()).toContain("Attempt 3");
 
     renderMonitor(createIssue({
-      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:56:00.000Z" } }),
-      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:56:00.000Z" } }),
+      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: at(0) } }),
+      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: at(0) } }),
     }));
     await flush();
     expect(monitorRowText()).toContain("Due now");
     expect(monitorRowText()).toContain("checking momentarily…");
 
     renderMonitor(createIssue({
-      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:38:00.000Z" } }),
-      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:38:00.000Z" } }),
+      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: at(-18) } }),
+      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: at(-18) } }),
     }));
     await flush();
     expect(monitorRowText()).toContain("Overdue by 18m");
-    expect(monitorRowText()).toMatch(/Today, \d{1,2}:\d{2} (AM|PM) · fires on next tick/);
+    expect(monitorRowText()).toContain("Today, 1:38 PM · fires on next tick");
 
     renderMonitor(createIssue({
       executionPolicy: createExecutionPolicy(),
@@ -2388,13 +2399,13 @@ describe("IssueProperties", () => {
         ...baseMonitorState,
         status: "cleared",
         nextCheckAt: null,
-        lastTriggeredAt: "2026-07-17T11:56:00.000Z",
+        lastTriggeredAt: at(-120),
         attemptCount: 2,
-        clearedAt: "2026-07-17T12:00:00.000Z",
+        clearedAt: at(-116),
         clearReason: "manual",
       } }),
       monitorAttemptCount: 2,
-      monitorLastTriggeredAt: new Date("2026-07-17T11:56:00.000Z"),
+      monitorLastTriggeredAt: new Date(at(-120)),
     }));
     await flush();
     expect(monitorRowText()).toContain("Cleared");
