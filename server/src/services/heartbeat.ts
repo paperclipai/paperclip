@@ -366,26 +366,41 @@ const PENDING_CLEANUP_ATTEMPTS_METADATA_KEY = "pendingCleanupRetryAttempts";
 const PENDING_CLEANUP_CAP_WARNED_METADATA_KEY = "pendingCleanupRetryCapWarned";
 
 // A provider or plugin destroy rejection can carry a bearer credential, a
-// signed URL, or provider response detail in its message, cause, or stack. Pino
-// redaction covers only the allowlisted HTTP paths, not an arbitrary Error. This
-// helper returns only the allowlisted, non-sensitive error identity, so the
-// pending_cleanup sweep logs never serialize the raw error. It reads the error
-// constructor name and, when present, a string `code` property. It never reads
-// the message, the cause, or the stack.
-function describePendingCleanupError(
-  err: unknown,
-): { errorName: string; errorCode?: string } {
-  if (typeof err !== "object" || err === null) {
-    return { errorName: typeof err };
-  }
-  const errorName =
-    typeof (err as { name?: unknown }).name === "string"
-      ? ((err as { name: string }).name)
-      : err.constructor?.name ?? "Error";
-  const code = (err as { code?: unknown }).code;
-  return typeof code === "string"
-    ? { errorName, errorCode: code }
-    : { errorName };
+// signed URL, or provider response detail in its name, code, message, cause, or
+// stack. The exception fields cross the server boundary, so they are not a
+// trusted enum. The pending_cleanup sweep logs never read the exception. Each
+// catch site logs a constant, locally generated `errorKind` instead.
+const PENDING_CLEANUP_RETRY_ERROR_KIND = "destroy_failed";
+const PENDING_CLEANUP_SWEEP_ERROR_KIND = "sweep_failed";
+
+// Read the stored retry attempt count as a safe integer, directly in SQL. A
+// provider can write a malformed value under the attempts key. The type guard
+// makes any non-number value read as zero, so the numeric cast never throws.
+// One malformed lease therefore never aborts the page sweep. This matches the
+// TypeScript reader `readPendingCleanupRetryAttempts`, which also accepts only a
+// JSON number.
+function pendingCleanupAttemptsSql() {
+  return sql`coalesce(
+    case
+      when jsonb_typeof(${environmentLeases.metadata} -> ${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY}) = 'number'
+        then floor((${environmentLeases.metadata} ->> ${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY})::numeric)::int
+      else 0
+    end,
+    0
+  )`;
+}
+
+// Read the stored cap-warned flag as a safe boolean, directly in SQL. A
+// malformed value reads as false, so the boolean cast never throws.
+function pendingCleanupCapWarnedSql() {
+  return sql`coalesce(
+    case
+      when jsonb_typeof(${environmentLeases.metadata} -> ${PENDING_CLEANUP_CAP_WARNED_METADATA_KEY}) = 'boolean'
+        then (${environmentLeases.metadata} ->> ${PENDING_CLEANUP_CAP_WARNED_METADATA_KEY})::boolean
+      else false
+    end,
+    false
+  )`;
 }
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -13167,20 +13182,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   // matches the guard. The loser gets zero rows and skips the lease. This bounds
   // the retries to the cap and stops a second destroy of the same lease.
   // Returns true only for the sweep that won the claim.
+  //
+  // The update writes only the attempts key with `jsonb_set`. It never writes a
+  // copied metadata object, so a concurrent write to an unrelated metadata key
+  // survives. The guard reads the stored count through the safe SQL reader, so a
+  // malformed value never throws.
   async function claimPendingCleanupRetryAttempt(
     leaseId: string,
     expectedAttempts: number,
-    nextMetadata: Record<string, unknown>,
   ): Promise<boolean> {
     const now = new Date();
     const claimed = await db
       .update(environmentLeases)
-      .set({ metadata: nextMetadata, lastUsedAt: now, updatedAt: now })
+      .set({
+        metadata: sql`jsonb_set(coalesce(${environmentLeases.metadata}, '{}'::jsonb), array[${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY}], to_jsonb(${expectedAttempts + 1}::int), true)`,
+        lastUsedAt: now,
+        updatedAt: now,
+      })
       .where(
         and(
           eq(environmentLeases.id, leaseId),
           eq(environmentLeases.status, "pending_cleanup"),
-          sql`coalesce((${environmentLeases.metadata} ->> ${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY})::int, 0) = ${expectedAttempts}`,
+          sql`${pendingCleanupAttemptsSql()} = ${expectedAttempts}`,
         ),
       )
       .returning({ id: environmentLeases.id });
@@ -13188,22 +13211,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   // Atomically claim the one-time cap warning for a lease. The update only
-  // matches when the lease has not yet carried the warned flag. Two concurrent
-  // sweeps that both reach the cap race here, but only one update sets the flag
-  // and returns a row. The loser skips the warning. This keeps the warning to
-  // one log line per lease.
-  async function claimPendingCleanupCapWarning(
-    leaseId: string,
-    nextMetadata: Record<string, unknown>,
-  ): Promise<boolean> {
+  // matches when the lease is still pending_cleanup, its stored attempt count is
+  // at or above the cap, and it has not yet carried the warned flag. Two
+  // concurrent sweeps that both reach the cap race here, but only one update
+  // sets the flag and returns a row. The loser skips the warning. This keeps the
+  // warning to one log line per lease.
+  //
+  // The status and cap predicates are the last line of defense. They stop a warn
+  // flag write to a lease that left pending_cleanup or dropped below the cap
+  // between the read and this claim. The update writes only the warned key with
+  // `jsonb_set`, so a concurrent write to an unrelated metadata key survives.
+  async function claimPendingCleanupCapWarning(leaseId: string): Promise<boolean> {
     const now = new Date();
     const claimed = await db
       .update(environmentLeases)
-      .set({ metadata: nextMetadata, updatedAt: now })
+      .set({
+        metadata: sql`jsonb_set(coalesce(${environmentLeases.metadata}, '{}'::jsonb), array[${PENDING_CLEANUP_CAP_WARNED_METADATA_KEY}], to_jsonb(true), true)`,
+        updatedAt: now,
+      })
       .where(
         and(
           eq(environmentLeases.id, leaseId),
-          sql`coalesce((${environmentLeases.metadata} ->> ${PENDING_CLEANUP_CAP_WARNED_METADATA_KEY})::boolean, false) = false`,
+          eq(environmentLeases.status, "pending_cleanup"),
+          sql`${pendingCleanupAttemptsSql()} >= ${PENDING_CLEANUP_SWEEP_ATTEMPT_CAP}`,
+          sql`${pendingCleanupCapWarnedSql()} = false`,
         ),
       )
       .returning({ id: environmentLeases.id });
@@ -13248,10 +13279,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // Warn once, then leave the lease for manual cleanup. The atomic claim
         // keeps the warning to one log line even when two sweeps overlap.
         if (metadata[PENDING_CLEANUP_CAP_WARNED_METADATA_KEY] !== true) {
-          const warned = await claimPendingCleanupCapWarning(row.id, {
-            ...metadata,
-            [PENDING_CLEANUP_CAP_WARNED_METADATA_KEY]: true,
-          });
+          const warned = await claimPendingCleanupCapWarning(row.id);
           if (warned) {
             logger.warn(
               { leaseId: row.id, environmentId: row.environmentId, attempts },
@@ -13271,10 +13299,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // never destroys the same lease twice or exceeds the attempt cap. The
       // claim records the attempt before the retry, so a thrown driver error
       // still counts against the cap.
-      const claimed = await claimPendingCleanupRetryAttempt(row.id, attempts, {
-        ...metadata,
-        [PENDING_CLEANUP_ATTEMPTS_METADATA_KEY]: attempts + 1,
-      });
+      const claimed = await claimPendingCleanupRetryAttempt(row.id, attempts);
       if (!claimed) continue;
 
       try {
@@ -13286,10 +13311,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (result && result.status !== "pending_cleanup") {
           destroyed += 1;
         }
-      } catch (err) {
+      } catch {
+        // Log a constant errorKind only. The exception can carry a credential in
+        // its name, code, message, cause, or stack, so the sweep never reads it.
         logger.warn(
           {
-            ...describePendingCleanupError(err),
+            errorKind: PENDING_CLEANUP_RETRY_ERROR_KIND,
             leaseId: row.id,
             environmentId: row.environmentId,
             attempts: attempts + 1,
@@ -13507,9 +13534,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           "swept pending_cleanup environment leases",
         );
       }
-    } catch (err) {
+    } catch {
+      // Log a constant errorKind only. The exception can carry a credential in
+      // its name, code, message, cause, or stack, so the sweep never reads it.
       logger.error(
-        describePendingCleanupError(err),
+        { errorKind: PENDING_CLEANUP_SWEEP_ERROR_KIND },
         "pending_cleanup lease sweep failed",
       );
     }

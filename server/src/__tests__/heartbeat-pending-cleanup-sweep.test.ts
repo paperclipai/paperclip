@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -408,9 +408,53 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     expect(capWarnings.length).toBeLessThanOrEqual(1);
   });
 
-  // A provider or plugin destroy rejection can carry a bearer credential in its
-  // message. The per-lease retry log must never serialize that raw error.
-  it("test_pending_cleanup_retry_log_omits_error_secrets", async () => {
+  // Run `inject` exactly once, right before the sweep's first UPDATE on the
+  // environmentLeases table runs. The sweep's first update is always its claim
+  // (the retry claim or the cap-warning claim). This lets a test place a
+  // concurrent writer between the sweep's read and its claim.
+  function injectBeforeFirstLeaseClaim(inject: () => Promise<void>): { restore: () => void } {
+    const realUpdate = db.update.bind(db);
+    let injected = false;
+    const spy = vi.spyOn(db, "update").mockImplementation(((table: unknown) => {
+      const builder = (realUpdate as (t: unknown) => unknown)(table) as {
+        set: (values: unknown) => unknown;
+      };
+      if (table === environmentLeases && !injected) {
+        const realSet = builder.set.bind(builder);
+        builder.set = (values: unknown) => {
+          const afterSet = realSet(values) as {
+            returning: (...args: unknown[]) => unknown;
+          };
+          if (!injected) {
+            injected = true;
+            const realReturning = afterSet.returning.bind(afterSet);
+            afterSet.returning = (...args: unknown[]) =>
+              (async () => {
+                await inject();
+                return realReturning(...args);
+              })();
+          }
+          return afterSet;
+        };
+      }
+      return builder;
+    }) as unknown as typeof db.update);
+    return { restore: () => spy.mockRestore() };
+  }
+
+  // Read the full metadata object of a lease.
+  async function readMetadata(leaseId: string): Promise<Record<string, unknown> | null> {
+    return db
+      .select({ metadata: environmentLeases.metadata })
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, leaseId))
+      .then((rows) => (rows[0]?.metadata as Record<string, unknown> | null) ?? null);
+  }
+
+  // A provider or plugin destroy rejection can carry a credential in its `name`
+  // or `code`, not only its message. The per-lease retry log must never
+  // serialize any error-derived string.
+  it("test_pending_cleanup_retry_log_omits_sentinel_in_error_name_and_code", async () => {
     const { companyId, environmentId } = await seedCompanyAndEnvironment();
     const leaseId = await insertPendingCleanupLease({
       companyId,
@@ -418,11 +462,12 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
       updatedAt: new Date(Date.now() - 60 * 60 * 1000),
     });
 
-    // The destroy rejects with a credential-shaped sentinel in the message.
+    // The destroy rejects with a credential-shaped sentinel in both the error
+    // name and the error code.
     const sentinel = "Bearer sk-SENTINEL-a1b2c3";
-    const rejection = new Error(`provider destroy failed: ${sentinel}`);
-    rejection.name = "ProviderDestroyError";
-    (rejection as { code?: string }).code = "EPROVIDER";
+    const rejection = new Error("provider destroy failed");
+    rejection.name = `ProviderDestroyError ${sentinel}`;
+    (rejection as { code?: string }).code = `EPROVIDER ${sentinel}`;
     const destroyRunLease = vi.fn(async () => {
       throw rejection;
     });
@@ -442,26 +487,28 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     expect(retryCall).toBeDefined();
     const record = retryCall?.[0] as Record<string, unknown>;
 
-    // The record omits the raw error. It never contains the sentinel.
+    // No error-derived string reaches the log. The sentinel never appears, and
+    // no error field is present.
     expect(JSON.stringify(record)).not.toContain(sentinel);
     expect(record).not.toHaveProperty("err");
+    expect(record).not.toHaveProperty("errorName");
+    expect(record).not.toHaveProperty("errorCode");
     expect(record).not.toHaveProperty("message");
     expect(record).not.toHaveProperty("stack");
     expect(record).not.toHaveProperty("cause");
 
-    // The record still carries the stable, non-sensitive fields.
+    // The log carries only fixed, locally generated fields.
     expect(record).toMatchObject({
       leaseId,
       environmentId,
       attempts: 1,
-      errorName: "ProviderDestroyError",
-      errorCode: "EPROVIDER",
+      errorKind: "destroy_failed",
     });
   });
 
-  // The outer sweep catch logs a failure of the sweep itself. It must log only
-  // the allowlisted error identity, never the raw error.
-  it("test_pending_cleanup_sweep_failure_log_omits_error_secrets", async () => {
+  // The outer sweep catch logs a failure of the sweep itself. It must log a
+  // constant errorKind only, never an error-derived string in the name or code.
+  it("test_pending_cleanup_sweep_failure_log_omits_sentinel_in_error_name_and_code", async () => {
     const { companyId, environmentId } = await seedCompanyAndEnvironment();
     await insertPendingCleanupLease({
       companyId,
@@ -469,9 +516,9 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
       updatedAt: new Date(Date.now() - 60 * 60 * 1000),
     });
 
-    // Make the sweep itself throw. The lease query rejects with a
-    // credential-shaped sentinel in the message. The reaper's own queries pass
-    // through, so only the sweep fails.
+    // Make the sweep itself throw. The lease query rejects with an error that
+    // carries a credential-shaped sentinel in both the name and the message. The
+    // reaper's own queries pass through, so only the sweep fails.
     const sentinel = "Bearer sk-SENTINEL-d4e5f6";
     const realSelect = db.select.bind(db);
     const selectSpy = vi
@@ -482,7 +529,8 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
         (builder as { from: unknown }).from = (table: unknown) => {
           if (table === environmentLeases) {
             const failure = new Error(`sweep query failed: ${sentinel}`);
-            failure.name = "SweepQueryError";
+            failure.name = `SweepQueryError ${sentinel}`;
+            (failure as { code?: string }).code = `ESWEEP ${sentinel}`;
             throw failure;
           }
           return realFrom(table as Parameters<typeof realFrom>[0]);
@@ -509,11 +557,163 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
 
       expect(JSON.stringify(record)).not.toContain(sentinel);
       expect(record).not.toHaveProperty("err");
+      expect(record).not.toHaveProperty("errorName");
+      expect(record).not.toHaveProperty("errorCode");
       expect(record).not.toHaveProperty("message");
       expect(record).not.toHaveProperty("stack");
-      expect(record).toMatchObject({ errorName: "SweepQueryError" });
+      expect(record).toMatchObject({ errorKind: "sweep_failed" });
     } finally {
       selectSpy.mockRestore();
     }
+  });
+
+  // The claim writes only its own attempts key with `jsonb_set`. A concurrent
+  // writer that sets an unrelated metadata key between the sweep's read and its
+  // claim must keep that key. A full copied-metadata write would lose it.
+  it("test_pending_cleanup_claim_preserves_unrelated_concurrent_metadata_key", async () => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+    const leaseId = await insertPendingCleanupLease({
+      companyId,
+      environmentId,
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    // The destroy fails, so the lease stays pending_cleanup and the test can
+    // read the final metadata.
+    const destroyRunLease = vi.fn(async () => null);
+    const heartbeat = heartbeatService(db, {
+      environmentRuntime: fakeRuntime(
+        destroyRunLease as HeartbeatEnvironmentRuntime["destroyRunLease"],
+      ),
+    });
+
+    // A concurrent writer sets an unrelated key right before the claim runs.
+    const hook = injectBeforeFirstLeaseClaim(async () => {
+      await db
+        .update(environmentLeases)
+        .set({
+          metadata: sql`jsonb_set(coalesce(${environmentLeases.metadata}, '{}'::jsonb), array['concurrentKey'], to_jsonb('keep-me'::text), true)`,
+        })
+        .where(eq(environmentLeases.id, leaseId));
+    });
+
+    try {
+      const result = await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 });
+      expect(result).toEqual({ swept: 1, destroyed: 0, capped: 0 });
+    } finally {
+      hook.restore();
+    }
+
+    // The claim advanced its own attempts key and kept the concurrent key.
+    const metadata = await readMetadata(leaseId);
+    expect(metadata?.[ATTEMPTS_KEY]).toBe(1);
+    expect(metadata?.concurrentKey).toBe("keep-me");
+  });
+
+  // A provider can write a malformed value under the attempts key. The guarded
+  // cast must read it as zero, not throw. One malformed lease must never abort
+  // the page sweep, so the sweep still processes the other leases on the page.
+  it("test_pending_cleanup_malformed_retry_metadata_does_not_abort_sweep", async () => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+
+    // The malformed lease sorts first, so a throw would abort before the sweep
+    // reaches the healthy lease.
+    const malformedLeaseId = await insertPendingCleanupLease({
+      companyId,
+      environmentId,
+      updatedAt: new Date(Date.now() - 120 * 60 * 1000),
+      metadata: { [ATTEMPTS_KEY]: "corrupt" },
+    });
+    const healthyLeaseId = await insertPendingCleanupLease({
+      companyId,
+      environmentId,
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    // The destroy fails, so both leases stay pending_cleanup and the test can
+    // count the retries.
+    const destroyedLeaseIds: string[] = [];
+    const destroyRunLease = vi.fn(async ({ lease }: { lease: { id: string } }) => {
+      destroyedLeaseIds.push(lease.id);
+      return null;
+    });
+    const heartbeat = heartbeatService(db, {
+      environmentRuntime: fakeRuntime(
+        destroyRunLease as unknown as HeartbeatEnvironmentRuntime["destroyRunLease"],
+      ),
+    });
+
+    // The sweep resolves; the malformed cast does not throw.
+    const result = await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 });
+    expect(result.swept).toBe(2);
+
+    // The sweep still processed the healthy lease.
+    expect(destroyedLeaseIds).toContain(healthyLeaseId);
+
+    // The malformed attempts value normalized to a real number on the claim.
+    const malformedMetadata = await readMetadata(malformedLeaseId);
+    expect(malformedMetadata?.[ATTEMPTS_KEY]).toBe(1);
+  });
+
+  // The cap warning fires only for a pending_cleanup lease at or above the cap.
+  // A lease that leaves pending_cleanup between the read and the claim must get
+  // no warn-flag write, because the claim carries a status predicate.
+  it("test_pending_cleanup_cap_warning_requires_pending_cleanup_status_and_cap", async () => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+
+    // A lease at the cap. It leaves pending_cleanup right before the warn claim.
+    const cappedLeaseId = await insertPendingCleanupLease({
+      companyId,
+      environmentId,
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+      metadata: { [ATTEMPTS_KEY]: ATTEMPT_CAP },
+    });
+
+    const destroyRunLease = vi.fn(async () => null);
+    const heartbeat = heartbeatService(db, {
+      environmentRuntime: fakeRuntime(
+        destroyRunLease as HeartbeatEnvironmentRuntime["destroyRunLease"],
+      ),
+    });
+
+    // A concurrent path moves the lease out of pending_cleanup right before the
+    // warn claim runs.
+    const hook = injectBeforeFirstLeaseClaim(async () => {
+      await db
+        .update(environmentLeases)
+        .set({ status: "expired" })
+        .where(eq(environmentLeases.id, cappedLeaseId));
+    });
+
+    try {
+      await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 });
+    } finally {
+      hook.restore();
+    }
+
+    // The lease left pending_cleanup, so the warn claim wrote no flag.
+    const metadata = await readMetadata(cappedLeaseId);
+    expect(metadata?.[CAP_WARNED_KEY]).not.toBe(true);
+
+    // The cap warning did not log.
+    const capWarnings = vi
+      .mocked(logger.warn)
+      .mock.calls.filter(
+        (call) =>
+          call[1] === "environment lease reached the pending_cleanup retry cap; left for manual cleanup",
+      );
+    expect(capWarnings.length).toBe(0);
+
+    // A lease below the cap gets no warn flag either. The retry path never
+    // reaches the cap branch.
+    const belowCapLeaseId = await insertPendingCleanupLease({
+      companyId,
+      environmentId,
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+      metadata: { [ATTEMPTS_KEY]: ATTEMPT_CAP - 1 },
+    });
+    await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 });
+    const belowCapMetadata = await readMetadata(belowCapLeaseId);
+    expect(belowCapMetadata?.[CAP_WARNED_KEY]).not.toBe(true);
   });
 });
