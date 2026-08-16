@@ -42,6 +42,7 @@ import {
   prepareClaudeConfigSeed,
   prepareSandboxClaudeProbeRuntime,
 } from "./claude-config.js";
+import { logRedactedSandboxProbeDiagnostic } from "./probe-diagnostics.js";
 import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
 import { buildClaudeProbePermissionArgs } from "./permissions.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
@@ -523,12 +524,11 @@ function buildAcpSandboxAuthMissingChecks(loginUrl: string | null): AdapterEnvir
  * confirm the login state. Nicky's direction: a sandbox Test without available
  * auth must not report a success.
  */
-function buildAcpLoginProbeUnavailableCheck(message: string, detail?: string): AdapterEnvironmentCheck {
+function buildAcpLoginProbeUnavailableCheck(message: string): AdapterEnvironmentCheck {
   return {
     code: "claude_acp_login_probe_unavailable",
     level: "warn",
     message,
-    ...(detail ? { detail } : {}),
     hint: "Verify that the sandbox can run `claude` and retry the Test. Set engine=cli to use the Claude CLI lane.",
   };
 }
@@ -586,12 +586,13 @@ export async function probeClaudeAcpSandboxLogin(input: {
       onLog: async () => {},
     });
   } catch (err) {
-    return [
-      buildAcpLoginProbeUnavailableCheck(
-        "The Claude login probe could not run in the sandbox.",
-        err instanceof Error ? err.message : String(err),
-      ),
-    ];
+    // Keep the raw error out of the Test-result check. Send the redacted
+    // diagnostic to the server log instead.
+    logRedactedSandboxProbeDiagnostic(
+      "Claude ACP login probe could not run in the sandbox",
+      err instanceof Error ? err.message : String(err),
+    );
+    return [buildAcpLoginProbeUnavailableCheck("The Claude login probe could not run in the sandbox.")];
   }
   if (probe.timedOut) {
     return [buildAcpLoginProbeUnavailableCheck("The Claude login probe timed out.")];
@@ -606,10 +607,13 @@ export async function probeClaudeAcpSandboxLogin(input: {
     return buildAcpSandboxAuthMissingChecks(loginMeta.loginUrl);
   }
   if ((probe.exitCode ?? 1) !== 0) {
-    const detail = firstNonEmptyString(probe.stderr, probe.stdout)?.replace(/\s+/g, " ").trim().slice(0, 240);
-    return [
-      buildAcpLoginProbeUnavailableCheck("The Claude login probe did not complete.", detail),
-    ];
+    // Keep the raw sandbox stderr and stdout out of the Test-result check. Send
+    // the redacted diagnostic to the server log instead.
+    logRedactedSandboxProbeDiagnostic(
+      "Claude ACP login probe did not complete",
+      firstNonEmptyString(probe.stderr, probe.stdout),
+    );
+    return [buildAcpLoginProbeUnavailableCheck("The Claude login probe did not complete.")];
   }
   return [];
 }

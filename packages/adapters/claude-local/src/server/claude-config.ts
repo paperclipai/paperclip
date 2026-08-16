@@ -17,6 +17,7 @@ import {
 } from "@paperclipai/adapter-utils/execution-target";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
+import { logRedactedSandboxProbeDiagnostic } from "./probe-diagnostics.js";
 
 const SEEDED_SHARED_FILES = ["settings.json", "CLAUDE.md"] as const;
 
@@ -348,11 +349,17 @@ export async function prepareSandboxClaudeProbeRuntime(input: {
         detail: remoteClaudeConfigDir,
       });
     } catch (err) {
+      // Keep the raw error out of the Test-result check. Send the redacted
+      // diagnostic to the server log instead.
+      logRedactedSandboxProbeDiagnostic(
+        "Could not materialize Paperclip-managed Claude config for the sandbox probe",
+        err instanceof Error ? err.message : String(err),
+      );
       checks.push({
         code: "claude_managed_config_dir_failed",
         level: "error",
         message: "Could not materialize Paperclip-managed Claude config for the sandbox probe.",
-        detail: err instanceof Error ? err.message : String(err),
+        hint: "Retry the Test. If the failure repeats, check the server log for the redacted diagnostic.",
       });
     } finally {
       await preparedRuntime?.restoreWorkspace().catch(() => undefined);

@@ -200,4 +200,57 @@ describe("probeClaudeAcpSandboxLogin", () => {
     expect(checks[0]?.code).toBe("claude_acp_login_probe_unavailable");
     expect(checks[0]?.level).toBe("warn");
   });
+
+  it("never copies a thrown probe error into a Test-result check", async () => {
+    // A sandbox transport failure can carry a credential. Inject a secret
+    // marker through the thrown error and assert no check text repeats it.
+    const secret = "sk-ant-LEAKMARKER0123456789abcdef";
+    probeResult.throwError = new Error(`transport failed with ${secret}`);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const checks = await probeClaudeAcpSandboxLogin({
+      config: { engine: "acp" },
+      target: sandboxTarget,
+    });
+
+    const checkText = JSON.stringify(checks);
+    expect(checkText).not.toContain(secret);
+    expect(checkText).not.toContain("LEAKMARKER");
+    expect(checks[0]?.code).toBe("claude_acp_login_probe_unavailable");
+    // The diagnostic still reaches the server log, but the secret is redacted.
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const loggedText = JSON.stringify(warnSpy.mock.calls);
+    expect(loggedText).not.toContain(secret);
+    expect(loggedText).toContain("***REDACTED***");
+    warnSpy.mockRestore();
+  });
+
+  it("never copies raw probe stderr or stdout into a Test-result check", async () => {
+    // A non-zero probe can print a credential to stderr. Inject a secret marker
+    // and assert no check text repeats it.
+    const secret = "sk-ant-STDERRMARKER0123456789abcdef";
+    probeResult.value = {
+      exitCode: 2,
+      stdout: initLine,
+      stderr: `fatal: leaked ${secret}`,
+      timedOut: false,
+    };
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const checks = await probeClaudeAcpSandboxLogin({
+      config: { engine: "acp" },
+      target: sandboxTarget,
+    });
+
+    const checkText = JSON.stringify(checks);
+    expect(checkText).not.toContain(secret);
+    expect(checkText).not.toContain("STDERRMARKER");
+    expect(checks[0]?.code).toBe("claude_acp_login_probe_unavailable");
+    // The diagnostic still reaches the server log, but the secret is redacted.
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const loggedText = JSON.stringify(warnSpy.mock.calls);
+    expect(loggedText).not.toContain(secret);
+    expect(loggedText).toContain("***REDACTED***");
+    warnSpy.mockRestore();
+  });
 });
