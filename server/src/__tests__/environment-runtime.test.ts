@@ -37,6 +37,7 @@ import {
 } from "../services/environment-runtime.ts";
 import * as sandboxProviderRuntime from "../services/sandbox-provider-runtime.ts";
 import * as environmentsModule from "../services/environments.ts";
+import { logger } from "../middleware/logger.ts";
 import { environmentService } from "../services/environments.ts";
 import { secretService } from "../services/secrets.ts";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.ts";
@@ -984,6 +985,9 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
             Promise.reject(new Error("pending-cleanup write failed")),
         };
       });
+    // The durable database write fails, so the only durable handle left is the
+    // error log. Capture it to prove the leaked sandbox stays discoverable.
+    const logSpy = vi.spyOn(logger, "error").mockImplementation(() => logger);
     try {
       const runtimeWithFailingCleanup = environmentRuntimeService(db);
       const rejection = await runtimeWithFailingCleanup
@@ -1018,7 +1022,24 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         .from(environmentLeases)
         .where(eq(environmentLeases.environmentId, environment.id));
       expect(rows).toHaveLength(0);
+      // The durable log preserves the provider identifiers, so an operator keeps
+      // a handle to find and tear the leaked sandbox down by hand.
+      const cleanupLog = logSpy.mock.calls.find(
+        ([fields]) =>
+          (fields as { errorKind?: string } | undefined)?.errorKind ===
+          "sandbox_orphan_cleanup_write_failed",
+      );
+      expect(cleanupLog).toBeDefined();
+      expect(cleanupLog?.[0]).toMatchObject({
+        provider: "fake",
+        companyId,
+        environmentId: environment.id,
+      });
+      // The log never carries the caught exception, so no credential leaks.
+      expect(cleanupLog?.[0]).not.toHaveProperty("cause");
+      expect(cleanupLog?.[0]).not.toHaveProperty("cleanupWriteError");
     } finally {
+      logSpy.mockRestore();
       factorySpy.mockRestore();
       destroySpy.mockRestore();
     }
@@ -1389,6 +1410,105 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     } finally {
       destroySpy.mockRestore();
     }
+  });
+
+  it("reports the plugin cleanup worker not ready while its worker is down, then ready after it recovers", async () => {
+    // A pending_cleanup orphan targets a plugin-backed provider. The sweep must
+    // not consume a finite retry attempt while the plugin worker is briefly down.
+    // So the readiness probe reports "not ready" for a down worker and "ready"
+    // after the worker recovers. A built-in provider has no worker, so it is
+    // always ready.
+    const pluginId = randomUUID();
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Cleanup Worker Readiness",
+      config: { provider: "fake-plugin-ready", image: "fake:test", reuseLease: false },
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "paperclip.fake-plugin-ready-sandbox-provider",
+      packageName: "@paperclipai/plugin-fake-ready-sandbox",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "paperclip.fake-plugin-ready-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Fake Plugin Ready Sandbox Provider",
+        description: "Test fake plugin provider readiness",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin-ready",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin Ready",
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+
+    // The worker is down at first, then recovers on the second probe.
+    let workerRunning = false;
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId && workerRunning),
+      call: vi.fn(async () => {
+        throw new Error("call must not run during a readiness probe");
+      }),
+    } as unknown as PluginWorkerManager;
+
+    const orphan = await environmentService(db).insertPendingCleanupLease({
+      companyId,
+      environmentId: environment.id,
+      executionWorkspaceId: null,
+      issueId: null,
+      heartbeatRunId: runId,
+      provider: "fake-plugin-ready",
+      providerLeaseId: "plugin-lease-readiness",
+      metadata: { provider: "fake-plugin-ready", driver: "sandbox", reuseLease: false },
+      failureReason: "acquire_rejected_teardown_failed",
+    });
+    const lease = (await environmentService(db).getLeaseById(orphan.id))!;
+
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    // A down plugin worker is the transient restart window, so the probe reports
+    // not ready. The sweep skips the lease without a claim, so no attempt burns.
+    await expect(
+      runtimeWithPlugin.isPendingCleanupWorkerReady({ environment, lease }),
+    ).resolves.toBe(false);
+    // The probe never calls the worker; it only checks the live worker state.
+    expect((workerManager.call as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+
+    // The worker recovers, so the probe now reports ready and the sweep proceeds.
+    workerRunning = true;
+    await expect(
+      runtimeWithPlugin.isPendingCleanupWorkerReady({ environment, lease }),
+    ).resolves.toBe(true);
+
+    // A built-in provider has no plugin worker, so its orphan is always ready.
+    const builtinOrphan = await environmentService(db).insertPendingCleanupLease({
+      companyId,
+      environmentId: environment.id,
+      executionWorkspaceId: null,
+      issueId: null,
+      heartbeatRunId: runId,
+      provider: "fake",
+      providerLeaseId: "builtin-lease-readiness",
+      metadata: { provider: "fake", driver: "sandbox", reuseLease: false },
+      failureReason: "acquire_rejected_teardown_failed",
+    });
+    const builtinLease = (await environmentService(db).getLeaseById(builtinOrphan.id))!;
+    await expect(
+      runtimeWithPlugin.isPendingCleanupWorkerReady({ environment, lease: builtinLease }),
+    ).resolves.toBe(true);
   });
 
   it("records an orphan with a null reference when a delete already removed the environment", async () => {

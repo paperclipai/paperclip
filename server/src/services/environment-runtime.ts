@@ -65,6 +65,13 @@ import {
 } from "./plugin-environment-driver.js";
 import { collectSecretRefPaths } from "./json-schema-secret-refs.js";
 import { buildWorkspaceRealizationRecordFromDriverInput } from "./workspace-realization.js";
+import { logger } from "../middleware/logger.js";
+
+// The constant error kind for the durable orphan-cleanup-write-failed log. The
+// log never reads the caught exception, because the exception can carry a
+// credential in its name, code, message, cause, or stack. So the log records
+// this constant and the plain provider identifiers only.
+const SANDBOX_ORPHAN_CLEANUP_WRITE_ERROR_KIND = "sandbox_orphan_cleanup_write_failed";
 
 // ---------------------------------------------------------------------------
 // Sandbox capability contract — one normalizer for both branches
@@ -462,6 +469,18 @@ export interface EnvironmentRuntimeDriver {
    * the cleanup sweep keeps the row for a later retry.
    */
   retryPendingSandboxTeardown?(input: { environment: Environment | null; lease: EnvironmentLease }): Promise<void>;
+  /**
+   * Report whether the provider worker can run an orphan teardown now. A plugin
+   * sandbox provider worker can be briefly down during its own restart window.
+   * A teardown in that window throws, and the cleanup sweep would count that
+   * throw against the finite retry cap. So the sweep probes this method before
+   * it claims a retry attempt, and skips the lease when the worker is not ready.
+   * A later sweep retries after the worker recovers. The method reports `true`
+   * for every persistent condition (a built-in provider, a missing plugin, or an
+   * absent worker manager), so the teardown still runs, throws, and counts
+   * toward the cap. It reports `false` only for the transient worker-down window.
+   */
+  isPendingCleanupWorkerReady?(input: { environment: Environment | null; lease: EnvironmentLease }): Promise<boolean>;
 }
 
 /**
@@ -944,11 +963,13 @@ function createSandboxEnvironmentDriver(
   // for the `pending_cleanup` status, so the orphan is visible at once.
   //
   // The write is not best-effort. A failed teardown already left a live sandbox
-  // with no lease row. If this write also fails, the sandbox has no durable
-  // cleanup state and no sweep can ever find it. So a write failure throws
-  // `SandboxOrphanCleanupWriteError`, which the caller propagates. The error
-  // keeps the original insert rejection as its `cause`, so the real reason the
-  // acquire failed stays visible in the error chain.
+  // with no lease row. If this write also fails, no sweep can find the sandbox.
+  // So a write failure first logs the plain provider identifiers at error level,
+  // so an operator keeps a durable handle to find and tear the sandbox down by
+  // hand. The write failure then throws `SandboxOrphanCleanupWriteError`, which
+  // the caller propagates. The error keeps the original insert rejection as its
+  // `cause`, so the real reason the acquire failed stays visible in the error
+  // chain.
   const recordPendingSandboxCleanup = async (record: {
     companyId: string;
     environmentId: string;
@@ -973,6 +994,26 @@ function createSandboxEnvironmentDriver(
         failureReason: "acquire_rejected_teardown_failed",
       });
     } catch (cleanupWriteError) {
+      // The durable database write failed, so no lease row tracks the live
+      // sandbox. The database is the only automated cleanup store, and it is
+      // unavailable here, so the single durable handle that stays is this log.
+      // Emit the plain provider identifiers at error level, so an operator can
+      // find the leaked sandbox and tear it down by hand. Never log the caught
+      // exception: it can carry a credential in its name, code, message, cause,
+      // or stack. The provider identifiers below carry no secret.
+      logger.error(
+        {
+          errorKind: SANDBOX_ORPHAN_CLEANUP_WRITE_ERROR_KIND,
+          provider: record.provider,
+          providerLeaseId: record.providerLeaseId,
+          companyId: record.companyId,
+          environmentId: record.environmentId,
+          executionWorkspaceId: record.executionWorkspaceId,
+          issueId: record.issueId,
+          heartbeatRunId: record.heartbeatRunId,
+        },
+        "sandbox orphan cleanup write failed; live sandbox has no durable lease row and needs a manual teardown",
+      );
       throw new SandboxOrphanCleanupWriteError({
         provider: record.provider,
         providerLeaseId: record.providerLeaseId,
@@ -1804,6 +1845,37 @@ function createSandboxEnvironmentDriver(
         config: cleanupConfig,
         providerLeaseId: input.lease.providerLeaseId,
       });
+    },
+
+    async isPendingCleanupWorkerReady(input) {
+      // Resolve the recorded provider the same way `retryPendingSandboxTeardown`
+      // does, so the probe reads the same target the teardown uses.
+      const recordedProvider =
+        input.lease.provider ??
+        (typeof input.lease.metadata?.provider === "string" ? input.lease.metadata.provider : null);
+      // A missing provider is a permanent misconfiguration. Report ready, so the
+      // teardown runs, throws, and counts toward the cap.
+      if (!recordedProvider) return true;
+      // A built-in provider has no plugin worker, so it is always ready.
+      if (isBuiltinSandboxProvider(recordedProvider)) return true;
+      // No worker manager is a permanent condition here. Report ready, so the
+      // teardown runs, throws its own "no worker manager" error, and counts
+      // toward the cap.
+      if (!pluginWorkerManager) return true;
+      // Resolve the installed plugin without a wait. A plugin that is not
+      // installed or not ready is a permanent condition, so report ready and let
+      // the teardown run and count toward the cap.
+      const installed = await resolvePluginSandboxProviderDriverByKey({
+        db,
+        driverKey: recordedProvider,
+        workerManager: pluginWorkerManager,
+        requireRunning: false,
+      });
+      if (!installed || installed.plugin.status !== "ready") return true;
+      // The plugin is installed and ready, so gate on the live worker. A running
+      // worker is ready. A down worker is the transient restart window, so report
+      // not ready and let a later sweep retry after the worker recovers.
+      return pluginWorkerManager.isRunning(installed.plugin.id);
     },
 
     async realizeWorkspace(input) {
@@ -2778,6 +2850,20 @@ export function environmentRuntimeService(
         );
       }
       await driver.retryPendingSandboxTeardown(input);
+    },
+
+    // Report whether the provider worker can run an orphan teardown now. The
+    // cleanup sweep calls this before it claims a finite retry attempt, so a
+    // briefly-down plugin worker never burns an attempt. This dispatcher never
+    // throws: an unregistered driver, or a driver with no probe, reports ready,
+    // so the teardown still runs and its own failure counts toward the cap.
+    async isPendingCleanupWorkerReady(input: {
+      environment: Environment | null;
+      lease: EnvironmentLease;
+    }): Promise<boolean> {
+      const driver = getDriver(getLeaseDriverKey(input.lease, input.environment));
+      if (!driver?.isPendingCleanupWorkerReady) return true;
+      return driver.isPendingCleanupWorkerReady(input);
     },
 
     async destroyReusableSandboxLeases(input: {

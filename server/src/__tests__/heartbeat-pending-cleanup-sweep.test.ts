@@ -467,6 +467,59 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     expect((finalRow?.metadata as Record<string, unknown> | null)?.[ATTEMPTS_KEY]).toBe(1);
   });
 
+  it("test_pending_cleanup_sweep_skips_lease_while_plugin_worker_down_then_retries", async () => {
+    const { companyId } = await seedCompanyAndEnvironment();
+    // An orphan ephemeral lease that a failed plugin acquire recorded. The sweep
+    // tears it down through retryPendingSandboxTeardown.
+    const leaseId = await insertOrphanEphemeralLease({
+      companyId,
+      environmentId: null,
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    // The plugin worker is down at first, then recovers on the second sweep.
+    let workerReady = false;
+    const isPendingCleanupWorkerReady = vi.fn(async () => workerReady);
+    const retryPendingSandboxTeardown = vi.fn(async () => {});
+    const destroyRunLease = vi.fn(async () => null);
+    const runtime = {
+      isPendingCleanupWorkerReady,
+      retryPendingSandboxTeardown,
+      destroyRunLease,
+    } as unknown as HeartbeatEnvironmentRuntime;
+    const heartbeat = heartbeatService(db, { environmentRuntime: runtime });
+
+    // First sweep: the worker is down, so the sweep skips the lease. It never
+    // claims an attempt and never runs the teardown.
+    const first = await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 });
+    expect(first).toEqual({ swept: 1, destroyed: 0, capped: 0 });
+    expect(isPendingCleanupWorkerReady).toHaveBeenCalledTimes(1);
+    expect(retryPendingSandboxTeardown).not.toHaveBeenCalled();
+    // The skipped lease consumed no finite attempt.
+    expect(await readAttempts(leaseId)).toBe(0);
+    const afterSkip = await db
+      .select({ status: environmentLeases.status })
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, leaseId))
+      .then((rows) => rows[0]?.status);
+    expect(afterSkip).toBe("pending_cleanup");
+
+    // Second sweep: the worker recovered, so the sweep claims an attempt and
+    // tears the sandbox down.
+    workerReady = true;
+    const second = await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 });
+    expect(second).toEqual({ swept: 1, destroyed: 1, capped: 0 });
+    expect(retryPendingSandboxTeardown).toHaveBeenCalledTimes(1);
+
+    const finalRow = await db
+      .select({ status: environmentLeases.status, cleanupStatus: environmentLeases.cleanupStatus })
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, leaseId))
+      .then((rows) => rows[0]);
+    expect(finalRow?.status).toBe("expired");
+    expect(finalRow?.cleanupStatus).toBe("success");
+  });
+
   // Read the current retry attempt count from a lease's metadata.
   async function readAttempts(leaseId: string): Promise<number> {
     const metadata = await db
