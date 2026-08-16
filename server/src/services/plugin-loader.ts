@@ -62,6 +62,53 @@ export const STANDALONE_BUNDLED_PLUGIN_ROOT = path.join(BUNDLED_LOCAL_PLUGIN_ROO
 export const LOCAL_PLUGIN_AUTOBUILD_TIMEOUT_MS = 120_000;
 const STANDALONE_BUNDLED_PLUGIN_SDK_PACKAGE = "@paperclipai/plugin-sdk";
 
+type PluginManagedAgentCleanupService = {
+  remove(agentId: string): Promise<unknown>;
+  terminate(agentId: string, audit: {
+    actorType: "plugin";
+    actorId: string;
+    source: string;
+  }): Promise<unknown>;
+};
+
+function errorChainHasCode(error: unknown, expectedCode: string): boolean {
+  const seen = new Set<object>();
+  let current = error;
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (typeof current !== "object" || current === null || seen.has(current)) return false;
+    seen.add(current);
+    if ("code" in current && String((current as { code?: unknown }).code) === expectedCode) {
+      return true;
+    }
+    current = "cause" in current ? (current as { cause?: unknown }).cause : undefined;
+  }
+  return false;
+}
+
+/**
+ * Remove a plugin-managed agent when no history references it. PostgreSQL
+ * intentionally prevents deleting agents that still anchor audit/finance
+ * rows; retain those as terminated, non-invokable tombstones instead.
+ */
+export async function cleanupPluginManagedAgent(
+  service: PluginManagedAgentCleanupService,
+  agentId: string,
+  pluginKey: string,
+): Promise<"removed" | "retained_audit_tombstone"> {
+  try {
+    await service.remove(agentId);
+    return "removed";
+  } catch (error) {
+    if (!errorChainHasCode(error, "23503")) throw error;
+    await service.terminate(agentId, {
+      actorType: "plugin",
+      actorId: pluginKey,
+      source: "plugin_hard_purge_audit_tombstone",
+    });
+    return "retained_audit_tombstone";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -1878,7 +1925,17 @@ export function pluginLoader(
       // keys, runs, and hierarchy references are cleaned consistently.
       for (const resource of managedResources) {
         if (resource.resourceKind === "agent") {
-          await agentService(db).remove(resource.resourceId);
+          const cleanupOutcome = await cleanupPluginManagedAgent(
+            agentService(db),
+            resource.resourceId,
+            plugin.pluginKey,
+          );
+          if (cleanupOutcome === "retained_audit_tombstone") {
+            log.info(
+              { pluginId: plugin.id, pluginKey: plugin.pluginKey, agentId: resource.resourceId },
+              "plugin-loader: retained terminated managed agent to preserve audit references",
+            );
+          }
         }
       }
 
