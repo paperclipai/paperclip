@@ -92,6 +92,7 @@ import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
 import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
 import {
   closeHttpServerForShutdown,
+  coalesceShutdown,
   coordinateHeartbeatSchedulerShutdown,
   drainExecutionOwnershipForShutdown,
   loadWithoutCoordinatedShutdownSignalHooks,
@@ -1619,7 +1620,7 @@ export async function startServer(): Promise<StartedServer> {
   });
   
   {
-    const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+    const shutdown = coalesceShutdown(async (signal: "SIGINT" | "SIGTERM") => {
       await runShutdownAndExit({
         shutdown: async () => {
           await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
@@ -1703,7 +1704,7 @@ export async function startServer(): Promise<StartedServer> {
         },
         exit: (code) => process.exit(code),
       });
-    };
+    });
 
     process.once("SIGINT", () => {
       void shutdown("SIGINT");

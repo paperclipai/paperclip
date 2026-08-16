@@ -64,6 +64,16 @@ type ClosableHttpServer = {
   closeIdleConnections?: () => void;
 };
 
+export function coalesceShutdown<TSignal>(
+  performShutdown: (signal: TSignal) => Promise<void>,
+): (signal: TSignal) => Promise<void> {
+  let shutdownPromise: Promise<void> | null = null;
+  return (signal) => {
+    shutdownPromise ??= performShutdown(signal);
+    return shutdownPromise;
+  };
+}
+
 export async function closeHttpServerForShutdown(server: ClosableHttpServer): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     server.close((error) => {

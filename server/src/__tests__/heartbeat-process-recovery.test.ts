@@ -2549,6 +2549,43 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("claimed");
   });
 
+  it("repairs a claimed wakeup before finalizing a terminal run after a crash", async () => {
+    const { runId, wakeupRequestId } = await seedRunFixture({
+      agentStatus: "idle",
+      includeIssue: false,
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "succeeded",
+        finishedAt: new Date("2026-03-19T00:05:30.000Z"),
+        updatedAt: new Date("2026-03-19T00:05:30.000Z"),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    await heartbeatService(db).reapOrphanedRuns();
+
+    const run = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(run).toMatchObject({
+      status: "succeeded",
+      executionFinalizerCompletedAt: expect.any(Date),
+      executionFinalizedAt: expect.any(Date),
+    });
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup).toMatchObject({
+      status: "completed",
+      finishedAt: new Date("2026-03-19T00:05:30.000Z"),
+    });
+  });
+
   it("does not enqueue duplicate restart recovery for the same interrupted run", async () => {
     const { agentId, runId, wakeupRequestId } = await seedRunFixture({
       agentStatus: "running",

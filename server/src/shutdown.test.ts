@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import {
   closeHttpServerForShutdown,
+  coalesceShutdown,
   coordinateHeartbeatSchedulerShutdown,
   finalizeServerShutdown,
   drainExecutionOwnershipForShutdown,
@@ -136,6 +137,29 @@ describe("finalizeServerShutdown", () => {
     expect(shutdownAppServices).toHaveBeenCalledOnce();
     expect(shutdownInstrumentation).toHaveBeenCalledOnce();
     expect(log.info).not.toHaveBeenCalled();
+  });
+});
+
+describe("coalesceShutdown", () => {
+  it("returns one in-flight shutdown when different signals arrive together", async () => {
+    let releaseShutdown!: () => void;
+    const shutdownBlocked = new Promise<void>((resolve) => {
+      releaseShutdown = resolve;
+    });
+    const performShutdown = vi.fn(async (_signal: "SIGINT" | "SIGTERM") => {
+      await shutdownBlocked;
+    });
+    const shutdown = coalesceShutdown(performShutdown);
+
+    const first = shutdown("SIGINT");
+    const second = shutdown("SIGTERM");
+
+    expect(second).toBe(first);
+    expect(performShutdown).toHaveBeenCalledOnce();
+    expect(performShutdown).toHaveBeenCalledWith("SIGINT");
+
+    releaseShutdown();
+    await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined]);
   });
 });
 
