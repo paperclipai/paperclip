@@ -14385,6 +14385,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     activeRunExecutions.add(run.id);
     let runScratch: HeartbeatRunScratch | null = null;
+    let gatewayTokensRevoked = false;
 
     try {
     const agent = await getAgent(run.agentId);
@@ -16454,11 +16455,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         throw adapterErr;
       } finally {
         try {
-          await revokeHeartbeatRunGatewayTokens({
+          await revokeRunGatewayTokens({
             db,
             companyId: agent.companyId,
             runId: run.id,
           });
+          gatewayTokensRevoked = true;
         } catch (revokeErr) {
           logger.warn(
             { err: revokeErr, runId: run.id, companyId: agent.companyId },
@@ -17114,6 +17116,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
           }
         } finally {
+          if (!gatewayTokensRevoked) {
+            try {
+              await revokeRunGatewayTokens({
+                db,
+                companyId: run.companyId,
+                runId: run.id,
+              });
+              gatewayTokensRevoked = true;
+            } catch (revokeErr) {
+              logger.error(
+                { err: revokeErr, runId: run.id, companyId: run.companyId },
+                "failed to revoke heartbeat-run MCP gateway tokens during finalization; leaving run unacknowledged for recovery",
+              );
+            }
+          }
           let latestRun = await getRun(run.id).catch(() => null);
           // Close the invariant "environment lease released implies the run is
           // terminal". When the teardown reaches this point with the run still
@@ -17206,12 +17223,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               await startNextQueuedRunForAgent(run.agentId);
             }
           } finally {
-            await acknowledgeRunFinalizationReliably(run.id).catch((error) => {
-              logger.error(
-                { err: error, runId: run.id, agentId: run.agentId },
-                "failed to acknowledge terminal heartbeat execution finalization",
-              );
-            });
+            if (gatewayTokensRevoked) {
+              await acknowledgeRunFinalizationReliably(run.id).catch((error) => {
+                logger.error(
+                  { err: error, runId: run.id, agentId: run.agentId },
+                  "failed to acknowledge terminal heartbeat execution finalization",
+                );
+              });
+            }
           }
         }
   }

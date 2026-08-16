@@ -5,6 +5,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { readProcessStartedAt } from "./hot-restart.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -24,6 +25,7 @@ export interface LocalServiceRegistryRecord {
   runtimeServiceId: string | null;
   reuseKey: string | null;
   startedAt: string;
+  processStartedAt?: string | null;
   lastSeenAt: string;
   metadata: Record<string, unknown> | null;
 }
@@ -99,6 +101,7 @@ function normalizeRegistryRecord(raw: unknown): LocalServiceRegistryRecord | nul
     runtimeServiceId: typeof rec.runtimeServiceId === "string" ? rec.runtimeServiceId : null,
     reuseKey: typeof rec.reuseKey === "string" ? rec.reuseKey : null,
     startedAt: typeof rec.startedAt === "string" ? rec.startedAt : new Date().toISOString(),
+    processStartedAt: typeof rec.processStartedAt === "string" ? rec.processStartedAt : null,
     lastSeenAt: typeof rec.lastSeenAt === "string" ? rec.lastSeenAt : new Date().toISOString(),
     metadata:
       rec.metadata && typeof rec.metadata === "object" && !Array.isArray(rec.metadata)
@@ -180,12 +183,17 @@ export async function listLocalServiceRegistryRecords(filter?: {
 export async function findLocalServiceRegistryRecordByRuntimeServiceId(input: {
   runtimeServiceId: string;
   profileKind?: string;
+  requireExactProcessIdentity?: boolean;
 }) {
   const records = await listLocalServiceRegistryRecords(
     input.profileKind ? { profileKind: input.profileKind } : undefined,
   );
   const record = records.find((entry) => entry.runtimeServiceId === input.runtimeServiceId) ?? null;
   if (!record) return null;
+
+  if (input.requireExactProcessIdentity) {
+    return (await hasExactLocalServiceProcessIdentity(record)) ? record : null;
+  }
 
   let candidate = record;
   if (!isPidAlive(candidate.pid)) {
@@ -331,6 +339,58 @@ export async function isLocalServiceProcessOwnedBy(pid: number, ownerProcessId: 
   }
 }
 
+async function readLocalServiceProcessCommand(pid: number) {
+  if (process.platform === "win32") return null;
+  try {
+    const { stdout } = await execFileAsync("ps", ["-o", "command=", "-p", String(pid)]);
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function hasExactLocalServiceProcessIdentity(
+  record: LocalServiceRegistryRecord,
+  options: {
+    isAlive?: (pid: number) => boolean;
+    readCommand?: (pid: number) => Promise<string | null>;
+    readCwd?: (pid: number) => Promise<string | null>;
+    readStartedAt?: (pid: number) => Promise<string | null>;
+    readGroupId?: (pid: number) => Promise<number | null>;
+    isInWorkspace?: (processCwd: string, workspaceCwd: string) => Promise<boolean>;
+  } = {},
+) {
+  const isAlive = options.isAlive ?? isPidAlive;
+  if (!isAlive(record.pid)) return false;
+
+  const [commandLine, processCwd, observedStartedAt, observedGroupId] = await Promise.all([
+    (options.readCommand ?? readLocalServiceProcessCommand)(record.pid),
+    (options.readCwd ?? readLocalServiceProcessCwd)(record.pid),
+    (options.readStartedAt ?? readProcessStartedAt)(record.pid).catch(() => null),
+    (options.readGroupId ?? readProcessGroupId)(record.pid),
+  ]);
+  if (!commandLine || !processCwd || !observedStartedAt) return false;
+
+  const normalize = (value: string) => value.replace(/["']/g, "").replace(/\s+/g, " ").trim();
+  if (!normalize(commandLine).includes(normalize(record.command))) return false;
+  if (!(await (options.isInWorkspace ?? isLocalServiceProcessInWorkspace)(processCwd, record.cwd))) {
+    return false;
+  }
+
+  if (!record.processStartedAt) return false;
+  const recordedStartMs = Date.parse(record.processStartedAt);
+  const observedStartMs = Date.parse(observedStartedAt);
+  if (
+    !Number.isFinite(recordedStartMs)
+    || !Number.isFinite(observedStartMs)
+    || recordedStartMs !== observedStartMs
+  ) {
+    return false;
+  }
+
+  return record.processGroupId === null || observedGroupId === record.processGroupId;
+}
+
 async function adoptLocalServiceFromPortOwner(input: {
   serviceKey: string;
   profileKind?: string | null;
@@ -355,6 +415,7 @@ async function adoptLocalServiceFromPortOwner(input: {
   const processGroupId = await readLocalServiceProcessGroupId(ownerPid);
   const pid = processGroupId && isPidAlive(processGroupId) ? processGroupId : ownerPid;
   const now = new Date().toISOString();
+  const processStartedAt = await readProcessStartedAt(pid).catch(() => null);
   const record: LocalServiceRegistryRecord = {
     version: 1,
     serviceKey: input.serviceKey,
@@ -371,6 +432,7 @@ async function adoptLocalServiceFromPortOwner(input: {
     runtimeServiceId: null,
     reuseKey: input.envFingerprint ?? null,
     startedAt: now,
+    processStartedAt,
     lastSeenAt: now,
     metadata: null,
   };

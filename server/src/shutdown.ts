@@ -62,6 +62,7 @@ type ShutdownSignalTarget = {
 type ClosableHttpServer = {
   close(callback: (error?: Error) => void): unknown;
   closeIdleConnections?: () => void;
+  closeAllConnections?: () => void;
 };
 
 export function coalesceShutdown<TSignal>(
@@ -85,6 +86,25 @@ export async function closeHttpServerForShutdown(server: ClosableHttpServer): Pr
     });
     server.closeIdleConnections?.();
   });
+}
+
+export function beginHttpServerShutdown(server: ClosableHttpServer) {
+  const settled = closeHttpServerForShutdown(server).then(
+    () => ({ error: null as Error | null }),
+    (error: unknown) => ({
+      error: error instanceof Error ? error : new Error(String(error)),
+    }),
+  );
+
+  return {
+    closeRemainingConnections: () => {
+      server.closeAllConnections?.();
+    },
+    waitForClose: async () => {
+      const result = await settled;
+      if (result.error) throw result.error;
+    },
+  };
 }
 
 /**

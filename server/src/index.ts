@@ -91,7 +91,7 @@ import { closeAcpxEngineRuntimesForShutdown } from "@paperclipai/adapter-utils/a
 import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
 import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
 import {
-  closeHttpServerForShutdown,
+  beginHttpServerShutdown,
   coalesceShutdown,
   coordinateHeartbeatSchedulerShutdown,
   drainExecutionOwnershipForShutdown,
@@ -1629,10 +1629,12 @@ export async function startServer(): Promise<StartedServer> {
             clearInterval(heartbeatSchedulerInterval);
             heartbeatSchedulerInterval = null;
           }
-          await Promise.all([
-            closeHttpServerForShutdown(server),
-            heartbeat?.closeAdmissionsForShutdown(),
-          ]);
+          // Stop accepting new HTTP connections immediately, but do not await
+          // active responses yet. Long-lived SSE responses can keep the close
+          // callback pending; heartbeat admissions and execution ownership must
+          // drain before those connections are force-closed.
+          const httpShutdown = beginHttpServerShutdown(server);
+          await heartbeat?.closeAdmissionsForShutdown();
 
           const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
             signal,
@@ -1669,6 +1671,8 @@ export async function startServer(): Promise<StartedServer> {
             { signal, drain, heartbeatDrainSkipped: skipHeartbeatDrain, retainedRuntimes },
             "shutdown heartbeat and retained-runtime drain complete",
           );
+          httpShutdown.closeRemainingConnections();
+          await httpShutdown.waitForClose();
 
           // Whatever the drain did not finalize (timed-out runs, the hot-restart
           // skip path) still has a local-only tail when the in-flight run-log

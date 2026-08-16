@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import {
+  beginHttpServerShutdown,
   closeHttpServerForShutdown,
   coalesceShutdown,
   coordinateHeartbeatSchedulerShutdown,
@@ -187,6 +188,42 @@ describe("closeHttpServerForShutdown", () => {
 
     reportClose(closeError);
     await expect(closing).rejects.toBe(closeError);
+  });
+});
+
+describe("beginHttpServerShutdown", () => {
+  it("starts listener close without blocking execution drain on an active response", async () => {
+    let reportClose!: (error?: Error) => void;
+    const closeAllConnections = vi.fn(() => reportClose());
+    const server = {
+      close: vi.fn((callback: (error?: Error) => void) => {
+        reportClose = callback;
+      }),
+      closeIdleConnections: vi.fn(),
+      closeAllConnections,
+    };
+
+    const shutdown = beginHttpServerShutdown(server);
+
+    expect(server.close).toHaveBeenCalledOnce();
+    expect(server.closeIdleConnections).toHaveBeenCalledOnce();
+    expect(closeAllConnections).not.toHaveBeenCalled();
+
+    shutdown.closeRemainingConnections();
+    await expect(shutdown.waitForClose()).resolves.toBeUndefined();
+    expect(closeAllConnections).toHaveBeenCalledOnce();
+  });
+
+  it("captures an early close failure until the ordered waiter observes it", async () => {
+    const closeError = new Error("listener close failed before drain");
+    const server = {
+      close: vi.fn((callback: (error?: Error) => void) => callback(closeError)),
+    };
+
+    const shutdown = beginHttpServerShutdown(server);
+    await Promise.resolve();
+
+    await expect(shutdown.waitForClose()).rejects.toBe(closeError);
   });
 });
 
