@@ -7,7 +7,7 @@ import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
-import { credentialsApi, type CredentialUsage } from "../api/credentials";
+import { costsApi } from "../api/costs";
 import { buildCompanyUserProfileMap } from "../lib/company-members";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -17,15 +17,14 @@ import { CircularStatWidget } from "../components/CircularStatWidget";
 import { MetricCard } from "../components/MetricCard";
 import { EmptyState } from "../components/EmptyState";
 import { StatusIcon } from "../components/StatusIcon";
-import { Button } from "@/components/ui/button";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 
 import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
-import { cn, formatCents, formatTokens } from "../lib/utils";
+import { formatCents, formatTokens } from "../lib/utils";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
-import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Eye, KeyRound, RefreshCw } from "lucide-react";
+import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle, Eye } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { AnimatedNumber, DotMatrixText } from "../components/NothingAesthetic";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
@@ -34,126 +33,13 @@ import { Card } from "@/components/ui/card";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { SmokeLabDashboardCard } from "../components/SmokeLabDashboardCard";
+import { DashboardQuotaCard } from "../components/DashboardQuotaCard";
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
 
 function getRecentIssues(issues: Issue[]): Issue[] {
   return [...issues]
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-}
-
-function credentialUsageTokens(usage: CredentialUsage | undefined): number {
-  if (!usage) return 0;
-  return usage.inputTokens + usage.cachedInputTokens + usage.outputTokens;
-}
-
-function credentialUsageWindowTokens(usage: CredentialUsage | undefined, label: string): number {
-  const window = usage?.windows.find((entry) => entry.label === label);
-  if (!window) return 0;
-  return window.inputTokens + window.cachedInputTokens + window.outputTokens;
-}
-
-function credentialUsageBreakdown(usage: CredentialUsage | undefined): string {
-  if (!usage) return "input miss 0 · cached 0 · output 0";
-  return [
-    `input miss ${formatTokens(usage.inputTokens)}`,
-    `cached ${formatTokens(usage.cachedInputTokens)}`,
-    `output ${formatTokens(usage.outputTokens)}`,
-  ].join(" · ");
-}
-
-function credentialModelTitle(usage: CredentialUsage | undefined): string {
-  const models = usage?.models ?? [];
-  if (models.length === 0) return "Model-aware value uses recorded model pricing when available.";
-  return models
-    .slice(0, 8)
-    .map((model) => {
-      const tokens = model.inputTokens + model.cachedInputTokens + model.outputTokens;
-      return [
-        `${model.model} (${model.provider}/${model.biller})`,
-        `${formatTokens(tokens)} tok`,
-        `${formatCents(model.apiEquivalentCostCents)} API value`,
-        model.pricingLabel ?? "recorded/fallback pricing",
-      ].join(" · ");
-    })
-    .join("\n");
-}
-
-function credentialTopModelLabel(usage: CredentialUsage | undefined): string {
-  const top = usage?.models?.[0];
-  if (!top) return "model-aware";
-  return top.model.length > 18 ? `${top.model.slice(0, 17)}…` : top.model;
-}
-
-function formatQuotaResetTime(iso: string | null | undefined): string | null {
-  if (!iso) return null;
-  const date = new Date(iso);
-  if (!Number.isFinite(date.getTime())) return null;
-  return `resets ${date.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZoneName: "short",
-  })}`;
-}
-
-function formatQuotaResetOrDetail(window: { resetsAt: string | null; detail?: string | null }): string | null {
-  return formatQuotaResetTime(window.resetsAt) ?? window.detail ?? null;
-}
-
-function isCredentialCooldownActive(cooldownUntil: string | null | undefined): boolean {
-  if (!cooldownUntil) return false;
-  const cooldownMs = new Date(cooldownUntil).getTime();
-  return Number.isFinite(cooldownMs) && cooldownMs > Date.now();
-}
-
-function DottedUsageBar({
-  usedPercent,
-  className,
-}: {
-  usedPercent: number;
-  className?: string;
-}) {
-  const used = Math.min(100, Math.max(0, usedPercent));
-  const segmentCount = 28;
-  const usedSegments = used <= 0
-    ? 0
-    : Math.max(1, Math.min(segmentCount, Math.round((used / 100) * segmentCount)));
-  return (
-    <div
-      className={cn(
-        "grid h-4 grid-cols-[repeat(28,minmax(0,1fr))] items-center gap-1 rounded-full border border-border/50 bg-muted/20 px-1",
-        className,
-      )}
-      aria-label={`${Math.round(used)}% used, ${Math.max(0, Math.round(100 - used))}% available`}
-    >
-      {Array.from({ length: segmentCount }).map((_, index) => {
-        const isUsed = index < usedSegments;
-        return (
-          <span
-            key={index}
-            className={cn(
-              "h-2 min-w-0 rounded-full transition-colors duration-200",
-              isUsed
-                ? "bg-red-500/90 shadow-[0_0_8px_rgba(239,68,68,0.22)]"
-                : "bg-green-500/75 shadow-[0_0_8px_rgba(34,197,94,0.18)]",
-            )}
-          />
-        );
-      })}
-    </div>
-  );
-}
-
-function compactQuotaLabel(label: string): string {
-  const normalized = label.toLowerCase();
-  if (normalized.includes("session")) return "5h";
-  if (normalized.includes("week") && normalized.includes("sonnet")) return "sonnet wk";
-  if (normalized.includes("week") && normalized.includes("opus")) return "opus wk";
-  if (normalized.includes("week")) return "week";
-  if (normalized.includes("extra")) return "extra";
-  return label.length > 14 ? `${label.slice(0, 13)}…` : label;
 }
 
 export function Dashboard() {
@@ -164,7 +50,6 @@ export function Dashboard() {
   const seenActivityIdsRef = useRef<Set<string>>(new Set());
   const hydratedActivityRef = useRef(false);
   const activityAnimationTimersRef = useRef<number[]>([]);
-  const forceCredentialQuotaRefreshRef = useRef(false);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -242,36 +127,20 @@ export function Dashboard() {
   });
 
   const {
-    data: credentialQuota = [],
-    refetch: refetchCredentialQuota,
-    isFetching: credentialQuotaFetching,
+    data: providerQuota = [],
+    error: providerQuotaError,
+    isFetching: providerQuotaFetching,
+    isLoading: providerQuotaLoading,
+    refetch: refetchProviderQuota,
   } = useQuery({
     queryKey: selectedCompanyId
-      ? queryKeys.credentials.quotaWindows(selectedCompanyId)
-      : ["credentials", "none", "quota-windows"],
-    queryFn: () => {
-      const refresh = forceCredentialQuotaRefreshRef.current;
-      forceCredentialQuotaRefreshRef.current = false;
-      return credentialsApi.quotaWindows(selectedCompanyId!, { refresh });
-    },
+      ? queryKeys.usageQuotaWindows(selectedCompanyId)
+      : ["usage-quota-windows", "none"],
+    queryFn: () => costsApi.quotaWindows(selectedCompanyId!),
     enabled: !!selectedCompanyId,
-    staleTime: 5 * 60_000,
+    staleTime: 60_000,
     refetchInterval: 5 * 60_000,
     refetchOnWindowFocus: false,
-  });
-
-  const refreshCredentialQuota = () => {
-    forceCredentialQuotaRefreshRef.current = true;
-    void refetchCredentialQuota();
-  };
-
-  const { data: credentialUsageResp } = useQuery({
-    queryKey: selectedCompanyId
-      ? ["credentials", selectedCompanyId, "usage", "mtd"]
-      : ["credentials", "none", "usage", "mtd"],
-    queryFn: () => credentialsApi.usage(selectedCompanyId!, { period: "month" }),
-    enabled: !!selectedCompanyId,
-    refetchInterval: 60_000,
   });
 
   const { data: companyMembers } = useQuery({
@@ -287,28 +156,6 @@ export function Dashboard() {
 
   const recentIssues = issues ? getRecentIssues(issues) : [];
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
-  const credentialUsageById = useMemo(() => {
-    const map = new Map<string, CredentialUsage>();
-    for (const usage of credentialUsageResp?.usage ?? []) map.set(usage.credentialId, usage);
-    return map;
-  }, [credentialUsageResp]);
-  const credentialUsageTotals = useMemo(() => {
-    const usageRows = credentialUsageResp?.usage ?? [];
-    let tokens5h = 0;
-    let value7dCents = 0;
-    let valueMtdCents = 0;
-    let billedMtdCents = 0;
-    let maxCredentialTokens = 1;
-    for (const usage of usageRows) {
-      tokens5h += credentialUsageWindowTokens(usage, "5h");
-      value7dCents += usage.windows.find((entry) => entry.label === "7d")?.apiEquivalentCostCents ?? 0;
-      valueMtdCents += usage.apiEquivalentCostCents;
-      billedMtdCents += usage.costCents;
-      maxCredentialTokens = Math.max(maxCredentialTokens, credentialUsageTokens(usage));
-    }
-    return { tokens5h, value7dCents, valueMtdCents, billedMtdCents, maxCredentialTokens };
-  }, [credentialUsageResp]);
-
   // Stalled tasks: open issues whose blocker-attention says they're stalled or
   // need attention (computed server-side and returned on the list). Most-recent
   // first so the drill-down shows what to investigate.
@@ -490,185 +337,25 @@ export function Dashboard() {
             </div>
           ) : null}
 
-          {credentialQuota.length > 0 && (
-            <div className="rounded-2xl border border-border/60 bg-background/75 backdrop-blur-sm shadow-sm px-5 py-4">
-              <div className="mb-4 flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <KeyRound className="h-4 w-4 text-[#34BFF0]" />
-                  <h3 className="text-sm font-medium">Credential quota & value</h3>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    className="h-7 gap-1.5 px-2 text-xs text-muted-foreground"
-                    onClick={refreshCredentialQuota}
-                    disabled={credentialQuotaFetching}
-                  >
-                    <RefreshCw className={cn("h-3.5 w-3.5", credentialQuotaFetching && "animate-spin")} />
-                    Refresh
-                  </Button>
-                  <Link to="/settings" className="text-xs text-muted-foreground hover:text-foreground">
-                    Manage
-                  </Link>
-                </div>
-              </div>
-              <div className="mb-4 grid gap-2 sm:grid-cols-3">
-                <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2">
-                  <p className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">5h tokens</p>
-                  <DotMatrixText className="text-xl leading-tight text-foreground">
-                    <AnimatedNumber value={credentialUsageTotals.tokens5h} format={formatTokens} />
-                  </DotMatrixText>
-                </div>
-                <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2">
-                  <p className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">7d API value</p>
-                  <DotMatrixText className="text-xl leading-tight text-foreground">
-                    <AnimatedNumber value={credentialUsageTotals.value7dCents} format={(n) => formatCents(Math.round(n))} />
-                  </DotMatrixText>
-                </div>
-                <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2">
-                  <p className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">MTD value / billed</p>
-                  <DotMatrixText className="text-xl leading-tight text-foreground">
-                    <AnimatedNumber value={credentialUsageTotals.valueMtdCents} format={(n) => formatCents(Math.round(n))} />
-                  </DotMatrixText>
-                  <p className="text-[10px] text-muted-foreground">
-                    billed {formatCents(credentialUsageTotals.billedMtdCents)}
-                  </p>
-                </div>
-              </div>
-              <div className="overflow-hidden rounded-md border border-border/60 bg-muted/10">
-                <div className="hidden grid-cols-[minmax(12rem,1.6fr)_minmax(8rem,0.8fr)_minmax(8rem,0.8fr)_minmax(14rem,1fr)] gap-3 border-b border-border/60 px-3 py-2 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground md:grid">
-                  <span>Credential</span>
-                  <span>MTD tokens</span>
-                  <span>7d value</span>
-                  <span>Quota</span>
-                </div>
-                <div className="divide-y divide-border/60">
-                  {credentialQuota.map((row) => {
-                    const usage = credentialUsageById.get(row.credentialId);
-                    const totalTokens = credentialUsageTokens(usage);
-                    const weekValue = usage?.windows.find((entry) => entry.label === "7d")?.apiEquivalentCostCents ?? 0;
-                    const observedPercent = Math.min(
-                      100,
-                      credentialUsageTotals.maxCredentialTokens > 0
-                        ? (totalTokens / credentialUsageTotals.maxCredentialTokens) * 100
-                        : 0,
-                    );
-                    const visibleQuotaWindows = row.quotaWindows
-                      .filter((entry) => entry.usedPercent != null || entry.valueLabel)
-                      .slice(0, 4);
-                    const isCooling = isCredentialCooldownActive(row.cooldownUntil);
-                    const quotaStatusLabel = row.stale
-                      ? "stale"
-                      : row.disabledAt
-                        ? "disabled"
-                        : isCooling
-                          ? "cooling"
-                          : !row.ok
-                            ? "retrying"
-                            : row.type;
-                    const quotaStatusTitle = row.stale && row.cachedAt
-                      ? `Showing last successful quota sample from ${new Date(row.cachedAt).toLocaleString()}`
-                      : row.error;
-                    const quotaStatusClass = cn(
-                      "shrink-0 rounded px-1.5 py-0.5 text-[10px]",
-                      row.stale
-                        ? "bg-amber-500/10 text-amber-600"
-                        : row.disabledAt
-                          ? "bg-destructive/10 text-destructive"
-                          : isCooling
-                            ? "bg-sky-500/10 text-sky-600"
-                            : "bg-muted text-muted-foreground",
-                    );
-                    return (
-                      <div
-                        key={row.credentialId}
-                        className="grid gap-3 px-3 py-3 md:grid-cols-[minmax(12rem,1.6fr)_minmax(8rem,0.8fr)_minmax(8rem,0.8fr)_minmax(14rem,1fr)] md:items-start"
-                      >
-                        <div className="min-w-0">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="truncate text-xs font-medium" title={row.name}>{row.name}</span>
-                            <span className={quotaStatusClass} title={quotaStatusTitle}>
-                              {quotaStatusLabel}
-                            </span>
-                          </div>
-                          <p className="mt-1 max-w-full truncate text-[10px] text-muted-foreground" title={credentialModelTitle(usage)}>
-                            {row.type} · {credentialTopModelLabel(usage)}
-                          </p>
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground md:hidden">MTD tokens</p>
-                          <DotMatrixText className="text-base leading-none">
-                            {formatTokens(totalTokens)}
-                          </DotMatrixText>
-                          <p className="mt-1 max-w-full truncate text-[10px] text-muted-foreground" title={credentialUsageBreakdown(usage)}>
-                            {credentialUsageBreakdown(usage)}
-                          </p>
-                          <DottedUsageBar usedPercent={observedPercent} className="mt-2" />
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground md:hidden">7d value</p>
-                          <span className="text-xs tabular-nums" title={credentialModelTitle(usage)}>
-                            {formatCents(weekValue)}
-                          </span>
-                          <p className="mt-1 text-[10px] text-muted-foreground">
-                            5h {formatTokens(credentialUsageWindowTokens(usage, "5h"))}
-                          </p>
-                        </div>
-                        <div
-                          className="min-w-0 space-y-1.5"
-                          title={row.quotaWindows
-                            .map((entry) => {
-                              const reset = formatQuotaResetOrDetail(entry);
-                              return `${entry.label}: ${entry.usedPercent != null ? `${Math.round(entry.usedPercent)}% used, ${Math.max(0, Math.round(100 - entry.usedPercent))}% available` : entry.valueLabel ?? "reported"}${reset ? ` · ${reset}` : ""}`;
-                            })
-                            .join(" · ")}
-                        >
-                          <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground md:hidden">Quota</p>
-                          {row.stale && row.error ? (
-                            <p className="text-[10px] text-amber-600" title={row.error}>
-                              stale quota sample
-                            </p>
-                          ) : null}
-                          {!row.supported ? (
-                            <p className="text-[10px] text-muted-foreground">quota n/a</p>
-                          ) : !row.ok && visibleQuotaWindows.length === 0 ? (
-                            <p className="text-[10px] text-amber-600" title={row.error ?? "quota unavailable"}>
-                              quota retrying
-                            </p>
-                          ) : visibleQuotaWindows.length === 0 ? (
-                            <p className="text-[10px] text-muted-foreground">quota ok</p>
-                          ) : (
-                            visibleQuotaWindows.map((window) => (
-                              <div key={window.label} className="space-y-1">
-                                <div className="flex items-center justify-between gap-2 text-[10px]">
-                                  <span className="truncate text-muted-foreground">{compactQuotaLabel(window.label)}</span>
-                                  <span className="shrink-0 tabular-nums">
-                                    {window.usedPercent != null
-                                      ? `${Math.max(0, Math.round(100 - window.usedPercent))}% left`
-                                      : window.valueLabel ?? "ok"}
-                                  </span>
-                                </div>
-                                {formatQuotaResetOrDetail(window) ? (
-                                  <div className="truncate text-[10px] text-muted-foreground">
-                                    {formatQuotaResetOrDetail(window)}
-                                  </div>
-                                ) : null}
-                                {window.usedPercent != null ? (
-                                  <DottedUsageBar usedPercent={window.usedPercent} />
-                                ) : null}
-                              </div>
-                            ))
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          )}
+          <DashboardQuotaCard
+            results={providerQuota}
+            isLoading={providerQuotaLoading}
+            isFetching={providerQuotaFetching}
+            error={
+              providerQuotaError instanceof Error
+                ? providerQuotaError
+                : providerQuotaError
+                  ? "The quota request failed."
+                  : null
+            }
+            monthTokens={
+              data.costs.monthInputTokens
+              + data.costs.monthCachedInputTokens
+              + data.costs.monthOutputTokens
+            }
+            monthSpendCents={data.costs.monthSpendCents}
+            onRefresh={() => void refetchProviderQuota()}
+          />
 
           {(() => {
             const costsPercent =
