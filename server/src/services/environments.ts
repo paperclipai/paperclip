@@ -1109,12 +1109,13 @@ export function environmentService(db: Db) {
               select 1 from ${instanceSettings}
               where ${instanceSettings.defaultEnvironmentId} = ${environments.id}
             )`,
-            // A `pending_cleanup` lease holds the only durable provider
-            // reference for an orphan sandbox. The environment foreign key uses
-            // `on delete cascade`, so a delete removes that reference and strands
-            // the remote sandbox. This predicate refuses the delete while such a
-            // lease exists. It runs in the same statement as the delete, so it
-            // also closes the check-to-delete race.
+            // A `pending_cleanup` lease is the durable teardown reference for an
+            // orphan sandbox. The environment foreign key uses
+            // `on delete set null`, so a delete keeps the lease row but drops its
+            // environment reference. This predicate refuses the delete while such
+            // a lease exists, so the operator resolves the cleanup first and the
+            // lease keeps its environment link. It runs in the same statement as
+            // the delete, so it also closes the check-to-delete race.
             sql`not exists (
               select 1 from ${environmentLeases}
               where ${environmentLeases.environmentId} = ${environments.id}
@@ -1233,10 +1234,11 @@ export function environmentService(db: Db) {
       const deleteBlockedReasons: EnvironmentDeleteBlockedReason[] = [];
       if (isManagedLocal) deleteBlockedReasons.push("managed_local");
       if (isInstanceDefault) deleteBlockedReasons.push("instance_default");
-      // A `pending_cleanup` lease holds the only durable provider reference for
-      // an orphan sandbox. The environment foreign key uses `on delete cascade`,
-      // so a delete removes that reference before a teardown retry can destroy
-      // the sandbox. Block the delete until the sweep resolves the lease.
+      // A `pending_cleanup` lease is the durable teardown reference for an orphan
+      // sandbox. The environment foreign key uses `on delete set null`, so a
+      // delete keeps the lease but drops its environment reference. Block the
+      // delete until the sweep resolves the lease, so the operator resolves the
+      // cleanup first and the lease keeps its environment link.
       if (pendingCleanupLeaseCount > 0) deleteBlockedReasons.push("pending_sandbox_cleanup");
       const activeLeaseCount = countFromRows(activeLeaseRows);
       const activeCustomImageSetupSessionCount = countFromRows(activeSetupRows);

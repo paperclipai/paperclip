@@ -581,6 +581,188 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(rows).toHaveLength(0);
   });
 
+  it("records the orphan with a null reference when a delete already removed the environment", async () => {
+    // A delete wins the untracked window before the orphan record lands. The
+    // record must still persist, so the sweep keeps a durable handle to the
+    // remote sandbox.
+    const companyId = randomUUID();
+    const environmentId = randomUUID();
+    const now = new Date();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(environments).values({
+      id: environmentId,
+      name: "Deleted Before Record",
+      driver: "ssh",
+      status: "active",
+      config: {
+        host: "deleted.example.test",
+        port: 22,
+        username: "fixture",
+        remoteWorkspacePath: "/srv/paperclip",
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const removed = await svc.removeIfDeletable(environmentId);
+    expect(removed?.id).toBe(environmentId);
+
+    // The foreign key does not reject the insert. The insert reads the absent
+    // environment and stores a null reference with the immutable provider
+    // metadata, so the teardown still runs later.
+    const lease = await svc.insertPendingCleanupLease({
+      companyId,
+      environmentId,
+      provider: "fake-plugin",
+      providerLeaseId: "sandbox-orphan-1",
+      metadata: { provider: "fake-plugin", config: { provider: "fake-plugin" } },
+      failureReason: "acquire_rejected_teardown_failed",
+    });
+
+    expect(lease.environmentId).toBeNull();
+    expect(lease.status).toBe("pending_cleanup");
+    expect(lease.provider).toBe("fake-plugin");
+    expect(lease.providerLeaseId).toBe("sandbox-orphan-1");
+
+    const rows = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, lease.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.environmentId).toBeNull();
+    expect(rows[0]?.metadata).toMatchObject({ provider: "fake-plugin" });
+  });
+
+  it("keeps the orphan when an environment delete and the orphan record race", async () => {
+    // Race the delete against the orphan record. The record locks the
+    // environment row `for update`, and the delete refuses while a
+    // `pending_cleanup` lease exists, so the two writes serialize into one of
+    // two safe outcomes. The orphan row persists in both.
+    const companyId = randomUUID();
+    const environmentId = randomUUID();
+    const now = new Date();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(environments).values({
+      id: environmentId,
+      name: "Delete Vs Record Race",
+      driver: "ssh",
+      status: "active",
+      config: {
+        host: "race.example.test",
+        port: 22,
+        username: "fixture",
+        remoteWorkspacePath: "/srv/paperclip",
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const [removed, lease] = await Promise.all([
+      svc.removeIfDeletable(environmentId),
+      svc.insertPendingCleanupLease({
+        companyId,
+        environmentId,
+        provider: "fake-plugin",
+        providerLeaseId: "sandbox-orphan-2",
+        metadata: { provider: "fake-plugin", config: { provider: "fake-plugin" } },
+        failureReason: "acquire_rejected_teardown_failed",
+      }),
+    ]);
+
+    // The orphan row always persists, so no ordering strands the sandbox.
+    const leaseRows = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.status, "pending_cleanup"));
+    expect(leaseRows).toHaveLength(1);
+    expect(leaseRows[0]?.id).toBe(lease.id);
+    expect(leaseRows[0]?.provider).toBe("fake-plugin");
+
+    const environmentRows = await db
+      .select()
+      .from(environments)
+      .where(eq(environments.id, environmentId));
+    if (removed) {
+      // The delete won. The environment is gone, and the orphan keeps a null
+      // reference with its immutable provider metadata.
+      expect(environmentRows).toHaveLength(0);
+      expect(leaseRows[0]?.environmentId).toBeNull();
+    } else {
+      // The record won. The orphan keeps the environment reference, and the
+      // delete refused because the `pending_cleanup` lease now exists.
+      expect(environmentRows).toHaveLength(1);
+      expect(leaseRows[0]?.environmentId).toBe(environmentId);
+    }
+  });
+
+  it("keeps the recorded provider immutable when a provider change and the orphan record race", async () => {
+    // Race a provider change against the orphan record for the original
+    // provider. The recorded lease must keep the original provider and its
+    // immutable teardown metadata, so a later retry targets the original
+    // provider, never the reconfigured one.
+    const companyId = randomUUID();
+    const environmentId = randomUUID();
+    const now = new Date();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(environments).values({
+      id: environmentId,
+      name: "Provider Change Vs Record Race",
+      driver: "sandbox",
+      status: "active",
+      config: { provider: "provider-a" },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const [, lease] = await Promise.all([
+      svc.update(environmentId, {
+        driver: "sandbox",
+        config: { provider: "provider-b" },
+      }),
+      svc.insertPendingCleanupLease({
+        companyId,
+        environmentId,
+        provider: "provider-a",
+        providerLeaseId: "sandbox-orphan-3",
+        metadata: { provider: "provider-a", config: { provider: "provider-a" } },
+        failureReason: "acquire_rejected_teardown_failed",
+      }),
+    ]);
+
+    const rows = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, lease.id));
+    expect(rows[0]?.provider).toBe("provider-a");
+    expect(rows[0]?.metadata).toMatchObject({ provider: "provider-a" });
+
+    // The environment now points at the reconfigured provider, but the recorded
+    // teardown context stays independent of it.
+    const environmentRows = await db
+      .select()
+      .from(environments)
+      .where(eq(environments.id, environmentId));
+    expect((environmentRows[0]?.config as { provider?: string } | null)?.provider).toBe("provider-b");
+  });
+
   it("creates and then reuses the default local environment for a company", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
