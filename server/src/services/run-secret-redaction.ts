@@ -8,6 +8,12 @@ import type { StoredSecretVersionMaterial } from "../secrets/types.js";
 
 const REGISTRY_KEY = "paperclipSecretRedactions";
 
+// Keep this predicate literal so PostgreSQL can match the partial indexes that
+// cover the two issue-id layouts below. Runs without a registry cannot
+// contribute any values to redact, so scanning them is both unnecessary and
+// potentially expensive on companies with a large heartbeat history.
+const REGISTRY_PRESENCE_CONDITION = sql`${heartbeatRuns.contextSnapshot} ? 'paperclipSecretRedactions'`;
+
 type RegistryEntry = {
   fingerprintSha256: string;
   material: StoredSecretVersionMaterial;
@@ -81,6 +87,7 @@ export function createRunSecretRedactionRegistry(db: Db) {
       .from(heartbeatRuns)
       .where(and(
         eq(heartbeatRuns.companyId, companyId),
+        REGISTRY_PRESENCE_CONDITION,
         or(
           sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
           sql`${heartbeatRuns.contextSnapshot} -> 'paperclipIssue' ->> 'id' = ${issueId}`,

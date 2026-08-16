@@ -1,10 +1,34 @@
-import { describe, expect, it } from "vitest";
+import { PgDialect } from "drizzle-orm/pg-core";
+import { describe, expect, it, vi } from "vitest";
+import type { Db } from "@paperclipai/db";
 import { REDACTED_EVENT_VALUE } from "../redaction.js";
-import { redactRegisteredSecretValues } from "../services/run-secret-redaction.js";
+import {
+  createRunSecretRedactionRegistry,
+  redactRegisteredSecretValues,
+} from "../services/run-secret-redaction.js";
 
 const secret = "q2a-exact-secret-value";
 
 describe("registered run secret redaction", () => {
+  it("limits issue lookups to runs that have registered redaction material", async () => {
+    const where = vi.fn().mockResolvedValue([]);
+    const from = vi.fn().mockReturnValue({ where });
+    const select = vi.fn().mockReturnValue({ from });
+    const db = { select } as unknown as Db;
+
+    await createRunSecretRedactionRegistry(db).redactForIssue(
+      "company-1",
+      "issue-1",
+      { body: "safe" },
+    );
+
+    const whereClause = where.mock.calls[0]?.[0];
+    expect(whereClause).toBeDefined();
+    const whereSql = new PgDialect().sqlToQuery(whereClause).sql;
+    expect(whereSql).toContain("paperclipSecretRedactions");
+    expect(whereSql).toContain("paperclipIssue");
+  });
+
   it("redacts exact values across comment and heartbeat/wake projections", () => {
     const result = redactRegisteredSecretValues({
       comment: { body: `agent pasted ${secret} in a comment` },
