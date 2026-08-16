@@ -1,5 +1,11 @@
+import { createServer } from "node:http";
 import { describe, expect, it } from "vitest";
-import { resolveViteHmrHost, resolveViteHmrPort } from "../app.ts";
+import {
+  listenViteHmrServer,
+  resolveViteHmrHost,
+  resolveViteHmrPort,
+  resolveViteHmrProtocol,
+} from "../app.ts";
 
 describe("resolveViteHmrPort", () => {
   it("uses serverPort + 10000 when the result stays in range", () => {
@@ -19,13 +25,47 @@ describe("resolveViteHmrPort", () => {
 });
 
 describe("resolveViteHmrHost", () => {
-  it("omits wildcard bind hosts so Vite uses the browser hostname", () => {
+  it("omits local bind hosts so Vite uses the browser hostname", () => {
     expect(resolveViteHmrHost("0.0.0.0")).toBeUndefined();
     expect(resolveViteHmrHost("::")).toBeUndefined();
+    expect(resolveViteHmrHost("127.0.0.1")).toBeUndefined();
+    expect(resolveViteHmrHost("::1")).toBeUndefined();
+    expect(resolveViteHmrHost("LOCALHOST")).toBeUndefined();
   });
 
-  it("keeps concrete bind hosts", () => {
-    expect(resolveViteHmrHost("127.0.0.1")).toBe("127.0.0.1");
+  it("keeps externally reachable bind hosts", () => {
     expect(resolveViteHmrHost("paperclip-dev")).toBe("paperclip-dev");
+  });
+});
+
+describe("resolveViteHmrProtocol", () => {
+  it("accepts supported websocket protocols", () => {
+    expect(resolveViteHmrProtocol(undefined)).toBeUndefined();
+    expect(resolveViteHmrProtocol("ws")).toBe("ws");
+    expect(resolveViteHmrProtocol("wss")).toBe("wss");
+  });
+
+  it("rejects unsupported protocols", () => {
+    expect(() => resolveViteHmrProtocol("http")).toThrow(
+      "PAPERCLIP_VITE_HMR_PROTOCOL must be ws or wss",
+    );
+  });
+});
+
+describe("listenViteHmrServer", () => {
+  it("binds the HMR listener to the requested host", async () => {
+    const server = createServer();
+
+    try {
+      await listenViteHmrServer(server, 0, "127.0.0.1");
+      const address = server.address();
+
+      expect(server.listening).toBe(true);
+      expect(address).toMatchObject({ address: "127.0.0.1", family: "IPv4" });
+    } finally {
+      if (server.listening) {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    }
   });
 });
