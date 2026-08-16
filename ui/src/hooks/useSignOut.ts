@@ -77,6 +77,20 @@ export function useSignOut({ onSignedOut }: UseSignOutOptions = {}) {
       // across the whole sign-out/sign-in cycle. Reset notifies them, so the
       // old data is gone from the cache *and* from everything reading it.
       //
+      // Measured against query-core 5.101.4 rather than reasoned about:
+      // removal produced 0 notifications and left the observer holding the
+      // signed-out account's session; reset produced 3 and null. The
+      // consequence of the former is not just stale reads — the redirect in
+      // CloudAccessGate fires on the session going empty, and it never runs.
+      //
+      // The opposite advice holds for a *local* reset under an observer that
+      // stays mounted, which is why InviteLanding and the onboarding draft
+      // gate avoid it: reset rewinds the update counters `isFetchedAfterMount`
+      // is derived from while that observer keeps its bind-time baseline, so
+      // the flag can never read true again and the gate withholds forever.
+      // Sign-out is not one of those cases. It resets the session too, so
+      // those consumers redirect, unmount, and remount with a fresh baseline.
+      //
       // Not awaited: the refetches this kicks off are expected to 401 now that
       // the session is gone, and the sign-out button should not sit pending
       // while they fail.
