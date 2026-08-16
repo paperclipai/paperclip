@@ -49,6 +49,7 @@ import {
   getBuiltinRoutineVariableValues,
   extractRoutineVariableNames,
   interpolateRoutineTemplate,
+  isUuidLike,
   isValidRoutineDateString,
   normalizeAgentUrlKey,
   pluginOperationIssueOriginKind,
@@ -638,10 +639,12 @@ export function routineService(
   });
 
   async function getRoutineById(id: string) {
+    const normalizedId = id.trim();
+    if (!isUuidLike(normalizedId)) return null;
     return db
       .select()
       .from(routines)
-      .where(eq(routines.id, id))
+      .where(eq(routines.id, normalizedId))
       .then((rows) => rows[0] ?? null);
   }
 
@@ -722,10 +725,12 @@ export function routineService(
   }
 
   async function getTriggerById(id: string) {
+    const normalizedId = id.trim();
+    if (!isUuidLike(normalizedId)) return null;
     return db
       .select()
       .from(routineTriggers)
-      .where(eq(routineTriggers.id, id))
+      .where(eq(routineTriggers.id, normalizedId))
       .then((rows) => rows[0] ?? null);
   }
 
