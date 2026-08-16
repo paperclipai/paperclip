@@ -5283,6 +5283,7 @@ export function issueService(db: Db) {
         })
         .then((rows) => rows[0] ?? null);
       if (adopted) {
+        await setCheckoutRunContextSnapshot(input.actorAgentId, input.issueId, input.actorRunId, tx);
         return { adopted, latest: adopted };
       }
 
@@ -5343,6 +5344,10 @@ export function issueService(db: Db) {
           executionRunId: issues.executionRunId,
         })
         .then((rows) => rows[0] ?? null);
+
+      if (adopted) {
+        await setCheckoutRunContextSnapshot(input.actorAgentId, input.issueId, input.actorRunId, tx);
+      }
 
       return adopted;
     });
@@ -5453,6 +5458,28 @@ export function issueService(db: Db) {
 
       return Boolean(updated);
     });
+  }
+
+  async function setCheckoutRunContextSnapshot(
+    agentId: string,
+    issueId: string,
+    checkoutRunId: string,
+    dbOrTx: any = db,
+  ) {
+    await dbOrTx
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || jsonb_build_object(
+          'issueId', ${issueId}::text,
+          'taskId', ${issueId}::text
+        )`,
+      })
+      .where(
+        and(
+          eq(heartbeatRuns.id, checkoutRunId),
+          eq(heartbeatRuns.agentId, agentId),
+        ),
+      );
   }
 
   async function addStopRelayCommentIfNeeded(
@@ -8213,6 +8240,9 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (updated) {
+        if (checkoutRunId) {
+          await setCheckoutRunContextSnapshot(agentId, id, checkoutRunId);
+        }
         const [enriched] = await withIssueLabels(db, [updated]);
         return enriched;
       }
@@ -8256,7 +8286,10 @@ export function issueService(db: Db) {
           )
           .returning()
           .then((rows) => rows[0] ?? null);
-        if (adopted) return adopted;
+        if (adopted) {
+          await setCheckoutRunContextSnapshot(agentId, id, checkoutRunId);
+          return adopted;
+        }
       }
 
       if (
@@ -8318,6 +8351,7 @@ export function issueService(db: Db) {
             .returning()
             .then((rows) => rows[0] ?? null);
           if (adopted) {
+            await setCheckoutRunContextSnapshot(agentId, id, checkoutRunId);
             const [enriched] = await withIssueLabels(db, [adopted]);
             return enriched;
           }
@@ -8330,6 +8364,9 @@ export function issueService(db: Db) {
         current.status === "in_progress" &&
         sameRunLock(current.checkoutRunId, checkoutRunId)
       ) {
+        if (checkoutRunId) {
+          await setCheckoutRunContextSnapshot(agentId, id, checkoutRunId);
+        }
         const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
         if (!row) throw notFound("Issue not found");
         const [enriched] = await withIssueLabels(db, [row]);

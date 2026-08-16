@@ -2676,6 +2676,43 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result?.description?.endsWith("—")).toBe(true);
     expect(result?.descriptionTruncated).toBe(true);
   });
+
+  it("checkout writes the issue id into the heartbeat run contextSnapshot", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const checkoutRunId = randomUUID();
+
+    await db.insert(agents).values(agentRow(companyId, { id: agentId, name: "CheckoutCoder" }));
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Checkout context snapshot",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const result = await svc.checkout(issueId, agentId, ["todo"], checkoutRunId);
+    expect(result).toBeTruthy();
+
+    const run = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, checkoutRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.contextSnapshot).toMatchObject({
+      issueId,
+      taskId: issueId,
+    });
+  });
 });
 
 describeEmbeddedPostgres("issueService.findOpenAncestorCreatedByAgent", () => {
