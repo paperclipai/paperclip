@@ -375,7 +375,20 @@ describe("prepareOpenCodeRuntimeConfig", () => {
         "utf8",
       ),
     ) as Record<string, unknown>;
-    expect((runtimeConfig as { provider?: unknown }).provider).toBeUndefined();
+    expect(runtimeConfig).toMatchObject({
+      provider: {
+        ollama: {
+          models: {
+            "gemma4:26b-a4b-it-q4_K_M": {},
+          },
+        },
+      },
+    });
+    expect(
+      (runtimeConfig as {
+        provider?: { ollama?: { models?: Record<string, { options?: unknown }> } };
+      }).provider?.ollama?.models?.["gemma4:26b-a4b-it-q4_K_M"]?.options,
+    ).toBeUndefined();
 
     await prepared.cleanup();
     cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
