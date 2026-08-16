@@ -340,6 +340,43 @@ describe("approval routes idempotent retries", () => {
     );
   });
 
+  it.each([
+    "telegram:",
+    "telegram:bad/value",
+    "telegram:bad\tvalue",
+    "telegram:\u0000bad",
+  ])("rejects unsafe Telegram approval attribution: %s", async (decidedByUserId) => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-4d",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "pending",
+      payload: {},
+    });
+    mockApprovalService.approve.mockResolvedValue({
+      approval: {
+        id: "approval-4d",
+        companyId: "company-1",
+        type: "hire_agent",
+        status: "approved",
+        payload: {},
+        requestedByAgentId: null,
+      },
+      applied: true,
+    });
+
+    const res = await request(await createApp({ source: "board_key", keyId: "board-key-1" }))
+      .post("/api/approvals/approval-4d/approve")
+      .send({ decidedByUserId, decisionNote: "ship it" });
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.approve).toHaveBeenCalledWith(
+      "approval-4d",
+      "user-1",
+      "ship it",
+    );
+  });
+
   it("derives approval attribution from the authenticated actor on reject", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-5",

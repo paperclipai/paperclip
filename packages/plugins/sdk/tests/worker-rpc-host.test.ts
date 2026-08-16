@@ -201,7 +201,7 @@ describe("worker invocation scope propagation", () => {
             });
           }
           const company = await ctx.companies.get(String(params.requestedCompanyId));
-          return { label: params.label, company };
+          return { label: params.label, company, hasCompanyId: Object.hasOwn(params, "companyId") };
         });
       },
     });
@@ -307,6 +307,7 @@ describe("worker invocation scope propagation", () => {
       await expect(companyBRequest).resolves.toEqual({
         label: "b",
         company: { id: "company-b" },
+        hasCompanyId: false,
       });
       await companyAExpectation;
 

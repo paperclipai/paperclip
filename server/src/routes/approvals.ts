@@ -47,9 +47,7 @@ function resolveApprovalDecisionActor(req: Request): string {
     : "";
   if (
     req.actor.source === "board_key" &&
-    externalActor.startsWith("telegram:") &&
-    externalActor.length > "telegram:".length &&
-    !/[\r\n]/.test(externalActor)
+    /^telegram:[A-Za-z0-9_-]+$/.test(externalActor)
   ) {
     return externalActor;
   }
