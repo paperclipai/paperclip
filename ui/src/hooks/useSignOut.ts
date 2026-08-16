@@ -83,13 +83,16 @@ export function useSignOut({ onSignedOut }: UseSignOutOptions = {}) {
       // consequence of the former is not just stale reads — the redirect in
       // CloudAccessGate fires on the session going empty, and it never runs.
       //
-      // The opposite advice holds for a *local* reset under an observer that
-      // stays mounted, which is why InviteLanding and the onboarding draft
-      // gate avoid it: reset rewinds the update counters `isFetchedAfterMount`
-      // is derived from while that observer keeps its bind-time baseline, so
-      // the flag can never read true again and the gate withholds forever.
-      // Sign-out is not one of those cases. It resets the session too, so
-      // those consumers redirect, unmount, and remount with a fresh baseline.
+      // The opposite advice holds for a *local* reset of a key an observer is
+      // still mounted against. Reset rewinds the update counters
+      // `isFetchedAfterMount` derives from while that observer keeps its
+      // bind-time baseline, so the flag can never read true again and anything
+      // gated on it withholds forever. `AppsConnect` is the consumer to check
+      // against: it gates its render on that flag for two queries.
+      //
+      // Sign-out is not that case. It resets the session too, so `AppsConnect`
+      // — which sits behind a route — unmounts on the redirect and remounts
+      // with a fresh baseline.
       //
       // Not awaited: the refetches this kicks off are expected to 401 now that
       // the session is gone, and the sign-out button should not sit pending
