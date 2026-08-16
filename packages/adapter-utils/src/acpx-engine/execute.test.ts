@@ -26,6 +26,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importActual) => {
   };
 });
 import {
+  closeAcpxEngineRuntimesForShutdown,
   createAcpxEngineExecutor,
   findAncestorBin,
   geminiVersionSupportsNativeAcpFlag,
@@ -1475,6 +1476,7 @@ describe("shared ACPX engine runtime behavior", () => {
     const stateDir = path.join(root, "state");
     const warmHandles = new Map();
     const closeError = new Error("stale runtime close failed");
+    let firstRuntimeCloseAttempts = 0;
     let currentNow = 0;
     let runtimeCount = 0;
     const execute = createAcpxEngineExecutor({
@@ -1486,7 +1488,10 @@ describe("shared ACPX engine runtime behavior", () => {
         return {
           ...runtime,
           close: runtimeCount === 1
-            ? async () => { throw closeError; }
+            ? async () => {
+              firstRuntimeCloseAttempts += 1;
+              if (firstRuntimeCloseAttempts === 1) throw closeError;
+            }
             : async () => {},
         } as never;
       },
@@ -1522,7 +1527,26 @@ describe("shared ACPX engine runtime behavior", () => {
 
     expect(first.exitCode).toBe(0);
     expect(runtimeCount).toBe(2);
-    expect(warmHandles.size).toBe(2);
+    expect(firstRuntimeCloseAttempts).toBe(1);
+    expect(warmHandles.size).toBe(1);
+
+    await expect(execute({
+      runId: "run-stale-close-3",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: { sessionParams: first.sessionParams },
+      config: { ...baseConfig, env: { FINGERPRINT: "first" } },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never)).resolves.toMatchObject({ exitCode: 0 });
+
+    expect(runtimeCount).toBe(3);
+    expect(firstRuntimeCloseAttempts).toBe(1);
+    await expect(closeAcpxEngineRuntimesForShutdown({ warmHandles })).resolves.toMatchObject({
+      closedWarmHandles: 3,
+    });
+    expect(firstRuntimeCloseAttempts).toBe(2);
+    expect(warmHandles.size).toBe(0);
   });
 
   it("passes Paperclip env through ACPX session options instead of process.env", async () => {

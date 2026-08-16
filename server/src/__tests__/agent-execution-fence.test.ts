@@ -932,6 +932,72 @@ describePostgres("agent execution fence", () => {
     ).resolves.toMatchObject({ status: "stopped", stoppedAt: expect.any(Date) });
   });
 
+  it("does not certify finalization when gateway token revocation fails", async () => {
+    const { company, agent } = await seedAgent("idle");
+    const run = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: company.id,
+        agentId: agent.id,
+        status: "failed",
+        startedAt: new Date(Date.now() - 60_000),
+        finishedAt: new Date(Date.now() - 30_000),
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: {},
+      revokeRunGatewayTokens: async () => {
+        throw new Error("gateway token store unavailable");
+      },
+    });
+    await expect(heartbeat.reapOrphanedRuns()).resolves.toEqual({ reaped: 0, runIds: [] });
+    await expect(heartbeat.getRun(run.id)).resolves.toMatchObject({
+      executionFinalizerCompletedAt: null,
+      executionFinalizedAt: null,
+    });
+  });
+
+  it("does not kill an unverified live runtime-service PID during finalizer recovery", async () => {
+    const { company, agent } = await seedAgent("idle");
+    const run = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: company.id,
+        agentId: agent.id,
+        status: "failed",
+        startedAt: new Date(Date.now() - 60_000),
+        finishedAt: new Date(Date.now() - 30_000),
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const runtimeServiceId = randomUUID();
+    await db.insert(workspaceRuntimeServices).values({
+      id: runtimeServiceId,
+      companyId: company.id,
+      scopeType: "run",
+      serviceName: "unverified-recycled-pid",
+      status: "running",
+      lifecycle: "ephemeral",
+      provider: "local",
+      providerRef: String(process.pid),
+      startedByRunId: run.id,
+    });
+
+    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+    await expect(heartbeat.reapOrphanedRuns()).resolves.toEqual({ reaped: 0, runIds: [] });
+    await expect(
+      db.select().from(workspaceRuntimeServices)
+        .where(eq(workspaceRuntimeServices.id, runtimeServiceId))
+        .then((rows) => rows[0]!),
+    ).resolves.toMatchObject({ status: "running" });
+    await expect(heartbeat.getRun(run.id)).resolves.toMatchObject({
+      executionFinalizerCompletedAt: null,
+      executionFinalizedAt: null,
+    });
+  });
+
   it("retries acknowledgement only after durable finalizer completion exists", async () => {
     const { company, agent } = await seedAgent("idle");
     const run = await db

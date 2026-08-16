@@ -445,6 +445,10 @@ interface AcpxPreparedRuntime {
 }
 
 const defaultWarmHandles = new Map<string, RuntimeCacheEntry>();
+const quarantinedWarmHandles = new WeakMap<
+  Map<string, RuntimeCacheEntry>,
+  Set<RuntimeCacheEntry>
+>();
 const defaultStagedRuntimes = new Map<string, StagedRuntimeCacheEntry>();
 const defaultStagingLocks = new Map<string, Promise<unknown>>();
 
@@ -2929,15 +2933,29 @@ function clearWarmHandleTimer(entry: RuntimeCacheEntry) {
   entry.cleanupTimer = undefined;
 }
 
+function getQuarantinedWarmHandles(handles: Map<string, RuntimeCacheEntry>) {
+  let entries = quarantinedWarmHandles.get(handles);
+  if (!entries) {
+    entries = new Set<RuntimeCacheEntry>();
+    quarantinedWarmHandles.set(handles, entries);
+  }
+  return entries;
+}
+
 async function closeWarmHandle(input: {
   handles: Map<string, RuntimeCacheEntry>;
-  key: string;
+  key: string | null;
   entry: RuntimeCacheEntry;
   reason: string;
   discardPersistentState?: boolean;
   suppressCloseErrors?: boolean;
 }) {
   clearWarmHandleTimer(input.entry);
+  const quarantine = getQuarantinedWarmHandles(input.handles);
+  if (input.key !== null && input.handles.get(input.key) === input.entry) {
+    input.handles.delete(input.key);
+  }
+  quarantine.add(input.entry);
   const closePromise = input.entry.closePromise ?? Promise.resolve().then(() => input.entry.runtime.close({
     handle: input.entry.handle,
     reason: input.reason,
@@ -2946,13 +2964,8 @@ async function closeWarmHandle(input: {
   input.entry.closePromise = closePromise;
   try {
     await closePromise;
-    if (input.handles.get(input.key) === input.entry) {
-      input.handles.delete(input.key);
-    }
+    quarantine.delete(input.entry);
   } catch (error) {
-    if (!input.handles.has(input.key)) {
-      input.handles.set(input.key, input.entry);
-    }
     if (input.suppressCloseErrors === false) throw error;
   } finally {
     if (input.entry.closePromise === closePromise) {
@@ -2966,8 +2979,15 @@ export async function closeAcpxEngineRuntimesForShutdown(input: {
   warmHandles?: Map<string, RuntimeCacheEntry>;
 } = {}) {
   const warmHandles = input.warmHandles ?? defaultWarmHandles;
-  const retained = [...warmHandles.entries()];
-  const results = await Promise.allSettled(retained.map(([key, entry]) => closeWarmHandle({
+  const active = [...warmHandles.entries()];
+  const activeEntries = new Set(active.map(([, entry]) => entry));
+  const quarantined = [...(quarantinedWarmHandles.get(warmHandles) ?? [])]
+    .filter((entry) => !activeEntries.has(entry));
+  const retained = [
+    ...active.map(([key, entry]) => ({ key, entry })),
+    ...quarantined.map((entry) => ({ key: null, entry })),
+  ];
+  const results = await Promise.allSettled(retained.map(({ key, entry }) => closeWarmHandle({
     handles: warmHandles,
     key,
     entry,

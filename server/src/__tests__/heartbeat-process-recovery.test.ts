@@ -495,6 +495,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runStatus?: "running" | "queued" | "failed";
     processPid?: number | null;
     processGroupId?: number | null;
+    processStartedAt?: Date | null;
     processLossRetryCount?: number;
     includeIssue?: boolean;
     runErrorCode?: string | null;
@@ -555,6 +556,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         : { ...(input?.contextSnapshot ?? {}), issueId },
       processPid: input?.processPid ?? null,
       processGroupId: input?.processGroupId ?? null,
+      processStartedAt: input?.processStartedAt ?? null,
       processLossRetryCount: input?.processLossRetryCount ?? 0,
       errorCode: input?.runErrorCode ?? null,
       error: input?.runError ?? null,
@@ -2145,10 +2147,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runStatus: "failed",
       processPid: child.pid ?? null,
       processGroupId: null,
+      processStartedAt: new Date("2026-08-16T12:00:00.000Z"),
       includeIssue: false,
       runError: "terminal status persisted before cleanup",
     });
-    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: {},
+      readProcessStartedAt: async () => "2026-08-16T12:00:00.000Z",
+    });
 
     await heartbeat.reapOrphanedRuns();
 
@@ -2157,6 +2163,34 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: "failed",
       executionFinalizerCompletedAt: expect.any(Date),
       executionFinalizedAt: expect.any(Date),
+    });
+  });
+
+  it("refuses to kill a recycled PID while recovering a terminal run finalizer", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeGreaterThan(0);
+    const { runId } = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "failed",
+      processPid: child.pid ?? null,
+      processGroupId: null,
+      processStartedAt: new Date("2026-08-16T12:00:00.000Z"),
+      includeIssue: false,
+      runError: "terminal status persisted before cleanup",
+    });
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: {},
+      readProcessStartedAt: async () => "2026-08-16T12:05:00.000Z",
+    });
+
+    await expect(heartbeat.reapOrphanedRuns()).resolves.toEqual({ reaped: 0, runIds: [] });
+
+    expect(isPidAlive(child.pid)).toBe(true);
+    await expect(heartbeat.getRun(runId)).resolves.toMatchObject({
+      status: "failed",
+      executionFinalizerCompletedAt: null,
+      executionFinalizedAt: null,
     });
   });
 

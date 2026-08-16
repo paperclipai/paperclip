@@ -183,6 +183,7 @@ import { buildDocumentReviewContext, buildPlanReviewContext } from "./plan-revie
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService, type WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
+import { readProcessStartedAt } from "./hot-restart.js";
 import {
   HEARTBEAT_RUN_SCRATCH_MARKER,
   buildHeartbeatRunScratchEnv,
@@ -6639,6 +6640,8 @@ export interface HeartbeatServiceOptions {
   runtimeEnv?: Record<string, string | undefined>;
   beforeProcessLossRetryEnqueue?: (runId: string) => Promise<void> | void;
   shutdownExecutionWaitTimeoutMs?: number;
+  readProcessStartedAt?: (pid: number) => Promise<string | null>;
+  revokeRunGatewayTokens?: typeof revokeHeartbeatRunGatewayTokens;
 }
 
 type WorkspaceReadyCommentWriter = {
@@ -6717,6 +6720,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
   });
   const runtimeEnv = options.runtimeEnv ?? process.env;
+  const processStartedAtReader = options.readProcessStartedAt ?? readProcessStartedAt;
+  const revokeRunGatewayTokens = options.revokeRunGatewayTokens ?? revokeHeartbeatRunGatewayTokens;
   const inWorktreeRuntime = isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE);
   // Preview worktree instances suppress the run engine by default. Users can lift
   // that per-worktree via the `enableWorktreeRunExecution` experimental setting
@@ -6822,21 +6827,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const processAlive =
       isProcessAlive(run.processPid) || isProcessGroupAlive(run.processGroupId);
     if (processAlive && !run.processOwnershipReleasedAt) {
+      if (!isProcessAlive(run.processPid) || !run.processStartedAt) {
+        throw new Error(
+          `Cannot establish terminal run process identity for ${run.id}: live process group has no verifiable parent`,
+        );
+      }
+      const observedStartedAt = await processStartedAtReader(run.processPid!);
+      const observedMs = observedStartedAt ? Date.parse(observedStartedAt) : Number.NaN;
+      const recordedMs = run.processStartedAt.getTime();
+      if (!Number.isFinite(observedMs) || Math.abs(observedMs - recordedMs) > 1_500) {
+        throw new Error(
+          `Cannot establish terminal run process identity for ${run.id}: PID ${run.processPid} start time does not match`,
+        );
+      }
       await terminateHeartbeatRunProcess({
         pid: run.processPid,
         processGroupId: run.processGroupId,
       });
     }
 
-    await revokeHeartbeatRunGatewayTokens({
+    await revokeRunGatewayTokens({
       db,
       companyId: run.companyId,
       runId: run.id,
-    }).catch((error) => {
-      logger.warn(
-        { err: error, runId: run.id, companyId: run.companyId },
-        "failed to revoke heartbeat-run MCP gateway tokens during terminal recovery",
-      );
     });
     await reconcileClaimedWakeupForTerminalRun(run);
     await releaseEnvironmentLeasesForRun({
