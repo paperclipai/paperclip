@@ -13261,6 +13261,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return claimed.length > 0;
   }
 
+  // Defer a pending_cleanup lease whose provider plugin is not ready this tick.
+  // The sweep reads one page of the oldest rows, ordered by `updatedAt`. A lease
+  // that the sweep only skips keeps its old `updatedAt`, so it stays the oldest
+  // and refills the page on every tick. That starves a newer lease whose
+  // provider is ready. The defer bumps `updatedAt` to now, so the unavailable
+  // lease moves to the back of the queue and a ready lease takes its page slot.
+  // The defer never writes the attempt count, so a long provider outage never
+  // consumes a finite retry. The status guard keeps the write on a lease that is
+  // still pending_cleanup.
+  async function deferPendingCleanupLease(leaseId: string): Promise<void> {
+    const now = new Date();
+    await db
+      .update(environmentLeases)
+      .set({ updatedAt: now })
+      .where(
+        and(
+          eq(environmentLeases.id, leaseId),
+          eq(environmentLeases.status, "pending_cleanup"),
+        ),
+      );
+  }
+
   // Retry the leases stranded in "pending_cleanup". A failed destroy leaves a
   // lease in that state forever without this sweep. The reaper tick runs the
   // sweep. The backoff equals the reaper staleness threshold, so a lease waits
@@ -13336,7 +13358,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // plugin can be missing or not ready in that window. A teardown then throws,
       // and the atomic claim below would count that throw against the cap, so a
       // long restart or reload could exhaust the retries and strand a live
-      // sandbox. So probe the provider first, and skip the lease this tick when
+      // sandbox. So probe the provider first, and defer the lease this tick when
       // the provider is not ready. The sweep preserves the pending_cleanup row,
       // and a later sweep retries after the provider recovers. The probe reports
       // ready only for a permanent condition (a missing provider string, a
@@ -13347,7 +13369,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const workerReady = environmentRuntime.isPendingCleanupWorkerReady
         ? await environmentRuntime.isPendingCleanupWorkerReady({ environment, lease })
         : true;
-      if (!workerReady) continue;
+      if (!workerReady) {
+        // Move the unavailable lease to the back of the sweep queue. Otherwise
+        // the oldest unavailable rows refill the page on every tick and starve a
+        // newer lease that has a ready provider. The defer bumps `updatedAt`
+        // only, so it consumes no finite retry attempt.
+        await deferPendingCleanupLease(row.id);
+        continue;
+      }
 
       // Atomically claim the attempt before the retry. Only the winning sweep
       // increments the count and tears the sandbox down, so an overlapping sweep

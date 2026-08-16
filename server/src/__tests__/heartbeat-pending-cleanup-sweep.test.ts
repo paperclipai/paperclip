@@ -49,6 +49,8 @@ if (!embeddedPostgresSupport.supported) {
 const ATTEMPTS_KEY = "pendingCleanupRetryAttempts";
 const CAP_WARNED_KEY = "pendingCleanupRetryCapWarned";
 const ATTEMPT_CAP = 5;
+// The sweep reads at most this many oldest pending_cleanup rows per tick.
+const SWEEP_PAGE_SIZE = 20;
 
 describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
   let db!: ReturnType<typeof createDb>;
@@ -575,6 +577,97 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
       .then((rows) => rows[0]);
     expect(finalRow?.status).toBe("expired");
     expect(finalRow?.cleanupStatus).toBe("success");
+  });
+
+  it("test_pending_cleanup_sweep_does_not_let_unavailable_leases_starve_ready_leases", async () => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+
+    // Fill one whole page with the oldest leases, and make every one of them
+    // unavailable. Their providers are not ready, so the sweep must not tear
+    // them down.
+    const unavailableIds = new Set<string>();
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    for (let index = 0; index < SWEEP_PAGE_SIZE; index += 1) {
+      const id = await insertOrphanEphemeralLease({
+        companyId,
+        environmentId: null,
+        updatedAt: twoHoursAgo,
+      });
+      unavailableIds.add(id);
+    }
+
+    // Add one newer lease with a ready provider. It sorts after the page of
+    // unavailable leases, so the first sweep never reaches it.
+    const readyLeaseId = await insertPendingCleanupLease({
+      companyId,
+      environmentId,
+      updatedAt: new Date(Date.now() - 30 * 60 * 1000),
+    });
+
+    // The probe reports the ready lease's provider ready and every unavailable
+    // lease's provider not ready.
+    const isPendingCleanupWorkerReady = vi.fn(
+      async ({ lease }: { lease: { id: string } }) => !unavailableIds.has(lease.id),
+    );
+    const retryPendingSandboxTeardown = vi.fn(async () => {});
+    const destroyRunLease = vi.fn(async ({ lease }: { lease: { id: string } }) => {
+      const now = new Date();
+      const row = await db
+        .update(environmentLeases)
+        .set({ status: "expired", cleanupStatus: "success", updatedAt: now })
+        .where(eq(environmentLeases.id, lease.id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return row ? { ...row, status: "expired" as const } : null;
+    });
+    const runtime = {
+      isPendingCleanupWorkerReady,
+      retryPendingSandboxTeardown,
+      destroyRunLease,
+    } as unknown as HeartbeatEnvironmentRuntime;
+    const heartbeat = heartbeatService(db, { environmentRuntime: runtime });
+
+    // A five-minute backoff keeps every seeded lease eligible, because each one
+    // is older than the backoff. A deferred lease bumps its updatedAt to now,
+    // so the backoff then excludes it from the next page.
+    const backoffMs = 5 * 60 * 1000;
+
+    // First sweep: the page holds only the unavailable leases. The sweep defers
+    // all of them and tears none down. The ready lease is not in this page.
+    const first = await heartbeat.sweepPendingCleanupLeases({ backoffMs });
+    expect(first).toEqual({ swept: SWEEP_PAGE_SIZE, destroyed: 0, capped: 0 });
+    expect(retryPendingSandboxTeardown).not.toHaveBeenCalled();
+    expect(destroyRunLease).not.toHaveBeenCalled();
+    // The deferred leases consumed no finite attempt.
+    for (const id of unavailableIds) {
+      expect(await readAttempts(id)).toBe(0);
+    }
+
+    // Second sweep: the deferred unavailable leases now sit inside the backoff
+    // window, so the sweep skips them. The ready lease takes the page slot and
+    // tears down. This proves the unavailable leases never starve the ready
+    // lease.
+    const second = await heartbeat.sweepPendingCleanupLeases({ backoffMs });
+    expect(second.destroyed).toBe(1);
+    expect(destroyRunLease).toHaveBeenCalledTimes(1);
+    expect(destroyRunLease.mock.calls[0]?.[0]).toMatchObject({
+      lease: expect.objectContaining({ id: readyLeaseId }),
+    });
+
+    const readyStatus = await db
+      .select({ status: environmentLeases.status })
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, readyLeaseId))
+      .then((rows) => rows[0]?.status);
+    expect(readyStatus).toBe("expired");
+
+    // The unavailable leases stay in pending_cleanup for a later retry.
+    const stillPending = await db
+      .select({ id: environmentLeases.id })
+      .from(environmentLeases)
+      .where(eq(environmentLeases.status, "pending_cleanup"))
+      .then((rows) => rows.map((row) => row.id));
+    expect(new Set(stillPending)).toEqual(unavailableIds);
   });
 
   // Read the current retry attempt count from a lease's metadata.
