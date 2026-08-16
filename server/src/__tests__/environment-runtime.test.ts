@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
   buildSshEnvLabFixtureConfig,
@@ -148,6 +148,11 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
   let db!: ReturnType<typeof createDb>;
   let runtime!: ReturnType<typeof environmentRuntimeService>;
   const fixtureRoots: string[] = [];
+  // Give each test its own orphan-cleanup spool directory, so a spool file one
+  // test writes never leaks into another test's flush. The default runtime reads
+  // this env override when a test does not pass an explicit spool directory.
+  let orphanCleanupSpoolDir: string | null = null;
+  const previousOrphanCleanupSpoolDir = process.env.SANDBOX_ORPHAN_CLEANUP_SPOOL_DIR;
 
   beforeAll(async () => {
     const started = await startEmbeddedPostgresTestDatabase("environment-runtime");
@@ -156,7 +161,21 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     runtime = environmentRuntimeService(db);
   });
 
+  beforeEach(async () => {
+    orphanCleanupSpoolDir = await mkdtemp(path.join(os.tmpdir(), "orphan-cleanup-spool-"));
+    process.env.SANDBOX_ORPHAN_CLEANUP_SPOOL_DIR = orphanCleanupSpoolDir;
+  });
+
   afterEach(async () => {
+    if (orphanCleanupSpoolDir) {
+      await rm(orphanCleanupSpoolDir, { recursive: true, force: true }).catch(() => undefined);
+      orphanCleanupSpoolDir = null;
+    }
+    if (previousOrphanCleanupSpoolDir === undefined) {
+      delete process.env.SANDBOX_ORPHAN_CLEANUP_SPOOL_DIR;
+    } else {
+      process.env.SANDBOX_ORPHAN_CLEANUP_SPOOL_DIR = previousOrphanCleanupSpoolDir;
+    }
     while (fixtureRoots.length > 0) {
       const root = fixtureRoots.pop();
       if (!root) continue;
@@ -1431,6 +1450,237 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         .from(environmentLeases)
         .where(eq(environmentLeases.environmentId, environment.id));
       expect(rowsAfter).toHaveLength(1);
+    } finally {
+      logSpy.mockRestore();
+      factorySpy.mockRestore();
+      destroySpy.mockRestore();
+    }
+  });
+
+  it("persists the orphan to the durable spool so a restart recovers and lands the durable row", async () => {
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Foreign-bound Fake Sandbox Cleanup Spool Restart",
+      config: { provider: "fake", image: "ubuntu:24.04", reuseLease: false },
+    });
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other Co Cleanup Spool Restart",
+      issuePrefix: "OCS",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(builtInManagedResources).values({
+      companyId: otherCompanyId,
+      bundleKey: "managed-environment",
+      resourceKind: "environment",
+      resourceKey: "managed-sandbox",
+      resourceId: environment.id,
+      stockVersion: "1",
+      stockHash: "hash",
+    });
+
+    // The remote teardown fails, so the acquire tries to record a durable
+    // pending-cleanup row instead.
+    const destroySpy = vi
+      .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
+      .mockRejectedValue(new Error("teardown failed"));
+    // The database is down, so every synchronous pending-cleanup write rejects.
+    // The flag flips to false to simulate the database recovering after a
+    // restart.
+    let databaseDown = true;
+    const realEnvironmentService = environmentsModule.environmentService;
+    const factorySpy = vi
+      .spyOn(environmentsModule, "environmentService")
+      .mockImplementation((database: Parameters<typeof realEnvironmentService>[0]) => {
+        const real = realEnvironmentService(database);
+        return {
+          ...real,
+          insertPendingCleanupLease: (
+            input: Parameters<typeof real.insertPendingCleanupLease>[0],
+          ) => {
+            if (databaseDown) {
+              return Promise.reject(new Error("pending-cleanup write failed; database down"));
+            }
+            return real.insertPendingCleanupLease(input);
+          },
+        };
+      });
+    const logSpy = vi.spyOn(logger, "error").mockImplementation(() => logger);
+    const spoolDir = process.env.SANDBOX_ORPHAN_CLEANUP_SPOOL_DIR!;
+    try {
+      // The first process acquires, fails every synchronous write, and persists
+      // the orphan to the durable spool. The retry backoff is zero, so the test
+      // never waits.
+      const firstProcessRuntime = environmentRuntimeService(db, { pendingCleanupWriteBackoffMs: 0 });
+      const rejection = await firstProcessRuntime
+        .acquireRunLease({
+          companyId,
+          environment,
+          issueId: null,
+          heartbeatRunId: runId,
+          persistedExecutionWorkspace: null,
+          assertCompanyBinding: true,
+        })
+        .then(
+          () => {
+            throw new Error("acquireRunLease resolved but must reject");
+          },
+          (error: unknown) => error,
+        );
+      expect(rejection).toBeInstanceOf(SandboxOrphanCleanupWriteError);
+
+      // The database was down, so no durable row exists yet.
+      let rows = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.environmentId, environment.id));
+      expect(rows).toHaveLength(0);
+
+      // The acquire persisted the orphan to the durable spool, so a file waits on
+      // the disk and the log records the durable persist.
+      const spoolFiles = (await readdir(spoolDir)).filter((name) => name.endsWith(".json"));
+      expect(spoolFiles).toHaveLength(1);
+      const persistedLog = logSpy.mock.calls.find(
+        ([fields]) =>
+          (fields as { errorKind?: string } | undefined)?.errorKind ===
+          "sandbox_orphan_cleanup_write_failed",
+      );
+      expect(persistedLog?.[0]).toMatchObject({ persisted: true });
+
+      // The process restarts. A fresh runtime keeps no in-process buffer, so only
+      // the durable spool carries the orphan. The database recovers, so the first
+      // cleanup-sweep flush loads the spool and lands the durable row.
+      databaseDown = false;
+      const restartedRuntime = environmentRuntimeService(db, { pendingCleanupWriteBackoffMs: 0 });
+      const flushed = await restartedRuntime.flushDeferredOrphanCleanups();
+      expect(flushed).toEqual({ recovered: 1, pending: 0 });
+
+      rows = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.environmentId, environment.id));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.status).toBe("pending_cleanup");
+      expect(rows[0]?.failureReason).toBe("acquire_rejected_teardown_failed");
+      expect(rows[0]?.providerLeaseId).toBeTruthy();
+
+      // The flush removed the spooled copy after the row landed, so a second
+      // restart never re-inserts a duplicate.
+      const spoolFilesAfter = (await readdir(spoolDir)).filter((name) => name.endsWith(".json"));
+      expect(spoolFilesAfter).toHaveLength(0);
+      const secondRestartRuntime = environmentRuntimeService(db, { pendingCleanupWriteBackoffMs: 0 });
+      const secondFlush = await secondRestartRuntime.flushDeferredOrphanCleanups();
+      expect(secondFlush).toEqual({ recovered: 0, pending: 0 });
+      const rowsAfter = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.environmentId, environment.id));
+      expect(rowsAfter).toHaveLength(1);
+    } finally {
+      logSpy.mockRestore();
+      factorySpy.mockRestore();
+      destroySpy.mockRestore();
+    }
+  });
+
+  it("buffers the orphan in-process when the durable spool write also fails", async () => {
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Foreign-bound Fake Sandbox Cleanup Spool Unwritable",
+      config: { provider: "fake", image: "ubuntu:24.04", reuseLease: false },
+    });
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other Co Cleanup Spool Unwritable",
+      issuePrefix: "OCU",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(builtInManagedResources).values({
+      companyId: otherCompanyId,
+      bundleKey: "managed-environment",
+      resourceKind: "environment",
+      resourceKey: "managed-sandbox",
+      resourceId: environment.id,
+      stockVersion: "1",
+      stockHash: "hash",
+    });
+
+    const destroySpy = vi
+      .spyOn(sandboxProviderRuntime, "destroySandboxProviderLease")
+      .mockRejectedValue(new Error("teardown failed"));
+    let databaseDown = true;
+    const realEnvironmentService = environmentsModule.environmentService;
+    const factorySpy = vi
+      .spyOn(environmentsModule, "environmentService")
+      .mockImplementation((database: Parameters<typeof realEnvironmentService>[0]) => {
+        const real = realEnvironmentService(database);
+        return {
+          ...real,
+          insertPendingCleanupLease: (
+            input: Parameters<typeof real.insertPendingCleanupLease>[0],
+          ) => {
+            if (databaseDown) {
+              return Promise.reject(new Error("pending-cleanup write failed; database down"));
+            }
+            return real.insertPendingCleanupLease(input);
+          },
+        };
+      });
+    const logSpy = vi.spyOn(logger, "error").mockImplementation(() => logger);
+    try {
+      // Point the spool at an unwritable path, so the durable spool write fails
+      // like a full or read-only disk. The acquire must fall back to the
+      // in-process buffer and never lose the orphan silently.
+      const unwritableSpool = {
+        append: () => Promise.resolve(false),
+        load: () => Promise.resolve([]),
+        remove: () => Promise.resolve(),
+      };
+      const runtime = environmentRuntimeService(db, {
+        pendingCleanupWriteBackoffMs: 0,
+        orphanCleanupSpool: unwritableSpool,
+      });
+      await runtime
+        .acquireRunLease({
+          companyId,
+          environment,
+          issueId: null,
+          heartbeatRunId: runId,
+          persistedExecutionWorkspace: null,
+          assertCompanyBinding: true,
+        })
+        .then(
+          () => {
+            throw new Error("acquireRunLease resolved but must reject");
+          },
+          () => undefined,
+        );
+
+      // The spool write failed, so the log records the in-process-only fallback.
+      const fallbackLog = logSpy.mock.calls.find(
+        ([fields]) =>
+          (fields as { errorKind?: string } | undefined)?.errorKind ===
+          "sandbox_orphan_cleanup_write_failed",
+      );
+      expect(fallbackLog?.[0]).toMatchObject({ persisted: false, buffered: true });
+
+      // The same runtime still keeps the orphan in-process, so a flush after the
+      // database recovers lands the durable row.
+      databaseDown = false;
+      const flushed = await runtime.flushDeferredOrphanCleanups();
+      expect(flushed).toEqual({ recovered: 1, pending: 0 });
+      const rows = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.environmentId, environment.id));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.status).toBe("pending_cleanup");
     } finally {
       logSpy.mockRestore();
       factorySpy.mockRestore();
