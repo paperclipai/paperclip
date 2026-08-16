@@ -2591,64 +2591,77 @@ async function listIssueBlockerAttentionMap(
     covered: boolean;
     stalled: boolean;
     sampleBlockerIdentifier: string | null;
+    /**
+     * The edge that reaches `sampleBlockerIdentifier`. A sample taken from
+     * further down the chain carries that node's own incoming edge kind, not
+     * the top-level one, so the kind always describes the sampled issue.
+     */
+    sampleBlockerEdgeKind: IssueBlockerAttentionEdgeKind;
     sampleStalledBlockerIdentifier: string | null;
     terminalBlockerIssueId?: string | null;
   };
   const classifyPath = (
     nodeId: string,
     seen: Set<string>,
+    edgeKind: IssueBlockerAttentionEdgeKind,
   ): PathClassification => {
     const sample = blockerSampleIdentifier(nodesById.get(nodeId));
     if (truncated || seen.has(nodeId)) {
-      return { covered: false, stalled: false, sampleBlockerIdentifier: sample, sampleStalledBlockerIdentifier: null };
+      return {
+        covered: false,
+        stalled: false,
+        sampleBlockerIdentifier: sample,
+        sampleBlockerEdgeKind: edgeKind,
+        sampleStalledBlockerIdentifier: null,
+      };
     }
     const node = nodesById.get(nodeId);
     if (!node || node.companyId !== companyId) {
-      return { covered: false, stalled: false, sampleBlockerIdentifier: nodeId, sampleStalledBlockerIdentifier: null };
+      return {
+        covered: false,
+        stalled: false,
+        sampleBlockerIdentifier: nodeId,
+        sampleBlockerEdgeKind: edgeKind,
+        sampleStalledBlockerIdentifier: null,
+      };
     }
     const nodeSample = blockerSampleIdentifier(node);
+    const selfSample = {
+      sampleBlockerIdentifier: nodeSample,
+      sampleBlockerEdgeKind: edgeKind,
+      sampleStalledBlockerIdentifier: null,
+    } as const;
     if (node.status === "done" && !pendingFinalizeBlockerIssueIds.has(node.id)) {
-      return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
+      return { covered: true, stalled: false, ...selfSample };
     }
     if (explicitWaitingIssueIds.has(node.id)) {
-      return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
+      return { covered: true, stalled: false, ...selfSample };
     }
     if (node.assigneeUserId && node.status !== "cancelled") {
-      return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
+      return { covered: true, stalled: false, ...selfSample };
     }
     if (node.status === "in_review") {
       const hasWaitingPath = activeIssueIds.has(node.id) || Boolean(node.assigneeUserId);
       if (hasWaitingPath) {
-        return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
+        return { covered: true, stalled: false, ...selfSample };
       }
       return {
         covered: false,
         stalled: true,
         sampleBlockerIdentifier: nodeSample,
+        sampleBlockerEdgeKind: edgeKind,
         sampleStalledBlockerIdentifier: nodeSample,
         terminalBlockerIssueId: node.id,
       };
     }
     if (activeIssueIds.has(node.id)) {
-      return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
+      return { covered: true, stalled: false, ...selfSample };
     }
     if (node.status === "cancelled") {
-      return {
-        covered: false,
-        stalled: false,
-        sampleBlockerIdentifier: nodeSample,
-        sampleStalledBlockerIdentifier: null,
-        terminalBlockerIssueId: node.id,
-      };
+      return { covered: false, stalled: false, ...selfSample, terminalBlockerIssueId: node.id };
     }
     if (node.status === "backlog" && node.assigneeAgentId) {
-      return {
-        covered: false,
-        stalled: false,
-        sampleBlockerIdentifier: nodeSample,
-        sampleStalledBlockerIdentifier: null,
-        terminalBlockerIssueId: node.id,
-      };
+      return { covered: false, stalled: false, ...selfSample, terminalBlockerIssueId: node.id };
     }
 
     const downstream = (edgesByIssueId.get(node.id) ?? []).filter((edge) => {
@@ -2658,7 +2671,7 @@ async function listIssueBlockerAttentionMap(
     if (downstream.length > 0) {
       const nextSeen = new Set(seen);
       nextSeen.add(nodeId);
-      const classified = downstream.map((edge) => classifyPath(edge.blockerIssueId, nextSeen));
+      const classified = downstream.map((edge) => classifyPath(edge.blockerIssueId, nextSeen, edge.kind));
       const stalledChild = classified.find((result) => result.stalled || result.sampleStalledBlockerIdentifier);
       const sampleStalled = stalledChild?.sampleStalledBlockerIdentifier ?? null;
       const hardAttention = classified.find((result) =>
@@ -2669,6 +2682,7 @@ async function listIssueBlockerAttentionMap(
           covered: false,
           stalled: false,
           sampleBlockerIdentifier: hardAttention.sampleBlockerIdentifier,
+          sampleBlockerEdgeKind: hardAttention.sampleBlockerEdgeKind,
           sampleStalledBlockerIdentifier: sampleStalled,
           terminalBlockerIssueId: hardAttention.terminalBlockerIssueId ?? null,
         };
@@ -2679,14 +2693,17 @@ async function listIssueBlockerAttentionMap(
           covered: false,
           stalled: true,
           sampleBlockerIdentifier: stalledEntry.sampleBlockerIdentifier,
+          sampleBlockerEdgeKind: stalledEntry.sampleBlockerEdgeKind,
           sampleStalledBlockerIdentifier: sampleStalled,
           terminalBlockerIssueId: stalledEntry.terminalBlockerIssueId ?? null,
         };
       }
+      const firstDownstream = classified[0]?.sampleBlockerIdentifier ? classified[0] : null;
       return {
         covered: true,
         stalled: false,
-        sampleBlockerIdentifier: classified[0]?.sampleBlockerIdentifier ?? nodeSample,
+        sampleBlockerIdentifier: firstDownstream?.sampleBlockerIdentifier ?? nodeSample,
+        sampleBlockerEdgeKind: firstDownstream?.sampleBlockerEdgeKind ?? edgeKind,
         sampleStalledBlockerIdentifier: null,
       };
     }
@@ -2694,23 +2711,11 @@ async function listIssueBlockerAttentionMap(
     if (node.assigneeAgentId) {
       const assignee = agentsById.get(node.assigneeAgentId);
       if (!assignee || assignee.companyId !== companyId || !BLOCKER_ATTENTION_INVOKABLE_AGENT_STATUSES.has(assignee.status)) {
-        return {
-          covered: false,
-          stalled: false,
-          sampleBlockerIdentifier: nodeSample,
-          sampleStalledBlockerIdentifier: null,
-          terminalBlockerIssueId: node.id,
-        };
+        return { covered: false, stalled: false, ...selfSample, terminalBlockerIssueId: node.id };
       }
     }
 
-    return {
-      covered: false,
-      stalled: false,
-      sampleBlockerIdentifier: nodeSample,
-      sampleStalledBlockerIdentifier: null,
-      terminalBlockerIssueId: node.id,
-    };
+    return { covered: false, stalled: false, ...selfSample, terminalBlockerIssueId: node.id };
   };
 
   const pathHasLiveWork = (nodeId: string, seen: Set<string>): boolean => {
@@ -2752,7 +2757,7 @@ async function listIssueBlockerAttentionMap(
 
     const classified = topLevelEdges.map((edge) => ({
       edge,
-      result: classifyPath(edge.blockerIssueId, new Set([root.id])),
+      result: classifyPath(edge.blockerIssueId, new Set([root.id]), edge.kind),
     }));
     const coveredBlockerCount = classified.filter((entry) => entry.result.covered).length;
     const stalledBlockerCount = classified.filter((entry) => entry.result.stalled).length;
@@ -2799,7 +2804,14 @@ async function listIssueBlockerAttentionMap(
         .map((edge) => edge.blockerIssueId)
         .filter((blockerIssueId) => pendingFinalizeBlockerIssueIds.has(blockerIssueId)),
       sampleBlockerIdentifier: sampleEntry?.result.sampleBlockerIdentifier ?? blockerSampleIdentifier(sampleNode),
-      sampleBlockerEdgeKind: sampleEntry?.edge.kind ?? null,
+      // The sample can come from deeper in the chain, so take the kind the
+      // classifier reported for that node. Only fall back to the top-level
+      // edge when the sample itself falls back to the top-level node.
+      sampleBlockerEdgeKind: sampleEntry
+        ? (sampleEntry.result.sampleBlockerIdentifier
+          ? sampleEntry.result.sampleBlockerEdgeKind
+          : sampleEntry.edge.kind)
+        : null,
       sampleStalledBlockerIdentifier:
         stalledEntry?.result.sampleStalledBlockerIdentifier ?? sampleStalledFromChain ?? null,
       blockingTreeLive: topLevelEdges.some((edge) => pathHasLiveWork(edge.blockerIssueId, new Set([root.id]))),

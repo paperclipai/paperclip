@@ -411,13 +411,18 @@ export interface IssueBlockerAttention {
   coveredBlockerCount: number;
   stalledBlockerCount: number;
   attentionBlockerCount: number;
-  /** Counted blockers that come from an explicit `blocks` relation. */
+  /** Top-level blockers of this issue that come from an explicit `blocks` relation. */
   dependencyBlockerCount?: number;
-  /** Counted blockers that are open child issues rather than `blockedBy` entries. */
+  /** Top-level blockers of this issue that are open child issues rather than `blockedBy` entries. */
   childBlockerCount?: number;
   pendingFinalizeBlockerIssueIds?: string[];
   sampleBlockerIdentifier: string | null;
-  /** Which edge the sampled blocker was reached through. */
+  /**
+   * The edge that reaches `sampleBlockerIdentifier`. The sample can sit deeper
+   * in the chain than the counted top-level blockers, so this describes the
+   * sampled issue's own incoming edge and does not have to agree with
+   * `dependencyBlockerCount` / `childBlockerCount`.
+   */
   sampleBlockerEdgeKind?: IssueBlockerAttentionEdgeKind | null;
   sampleStalledBlockerIdentifier: string | null;
   /** True when a blocker or one of its open descendants is actively progressing. */
