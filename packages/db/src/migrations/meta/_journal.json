@@ -1562,6 +1562,13 @@
       "when": 1787000753490,
       "tag": "0224_agent_execution_fence",
       "breakpoints": true
+    },
+    {
+      "idx": 225,
+      "version": "7",
+      "when": 1787000753491,
+      "tag": "0225_agent_execution_fence_hardening",
+      "breakpoints": true
     }
   ]
 }

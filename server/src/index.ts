@@ -87,6 +87,7 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
+import { closeAcpxEngineRuntimesForShutdown } from "@paperclipai/adapter-utils/acpx-engine/execute";
 import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
 import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
 import {
@@ -1623,6 +1624,11 @@ export async function startServer(): Promise<StartedServer> {
         clearInterval(heartbeatSchedulerInterval);
         heartbeatSchedulerInterval = null;
       }
+      server.close((err) => {
+        if (err) logger.error({ err, signal }, "HTTP listener failed to close cleanly");
+      });
+      server.closeIdleConnections?.();
+      await heartbeat?.closeAdmissionsForShutdown();
 
       const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
         signal,
@@ -1649,13 +1655,18 @@ export async function startServer(): Promise<StartedServer> {
         await telemetryClient.flush();
       }
 
-      if (!skipHeartbeatDrain && drainHeartbeatRunsForShutdown) {
-        try {
-          const drain = await drainHeartbeatRunsForShutdown(signal, selectiveDrainRunIds);
-          logger.info({ signal, drain }, "graceful heartbeat run drain complete");
-        } catch (err) {
-          logger.error({ err, signal }, "graceful heartbeat run drain failed");
-        }
+      try {
+        const drain = !skipHeartbeatDrain && drainHeartbeatRunsForShutdown
+          ? await drainHeartbeatRunsForShutdown(signal, selectiveDrainRunIds)
+          : null;
+        const retainedRuntimes = await closeAcpxEngineRuntimesForShutdown();
+        logger.info(
+          { signal, drain, heartbeatDrainSkipped: skipHeartbeatDrain, retainedRuntimes },
+          "shutdown heartbeat and retained-runtime drain complete",
+        );
+      } catch (err) {
+        logger.error({ err, signal }, "shutdown heartbeat or retained-runtime drain failed");
+        return;
       }
 
       // Whatever the drain did not finalize (timed-out runs, the hot-restart

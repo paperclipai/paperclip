@@ -2935,17 +2935,47 @@ async function closeWarmHandle(input: {
   entry: RuntimeCacheEntry;
   reason: string;
   discardPersistentState?: boolean;
+  suppressCloseErrors?: boolean;
 }) {
-  if (input.handles.get(input.key) === input.entry) {
+  const owned = input.handles.get(input.key) === input.entry;
+  if (owned) {
     input.handles.delete(input.key);
   }
   clearWarmHandleTimer(input.entry);
-  await input.entry.runtime.close({
-    handle: input.entry.handle,
-    reason: input.reason,
-    discardPersistentState: input.discardPersistentState ?? false,
-  }).catch(() => {});
-  flushChildStderr(input.entry.childStderrState);
+  try {
+    const close = input.entry.runtime.close({
+      handle: input.entry.handle,
+      reason: input.reason,
+      discardPersistentState: input.discardPersistentState ?? false,
+    });
+    if (input.suppressCloseErrors === false) {
+      await close;
+    } else {
+      await close.catch(() => {});
+    }
+  } catch (error) {
+    if (owned && !input.handles.has(input.key)) {
+      input.handles.set(input.key, input.entry);
+    }
+    throw error;
+  } finally {
+    flushChildStderr(input.entry.childStderrState);
+  }
+}
+
+export async function closeAcpxEngineRuntimesForShutdown(input: {
+  warmHandles?: Map<string, RuntimeCacheEntry>;
+} = {}) {
+  const warmHandles = input.warmHandles ?? defaultWarmHandles;
+  const retained = [...warmHandles.entries()];
+  await Promise.all(retained.map(([key, entry]) => closeWarmHandle({
+    handles: warmHandles,
+    key,
+    entry,
+    reason: "paperclip server shutdown",
+    suppressCloseErrors: false,
+  })));
+  return { closedWarmHandles: retained.length };
 }
 
 function warmHandleMatches(

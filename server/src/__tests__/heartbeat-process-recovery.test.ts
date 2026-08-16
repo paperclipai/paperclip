@@ -100,6 +100,7 @@ vi.mock("../adapters/index.ts", async () => {
 });
 
 import {
+  __resetHeartbeatShutdownAdmissionsForTests,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   heartbeatService,
@@ -466,6 +467,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
     }
+    __resetHeartbeatShutdownAdmissionsForTests(db);
   });
 
   afterAll(async () => {
@@ -1403,6 +1405,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryReason: "issue_continuation_needed",
       retryOfRunId: runId,
     });
+    const settledFirstRetry = await waitForRunToSettle(heartbeat, firstRetry!.id);
+    expect(settledFirstRetry?.status).toBe("succeeded");
 
     const secondAttempt = await seedRunFixture({
       adapterType: "openclaw_gateway",
@@ -2375,7 +2379,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
   });
 
-  it("bounds shutdown waiting for an execution without a local process handle", async () => {
+  it("keeps shutdown fail-closed after the warning deadline until a remote execution finalizes", async () => {
     let signalAdapterStarted!: () => void;
     const adapterStarted = new Promise<void>((resolve) => {
       signalAdapterStarted = resolve;
@@ -2410,35 +2414,52 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       "SIGTERM",
       new Date("2026-03-19T00:06:00.000Z"),
     );
-    try {
-      await expect(Promise.race([
-        drain,
-        new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error("shutdown drain did not honor its execution deadline")), 500);
-        }),
-      ])).resolves.toMatchObject({
-        interruptedRunIds: [runId],
-        drainTimedOutRunIds: [runId],
-      });
-      const interrupted = await heartbeat.getRun(runId);
-      expect(interrupted).toMatchObject({
-        status: "interrupted",
-        executionFinalizerCompletedAt: null,
-        executionFinalizedAt: null,
-      });
-    } finally {
-      releaseAdapter();
-      await drain;
-    }
-
-    const eventuallyFinalized = await waitForValue(async () => {
-      const current = await heartbeat.getRun(runId);
-      return current?.executionFinalizedAt ? current : null;
+    let drainSettled = false;
+    void drain.finally(() => {
+      drainSettled = true;
     });
-    expect(eventuallyFinalized).toMatchObject({
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    expect(drainSettled).toBe(false);
+    const interrupted = await heartbeat.getRun(runId);
+    expect(interrupted).toMatchObject({
+      status: "interrupted",
+      executionFinalizerCompletedAt: null,
+      executionFinalizedAt: null,
+    });
+
+    releaseAdapter();
+    await expect(drain).resolves.toMatchObject({
+      interruptedRunIds: [runId],
+    });
+    const finalized = await heartbeat.getRun(runId);
+    expect(finalized).toMatchObject({
       executionFinalizerCompletedAt: expect.any(Date),
       executionFinalizedAt: expect.any(Date),
     });
+  });
+
+  it("closes wakeup admissions across service instances before shutdown takes its snapshot", async () => {
+    const { agentId } = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "succeeded",
+      includeIssue: false,
+    });
+    const shutdownOwner = heartbeatService(db);
+    const routeService = heartbeatService(db);
+    const before = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns);
+
+    await shutdownOwner.closeAdmissionsForShutdown();
+
+    await expect(routeService.wakeup(agentId, {
+      source: "on_demand",
+      requestedByActorType: "user",
+      requestedByActorId: "shutdown-race-user",
+    })).rejects.toMatchObject({
+      status: 409,
+      details: { code: "heartbeat_shutdown_admissions_closed", agentId },
+    });
+    const after = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns);
+    expect(after).toEqual(before);
   });
 
   it("genuinely finalizes a previously adopted run during a later shutdown", async () => {

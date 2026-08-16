@@ -805,6 +805,24 @@ const shutdownDrainingRunIds = new Set<string>();
 // can await a wake that is still before run registration. A caller that tears
 // down a shared database (a test afterEach) then cannot race a late wake.
 const activeWakeupPromises = new Set<Promise<unknown>>();
+type ShutdownAdmissionState = {
+  closed: boolean;
+  inFlight: Set<Promise<unknown>>;
+};
+const shutdownAdmissionStates = new WeakMap<object, ShutdownAdmissionState>();
+
+function getShutdownAdmissionState(db: Db): ShutdownAdmissionState {
+  const key = db as object;
+  const existing = shutdownAdmissionStates.get(key);
+  if (existing) return existing;
+  const created: ShutdownAdmissionState = { closed: false, inFlight: new Set() };
+  shutdownAdmissionStates.set(key, created);
+  return created;
+}
+
+export function __resetHeartbeatShutdownAdmissionsForTests(db: Db) {
+  shutdownAdmissionStates.delete(db as object);
+}
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
@@ -6678,6 +6696,21 @@ export function resolveHeartbeatSchedulingSuppression(
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
+  const shutdownAdmissions = getShutdownAdmissionState(db);
+  function trackAdmission<T>(operation: () => Promise<T>): Promise<T> {
+    const admitted = Promise.resolve().then(operation);
+    shutdownAdmissions.inFlight.add(admitted);
+    void admitted.catch(() => {}).finally(() => {
+      shutdownAdmissions.inFlight.delete(admitted);
+    });
+    return admitted;
+  }
+  async function closeAdmissionsForShutdown() {
+    shutdownAdmissions.closed = true;
+    while (shutdownAdmissions.inFlight.size > 0) {
+      await Promise.allSettled([...shutdownAdmissions.inFlight]);
+    }
+  }
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -10706,6 +10739,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     now = new Date(),
     runIds: readonly string[] | null = null,
   ) {
+    await closeAdmissionsForShutdown();
     const selectedRunIds = runIds ? [...new Set(runIds)] : null;
     if (selectedRunIds?.length === 0) {
       return { interrupted: 0, interruptedRunIds: [], retryRunIds: [] };
@@ -10721,7 +10755,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const interruptedRunIds: string[] = [];
     const retryRunIds: string[] = [];
     const adoptedRunIdsRequiringFinalization: string[] = [];
-    const drainTimedOutRunIds: string[] = [];
 
     try {
       const activeRuns = await db
@@ -10833,38 +10866,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // must not wait on adopted runs, while a normal SIGTERM/SIGINT waits for
       // every execution owned by this process. The execution promise settles
       // only after the genuine finally path has flushed its durable proof. A
-      // remote adapter may have no local process handle to terminate, so bound
-      // this wait below the service manager's stop deadline. A timed-out run
-      // keeps its drain marker until its promise settles and remains without
-      // finalization proof if the process exits first.
+      // remote adapter may have no local process handle to terminate. The
+      // deadline below is therefore diagnostic only: releasing shutdown after
+      // it would let the process exit while execution still owns finalization.
       if (selectedExecutionEntries.length > 0) {
         const configuredTimeoutMs = options.shutdownExecutionWaitTimeoutMs;
         const timeoutMs = configuredTimeoutMs !== undefined && Number.isFinite(configuredTimeoutMs)
           ? Math.max(1, configuredTimeoutMs)
           : SHUTDOWN_EXECUTION_FINALIZER_WAIT_MS;
-        let timeout: ReturnType<typeof setTimeout> | null = null;
-        const waitOutcome = await Promise.race([
-          Promise.all(selectedExecutionEntries.map(([, execution]) => execution)).then(() => "settled" as const),
-          new Promise<"timed_out">((resolve) => {
-            timeout = setTimeout(() => resolve("timed_out"), timeoutMs);
-          }),
-        ]);
-        if (timeout) clearTimeout(timeout);
-        if (waitOutcome === "timed_out") {
-          drainTimedOutRunIds.push(
-            ...selectedExecutionEntries
-              .filter(([runId, execution]) => activeRunExecutionPromises.get(runId) === execution)
-              .map(([runId]) => runId),
-          );
+        const executionsSettled = Promise.all(selectedExecutionEntries.map(([, execution]) => execution));
+        const timeout = setTimeout(() => {
+          const pendingRunIds = selectedExecutionEntries
+            .filter(([runId, execution]) => activeRunExecutionPromises.get(runId) === execution)
+            .map(([runId]) => runId);
           logger.error(
-            { signal, timeoutMs, runIds: drainTimedOutRunIds },
-            "shutdown execution finalizer wait reached its deadline; leaving proof fail-closed",
+            { signal, timeoutMs, runIds: pendingRunIds },
+            "shutdown execution finalizer wait reached its warning deadline; continuing to wait fail-closed",
           );
+        }, timeoutMs);
+        timeout.unref?.();
+        try {
+          await executionsSettled;
+        } finally {
+          clearTimeout(timeout);
         }
       }
 
       for (const [runId] of selectedExecutionEntries) {
-        if (drainTimedOutRunIds.includes(runId)) continue;
         const current = await getRun(runId);
         if (!current?.executionFinalizerCompletedAt || current.executionFinalizedAt) continue;
         await acknowledgeCompletedRunFinalizationReliably(runId);
@@ -10907,14 +10935,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
     } finally {
-      for (const [runId, execution] of selectedExecutionEntries) {
-        if (drainTimedOutRunIds.includes(runId)) {
-          void execution.finally(() => {
-            shutdownDrainingRunIds.delete(runId);
-          });
-        } else {
-          shutdownDrainingRunIds.delete(runId);
-        }
+      for (const [runId] of selectedExecutionEntries) {
+        shutdownDrainingRunIds.delete(runId);
       }
     }
 
@@ -10929,7 +10951,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       interrupted: interruptedRunIds.length,
       interruptedRunIds,
       retryRunIds,
-      ...(drainTimedOutRunIds.length > 0 ? { drainTimedOutRunIds } : {}),
     };
   }
 
@@ -14108,7 +14129,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
-  async function startNextQueuedRunForAgent(agentId: string) {
+  async function startNextQueuedRunForAgentAfterAdmission(agentId: string) {
     if ((await getSchedulingSuppression()).suppressed) return [];
     const cutoff = await getWorktreeExecutionCutoff();
 
@@ -14201,6 +14222,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       return claimedRuns;
     });
+  }
+
+  function startNextQueuedRunForAgent(agentId: string) {
+    if (shutdownAdmissions.closed) return Promise.resolve([]);
+    return trackAdmission(() => startNextQueuedRunForAgentAfterAdmission(agentId));
   }
 
   // Await every background heartbeat execution that is currently in flight. A
@@ -17856,7 +17882,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     await startNextQueuedRunForAgent(promotedRun.agentId);
   }
 
-  async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
+  async function enqueueWakeupAfterAdmission(agentId: string, opts: WakeupOptions = {}) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = { ...(opts.contextSnapshot ?? {}) };
@@ -19121,6 +19147,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return newRun;
   }
 
+  function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
+    if (shutdownAdmissions.closed) {
+      if (opts.requestedByActorType === "user") {
+        return Promise.reject(conflict("Cannot wake an agent while the server is shutting down", {
+          code: "heartbeat_shutdown_admissions_closed",
+          agentId,
+        }));
+      }
+      return Promise.resolve(null);
+    }
+    return trackAdmission(() => enqueueWakeupAfterAdmission(agentId, opts));
+  }
+
   async function listProjectScopedRunIds(companyId: string, projectId: string) {
     const runIssueId = sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
     const effectiveProjectId = sql<string | null>`coalesce(${heartbeatRuns.contextSnapshot} ->> 'projectId', ${issues.projectId}::text)`;
@@ -19708,6 +19747,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reconcileHotRestartAdoption,
     reapOrphanedRuns,
     sweepPendingCleanupLeases,
+    closeAdmissionsForShutdown,
     // Override-aware scheduling-suppression check (honors the worktree
     // run-execution experimental setting). Callers outside the service that
     // gate on suppression should prefer this over the env-only resolver.

@@ -23,7 +23,10 @@ import { agentExecutionFenceService } from "../services/agent-execution-fence.js
 import { agentService } from "../services/agents.js";
 import { budgetService } from "../services/budgets.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
-import { heartbeatService } from "../services/heartbeat.js";
+import {
+  __resetHeartbeatShutdownAdmissionsForTests,
+  heartbeatService,
+} from "../services/heartbeat.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
@@ -49,6 +52,7 @@ describePostgres("agent execution fence", () => {
     await db.delete(agents);
     await db.delete(companies);
     await db.delete(environments);
+    __resetHeartbeatShutdownAdmissionsForTests(db);
   });
 
   afterAll(async () => tempDb?.cleanup());
