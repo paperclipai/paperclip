@@ -49,13 +49,21 @@ const sessionQueryOptions = {
 /**
  * The signed-in account, as the cache currently understands it.
  *
- * `settled` is false until the session query has an answer. Fetching the list
- * before then would key it to the wrong account and force a second request when
- * the session lands, so callers hold instead.
+ * `settled` means the session query *answered*, not merely that it stopped
+ * being pending. The distinction is the whole point of this helper. `null` is a
+ * real answer — `authApi.getSession` returns it for a 401, meaning "signed out"
+ * — but a session request that *failed* answers nothing, and it throws rather
+ * than returning null. Treating that failure as `null` would key an account's
+ * list to `anonymous` while the request still carried their cookie, writing a
+ * credentialed response into the entry every signed-out reader trusts. Which is
+ * the original bug, rebuilt for anonymous.
+ *
+ * So: settled on success only. A failed session lookup leaves the list unfetched
+ * until the query recovers, which it does on the next refetch.
  */
 export function useAccountIdentity(): { userId: string | null; settled: boolean } {
-  const { data: session, isPending } = useQuery(sessionQueryOptions);
-  return { userId: session?.user.id ?? null, settled: !isPending };
+  const { data: session, isSuccess } = useQuery(sessionQueryOptions);
+  return { userId: session?.user.id ?? null, settled: isSuccess };
 }
 
 /**
@@ -93,13 +101,21 @@ export function useCompanyListQuery(
 }
 
 /**
- * Read the account identity the cache holds without subscribing to it. For
- * imperative paths (`fetchQuery`, `invalidateQueries`) that need the key.
+ * Resolve the account identity for an imperative path, fetching the session if
+ * the cache has no answer yet.
+ *
+ * Not `getQueryData` with a `?? null` fallback: an empty or errored session
+ * entry would read as "signed out" and key an authenticated response to
+ * `anonymous`. There is no safe default here — the identity is either known or
+ * must be obtained, and if it cannot be obtained the caller must fail rather
+ * than guess.
  */
-export function currentAccountUserId(queryClient: QueryClient): string | null {
-  const session = queryClient.getQueryData<Awaited<ReturnType<typeof authApi.getSession>>>(
+export async function resolveAccountUserId(queryClient: QueryClient): Promise<string | null> {
+  const state = queryClient.getQueryState<Awaited<ReturnType<typeof authApi.getSession>>>(
     queryKeys.auth.session,
   );
+  if (state?.status === "success") return state.data?.user.id ?? null;
+  const session = await queryClient.fetchQuery(sessionQueryOptions);
   return session?.user.id ?? null;
 }
 
@@ -107,8 +123,9 @@ export function currentAccountUserId(queryClient: QueryClient): string | null {
 export async function fetchCompanyListForCurrentAccount(
   queryClient: QueryClient,
 ): Promise<CompanyListResult> {
+  const userId = await resolveAccountUserId(queryClient);
   return queryClient.fetchQuery({
-    ...companyListQueryOptions(currentAccountUserId(queryClient)),
+    ...companyListQueryOptions(userId),
     staleTime: 0,
   });
 }

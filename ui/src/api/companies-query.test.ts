@@ -1,8 +1,16 @@
 import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
-import { companyListQueryOptions } from "./companies-query";
+import { companyListQueryOptions, resolveAccountUserId } from "./companies-query";
 import { ApiError } from "./client";
 import { queryKeys } from "../lib/queryKeys";
+
+const mockAuthApi = vi.hoisted(() => ({
+  getSession: vi.fn(),
+}));
+
+vi.mock("./auth", () => ({
+  authApi: mockAuthApi,
+}));
 
 const mockCompaniesApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -61,3 +69,39 @@ describe("existing invalidations still reach the account-keyed list", () => {
     expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true);
   });
 });
+
+// A session request that fails answers nothing. `authApi.getSession` returns
+// null only for a 401 — a real "signed out" — and throws otherwise, so treating
+// a failure as null would key a credentialed response to `anonymous` and hand
+// it to every signed-out reader. The original bug, rebuilt for anonymous.
+describe("an unavailable session is not an anonymous session", () => {
+  it("does not resolve an identity from an errored session entry", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockAuthApi.getSession.mockRejectedValueOnce(new Error("network down"));
+    await queryClient
+      .fetchQuery({ queryKey: queryKeys.auth.session, queryFn: () => mockAuthApi.getSession(), retry: false })
+      .catch(() => undefined);
+    expect(queryClient.getQueryState(queryKeys.auth.session)?.status).toBe("error");
+
+    // Asked again rather than assumed anonymous.
+    mockAuthApi.getSession.mockResolvedValueOnce({ user: { id: "user-9" } });
+    await expect(resolveAccountUserId(queryClient)).resolves.toBe("user-9");
+  });
+
+  it("fetches the session when the cache has no answer, instead of defaulting to anonymous", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockAuthApi.getSession.mockResolvedValueOnce({ user: { id: "user-7" } });
+
+    await expect(resolveAccountUserId(queryClient)).resolves.toBe("user-7");
+    expect(mockAuthApi.getSession).toHaveBeenCalled();
+  });
+
+  it("still treats a confirmed 401 as the anonymous identity", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    // `getSession` resolves null for a 401 — signed out is an answer.
+    mockAuthApi.getSession.mockResolvedValueOnce(null);
+
+    await expect(resolveAccountUserId(queryClient)).resolves.toBeNull();
+  });
+});
+

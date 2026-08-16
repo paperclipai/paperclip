@@ -7,6 +7,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (hoisted so vi.mock factories can close over them) ----------------
 
+// The company list is keyed by account, so it holds until the session query
+// *succeeds*. A seeded entry is stale under the test client and refetches, so
+// the refetch has to answer too — otherwise the identity errors and the list
+// never runs.
+const mockAuthApi = vi.hoisted(() => ({ getSession: vi.fn() }));
+vi.mock("../api/auth", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/auth")>();
+  return { ...actual, authApi: { ...actual.authApi, getSession: mockAuthApi.getSession } };
+});
+
 const mockDialog = vi.hoisted(() => ({
   onboardingOpen: true,
   onboardingOptions: {} as { initialStep?: number; companyId?: string },
@@ -152,6 +162,10 @@ function render() {
 
 describe("OnboardingWizard restore-gate (stale localStorage across accounts)", () => {
   beforeEach(() => {
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { id: "session-b", userId: SESSION_USER_ID },
+      user: { id: SESSION_USER_ID, name: "B", email: "b@example.com", image: null },
+    });
     window.localStorage.clear();
     mockDialog.onboardingOpen = true;
     mockDialog.onboardingOptions = {};

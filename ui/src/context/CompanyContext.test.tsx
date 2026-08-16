@@ -479,6 +479,39 @@ describe("CompanyProvider", () => {
       });
     });
 
+    // A session request that failed answers nothing. Keying the list to
+    // `anonymous` on that basis would write an authenticated response — the
+    // request still carries the cookie — into the entry every signed-out reader
+    // trusts, which is the original bug rebuilt for anonymous.
+    //
+    // Cold cache on purpose: after a prior success React Query retains the old
+    // session `data` through a failed refetch, so the identity survives anyway
+    // and the bug does not show. It needs a session that never answered.
+    it("does not treat a never-answered session as a signed-out session", async () => {
+      mockAuthApi.getSession.mockRejectedValue(new Error("network down"));
+      localStorage.setItem("paperclip.selectedCompanyId", "company-1");
+      mockCompaniesApi.list.mockResolvedValue([makeCompany("company-1")]);
+
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <CompanyProvider>
+              <Probe onSelectedCompanyId={() => undefined} />
+            </CompanyProvider>
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+      await flushReact();
+
+      // Nothing asked for a list it could not attribute, and nothing landed in
+      // the anonymous entry.
+      expect(mockCompaniesApi.list).not.toHaveBeenCalled();
+      expect(queryClient.getQueryData(queryKeys.companies.list(null))).toBeUndefined();
+      // And the stored company survives: unavailable is not "owns nothing".
+      expect(localStorage.getItem("paperclip.selectedCompanyId")).toBe("company-1");
+    });
+
     it("leaves the selection alone when the same account is observed again", async () => {
       const seen: Array<string | null> = [];
       await bootWithFirstAccount(seen);
