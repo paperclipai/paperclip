@@ -35,7 +35,7 @@ function createPluginPackage(source = "export default {};\n") {
 }
 
 function readyPlugin(packageRoot: string) {
-  mockRegistry.getById.mockResolvedValue({
+  const plugin = {
     id: pluginId,
     pluginKey: "paperclip.example",
     packageName: "paperclip-plugin-example",
@@ -48,8 +48,10 @@ function readyPlugin(packageRoot: string) {
         ui: "./dist/ui",
       },
     },
-  });
+  };
+  mockRegistry.getById.mockResolvedValue(plugin);
   mockRegistry.getByKey.mockResolvedValue(null);
+  return plugin;
 }
 
 function boardActor(companyIds: string[]) {
@@ -107,6 +109,20 @@ describe("plugin UI static route", () => {
     expect(res.status).toBe(200);
     expect(res.text).toContain("static-bundle");
     expect(mockRegistry.getConfig).not.toHaveBeenCalled();
+  });
+
+  it("looks up plugin keys without sending them to the UUID query", async () => {
+    const plugin = readyPlugin(createPluginPackage("export const marker = 'key-bundle';\n"));
+    mockRegistry.getById.mockResolvedValue(null);
+    mockRegistry.getByKey.mockResolvedValue(plugin);
+    const app = await createApp({ type: "none", source: "none" });
+
+    const res = await request(app).get("/_plugins/paperclip.example/ui/index.js");
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain("key-bundle");
+    expect(mockRegistry.getById).not.toHaveBeenCalled();
+    expect(mockRegistry.getByKey).toHaveBeenCalledWith("paperclip.example");
   });
 
   it("requires authentication before reading company-scoped devUiUrl config", async () => {
