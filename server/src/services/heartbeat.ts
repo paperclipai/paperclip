@@ -13310,7 +13310,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         continue;
       }
 
-      const environment = await environmentsSvc.getById(row.environmentId);
+      const environment = row.environmentId
+        ? await environmentsSvc.getById(row.environmentId)
+        : null;
       const lease = await environmentsSvc.getLeaseById(row.id);
       if (!environment || !lease) continue;
 
