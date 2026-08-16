@@ -41,6 +41,7 @@ vi.mock("../api/health", () => ({
 vi.mock("../api/companies", () => ({
   companiesApi: {
     list: () => listCompaniesMock(),
+    detachInflightList: () => undefined,
   },
 }));
 
@@ -495,7 +496,7 @@ describe("InviteLandingPage", () => {
     expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
     expect(setSelectedCompanyIdMock).toHaveBeenCalledWith("company-1", { source: "manual" });
     expect(queryClient.getQueryState(queryKeys.access.currentBoardAccess)?.isInvalidated).toBe(true);
-    expect(queryClient.getQueryData(queryKeys.companies.all)).toMatchObject({
+    expect(queryClient.getQueryData(queryKeys.companies.list("user-1"))).toMatchObject({
       companies: [],
       unauthorized: false,
     });
@@ -755,7 +756,7 @@ describe("InviteLandingPage", () => {
     });
     expect(acceptInviteMock).not.toHaveBeenCalled();
     expect(setSelectedCompanyIdMock).toHaveBeenCalledWith("company-1", { source: "manual" });
-    expect(queryClient.getQueryData(queryKeys.companies.all)).toMatchObject({
+    expect(queryClient.getQueryData(queryKeys.companies.list("user-1"))).toMatchObject({
       companies: [{ id: "company-1", name: "Acme Robotics" }],
       unauthorized: false,
     });
@@ -876,7 +877,7 @@ describe("InviteLandingPage", () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
-    queryClient.setQueryData(queryKeys.companies.all, {
+    queryClient.setQueryData(queryKeys.companies.list("user-1"), {
       companies: [],
       unauthorized: false,
     });

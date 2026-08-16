@@ -5,7 +5,7 @@ import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { companiesApi } from "../api/companies";
-import { companiesListQueryOptions } from "../api/companies-query";
+import { useCompanyListQuery } from "../api/companies-query";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
@@ -220,8 +220,7 @@ export function OnboardingWizard() {
   // is what makes that reachable while the shared entry is still fresh. It
   // shares the query key, so the result populates the same cache entry the
   // rest of the app reads.
-  const companiesQuery = useQuery({
-    ...companiesListQueryOptions,
+  const companiesQuery = useCompanyListQuery({
     staleTime: 0,
     // Only a *parseable* saved draft poses the question. Without one there is
     // nothing to authorize, and this must not add a request to every wizard

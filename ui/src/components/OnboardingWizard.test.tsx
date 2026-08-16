@@ -23,6 +23,7 @@ const mockCompany = vi.hoisted(() => ({
 }));
 
 const mockCompaniesApi = vi.hoisted(() => ({
+  detachInflightList: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
   // The gate fetches the list itself now, rather than reading the shared
@@ -131,12 +132,20 @@ async function flushReact() {
   });
 }
 
+const SESSION_USER_ID = "user-b";
+
 function render() {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
+  });
+  // The company list is keyed by account, so it stays disabled until the
+  // session is known. Seeding it is how these tests say "signed in as B".
+  queryClient.setQueryData(queryKeys.auth.session, {
+    session: { id: "session-b", userId: SESSION_USER_ID },
+    user: { id: SESSION_USER_ID, name: "B", email: "b@example.com", image: null },
   });
   return { container, root, queryClient };
 }
@@ -644,7 +653,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     );
     const { root, queryClient } = render();
     // A's list, already in the cache from their session.
-    queryClient.setQueryData(queryKeys.companies.all, {
+    queryClient.setQueryData(queryKeys.companies.list(SESSION_USER_ID), {
       companies: [{ id: "company-a", name: "Account A Co", issuePrefix: "AAC" }],
       unauthorized: false,
     });
@@ -687,7 +696,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     });
     window.localStorage.setItem(ONBOARDING_STORAGE_KEY, draft);
     const { root, queryClient } = render();
-    queryClient.setQueryData(queryKeys.companies.all, {
+    queryClient.setQueryData(queryKeys.companies.list(SESSION_USER_ID), {
       companies: [{ id: "c1", name: "Saved Co", issuePrefix: "SC" }],
       unauthorized: false,
     });
