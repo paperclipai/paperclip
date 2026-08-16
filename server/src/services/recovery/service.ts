@@ -53,6 +53,7 @@ import {
   parseIssueExecutionState,
 } from "../issue-execution-policy.js";
 import {
+  DEPENDENCY_WAKE_TERMINAL_SUPPRESSION_MS,
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeIdempotencyKey,
   findExistingIssueBlockersResolvedWakeForAnyKey,
@@ -7736,6 +7737,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         const existingWake = await findExistingIssueBlockersResolvedWakeForAnyKey(db, {
           companyId,
           idempotencyKeys,
+          terminalSuppressionMs: DEPENDENCY_WAKE_TERMINAL_SUPPRESSION_MS,
         });
         if (existingWake) {
           result.existingWakeSkipped += 1;
