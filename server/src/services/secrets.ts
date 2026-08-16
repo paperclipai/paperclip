@@ -68,6 +68,10 @@ import { logActivity } from "./activity-log.js";
 
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const AGENT_ACCESS_CONFIG_PATH_PREFIX = "access.";
+// System consumer id for a durable orphan-sandbox teardown. The cleanup sweep
+// resolves the recorded connection secret under this id so the audit trail
+// marks the read as an orphan-sandbox teardown, not a normal environment read.
+export const SANDBOX_CLEANUP_CONSUMER_ID = "environment-sandbox-cleanup";
 const SENSITIVE_ENV_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 const REDACTED_SENTINEL = "***REDACTED***";
@@ -1464,6 +1468,44 @@ export function secretService(db: Db) {
     return (await resolveSecretValueInternal(companyId, secretId, version, {
       accessContext: context,
     })).value;
+  }
+
+  // Resolve a connection secret for a durable orphan-sandbox teardown.
+  //
+  // The retry destroys a remote sandbox that a failed acquire left allocated.
+  // The teardown needs the same connection secret the acquire used. But the
+  // environment binding may be gone: a delete removed the environment, or a
+  // provider change replaced the binding. So this path authorizes the read from
+  // the durable `pending_cleanup` lease row, not from the environment binding,
+  // and it never checks the binding. The caller passes only a secret id that the
+  // durable row recorded, so the scope stays narrow. The resolution records an
+  // access event for audit, and the value never enters lease metadata.
+  async function resolveSecretValueForSandboxCleanup(
+    companyId: string,
+    secretId: string,
+    version: number | "latest",
+    context: {
+      configPath: string;
+      issueId?: string | null;
+      heartbeatRunId?: string | null;
+    },
+  ): Promise<string> {
+    return (
+      await resolveSecretValueInternal(companyId, secretId, version, {
+        // Audit-only access context. No `bindingContext`, so the resolver never
+        // asserts the environment binding that a delete or a provider change may
+        // have removed.
+        accessContext: {
+          consumerType: "system",
+          consumerId: SANDBOX_CLEANUP_CONSUMER_ID,
+          actorType: "system",
+          actorId: null,
+          configPath: context.configPath,
+          issueId: context.issueId ?? null,
+          heartbeatRunId: context.heartbeatRunId ?? null,
+        },
+      })
+    ).value;
   }
 
   async function resolveSecretValueForAgentAccess(
@@ -3829,6 +3871,7 @@ export function secretService(db: Db) {
     resolveSecretValueForAgentAccess,
     listAgentSecretAccess,
     resolveSecretValueForEphemeralAccess,
+    resolveSecretValueForSandboxCleanup,
 
     create: async (
       companyId: string,

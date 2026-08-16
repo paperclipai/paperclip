@@ -1516,6 +1516,276 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     }
   });
 
+  // A plugin provider whose config declares an `apiKey` secret-ref field. The
+  // orphan teardown must resolve that recorded ref even when the environment
+  // binding is gone, so these tests register a provider with a real secret-ref
+  // field, unlike the plain `fake-plugin` tests above.
+  const SECRET_REF_PLUGIN_KEY = "paperclip.secret-plugin-sandbox-provider";
+  const SECRET_REF_PROVIDER = "secret-plugin";
+
+  async function registerSecretRefPluginProvider(): Promise<string> {
+    const pluginId = randomUUID();
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: SECRET_REF_PLUGIN_KEY,
+      packageName: "@paperclipai/plugin-secret-sandbox",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: SECRET_REF_PLUGIN_KEY,
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Secret Plugin Sandbox Provider",
+        description: "Test plugin provider with a secret-ref config field",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: SECRET_REF_PROVIDER,
+            kind: "sandbox_provider",
+            displayName: "Secret Plugin",
+            configSchema: {
+              type: "object",
+              properties: {
+                apiKey: { type: "string", format: "secret-ref" },
+              },
+            },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    return pluginId;
+  }
+
+  // A worker manager mock that records the config of each destroy call, so a
+  // test can assert the resolved API key reached the provider teardown.
+  function createDestroyRecordingWorkerManager(pluginId: string): {
+    workerManager: PluginWorkerManager;
+    destroyConfigs: Array<Record<string, unknown> | undefined>;
+  } {
+    const destroyConfigs: Array<Record<string, unknown> | undefined> = [];
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string, args: any) => {
+        if (method === "environmentDestroyLease") {
+          destroyConfigs.push(args?.config as Record<string, unknown> | undefined);
+          return {};
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+    return { workerManager, destroyConfigs };
+  }
+
+  async function createApiKeySecret(companyId: string, value: string): Promise<string> {
+    const secret = await secretService(db).create(companyId, {
+      name: `sandbox-cleanup-api-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value,
+    });
+    return secret.id;
+  }
+
+  it("tears down a secret-backed plugin orphan when a delete already removed the environment", async () => {
+    // Ordering: a delete removed the environment (and its secret binding) before
+    // the acquire recorded the orphan. The recorded config keeps the API-key
+    // secret ref, so the teardown must resolve it without the environment
+    // binding and send the resolved value to the provider destroy call.
+    const pluginId = await registerSecretRefPluginProvider();
+    const { companyId, environment } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Secret Plugin Delete Before Record",
+      config: { provider: SECRET_REF_PROVIDER, reuseLease: false },
+    });
+    const secretId = await createApiKeySecret(companyId, "old-provider-api-key");
+    await secretService(db).createBinding({
+      companyId,
+      secretId,
+      targetType: "environment",
+      targetId: environment.id,
+      configPath: "apiKey",
+    });
+
+    // Remove the environment first, so the record happens after the delete.
+    await environmentService(db).remove(environment.id);
+
+    const orphan = await environmentService(db).insertPendingCleanupLease({
+      companyId,
+      environmentId: environment.id,
+      provider: SECRET_REF_PROVIDER,
+      providerLeaseId: "secret-plugin-lease-delete-before",
+      metadata: {
+        provider: SECRET_REF_PROVIDER,
+        driver: "sandbox",
+        sandboxProviderPlugin: true,
+        pluginId,
+        pluginKey: SECRET_REF_PLUGIN_KEY,
+        apiKey: secretId,
+        reuseLease: false,
+      },
+      failureReason: "acquire_rejected_teardown_failed",
+    });
+    expect(orphan.environmentId).toBeNull();
+    expect(orphan.status).toBe("pending_cleanup");
+
+    const { workerManager, destroyConfigs } = createDestroyRecordingWorkerManager(pluginId);
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const result = await runtimeWithPlugin.sweepPendingSandboxCleanups({ companyId });
+    expect(result).toMatchObject({ scanned: 1, cleaned: 1, failed: 0, skipped: 0 });
+    expect(destroyConfigs).toHaveLength(1);
+    // The recorded secret ref resolved to the old credential, and the resolved
+    // value reached the provider teardown instead of the secret ref.
+    expect(destroyConfigs[0]).toMatchObject({ apiKey: "old-provider-api-key" });
+    expect(destroyConfigs[0]?.apiKey).not.toBe(secretId);
+
+    const cleaned = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, orphan.id))
+      .then((r) => r[0]!);
+    expect(cleaned.status).toBe("expired");
+    expect(cleaned.cleanupStatus).toBe("success");
+  });
+
+  it("tears down a secret-backed plugin orphan after the environment is deleted", async () => {
+    // Ordering: the orphan is recorded, then a delete removes the environment.
+    // The foreign key sets the lease reference null, so the orphan survives. The
+    // teardown resolves the recorded API-key ref without the environment.
+    const pluginId = await registerSecretRefPluginProvider();
+    const { companyId, environment } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Secret Plugin Delete After Record",
+      config: { provider: SECRET_REF_PROVIDER, reuseLease: false },
+    });
+    const secretId = await createApiKeySecret(companyId, "old-provider-api-key");
+    await secretService(db).createBinding({
+      companyId,
+      secretId,
+      targetType: "environment",
+      targetId: environment.id,
+      configPath: "apiKey",
+    });
+
+    const orphan = await environmentService(db).insertPendingCleanupLease({
+      companyId,
+      environmentId: environment.id,
+      provider: SECRET_REF_PROVIDER,
+      providerLeaseId: "secret-plugin-lease-delete-after",
+      metadata: {
+        provider: SECRET_REF_PROVIDER,
+        driver: "sandbox",
+        sandboxProviderPlugin: true,
+        pluginId,
+        pluginKey: SECRET_REF_PLUGIN_KEY,
+        apiKey: secretId,
+        reuseLease: false,
+      },
+      failureReason: "acquire_rejected_teardown_failed",
+    });
+    expect(orphan.environmentId).toBe(environment.id);
+
+    // Delete the environment. The foreign key sets the lease reference null, so
+    // the orphan survives and the current binding is gone.
+    await environmentService(db).remove(environment.id);
+    const survived = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, orphan.id))
+      .then((r) => r[0]!);
+    expect(survived.environmentId).toBeNull();
+
+    const { workerManager, destroyConfigs } = createDestroyRecordingWorkerManager(pluginId);
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const result = await runtimeWithPlugin.sweepPendingSandboxCleanups({ companyId });
+    expect(result).toMatchObject({ scanned: 1, cleaned: 1, failed: 0, skipped: 0 });
+    expect(destroyConfigs).toHaveLength(1);
+    expect(destroyConfigs[0]).toMatchObject({ apiKey: "old-provider-api-key" });
+
+    const cleaned = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, orphan.id))
+      .then((r) => r[0]!);
+    expect(cleaned.status).toBe("expired");
+    expect(cleaned.cleanupStatus).toBe("success");
+  });
+
+  it("tears down a secret-backed plugin orphan with the recorded credential after the provider is reconfigured", async () => {
+    // Ordering: the orphan is recorded for the old credential, then the
+    // environment is reconfigured to a new credential. The environment binding
+    // now points to a different secret at the same path. The teardown must
+    // resolve the OLD recorded ref, not the new binding, so it destroys the
+    // sandbox the old credential provisioned.
+    const pluginId = await registerSecretRefPluginProvider();
+    const { companyId, environment } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Secret Plugin Reconfigured",
+      config: { provider: SECRET_REF_PROVIDER, reuseLease: false },
+    });
+    const oldSecretId = await createApiKeySecret(companyId, "old-provider-api-key");
+
+    const orphan = await environmentService(db).insertPendingCleanupLease({
+      companyId,
+      environmentId: environment.id,
+      provider: SECRET_REF_PROVIDER,
+      providerLeaseId: "secret-plugin-lease-reconfigured",
+      metadata: {
+        provider: SECRET_REF_PROVIDER,
+        driver: "sandbox",
+        sandboxProviderPlugin: true,
+        pluginId,
+        pluginKey: SECRET_REF_PLUGIN_KEY,
+        apiKey: oldSecretId,
+        reuseLease: false,
+      },
+      failureReason: "acquire_rejected_teardown_failed",
+    });
+    expect(orphan.environmentId).toBe(environment.id);
+
+    // Reconfigure the environment: a new secret replaces the binding at the same
+    // path. The old recorded ref is no longer bound to the environment.
+    const newSecretId = await createApiKeySecret(companyId, "new-provider-api-key");
+    await secretService(db).createBinding({
+      companyId,
+      secretId: newSecretId,
+      targetType: "environment",
+      targetId: environment.id,
+      configPath: "apiKey",
+    });
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      config: { provider: SECRET_REF_PROVIDER, apiKey: newSecretId, reuseLease: false },
+    });
+
+    const { workerManager, destroyConfigs } = createDestroyRecordingWorkerManager(pluginId);
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const result = await runtimeWithPlugin.sweepPendingSandboxCleanups({ companyId });
+    expect(result).toMatchObject({ scanned: 1, cleaned: 1, failed: 0, skipped: 0 });
+    expect(destroyConfigs).toHaveLength(1);
+    // The teardown resolved the OLD recorded credential, not the new binding.
+    expect(destroyConfigs[0]).toMatchObject({ apiKey: "old-provider-api-key" });
+    expect(destroyConfigs[0]?.apiKey).not.toBe("new-provider-api-key");
+
+    const cleaned = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, orphan.id))
+      .then((r) => r[0]!);
+    expect(cleaned.status).toBe("expired");
+    expect(cleaned.cleanupStatus).toBe("success");
+
+    await environmentService(db).update(environment.id, { driver: "local", config: {} });
+  });
+
   it("retries the plugin teardown for a pending-cleanup orphan and marks it cleaned", async () => {
     const pluginId = randomUUID();
     const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();

@@ -698,6 +698,45 @@ export async function resolveEnvironmentDriverConfigForRuntime(
   return parsed;
 }
 
+/**
+ * Resolve the connection secrets of a recorded sandbox config for a durable
+ * orphan-sandbox teardown. The retry reads the recorded config from the durable
+ * `pending_cleanup` lease row, not from the current environment. So this
+ * resolver must not require the environment binding: a delete removed the
+ * environment, or a provider change replaced the binding. It resolves each
+ * schema-declared secret ref by id at the latest version through
+ * `resolveSecretValueForSandboxCleanup`, which authorizes the read from the
+ * durable orphan record and skips the binding check. The resolved values are
+ * used once for the teardown RPC and never persisted.
+ */
+export async function resolveSandboxCleanupConfigSecrets(
+  db: Db,
+  companyId: string,
+  config: SandboxEnvironmentConfig,
+  context?: { issueId?: string | null; heartbeatRunId?: string | null },
+): Promise<SandboxEnvironmentConfig> {
+  if (config.provider === "fake") return config;
+  const schema = await getSandboxProviderConfigSchema(db, config.provider);
+  const secrets = secretService(db);
+  let nextConfig = { ...config } as Record<string, unknown>;
+  for (const path of collectSecretRefPaths(schema)) {
+    const current = canonicalizeSecretRefValue(readConfigValueAtPath(nextConfig, path), path);
+    if (typeof current !== "string") continue;
+    const trimmed = current.trim();
+    if (!isUuidSecretRef(trimmed)) continue;
+    nextConfig = writeConfigValueAtPath(
+      nextConfig,
+      path,
+      await secrets.resolveSecretValueForSandboxCleanup(companyId, trimmed, "latest", {
+        configPath: path,
+        issueId: context?.issueId ?? null,
+        heartbeatRunId: context?.heartbeatRunId ?? null,
+      }),
+    );
+  }
+  return nextConfig as SandboxEnvironmentConfig;
+}
+
 export function readSshEnvironmentPrivateKeySecretId(
   environment: Pick<Environment, "driver" | "config">,
 ): string | null {

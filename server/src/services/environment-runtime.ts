@@ -33,6 +33,7 @@ import {
   collectEnvironmentSecretRefs,
   parseEnvironmentDriverConfig,
   resolveEnvironmentDriverConfigForRuntime,
+  resolveSandboxCleanupConfigSecrets,
   stripSandboxProviderEnvelope,
 } from "./environment-config.js";
 import {
@@ -1745,17 +1746,15 @@ function createSandboxEnvironmentDriver(
 
       // Build the config from the lease metadata under the orphan's company
       // scope, so the retry resolves the same connection secrets the failed
-      // acquire used. A synthetic environment stands in when a delete already
-      // removed the real one; it carries the recorded config, so secret and
-      // config resolution still succeed.
+      // acquire used. The recorded config is the sole source of truth here: a
+      // delete removed the environment, and a provider change re-points it, so
+      // the retry never reads the current environment config.
       const metadataConfig = sandboxConfigFromLeaseMetadataLoose(input.lease);
-      const environmentForTeardown: Pick<Environment, "id" | "driver" | "config"> = {
-        id: input.environment?.id ?? input.lease.environmentId ?? "",
-        driver: "sandbox",
-        // The recorded config wins over the current environment config, so a
-        // provider change never re-points the teardown.
-        config: (metadataConfig as Record<string, unknown> | null) ?? input.environment?.config ?? {},
-      };
+      if (!metadataConfig || metadataConfig.provider !== recordedProvider) {
+        throw new Error(
+          `Pending-cleanup lease "${input.lease.id}" has no recorded config for provider "${recordedProvider}".`,
+        );
+      }
 
       // Plugin-backed provider path. The Claude login runs on a plugin-backed
       // sandbox, so this path tears down the login orphan.
@@ -1771,11 +1770,16 @@ function createSandboxEnvironmentDriver(
             `Sandbox provider plugin for "${recordedProvider}" is ${pluginProvider.state}, so the cleanup teardown cannot run yet.`,
           );
         }
-        const config = await resolvePluginSandboxRuntimeConfig({
-          environment: environmentForTeardown,
-          lease: input.lease,
-          provider: recordedProvider,
-        });
+        // Resolve the recorded secret refs through the durable orphan record,
+        // not the environment binding. A delete removed the binding, or a
+        // provider change replaced it, so environment-bound resolution would
+        // reject the recorded API-key ref and strand the teardown forever.
+        const config = await resolveSandboxCleanupConfigSecrets(
+          db,
+          input.lease.companyId,
+          metadataConfig,
+          { issueId: input.lease.issueId, heartbeatRunId: input.lease.heartbeatRunId },
+        );
         const workerConfig = stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig);
         await pluginWorkerManager.call(
           pluginProvider.resolved.plugin.id,
@@ -1797,24 +1801,18 @@ function createSandboxEnvironmentDriver(
         return;
       }
 
-      // Built-in provider path. Resolve the built-in config from the recorded
-      // metadata so the teardown targets the recorded provider, not the current
-      // environment provider.
-      if (!metadataConfig || metadataConfig.provider !== recordedProvider) {
-        throw new Error(
-          `Pending-cleanup lease "${input.lease.id}" has no recorded config for provider "${recordedProvider}".`,
-        );
-      }
-      const parsed = await resolveEnvironmentDriverConfigForRuntime(db, input.lease.companyId, {
-        id: input.lease.environmentId ?? input.environment?.id ?? undefined,
-        driver: "sandbox",
-        config: sandboxConfigForLeaseMetadata(metadataConfig),
-      });
-      if (parsed.driver !== "sandbox") {
-        throw new Error(`Expected sandbox environment config for lease "${input.lease.id}".`);
-      }
+      // Built-in provider path. Resolve the recorded config secrets through the
+      // durable orphan record, not the environment binding, for the same reason
+      // as the plugin path above. The teardown targets the recorded provider,
+      // never the current environment provider.
+      const cleanupConfig = await resolveSandboxCleanupConfigSecrets(
+        db,
+        input.lease.companyId,
+        metadataConfig,
+        { issueId: input.lease.issueId, heartbeatRunId: input.lease.heartbeatRunId },
+      );
       await destroySandboxProviderLease({
-        config: parsed.config,
+        config: cleanupConfig,
         providerLeaseId: input.lease.providerLeaseId,
       });
     },
