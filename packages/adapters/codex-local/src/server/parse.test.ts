@@ -264,12 +264,12 @@ describe("isCodexTransientUpstreamError", () => {
     ).toBe(true);
   });
 
-  it("keeps model-specific usage limits transient and extracts the retry time", () => {
+  it("classifies timed model-specific usage limits as provider quota", () => {
     const errorMessage = "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at 11:31 PM.";
     const now = new Date(2026, 3, 22, 22, 29, 2);
 
-    expect(isCodexProviderQuotaError({ errorMessage })).toBe(false);
-    expect(isCodexTransientUpstreamError({ errorMessage })).toBe(true);
+    expect(isCodexProviderQuotaError({ errorMessage })).toBe(true);
+    expect(isCodexTransientUpstreamError({ errorMessage })).toBe(false);
     expect(extractCodexRetryNotBefore({ errorMessage }, now)?.getTime()).toBe(
       new Date(2026, 3, 22, 23, 31, 0, 0).getTime(),
     );
