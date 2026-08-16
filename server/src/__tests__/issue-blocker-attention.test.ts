@@ -298,6 +298,113 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     expect(parent?.blockerAttention?.sampleBlockerIdentifier).not.toBe("PBD-4");
   });
 
+  it("reports that a sampled blocker came from a child issue rather than blockedBy", async () => {
+    // Regression: an issue whose explicit blockers are all done, but which still
+    // has one open child, reported unresolvedBlockerCount 1 and sampled that
+    // child. The child never appears in `blockedBy`, so the two payloads read as
+    // a contradiction. The counts are correct — the payload must say which edge
+    // they came from.
+    const { companyId, agentId } = await createCompany("PBE");
+    const parentId = await insertIssue({ companyId, identifier: "PBE-1", title: "Delegating parent", status: "blocked" });
+    const doneBlockerOneId = await insertIssue({
+      companyId,
+      identifier: "PBE-2",
+      title: "Delegated work one",
+      status: "done",
+      parentId,
+      assigneeAgentId: agentId,
+    });
+    const doneBlockerTwoId = await insertIssue({
+      companyId,
+      identifier: "PBE-3",
+      title: "Delegated work two",
+      status: "done",
+      parentId,
+      assigneeAgentId: agentId,
+    });
+    await insertIssue({
+      companyId,
+      identifier: "PBE-4",
+      title: "Leftover child, not a blocker",
+      status: "todo",
+      parentId,
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: doneBlockerOneId, blockedIssueId: parentId });
+    await block({ companyId, blockerIssueId: doneBlockerTwoId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      unresolvedBlockerCount: 1,
+      dependencyBlockerCount: 0,
+      childBlockerCount: 1,
+      sampleBlockerIdentifier: "PBE-4",
+      sampleBlockerEdgeKind: "child",
+    });
+  });
+
+  it("reports a blocker that is both an open child and an explicit dependency as blocked_by", async () => {
+    const { companyId, agentId } = await createCompany("PBF");
+    const parentId = await insertIssue({ companyId, identifier: "PBF-1", title: "Parent", status: "blocked" });
+    const childBlockerId = await insertIssue({
+      companyId,
+      identifier: "PBF-2",
+      title: "Delegated child that also blocks",
+      status: "todo",
+      parentId,
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: childBlockerId, blockedIssueId: parentId });
+    await activeRun({ companyId, agentId, issueId: childBlockerId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      unresolvedBlockerCount: 1,
+      dependencyBlockerCount: 1,
+      childBlockerCount: 0,
+      sampleBlockerIdentifier: "PBF-2",
+      sampleBlockerEdgeKind: "blocked_by",
+    });
+  });
+
+  it("labels a sampled descendant with its own edge kind, not the top-level one", async () => {
+    // The sample can come from deeper in the chain than the counted top-level
+    // blockers. Reporting the root edge kind for it would claim a descendant is
+    // in `blockedBy` when it is not.
+    const { companyId, agentId } = await createCompany("PBG");
+    const parentId = await insertIssue({ companyId, identifier: "PBG-1", title: "Parent", status: "blocked" });
+    const dependencyId = await insertIssue({
+      companyId,
+      identifier: "PBG-2",
+      title: "Explicit dependency, itself blocked",
+      status: "blocked",
+    });
+    await insertIssue({
+      companyId,
+      identifier: "PBG-3",
+      title: "Open child of the dependency",
+      status: "todo",
+      parentId: dependencyId,
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: dependencyId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      unresolvedBlockerCount: 1,
+      dependencyBlockerCount: 1,
+      childBlockerCount: 0,
+      sampleBlockerIdentifier: "PBG-3",
+      sampleBlockerEdgeKind: "child",
+    });
+  });
+
   it("covers recursive blocker chains when the downstream leaf has active work", async () => {
     const { companyId, agentId } = await createCompany("PBR");
     const parentId = await insertIssue({ companyId, identifier: "PBR-1", title: "Parent", status: "blocked" });

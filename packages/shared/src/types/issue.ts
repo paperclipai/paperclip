@@ -396,6 +396,14 @@ export type IssueBlockerAttentionReason =
   | "attention_required"
   | null;
 
+/**
+ * How a counted blocker reaches the blocked issue. `blocked_by` is an explicit
+ * `blocks` relation and appears in the issue's `blockedBy` list. `child` is an
+ * open child issue, which the blocker graph also treats as a wait but which
+ * never appears in `blockedBy`.
+ */
+export type IssueBlockerAttentionEdgeKind = "blocked_by" | "child";
+
 export interface IssueBlockerAttention {
   state: IssueBlockerAttentionState;
   reason: IssueBlockerAttentionReason;
@@ -403,8 +411,19 @@ export interface IssueBlockerAttention {
   coveredBlockerCount: number;
   stalledBlockerCount: number;
   attentionBlockerCount: number;
+  /** Top-level blockers of this issue that come from an explicit `blocks` relation. */
+  dependencyBlockerCount?: number;
+  /** Top-level blockers of this issue that are open child issues rather than `blockedBy` entries. */
+  childBlockerCount?: number;
   pendingFinalizeBlockerIssueIds?: string[];
   sampleBlockerIdentifier: string | null;
+  /**
+   * The edge that reaches `sampleBlockerIdentifier`. The sample can sit deeper
+   * in the chain than the counted top-level blockers, so this describes the
+   * sampled issue's own incoming edge and does not have to agree with
+   * `dependencyBlockerCount` / `childBlockerCount`.
+   */
+  sampleBlockerEdgeKind?: IssueBlockerAttentionEdgeKind | null;
   sampleStalledBlockerIdentifier: string | null;
   /** True when a blocker or one of its open descendants is actively progressing. */
   blockingTreeLive?: boolean;
