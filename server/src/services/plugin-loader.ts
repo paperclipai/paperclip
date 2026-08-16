@@ -2287,10 +2287,23 @@ export function pluginLoader(
         proactiveCompanyScopes: configRows.map((row) => row.companyId),
       };
 
-      // Repo-local plugin installs can resolve workspace TS sources at runtime
-      // (for example @paperclipai/shared exports). Run those workers through
-      // the tsx loader so first-party example plugins work in development.
-      if (activePlugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
+      // The tsx loader is only needed for repo-local packages that may
+      // import workspace TypeScript sources (e.g. @paperclipai/shared)
+      // at runtime. Restricting it to packages inside this repo also fixes
+      // a Windows crash for external local-path plugin installs: with
+      // `--import <tsx-loader>`, Node's ESM loader receives the worker
+      // entry as a raw drive-letter path (e.g. `E:\plugins\dist\worker.js`)
+      // and fails with ERR_UNSUPPORTED_ESM_URL_SCHEME (protocol 'e:').
+      // External plugins ship prebuilt JS and do not need the tsx loader.
+      const PLUGIN_REPO_ROOT = path.resolve(__dirname, "../../..");
+      const resolvedPkgPath = activePlugin.packagePath
+        ? path.resolve(activePlugin.packagePath)
+        : null;
+      const isRepoLocalPlugin =
+        resolvedPkgPath !== null &&
+        (resolvedPkgPath === PLUGIN_REPO_ROOT ||
+          resolvedPkgPath.startsWith(PLUGIN_REPO_ROOT + path.sep));
+      if (isRepoLocalPlugin && existsSync(DEV_TSX_LOADER_PATH)) {
         workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
       }
 
