@@ -114,6 +114,37 @@ export function approvalService(db: Db) {
       return rows[0] ?? null;
     },
 
+    createIdempotent: async (
+      companyId: string,
+      data: Omit<typeof approvals.$inferInsert, "companyId">,
+    ): Promise<{ approval: typeof approvals.$inferSelect; created: boolean }> => {
+      if (data.idempotencyKey) {
+        const existing = await db
+          .select()
+          .from(approvals)
+          .where(and(eq(approvals.companyId, companyId), eq(approvals.idempotencyKey, data.idempotencyKey)))
+          .then((rows) => rows[0] ?? null);
+        if (existing) return { approval: existing, created: false };
+      }
+      const approval = await db
+        .insert(approvals)
+        .values({ ...data, companyId })
+        .onConflictDoNothing()
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (approval) return { approval, created: true };
+      // Race: another concurrent insert with the same idempotencyKey won
+      if (data.idempotencyKey) {
+        const winner = await db
+          .select()
+          .from(approvals)
+          .where(and(eq(approvals.companyId, companyId), eq(approvals.idempotencyKey, data.idempotencyKey)))
+          .then((rows) => rows[0] ?? null);
+        if (winner) return { approval: winner, created: false };
+      }
+      throw unprocessable("Failed to create approval due to a conflict");
+    },
+
     create: (companyId: string, data: Omit<typeof approvals.$inferInsert, "companyId">) =>
       db
         .insert(approvals)
