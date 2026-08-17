@@ -202,6 +202,41 @@ describe("claude sandbox hello probe diagnostics", () => {
     warnSpy.mockRestore();
   });
 
+  it("classifies an invalid or expired token as adapter_auth_missing without leaking the token", async () => {
+    // Grounded on the real Claude CLI output for CLAUDE_CODE_OAUTH_TOKEN=invalid.
+    // The probe exits non-zero and the result event reports a 401 authentication
+    // failure with an "Invalid bearer token" message. A synthetic bearer marker
+    // rides along on a retry line, so the test proves the raw text never reaches
+    // a check.
+    const marker = "SUPERSECRETbearerMARKERcli";
+    probeResult.value = {
+      exitCode: 1,
+      stdout: [
+        initLine,
+        `{"type":"system","subtype":"api_retry","attempt":1,"error_status":401,"error":"authentication_failed: bearer ${marker} is invalid","session_id":"abc"}`,
+        '{"type":"result","subtype":"success","is_error":true,"api_error_status":401,"error":"authentication_failed","result":"Failed to authenticate. API Error: 401 Invalid bearer token","session_id":"abc"}',
+      ].join("\n"),
+      stderr: "",
+    };
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "claude" },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    // An auth failure returns the canonical login gate code, so the user
+    // interface can offer login.
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_auth_required")).toBe(true);
+    expect(result.checks.some((check) => check.code === "adapter_auth_missing")).toBe(true);
+    // The raw probe text, including the bearer marker, never reaches a check.
+    expect(JSON.stringify(result.checks)).not.toContain(marker);
+    warnSpy.mockRestore();
+  });
+
   it("keeps an unexpected successful summary out of every check", async () => {
     // The probe exits 0 but does not return `hello`. The unexpected summary is
     // untrusted output. The check must not repeat its marker.

@@ -73,6 +73,18 @@ const helloStdout = [
   '{"type":"result","subtype":"success","is_error":false,"result":"hello","session_id":"abc"}',
 ].join("\n");
 
+// The real Claude CLI output for CLAUDE_CODE_OAUTH_TOKEN=invalid. The probe
+// exits non-zero and the result event reports a 401 authentication failure with
+// an "Invalid bearer token" message. A synthetic bearer marker rides along on a
+// retry line, so the test can prove the raw probe text never reaches a check.
+const invalidTokenMarker = "SUPERSECRETbearerMARKER";
+const invalidTokenStdout = [
+  initLine,
+  `{"type":"system","subtype":"api_retry","attempt":1,"error_status":401,"error":"authentication_failed: bearer ${invalidTokenMarker} is invalid","session_id":"abc"}`,
+  '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Failed to authenticate. API Error: 401 Invalid bearer token"}]},"session_id":"abc","error":"authentication_failed"}',
+  '{"type":"result","subtype":"success","is_error":true,"api_error_status":401,"error":"authentication_failed","result":"Failed to authenticate. API Error: 401 Invalid bearer token","session_id":"abc"}',
+].join("\n");
+
 afterEach(() => {
   vi.clearAllMocks();
   probeResult.value = { exitCode: 1, stdout: "", stderr: "", timedOut: false };
@@ -138,6 +150,23 @@ describe("probeClaudeAcpSandboxLogin", () => {
     // A missing-auth probe is a warning, not a failure, so the environment stays
     // testable and the user interface can offer login.
     expect(checks.every((check) => check.level === "warn")).toBe(true);
+  });
+
+  it("classifies an invalid or expired token as adapter_auth_missing without leaking the token", async () => {
+    probeResult.value = { exitCode: 1, stdout: invalidTokenStdout, stderr: "", timedOut: false };
+
+    const checks = await probeClaudeAcpSandboxLogin({
+      config: { engine: "acp" },
+      target: sandboxTarget,
+    });
+
+    // An auth failure returns the canonical login gate code, not the
+    // probe-could-not-run code.
+    expect(checks.some((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE)).toBe(true);
+    expect(checks.some((check) => check.code === "claude_hello_probe_auth_required")).toBe(true);
+    expect(checks.some((check) => check.code === "claude_acp_login_probe_unavailable")).toBe(false);
+    // The raw probe text, including the bearer marker, never reaches a check.
+    expect(JSON.stringify(checks)).not.toContain(invalidTokenMarker);
   });
 
   it("never renders an untrusted login URL with sensitive query or fragment text", async () => {

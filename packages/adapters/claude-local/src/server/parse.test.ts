@@ -33,6 +33,43 @@ describe("detectClaudeLoginRequired", () => {
       }).requiresLogin,
     ).toBe(false);
   });
+
+  it("classifies an invalid or expired OAuth bearer token as login required", () => {
+    // Grounded on the real Claude CLI output for CLAUDE_CODE_OAUTH_TOKEN=invalid:
+    // the result event carries a 401 authentication failure and an "Invalid
+    // bearer token" message. This is an auth failure, not a probe that could not
+    // run, so the detector must classify it as login required.
+    const parsed = {
+      is_error: true,
+      subtype: "success",
+      api_error_status: 401,
+      error: "authentication_failed",
+      result: "Failed to authenticate. API Error: 401 Invalid bearer token",
+    };
+    expect(
+      detectClaudeLoginRequired({
+        parsed,
+        stdout:
+          '{"type":"assistant","message":{"content":[{"type":"text","text":"Failed to authenticate. API Error: 401 Invalid bearer token"}]},"error":"authentication_failed"}',
+        stderr: "",
+      }).requiresLogin,
+    ).toBe(true);
+  });
+
+  it("does not route an invalid token to the transient or quota classifiers", () => {
+    // An auth failure must win over the transient and quota lanes, so a run
+    // surfaces login required instead of a retry.
+    const input = {
+      parsed: {
+        is_error: true,
+        result: "Failed to authenticate. API Error: 401 Invalid bearer token",
+      },
+      stdout: "",
+      stderr: "",
+    };
+    expect(isClaudeTransientUpstreamError(input)).toBe(false);
+    expect(isClaudeProviderQuotaError(input)).toBe(false);
+  });
 });
 
 describe("isClaudeModelNotFoundError", () => {
