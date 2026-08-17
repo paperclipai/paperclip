@@ -100,11 +100,17 @@ import type {
   PluginEnvironmentCaptureTemplateParams,
   PluginEnvironmentCancelInteractiveSetupParams,
   PluginEnvironmentDeleteTemplateParams,
+  PluginSetupTokenPtyOpenParams,
+  PluginSetupTokenPtyInputParams,
+  PluginSetupTokenPtyStopParams,
+  PluginSetupTokenPtyCloseParams,
   PluginInvocationContext,
   WorkerToHostMethodName,
   WorkerToHostMethods,
 } from "./protocol.js";
 import {
+  SETUP_TOKEN_PTY_OUTPUT_NOTIFICATION,
+  SETUP_TOKEN_PTY_EXIT_NOTIFICATION,
   JSONRPC_VERSION,
   JSONRPC_ERROR_CODES,
   PLUGIN_RPC_ERROR_CODES,
@@ -1366,6 +1372,30 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
+      setupTokenPty: {
+        output(workerSessionId: string, chunk: string): void {
+          // Forward one raw output chunk of a live login pseudo-terminal. The
+          // notification carries the worker session identifier, so the host binds
+          // the chunk to the open route by that identifier while the route is
+          // open. The host drops an unknown or a mismatched identifier and never
+          // logs the raw bytes. This notification carries no invocation id,
+          // because it fires after the open reply returns.
+          if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
+          if (typeof chunk !== "string" || chunk.length === 0) return;
+          notifyHost(SETUP_TOKEN_PTY_OUTPUT_NOTIFICATION, { workerSessionId, chunk });
+        },
+        exit(workerSessionId: string, exitCode: number | null): void {
+          // Forward the child exit of a live login pseudo-terminal. The host
+          // resolves the open route's wait promise by the worker session
+          // identifier while the route is open.
+          if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
+          notifyHost(SETUP_TOKEN_PTY_EXIT_NOTIFICATION, {
+            workerSessionId,
+            exitCode: typeof exitCode === "number" ? exitCode : null,
+          });
+        },
+      },
+
       tools: {
         register(
           name: string,
@@ -1582,6 +1612,18 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       case "environmentDeleteTemplate":
         return handleEnvironmentDeleteTemplate(params as PluginEnvironmentDeleteTemplateParams);
 
+      case "setupTokenPtyOpen":
+        return handleSetupTokenPtyOpen(params as PluginSetupTokenPtyOpenParams);
+
+      case "setupTokenPtyInput":
+        return handleSetupTokenPtyInput(params as PluginSetupTokenPtyInputParams);
+
+      case "setupTokenPtyStop":
+        return handleSetupTokenPtyStop(params as PluginSetupTokenPtyStopParams);
+
+      case "setupTokenPtyClose":
+        return handleSetupTokenPtyClose(params as PluginSetupTokenPtyCloseParams);
+
       default:
         throw Object.assign(
           new Error(`Unknown method: ${method}`),
@@ -1633,6 +1675,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onEnvironmentCaptureTemplate) supportedMethods.push("environmentCaptureTemplate");
     if (plugin.definition.onEnvironmentCancelInteractiveSetup) supportedMethods.push("environmentCancelInteractiveSetup");
     if (plugin.definition.onEnvironmentDeleteTemplate) supportedMethods.push("environmentDeleteTemplate");
+    if (plugin.definition.onSetupTokenPtyOpen) supportedMethods.push("setupTokenPtyOpen");
+    if (plugin.definition.onSetupTokenPtyInput) supportedMethods.push("setupTokenPtyInput");
+    if (plugin.definition.onSetupTokenPtyStop) supportedMethods.push("setupTokenPtyStop");
+    if (plugin.definition.onSetupTokenPtyClose) supportedMethods.push("setupTokenPtyClose");
 
     return { ok: true, supportedMethods };
   }
@@ -1979,6 +2025,34 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       throw methodNotImplemented("environmentDeleteTemplate");
     }
     return plugin.definition.onEnvironmentDeleteTemplate(params);
+  }
+
+  async function handleSetupTokenPtyOpen(params: PluginSetupTokenPtyOpenParams) {
+    if (!plugin.definition.onSetupTokenPtyOpen) {
+      throw methodNotImplemented("setupTokenPtyOpen");
+    }
+    return plugin.definition.onSetupTokenPtyOpen(params);
+  }
+
+  async function handleSetupTokenPtyInput(params: PluginSetupTokenPtyInputParams) {
+    if (!plugin.definition.onSetupTokenPtyInput) {
+      throw methodNotImplemented("setupTokenPtyInput");
+    }
+    return plugin.definition.onSetupTokenPtyInput(params);
+  }
+
+  async function handleSetupTokenPtyStop(params: PluginSetupTokenPtyStopParams) {
+    if (!plugin.definition.onSetupTokenPtyStop) {
+      throw methodNotImplemented("setupTokenPtyStop");
+    }
+    return plugin.definition.onSetupTokenPtyStop(params);
+  }
+
+  async function handleSetupTokenPtyClose(params: PluginSetupTokenPtyCloseParams) {
+    if (!plugin.definition.onSetupTokenPtyClose) {
+      throw methodNotImplemented("setupTokenPtyClose");
+    }
+    return plugin.definition.onSetupTokenPtyClose(params);
   }
 
   // -----------------------------------------------------------------------

@@ -66,7 +66,6 @@ describe("sandbox capability contract normalizer", () => {
     const narrowing = buildSandboxCapabilityNarrowing({
       leasePolicy: "ephemeral",
       leaseMetadata: { backend: "job" },
-      config: {},
     });
     const effective = resolveEffectiveSandboxCapabilities({
       verifiedMethods: ALL_PLUGIN_METHODS,
@@ -83,59 +82,44 @@ describe("sandbox capability contract normalizer", () => {
     const flaggedNarrowing = buildSandboxCapabilityNarrowing({
       leasePolicy: "ephemeral",
       leaseMetadata: { nativeFileSyncUnsupported: true },
-      config: {},
     });
     expect(flaggedNarrowing.nativeSyncIn).toBe(false);
     expect(flaggedNarrowing.nativeSyncOut).toBe(false);
   });
 
-  it("test_daytona_persistent_process_sessions_follows_use_sessions_config", () => {
+  it("test_persistent_process_sessions_follow_the_verified_and_declared_capability", () => {
+    // Session-output streaming now follows the capability snapshot alone, not a
+    // config flag. A provider that declares and verifies persistent process
+    // sessions keeps the capability when no narrowing removes it.
     const verifiedMethods = ["environmentExecute"];
     const declared = { persistentProcessSessions: true };
 
-    const sessionsOff = resolveEffectiveSandboxCapabilities({
-      verifiedMethods,
-      declared,
-      narrowing: buildSandboxCapabilityNarrowing({
-        leasePolicy: "ephemeral",
-        leaseMetadata: {},
-        config: { useSessions: false },
-      }),
-    });
-    expect(sessionsOff.persistentProcessSessions).toBe(false);
-
-    const sessionsOn = resolveEffectiveSandboxCapabilities({
-      verifiedMethods,
-      declared,
-      narrowing: buildSandboxCapabilityNarrowing({
-        leasePolicy: "ephemeral",
-        leaseMetadata: {},
-        config: { useSessions: true },
-      }),
-    });
-    expect(sessionsOn.persistentProcessSessions).toBe(true);
-
-    // A provider config that omits `useSessions` adds no narrowing here.
-    const noKey = buildSandboxCapabilityNarrowing({
+    const narrowing = buildSandboxCapabilityNarrowing({
       leasePolicy: "ephemeral",
       leaseMetadata: {},
-      config: {},
     });
-    expect(noKey.persistentProcessSessions).toBeUndefined();
+    // A normal lease adds no persistent-session narrowing.
+    expect(narrowing.persistentProcessSessions).toBeUndefined();
+
+    const effective = resolveEffectiveSandboxCapabilities({
+      verifiedMethods,
+      declared,
+      narrowing,
+    });
+    expect(effective.persistentProcessSessions).toBe(true);
   });
 
   it("test_config_resolution_failure_fails_closed_on_persistent_process_sessions", () => {
     const verifiedMethods = ["environmentExecute"];
     const declared = { persistentProcessSessions: true };
 
-    // Config resolution failed, so the runtime cannot read `useSessions`. The
-    // narrowing must deny persistent process sessions instead of allowing them
-    // through an empty config. Without the fail-closed guard this narrowing key
-    // stays undefined and `persistentProcessSessions` resolves to true.
+    // Config resolution failed, so the provider is untrusted. The narrowing must
+    // deny persistent process sessions instead of allowing them through. Without
+    // the fail-closed guard this narrowing key stays undefined and
+    // `persistentProcessSessions` resolves to true.
     const narrowing = buildSandboxCapabilityNarrowing({
       leasePolicy: "ephemeral",
       leaseMetadata: {},
-      config: {},
       configResolutionFailed: true,
     });
     expect(narrowing.persistentProcessSessions).toBe(false);
@@ -151,7 +135,6 @@ describe("sandbox capability contract normalizer", () => {
     const syncNarrowing = buildSandboxCapabilityNarrowing({
       leasePolicy: "reuse_by_environment",
       leaseMetadata: { backend: "job" },
-      config: {},
       configResolutionFailed: true,
     });
     expect(syncNarrowing.reusableLeases).toBe(true);
@@ -241,6 +224,72 @@ describe("sandbox capability contract normalizer", () => {
     expect(allReuseVerbs.reusableLeases).toBe(true);
   });
 
+  it("test_generic_one_shot_provider_does_not_get_session_output_streaming", () => {
+    // The regression: a generic one-shot provider (for example Modal) verifies
+    // `environmentExecute` and declares the two broad session capabilities, yet
+    // it never emits incremental session output. Both broad capabilities resolve
+    // true, but `incrementalSessionOutput` must stay false because the provider
+    // did not declare the opt-in behavior. The session-output streaming gate
+    // reads `incrementalSessionOutput`, so this provider keeps the poll path.
+    const effective = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["environmentExecute"],
+      declared: {
+        persistentProcessSessions: true,
+        independentControlCommands: true,
+      },
+    });
+
+    expect(effective.persistentProcessSessions).toBe(true);
+    expect(effective.independentControlCommands).toBe(true);
+    // Opt-in denied: the provider did not declare incremental session output.
+    expect(effective.incrementalSessionOutput).toBe(false);
+  });
+
+  it("test_incremental_session_output_is_opt_in_and_needs_a_declaration", () => {
+    // An absent declaration denies the opt-in capability even when the worker
+    // verifies the prerequisite verb. This differs from a worker-property
+    // capability, which defers to the verified baseline.
+    const undeclared = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["environmentExecute"],
+      declared: null,
+    });
+    expect(undeclared.incrementalSessionOutput).toBe(false);
+
+    // A provider that declares the capability and verifies the prerequisite gets
+    // the streaming path.
+    const declared = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["environmentExecute"],
+      declared: { incrementalSessionOutput: true },
+    });
+    expect(declared.incrementalSessionOutput).toBe(true);
+
+    // A declaration never grants the capability without the verified verb.
+    const declaredButUnverified = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: [],
+      declared: { incrementalSessionOutput: true },
+    });
+    expect(declaredButUnverified.incrementalSessionOutput).toBe(false);
+  });
+
+  it("test_config_resolution_failure_fails_closed_on_incremental_session_output", () => {
+    // Config resolution failed, so the provider is untrusted. The narrowing must
+    // deny incremental session output even with a positive declaration, so the
+    // session-output streaming gate fails closed to the poll path.
+    const narrowing = buildSandboxCapabilityNarrowing({
+      leasePolicy: "ephemeral",
+      leaseMetadata: {},
+      configResolutionFailed: true,
+    });
+    expect(narrowing.incrementalSessionOutput).toBe(false);
+
+    const effective = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["environmentExecute"],
+      declared: { incrementalSessionOutput: true },
+      narrowing,
+    });
+    expect(effective.incrementalSessionOutput).toBe(false);
+  });
+
   it("test_unknown_or_unavailable_verification_resolves_false", () => {
     const declaredAll = {
       reusableLeases: true,
@@ -248,6 +297,7 @@ describe("sandbox capability contract normalizer", () => {
       nativeSyncOut: true,
       persistentProcessSessions: true,
       independentControlCommands: true,
+      incrementalSessionOutput: true,
     };
 
     for (const verifiedMethods of [null, undefined, [] as string[]]) {

@@ -50,6 +50,7 @@ environmentDrivers: [
       nativeSyncOut: true,
       persistentProcessSessions: false,
       independentControlCommands: false,
+      incrementalSessionOutput: false,
     },
   },
 ]
@@ -61,8 +62,9 @@ states:
 - **Omitted** — the host defers to verified worker discovery. The capability is
   effective when the worker advertises the required methods and no narrowing
   removes it. Omission is the correct default for a provider that follows the
-  standard method contract. `reusableLeases` is the one exception: an omitted
-  `reusableLeases` key never grants reusable leases (see the next section).
+  standard method contract. `reusableLeases` and `incrementalSessionOutput` are
+  the two exceptions: an omitted key never grants either capability. Both are
+  opt-in (see the next two sections).
 - **`false`** — the host narrows the capability to off. The capability is never
   effective, even when the worker advertises the required methods.
 - **`true`** — the host still requires the verified prerequisites. A `true`
@@ -99,6 +101,25 @@ into `sandboxCapabilities.reusableLeases`.
 A manifest with legacy `true` and nested `false` therefore resolves to `false`.
 Prefer the nested `sandboxCapabilities.reusableLeases` in a new manifest.
 
+## Incremental session output needs an explicit opt-in
+
+Incremental session output is the second exception to the omission rule. The host
+selects the session-output streaming path only when the declaration sets
+`incrementalSessionOutput` to `true`. An omitted key resolves the capability to
+`false`, so the host keeps the output-file poll path.
+
+The reason is that this key is a behavioral guarantee, not a worker-method
+property. A generic one-shot provider can keep persistent process sessions and run
+independent control commands, yet it never emits incremental stdout and stderr
+from a live session. The two broad capabilities do not imply incremental output,
+so the host requires the provider to declare the behavior. A provider that streams
+incremental session output declares `sandboxCapabilities.incrementalSessionOutput:
+true`; every other provider omits the key and keeps the poll path.
+
+The opt-in never removes the prerequisites. The worker must still verify
+`environmentExecute`, and per-run narrowing still applies. A config-resolution
+failure narrows the capability to off (see [Failure behavior](#failure-behavior)).
+
 ## The capabilities and their worker-method prerequisites
 
 | Capability | Required worker methods | Meaning |
@@ -108,6 +129,7 @@ Prefer the nested `sandboxCapabilities.reusableLeases` in a new manifest.
 | `nativeSyncOut` | `environmentSyncOut` | The host transfers files out of the sandbox through the native outbound hook. |
 | `persistentProcessSessions` | `environmentExecute` | The provider keeps a persistent process session open across commands. |
 | `independentControlCommands` | `environmentExecute` | The provider runs a one-shot control command beside a long-lived command. |
+| `incrementalSessionOutput` | `environmentExecute` | The provider streams incremental stdout and stderr from a live session. Opt-in: an omitted key resolves `false`. |
 
 Reusable leases need all three lifecycle methods. The host resumes a lease with
 `environmentResumeLease`, ends it with `environmentReleaseLease`, and tears down a
@@ -131,18 +153,16 @@ this run cannot use.
   unable to run native file sync, disables native sync. The host narrows
   `nativeSyncIn` and `nativeSyncOut` to off and keeps the base64-over-exec
   fallback.
-- **`useSessions` provider config.** A session-based provider follows its
-  `useSessions` config value for `persistentProcessSessions`. Sessions default to
-  off. A config that omits the key adds no narrowing.
 
 ## Failure behavior
 
 The host fails closed on two failure states. It never grants a capability from an
 unknown state.
 
-- **Config-resolution failure.** When the host cannot resolve the provider
-  config, it cannot read `useSessions`. It narrows `persistentProcessSessions` to
-  off instead of allowing it through an empty config.
+- **Config-resolution failure.** A provider whose config the host cannot resolve
+  is untrusted. The host narrows `persistentProcessSessions` and
+  `incrementalSessionOutput` to off instead of allowing either through an empty
+  config.
 - **Exact-plugin identity failure.** A retained lease pins the exact plugin that
   acquired it. When that plugin is absent, or when it no longer declares this
   provider key with the `sandbox_provider` kind, the host cannot establish the

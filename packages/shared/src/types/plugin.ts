@@ -153,6 +153,16 @@ export interface SandboxProviderCapabilities {
   persistentProcessSessions?: boolean;
   /** Provider can run a control command that does not wait for the main command. */
   independentControlCommands?: boolean;
+  /**
+   * Provider streams incremental stdout and stderr from a persistent session
+   * while the command runs. This is an opt-in behavioral guarantee, not a worker
+   * method property: a generic one-shot provider can keep persistent sessions and
+   * run independent control commands yet never emit incremental session output.
+   * An omitted key denies the capability. Only a provider that declares this key
+   * `true` selects the session-output streaming path; every other provider keeps
+   * the output-file poll path.
+   */
+  incrementalSessionOutput?: boolean;
 }
 
 export interface PluginEnvironmentDriverDeclaration {
@@ -205,6 +215,13 @@ export interface PluginEnvironmentDriverDeclaration {
   templateIdentityPaths?: string[];
   /** Provider supports best-effort deletion/cleanup of captured templates. */
   supportsTemplateDelete?: boolean;
+  /**
+   * Provider can host the Claude setup-token login on a real pseudo-terminal.
+   * Only a provider with this flag exposes the setup-token pseudo-terminal
+   * methods. The setup-token login server and the login UI both gate on this
+   * flag, so a provider without it never starts a login.
+   */
+  supportsSetupTokenLogin?: boolean;
   /** JSON Schema describing the driver's provider-specific configuration. */
   configSchema: JsonSchema;
 }

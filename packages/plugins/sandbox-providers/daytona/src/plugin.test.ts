@@ -45,6 +45,7 @@ function createMockSandbox(overrides: {
   state?: string;
   recoverable?: boolean;
   workDir?: string;
+  autoDestroyAt?: string | null;
 } = {}) {
   return {
     id: overrides.id ?? "sandbox-123",
@@ -53,6 +54,9 @@ function createMockSandbox(overrides: {
     recoverable: overrides.recoverable ?? false,
     target: "us",
     errorReason: null,
+    // A configured provider TTL populates `autoDestroyAt` after `setTtl` +
+    // `refreshData`. The default mock leaves it unset (no TTL configured).
+    autoDestroyAt: overrides.autoDestroyAt ?? undefined,
     getWorkDir: vi.fn().mockResolvedValue(overrides.workDir ?? "/home/daytona"),
     getUserHomeDir: vi.fn().mockResolvedValue("/home/daytona"),
     start: vi.fn().mockResolvedValue(undefined),
@@ -65,6 +69,7 @@ function createMockSandbox(overrides: {
     resize: vi.fn().mockResolvedValue(undefined),
     delete: vi.fn().mockResolvedValue(undefined),
     archive: vi.fn().mockResolvedValue(undefined),
+    setTtl: vi.fn().mockResolvedValue(undefined),
     setAutoDeleteInterval: vi.fn().mockResolvedValue(undefined),
     createSshAccess: vi.fn().mockResolvedValue({
       token: "ssh-token-secret",
@@ -128,6 +133,9 @@ describe("Daytona sandbox provider plugin", () => {
       supportsTemplateCapture: true,
       templateRefKind: "snapshot",
       supportsTemplateDelete: true,
+      // Daytona streams incremental session output, so it declares the opt-in
+      // capability that selects the session-output streaming path.
+      sandboxCapabilities: { incrementalSessionOutput: true },
     });
   });
 
@@ -170,8 +178,6 @@ describe("Daytona sandbox provider plugin", () => {
         autoDeleteInterval: -1,
         reuseLease: true,
         archiveOnRelease: false,
-        useSessions: false,
-        useLogStream: false,
       },
     });
   });
@@ -341,6 +347,71 @@ describe("Daytona sandbox provider plugin", () => {
       "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
       300,
     );
+  });
+
+  it("does not configure a provider ttl when the acquire carries no requested expiry", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    mockCreate.mockResolvedValue(sandbox);
+
+    const lease = await plugin.definition.onEnvironmentAcquireLease?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      runId: "run-1",
+      config: { image: "node:20", timeoutMs: 300000, reuseLease: false },
+    });
+
+    // A generic caller keeps the current behavior: no provider ttl, no expiry.
+    expect(sandbox.setTtl).not.toHaveBeenCalled();
+    expect(lease?.expiresAt ?? null).toBeNull();
+  });
+
+  it("configures a provider ttl at or before the requested expiry and returns the provider expiry", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const autoDestroyAt = new Date(Date.now() + 30 * 60_000).toISOString();
+    const sandbox = createMockSandbox({ autoDestroyAt });
+    mockCreate.mockResolvedValue(sandbox);
+
+    const requestedExpiresAt = new Date(Date.now() + 30 * 60_000 + 30_000).toISOString();
+    const lease = await plugin.definition.onEnvironmentAcquireLease?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      runId: "run-1",
+      config: { image: "node:20", timeoutMs: 300000, reuseLease: false },
+      requestedExpiresAt,
+    });
+
+    // The provider ttl is rounded DOWN to whole minutes, so the destroy time
+    // never lands after the requested deadline.
+    expect(sandbox.setTtl).toHaveBeenCalledTimes(1);
+    expect(sandbox.setTtl).toHaveBeenCalledWith(30);
+    expect(sandbox.refreshData).toHaveBeenCalled();
+    // The lease carries the real provider destroy time as evidence of the bound.
+    expect(lease?.expiresAt).toBe(autoDestroyAt);
+  });
+
+  it("returns no expiry when the requested deadline is less than one minute away", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ autoDestroyAt: "must-not-be-read" });
+    mockCreate.mockResolvedValue(sandbox);
+
+    const requestedExpiresAt = new Date(Date.now() + 30_000).toISOString();
+    const lease = await plugin.definition.onEnvironmentAcquireLease?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      runId: "run-1",
+      config: { image: "node:20", timeoutMs: 300000, reuseLease: false },
+      requestedExpiresAt,
+    });
+
+    // Daytona ttl granularity is one minute, so a nearer deadline maps to no
+    // valid provider ttl. The provider grants no expiry and the server fails
+    // closed on the null expiry.
+    expect(sandbox.setTtl).not.toHaveBeenCalled();
+    expect(lease?.expiresAt ?? null).toBeNull();
   });
 
   it("starts an interactive setup sandbox with redacted metadata and one-time SSH payload", async () => {
@@ -1125,7 +1196,7 @@ describe("Daytona sandbox provider plugin", () => {
       driverKey: "daytona" as const,
       companyId: "company-1",
       environmentId: "env-1",
-      config: { timeoutMs: 300000, reuseLease: false, useSessions: true },
+      config: { timeoutMs: 300000, reuseLease: false },
       lease: { providerLeaseId: "sandbox-123", metadata: {} },
       command: "printf",
       args: ["hello"],
@@ -1179,23 +1250,10 @@ describe("Daytona sandbox provider plugin", () => {
         companyId: "company-1",
         environmentId: "env-1",
         providerLeaseId: "sandbox-123",
-        config: { timeoutMs: 300000, reuseLease: false, useSessions: true },
+        config: { timeoutMs: 300000, reuseLease: false },
       });
       expect(sandbox.process.deleteSession).toHaveBeenCalledTimes(1);
       expect(sandbox.process.deleteSession).toHaveBeenCalledWith(sessionId);
-    });
-
-    it("opens no session when the session model is off", async () => {
-      process.env.DAYTONA_API_KEY = "host-key";
-      const sandbox = createMockSandbox();
-      mockGet.mockResolvedValue(sandbox);
-
-      await plugin.definition.onEnvironmentExecute?.(
-        sessionExecParams({ config: { timeoutMs: 300000, reuseLease: false } }),
-      );
-
-      expect(sandbox.process.createSession).not.toHaveBeenCalled();
-      expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
     });
 
     it("runs a bypassSession command one-shot and leaves the session closed", async () => {
@@ -1246,7 +1304,7 @@ describe("Daytona sandbox provider plugin", () => {
         companyId: "company-1",
         environmentId: "env-1",
         providerLeaseId: "sandbox-123",
-        config: { timeoutMs: 300000, reuseLease: false, useSessions: true },
+        config: { timeoutMs: 300000, reuseLease: false },
       });
 
       expect(sandbox.process.deleteSession).toHaveBeenCalledWith(sessionId);
@@ -1267,7 +1325,7 @@ describe("Daytona sandbox provider plugin", () => {
           companyId: "company-1",
           environmentId: "env-1",
           providerLeaseId: "sandbox-123",
-          config: { timeoutMs: 300000, reuseLease: false, useSessions: true },
+          config: { timeoutMs: 300000, reuseLease: false },
         }),
       ).rejects.toThrow(/delete failed/);
 
@@ -1287,7 +1345,7 @@ describe("Daytona sandbox provider plugin", () => {
         companyId: "company-1",
         environmentId: "env-1",
         providerLeaseId: "sandbox-123",
-        config: { timeoutMs: 300000, reuseLease: false, useSessions: true },
+        config: { timeoutMs: 300000, reuseLease: false },
       });
 
       expect(sandbox.process.deleteSession).toHaveBeenCalledWith(sessionId);
@@ -1308,7 +1366,7 @@ describe("Daytona sandbox provider plugin", () => {
         companyId: "company-1",
         environmentId: "env-1",
         providerLeaseId: "sandbox-123",
-        config: { timeoutMs: 300000, reuseLease: false, useSessions: true },
+        config: { timeoutMs: 300000, reuseLease: false },
       });
 
       expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(sessionId));
@@ -1325,7 +1383,7 @@ describe("Daytona sandbox provider plugin", () => {
         companyId: "company-1",
         environmentId: "env-1",
         providerLeaseId: "sandbox-123",
-        config: { timeoutMs: 300000, reuseLease: true, useSessions: true },
+        config: { timeoutMs: 300000, reuseLease: true },
       };
 
       await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
@@ -1352,7 +1410,7 @@ describe("Daytona sandbox provider plugin", () => {
         companyId: "company-1",
         environmentId: "env-1",
         providerLeaseId: "sandbox-123",
-        config: { timeoutMs: 300000, reuseLease: false, useSessions: true },
+        config: { timeoutMs: 300000, reuseLease: false },
         leaseMetadata: {
           remoteCwd: "/home/daytona/paperclip-workspace",
           workspaceSentinel: {
@@ -1383,7 +1441,7 @@ describe("Daytona sandbox provider plugin", () => {
         companyId: "company-1",
         environmentId: "env-1",
         providerLeaseId: "sandbox-123",
-        config: { timeoutMs: 300000, reuseLease: false, useSessions: true },
+        config: { timeoutMs: 300000, reuseLease: false },
         leaseMetadata: {
           remoteCwd: "/home/daytona/paperclip-workspace",
           workspaceSentinel: {
@@ -1403,7 +1461,7 @@ describe("Daytona sandbox provider plugin", () => {
         companyId: "company-1",
         environmentId: "env-1",
         providerLeaseId: "sandbox-123",
-        config: { timeoutMs: 300000, reuseLease: false, useSessions: true },
+        config: { timeoutMs: 300000, reuseLease: false },
       });
       expect(sandbox.process.deleteSession).toHaveBeenCalledTimes(1);
       expect(sandbox.process.deleteSession).toHaveBeenCalledWith(sessionId);
@@ -1427,7 +1485,7 @@ describe("Daytona sandbox provider plugin", () => {
           companyId: "company-1",
           environmentId: "env-1",
           providerLeaseId: "sandbox-123",
-          config: { timeoutMs: 300000, reuseLease: false, useSessions: true },
+          config: { timeoutMs: 300000, reuseLease: false },
         });
         const teardown = spans.find((span) => span.name === "session.close");
         expect(teardown).toBeDefined();
@@ -1462,7 +1520,19 @@ describe("Daytona sandbox provider plugin", () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox();
       sandbox.process.getSessionCommand.mockResolvedValue({ id: "cmd-1", command: "", exitCode: 7 });
-      sandbox.process.getSessionCommandLogs.mockResolvedValue({ stdout: "out-here", stderr: "err-here" });
+      // A session command tries the log stream first: it delivers stdout and
+      // stderr from the callback log form.
+      sandbox.process.getSessionCommandLogs.mockImplementation(
+        async (
+          _sid: string,
+          _cmdId: string,
+          onStdout?: (chunk: string) => void,
+          onStderr?: (chunk: string) => void,
+        ) => {
+          onStdout?.("out-here");
+          onStderr?.("err-here");
+        },
+      );
       mockGet.mockResolvedValue(sandbox);
 
       const result = await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
@@ -1483,7 +1553,7 @@ describe("Daytona sandbox provider plugin", () => {
       // The session command runs plain: no bwrap wrapper and no su privilege drop.
       expect(req.command).not.toContain("sudo -n bwrap");
       expect(req.command).not.toContain("su -s /bin/sh");
-      // True separated streams come from the logs endpoint.
+      // True separated streams come from the callback log stream.
       expect(result).toMatchObject({ exitCode: 7, timedOut: false, stdout: "out-here", stderr: "err-here" });
       expect(typeof (result!.metadata as Record<string, unknown>)?.durationMs).toBe("number");
     });
@@ -1522,10 +1592,20 @@ describe("Daytona sandbox provider plugin", () => {
       expect(firstSid).toBe(secondSid);
     });
 
-    it("returns a session timeout when the command never reports an exit code", async () => {
+    it("returns a session timeout on the poll fallback when the command never reports an exit code", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox();
-      // The command stays running: the exit code never arrives.
+      // The log stream fails, so the dispatch falls back to the poll path. The
+      // command stays running there: the exit code never arrives, so the poll
+      // deadline fires.
+      sandbox.process.getSessionCommandLogs.mockImplementation(
+        async (_sid: string, _cmdId: string, onStdout?: (chunk: string) => void) => {
+          if (onStdout) {
+            throw new Error("socket error");
+          }
+          return { stdout: "", stderr: "" };
+        },
+      );
       sandbox.process.getSessionCommand.mockResolvedValue({ id: "cmd-1", command: "", exitCode: undefined });
       mockGet.mockResolvedValue(sandbox);
 
@@ -1537,14 +1617,12 @@ describe("Daytona sandbox provider plugin", () => {
       expect(result!.stderr).toMatch(/timed out/);
     });
 
-    describe("log stream (useLogStream)", () => {
-      // A session exec params helper with the log-stream flag on. It streams
-      // stdout and stderr from the callback log form instead of the 50-ms poll.
+    describe("log stream (default)", () => {
+      // A session command tries the log stream first. It streams stdout and
+      // stderr from the callback log form instead of the 50-ms poll, and falls
+      // back to the poll only when the stream fails.
       const streamExecParams = (overrides: Record<string, unknown> = {}) =>
-        sessionExecParams({
-          config: { timeoutMs: 300000, reuseLease: false, useSessions: true, useLogStream: true },
-          ...overrides,
-        });
+        sessionExecParams(overrides);
 
       it("streams ordered stdout and stderr from the callback log form (test_log_stream_delivers_ordered_chunks)", async () => {
         process.env.DAYTONA_API_KEY = "host-key";
@@ -1738,6 +1816,7 @@ describe("Daytona sandbox provider plugin", () => {
         timeoutMs: 300000,
         reuseLease: false,
       },
+      bypassSession: true,
       lease: { providerLeaseId: "sandbox-123", metadata: {} },
       command: "printf",
       args: ["hello"],
@@ -1791,6 +1870,7 @@ describe("Daytona sandbox provider plugin", () => {
         companyId: "company-1",
         environmentId: "env-1",
         config: { timeoutMs: 300000, reuseLease: false },
+        bypassSession: true,
         lease: { providerLeaseId: "sandbox-123", metadata: {} },
         command: "printf",
         args: ["hello"],
@@ -1819,6 +1899,7 @@ describe("Daytona sandbox provider plugin", () => {
       companyId: "company-1",
       environmentId: "env-1",
       config: { timeoutMs: 300000, reuseLease: false },
+      bypassSession: true,
       lease: { providerLeaseId: "sandbox-123", metadata: {} },
       command: "printf",
       args: ["hello"],
@@ -1852,6 +1933,7 @@ describe("Daytona sandbox provider plugin", () => {
         timeoutMs: 300000,
         reuseLease: false,
       },
+      bypassSession: true,
       lease: { providerLeaseId: "sandbox-123", metadata: {} },
       command: "cat",
       args: [],
@@ -1888,6 +1970,7 @@ describe("Daytona sandbox provider plugin", () => {
       companyId: "company-1",
       environmentId: "env-1",
       config: { timeoutMs: 300000, reuseLease: false },
+      bypassSession: true,
       lease: { providerLeaseId: "sandbox-123", metadata: { remoteCwd: "/home/daytona/paperclip-workspace" } },
       command: "printf",
       args: ["hello"],
@@ -1914,6 +1997,7 @@ describe("Daytona sandbox provider plugin", () => {
         timeoutMs: 300000,
         reuseLease: false,
       },
+      bypassSession: true,
       lease: { providerLeaseId: "sandbox-123", metadata: {} },
       command: "printf",
       args: ["hello"],
@@ -1946,6 +2030,7 @@ describe("Daytona sandbox provider plugin", () => {
           timeoutMs: 300000,
           reuseLease: false,
         },
+        bypassSession: true,
         lease: { providerLeaseId: "sandbox-123", metadata: {} },
         command: "sleep",
         args: ["60"],
@@ -1978,6 +2063,7 @@ describe("Daytona sandbox provider plugin", () => {
       companyId: "company-1",
       environmentId: "env-1",
       config: { timeoutMs: 300000, reuseLease: false },
+      bypassSession: true,
       lease: { providerLeaseId: "sandbox-123", metadata: {} },
       command: "git",
       args: ["status"],
@@ -2003,6 +2089,7 @@ describe("Daytona sandbox provider plugin", () => {
       companyId: "company-1",
       environmentId: "env-1",
       config: { timeoutMs: 300000, reuseLease: false },
+      bypassSession: true,
       lease: { providerLeaseId: "sandbox-123", metadata: {} },
       command: "git",
       args: ["push", "origin", "HEAD"],
@@ -2036,6 +2123,7 @@ describe("Daytona sandbox provider plugin", () => {
       companyId: "company-1",
       environmentId: "env-1",
       config: { timeoutMs: 300000, reuseLease: false },
+      bypassSession: true,
       lease: { providerLeaseId: "sandbox-123", metadata: {} },
       command: "base64",
       args: ["-d"],
@@ -2070,6 +2158,7 @@ describe("Daytona sandbox provider plugin", () => {
       companyId: "company-1",
       environmentId: "env-1",
       config: { timeoutMs: 300000, reuseLease: false },
+      bypassSession: true,
       lease: { providerLeaseId: "sandbox-123", metadata: {} },
       command: "node",
       args: ["--version"],
@@ -2101,6 +2190,7 @@ describe("Daytona sandbox provider plugin", () => {
         companyId: overrides.companyId ?? "company-1",
         environmentId: overrides.environmentId ?? "env-1",
         config: { timeoutMs: 300000, reuseLease: false },
+        bypassSession: true,
         lease: { providerLeaseId, metadata: {} },
         command: "printf",
         args: ["hi"],

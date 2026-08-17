@@ -1747,12 +1747,17 @@ async function buildRuntime(input: {
     Boolean(executionTarget.runner) &&
     Boolean(agentCommandShell);
   // Stream the agent output through the persistent session log stream instead of
-  // the host output-file poll. Default OFF; an operator opts a sandbox
-  // environment in through the environment config.
+  // the host output-file poll. The decision comes from the effective capability
+  // snapshot alone: the provider must declare and verify incremental session
+  // output. `incrementalSessionOutput` is an opt-in capability, so a generic
+  // one-shot provider that keeps persistent process sessions and runs independent
+  // control commands, yet never emits incremental session output, keeps the poll
+  // path. The snapshot resolves this key false when it is absent, undeclared, or
+  // capability resolution failed, so this fails closed to the poll path.
   const streamAgentSessionOutput =
     executionTarget?.kind === "remote" &&
     executionTarget.transport === "sandbox" &&
-    executionTarget.streamAgentSessionOutput === true;
+    executionTarget.effectiveCapabilities?.incrementalSessionOutput === true;
   // The ACP `session/new` cwd and every cwd-keyed session-state site
   // (fingerprint, compat, persist, ensureSession, error) bind to THIS single
   // value so a warm/resumable session created with the in-sandbox cwd is reused

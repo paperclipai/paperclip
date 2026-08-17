@@ -102,6 +102,7 @@ export interface EffectiveSandboxCapabilities {
   readonly nativeSyncOut: boolean;
   readonly persistentProcessSessions: boolean;
   readonly independentControlCommands: boolean;
+  readonly incrementalSessionOutput: boolean;
 }
 
 export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWorkspaceMetadata {
@@ -127,13 +128,6 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
    * set to `false` to explicitly opt out back to batch-at-end delivery.
    */
   streamRunLogs?: boolean | null;
-  /**
-   * Stream the interactive ACP agent output through the persistent session log
-   * stream instead of the host-side output-file poll. The process session
-   * bridge runs the agent as one long-lived session command and reads its
-   * output frames from the stream. Default OFF: the bridge keeps the poll path.
-   */
-  streamAgentSessionOutput?: boolean | null;
 }
 
 export type AdapterExecutionTarget =
@@ -247,6 +241,7 @@ function parseEffectiveSandboxCapabilities(value: unknown): EffectiveSandboxCapa
     nativeSyncOut: parsed.nativeSyncOut === true,
     persistentProcessSessions: parsed.persistentProcessSessions === true,
     independentControlCommands: parsed.independentControlCommands === true,
+    incrementalSessionOutput: parsed.incrementalSessionOutput === true,
   };
 }
 

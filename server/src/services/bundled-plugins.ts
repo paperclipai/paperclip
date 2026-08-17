@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
+import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 
 /**
  * Bundled plugin auto-provisioning.
@@ -190,16 +191,23 @@ interface RegistryPluginRow {
   id: string;
   pluginKey: string;
   status: string;
+  version: string;
+  manifestJson: PaperclipPluginManifestV1;
 }
 
 export interface BundledPluginProvisionerDeps {
   registry: {
     getByKey(pluginKey: string): Promise<RegistryPluginRow | null>;
+    update(
+      id: string,
+      data: { version?: string; manifest?: PaperclipPluginManifestV1 },
+    ): Promise<unknown>;
   };
   loader: {
     installPlugin(options: { localPath: string }): Promise<{
       manifest: { id: string } | null;
     }>;
+    loadManifest(packagePath: string): Promise<PaperclipPluginManifestV1 | null>;
   };
   lifecycle: {
     load(pluginId: string): Promise<unknown>;
@@ -217,6 +225,49 @@ function defaultBundleManifestExists(localPath: string): boolean {
 }
 
 /**
+ * Reconcile a present bundled plugin's persisted manifest with the shipped
+ * bundle. The bundle is part of the release image, so its manifest is the
+ * source of truth. When the bundle declares a version that differs from the
+ * persisted version, update the stored manifest and version. This propagates
+ * a manifest change (for example a new driver capability) to an existing
+ * install that the auto-install path skips.
+ *
+ * The step is fail-safe. A missing bundle, a manifest read error, or a
+ * database error is caught, logged, and swallowed, so boot always completes.
+ * The step updates only the stored manifest row; it never restarts the worker.
+ */
+async function reconcileBundledPluginManifest(
+  existing: RegistryPluginRow,
+  install: ResolvedBundledPlugin,
+  deps: BundledPluginProvisionerDeps,
+  bundleManifestExists: (localPath: string) => boolean,
+): Promise<void> {
+  try {
+    if (!bundleManifestExists(install.localPath)) return;
+    const bundleManifest = await deps.loader.loadManifest(install.localPath);
+    if (!bundleManifest) return;
+    if (bundleManifest.version === existing.version) return;
+    await deps.registry.update(existing.id, {
+      version: bundleManifest.version,
+      manifest: bundleManifest,
+    });
+    deps.logger.info(
+      {
+        pluginKey: install.pluginKey,
+        fromVersion: existing.version,
+        toVersion: bundleManifest.version,
+      },
+      "reconciled bundled plugin manifest to the shipped bundle version",
+    );
+  } catch (err) {
+    deps.logger.error(
+      { err, pluginKey: install.pluginKey },
+      "Failed to reconcile bundled plugin manifest; continuing boot with the stored manifest",
+    );
+  }
+}
+
+/**
  * Ensure each resolved bundled plugin is installed and loaded.
  *
  * Same mechanism the kubernetes bundle has always used: in-process
@@ -226,7 +277,9 @@ function defaultBundleManifestExists(localPath: string): boolean {
  *
  * Skip semantics:
  * - A plugin present in any non-uninstalled state is skipped, so an
- *   operator-disabled plugin is not silently re-enabled on reboot.
+ *   operator-disabled plugin is not silently re-enabled on reboot. Before the
+ *   skip, the persisted manifest is reconciled to the shipped bundle version
+ *   (see `reconcileBundledPluginManifest`).
  * - A soft-uninstalled plugin is reinstalled only when
  *   `reinstallUninstalled` is set (managed mode, where the control plane
  *   owns provisioning). Self-hosted keeps the pre-refactor behavior of
@@ -242,6 +295,14 @@ export async function ensureBundledPlugins(
     try {
       const existing = await deps.registry.getByKey(install.pluginKey);
       if (existing && (existing.status !== "uninstalled" || !opts.reinstallUninstalled)) {
+        // The bundle ships with the release image, so its manifest is the
+        // source of truth for a present plugin. Reconcile the persisted
+        // manifest when the shipped bundle declares a newer version. Without
+        // this step a manifest capability added to a bundle never reaches an
+        // existing install, because the auto-install below skips a present
+        // plugin. The reconcile updates only the stored manifest row; the
+        // running worker already runs the shipped code.
+        await reconcileBundledPluginManifest(existing, install, deps, bundleManifestExists);
         deps.logger.info(
           { pluginKey: install.pluginKey, status: existing.status },
           "bundled plugin already present; skipping auto-install",

@@ -2008,6 +2008,35 @@ export interface PluginExecutionClient {
   log(stream: "stdout" | "stderr", chunk: string): void;
 }
 
+/**
+ * `ctx.setupTokenPty` — stream one live login pseudo-terminal's output and exit
+ * from a sandbox provider worker to the host.
+ *
+ * The worker opener registers the output listener on the session and forwards
+ * each raw chunk through `output(workerSessionId, chunk)`. It forwards the child
+ * exit through `exit(workerSessionId, exitCode)`. Each call carries the worker
+ * session identifier the open reply returned, so the host binds the output to
+ * the open route by that identifier while the route is open. The host drops a
+ * chunk or an exit that carries an unknown or a mismatched identifier, and it
+ * never logs the raw bytes. The default is a no-op that never throws.
+ */
+export interface PluginSetupTokenPtyClient {
+  /**
+   * Deliver one raw output chunk of a live login pseudo-terminal.
+   *
+   * @param workerSessionId - The worker session identifier the open reply returned.
+   * @param chunk - The raw terminal output text.
+   */
+  output(workerSessionId: string, chunk: string): void;
+  /**
+   * Deliver the child exit of a live login pseudo-terminal.
+   *
+   * @param workerSessionId - The worker session identifier the open reply returned.
+   * @param exitCode - The child exit code, or null when the child ended with no code.
+   */
+  exit(workerSessionId: string, exitCode: number | null): void;
+}
+
 // ---------------------------------------------------------------------------
 // Full plugin context
 // ---------------------------------------------------------------------------
@@ -2122,6 +2151,11 @@ export interface PluginContext {
    * host runner log sink. The default is a no-op for a provider that does not
    * stream. */
   execution: PluginExecutionClient;
+
+  /** Stream one live login pseudo-terminal's output and exit to the host.
+   * The default is a no-op for a provider that opens no login
+   * pseudo-terminal. */
+  setupTokenPty: PluginSetupTokenPtyClient;
 
   /** Register agent tool handlers. Requires `agent.tools.register`. */
   tools: PluginToolsClient;

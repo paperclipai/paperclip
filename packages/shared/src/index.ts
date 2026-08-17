@@ -816,6 +816,14 @@ export type {
   AdapterAuthSessionPrompt,
   AdapterAuthSessionOwnerResponse,
   StartAdapterAuthSessionRequest,
+  AdapterAuthPanelMode,
+  ClaudeSetupTokenSessionPrompt,
+  ClaudeSetupTokenSessionResponse,
+  ClaudeSetupTokenSessionOwnerResponse,
+  SubmitBrowserCodeRequest,
+  ClaudeSetupTokenCompletionResponse,
+  SetupTokenTransportAdvisory,
+  SetupTokenTransportAdvisoryCode,
   AssetImage,
   Project,
   ProjectBudgetSummary,
@@ -1438,6 +1446,8 @@ export {
 export {
   ADAPTER_AUTH_SESSION_STATUSES,
   ADAPTER_AUTH_SESSION_INTERNAL_STATUSES,
+  ADAPTER_AUTH_PANEL_MODES,
+  SETUP_TOKEN_TRANSPORT_ADVISORY_CODE,
 } from "./types/index.js";
 export {
   ADAPTER_AUTH_SESSION_ACTIVE_STATUSES,
@@ -1453,6 +1463,27 @@ export {
   adapterAuthSessionOwnerResponseSchema,
   startAdapterAuthSessionRequestSchema,
 } from "./validators/adapter-auth-session.js";
+export {
+  startClaudeSetupTokenSessionRequestSchema,
+  adapterAuthPanelModeSchema,
+  claudeSetupTokenSessionResponseSchema,
+  claudeSetupTokenSessionPromptSchema,
+  claudeSetupTokenSessionOwnerResponseSchema,
+  setupTokenTransportAdvisorySchema,
+  submitBrowserCodeRequestSchema,
+  browserCodeSchema,
+  isValidBrowserCode,
+  BROWSER_CODE_MAX_LENGTH,
+  BROWSER_CODE_DISALLOWED_CHAR,
+  storedSessionIdSchema,
+  claudeSetupTokenCompletionResponseSchema,
+  claudeSetupTokenOverwriteSchema,
+  claudeOAuthTokenStatusResponseSchema,
+  type StartClaudeSetupTokenSessionRequest,
+  type ClaudeSetupTokenOverwrite,
+  type ClaudeOAuthTokenStatusResponse,
+  type BrowserCode,
+} from "./validators/claude-setup-token-session.js";
 export {
   ISSUE_REFERENCE_IDENTIFIER_RE,
   buildIssueReferenceHref,

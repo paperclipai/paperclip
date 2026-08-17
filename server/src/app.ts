@@ -31,6 +31,15 @@ import { statusCardRoutes } from "./routes/status-cards.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
 import type { SetupTokenSessionService } from "./services/setup-token-session.js";
+import {
+  buildSetupTokenLoginTransport,
+  createProductionSetupTokenSandboxProvider,
+  createProductionSetupTokenCleanupStore,
+  createSetupTokenSecretWriter,
+  createWorkerBoundSetupTokenPtyOpener,
+} from "./services/setup-token-transport-binding.js";
+import { environmentService } from "./services/environments.js";
+import { environmentRuntimeService } from "./services/environment-runtime.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
@@ -426,18 +435,52 @@ export async function createApp(
     .split(",")
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
-  // The production server does not bind `setupTokenLogin` yet, so the start route
-  // fails closed with a fixed no-secret 503 and the login never spawns a process
-  // or holds a lease. This is a deliberate staged rollout: the live transport
-  // needs a real sandbox-lease manager, a live pseudo-terminal factory over the
-  // sandbox provider, and a durable cleanup store (the in-router default store is
-  // in-memory only). Each of those is a separate follow-up that goes through its
-  // own security review before the production server binds `setupTokenLogin`.
+  // Bind the production setup-token login transport. It carries the live lease
+  // manager, the login-process factory over the sandbox pseudo-terminal, and the
+  // durable cleanup store. The factory passes only the fixed command
+  // `CLAUDE_SETUP_TOKEN_COMMAND`; it never reads a command from a
+  // route, a request body, or an adapter configuration. The durable store and the
+  // startup reaper are live now, so a restart reaps a leftover lease.
+  //
+  // The live sandbox pseudo-terminal opener binds inside the sandbox provider
+  // worker, so the server process does not hold the raw sandbox process. The
+  // opener drives the worker through the plugin worker manager route gate.
+  // The manager mints a host-owned route identifier, permits one
+  // active credential pseudo-terminal per worker, binds the worker session
+  // identifier one time for output only, and terminalizes the route on every open
+  // failure path. With the opener supplied, the provider acquires a lease and the
+  // start route drives a live login instead of the fixed 503.
+  const setupTokenLoginTransport = buildSetupTokenLoginTransport({
+    sandbox: createProductionSetupTokenSandboxProvider({
+      environments: environmentService(db),
+      environmentRuntime: environmentRuntimeService(db, { pluginWorkerManager: workerManager }),
+      openLivePtySession: createWorkerBoundSetupTokenPtyOpener({
+        workerManager,
+        environments: environmentService(db),
+        log: (line) => logger.info(line),
+      }),
+      log: (line) => logger.info(line),
+    }),
+    store: createProductionSetupTokenCleanupStore(db),
+    // Bind the atomic credential-claim writer, so a completed login transitions
+    // the durable row to `stored` and stores the minted token in one control-plane
+    // transaction. The writer reads the company and the owner only from the
+    // immutable session scope. The confirm-replacement flow owns rotation. Without
+    // this writer the router falls back to the deferred, fail-closed 503 and never
+    // stores the token.
+    completeCredential: createSetupTokenSecretWriter({ db }),
+    // Forward the login runner diagnostic lines to the server logger. The
+    // runner is the sole producer, and every line is a fixed, non-secret
+    // literal. Without this sink the diagnostics fall back to a no-op in
+    // production, so a failed login leaves no log trail.
+    log: (line) => logger.info(line),
+  });
   api.use(
     agentRoutes(db, {
       pluginWorkerManager: workerManager,
       deploymentMode: opts.deploymentMode,
       confidentialProxyAllowlist: setupTokenLoginProxyAllowlist,
+      setupTokenLogin: setupTokenLoginTransport,
       onSetupTokenLoginService: (service) => {
         setupTokenLoginService = service;
         // Startup reaper (SR-4): release any lease whose login session is
@@ -865,28 +908,40 @@ export async function createApp(
     logger.error({ err }, "Failed to load ready plugins on startup");
   });
   app.locals.bundledPluginsStartup = bundledPluginsStartup;
-  let appServicesShutdown = false;
-  const shutdownAppServices = () => {
-    if (appServicesShutdown) return;
-    appServicesShutdown = true;
-    disableFeedbackExportFlushes();
-    if (importTransferSweepTimer) {
-      clearInterval(importTransferSweepTimer);
-      importTransferSweepTimer = null;
-    }
-    devWatcher?.close();
-    viteHtmlRenderer?.dispose();
-    void viteDevServer?.close().catch(() => undefined);
-    viteHmrServer?.close();
-    hostServiceCleanup.disposeAll();
-    hostServiceCleanup.teardown();
-    // Cancel every live setup-token login session, so each direct child stops
-    // before the server releases each lease (SR-4).
-    void setupTokenLoginService?.shutdown();
+  // The shutdown hook runs at most once. It caches the in-flight promise, so a
+  // second caller (for example the `exit` handler) awaits the same completion
+  // instead of starting a second teardown.
+  let appServicesShutdown: Promise<void> | null = null;
+  const shutdownAppServices = (): Promise<void> => {
+    if (appServicesShutdown) return appServicesShutdown;
+    appServicesShutdown = (async () => {
+      disableFeedbackExportFlushes();
+      if (importTransferSweepTimer) {
+        clearInterval(importTransferSweepTimer);
+        importTransferSweepTimer = null;
+      }
+      devWatcher?.close();
+      viteHtmlRenderer?.dispose();
+      void viteDevServer?.close().catch(() => undefined);
+      viteHmrServer?.close();
+      hostServiceCleanup.disposeAll();
+      hostServiceCleanup.teardown();
+      // Cancel every live setup-token login session and AWAIT the cancellation,
+      // so each direct child stops and the server releases each lease before the
+      // caller stops the database and the provider. A lease release that
+      // fails stays a durable record for the startup reaper.
+      await setupTokenLoginService?.shutdown();
+    })();
+    return appServicesShutdown;
   };
   app.locals.paperclipShutdown = shutdownAppServices;
 
-  process.once("exit", shutdownAppServices);
+  // The `exit` event is synchronous. It cannot await the teardown, so it runs
+  // the best-effort cleanup and drops the returned promise. The orderly signal
+  // path awaits `shutdownAppServices` in full before the process exits.
+  process.once("exit", () => {
+    void shutdownAppServices();
+  });
   process.once("beforeExit", () => {
     void flushPluginLogBuffer();
   });
