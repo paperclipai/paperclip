@@ -12,6 +12,7 @@ export default defineConfig({
     // mirrors it for the same reason.
     hookTimeout: 30000,
     teardownTimeout: 30000,
+    testTimeout: 15000,
     isolate: true,
     maxConcurrency: 1,
     maxWorkers: 1,
