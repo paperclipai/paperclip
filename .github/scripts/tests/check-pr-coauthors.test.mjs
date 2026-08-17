@@ -161,3 +161,19 @@ test('checkCoauthors: does not credit the PR author as a co-author of themselves
   assert.deepEqual(byName.informational, []);
   assert.deepEqual(byEmail.informational, []);
 });
+
+test('checkCoauthors: counts one person once when some commits matched their account and some did not', () => {
+  // The mixed case: GitHub resolved one commit to the login and left another
+  // unmatched, both carrying the same email. Keying on login alone emits two
+  // trailers for one contributor.
+  const result = checkCoauthors(
+    [
+      commit('stubbi', 'Jannes Stubbemann', 'jannes@example.com'),
+      { author: null, commit: { author: { name: 'Jannes Stubbemann', email: 'jannes@example.com' } } },
+    ],
+    'tonio-alucema'
+  );
+
+  const trailers = result.informational[0].match(/Co-Authored-By:/g) ?? [];
+  assert.equal(trailers.length, 1);
+});

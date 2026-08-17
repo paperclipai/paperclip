@@ -13,6 +13,14 @@
  * and the PR page keeps showing the original author either way, so the loss is
  * invisible at exactly the moment it happens.
  *
+ * Identity matching is a heuristic and is deliberately biased. A commit GitHub
+ * could not match to an account is credited unless its name or email resolves
+ * to the PR author, which will occasionally credit someone as a co-author of
+ * themselves — their git config carrying a real name where the comparison has
+ * only a login. That error costs a line a human drops while pasting. The
+ * opposite error costs a contributor their attribution silently, which is the
+ * failure this gate exists to prevent, so the bias runs towards over-crediting.
+ *
  * Informational rather than a failure, on purpose. The squash message does not
  * exist while the PR is open, so this cannot be verified here and cannot be
  * fixed here either. Failing the PR would block work on something its author
@@ -52,6 +60,11 @@ function noReplyEmail(login) {
 export function checkCoauthors(commits, prAuthor) {
   const author = (prAuthor ?? '').toLowerCase();
   const contributors = new Map();
+  // Emails already accounted for under a GitHub login. One person can appear
+  // both ways in the same branch — some commits matched to their account, some
+  // authored with an email GitHub does not know — and keying on login alone
+  // would then emit two trailers for them.
+  const seenEmails = new Set();
 
   for (const entry of commits ?? []) {
     const login = entry?.author?.login ?? null;
@@ -86,6 +99,9 @@ export function checkCoauthors(commits, prAuthor) {
     // would put two trailers for the same contributor into the squash body.
     const key = (login ?? gitEmail ?? name).toLowerCase();
     if (contributors.has(key)) continue;
+    const emailKey = (gitEmail ?? '').toLowerCase();
+    if (emailKey && seenEmails.has(emailKey)) continue;
+    if (emailKey) seenEmails.add(emailKey);
 
     const displayName = gitName && login ? gitName : name;
     contributors.set(key, {
