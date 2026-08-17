@@ -105,3 +105,25 @@ describe("an unavailable session is not an anonymous session", () => {
   });
 });
 
+
+// Invalidation is the app saying "that answer belongs to the previous account".
+// The entry stays `success` with the old user until a refetch lands, so a status
+// check alone would key the new account's list to the old account's id.
+describe("an invalidated session is not a current identity", () => {
+  it("re-reads the session rather than trusting an invalidated success", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockAuthApi.getSession.mockResolvedValueOnce({ user: { id: "user-1" } });
+    await queryClient.fetchQuery({
+      queryKey: queryKeys.auth.session,
+      queryFn: () => mockAuthApi.getSession(),
+      retry: false,
+    });
+
+    // Signed in as somebody else; the invite page invalidates and asks at once.
+    await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+    expect(queryClient.getQueryState(queryKeys.auth.session)?.status).toBe("success");
+    mockAuthApi.getSession.mockResolvedValueOnce({ user: { id: "user-2" } });
+
+    await expect(resolveAccountUserId(queryClient)).resolves.toBe("user-2");
+  });
+});

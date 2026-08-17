@@ -114,8 +114,16 @@ export async function resolveAccountUserId(queryClient: QueryClient): Promise<st
   const state = queryClient.getQueryState<Awaited<ReturnType<typeof authApi.getSession>>>(
     queryKeys.auth.session,
   );
-  if (state?.status === "success") return state.data?.user.id ?? null;
-  const session = await queryClient.fetchQuery(sessionQueryOptions);
+  // `isInvalidated` matters as much as `status` here. Invalidation is how the
+  // app says "this is the previous account's answer" — InviteLanding invalidates
+  // the session immediately after a sign-in and resolves an identity in the next
+  // breath. The entry is still `success`, still holding the *old* user, until a
+  // refetch lands; trusting it would key the new account's list to the old
+  // account's id, which is the misattribution this whole file exists to prevent.
+  if (state?.status === "success" && !state.isInvalidated) {
+    return state.data?.user.id ?? null;
+  }
+  const session = await queryClient.fetchQuery({ ...sessionQueryOptions, staleTime: 0 });
   return session?.user.id ?? null;
 }
 
