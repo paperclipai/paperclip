@@ -58,6 +58,10 @@ import {
   buildIssueBlockersResolvedWakeIdempotencyKey,
   findExistingIssueBlockersResolvedWakeForAnyKey,
 } from "../issue-dependency-wakeups.js";
+import {
+  RECOVERY_CARD_TERMINAL_SUPPRESSION_MS,
+  findReusableMetaIssue,
+} from "../meta-issue-dedup.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { getRunLogStore } from "../run-log-store.js";
 import {
@@ -3546,21 +3550,50 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       return null;
     }
 
+    const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
+    const recoveryTitle = recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
+      ? `Recover missing next step ${input.issue.identifier ?? input.issue.title}`
+      : `Recover stalled issue ${input.issue.identifier ?? input.issue.title}`;
+
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
-    if (existing) return existing;
+    if (existing) {
+      // TSMC-20961: each sweep attempt used to return here silently while other
+      // paths minted fresh cards; the fresh occurrence is now a comment on the
+      // one open card instead of a new card.
+      await issuesSvc.addComment(existing.id, [
+        `Recovery re-requested at ${new Date().toISOString()}.`,
+        "",
+        `- Source issue: ${input.issue.identifier ?? input.issue.id}`,
+        `- Previous source status: \`${input.previousStatus}\``,
+        `- Recovery cause: \`${recoveryCause}\``,
+        `- Triggering run: ${input.latestRun?.id ? `\`${input.latestRun.id}\`` : "none"}`,
+        "",
+        "Reusing this open recovery card instead of minting an identical duplicate.",
+      ].join("\n"), input.latestRun?.id ? { runId: input.latestRun.id } : {});
+      return existing;
+    }
+
+    // A same-kind recovery card that just reached done/cancelled still holds
+    // the slot (TSMC-20961): reminting right after a close is the loop this
+    // guard exists to stop, so re-creation is suppressed for the window.
+    const terminalTwin = await findReusableMetaIssue(db, {
+      companyId: input.issue.companyId,
+      title: recoveryTitle,
+      originKind: STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
+      originId: input.issue.id,
+      terminalSuppressionMs: RECOVERY_CARD_TERMINAL_SUPPRESSION_MS,
+    });
+    if (terminalTwin?.outcome === "terminal_suppressed") return null;
 
     const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
     if (!ownerAgentId) return null;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
     const sourceAssignee = input.issue.assigneeAgentId ? await getAgent(input.issue.assigneeAgentId) : null;
-    const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
     let recovery: Awaited<ReturnType<typeof issuesSvc.create>>;
     try {
       recovery = await issuesSvc.create(input.issue.companyId, {
-        title: recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
-          ? `Recover missing next step ${input.issue.identifier ?? input.issue.title}`
-          : `Recover stalled issue ${input.issue.identifier ?? input.issue.title}`,
+        title: recoveryTitle,
         description: buildStrandedIssueRecoveryDescription({
           issue: input.issue,
           latestRun: input.latestRun,

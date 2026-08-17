@@ -190,6 +190,10 @@ import { authorizationService, type AuthorizationActor } from "./authorization.j
 import { createToolGatewayService } from "./tool-gateway.js";
 import { toolAccessService } from "./tool-access.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import {
+  UNBLOCK_CARD_TERMINAL_SUPPRESSION_MS,
+  findReusableMetaIssue,
+} from "./meta-issue-dedup.js";
 import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "./issue-dependency-wakeups.js";
 import {
   buildIssueMonitorClearedPatch,
@@ -569,6 +573,77 @@ export function buildStatedDispositionBlockerIssueInput(input: {
     assigneeAgentId: input.assigneeAgentId,
     assigneeUserId: input.assigneeUserId,
   };
+}
+
+export type UnblockBlockerCardResult =
+  | { outcome: "created" | "reused"; issue: { id: string } | null }
+  | { outcome: "terminal_suppressed"; existingIssueId: string; existingStatus: string };
+
+/**
+ * TSMC-20961: identical "Unblock: ..." cards were minted per blocked run
+ * (same blocker text, same company) instead of converging on one card. Reuse
+ * an identical open card — recording the fresh occurrence as a comment — and
+ * suppress the mint entirely while an identical card sits freshly terminal,
+ * so closing one cannot start a remint-after-close loop.
+ */
+export async function ensureUnblockBlockerCard(
+  db: Db,
+  issuesSvc: Pick<ReturnType<typeof issueService>, "create" | "addComment">,
+  input: {
+    sourceIssue: {
+      id: string;
+      companyId: string;
+      identifier: string | null;
+      projectId: string | null;
+      projectWorkspaceId: string | null;
+      executionWorkspaceSettings: Record<string, unknown> | null;
+      workMode: string | null;
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+    };
+    blocker: string;
+    runId?: string | null;
+    now?: Date;
+  },
+): Promise<UnblockBlockerCardResult> {
+  const issueInput = buildStatedDispositionBlockerIssueInput({
+    sourceIdentifier: input.sourceIssue.identifier,
+    sourceId: input.sourceIssue.id,
+    blocker: input.blocker,
+    projectId: input.sourceIssue.projectId,
+    projectWorkspaceId: input.sourceIssue.projectWorkspaceId,
+    executionWorkspaceSettings: input.sourceIssue.executionWorkspaceSettings,
+    workMode: input.sourceIssue.workMode,
+    assigneeAgentId: input.sourceIssue.assigneeAgentId,
+    assigneeUserId: input.sourceIssue.assigneeUserId,
+  });
+  const duplicate = await findReusableMetaIssue(db, {
+    companyId: input.sourceIssue.companyId,
+    title: issueInput.title,
+    excludeIssueId: input.sourceIssue.id,
+    terminalSuppressionMs: UNBLOCK_CARD_TERMINAL_SUPPRESSION_MS,
+    now: input.now,
+  });
+  if (duplicate?.outcome === "terminal_suppressed") {
+    return {
+      outcome: "terminal_suppressed",
+      existingIssueId: duplicate.issue.id,
+      existingStatus: duplicate.issue.status,
+    };
+  }
+  if (duplicate) {
+    await issuesSvc.addComment(duplicate.issue.id, [
+      `Blocker reported again at ${(input.now ?? new Date()).toISOString()}.`,
+      "",
+      `- Source issue: ${input.sourceIssue.identifier ?? input.sourceIssue.id}`,
+      `- Run: ${input.runId ? `\`${input.runId}\`` : "none"}`,
+      "",
+      "Reusing this open card instead of minting an identical duplicate.",
+    ].join("\n"), input.runId ? { runId: input.runId } : {});
+    return { outcome: "reused", issue: duplicate.issue };
+  }
+  const created = await issuesSvc.create(input.sourceIssue.companyId, issueInput);
+  return { outcome: "created", issue: created ?? null };
 }
 
 /**
@@ -10876,19 +10951,57 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             });
             return;
           }
-          const blockerIssue = await issuesSvc.create(issue.companyId, buildStatedDispositionBlockerIssueInput({
-            sourceIdentifier: issue.identifier,
-            sourceId: issue.id,
+          const blockerCard = await ensureUnblockBlockerCard(db, issuesSvc, {
+            sourceIssue: {
+              id: issue.id,
+              companyId: issue.companyId,
+              identifier: issue.identifier,
+              projectId: issue.projectId,
+              projectWorkspaceId: issue.projectWorkspaceId,
+              executionWorkspaceSettings: issue.executionWorkspaceSettings
+                ? parseObject(issue.executionWorkspaceSettings)
+                : null,
+              workMode: issue.workMode,
+              assigneeAgentId: issue.assigneeAgentId,
+              assigneeUserId: issue.assigneeUserId,
+            },
             blocker: statedVerifiedBlocker,
-            projectId: issue.projectId,
-            projectWorkspaceId: issue.projectWorkspaceId,
-            executionWorkspaceSettings: issue.executionWorkspaceSettings
-              ? parseObject(issue.executionWorkspaceSettings)
-              : null,
-            workMode: issue.workMode,
-            assigneeAgentId: issue.assigneeAgentId,
-            assigneeUserId: issue.assigneeUserId,
-          }));
+            runId: run.id,
+          });
+          if (blockerCard.outcome === "terminal_suppressed") {
+            // An identical Unblock card just reached done/cancelled. Reminting
+            // it now can only loop (close → identical blocked report → remint);
+            // record the suppression and leave the source issue untouched.
+            await appendRunEvent(run, await nextRunEventSeq(run.id), {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "warn",
+              message: "Suppressed duplicate Unblock card; identical card reached a terminal status within the suppression window",
+              payload: {
+                issueId: issue.id,
+                suppressedByIssueId: blockerCard.existingIssueId,
+                suppressedByStatus: blockerCard.existingStatus,
+              },
+            });
+            await logActivity(db, {
+              companyId: issue.companyId,
+              actorType: "system",
+              actorId: "heartbeat",
+              agentId: run.agentId,
+              runId: run.id,
+              action: "issue.duplicate_unblock_card_suppressed",
+              entityType: "issue",
+              entityId: issue.id,
+              details: {
+                label: "Duplicate Unblock card suppressed after recent terminal twin",
+                suppressedByIssueId: blockerCard.existingIssueId,
+                suppressedByStatus: blockerCard.existingStatus,
+                sourceRunId: run.id,
+              },
+            });
+            return;
+          }
+          const blockerIssue = blockerCard.issue;
           if (blockerIssue?.id) {
             createdBlockerId = blockerIssue.id;
             const applied = await issuesSvc.update(issue.id, {
