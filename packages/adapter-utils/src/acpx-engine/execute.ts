@@ -84,6 +84,13 @@ import {
   DEFAULT_ACP_ENGINE_TIMEOUT_SEC,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "./constants.js";
+import type {
+  LaunchEnvironment,
+  LaunchEnvironmentContribution,
+  RunScopedContribution,
+  SessionFingerprintIdentity,
+  SessionKeyIdentity,
+} from "./run-contracts.js";
 import {
   createRuntimeSpanRunner,
   emitSkippedStartupStep,
@@ -449,6 +456,46 @@ function stableJson(value: unknown): string {
 
 function shortHash(value: unknown): string {
   return createHash("sha256").update(stableJson(value)).digest("hex").slice(0, 16);
+}
+
+/**
+ * Hash the session fingerprint. The builder accepts only a
+ * `SessionFingerprintIdentity`, so no company, agent, or task identifier can
+ * enter the hash. Those identifiers scope the outer session key only (see
+ * `SessionKeyIdentity`).
+ */
+export function buildSessionFingerprint(identity: SessionFingerprintIdentity): string {
+  return shortHash(identity);
+}
+
+/**
+ * Build the session key from the fingerprint and the outer-key identity. The key
+ * form is `paperclip:companyId:agentId:taskKey:fingerprint`.
+ */
+export function buildSessionKey(identity: SessionKeyIdentity, fingerprint: string): string {
+  return `paperclip:${identity.companyId}:${identity.agentId}:${identity.taskKey}:${fingerprint}`;
+}
+
+/**
+ * Build the single branded launch environment for a run. This is the sole
+ * constructor of `LaunchEnvironment`. It applies each contribution into the base
+ * env in registration order, then resolves and freezes the launch env.
+ *
+ * A contribution carries its credential scope. A run-scoped contribution (the
+ * run API key, a bridge token) and a session-scoped contribution (the Codex auth
+ * copy-back material) both merge here. Neither scope can escape into a reuse
+ * payload, because the branded contribution type and the branded environment
+ * type forbid it.
+ */
+export function finalizeLaunchEnvironment(
+  baseEnv: Record<string, string>,
+  contributions: readonly LaunchEnvironmentContribution[],
+): LaunchEnvironment {
+  for (const contribution of contributions) {
+    Object.assign(baseEnv, contribution.env);
+  }
+  const env = Object.freeze(resolveRuntimeEnv(baseEnv));
+  return { env } as unknown as LaunchEnvironment;
 }
 
 // Directory names the staging path never ships for a referenced project (heavy
@@ -1772,7 +1819,10 @@ async function buildRuntime(input: {
     useRemoteProcessSession && executionTarget?.kind === "remote"
       ? executionTarget.remoteCwd
       : cwd;
-  const fingerprint = shortHash({
+  // The 17 fields the session fingerprint hashes. Company, agent, and task
+  // identifiers are NOT here; they scope the outer session key only (see
+  // `keyIdentity`). The fingerprint builder accepts only this identity.
+  const fingerprintIdentity: SessionFingerprintIdentity = {
     acpxAgent,
     agentCommand: agentCommand ?? acpxAgent,
     cwd: path.resolve(sessionCwd),
@@ -1787,7 +1837,7 @@ async function buildRuntime(input: {
     // added, removed, or re-pinned) invalidates a warm/resumable session so the
     // next launch stages the current referenced-project trees instead of reusing
     // a stale staged tree.
-    additionalSourcesIdentity,
+    additionalSourcesIdentity: additionalSourcesIdentity as unknown as Record<string, unknown>,
     skillsIdentity,
     skillPromptInstructions,
     paperclipClaudeSettings: paperclipClaudeSettings
@@ -1807,9 +1857,17 @@ async function buildRuntime(input: {
     // edits and same-version secret rotations. Per-wake runtime vars never enter
     // resolvedAdapterEnv, so they don't churn the fingerprint every heartbeat.
     adapterEnvHash: shortHash(resolvedAdapterEnv),
-  });
+  };
+  const fingerprint = buildSessionFingerprint(fingerprintIdentity);
   const taskKey = asString(input.ctx.runtime.taskKey, "") || wakeTaskId || workspaceId || "default";
-  const sessionKey = `paperclip:${agent.companyId}:${agent.id}:${taskKey}:${fingerprint}`;
+  // Company, agent, and task identity for the outer session key. These parts
+  // stay out of the fingerprint hash.
+  const keyIdentity: SessionKeyIdentity = {
+    companyId: agent.companyId,
+    agentId: agent.id,
+    taskKey,
+  };
+  const sessionKey = buildSessionKey(keyIdentity, fingerprint);
 
   // Ship the workspace into the sandbox and capture `{ workspaceRemoteDir,
   // runtimeRootDir, assetDirs, restoreWorkspace }`. Done once here, before the
@@ -2069,11 +2127,17 @@ async function buildRuntime(input: {
       const finalizeLaunchEnv = (): Promise<Record<string, string>> =>
         (launchEnvPromise ??= (async () => {
           const paperclip = await paperclipStart;
+          // The paperclip callback bridge token is run-scoped: it lives for this
+          // run only and never enters a reuse payload (Amendment B). Wrap it as a
+          // run-scoped contribution so `finalizeLaunchEnvironment` stays the sole
+          // consumer of the launch-environment contributions.
+          const contributions: LaunchEnvironmentContribution[] = [];
           if (paperclip) {
-            Object.assign(env, paperclip.env);
+            contributions.push({ scope: "run", env: paperclip.env } as unknown as RunScopedContribution);
             await input.ctx.onLog("stdout", "[paperclip] Sandbox ACP API callback bridge enabled for this run.\n");
           }
-          return (runtimeEnv = resolveRuntimeEnv(env));
+          runtimeEnv = finalizeLaunchEnvironment(env, contributions).env;
+          return runtimeEnv;
         })());
       const processSessionStart = measureStartupStep(input.ctx, nowMs, "bridge.process-session", () =>
         startAdapterExecutionTargetProcessSessionBridge({
@@ -2106,9 +2170,10 @@ async function buildRuntime(input: {
       // returned without consuming the launch env (memoized ⇒ a no-op if it did).
       await finalizeLaunchEnv();
     } else {
-      // Local / runner-less lanes never start a bridge, but the returned prepared
-      // runtime and the log builder still read `runtimeEnv`.
-      runtimeEnv = resolveRuntimeEnv(env);
+      // Local / runner-less lanes never start a bridge, so they add no
+      // contribution. `finalizeLaunchEnvironment` still produces the one branded
+      // launch env the prepared runtime and the log builder read.
+      runtimeEnv = finalizeLaunchEnvironment(env, []).env;
     }
   } catch (err) {
     // On a partial concurrent bring-up failure, ONE bridge may have started while
