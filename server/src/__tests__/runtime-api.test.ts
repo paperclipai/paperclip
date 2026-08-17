@@ -1,10 +1,15 @@
-import { describe, expect, it } from "vitest";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   buildRuntimeApiCandidateUrls,
   choosePrimaryRuntimeApiUrl,
   collectReachableInterfaceHosts,
+  createRuntimeApiProbe,
+  getRuntimeApiInstanceToken,
   rankRuntimeApiCandidatesByBindAddress,
   resolveRuntimeApiUrl,
+  RUNTIME_API_INSTANCE_HEADER,
 } from "../runtime-api.js";
 
 describe("runtime API discovery", () => {
@@ -334,5 +339,97 @@ describe("runtime API reachability resolution", () => {
       "http://no-such-name:3100",
       "http://unreachable-name:3100",
     ]);
+  });
+});
+
+describe("runtime API probe identity", () => {
+  // An allow-listed hostname can resolve to a machine running something else
+  // entirely. "A listener answered" is therefore not enough to promote an origin
+  // to PAPERCLIP_API_URL: agents send bearer tokens there, so the probe has to
+  // establish that the responder is this process.
+  const servers: http.Server[] = [];
+
+  const startListener = async (
+    handler: (req: http.IncomingMessage, res: http.ServerResponse) => void,
+  ): Promise<string> => {
+    const server = http.createServer(handler);
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    return `http://127.0.0.1:${port}`;
+  };
+
+  afterEach(async () => {
+    await Promise.all(
+      servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
+    );
+  });
+
+  it("accepts an origin that answers with this process's instance token", async () => {
+    const origin = await startListener((_req, res) => {
+      res.setHeader(RUNTIME_API_INSTANCE_HEADER, getRuntimeApiInstanceToken());
+      res.writeHead(200).end("{}");
+    });
+
+    const probe = createRuntimeApiProbe(600, getRuntimeApiInstanceToken());
+    expect(await probe(origin)).toBe(true);
+  });
+
+  it("accepts our own listener even when it rejects the probe unauthenticated", async () => {
+    // The header is set ahead of any authorization decision, so tightening auth
+    // on /api/health must not make this server look unreachable to itself.
+    const origin = await startListener((_req, res) => {
+      res.setHeader(RUNTIME_API_INSTANCE_HEADER, getRuntimeApiInstanceToken());
+      res.writeHead(401).end("unauthorized");
+    });
+
+    const probe = createRuntimeApiProbe(600, getRuntimeApiInstanceToken());
+    expect(await probe(origin)).toBe(true);
+  });
+
+  it("rejects an unrelated HTTP service that answers on a candidate origin", async () => {
+    const origin = await startListener((_req, res) => {
+      res.writeHead(200).end("hello from something else");
+    });
+
+    const probe = createRuntimeApiProbe(600, getRuntimeApiInstanceToken());
+    expect(await probe(origin)).toBe(false);
+  });
+
+  it("rejects another Paperclip process listening on a candidate origin", async () => {
+    const origin = await startListener((_req, res) => {
+      res.setHeader(RUNTIME_API_INSTANCE_HEADER, "a-different-paperclip-process");
+      res.writeHead(200).end("{}");
+    });
+
+    const probe = createRuntimeApiProbe(600, getRuntimeApiInstanceToken());
+    expect(await probe(origin)).toBe(false);
+  });
+
+  it("falls back to the ranked pick when only a foreign listener answers", async () => {
+    // End to end: a stranger on the wrong name must not be promoted just because
+    // it replies. Ranking still decides, and the reason records that nothing of
+    // ours answered.
+    const foreign = await startListener((_req, res) => {
+      res.writeHead(200).end("hello from something else");
+    });
+
+    const resolved = await resolveRuntimeApiUrl({
+      allowedHostnames: ["unreachable-name", "good-name"],
+      bindHost: "100.108.64.76",
+      port: 3100,
+      networkInterfacesMap: {},
+      lookupHost: async (hostname) => {
+        if (hostname === "good-name") return ["100.108.64.76"];
+        if (hostname === "unreachable-name") return ["10.0.0.4"];
+        return [];
+      },
+      probeOrigin: createRuntimeApiProbe(600, getRuntimeApiInstanceToken()),
+      probeTimeoutMs: 600,
+    });
+
+    expect(foreign).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(resolved.reason).toBe("unreachable-fallback");
+    expect(resolved.url).toBe("http://good-name:3100");
   });
 });

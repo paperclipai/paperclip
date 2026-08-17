@@ -1,5 +1,29 @@
+import { randomUUID } from "node:crypto";
 import dns from "node:dns/promises";
 import os from "node:os";
+
+/**
+ * Response header carrying this process's runtime-API instance token.
+ *
+ * The startup probe below has to answer "is this origin me?", not merely "is
+ * something listening?". A candidate hostname can resolve to an unrelated HTTP
+ * service, and promoting that origin would hand every agent a control-plane URL
+ * pointing at a stranger — bearer tokens included. Only this process knows the
+ * token, so echoing it is what separates our listener from any other.
+ */
+export const RUNTIME_API_INSTANCE_HEADER = "x-paperclip-instance";
+
+let runtimeApiInstanceToken: string | null = null;
+
+/**
+ * Per-process identity for the reachability probe. Random and minted once; it
+ * names no config and encodes nothing, so serving it to anonymous callers on
+ * `/api/health` leaks nothing a port scan would not already reveal.
+ */
+export function getRuntimeApiInstanceToken(): string {
+  if (!runtimeApiInstanceToken) runtimeApiInstanceToken = randomUUID();
+  return runtimeApiInstanceToken;
+}
 
 /** Per-hostname DNS timeout. Ranking every candidate must stay bounded too. */
 const DEFAULT_LOOKUP_TIMEOUT_MS = 500;
@@ -256,15 +280,20 @@ function withLookupTimeout(lookupHost: RuntimeApiLookupHost, timeoutMs: number):
   };
 }
 
-function createDefaultProbe(timeoutMs: number): RuntimeApiProbe {
+export function createRuntimeApiProbe(timeoutMs: number, instanceToken: string): RuntimeApiProbe {
   return async (origin) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      // Any HTTP response proves a listener is there. The status does not
-      // matter, so an auth change on /api/health cannot silently break this.
-      await fetch(new URL("/api/health", origin), { redirect: "manual", signal: controller.signal });
-      return true;
+      const response = await fetch(new URL("/api/health", origin), {
+        redirect: "manual",
+        signal: controller.signal,
+      });
+      // A reply proves a listener; only the instance header proves it is *this*
+      // listener. The status is deliberately not checked, so an auth change on
+      // /api/health cannot silently break the probe — the header is set ahead of
+      // any authorization decision.
+      return response.headers.get(RUNTIME_API_INSTANCE_HEADER) === instanceToken;
     } catch {
       return false;
     } finally {
@@ -395,7 +424,9 @@ export async function resolveRuntimeApiUrl(input: {
 
   const now = input.now ?? Date.now;
   const probeBudgetMs = input.probeBudgetMs ?? DEFAULT_PROBE_BUDGET_MS;
-  const probeOrigin = input.probeOrigin ?? createDefaultProbe(input.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS);
+  const probeOrigin =
+    input.probeOrigin ??
+    createRuntimeApiProbe(input.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS, getRuntimeApiInstanceToken());
 
   const probed: Array<{ url: string; reachable: boolean }> = [];
   const skipped: string[] = [];
