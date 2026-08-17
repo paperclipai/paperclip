@@ -345,6 +345,108 @@ describe("agent auth middleware", () => {
     });
   });
 
+  describe("local_trusted deployment mode", () => {
+    it("grants board access when no Authorization header is present", async () => {
+      const companyId = randomUUID();
+      const { db } = createDbState({
+        agent: { id: randomUUID(), companyId },
+      });
+      const app = express();
+      app.use(actorMiddleware(db, { deploymentMode: "local_trusted" }));
+      app.get("/actor", (req, res) => res.json(req.actor));
+
+      const res = await request(app).get("/actor");
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        type: "board",
+        isInstanceAdmin: true,
+        source: "local_implicit",
+      });
+    });
+
+    it("denies board access when an invalid bearer token is presented (fail-closed)", async () => {
+      const companyId = randomUUID();
+      const { db } = createDbState({
+        agent: { id: randomUUID(), companyId },
+      });
+      const app = express();
+      app.use(actorMiddleware(db, { deploymentMode: "local_trusted" }));
+      app.get("/actor", (req, res) => res.json(req.actor));
+
+      const res = await request(app)
+        .get("/actor")
+        .set("Authorization", "Bearer pcp_invalid_token_deadbeef");
+      expect(res.status).toBe(200);
+      expect(res.body.type).toBe("none");
+      expect(res.body.source).toBe("none");
+    });
+
+    it("denies board access when a malformed JWT is presented (fail-closed)", async () => {
+      const companyId = randomUUID();
+      const { db } = createDbState({
+        agent: { id: randomUUID(), companyId },
+      });
+      const app = express();
+      app.use(actorMiddleware(db, { deploymentMode: "local_trusted" }));
+      app.get("/actor", (req, res) => res.json(req.actor));
+
+      const res = await request(app)
+        .get("/actor")
+        .set("Authorization", "Bearer eyJhbGciOiJIUzI1NiJ9.invalid.invalid");
+      expect(res.status).toBe(200);
+      expect(res.body.type).toBe("none");
+      expect(res.body.source).toBe("none");
+    });
+
+    it("resolves a valid agent JWT in local_trusted mode", async () => {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const runId = randomUUID();
+      const { db } = createDbState({
+        agent: { id: agentId, companyId },
+        run: { id: runId, companyId, agentId, responsibleUserId: "user-claim" },
+      });
+      const token = createLocalAgentJwt(agentId, companyId, "codex_local", runId, "user-claim");
+      const app = express();
+      app.use(actorMiddleware(db, { deploymentMode: "local_trusted" }));
+      app.get("/actor", (req, res) => res.json(req.actor));
+
+      const res = await request(app)
+        .get("/actor")
+        .set("Authorization", `Bearer ${token}`)
+        .set("X-Paperclip-Run-Id", runId);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        type: "agent",
+        agentId,
+        companyId,
+        runId,
+        onBehalfOfUserId: "user-claim",
+        source: "agent_jwt",
+      });
+    });
+
+    it("denies access when a revoked agent key is presented (fail-closed)", async () => {
+      const companyId = randomUUID();
+      const token = "pcp_revoked_key_token";
+      const app = express();
+      const { db } = createDbState({
+        agent: { id: randomUUID(), companyId },
+      });
+
+      app.use(actorMiddleware(db, { deploymentMode: "local_trusted" }));
+      app.get("/actor", (req, res) => res.json(req.actor));
+
+      const res = await request(app)
+        .get("/actor")
+        .set("Authorization", `Bearer ${token}`);
+      expect(res.status).toBe(200);
+      expect(res.body.type).toBe("none");
+      expect(res.body.source).toBe("none");
+    });
+  });
+
   it("rejects agent keys that lack a responsible user binding and audits the denial", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
