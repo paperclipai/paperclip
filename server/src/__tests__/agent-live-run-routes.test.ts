@@ -227,6 +227,8 @@ describe("agent live run routes", () => {
     mockHeartbeatService.getRunLogAccess.mockResolvedValue({
       id: "run-1",
       companyId: "company-1",
+      scopeKind: "company",
+      issueId: null,
       logStore: "local_file",
       logRef: "logs/run-1.ndjson",
     });
@@ -360,6 +362,8 @@ describe("agent live run routes", () => {
     expect(mockHeartbeatService.readLog).toHaveBeenCalledWith({
       id: "run-1",
       companyId: "company-1",
+      scopeKind: "company",
+      issueId: null,
       logStore: "local_file",
       logRef: "logs/run-1.ndjson",
     }, {
@@ -399,7 +403,8 @@ describe("agent live run routes", () => {
       lastOutputStream: null,
       lastOutputBytes: 0,
       processStartedAt: null,
-      issueId: "issue-1",
+      scopeKind: "company",
+      issueId: null,
     }));
     const { db, limit } = createLiveRunsDbStub(rows);
 
@@ -438,7 +443,8 @@ describe("agent live run routes", () => {
       lastOutputStream: null,
       lastOutputBytes: 0,
       processStartedAt: null,
-      issueId: "issue-1",
+      scopeKind: "company",
+      issueId: null,
     }));
     const { db, limit } = createLiveRunsDbStub(rows);
 
@@ -476,7 +482,8 @@ describe("agent live run routes", () => {
       lastOutputStream: null,
       lastOutputBytes: 0,
       processStartedAt: null,
-      issueId: "issue-1",
+      scopeKind: "company",
+      issueId: null,
     }));
 
     const selectCalls: Array<ReturnType<typeof vi.fn>> = [];
@@ -533,7 +540,8 @@ describe("agent live run routes", () => {
       lastOutputStream: null,
       lastOutputBytes: 0,
       processStartedAt: null,
-      issueId: "issue-1",
+      scopeKind: "company",
+      issueId: null,
     }));
     const recentRows = Array.from({ length: 4 }, (_, index) => ({
       id: `run-recent-${index}`,
@@ -558,7 +566,8 @@ describe("agent live run routes", () => {
       lastOutputStream: null,
       lastOutputBytes: 0,
       processStartedAt: null,
-      issueId: "issue-1",
+      scopeKind: "company",
+      issueId: null,
     }));
 
     let selectCallCount = 0;

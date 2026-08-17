@@ -3056,6 +3056,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .values({
           companyId: input.issue.companyId,
           agentId: input.agentId,
+          scopeKind: "issue",
+          issueId: input.issue.id,
           invocationSource: "automation",
           triggerDetail: "system",
           status: "scheduled_retry",

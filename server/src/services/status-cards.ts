@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, or, sql, type SQL } from "drizzle-orm";
 import {
   agents,
   costEvents,
@@ -44,6 +44,7 @@ import {
 type StatusCardActor = { agentId: string | null; userId: string | null };
 type StatusCardWriter = { agentId: string | null; runId: string | null };
 type StatusCardRow = typeof statusCards.$inferSelect;
+type StatusCardReadOptions = { issueReadCondition?: SQL<boolean> };
 
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 
@@ -154,10 +155,15 @@ export function statusCardService(
   const issuesSvc = deps.issuesSvc ?? issueService(db);
   const searchSvc = companySearchService(db);
 
-  async function readWatchedIssueCount(card: StatusCardRow) {
-    if (card.queries.length === 0 && (card.mentionedIssueIds?.length ?? 0) === 0) return 0;
+  async function readWatchedIssueVisibility(card: StatusCardRow, options: StatusCardReadOptions = {}) {
+    if (card.queries.length === 0 && (card.mentionedIssueIds?.length ?? 0) === 0) {
+      return { count: 0, privacyRedacted: false };
+    }
     try {
-      return (await executeQueries(card)).length;
+      const visible = await executeQueries(card, options);
+      if (!options.issueReadCondition) return { count: visible.length, privacyRedacted: false };
+      const total = await executeQueries(card);
+      return { count: visible.length, privacyRedacted: total.length !== visible.length };
     } catch (err) {
       logger.warn(
         { err, cardId: card.id, companyId: card.companyId },
@@ -167,7 +173,7 @@ export function statusCardService(
     }
   }
 
-  async function hydrate(card: StatusCardRow) {
+  async function hydrate(card: StatusCardRow, options: StatusCardReadOptions = {}) {
     const dayStart = new Date();
     dayStart.setUTCHours(0, 0, 0, 0);
     const [document, today, watchedIssues] = await Promise.all([
@@ -184,25 +190,28 @@ export function statusCardService(
         .from(statusCardUpdates)
         .where(and(eq(statusCardUpdates.cardId, card.id), gte(statusCardUpdates.startedAt, dayStart)))
         .then((rows) => rows[0] ?? { tokens: 0, costCents: 0 }),
-      readWatchedIssueCount(card),
+      readWatchedIssueVisibility(card, options),
     ]);
 
     return {
       ...card,
-      summaryBody: document?.latestBody ?? null,
-      ...(watchedIssues === undefined ? {} : { watchedIssueCount: watchedIssues }),
+      summaryBody: watchedIssues?.privacyRedacted ? null : document?.latestBody ?? null,
+      ...(watchedIssues === undefined ? {} : {
+        watchedIssueCount: watchedIssues.count,
+        privacyRedacted: watchedIssues.privacyRedacted,
+      }),
       todayTokens: today.tokens,
       todayCostCents: today.costCents,
     };
   }
 
-  async function list(companyId: string, archived: boolean) {
+  async function list(companyId: string, archived: boolean, options: StatusCardReadOptions = {}) {
     const cards = await db
       .select()
       .from(statusCards)
       .where(and(eq(statusCards.companyId, companyId), archived ? isNotNull(statusCards.archivedAt) : isNull(statusCards.archivedAt)))
       .orderBy(desc(statusCards.updatedAt));
-    return Promise.all(cards.map(hydrate));
+    return Promise.all(cards.map((card) => hydrate(card, options)));
   }
 
   async function getById(id: string) {
@@ -515,7 +524,11 @@ export function statusCardService(
     });
   }
 
-  async function loadIssueSummaries(companyId: string, issueIds: string[]): Promise<CompanySearchIssueSummary[]> {
+  async function loadIssueSummaries(
+    companyId: string,
+    issueIds: string[],
+    options: StatusCardReadOptions = {},
+  ): Promise<CompanySearchIssueSummary[]> {
     if (issueIds.length === 0) return [];
     const rows = await db
       .select({
@@ -530,7 +543,11 @@ export function statusCardService(
         updatedAt: issues.updatedAt,
       })
       .from(issues)
-      .where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds)));
+      .where(and(
+        eq(issues.companyId, companyId),
+        inArray(issues.id, issueIds),
+        options.issueReadCondition ?? sql<boolean>`true`,
+      ));
     return rows.map((row) => ({
       ...row,
       status: row.status as CompanySearchIssueSummary["status"],
@@ -559,15 +576,17 @@ export function statusCardService(
     return rows.map((row) => row.id).sort();
   }
 
-  async function listMentionedIssues(card: StatusCardRow) {
-    return loadIssueSummaries(card.companyId, card.mentionedIssueIds ?? []);
+  async function listMentionedIssues(card: StatusCardRow, options: StatusCardReadOptions = {}) {
+    return loadIssueSummaries(card.companyId, card.mentionedIssueIds ?? [], options);
   }
 
-  async function executeQueries(card: StatusCardRow) {
+  async function executeQueries(card: StatusCardRow, options: StatusCardReadOptions = {}) {
     const issueMap = new Map<string, CompanySearchIssueSummary>();
     for (const storedQuery of card.queries) {
       const query = companySearchQuerySchema.parse(storedQuery);
-      const response = await searchSvc.search(card.companyId, query);
+      const response = await searchSvc.search(card.companyId, query, {
+        issueReadCondition: options.issueReadCondition,
+      });
       for (const result of response.results) {
         if (result.type === "issue" && result.issue) issueMap.set(result.issue.id, result.issue);
       }
@@ -577,6 +596,7 @@ export function statusCardService(
     const mentioned = await loadIssueSummaries(
       card.companyId,
       (card.mentionedIssueIds ?? []).filter((issueId) => !issueMap.has(issueId)),
+      options,
     );
     for (const issue of mentioned) issueMap.set(issue.id, issue);
     const snapshot = [...issueMap.values()];
@@ -909,8 +929,16 @@ export function statusCardService(
     });
   }
 
-  async function dryRun(card: StatusCardRow) {
-    return Promise.all(card.queries.map(async (query) => ({ query, result: await searchSvc.search(card.companyId, query) })));
+  async function dryRun(card: StatusCardRow, options: StatusCardReadOptions = {}) {
+    return Promise.all(card.queries.map(async (storedQuery) => {
+      const query = companySearchQuerySchema.parse(storedQuery);
+      return {
+        query,
+        result: await searchSvc.search(card.companyId, query, {
+          issueReadCondition: options.issueReadCondition,
+        }),
+      };
+    }));
   }
 
   return { list, getById, hydrate, create, update, remove, listUpdates, listSummaryRevisions, listMentionedIssues, requestCompile, requestRefresh, tickDueStatusCards, writeQuery, writeSummary, dryRun };

@@ -27,7 +27,7 @@ import type {
   PluginIssueOrchestrationSummary,
   PluginExecutionWorkspaceMetadata,
 } from "@paperclipai/plugin-sdk";
-import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
+import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, IssueRelationIssueSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
 import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
@@ -76,7 +76,14 @@ import { isIP } from "node:net";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
-import { authorizationService, type AuthorizationActor } from "./authorization.js";
+import {
+  authorizationService,
+  canActorReadIssuePrivacy,
+  issuePrivacyMode,
+  issueReadSqlCondition,
+  type AuthorizationActor,
+  type IssuePrivacyRow,
+} from "./authorization.js";
 import { redactEventPayload, sanitizeRecord } from "../redaction.js";
 import type { WorkerHostCallContext } from "@paperclipai/plugin-sdk";
 import {
@@ -748,6 +755,135 @@ export function buildHostServices(
   const approvalSvc = approvalService(db);
   const interactions = issueThreadInteractionService(db);
   const scopedBus = eventBus.forPlugin(pluginKey);
+
+  // --- Issue privacy for plugin-facing reads (PAP-16091 / PAP-16050) ---------
+  // Plugins are non-member principals: they hold no company membership, issue
+  // access grant, or private-project access, so the canonical issue-visibility
+  // predicate resolves them to the same scope as any other non-member — public
+  // issues only. Notification/digest plugins (e.g. a Slack notifier) fan issue
+  // data out to shared channels whose audience is, by definition, non-members,
+  // so private issue content and relationship metadata must never reach them.
+  //
+  // A synthetic { type: "none" } actor produces exactly that scope: it yields a
+  // null privacy principal (no implicit/grant/project-member match) and does not
+  // trip the local-implicit / instance-admin bypasses inside the predicate. In
+  // "off"/"shadow" modes these helpers are pass-through, matching every other
+  // enforcement surface so the enforce flip stays the single behavioral switch.
+  const pluginIssuePrivacyActor: AuthorizationActor = { type: "none" };
+  const toIssuePrivacyRow = (issue: {
+    id: string;
+    companyId: string;
+    visibility?: string | null;
+    privacyRootIssueId?: string | null;
+    responsibleUserId?: string | null;
+    createdByUserId?: string | null;
+    assigneeUserId?: string | null;
+    assigneeAgentId?: string | null;
+    projectId?: string | null;
+  }): IssuePrivacyRow => ({
+    id: issue.id,
+    companyId: issue.companyId,
+    visibility: issue.visibility ?? "open",
+    privacyRootIssueId: issue.privacyRootIssueId ?? null,
+    responsibleUserId: issue.responsibleUserId ?? null,
+    createdByUserId: issue.createdByUserId ?? null,
+    assigneeUserId: issue.assigneeUserId ?? null,
+    assigneeAgentId: issue.assigneeAgentId ?? null,
+    projectId: issue.projectId ?? null,
+  });
+  const pluginCanReadIssue = async (
+    issue: Parameters<typeof toIssuePrivacyRow>[0] | null | undefined,
+  ): Promise<boolean> => {
+    if (!issue) return false;
+    if (issuePrivacyMode() !== "enforce") return true;
+    return canActorReadIssuePrivacy(db, pluginIssuePrivacyActor, toIssuePrivacyRow(issue));
+  };
+  const pluginReadableIssueIds = async (
+    issueList: Array<Parameters<typeof toIssuePrivacyRow>[0]>,
+  ): Promise<Set<string>> => {
+    if (issuePrivacyMode() !== "enforce") return new Set(issueList.map((issue) => issue.id));
+    const decisions = await Promise.all(
+      issueList.map(async (issue) => ({
+        id: issue.id,
+        allowed: await canActorReadIssuePrivacy(db, pluginIssuePrivacyActor, toIssuePrivacyRow(issue)),
+      })),
+    );
+    return new Set(decisions.filter((decision) => decision.allowed).map((decision) => decision.id));
+  };
+  // Column projection matching IssuePrivacyRow, for ad-hoc readability lookups
+  // of bare issue IDs (relation targets, subtree descendants) that arrive
+  // without their privacy columns loaded.
+  const issuePrivacyRowColumns = {
+    id: issuesTable.id,
+    companyId: issuesTable.companyId,
+    visibility: issuesTable.visibility,
+    privacyRootIssueId: issuesTable.privacyRootIssueId,
+    responsibleUserId: issuesTable.responsibleUserId,
+    createdByUserId: issuesTable.createdByUserId,
+    assigneeUserId: issuesTable.assigneeUserId,
+    assigneeAgentId: issuesTable.assigneeAgentId,
+    projectId: issuesTable.projectId,
+  } as const;
+  // Resolve which of the given issue IDs a non-member plugin may read. Loads
+  // the privacy-relevant columns for those IDs and evaluates the canonical
+  // predicate. An ID with no surviving row (deleted, cross-company) is absent
+  // from the result set — fail closed.
+  const pluginReadableIssueIdsByIds = async (
+    companyId: string,
+    ids: Iterable<string>,
+  ): Promise<Set<string>> => {
+    const uniqueIds = [...new Set(ids)];
+    if (issuePrivacyMode() !== "enforce" || uniqueIds.length === 0) {
+      return new Set(uniqueIds);
+    }
+    const rows = await db
+      .select(issuePrivacyRowColumns)
+      .from(issuesTable)
+      .where(and(eq(issuesTable.companyId, companyId), inArray(issuesTable.id, uniqueIds)));
+    return pluginReadableIssueIds(rows);
+  };
+  // Fetch an issue and require it be both in-company and readable by a
+  // non-member plugin. A private (unreadable) issue throws the same "not found"
+  // error a genuinely missing issue would, so its existence never leaks. This
+  // is the single gate every issue-derived plugin read routes through, so no
+  // method needs its own bespoke visibility check.
+  const requirePluginReadableIssue = async (issueId: string, companyId: string): Promise<Issue> => {
+    const issue = requireInCompany("Issue", await issues.getById(issueId), companyId);
+    if (!(await pluginCanReadIssue(issue))) {
+      throw new Error("Issue not found");
+    }
+    return issue as Issue;
+  };
+  // Redact a relation summary so blocker/blocked edges pointing at an issue the
+  // plugin cannot read are dropped, recursing into nested terminal blockers. An
+  // edge's title/status/assignee is relationship metadata a non-member must not
+  // see even when the issue that owns the edge is itself public.
+  const pluginRedactRelationSummary = async <
+    R extends { blockedBy: IssueRelationIssueSummary[]; blocks: IssueRelationIssueSummary[] },
+  >(
+    companyId: string,
+    relation: R,
+  ): Promise<R> => {
+    if (issuePrivacyMode() !== "enforce") return relation;
+    const edgeIds = new Set<string>();
+    const collect = (edges: IssueRelationIssueSummary[]) => {
+      for (const edge of edges) {
+        edgeIds.add(edge.id);
+        if (edge.terminalBlockers?.length) collect(edge.terminalBlockers);
+      }
+    };
+    collect(relation.blockedBy);
+    collect(relation.blocks);
+    if (edgeIds.size === 0) return relation;
+    const readable = await pluginReadableIssueIdsByIds(companyId, edgeIds);
+    const redact = (edges: IssueRelationIssueSummary[]): IssueRelationIssueSummary[] =>
+      edges
+        .filter((edge) => readable.has(edge.id))
+        .map((edge) => (edge.terminalBlockers?.length
+          ? { ...edge, terminalBlockers: redact(edge.terminalBlockers) }
+          : edge));
+    return { ...relation, blockedBy: redact(relation.blockedBy), blocks: redact(relation.blocks) };
+  };
 
   // Track active session event subscriptions for cleanup
   const activeSubscriptions = new Set<{ unsubscribe: () => void; timer: ReturnType<typeof setTimeout> }>();
@@ -1895,13 +2031,21 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         assertReadableOriginFilter(params.originKind);
-        return applyWindow((await issues.list(companyId, params as any)) as Issue[], params);
+        // Push the non-member visibility predicate into the list query so private
+        // issues are filtered at the SQL layer before they can reach a plugin.
+        const readCondition = await issueReadSqlCondition(db, pluginIssuePrivacyActor);
+        return applyWindow(
+          (await issues.list(companyId, { ...(params as any), readCondition })) as Issue[],
+          params,
+        );
       },
       async get(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         const issue = await issues.getById(params.issueId);
-        return (inCompany(issue, companyId) ? issue : null) as Issue | null;
+        if (!inCompany(issue, companyId)) return null;
+        if (!(await pluginCanReadIssue(issue))) return null;
+        return issue as Issue;
       },
       async create(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -1979,13 +2123,20 @@ export function buildHostServices(
       async getRelations(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
-        return await issues.getRelationSummaries(params.issueId);
+        // Private root -> indistinguishable from missing; readable root ->
+        // still redact any edge that points at an issue the plugin cannot read.
+        await requirePluginReadableIssue(params.issueId, companyId);
+        return await pluginRedactRelationSummary(
+          companyId,
+          await issues.getRelationSummaries(params.issueId),
+        );
       },
       async setBlockedBy(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        return setBlockedByWithActivity({
+        // The echoed relation summary can name a private blocker target, so
+        // redact unreadable edges before returning it to a non-member plugin.
+        return pluginRedactRelationSummary(companyId, await setBlockedByWithActivity({
           companyId,
           issueId: params.issueId,
           blockedByIssueIds: params.blockedByIssueIds,
@@ -1993,7 +2144,7 @@ export function buildHostServices(
           actorAgentId: params.actorAgentId,
           actorUserId: params.actorUserId,
           actorRunId: params.actorRunId,
-        });
+        }));
       },
       async addBlockers(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -2006,7 +2157,7 @@ export function buildHostServices(
             ...params.blockerIssueIds,
           ]),
         ];
-        return setBlockedByWithActivity({
+        return pluginRedactRelationSummary(companyId, await setBlockedByWithActivity({
           companyId,
           issueId: params.issueId,
           blockedByIssueIds: nextBlockedByIssueIds,
@@ -2014,7 +2165,7 @@ export function buildHostServices(
           actorAgentId: params.actorAgentId,
           actorUserId: params.actorUserId,
           actorRunId: params.actorRunId,
-        });
+        }));
       },
       async removeBlockers(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -2025,7 +2176,7 @@ export function buildHostServices(
         const nextBlockedByIssueIds = previous.blockedBy
           .map((relation) => relation.id)
           .filter((issueId) => !removals.has(issueId));
-        return setBlockedByWithActivity({
+        return pluginRedactRelationSummary(companyId, await setBlockedByWithActivity({
           companyId,
           issueId: params.issueId,
           blockedByIssueIds: nextBlockedByIssueIds,
@@ -2033,7 +2184,7 @@ export function buildHostServices(
           actorAgentId: params.actorAgentId,
           actorUserId: params.actorUserId,
           actorRunId: params.actorRunId,
-        });
+        }));
       },
       async assertCheckoutOwner(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -2072,17 +2223,31 @@ export function buildHostServices(
       async getSubtree(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const rootIssue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        // A private root is invisible to a non-member plugin: report not-found
+        // rather than leak its existence or any descendant metadata.
+        const rootIssue = await requirePluginReadableIssue(params.issueId, companyId);
         const includeRoot = params.includeRoot !== false;
         const subtreeIssueIds = await collectIssueSubtreeIds(companyId, rootIssue.id);
-        const issueIds = includeRoot ? subtreeIssueIds : subtreeIssueIds.filter((issueId) => issueId !== rootIssue.id);
-        const issueRows = issueIds.length > 0
+        const candidateIssueIds = includeRoot
+          ? subtreeIssueIds
+          : subtreeIssueIds.filter((issueId) => issueId !== rootIssue.id);
+        const issueRows = candidateIssueIds.length > 0
           ? await db
             .select()
             .from(issuesTable)
-            .where(and(eq(issuesTable.companyId, companyId), inArray(issuesTable.id, issueIds)))
+            .where(and(eq(issuesTable.companyId, companyId), inArray(issuesTable.id, candidateIssueIds)))
           : [];
-        const issuesById = new Map(issueRows.map((issue) => [issue.id, issue as Issue]));
+        // Filter private descendants BEFORE fetching any relations, documents,
+        // runs, or assignees so private issue rows and their metadata never
+        // enter the result. The root has already cleared the readability gate.
+        const readableSubtreeIds = await pluginReadableIssueIds(issueRows);
+        readableSubtreeIds.add(rootIssue.id);
+        const issueIds = candidateIssueIds.filter((issueId) => readableSubtreeIds.has(issueId));
+        const issuesById = new Map(
+          issueRows
+            .filter((issue) => readableSubtreeIds.has(issue.id))
+            .map((issue) => [issue.id, issue as Issue]),
+        );
         const outputIssues = issueIds
           .map((issueId) => issuesById.get(issueId))
           .filter((issue): issue is Issue => Boolean(issue));
@@ -2093,7 +2258,10 @@ export function buildHostServices(
 
         const [relationPairs, documentPairs, activeRunRows, assigneeRows] = await Promise.all([
           params.includeRelations
-            ? Promise.all(issueIds.map(async (issueId) => [issueId, await issues.getRelationSummaries(issueId)] as const))
+            ? Promise.all(issueIds.map(async (issueId) => [
+              issueId,
+              await pluginRedactRelationSummary(companyId, await issues.getRelationSummaries(issueId)),
+            ] as const))
             : Promise.resolve(null),
           params.includeDocuments
             ? Promise.all(
@@ -2291,12 +2459,27 @@ export function buildHostServices(
       async getOrchestrationSummary(params): Promise<PluginIssueOrchestrationSummary> {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const rootIssue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
-        const subtreeIssueIds = params.includeSubtree
+        // A private root is invisible to a non-member plugin: report not-found
+        // rather than leak its existence or any subtree relationship metadata.
+        const rootIssue = await requirePluginReadableIssue(params.issueId, companyId);
+        const rawSubtreeIssueIds = params.includeSubtree
           ? await collectIssueSubtreeIds(companyId, rootIssue.id)
           : [rootIssue.id];
+        // Drop any private descendant the plugin may not read so its relations,
+        // approvals, runs, costs, and budget blocks never enter the summary.
+        const readableSubtreeIds = await pluginReadableIssueIdsByIds(companyId, rawSubtreeIssueIds);
+        readableSubtreeIds.add(rootIssue.id);
+        const subtreeIssueIds = rawSubtreeIssueIds.filter((id) => readableSubtreeIds.has(id));
+        // Blocker edges can point at private issues outside the readable subtree
+        // (e.g. a public task blocked by a private one). Their title/status/
+        // assignee are relationship metadata a non-member must not see, so
+        // pluginRedactRelationSummary drops any edge whose target is unreadable,
+        // recursing into nested terminal blockers.
         const relationPairs = await Promise.all(
-          subtreeIssueIds.map(async (issueId) => [issueId, await issues.getRelationSummaries(issueId)] as const),
+          subtreeIssueIds.map(async (issueId) => [
+            issueId,
+            await pluginRedactRelationSummary(companyId, await issues.getRelationSummaries(issueId)),
+          ] as const),
         );
         const approvalRows = (
           await Promise.all(
@@ -2366,7 +2549,10 @@ export function buildHostServices(
       async listComments(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        if (!inCompany(await issues.getById(params.issueId), companyId)) return [];
+        const issue = await issues.getById(params.issueId);
+        if (!inCompany(issue, companyId)) return [];
+        // Comment visibility follows the ACL of the issue they were posted on.
+        if (!(await pluginCanReadIssue(issue))) return [];
         return (await issues.listComments(params.issueId)) as IssueComment[];
       },
       async createComment(params) {
@@ -2462,7 +2648,11 @@ export function buildHostServices(
       async listInteractions(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        if (!inCompany(await issues.getById(params.issueId), companyId)) return [];
+        const issue = await issues.getById(params.issueId);
+        if (!inCompany(issue, companyId)) return [];
+        // Interaction payloads follow the ACL of the issue they belong to; a
+        // private issue yields no interactions to a non-member plugin.
+        if (!(await pluginCanReadIssue(issue))) return [];
         return (await interactions.listForIssue(params.issueId)) as any;
       },
       async respondInteraction(params) {
@@ -2553,7 +2743,9 @@ export function buildHostServices(
       async listAttachments(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        if (!inCompany(await issues.getById(params.issueId), companyId)) return [];
+        const issue = await issues.getById(params.issueId);
+        if (!inCompany(issue, companyId)) return [];
+        if (!(await pluginCanReadIssue(issue))) return [];
         return (await issues.listAttachments(params.issueId)) as any;
       },
       async getAttachmentContent(params) {
@@ -2563,6 +2755,9 @@ export function buildHostServices(
         // Unknown and cross-company ids are deliberately indistinguishable to
         // the plugin: both return null (no existence oracle across companies).
         if (!attachment || attachment.companyId !== companyId) return null;
+        // A private issue's attachment content must not reach a non-member
+        // plugin: gate on the parent issue's visibility, same null response.
+        if (!(await pluginCanReadIssue(await issues.getById(attachment.issueId)))) return null;
 
         const maxBytes = typeof params.maxBytes === "number" && params.maxBytes > 0 ? params.maxBytes : null;
         if (maxBytes !== null && attachment.byteSize > maxBytes) {
@@ -2693,14 +2888,15 @@ export function buildHostServices(
       async list(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        // Document bodies follow the issue ACL; a private issue is not-found.
+        await requirePluginReadableIssue(params.issueId, companyId);
         const rows = await documents.listIssueDocuments(params.issueId);
         return rows as any;
       },
       async get(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        await requirePluginReadableIssue(params.issueId, companyId);
         const doc = await documents.getIssueDocumentByKey(params.issueId, params.key);
         return (doc ?? null) as any;
       },

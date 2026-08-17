@@ -380,6 +380,11 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       identifier: `${issuePrefix}-1`,
     });
 
+    // Complete the circular issue/run fixture after both FK targets exist.
+    await db.update(heartbeatRuns)
+      .set({ scopeKind: "issue", issueId })
+      .where(eq(heartbeatRuns.id, runId));
+
     return { companyId, agentId, issueId, runId, now };
   }
 
@@ -1755,6 +1760,9 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       issueNumber: 1,
       identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-2`,
     });
+    await db.update(heartbeatRuns)
+      .set({ scopeKind: "issue", issueId })
+      .where(eq(heartbeatRuns.id, sourceRunId));
 
     const scheduled = await heartbeat.scheduleBoundedRetry(sourceRunId, {
       now,
@@ -1856,6 +1864,9 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       issueNumber: 1,
       identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-3`,
     });
+    await db.update(heartbeatRuns)
+      .set({ scopeKind: "issue", issueId })
+      .where(eq(heartbeatRuns.id, sourceRunId));
 
     const scheduled = await heartbeat.scheduleBoundedRetry(sourceRunId, {
       now,
@@ -1966,6 +1977,9 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       issueNumber: 1,
       identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-3`,
     });
+    await db.update(heartbeatRuns)
+      .set({ scopeKind: "issue", issueId })
+      .where(eq(heartbeatRuns.id, sourceRunId));
 
     const scheduled = await heartbeat.scheduleBoundedRetry(sourceRunId, {
       now,

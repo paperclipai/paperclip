@@ -21,8 +21,10 @@ const mockHeartbeatService = vi.hoisted(() => ({
   cancelRun: vi.fn(),
   wakeup: vi.fn(),
 }));
+const mockAccessService = vi.hoisted(() => ({ decide: vi.fn() }));
 
 vi.mock("../services/index.js", () => ({
+  accessService: () => mockAccessService,
   heartbeatService: () => mockHeartbeatService,
   issueService: () => mockIssueService,
   issueTreeControlService: () => mockTreeControlService,
@@ -62,6 +64,25 @@ describe("issue tree control routes", () => {
     });
     mockHeartbeatService.cancelRun.mockResolvedValue(null);
     mockHeartbeatService.wakeup.mockResolvedValue(null);
+    mockAccessService.decide.mockResolvedValue({ allowed: true });
+  });
+
+  it("conceals private roots from non-members before exposing tree state", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      companyIds: ["company-2"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+    mockAccessService.decide.mockResolvedValue({ allowed: false, reason: "deny_issue_private" });
+
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/tree-control/preview")
+      .send({ mode: "pause" });
+
+    expect(res.status).toBe(404);
+    expect(mockTreeControlService.preview).not.toHaveBeenCalled();
   });
 
   it("rejects cross-company preview requests with a uniform 404 before calling the preview service", async () => {

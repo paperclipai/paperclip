@@ -434,6 +434,7 @@ const createIssueBaseSchema = z.object({
   projectWorkspaceId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
   parentId: z.string().uuid().optional().nullable(),
+  visibility: z.enum(["open", "private"]).optional().default("open"),
   blockedByIssueIds: z.array(z.string().uuid()).optional(),
   unblockDescriptor: z.object({
     owner: z.union([
@@ -554,7 +555,9 @@ export const updateIssueSchema = createIssueBaseSchema.omit({
   createdByUserId: true,
   responsibleUserId: true,
   watchdog: true,
+  visibility: true,
 }).partial().extend({
+  visibility: z.enum(["open", "private"]).optional(),
   requestDepth: issueRequestDepthInputSchema.optional(),
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
   comment: multilineTextSchema.pipe(z.string().min(1)).optional(),

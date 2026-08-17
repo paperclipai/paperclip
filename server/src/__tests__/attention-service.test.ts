@@ -171,6 +171,9 @@ describeEmbeddedPostgres("attention service", () => {
     createdAt?: Date;
     unblockDescriptor?: { owner: { userId: string } | "board"; action: string } | null;
     blockedTransitionAt?: Date | null;
+    visibility?: "open" | "private";
+    privacyRootIssueId?: string | null;
+    responsibleUserId?: string | null;
     harnessKind?: string | null;
     reviewPolicy?: "anyone" | "not_creator" | "human_only" | null;
   }) {
@@ -194,6 +197,9 @@ describeEmbeddedPostgres("attention service", () => {
       executionState: input.executionState ?? null,
       unblockDescriptor: input.unblockDescriptor ?? null,
       blockedTransitionAt: input.blockedTransitionAt ?? null,
+      visibility: input.visibility ?? "open",
+      privacyRootIssueId: input.privacyRootIssueId ?? null,
+      responsibleUserId: input.responsibleUserId ?? null,
       harnessKind: input.harnessKind ?? null,
       createdAt: input.createdAt,
       updatedAt: input.updatedAt,
@@ -1955,6 +1961,35 @@ describeEmbeddedPostgres("attention service", () => {
       .get(`/api/companies/${companyId}/attention?sort=oldest`)
       .expect(400, { error: "sort must be 'activity' or 'decide'" });
     await request(app(agent)).get(`/api/companies/${companyId}/attention`).expect(403);
+  });
+
+  it("omits private issue review items for a non-member board user", async () => {
+    const { companyId } = await seedCompany("ATP");
+    const privateIssueId = randomUUID();
+    await insertIssue({
+      id: privateIssueId,
+      companyId,
+      identifier: "ATP-1",
+      title: "Confidential review",
+      status: "in_review",
+      assigneeUserId: "private-owner",
+      executionState: pendingUserExecutionState("private-owner"),
+      visibility: "private",
+      privacyRootIssueId: privateIssueId,
+      responsibleUserId: "private-owner",
+    });
+
+    const actor = {
+      type: "board" as const,
+      source: "session" as const,
+      userId: "non-member",
+      companyIds: [companyId],
+      isInstanceAdmin: false,
+    };
+    const feed = await attentionService(db).list(companyId, { userId: actor.userId, actor });
+
+    expect(feed.items.map((item) => item.subject.title)).not.toContain("Confidential review");
+    expect(JSON.stringify(feed)).not.toContain(privateIssueId);
   });
 
   it("computes the aging shelf uniformly across approval, interaction, and review sources", async () => {

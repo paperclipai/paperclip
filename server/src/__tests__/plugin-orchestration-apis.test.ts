@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   activityLog,
   agentWakeupRequests,
@@ -14,11 +14,13 @@ import {
   companyMemberships,
   costEvents,
   createDb,
+  documents,
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
   issueAttachments,
   issueComments,
+  issueDocuments,
   issueRelations,
   issueThreadInteractions,
   issues,
@@ -1232,5 +1234,216 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await expect(
       services.issues.getAttachmentContent({ attachmentId, companyId, maxBytes: 1_000_000 }),
     ).rejects.toThrow("over the");
+  });
+
+  // PAP-16091 / PAP-16050: a plugin is a non-member principal. Every issue-read
+  // path the host exposes (which a Slack notifier/digest plugin would fan out
+  // to shared channels) must apply the canonical visibility predicate so private
+  // issue content and relationship metadata never reach non-members.
+  describe("non-member plugin issue-read privacy (PAP-16091)", () => {
+    let previousMode: string | undefined;
+    beforeEach(() => {
+      previousMode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+      process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
+    });
+    afterEach(() => {
+      if (previousMode === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+      else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previousMode;
+    });
+
+    async function seedOpenAndPrivate() {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const openIssueId = randomUUID();
+      const privateIssueId = randomUUID();
+      await db.insert(issues).values([
+        { id: openIssueId, companyId, title: "Public status", status: "todo", priority: "medium", visibility: "open" },
+        { id: privateIssueId, companyId, title: "Confidential HR matter", status: "todo", priority: "medium", visibility: "private" },
+      ]);
+      return { companyId, agentId, openIssueId, privateIssueId };
+    }
+
+    it("omits private issues from issues.list", async () => {
+      const { companyId, openIssueId, privateIssueId } = await seedOpenAndPrivate();
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      const listed = await services.issues.list({ companyId });
+      const ids = listed.map((issue) => issue.id);
+      expect(ids).toContain(openIssueId);
+      expect(ids).not.toContain(privateIssueId);
+    });
+
+    it("returns null from issues.get for a private issue", async () => {
+      const { companyId, openIssueId, privateIssueId } = await seedOpenAndPrivate();
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(services.issues.get({ issueId: privateIssueId, companyId })).resolves.toBeNull();
+      // Sanity: the same path still returns readable (open) issues.
+      await expect(services.issues.get({ issueId: openIssueId, companyId })).resolves.toMatchObject({ id: openIssueId });
+    });
+
+    it("returns no comments from issues.listComments for a private issue", async () => {
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      await db.insert(issueComments).values({
+        id: randomUUID(), companyId, issueId: privateIssueId, body: "secret decision rationale",
+      });
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(services.issues.listComments({ issueId: privateIssueId, companyId })).resolves.toEqual([]);
+    });
+
+    it("returns no attachments from issues.listAttachments for a private issue", async () => {
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      const assetId = randomUUID();
+      await db.insert(assets).values({
+        id: assetId, companyId, provider: "local_disk", objectKey: "secret", contentType: "image/png", byteSize: 10, sha256: "z",
+      });
+      await db.insert(issueAttachments).values({ id: randomUUID(), companyId, issueId: privateIssueId, assetId });
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(services.issues.listAttachments({ issueId: privateIssueId, companyId })).resolves.toEqual([]);
+    });
+
+    it("returns null from issues.getAttachmentContent for a private issue's attachment", async () => {
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      const assetId = randomUUID();
+      await db.insert(assets).values({
+        id: assetId, companyId, provider: "local_disk", objectKey: "secret2", contentType: "text/plain", byteSize: 4, sha256: "y",
+      });
+      const attachmentId = randomUUID();
+      await db.insert(issueAttachments).values({ id: attachmentId, companyId, issueId: privateIssueId, assetId });
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(
+        services.issues.getAttachmentContent({ attachmentId, companyId, maxBytes: 1_000_000 }),
+      ).resolves.toBeNull();
+    });
+
+    it("excludes a private descendant and redacts private blocker edges in getOrchestrationSummary", async () => {
+      const { companyId } = await seedCompanyAndAgent();
+      const rootId = randomUUID();
+      const publicChildId = randomUUID();
+      const privateChildId = randomUUID();
+      const privateBlockerId = randomUUID();
+      await db.insert(issues).values([
+        { id: rootId, companyId, title: "Root", status: "todo", priority: "medium", visibility: "open" },
+        { id: publicChildId, companyId, parentId: rootId, title: "Public child", status: "todo", priority: "medium", visibility: "open" },
+        { id: privateChildId, companyId, parentId: rootId, title: "Private child", status: "todo", priority: "medium", visibility: "private" },
+        { id: privateBlockerId, companyId, title: "Private blocker", status: "todo", priority: "medium", visibility: "private" },
+      ]);
+      // privateBlocker blocks the public root -> root.blockedBy includes it pre-redaction.
+      await db.insert(issueRelations).values({
+        companyId, issueId: privateBlockerId, relatedIssueId: rootId, type: "blocks",
+      });
+
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      const summary = await services.issues.getOrchestrationSummary({ companyId, issueId: rootId, includeSubtree: true });
+
+      // Private descendant never enters the subtree.
+      expect(new Set(summary.subtreeIssueIds)).toEqual(new Set([rootId, publicChildId]));
+      // No relation edge anywhere references the private blocker or private child.
+      const edgeIds = new Set<string>();
+      for (const relation of Object.values(summary.relations)) {
+        for (const edge of [...relation.blockedBy, ...relation.blocks]) edgeIds.add(edge.id);
+      }
+      expect(edgeIds.has(privateBlockerId)).toBe(false);
+      expect(edgeIds.has(privateChildId)).toBe(false);
+    });
+
+    it("reports a private root issue as not-found from getOrchestrationSummary", async () => {
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(
+        services.issues.getOrchestrationSummary({ companyId, issueId: privateIssueId, includeSubtree: true }),
+      ).rejects.toThrow("Issue not found");
+    });
+
+    async function seedIssueDocument(companyId: string, issueId: string, key: string, body: string) {
+      const documentId = randomUUID();
+      await db.insert(documents).values({ id: documentId, companyId, latestBody: body, format: "markdown" });
+      await db.insert(issueDocuments).values({ id: randomUUID(), companyId, issueId, documentId, key });
+      return documentId;
+    }
+
+    it("throws not-found from issues.getRelations for a private issue", async () => {
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(
+        services.issues.getRelations({ issueId: privateIssueId, companyId }),
+      ).rejects.toThrow("Issue not found");
+    });
+
+    it("redacts a private blocker edge from issues.getRelations on a public issue", async () => {
+      const { companyId, openIssueId, privateIssueId } = await seedOpenAndPrivate();
+      // privateIssue blocks the open issue -> open.blockedBy would name it pre-redaction.
+      await db.insert(issueRelations).values({
+        companyId, issueId: privateIssueId, relatedIssueId: openIssueId, type: "blocks",
+      });
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      const relations = await services.issues.getRelations({ issueId: openIssueId, companyId });
+      const edgeIds = [...relations.blockedBy, ...relations.blocks].map((edge) => edge.id);
+      expect(edgeIds).not.toContain(privateIssueId);
+    });
+
+    it("reports a private root issue as not-found from issues.getSubtree", async () => {
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(
+        services.issues.getSubtree({ issueId: privateIssueId, companyId }),
+      ).rejects.toThrow("Issue not found");
+    });
+
+    it("excludes a private child and its documents from issues.getSubtree on an open root", async () => {
+      const { companyId } = await seedCompanyAndAgent();
+      const rootId = randomUUID();
+      const publicChildId = randomUUID();
+      const privateChildId = randomUUID();
+      await db.insert(issues).values([
+        { id: rootId, companyId, title: "Root", status: "todo", priority: "medium", visibility: "open" },
+        { id: publicChildId, companyId, parentId: rootId, title: "Public child", status: "todo", priority: "medium", visibility: "open" },
+        { id: privateChildId, companyId, parentId: rootId, title: "Private child", status: "todo", priority: "medium", visibility: "private" },
+      ]);
+      // A document on the private child would surface in the subtree summary pre-fix.
+      await seedIssueDocument(companyId, privateChildId, "plan", "confidential subtree plan");
+
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      const subtree = await services.issues.getSubtree({
+        issueId: rootId, companyId, includeDocuments: true, includeRelations: true,
+      });
+      expect(new Set(subtree.issueIds)).toEqual(new Set([rootId, publicChildId]));
+      expect(subtree.issues.map((issue) => issue.id)).not.toContain(privateChildId);
+      expect(Object.keys(subtree.documents ?? {})).not.toContain(privateChildId);
+    });
+
+    it("returns no interactions from issues.listInteractions for a private issue", async () => {
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      await db.insert(issueThreadInteractions).values({
+        id: randomUUID(), companyId, issueId: privateIssueId, kind: "request_confirmation",
+        payload: { version: 1, prompt: "Confirm confidential action?" } as any,
+      });
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(services.issues.listInteractions({ issueId: privateIssueId, companyId })).resolves.toEqual([]);
+    });
+
+    it("throws not-found from issueDocuments.list for a private issue", async () => {
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      await seedIssueDocument(companyId, privateIssueId, "plan", "confidential plan body");
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(
+        services.issueDocuments.list({ issueId: privateIssueId, companyId }),
+      ).rejects.toThrow("Issue not found");
+    });
+
+    it("throws not-found from issueDocuments.get for a private issue", async () => {
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      await seedIssueDocument(companyId, privateIssueId, "plan", "confidential plan body");
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(
+        services.issueDocuments.get({ issueId: privateIssueId, companyId, key: "plan" }),
+      ).rejects.toThrow("Issue not found");
+    });
+
+    it("is pass-through when privacy mode is off (enforce flip is the single switch)", async () => {
+      process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "off";
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      const ids = (await services.issues.list({ companyId })).map((issue) => issue.id);
+      expect(ids).toContain(privateIssueId);
+      await expect(services.issues.get({ issueId: privateIssueId, companyId })).resolves.toMatchObject({ id: privateIssueId });
+    });
   });
 });

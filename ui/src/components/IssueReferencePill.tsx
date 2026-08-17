@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
-import type { IssueRelationIssueSummary } from "@paperclipai/shared";
+import type { IssueLockedStub, IssueRelationIssueSummary } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { cn } from "../lib/utils";
+import { LockedIssueChip, isLockedIssueStub } from "./LockedIssueChip";
 import { StatusIcon } from "./StatusIcon";
 
 export function IssueReferencePill({
@@ -10,12 +11,18 @@ export function IssueReferencePill({
   className,
   children,
 }: {
-  issue: Pick<IssueRelationIssueSummary, "id" | "identifier" | "title"> &
-    Partial<Pick<IssueRelationIssueSummary, "status">>;
+  issue:
+    | (Pick<IssueRelationIssueSummary, "id" | "identifier" | "title"> &
+        Partial<Pick<IssueRelationIssueSummary, "status">>)
+    | IssueLockedStub;
   strikethrough?: boolean;
   className?: string;
   children?: ReactNode;
 }) {
+  // Private issue referenced from a visible edge — never leak a title or a link.
+  if (isLockedIssueStub(issue)) {
+    return <LockedIssueChip identifier={issue.identifier} className={className} />;
+  }
   const issueLabel = issue.identifier ?? issue.title;
   const classNames = cn(
     "paperclip-mention-chip paperclip-mention-chip--issue",
