@@ -6,6 +6,7 @@ const mockApprovalService = vi.hoisted(() => ({
   list: vi.fn(),
   getById: vi.fn(),
   create: vi.fn(),
+  createIdempotent: vi.fn(),
   approve: vi.fn(),
   reject: vi.fn(),
   requestRevision: vi.fn(),
@@ -121,6 +122,7 @@ describe("approval routes idempotent retries", () => {
     mockApprovalService.list.mockReset();
     mockApprovalService.getById.mockReset();
     mockApprovalService.create.mockReset();
+    mockApprovalService.createIdempotent.mockReset();
     mockApprovalService.approve.mockReset();
     mockApprovalService.reject.mockReset();
     mockApprovalService.requestRevision.mockReset();
@@ -323,7 +325,7 @@ describe("approval routes idempotent retries", () => {
   });
 
   it("lets agents create generic issue-linked board approval requests", async () => {
-    mockApprovalService.create.mockResolvedValue({
+    const approval = {
       id: "approval-1",
       companyId: "company-1",
       type: "request_board_approval",
@@ -334,9 +336,11 @@ describe("approval routes idempotent retries", () => {
       decisionNote: null,
       decidedByUserId: null,
       decidedAt: null,
+      idempotencyKey: null,
       createdAt: new Date("2026-04-06T00:00:00.000Z"),
       updatedAt: new Date("2026-04-06T00:00:00.000Z"),
-    });
+    };
+    mockApprovalService.createIdempotent.mockResolvedValue({ approval, created: true });
 
     const res = await request(await createAgentApp())
       .post("/api/companies/company-1/approvals")
@@ -346,7 +350,7 @@ describe("approval routes idempotent retries", () => {
         payload: { title: "Approve hosting spend" },
       });
 
-    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(res.body).toMatchObject({
       companyId: "company-1",
       type: "request_board_approval",
@@ -371,6 +375,101 @@ describe("approval routes idempotent retries", () => {
     );
   });
 
+  it("returns 200 with the existing approval when idempotencyKey matches", async () => {
+    const existingApproval = {
+      id: "approval-dup",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: { title: "Approve spend" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      idempotencyKey: "card:INU-123:inu-care/inu-fe:42:abc",
+      createdAt: new Date("2026-04-06T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-06T00:00:00.000Z"),
+    };
+    mockApprovalService.createIdempotent.mockResolvedValue({ approval: existingApproval, created: false });
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        payload: { title: "Approve spend" },
+        idempotencyKey: "card:INU-123:inu-care/inu-fe:42:abc",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.id).toBe("approval-dup");
+    expect(mockIssueApprovalService.linkManyForApproval).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("returns 201 and creates a new approval when idempotencyKey is new", async () => {
+    const newApproval = {
+      id: "approval-new",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: { title: "Approve spend" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      idempotencyKey: "card:INU-456:inu-care/inu-fe:55:def",
+      createdAt: new Date("2026-04-06T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-06T00:00:00.000Z"),
+    };
+    mockApprovalService.createIdempotent.mockResolvedValue({ approval: newApproval, created: true });
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        payload: { title: "Approve spend" },
+        idempotencyKey: "card:INU-456:inu-care/inu-fe:55:def",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.id).toBe("approval-new");
+    expect(mockLogActivity).toHaveBeenCalledOnce();
+  });
+
+  it("works without idempotencyKey for backward compatibility", async () => {
+    const approval = {
+      id: "approval-back",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: { title: "No key" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      idempotencyKey: null,
+      createdAt: new Date("2026-04-06T00:00:00.000Z"),
+      updatedAt: new Date("2026-04-06T00:00:00.000Z"),
+    };
+    mockApprovalService.createIdempotent.mockResolvedValue({ approval, created: true });
+
+    const res = await request(await createAgentApp())
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        payload: { title: "No key" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockApprovalService.createIdempotent).toHaveBeenCalledWith(
+      "company-1",
+      expect.not.objectContaining({ idempotencyKey: expect.anything() }),
+    );
+  });
+
   it("blocks status-only recovery runs from creating approvals", async () => {
     const res = await request(await createAgentApp({
       contextSnapshot: {
@@ -389,6 +488,7 @@ describe("approval routes idempotent retries", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toContain("Cheap status-only recovery runs cannot create or modify approvals");
+    expect(mockApprovalService.createIdempotent).not.toHaveBeenCalled();
     expect(mockApprovalService.create).not.toHaveBeenCalled();
     expect(mockIssueApprovalService.linkManyForApproval).not.toHaveBeenCalled();
   });
