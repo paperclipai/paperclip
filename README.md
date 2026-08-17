@@ -455,7 +455,7 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 - 🟡 Cloud deployments (multi-tenant isolation & company Import/Export shipped)
 - ⚪ Desktop App
 - ⚪ Bring-your-own-ticket-system (Asana / Linear / Jira as on-ramps)
-- ⚪ Connected Apps (one-click integrations, e.g. Vercel)
+- ✅ Connected Apps (one-click integrations: Vercel, Linear, Notion, Sentry, GitHub, Slack, and more)
 
 This is the short roadmap preview. See the full roadmap in [ROADMAP.md](ROADMAP.md).
 

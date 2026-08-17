@@ -122,6 +122,6 @@ A desktop app can make Paperclip feel more accessible and persistent for day-to-
 
 Existing ticket systems should be able to feed work into Paperclip without becoming the agent control plane themselves. Asana, Linear, and Jira can act as familiar on-ramps while Paperclip owns execution, governance, and outcomes.
 
-### ⚪ Connected Apps (one-click integrations, e.g. Vercel)
+### ✅ Connected Apps (one-click integrations: Vercel, Linear, Notion, Sentry, GitHub, Slack, and more)
 
-Common services should connect without bespoke setup for every company. One-click integrations can package credentials, permissions, and useful workflows for apps such as Vercel while keeping access governed and auditable.
+Common services should connect without bespoke setup for every company. One-click integrations package credentials, permissions, and useful workflows for apps such as Vercel while keeping access governed and auditable.
