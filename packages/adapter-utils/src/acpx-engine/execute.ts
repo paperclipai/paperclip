@@ -92,6 +92,13 @@ import type {
   SessionKeyIdentity,
 } from "./run-contracts.js";
 import {
+  createHostRunSite,
+  type AcpxAgentProcessIdentity,
+  type AcpxProcessIdentitySink,
+  type ChildStderrState,
+  type RuntimeCacheEntry,
+} from "./run-site-host.js";
+import {
   createRuntimeSpanRunner,
   emitSkippedStartupStep,
   getActiveStepContext,
@@ -111,11 +118,6 @@ import {
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
 const BENIGN_NES_CLOSE_STDERR = /method: ['"]nes\/close['"].*-32601/;
-
-interface ChildStderrState {
-  logPath: string | null;
-  pendingLiveLine: string;
-}
 
 function routeChildStderr(state: ChildStderrState, chunk: string) {
   if (state.logPath) {
@@ -144,8 +146,6 @@ function flushChildStderr(state: ChildStderrState) {
   state.pendingLiveLine = "";
 }
 
-type AcpxAgentProcessIdentity = { pid: number; startedAt: string };
-
 type PaperclipAcpRuntimeOptions = AcpRuntimeOptions & {
   onAgentSpawn?: (meta: AcpxAgentProcessIdentity) => Promise<void>;
   // Return the current-run parent-context token. It is the `task.run` token
@@ -155,22 +155,7 @@ type PaperclipAcpRuntimeOptions = AcpRuntimeOptions & {
   getRuntimeParentContext?: () => StartupSpanContext | undefined;
 };
 
-type AcpxProcessIdentitySink = {
-  current: AdapterExecutionContext["onSpawn"];
-  latest: AcpxAgentProcessIdentity | null;
-};
-
 type AcpxRuntimeFactory = (options: PaperclipAcpRuntimeOptions) => AcpRuntime;
-
-export interface RuntimeCacheEntry {
-  runtime: AcpRuntime;
-  handle: AcpRuntimeHandle;
-  childStderrState: ChildStderrState;
-  processIdentitySink: AcpxProcessIdentitySink;
-  fingerprint: string;
-  lastUsedAt: number;
-  cleanupTimer?: NodeJS.Timeout;
-}
 
 /**
  * A remote runner-backed session's staged runtime, kept warm across runs so a
@@ -2859,27 +2844,6 @@ function isResumeFailure(err: unknown): boolean {
   return /resume|load|not found|no session|unknown session|conversation/i.test(message);
 }
 
-async function cleanupIdleHandles(input: {
-  handles: Map<string, RuntimeCacheEntry>;
-  now: number;
-  idleMs: number;
-}) {
-  if (input.idleMs <= 0) return;
-
-  const stale: Array<[string, RuntimeCacheEntry]> = [];
-  for (const entry of input.handles.entries()) {
-    if (input.now - entry[1].lastUsedAt >= input.idleMs) stale.push(entry);
-  }
-  for (const [key, entry] of stale) {
-    await closeWarmHandle({
-      handles: input.handles,
-      key,
-      entry,
-      reason: "paperclip idle cleanup",
-    });
-  }
-}
-
 // Drop staged-runtime entries the session has not touched within the warm-idle
 // window, so the cache does not accumulate abandoned sessions (e.g. every time
 // a config change shifts the fingerprint to a new key). The per-run copy-back
@@ -3037,37 +3001,6 @@ async function closeWarmHandle(input: {
     discardPersistentState: input.discardPersistentState ?? false,
   }).catch(() => {});
   flushChildStderr(input.entry.childStderrState);
-}
-
-function scheduleIdleHandleCleanup(input: {
-  handles: Map<string, RuntimeCacheEntry>;
-  key: string;
-  entry: RuntimeCacheEntry;
-  idleMs: number;
-  now: () => number;
-}) {
-  clearWarmHandleTimer(input.entry);
-  if (input.idleMs <= 0) return;
-
-  const delayMs = Math.max(1, input.entry.lastUsedAt + input.idleMs - input.now());
-  input.entry.cleanupTimer = setTimeout(() => {
-    void (async () => {
-      const current = input.handles.get(input.key);
-      if (current !== input.entry) return;
-      const idleForMs = input.now() - input.entry.lastUsedAt;
-      if (idleForMs < input.idleMs) {
-        scheduleIdleHandleCleanup(input);
-        return;
-      }
-      await closeWarmHandle({
-        handles: input.handles,
-        key: input.key,
-        entry: input.entry,
-        reason: "paperclip idle cleanup",
-      });
-    })();
-  }, delayMs);
-  input.entry.cleanupTimer.unref?.();
 }
 
 function warmHandleMatches(
@@ -3309,6 +3242,24 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       billingType: billingIdentity?.billingType ?? ("unknown" as const),
     };
     const warmIdleMs = asNumber(ctx.config.warmHandleIdleMs, DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS);
+    // The host run site owns the warm-handle store on this run. It operates over
+    // the engine's persistent `warmHandles` map, so a warm runtime stays live for
+    // the next compatible resume. The store arms the per-entry idle timer on a
+    // warm save, sweeps idle entries at run start, and closes a released entry
+    // through `closeWarmEntry`. The run reads `warmHandleIdleMs` per run, so the
+    // site takes this run's bound.
+    const hostSite = createHostRunSite({
+      warmHandles,
+      now,
+      idleMs: warmIdleMs,
+      closeWarmEntry: async (entry) => {
+        await entry.runtime
+          .close({ handle: entry.handle, reason: "paperclip idle cleanup", discardPersistentState: false })
+          .catch(() => {});
+        flushChildStderr(entry.childStderrState);
+      },
+    });
+    const hostStore = hostSite.reuse();
     // The `task.run` and `sandbox.startup` spans must not cover a local or SSH
     // run: those runs have no sandbox, so they stay out of sandbox telemetry.
     // Open a real root span only when the target is a remote sandbox and the
@@ -3487,12 +3438,16 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           "stderr",
           `[paperclip] ${formatAdapterExecutionTimeoutStartLogLine(prepared.timeoutResolution)}\n`,
         );
-        await cleanupIdleHandles({ handles: warmHandles, now: now(), idleMs: warmIdleMs });
+        await hostStore.evictIdle(now());
 
         const previousParams = parseObject(ctx.runtime.sessionParams);
         const canResume = isCompatibleSession(previousParams, prepared);
         const resumeSessionId = canResume ? asString(previousParams.acpSessionId, "") || undefined : undefined;
-        const cached = canResume ? warmHandles.get(prepared.sessionKey) : undefined;
+        // Borrow the warm entry without removing it, so an overlapping run of the
+        // same session still sees it. The borrow clears the entry's idle timer, so
+        // the reused runtime cannot expire under its own timer while this run uses
+        // it (today's `clearWarmHandleTimer(cached)` after the reuse decision).
+        const cached = canResume ? hostStore.borrow(prepared.sessionKey) : undefined;
         childStderrState = cached?.childStderrState ?? { logPath: null, pendingLiveLine: "" };
         processIdentitySink = cached?.processIdentitySink ?? {
           current: ctx.onSpawn,
@@ -3554,7 +3509,6 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           runtime = createRuntime(runtimeOptions);
           createRuntimeMs = now() - createRuntimeStart;
         }
-        if (cached) clearWarmHandleTimer(cached);
         if (!canResume && asString(previousParams.runtimeSessionName, "")) {
           await ctx.onLog(
             "stdout",
@@ -3965,14 +3919,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               fingerprint: prepared.fingerprint,
               lastUsedAt: now(),
             };
-            warmHandles.set(prepared.sessionKey, entry);
-            scheduleIdleHandleCleanup({
-              handles: warmHandles,
-              key: prepared.sessionKey,
-              entry,
-              idleMs: warmIdleMs,
-              now,
-            });
+            // Save the warm entry through the host store, which arms its per-entry
+            // idle timer so the runtime closes on its own if no later run reuses it.
+            hostStore.save(prepared.sessionKey, entry);
           }
         } else {
           const existing = warmHandles.get(prepared.sessionKey);

@@ -6,31 +6,47 @@
 // cannot read what a site saves. `RunSite.reuseCandidate()` names the concrete
 // type per site.
 //
+// The store operates OVER a caller-provided map, not a private internal map.
+// The host lane passes its warm-handle map; the sandbox lane passes its staged-
+// runtime map. Both maps persist across runs, so a saved entry stays visible to
+// a later run of the same session. Each entry carries its own last-used time and
+// its own optional per-entry idle timer, so the store reads and writes those
+// through the caller-supplied accessors. This keeps the exact shape both caches
+// had before this refactor, so a caller that inspects the map still reads the
+// same entries.
+//
 // The store keeps the exact behavior the two caches had before this refactor:
 //
 //   * `borrow` reads without removal. It keeps today's visibility for
 //     overlapping runs of the same session. It clears the entry's per-entry
 //     idle timer, because an in-use entry must not expire under its own timer.
-//   * `save` is a synchronous map set. When the store has a per-entry idle
+//   * `save` sets the entry in the map. When the store has a per-entry idle
 //     timer, `save` arms an unref'd timer that discards the entry at the idle
 //     deadline without a run (today's `scheduleIdleHandleCleanup`).
 //   * `discard` is an identity-guarded removal that fires the idempotent
-//     release once. It acts on the node that is at the key now, so a re-saved
+//     release once. It acts on the entry that is at the key now, so a re-saved
 //     entry is safe and a second discard is a no-op.
 //   * `evictIdle` is the run-start sweep (today's `cleanupIdleHandles` and
 //     `cleanupIdleStagedRuntimes`). The host lane runs the critical section
-//     directly. The sandbox lane runs it under its per-key staging lease.
+//     directly. The sandbox lane runs it under its per-key staging lease and
+//     re-checks the idle window inside the lease.
 
 import type { SessionReuseStore } from "./run-contracts.js";
 
 /**
  * The construction options for a reuse store. The public `SessionReuseStore<T>`
  * surface stays generic; these options carry the per-lane behavior the store
- * needs but the interface does not name: the clock, the idle bound, how to
+ * needs but the interface does not name: the backing map, the clock, the idle
+ * bound, how to read an entry's last-used time and per-entry timer, how to
  * release an entry, whether to arm a per-entry timer, and the optional eviction
  * lease.
  */
 export interface SessionReuseStoreConfig<T> {
+  /**
+   * The map the store reads and writes. The caller owns it, so a caller that
+   * inspects the map still reads the same entries. The map persists across runs.
+   */
+  readonly entries: Map<string, T>;
   /** The clock. The store reads it for the idle deadline and the sweep. */
   readonly now: () => number;
   /**
@@ -38,13 +54,25 @@ export interface SessionReuseStoreConfig<T> {
    * per-entry timer and the sweep evicts nothing.
    */
   readonly idleMs: number;
+  /** Read an entry's last-used time. The store compares it to the idle bound. */
+  readonly lastUsedAt: (entry: T) => number;
   /**
-   * Release an entry's resources. The store calls it once per node on a
-   * discard, on a per-entry timer fire, or on an idle sweep. It must be safe to
-   * call more than once for one logical resource, because a shared release
-   * closure can ride a reuse chain.
+   * Release an entry's resources. The store calls it once per entry on a
+   * discard, on a per-entry timer fire, or on an idle sweep. The store guards
+   * every release with a map-identity check, so a discarded entry never
+   * releases twice.
    */
   readonly release: (entry: T) => void | Promise<void>;
+  /**
+   * Read an entry's per-entry idle timer, or `undefined` when it holds none.
+   * The host lane supplies this; the sandbox lane omits it and arms no timer.
+   */
+  readonly getTimer?: (entry: T) => ReturnType<typeof setTimeout> | undefined;
+  /**
+   * Write (or clear with `undefined`) an entry's per-entry idle timer. The host
+   * lane supplies this; the sandbox lane omits it.
+   */
+  readonly setTimer?: (entry: T, timer: ReturnType<typeof setTimeout> | undefined) => void;
   /**
    * Arm a per-entry idle timer on `save`. The host lane sets it true. The
    * sandbox lane leaves it false and relies on the run-start sweep only.
@@ -59,103 +87,96 @@ export interface SessionReuseStoreConfig<T> {
   readonly withEvictLease?: (key: string, critical: () => Promise<void>) => Promise<void>;
 }
 
-/** One stored node. The node identity guards the release against a re-save. */
-interface StoreNode<T> {
-  readonly value: T;
-  lastUsedAt: number;
-  timer?: ReturnType<typeof setTimeout>;
-  released: boolean;
-}
-
 /**
- * Create a generic per-session reuse store. The store holds at most one node
- * per session key. Each node carries its saved value, its last-used time, an
- * optional per-entry idle timer, and a one-shot released flag.
+ * Create a generic per-session reuse store over the caller-provided map. The
+ * store holds at most one entry per session key. Each entry carries its saved
+ * value, its last-used time, and an optional per-entry idle timer, all read
+ * through the config accessors.
  */
 export function createSessionReuseStore<T>(
   config: SessionReuseStoreConfig<T>,
 ): SessionReuseStore<T> {
-  const nodes = new Map<string, StoreNode<T>>();
+  const { entries } = config;
 
-  function clearNodeTimer(node: StoreNode<T>): void {
-    if (node.timer === undefined) return;
-    clearTimeout(node.timer);
-    node.timer = undefined;
+  function clearEntryTimer(entry: T): void {
+    const timer = config.getTimer?.(entry);
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    config.setTimer?.(entry, undefined);
   }
 
-  // Release a node once and drop it from the map when it is still the current
-  // node at the key. The released flag makes the release idempotent, so the
-  // per-entry timer, an explicit discard, and the sweep never release twice.
-  async function releaseNode(key: string, node: StoreNode<T>): Promise<void> {
-    clearNodeTimer(node);
-    if (nodes.get(key) === node) nodes.delete(key);
-    if (node.released) return;
-    node.released = true;
-    await config.release(node.value);
+  // Release an entry once and drop it from the map when it is still the current
+  // entry at the key. The map-identity guard makes the release idempotent: the
+  // synchronous `delete` runs before the awaited release, so a second release of
+  // the same entry finds a different or absent entry at the key and stops.
+  async function releaseEntry(key: string, entry: T): Promise<void> {
+    clearEntryTimer(entry);
+    if (entries.get(key) !== entry) return;
+    entries.delete(key);
+    await config.release(entry);
   }
 
-  function armTimer(key: string, node: StoreNode<T>): void {
+  function armTimer(key: string, entry: T): void {
     if (!config.perEntryTimer || config.idleMs <= 0) return;
-    clearNodeTimer(node);
-    const delayMs = Math.max(1, node.lastUsedAt + config.idleMs - config.now());
-    node.timer = setTimeout(() => {
+    clearEntryTimer(entry);
+    const delayMs = Math.max(1, config.lastUsedAt(entry) + config.idleMs - config.now());
+    const timer = setTimeout(() => {
       void (async () => {
-        if (nodes.get(key) !== node) return;
+        if (entries.get(key) !== entry) return;
         // A later touch can move `lastUsedAt` forward, so re-check the idle
-        // window and re-arm the timer when the node is still in use.
-        if (config.now() - node.lastUsedAt < config.idleMs) {
-          armTimer(key, node);
+        // window and re-arm the timer when the entry is still in use.
+        if (config.now() - config.lastUsedAt(entry) < config.idleMs) {
+          armTimer(key, entry);
           return;
         }
-        await releaseNode(key, node);
+        await releaseEntry(key, entry);
       })();
     }, delayMs);
-    node.timer.unref?.();
+    timer.unref?.();
+    config.setTimer?.(entry, timer);
   }
 
   return {
     borrow(sessionKey: string): T | undefined {
-      const node = nodes.get(sessionKey);
-      if (!node) return undefined;
+      const entry = entries.get(sessionKey);
+      if (entry === undefined) return undefined;
       // The entry is in use now, so clear its per-entry idle timer. The next
       // `save` re-arms a fresh timer after the run finishes.
-      clearNodeTimer(node);
-      return node.value;
+      clearEntryTimer(entry);
+      return entry;
     },
 
     save(sessionKey: string, entry: T): void {
-      const node: StoreNode<T> = {
-        value: entry,
-        lastUsedAt: config.now(),
-        released: false,
-      };
-      nodes.set(sessionKey, node);
-      armTimer(sessionKey, node);
+      // The caller sets the entry's last-used time before it saves, so `save`
+      // sets the entry as-is and arms its timer from that time.
+      entries.set(sessionKey, entry);
+      armTimer(sessionKey, entry);
     },
 
     discard(sessionKey: string): Promise<void> {
-      const node = nodes.get(sessionKey);
-      // `releaseNode` deletes the key synchronously and then fires the release,
+      const entry = entries.get(sessionKey);
+      // `releaseEntry` deletes the key synchronously and then fires the release,
       // so the returned promise lets the caller await the release when it must
       // finish before a downstream resource release.
-      if (!node) return Promise.resolve();
-      return releaseNode(sessionKey, node);
+      if (entry === undefined) return Promise.resolve();
+      return releaseEntry(sessionKey, entry);
     },
 
     async evictIdle(now: number): Promise<void> {
       if (config.idleMs <= 0) return;
-      const stale: Array<[string, StoreNode<T>]> = [];
-      for (const [key, node] of nodes.entries()) {
-        if (now - node.lastUsedAt >= config.idleMs) stale.push([key, node]);
+      const stale: Array<[string, T]> = [];
+      for (const [key, entry] of entries.entries()) {
+        if (now - config.lastUsedAt(entry) >= config.idleMs) stale.push([key, entry]);
       }
-      for (const [key, node] of stale) {
-        // The critical section re-checks the node inside the optional lease, so
-        // a run that re-saved the key while the lease was held keeps its entry.
+      for (const [key, entry] of stale) {
         const critical = async (): Promise<void> => {
-          const current = nodes.get(key);
-          if (current !== node) return;
-          if (config.now() - node.lastUsedAt < config.idleMs) return;
-          await releaseNode(key, node);
+          if (entries.get(key) !== entry) return;
+          // Under a lease the sweep re-checks the idle window, so a run that
+          // re-saved the key while the lease was held keeps its entry.
+          if (config.withEvictLease && config.now() - config.lastUsedAt(entry) < config.idleMs) {
+            return;
+          }
+          await releaseEntry(key, entry);
         };
         if (config.withEvictLease) {
           await config.withEvictLease(key, critical);
