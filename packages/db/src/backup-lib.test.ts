@@ -69,6 +69,11 @@ function createTempDir(prefix: string): string {
   return dir;
 }
 
+function formatBackupTimestamp(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
 async function createTempDatabase(): Promise<string> {
   const db = await startEmbeddedPostgresTestDatabase("paperclip-db-backup-");
   cleanups.push(db.cleanup);
@@ -196,7 +201,7 @@ describe("runDatabaseBackup preflight", () => {
       const fixedUuid = "12345678-1234-5678-1234-567812345678";
       const partialBackupFile = path.join(
         backupDir,
-        `paperclip-test-20260817-121112-${process.pid}-${fixedUuid.slice(0, 8)}.sql.gz.partial`,
+        `paperclip-test-${formatBackupTimestamp(fixedDate)}-${process.pid}-${fixedUuid.slice(0, 8)}.sql.gz.partial`,
       );
 
       fs.writeFileSync(fakePgDumpPath, "#!/bin/sh\nsleep 1\nprintf '%s\\n' '-- fake backup' 'SELECT 1;'\n");
@@ -374,7 +379,7 @@ describe("runDatabaseBackup preflight", () => {
       const fixedUuid = "12345678-1234-5678-1234-567812345678";
       const partialBackupFile = path.join(
         backupDir,
-        `paperclip-test-20260817-121112-${process.pid}-${fixedUuid.slice(0, 8)}.sql.gz.partial`,
+        `paperclip-test-${formatBackupTimestamp(fixedDate)}-${process.pid}-${fixedUuid.slice(0, 8)}.sql.gz.partial`,
       );
       fs.writeFileSync(partialBackupFile, "existing partial");
 
