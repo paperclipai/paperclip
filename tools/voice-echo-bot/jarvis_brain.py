@@ -15,11 +15,12 @@ import traceback
 import llm
 import vault_client
 import web_search
+import websuche_client
 from paperclip_client import create_issue, derive_title
 
 # Kopfteil des System-Prompts: Einleitung + Werkzeuge 1 (Vault) und 2 (Issue).
-# Wird in respond() um WEB_TOOL_HINT (Werkzeug 3, nur mit web_key) und danach
-# um SYSTEM_PROMPT_TAIL ergänzt — siehe dort für die Zusammensetzung.
+# Wird in respond() um WEB_TOOL_HINT (Werkzeug 3, nur mit web_erlaubt) und
+# danach um SYSTEM_PROMPT_TAIL ergänzt — siehe dort für die Zusammensetzung.
 SYSTEM_PROMPT_HEAD = (
     "Du bist Jarvis, der persönliche CEO-Draht von {name}. Du bist ein ganz "
     "normaler Chat-Assistent: antworte knapp, auf Deutsch, sprich {name} mit "
@@ -120,9 +121,9 @@ WEB_TOOL_HINT = (
     "   Rate NIE bei solchen Fragen — such nach oder sag, dass du es nicht weißt."
 )
 
-# Ersatz für WEB_TOOL_HINT, wenn kein web_key übergeben wurde (Werkzeug nicht
-# eingerichtet ODER für die laufende Wake-Kette nach einem Vault-Zugriff
-# gesperrt, siehe respond()). Ohne diesen Hinweis fehlt dem Modell schlicht
+# Ersatz für WEB_TOOL_HINT, wenn die Websuche gesperrt ist (web_erlaubt=False:
+# für die laufende Wake-Kette nach einem Vault-Zugriff gesperrt, siehe
+# respond()). Ohne diesen Hinweis fehlt dem Modell schlicht
 # das Werkzeug 3 aus der Liste — es greift dann ersatzweise zum einzig
 # verbliebenen Werkzeug (Vault-Lookup), auch für vault-fremde Themen wie
 # Wetter (Live-Befund: "das Wetter" wurde als LOOKUP gestellt, Antwort waren
@@ -165,7 +166,18 @@ def _strip_or_fallback(text):
 
 
 def respond(text, tenant, token, chat_model, history=None, source="per Telegram",
-            voice_output=False, now=None, web_key=None):
+            voice_output=False, now=None, web_key=None, web_erlaubt=True):
+    """`web_erlaubt` ist der Sperrschalter der Websuche, `web_key` nur der
+    Zugang zum Tavily-Fallback.
+
+    Die Trennung ist Absicht und sicherheitsrelevant: bis zum lokalen
+    Websuche-Dienst war "kein Key" gleichbedeutend mit "keine Suche", und der
+    Wake-Satellit hat den Key deshalb auf None gesetzt, um nach einem
+    Vault-Treffer die Suche für die restliche Gesprächskette zu sperren. Der
+    lokale Dienst braucht aber gar keinen Key — ohne eigenes Flag wäre diese
+    Sperre wirkungslos geworden und private Vault-Daten hätten als Suchbegriff
+    nach draußen wandern können.
+    """
     text = (text or "").strip()
     if not text:
         return {"kind": "empty", "answer": "Nichts erkannt, bitte erneut."}
@@ -173,12 +185,12 @@ def respond(text, tenant, token, chat_model, history=None, source="per Telegram"
     # Reihenfolge ist bewusst: WEB_TOOL_HINT (Werkzeug 3) bzw. NO_WEB_HINT
     # muss VOR dem "Brauchst du KEIN Werkzeug"-Absatz stehen, sonst liest ein
     # kleines Modell es nicht mehr als Teil der Werkzeugliste (Review-Befund).
-    # Ohne web_key MUSS NO_WEB_HINT stehen (nicht einfach weglassen): sonst
-    # greift das Modell für vault-fremde Themen (Wetter etc.) ersatzweise zum
-    # Vault, weil es glaubt, das sei das einzig verbliebene Werkzeug
-    # (Live-Befund, siehe NO_WEB_HINT-Kommentar oben).
+    # Ist die Suche gesperrt, MUSS NO_WEB_HINT stehen (nicht einfach
+    # weglassen): sonst greift das Modell für vault-fremde Themen (Wetter etc.)
+    # ersatzweise zum Vault, weil es glaubt, das sei das einzig verbliebene
+    # Werkzeug (Live-Befund, siehe NO_WEB_HINT-Kommentar oben).
     system_content = SYSTEM_PROMPT_HEAD.format(name=first_name(tenant))
-    if web_key:
+    if web_erlaubt:
         system_content += WEB_TOOL_HINT
     else:
         system_content += NO_WEB_HINT
@@ -201,14 +213,13 @@ def respond(text, tenant, token, chat_model, history=None, source="per Telegram"
         return {"kind": "issue",
                 "answer": _do_issue(action["title"], action["description"], tenant, token)}
     if action["kind"] == "web":
-        if not web_key:
-            # Kein Key im Aufruf — sei es, weil das Werkzeug grundsätzlich
-            # nicht eingerichtet ist, sei es, weil der Aufrufer (Wake-Satellit)
-            # es für die laufende Gesprächskette gesperrt hat (Vault-Daten
-            # dürfen nicht per Websuche nach draußen wandern). In beiden
-            # Fällen ist das Werkzeug nicht im Prompt — kommt trotzdem ein
-            # Token durch, muss die Antwort in beiden Fällen stimmen, ehrlich
-            # sein und darf nicht leer werden (leerer Text = stumme
+        if not web_erlaubt:
+            # Der Aufrufer (Wake-Satellit) hat die Suche für die laufende
+            # Gesprächskette gesperrt, weil bereits Vault-Daten geflossen sind
+            # — die dürfen nicht als Suchbegriff nach draußen wandern. Das
+            # Werkzeug steht dann nicht im Prompt; kommt trotzdem ein Token
+            # durch, darf es weder lokal noch über Tavily ausgeführt werden,
+            # und die Antwort darf nicht leer werden (leerer Text = stumme
             # Sprachausgabe).
             return {"kind": "chat",
                     "answer": "Dafür kann ich gerade nicht ins Netz."}
@@ -247,29 +258,90 @@ def _do_lookup(messages, mode, query, tenant, chat_model):
     return _strip_or_fallback(answer)
 
 
+# Deckel fuer den Folge-Durchgang nach einer Websuche. Bewusst hoeher als die
+# frueheren 30s: der lokale Dienst liefert Seitentext (~3250 Zeichen) statt
+# Tavilys fertiger Kurzantwort (~500), und gemma-4-12b braucht dafuer gemessen
+# 14,8-26,8s. Bei 30s reisst der Aufruf gelegentlich die Grenze und llm.chat
+# startet seine Kaskade (30 + 5 + 30 + 5 + Fallback) — daraus wurden im
+# Sprachpfad gemessene 77s stumme Wartezeit. Der Deckel gehoert deshalb ueber
+# die Streuung, nicht mittendrin.
+WEB_CHAT_TIMEOUT = 45
+
+# Wieviel Seitentext in den Folge-Prompt darf. Gemessen (17.08., gemma-4-12b)
+# haengt die stumme Wartezeit im Sprachpfad fast linear daran:
+#   3190 Zeichen -> 22,8/24,6s | 2165 -> 13,4/9,9s | 1165 -> 9,8/9,5s
+# Bei ~1200 ist die Antwort noch konkret (Temperaturen, Domain), die Wartezeit
+# aber wieder bei ~10s. Mehr Text kauft hier keine bessere Antwort, sondern nur
+# Wartezeit — der grosse Rest der Seiten ist Navigationsgeruempel.
+WEB_CONTEXT_ZEICHEN = 1200
+
+
+def _web_context_lokal(result, max_zeichen=WEB_CONTEXT_ZEICHEN):
+    """Baut den Folge-Kontext aus den Quellen des lokalen Diensts.
+
+    Bewusst Klartext statt json.dumps: der Dienst liefert Fliesstext, und ein
+    JSON-Dump davon verbraucht ein Viertel des Budgets für Escapes und
+    Feldnamen. Die Kappung sitzt je Quelle statt am Gesamtstring, damit nicht
+    die letzte Quelle komplett wegfällt.
+    """
+    quellen = result.get("quellen") or []
+    if not quellen:
+        return ""
+    budget = max_zeichen // len(quellen)
+    teile = []
+    for q in quellen:
+        kopf = "Quelle: {} ({}, abgerufen {})".format(
+            q.get("titel") or "ohne Titel", q.get("domain") or "unbekannt",
+            q.get("abgerufen_am") or "unbekannt")
+        teile.append("{}\n{}".format(kopf, (q.get("text") or "")[:budget]))
+    return "\n\n".join(teile)
+
+
 def _do_web(messages, query, chat_model, api_key):
     print("[web] query='{}'".format((query or "").replace("\n", " ")[:120]),
           flush=True)
     # Kürzere Timeouts als beim Vault-Lookup: der Nutzer wartet im Sprachpfad
-    # nach dem Bestätigungston stumm, Tavily (extern, langsamer als der Vault)
-    # und der Folge-LLM-Durchgang sollen dafür nicht die vollen Defaults
-    # (15s/90s) ausreizen (Review-Befund).
+    # nach dem Bestätigungston stumm, Suche und Folge-LLM-Durchgang sollen
+    # dafür nicht die vollen Defaults (15s/90s) ausreizen (Review-Befund).
+    #
+    # Erst der lokale Dienst: keine Suchanfrage verlässt das Haus, kein
+    # API-Kontingent, und die Quellen sind benennbar. Tavily bleibt als
+    # Ausfallsicherung für den Fall, dass SearXNG blockiert wird (503) oder
+    # der Dienst nicht läuft — genau das Risiko, das den lokalen Weg sonst
+    # zum einzelnen Blockierpunkt machen würde.
+    result = None
     try:
-        result = web_search.search(query, api_key, timeout=8)
-    except web_search.WebSearchError:
+        result = websuche_client.suche(
+            query, timeout=websuche_client.DEFAULT_TIMEOUT,
+            deadline=websuche_client.DEFAULT_DEADLINE)
+    except websuche_client.WebsucheError:
         traceback.print_exc()
+    if result is not None:
+        context = _web_context_lokal(result)
+        quellen_regel = ("Nenne die Domain der Quelle, wenn du dich auf sie "
+                         "stützt (z.B. \"laut tagesschau.de\"). Nenne keine URLs.")
+    elif api_key:
+        try:
+            tavily = web_search.search(query, api_key, timeout=8)
+        except web_search.WebSearchError:
+            traceback.print_exc()
+            return "⚠️ Ich komme gerade nicht ins Netz."
+        context = json.dumps(tavily, ensure_ascii=False)[:4000]
+        # Tavily liefert keine Domains mit (die URLs werden dort verworfen) —
+        # eine Quellenangabe wäre hier also frei erfunden.
+        quellen_regel = "Nenne keine URLs."
+    else:
         return "⚠️ Ich komme gerade nicht ins Netz."
-    context = json.dumps(result, ensure_ascii=False)[:4000]
     followup = messages + [
         {"role": "assistant", "content": "WEB: {}".format(query)},
         {"role": "user", "content":
-            ("Web-Suchergebnis (JSON):\n{}\n\nBeantworte meine letzte Frage knapp "
+            ("Web-Suchergebnis:\n{}\n\nBeantworte meine letzte Frage knapp "
              "auf Deutsch mit diesen Daten. Ist nichts Passendes dabei, sag das "
-             "ehrlich. Nenne keine URLs. Gib KEIN Steuer-Token mehr aus."
-             ).format(context)},
+             "ehrlich. {} Gib KEIN Steuer-Token mehr aus."
+             ).format(context, quellen_regel)},
     ]
     try:
-        answer = llm.chat(followup, model=chat_model, timeout=30)
+        answer = llm.chat(followup, model=chat_model, timeout=WEB_CHAT_TIMEOUT)
     except llm.LlmError:
         traceback.print_exc()
         return "⚠️ Konnte das Suchergebnis nicht auswerten, bitte gleich nochmal."

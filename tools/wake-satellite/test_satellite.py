@@ -42,7 +42,7 @@ def test_single_turn_speaks_answer(monkeypatch):
     spoken = []
     monkeypatch.setattr(satellite.transcribe, "transcribe", lambda wav, model: "Wie spät?")
     monkeypatch.setattr(satellite.jarvis_brain, "respond",
-                        lambda text, tenant, token, model, history=None, source=None, voice_output=None, web_key=None: {"kind": "chat", "answer": "Kurz nach drei."})
+                        lambda text, tenant, token, model, history=None, source=None, voice_output=None, web_key=None, web_erlaubt=True: {"kind": "chat", "answer": "Kurz nach drei."})
     monkeypatch.setattr(satellite, "_speak", lambda text, deps: spoken.append(text))
     # 1 Runde Sprache, dann Nachfrage-Fenster leer -> Ende
     frames = iter([loud(), loud(), quiet(), quiet(), quiet(), quiet(), quiet(),
@@ -138,7 +138,7 @@ def test_token_callable_is_resolved(monkeypatch):
     seen = {}
     monkeypatch.setattr(satellite.transcribe, "transcribe", lambda wav, model: "hi")
     monkeypatch.setattr(satellite.jarvis_brain, "respond",
-                        lambda text, tenant, token, model, history=None, source=None, voice_output=None, web_key=None: seen.update(token=token) or {"kind": "chat", "answer": "ok"})
+                        lambda text, tenant, token, model, history=None, source=None, voice_output=None, web_key=None, web_erlaubt=True: seen.update(token=token) or {"kind": "chat", "answer": "ok"})
     monkeypatch.setattr(satellite, "_speak", lambda text, deps: None)
     deps = _deps()
     deps["token"] = lambda: "AUFGELÖST"
@@ -171,11 +171,15 @@ def test_web_key_is_passed_to_brain(monkeypatch):
     assert seen["web_key"] == "tvly-k"
 
 
-def test_web_key_is_locked_after_vault_lookup_for_rest_of_chain(monkeypatch):
+def test_web_is_locked_after_vault_lookup_for_rest_of_chain(monkeypatch):
     # Eine Vault-Antwort (kind == "lookup") landet in der Kette-History. Ab der
     # NÄCHSTEN Runde derselben Kette darf die Websuche die Adresse nicht mehr
-    # nach draußen tragen dürfen — deshalb bekommt respond() ab dann
-    # web_key=None, unabhängig vom echten Schlüssel in deps.
+    # nach draußen tragen — deshalb bekommt respond() ab dann
+    # web_erlaubt=False.
+    #
+    # Gesperrt wird über das Flag, NICHT mehr über web_key=None: der lokale
+    # Websuche-Dienst braucht gar keinen Schlüssel, ein entzogener Key würde
+    # ihn also kein bisschen aufhalten.
     calls = []
     answers = iter([{"kind": "lookup", "answer": "Blumenweg 7"},
                      {"kind": "chat", "answer": "22 Grad."}])
@@ -189,14 +193,14 @@ def test_web_key_is_locked_after_vault_lookup_for_rest_of_chain(monkeypatch):
                   + [quiet()] * sat_config.FOLLOWUP_WINDOW_FRAMES)
     satellite.handle_interaction(frames, deps)
     assert len(calls) == 2
-    assert calls[0]["web_key"] == "tvly-k"    # Runde 1: Lookup, Schlüssel noch frei
-    assert calls[1]["web_key"] is None        # Runde 2: nach Lookup gesperrt
+    assert calls[0]["web_erlaubt"] is True     # Runde 1: Lookup, noch frei
+    assert calls[1]["web_erlaubt"] is False    # Runde 2: nach Lookup gesperrt
 
 
-def test_web_key_survives_turns_without_vault_lookup(monkeypatch):
+def test_web_stays_allowed_in_turns_without_vault_lookup(monkeypatch):
     # Gegenprobe zu obigem Test: ohne Vault-Zugriff in der Kette darf der
-    # Merker nicht versehentlich immer sperren — der Schlüssel bleibt über
-    # mehrere Runden erhalten.
+    # Merker nicht versehentlich immer sperren — Suche und Schlüssel bleiben
+    # über mehrere Runden erhalten.
     calls = []
     monkeypatch.setattr(satellite.transcribe, "transcribe", lambda wav, model: "frage")
     monkeypatch.setattr(satellite.jarvis_brain, "respond",
@@ -210,3 +214,5 @@ def test_web_key_survives_turns_without_vault_lookup(monkeypatch):
     assert len(calls) == 2
     assert calls[0]["web_key"] == "tvly-k"
     assert calls[1]["web_key"] == "tvly-k"
+    assert calls[0]["web_erlaubt"] is True
+    assert calls[1]["web_erlaubt"] is True

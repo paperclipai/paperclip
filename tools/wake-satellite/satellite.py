@@ -71,9 +71,10 @@ def handle_interaction(frames, deps, tenant=None, history=None):
     flush_mic = deps.get("flush_mic")
     # Sobald eine Runde dieser Kette eine Vault-Antwort geliefert hat, landet
     # der Fund im Gesprächsverlauf (`history`) — die Websuche wird für den
-    # Rest der Kette gesperrt, damit private Daten nicht per WEB: nach draußen
-    # wandern. Rein lokaler Merker: `main()` startet jede Kette ohne History,
-    # die Sperre wirkt also nie über ein erneutes "Hey Jarvis" hinaus.
+    # Rest der Kette gesperrt (`web_erlaubt=False`), damit private Daten nicht
+    # per WEB: nach draußen wandern. Rein lokaler Merker: `main()` startet jede
+    # Kette ohne History, die Sperre wirkt also nie über ein erneutes
+    # "Hey Jarvis" hinaus.
     web_locked_after_lookup = False
     for turn in range(sat_config.MAX_TURNS_PER_WAKE):
         recorded = capture.record_until_silence(frames)
@@ -82,11 +83,14 @@ def handle_interaction(frames, deps, tenant=None, history=None):
         t0 = time.monotonic()
         text = _transcribe(recorded, deps)
         t1 = time.monotonic()
-        web_key = None if web_locked_after_lookup else deps.get("web_key")
+        # Gesperrt wird über das Flag, nicht über einen entzogenen Schlüssel:
+        # der lokale Websuche-Dienst braucht gar keinen, ein web_key=None
+        # würde die Suche also nicht mehr aufhalten.
         result = jarvis_brain.respond(text, tenant, _resolve_token(deps),
                                       deps["chat_model"], history=history,
                                       source="per Sprache", voice_output=True,
-                                      web_key=web_key)
+                                      web_key=deps.get("web_key"),
+                                      web_erlaubt=not web_locked_after_lookup)
         t2 = time.monotonic()
         if result["kind"] == "lookup":
             web_locked_after_lookup = True

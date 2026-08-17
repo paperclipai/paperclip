@@ -172,19 +172,23 @@ def test_time_is_read_per_call_not_frozen(monkeypatch):
     assert "17:30 Uhr" in seen[1]
 
 
-def test_web_tool_absent_from_prompt_without_key(monkeypatch):
+def test_web_tool_absent_from_prompt_when_not_allowed(monkeypatch):
+    # Seit der lokale Websuche-Dienst keinen Schlüssel braucht, entscheidet
+    # NICHT mehr die Anwesenheit eines Tavily-Keys über das Werkzeug, sondern
+    # allein `web_erlaubt` — der Sperrschalter des Wake-Satelliten.
+    seen = {}
+    monkeypatch.setattr(jarvis_brain.llm, "chat",
+                        lambda msgs, model=None: seen.update(system=msgs[0]["content"]) or "ok")
+    jarvis_brain.respond("hi", TENANT, "tok", "m", web_erlaubt=False)
+    assert "WEB:" not in seen["system"]
+
+
+def test_web_tool_offered_without_key(monkeypatch):
+    # Kein Tavily-Key, trotzdem Websuche: der lokale Dienst trägt sie allein.
     seen = {}
     monkeypatch.setattr(jarvis_brain.llm, "chat",
                         lambda msgs, model=None: seen.update(system=msgs[0]["content"]) or "ok")
     jarvis_brain.respond("hi", TENANT, "tok", "m")
-    assert "WEB:" not in seen["system"]
-
-
-def test_web_tool_offered_with_key(monkeypatch):
-    seen = {}
-    monkeypatch.setattr(jarvis_brain.llm, "chat",
-                        lambda msgs, model=None: seen.update(system=msgs[0]["content"]) or "ok")
-    jarvis_brain.respond("hi", TENANT, "tok", "m", web_key="tvly-k")
     assert "WEB:" in seen["system"]
 
 
@@ -207,28 +211,27 @@ def test_web_tool_precedes_no_tool_paragraph_and_time_comes_last(monkeypatch):
     assert "\n\n\n" not in prompt
 
 
-def test_no_web_hint_present_without_key(monkeypatch):
-    # Fehlt der Web-Schlüssel -- egal ob grundsätzlich nicht eingerichtet
-    # oder per Sperre nach einem Vault-Zugriff für die laufende Kette
-    # gesperrt -- muss der System-Prompt einen expliziten Hinweis bekommen,
-    # dass für aktuelle Außenwelt-Themen kein Werkzeug da ist. Sonst greift
-    # ein kleines Modell ersatzweise zum Vault (Live-Bug: "das Wetter" wurde
-    # als LOOKUP an den Vault geschickt und las Kontaktdaten vor).
+def test_no_web_hint_present_when_not_allowed(monkeypatch):
+    # Ist die Websuche gesperrt -- per Sperre nach einem Vault-Zugriff für die
+    # laufende Kette -- muss der System-Prompt einen expliziten Hinweis
+    # bekommen, dass für aktuelle Außenwelt-Themen kein Werkzeug da ist. Sonst
+    # greift ein kleines Modell ersatzweise zum Vault (Live-Bug: "das Wetter"
+    # wurde als LOOKUP an den Vault geschickt und las Kontaktdaten vor).
     seen = {}
     monkeypatch.setattr(jarvis_brain.llm, "chat",
                         lambda msgs, model=None: seen.update(system=msgs[0]["content"]) or "ok")
-    jarvis_brain.respond("hi", TENANT, "tok", "m")
+    jarvis_brain.respond("hi", TENANT, "tok", "m", web_erlaubt=False)
     assert jarvis_brain.NO_WEB_HINT in seen["system"]
     assert "WEB:" not in seen["system"]
 
 
-def test_no_web_hint_absent_with_key(monkeypatch):
-    # Mit Web-Schlüssel wird stattdessen das echte Werkzeug angeboten -- der
+def test_no_web_hint_absent_when_allowed(monkeypatch):
+    # Ist die Websuche erlaubt, wird das echte Werkzeug angeboten -- der
     # Hinweis, dass keins da sei, wäre dann ein Widerspruch im Prompt.
     seen = {}
     monkeypatch.setattr(jarvis_brain.llm, "chat",
                         lambda msgs, model=None: seen.update(system=msgs[0]["content"]) or "ok")
-    jarvis_brain.respond("hi", TENANT, "tok", "m", web_key="tvly-k")
+    jarvis_brain.respond("hi", TENANT, "tok", "m")
     assert jarvis_brain.WEB_TOOL_HINT in seen["system"]
     assert jarvis_brain.NO_WEB_HINT not in seen["system"]
 
@@ -241,7 +244,7 @@ def test_no_web_hint_precedes_no_tool_paragraph_and_time_comes_last(monkeypatch)
     seen = {}
     monkeypatch.setattr(jarvis_brain.llm, "chat",
                         lambda msgs, model=None: seen.update(system=msgs[0]["content"]) or "ok")
-    jarvis_brain.respond("hi", TENANT, "tok", "m")
+    jarvis_brain.respond("hi", TENANT, "tok", "m", web_erlaubt=False)
     prompt = seen["system"]
     hint_idx = prompt.index(jarvis_brain.NO_WEB_HINT.strip())
     no_tool_idx = prompt.index("Brauchst du KEIN Werkzeug")
@@ -257,22 +260,76 @@ def test_parse_control_recognises_web_token():
     assert jarvis_brain.parse_control("  web :  Bahnstreik  ")["kind"] == "web"
 
 
+def _lokale_quelle(q, **kw):
+    return {"query": q, "quellen": [
+        {"domain": "wetter.example", "titel": "Wetter Cottbus",
+         "text": "24 Grad, sonnig", "abgerufen_am": "2026-08-17"}]}
+
+
 def test_web_search_result_is_answered(monkeypatch):
     calls = []
     def fake_chat(msgs, model=None, **kw):
         calls.append(msgs)
         return "WEB: Wetter Cottbus" if len(calls) == 1 else "Morgen 24 Grad, sonnig."
     monkeypatch.setattr(jarvis_brain.llm, "chat", fake_chat)
-    monkeypatch.setattr(jarvis_brain.web_search, "search",
-                        lambda q, key, **kw: {"query": q, "antwort": "24 Grad", "treffer": []})
-    r = jarvis_brain.respond("wetter morgen?", TENANT, "tok", "m", web_key="tvly-k")
+    monkeypatch.setattr(jarvis_brain.websuche_client, "suche", _lokale_quelle)
+    r = jarvis_brain.respond("wetter morgen?", TENANT, "tok", "m")
     assert r == {"kind": "web", "answer": "Morgen 24 Grad, sonnig."}
 
 
-def test_web_search_failure_is_honest(monkeypatch):
-    def fake_chat(msgs, model=None):
-        return "WEB: Wetter"
+def test_local_service_is_tried_first_and_tavily_stays_untouched(monkeypatch):
+    # Der lokale Dienst ist der Regelweg: keine Suchanfrage verlässt das Haus,
+    # solange er liefert. Tavily ist nur Ausfallsicherung.
+    tavily = []
+    monkeypatch.setattr(jarvis_brain.llm, "chat",
+                        lambda msgs, model=None, **kw: "WEB: Wetter" if not tavily else "ok")
+    monkeypatch.setattr(jarvis_brain.websuche_client, "suche", _lokale_quelle)
+    monkeypatch.setattr(jarvis_brain.web_search, "search",
+                        lambda q, key, **kw: tavily.append(q) or {})
+    jarvis_brain.respond("wetter morgen?", TENANT, "tok", "m", web_key="tvly-k")
+    assert tavily == []
+
+
+def test_falls_back_to_tavily_when_local_service_fails(monkeypatch):
+    # Blockierte Engines (503) oder toter Dienst dürfen JARVIS nicht verstummen
+    # lassen, solange ein Tavily-Key da ist.
+    calls = []
+    def fake_chat(msgs, model=None, **kw):
+        calls.append(msgs)
+        return "WEB: Bahnstreik" if len(calls) == 1 else "Kein Streik gemeldet."
     monkeypatch.setattr(jarvis_brain.llm, "chat", fake_chat)
+    def lokal_tot(q, **kw):
+        raise jarvis_brain.websuche_client.WebsucheError("503")
+    monkeypatch.setattr(jarvis_brain.websuche_client, "suche", lokal_tot)
+    tavily = []
+    monkeypatch.setattr(jarvis_brain.web_search, "search",
+                        lambda q, key, **kw: tavily.append(q) or
+                        {"query": q, "antwort": "nichts", "treffer": []})
+    r = jarvis_brain.respond("streik?", TENANT, "tok", "m", web_key="tvly-k")
+    assert tavily == ["Bahnstreik"]
+    assert r["answer"] == "Kein Streik gemeldet."
+
+
+def test_local_failure_without_tavily_key_is_honest(monkeypatch):
+    # Kein Key = kein Fallback. Dann muss die Antwort ehrlich sein statt
+    # leer (leerer Text = stumme Sprachausgabe).
+    monkeypatch.setattr(jarvis_brain.llm, "chat",
+                        lambda msgs, model=None, **kw: "WEB: Wetter")
+    def lokal_tot(q, **kw):
+        raise jarvis_brain.websuche_client.WebsucheError("offline")
+    monkeypatch.setattr(jarvis_brain.websuche_client, "suche", lokal_tot)
+    r = jarvis_brain.respond("wetter?", TENANT, "tok", "m")
+    assert r["kind"] == "web"
+    assert "nicht ins Netz" in r["answer"]
+
+
+def test_web_search_failure_is_honest(monkeypatch):
+    # Beide Wege tot: lokaler Dienst UND Tavily.
+    monkeypatch.setattr(jarvis_brain.llm, "chat",
+                        lambda msgs, model=None, **kw: "WEB: Wetter")
+    def lokal_tot(q, **kw):
+        raise jarvis_brain.websuche_client.WebsucheError("offline")
+    monkeypatch.setattr(jarvis_brain.websuche_client, "suche", lokal_tot)
     def boom(q, key, **kw):
         raise jarvis_brain.web_search.WebSearchError("offline")
     monkeypatch.setattr(jarvis_brain.web_search, "search", boom)
@@ -281,48 +338,104 @@ def test_web_search_failure_is_honest(monkeypatch):
     assert "nicht ins Netz" in r["answer"]
 
 
+def test_domain_reaches_followup_prompt(monkeypatch):
+    # Der Gewinn des lokalen Diensts: die Quelle ist benennbar. Domain und
+    # Erlaubnis, sie zu nennen, müssen im Folge-Prompt ankommen -- URLs nicht.
+    calls = []
+    def fake_chat(msgs, model=None, **kw):
+        calls.append(msgs)
+        return "WEB: Wetter" if len(calls) == 1 else "Laut wetter.example 24 Grad."
+    monkeypatch.setattr(jarvis_brain.llm, "chat", fake_chat)
+    monkeypatch.setattr(jarvis_brain.websuche_client, "suche", _lokale_quelle)
+    jarvis_brain.respond("wetter?", TENANT, "tok", "m")
+    followup = calls[1][-1]["content"]
+    assert "wetter.example" in followup
+    assert "Domain" in followup
+    assert "Nenne keine URLs" in followup
+
+
+def test_web_context_is_capped_for_voice_latency():
+    # Gemessen (17.08., gemma-4-12b) hängt die Wartezeit im Sprachpfad fast
+    # linear an der Kontextgröße: 3190 Zeichen -> 22,8/24,6s, 2165 -> 13,4/9,9s,
+    # 1165 -> 9,8/9,5s. Der Nutzer wartet dabei stumm, deshalb ist der Deckel
+    # eine Eigenschaft des Sprachpfads und kein Detail — er darf nicht
+    # unbemerkt wieder hochgezogen werden.
+    assert jarvis_brain.WEB_CONTEXT_ZEICHEN <= 1200
+    quellen = {"quellen": [
+        {"domain": "a.example", "titel": "A", "text": "x" * 5000,
+         "abgerufen_am": "2026-08-17"},
+        {"domain": "b.example", "titel": "B", "text": "y" * 5000,
+         "abgerufen_am": "2026-08-17"}]}
+    ctx = jarvis_brain._web_context_lokal(quellen)
+    # Budget plus die beiden Quellen-Köpfe, sonst nichts.
+    assert len(ctx) < jarvis_brain.WEB_CONTEXT_ZEICHEN + 300
+
+
+def test_web_context_splits_budget_so_last_source_survives():
+    # Die Kappung sitzt je Quelle, nicht am Gesamtstring — sonst fiele die
+    # zweite Quelle bei einer langen ersten komplett weg und die Antwort
+    # stützte sich unbemerkt auf eine einzige Seite.
+    quellen = {"quellen": [
+        {"domain": "lang.example", "titel": "Lang", "text": "x" * 9000,
+         "abgerufen_am": "2026-08-17"},
+        {"domain": "kurz.example", "titel": "Kurz", "text": "Wichtiger Satz.",
+         "abgerufen_am": "2026-08-17"}]}
+    ctx = jarvis_brain._web_context_lokal(quellen)
+    assert "kurz.example" in ctx
+    assert "Wichtiger Satz." in ctx
+
+
 def test_web_query_is_logged(monkeypatch, capsys):
     monkeypatch.setattr(jarvis_brain.llm, "chat",
                         lambda msgs, model=None, **kw: "WEB: Bahnstreik heute")
-    monkeypatch.setattr(jarvis_brain.web_search, "search",
-                        lambda q, key, **kw: {"query": q, "antwort": "", "treffer": []})
-    jarvis_brain.respond("gibt es streik?", TENANT, "tok", "m", web_key="tvly-k")
+    monkeypatch.setattr(jarvis_brain.websuche_client, "suche", _lokale_quelle)
+    jarvis_brain.respond("gibt es streik?", TENANT, "tok", "m")
     assert "[web] query='Bahnstreik heute'" in capsys.readouterr().out
 
 
 def test_do_web_uses_short_timeouts(monkeypatch):
-    # Im Sprachpfad wartet der Nutzer nach dem Bestätigungston stumm — Tavily
-    # und der Folge-LLM-Durchgang bekommen deshalb kürzere Timeouts als die
-    # Defaults (15s/90s), aber nur hier in _do_web, nicht global.
+    # Im Sprachpfad wartet der Nutzer nach dem Bestätigungston stumm — Suche
+    # und Folge-LLM-Durchgang bekommen deshalb kürzere Timeouts als die
+    # Defaults (15s/90s), aber nur hier in _do_web, nicht global. Die Deadline
+    # des Diensts liegt unter dem Client-Timeout, damit er selbst aufgibt.
     seen = {}
     def fake_chat(msgs, model=None, **kw):
         if "timeout" in kw:
             seen["chat_timeout"] = kw["timeout"]
         return "WEB: Wetter" if "chat_timeout" not in seen else "Alles trocken."
     monkeypatch.setattr(jarvis_brain.llm, "chat", fake_chat)
-    def fake_search(q, key, **kw):
-        seen["search_timeout"] = kw.get("timeout")
-        return {"query": q, "antwort": "", "treffer": []}
-    monkeypatch.setattr(jarvis_brain.web_search, "search", fake_search)
-    jarvis_brain.respond("wetter?", TENANT, "tok", "m", web_key="tvly-k")
-    assert seen["search_timeout"] == 8
-    assert seen["chat_timeout"] == 30
+    def fake_suche(q, **kw):
+        seen["timeout"] = kw.get("timeout")
+        seen["deadline"] = kw.get("deadline")
+        return _lokale_quelle(q)
+    monkeypatch.setattr(jarvis_brain.websuche_client, "suche", fake_suche)
+    jarvis_brain.respond("wetter?", TENANT, "tok", "m")
+    assert seen["timeout"] == 8
+    assert seen["deadline"] < seen["timeout"]
+    # Gemessen (17.08., gemma-4-12b, ~3250 Zeichen Kontext): 14,8s / 23,1s /
+    # 26,8s. Bei timeout=30 reisst der Aufruf gelegentlich die Grenze, und
+    # llm.chat startet dann seine Kaskade (30 + 5 + 30 + 5 + Fallback) — im
+    # Sprachpfad gemessene 77s stumme Wartezeit. Der Deckel muss deshalb ueber
+    # der Streuung liegen, nicht mittendrin.
+    assert seen["chat_timeout"] == jarvis_brain.WEB_CHAT_TIMEOUT
+    assert jarvis_brain.WEB_CHAT_TIMEOUT > 30
 
 
-def test_web_token_without_key_is_honest_not_silent(monkeypatch):
-    # Ohne Key wird das Werkzeug nicht angeboten — setzt das Modell trotzdem
-    # ein Token, darf es weder ausgeführt werden noch eine leere (= stumme)
-    # Antwort ergeben. Kein Key kommt aus zwei Gründen: das Werkzeug ist
-    # grundsätzlich nicht eingerichtet, ODER der Aufrufer (Wake-Satellit) hat
-    # es für die laufende Kette gesperrt — der Antworttext muss in BEIDEN
-    # Fällen stimmen, deshalb keine Aussage über "eingerichtet/nicht
-    # eingerichtet".
+def test_web_token_while_blocked_is_honest_not_silent(monkeypatch):
+    # PII-Notaus: hat der Wake-Satellit die Suche für die laufende Kette
+    # gesperrt (`web_erlaubt=False`), darf ein trotzdem gesetztes WEB:-Token
+    # WEDER lokal NOCH über Tavily ausgeführt werden -- auch dann nicht, wenn
+    # ein gültiger Tavily-Key vorliegt. Der Key ist seit dem lokalen Dienst
+    # kein Sperrschalter mehr; nur dieses Flag ist einer.
     searched = []
     monkeypatch.setattr(jarvis_brain.llm, "chat",
                         lambda msgs, model=None: "WEB: Wetter Cottbus")
+    monkeypatch.setattr(jarvis_brain.websuche_client, "suche",
+                        lambda q, **kw: searched.append(("lokal", q)) or {})
     monkeypatch.setattr(jarvis_brain.web_search, "search",
-                        lambda q, key, **kw: searched.append(q) or {})
-    r = jarvis_brain.respond("wetter?", TENANT, "tok", "m")
+                        lambda q, key, **kw: searched.append(("tavily", q)) or {})
+    r = jarvis_brain.respond("wetter?", TENANT, "tok", "m",
+                             web_key="tvly-k", web_erlaubt=False)
     assert searched == []
     assert r["answer"].strip()          # nicht stumm
     assert "ins Netz" in r["answer"]
@@ -346,9 +459,11 @@ def test_web_token_after_vault_lookup_is_not_executed(monkeypatch):
     monkeypatch.setattr(jarvis_brain.vault_client, "lookup",
                         lambda mode, query, vault=None: {"treffer": [{"inhalt": "Cottbus"}]})
     monkeypatch.setattr(jarvis_brain.web_search, "search",
-                        lambda q, key, **kw: searched.append(q) or {"query": q, "antwort": "", "treffer": []})
+                        lambda q, key, **kw: searched.append(("tavily", q)) or {"query": q, "antwort": "", "treffer": []})
+    monkeypatch.setattr(jarvis_brain.websuche_client, "suche",
+                        lambda q, **kw: searched.append(("lokal", q)) or {})
     r = jarvis_brain.respond("wo wohnt jana?", TENANT, "tok", "m", web_key="tvly-k")
-    assert searched == []                     # keine Suche ausgelöst
+    assert searched == []                     # keine Suche ausgelöst, auf keinem Weg
     assert r["kind"] == "lookup"
     assert "WEB:" not in r["answer"]          # Token gestrippt, nicht vorgelesen
     # Die zweite Modellantwort bestand NUR aus dem Token, nach dem Strippen
@@ -380,8 +495,7 @@ def test_web_answer_never_empty_if_model_repeats_token(monkeypatch):
     # antwortet nur mit einem Steuer-Token statt mit Text.
     monkeypatch.setattr(jarvis_brain.llm, "chat",
                         lambda msgs, model=None, **kw: "WEB: Wetter Cottbus")
-    monkeypatch.setattr(jarvis_brain.web_search, "search",
-                        lambda q, key, **kw: {"query": q, "antwort": "", "treffer": []})
-    r = jarvis_brain.respond("wetter morgen?", TENANT, "tok", "m", web_key="tvly-k")
+    monkeypatch.setattr(jarvis_brain.websuche_client, "suche", _lokale_quelle)
+    r = jarvis_brain.respond("wetter morgen?", TENANT, "tok", "m")
     assert r["kind"] == "web"
     assert r["answer"] == jarvis_brain.EMPTY_TOOL_ANSWER
