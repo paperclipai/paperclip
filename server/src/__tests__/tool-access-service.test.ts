@@ -4762,6 +4762,41 @@ describeEmbeddedPostgres("tool access service", () => {
     }
   });
 
+  it("reports a remote endpoint that stalls its body as a timeout, not a missing field", async () => {
+    process.env.PAPERCLIP_REMOTE_HTTP_TIMEOUT_MS = "300";
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+    // Headers arrive, then the body never completes. The fetch promise resolves,
+    // so only a body-read bound can end this.
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"jsonrpc":"2.0"'));
+          init?.signal?.addEventListener("abort", () => {
+            controller.error(init.signal?.reason ?? new Error("aborted"));
+          });
+        },
+      });
+      return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+    });
+
+    const startedAt = Date.now();
+    let res: Awaited<ReturnType<ReturnType<typeof request>["post"]>>;
+    try {
+      res = await request(app)
+        .post(`/api/companies/${company.id}/tools/apps/connect`)
+        .send({ link: "https://stalled-body.example.test/mcp", name: "Stalled body app" });
+    } finally {
+      delete process.env.PAPERCLIP_REMOTE_HTTP_TIMEOUT_MS;
+    }
+
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(Date.now() - startedAt).toBeLessThan(8000);
+    // The failure must describe the timeout rather than a downstream symptom of
+    // an empty payload.
+    expect(JSON.stringify(res.body)).toMatch(/remote_http_timeout|did not respond in time/);
+  });
+
   it("rejects OAuth metadata redirects to private endpoints", async () => {
     const company = await createCompany(db);
     const app = createRouteApp(db, undefined, undefined, {
