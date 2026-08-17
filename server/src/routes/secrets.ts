@@ -257,7 +257,8 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
         })
       : body.kind === "binding"
         ? await proposals.createBinding({ companyId: context.companyId, heartbeatRunId: context.heartbeatRunId }, {
-            secretId: body.secretId, secretProposalId: body.secretProposalId, targetAgentId: body.targetAgentId,
+            secretId: body.secretId, sourceConfigPath: body.sourceConfigPath,
+            secretProposalId: body.secretProposalId, targetAgentId: body.targetAgentId,
             configPath: body.configPath, justification: body.justification, bindingTargetPolicy: "self_and_reports",
           })
         : (() => { throw unprocessable("kind must be secret or binding"); })();
@@ -348,7 +349,10 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
       details: { count: secrets.length },
     });
     res.json({
-      secrets: secrets.map(({ secretId: _secretId, bindingId: _bindingId, configPath: _configPath, ...secret }) => secret),
+      secrets: secrets.map(({ secretId, bindingId: _bindingId, configPath: _configPath, ...secret }) => ({
+        ...secret,
+        secretRef: secretId,
+      })),
     });
   });
 

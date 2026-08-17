@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import express from "express";
 import request from "supertest";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -19,6 +19,8 @@ import {
   heartbeatRuns,
   issueComments,
   issues,
+  userSecretDeclarations,
+  userSecretDefinitions,
 } from "@paperclipai/db";
 import { conflict } from "../errors.js";
 import { errorHandler } from "../middleware/error-handler.js";
@@ -26,6 +28,7 @@ import { secretRoutes } from "../routes/secrets.js";
 import { awsSecretsManagerProvider } from "../secrets/aws-secrets-manager-provider.js";
 import type { IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { issueService } from "../services/issues.js";
+import { agentService } from "../services/agents.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { secretService } from "../services/secrets.js";
 import {
@@ -58,6 +61,8 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     await db.delete(companySecretBindings);
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
+    await db.delete(userSecretDeclarations);
+    await db.delete(userSecretDefinitions);
     await db.delete(companySecretProviderConfigs);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
@@ -98,6 +103,7 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       companyId,
       agentId,
       status: "running",
+      responsibleUserId: "user-1",
       contextSnapshot: { issueId },
     });
     await db.insert(issues).values({
@@ -106,6 +112,7 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       title: "Needs credential",
       identifier: "SEC-1",
       status: "in_progress",
+      responsibleUserId: "user-1",
       executionRunId: heartbeatRunId,
     });
     return { companyId, agentId, heartbeatRunId, issueId };
@@ -418,6 +425,300 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     ]);
   });
 
+  it("proposes and approves a binding by resolving the proposer's own sourceConfigPath", async () => {
+    const fixture = await seedRun();
+    const sourceSecret = await secretService(db).create(fixture.companyId, {
+      name: "dev/source-path/token",
+      key: "SOURCE_PATH_TOKEN",
+      provider: "local_encrypted",
+      value: "source-path-secret",
+    });
+    await secretService(db).createBinding({
+      companyId: fixture.companyId,
+      secretId: sourceSecret.id,
+      targetType: "agent",
+      targetId: fixture.agentId,
+      configPath: "access.existing_source",
+    });
+
+    const proposal = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding",
+        sourceConfigPath: "access.existing_source",
+        configPath: "access.new_alias",
+        justification: "Reuse the credential under the task-specific alias",
+      });
+
+    expect(proposal.status).toBe(201);
+    expect(proposal.body).toMatchObject({
+      kind: "binding",
+      secretId: sourceSecret.id,
+      configPath: "access.new_alias",
+      target: { id: fixture.agentId },
+    });
+    expect(await db.select().from(companySecretProposals).where(eq(companySecretProposals.id, proposal.body.id)))
+      .toEqual([expect.objectContaining({ secretId: sourceSecret.id, targetId: fixture.agentId })]);
+
+    const approved = await request(createBoardApp(fixture))
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposal.body.id}/approve`)
+      .send({});
+
+    expect(approved.status).toBe(200);
+    expect(await db.select().from(companySecretBindings)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        secretId: sourceSecret.id,
+        targetId: fixture.agentId,
+        configPath: "access.new_alias",
+      }),
+    ]));
+  });
+
+  it("rejects binding proposals that provide both secretId and sourceConfigPath", async () => {
+    const fixture = await seedRun();
+    const sourceSecret = await secretService(db).create(fixture.companyId, {
+      name: "dev/mutual-exclusion/token",
+      key: "MUTUAL_EXCLUSION_TOKEN",
+      provider: "local_encrypted",
+      value: "mutual-exclusion-secret",
+    });
+    await secretService(db).createBinding({
+      companyId: fixture.companyId,
+      secretId: sourceSecret.id,
+      targetType: "agent",
+      targetId: fixture.agentId,
+      configPath: "access.mutual_exclusion_source",
+    });
+
+    const response = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding",
+        secretId: sourceSecret.id,
+        sourceConfigPath: "access.mutual_exclusion_source",
+        configPath: "access.new_alias",
+        justification: "This request is intentionally ambiguous",
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toMatch(/exactly one of secretId, sourceConfigPath, or secretProposalId/);
+    expect(await db.select().from(companySecretProposals)).toHaveLength(0);
+  });
+
+  it("accepts a user-scoped source secret only through the proposer's existing binding", async () => {
+    const fixture = await seedRun();
+    const secrets = secretService(db);
+    const definition = await secrets.createUserSecretDefinition(fixture.companyId, {
+      key: "personal_source_token",
+      name: "Personal source token",
+      provider: "local_encrypted",
+    });
+    const userSecret = await secrets.createCurrentUserSecretValue(fixture.companyId, "user-1", {
+      definitionId: definition.id,
+      value: "personal-source-secret",
+    });
+    await agentService(db).update(fixture.agentId, {
+      adapterConfig: {
+        "access.personal_source": {
+          type: "user_secret_ref",
+          key: definition.key,
+          version: "latest",
+          required: true,
+          allowMissingOverride: false,
+        },
+      },
+    });
+
+    const proposal = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding",
+        sourceConfigPath: "access.personal_source",
+        configPath: "access.personal_alias",
+        justification: "Reuse the already-bound user credential",
+      });
+
+    expect(proposal.status).toBe(201);
+    expect(proposal.body).toMatchObject({ secretId: userSecret.id, target: { id: fixture.agentId } });
+
+    const approved = await request(createBoardApp(fixture))
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposal.body.id}/approve`)
+      .send({});
+
+    expect(approved.status).toBe(200);
+    const updatedAgent = await agentService(db).getById(fixture.agentId);
+    expect(updatedAgent?.adapterConfig).toMatchObject({
+      "access.personal_alias": {
+        type: "user_secret_ref",
+        key: definition.key,
+        version: "latest",
+        required: true,
+        allowMissingOverride: false,
+      },
+    });
+    expect(await db.select().from(userSecretDeclarations).where(eq(userSecretDeclarations.targetId, fixture.agentId)))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          userSecretDefinitionId: definition.id,
+          configPath: "access.personal_source",
+        }),
+        expect.objectContaining({
+          userSecretDefinitionId: definition.id,
+          configPath: "access.personal_alias",
+        }),
+      ]));
+  });
+
+  it("preserves user-secret declaration semantics when rebinding a source secret to a report", async () => {
+    const fixture = await seedRun();
+    const reportAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: reportAgentId,
+      companyId: fixture.companyId,
+      name: "Report",
+      role: "engineer",
+      reportsTo: fixture.agentId,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      permissions: {},
+      status: "idle",
+    });
+    const secrets = secretService(db);
+    const definition = await secrets.createUserSecretDefinition(fixture.companyId, {
+      key: "personal_report_source_token",
+      name: "Personal report source token",
+      provider: "local_encrypted",
+    });
+    const userSecret = await secrets.createCurrentUserSecretValue(fixture.companyId, "user-1", {
+      definitionId: definition.id,
+      value: "personal-report-source-secret",
+    });
+    await secrets.createCurrentUserSecretValue(fixture.companyId, "user-2", {
+      definitionId: definition.id,
+      value: "second-user-report-secret",
+    });
+    await agentService(db).update(fixture.agentId, {
+      adapterConfig: {
+        "access.personal_report_source": {
+          type: "user_secret_ref",
+          key: definition.key,
+          version: "latest",
+          required: true,
+          allowMissingOverride: false,
+        },
+      },
+    });
+
+    const proposal = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding",
+        sourceConfigPath: "access.personal_report_source",
+        targetAgentId: reportAgentId,
+        configPath: "access.personal_alias",
+        justification: "Attempt to pass a personal credential to a report",
+      });
+
+    expect(proposal.status).toBe(201);
+    expect(proposal.body).toMatchObject({ secretId: userSecret.id, target: { id: reportAgentId } });
+
+    const approved = await request(createBoardApp(fixture))
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposal.body.id}/approve`)
+      .send({});
+
+    expect(approved.status).toBe(200);
+    const report = await agentService(db).getById(reportAgentId);
+    expect(report?.adapterConfig).toMatchObject({
+      "access.personal_alias": {
+        type: "user_secret_ref",
+        key: definition.key,
+        version: "latest",
+        required: true,
+        allowMissingOverride: false,
+      },
+    });
+    expect(await db.select().from(userSecretDeclarations).where(and(
+      eq(userSecretDeclarations.targetId, reportAgentId),
+      eq(userSecretDeclarations.configPath, "access.personal_alias"),
+    ))).toEqual([expect.objectContaining({ userSecretDefinitionId: definition.id })]);
+    await expect(secrets.resolveUserSecretValue(
+      fixture.companyId,
+      {
+        definitionKey: definition.key,
+        responsibleUserId: "user-1",
+      },
+      {
+        consumerType: "agent",
+        consumerId: reportAgentId,
+        configPath: "access.personal_alias",
+      },
+    )).resolves.toMatchObject({ value: "personal-report-source-secret" });
+    await expect(secrets.resolveUserSecretValue(
+      fixture.companyId,
+      {
+        definitionKey: definition.key,
+        responsibleUserId: "user-2",
+      },
+      {
+        consumerType: "agent",
+        consumerId: reportAgentId,
+        configPath: "access.personal_alias",
+      },
+    )).resolves.toMatchObject({ value: "second-user-report-secret" });
+  });
+
+  it("returns 404 when sourceConfigPath is missing or belongs to another agent", async () => {
+    const fixture = await seedRun();
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId: fixture.companyId,
+      name: "Other agent",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      permissions: {},
+      status: "idle",
+    });
+    const otherSecret = await secretService(db).create(fixture.companyId, {
+      name: "dev/other-agent/token",
+      key: "OTHER_AGENT_TOKEN",
+      provider: "local_encrypted",
+      value: "other-agent-secret",
+    });
+    await secretService(db).createBinding({
+      companyId: fixture.companyId,
+      secretId: otherSecret.id,
+      targetType: "agent",
+      targetId: otherAgentId,
+      configPath: "access.other_agent_only",
+    });
+    const agentApp = createAgentApp(fixture);
+
+    const missing = await request(agentApp)
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding",
+        sourceConfigPath: "access.does_not_exist",
+        configPath: "access.new_alias",
+        justification: "Try an unresolved source",
+      });
+    const crossAgent = await request(agentApp)
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding",
+        sourceConfigPath: "access.other_agent_only",
+        configPath: "access.new_alias",
+        justification: "Try another agent's source",
+      });
+
+    expect(missing.status).toBe(404);
+    expect(crossAgent.status).toBe(404);
+    expect(missing.body.error).toBe("Source secret binding not found");
+    expect(crossAgent.body.error).toBe("Source secret binding not found");
+    expect(await db.select().from(companySecretProposals)).toHaveLength(0);
+  });
+
   it("serializes proposal quotas and exposes bounded list pagination", async () => {
     const fixture = await seedRun();
     const liveSecret = await secretService(db).create(fixture.companyId, {
@@ -426,6 +727,13 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       provider: "local_encrypted",
       value: "quota-source-secret",
     });
+    await secretService(db).createBinding({
+      companyId: fixture.companyId,
+      secretId: liveSecret.id,
+      targetType: "agent",
+      targetId: fixture.agentId,
+      configPath: "access.quota_source",
+    });
     const agentApp = createAgentApp(fixture);
 
     const responses = await Promise.all(Array.from({ length: 21 }, (_, index) =>
@@ -433,7 +741,7 @@ describeEmbeddedPostgres("secret proposal routes", () => {
         .post("/api/agents/me/secret-proposals")
         .send({
           kind: "binding",
-          secretId: liveSecret.id,
+          sourceConfigPath: "access.quota_source",
           configPath: `env.QUOTA_${index}`,
           justification: "Exercise the concurrent proposal cap",
         })));

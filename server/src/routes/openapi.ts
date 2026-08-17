@@ -1698,6 +1698,7 @@ registry.registerPath({
 
 const AgentSecretListResponseSchema = z.object({
   secrets: z.array(z.object({
+    secretRef: z.string().uuid(),
     key: z.string(),
     name: z.string(),
     description: z.string().nullable(),
@@ -1720,12 +1721,24 @@ const createAgentSecretProposalSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("binding"),
     secretId: z.string().uuid().optional(),
+    sourceConfigPath: z.string().min(1).optional(),
     secretProposalId: z.string().uuid().optional(),
     targetAgentId: z.string().uuid().optional(),
     configPath: z.string().min(1),
     justification: z.string().min(1),
   }),
-]);
+]).superRefine((value, ctx) => {
+  if (
+    value.kind === "binding"
+    && [value.secretId, value.sourceConfigPath, value.secretProposalId]
+      .filter((reference) => Boolean(reference)).length !== 1
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Provide exactly one of secretId, sourceConfigPath, or secretProposalId",
+    });
+  }
+});
 
 const approveSecretProposalSchema = z.object({
   cascade: z.boolean().optional(),
