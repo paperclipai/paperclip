@@ -488,6 +488,57 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await tempDb?.cleanup();
   });
 
+  // The K37-era launch guard refuses git-sensitive adapters (codex_local)
+  // without a project/task workspace: runs died at workspace_validation_failed
+  // before reaching the code under test, morphing every downstream assertion
+  // (run status, recovery cause, liveness state). Same repair ea890bf40 applied
+  // to seedQueuedIssueRunFixture, extended to the remaining launch-capable
+  // fixtures (TSMC-20853).
+  async function seedLaunchableProjectWorkspace(companyId: string) {
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Paperclip App",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: randomUUID(),
+      companyId,
+      projectId,
+      name: "Primary workspace",
+      sourceType: "local_path",
+      cwd: process.cwd(),
+      isPrimary: true,
+    });
+    return projectId;
+  }
+
+  // 38627cd79 (2026-08-10) suppresses the finish_successful_run_handoff echo
+  // unless the source run left issue-visible progress in the ACTIVITY LOG (the
+  // production comment API records `issue.comment_added` attributed to the
+  // run). Mocks in this suite insert issue_comments rows directly, bypassing
+  // that attribution, so they must record it explicitly or the platform
+  // correctly classifies the run as no-progress and suppresses the wake.
+  async function recordRunCommentProgressActivity(input: {
+    companyId: string;
+    agentId: string;
+    runId: string;
+    issueId: string;
+  }) {
+    await db.insert(activityLog).values({
+      companyId: input.companyId,
+      actorType: "agent",
+      actorId: input.agentId,
+      agentId: input.agentId,
+      runId: input.runId,
+      action: "issue.comment_added",
+      entityType: "issue",
+      entityId: input.issueId,
+      details: { source: "heartbeat-process-recovery-test-fixture" },
+    });
+  }
+
   async function seedRunFixture(input?: {
     adapterType?: string;
     agentStatus?: "paused" | "idle" | "running";
@@ -515,6 +566,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
     });
+
+    const projectId = await seedLaunchableProjectWorkspace(companyId);
 
     await db.insert(agents).values({
       id: agentId,
@@ -572,6 +625,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         companyId,
         title: "Recover local adapter after lost process",
         status: "in_progress",
+        projectId,
         priority: "medium",
         assigneeAgentId: agentId,
         checkoutRunId: runId,
@@ -808,6 +862,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
+    const projectId = await seedLaunchableProjectWorkspace(companyId);
+
     await db.insert(agents).values({
       id: agentId,
       companyId,
@@ -887,6 +943,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         title: "Recover stranded assigned work",
         status: input.status,
         workMode: input.workMode ?? "standard",
+        projectId,
         priority: "medium",
         assigneeAgentId: input.assignToUser ? null : agentId,
         assigneeUserId: input.assignToUser ? "user-1" : null,
@@ -935,6 +992,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
     });
+
+    const projectId = await seedLaunchableProjectWorkspace(companyId);
 
     await db.insert(agents).values({
       id: agentId,
@@ -987,6 +1046,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       companyId,
       title: "Review participant stayed pending",
       status: "in_review",
+      projectId,
       priority: "medium",
       assigneeAgentId: agentId,
       assigneeUserId: null,
@@ -1029,6 +1089,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
+    const projectId = await seedLaunchableProjectWorkspace(companyId);
+
     await db.insert(agents).values({
       id: agentId,
       companyId,
@@ -1046,6 +1108,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       companyId,
       title: "Assigned todo work that never received a heartbeat",
       status: "todo",
+      projectId,
       priority: "medium",
       assigneeAgentId: agentId,
       assigneeUserId: null,
@@ -1091,6 +1154,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { companyId, agentId };
   }
 
+  // Helper contract updated for the 2026-08 recovery-routing overhaul
+  // (TSMC-20853). The platform intentionally changed three behaviors this
+  // helper used to pin:
+  //   1. f606cb33d (08-05) + TSMC-20155/20183: the recovery-owner ladder no
+  //      longer falls back to the source assignee/creator. A company with no
+  //      distinct invokable owner (single-agent fixtures, no CTO/CEO) now
+  //      produces a BOARD-owned action with a linked board receipt card and a
+  //      bounded maxAttempts (STRANDED_NO_INVOKABLE_RECOVERY_OWNER_MAX_ATTEMPTS=3)
+  //      instead of routing back to the assignee (`owner: "board"`).
+  //   2. The visible per-source recovery card (TSMC-18233) is only minted when
+  //      the ladder resolves a card owner distinct from the assignee; with no
+  //      such owner the card creator returns null (`recoveryCard: false`).
+  //   3. 439ccb0a2 (08-10, Hermes token-burn containment): automated
+  //      `source_scoped_recovery_action` wakes for an already-blocked issue are
+  //      recorded as skipped `blocked_issue_noop_wake` rows instead of starting
+  //      an adapter session (`wake: "suppressed_blocked"`); 38627cd79 (08-10)
+  //      likewise suppresses the echo as `issue_lifecycle_noop_suppressed` when
+  //      the latest run succeeded without issue-visible progress
+  //      (`wake: "suppressed_noop"`).
   async function expectSourceScopedStrandedRecoveryAction(input: {
     companyId: string;
     agentId: string;
@@ -1102,7 +1184,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     kind?: string;
     previousOwnerAgentId?: string | null;
     returnOwnerAgentId?: string | null;
+    owner?: "agent" | "board";
+    recoveryCard?: boolean;
+    wake?: "delivered" | "suppressed_blocked" | "suppressed_noop" | "none";
+    sourceStatus?: "blocked" | "todo";
   }) {
+    const owner = input.owner ?? "agent";
+    const expectRecoveryCard = input.recoveryCard ?? owner === "agent";
+    const wakeMode = input.wake ?? (owner === "agent" ? "suppressed_blocked" : "none");
     const action = await waitForValue(async () =>
       db.select().from(issueRecoveryActions).where(
         and(
@@ -1116,16 +1205,27 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(action).toMatchObject({
       companyId: input.companyId,
       sourceIssueId: input.issueId,
-      recoveryIssueId: null,
       kind: input.kind ?? "stranded_assigned_issue",
       status: "active",
-      ownerType: "agent",
-      ownerAgentId: input.agentId,
       previousOwnerAgentId: input.previousOwnerAgentId ?? input.agentId,
       returnOwnerAgentId: input.returnOwnerAgentId ?? input.agentId,
       cause: input.cause ?? "stranded_assigned_issue",
       attemptCount: 1,
-      maxAttempts: input.kind === "missing_disposition" ? 1 : null,
+      ...(owner === "agent"
+        ? {
+          recoveryIssueId: null,
+          ownerType: "agent",
+          ownerAgentId: input.agentId,
+          maxAttempts: input.kind === "missing_disposition" ? 1 : null,
+        }
+        : {
+          // No invokable recovery owner: board hand-off with a mandatory
+          // board-visible receipt (TSMC-20155/20183) and a bounded retry cap.
+          recoveryIssueId: expect.any(String),
+          ownerType: "board",
+          ownerAgentId: null,
+          maxAttempts: input.kind === "missing_disposition" ? 1 : 3,
+        }),
     });
     expect(action.evidence).toMatchObject({
       sourceIssueId: input.issueId,
@@ -1142,15 +1242,30 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         input.kind === "missing_disposition" ? "valid issue disposition" : "Restore a live execution path",
       );
     }
-    expect(action.wakePolicy).toMatchObject({
-      type: "wake_owner",
-      reason: "source_scoped_recovery_action",
-      ...(input.kind === "missing_disposition" ? { minRefireIntervalMs: 60_000 } : {}),
-    });
+    if (owner === "agent") {
+      expect(action.wakePolicy).toMatchObject({
+        type: "wake_owner",
+        reason: "source_scoped_recovery_action",
+        ...(input.kind === "missing_disposition" ? { minRefireIntervalMs: 60_000 } : {}),
+      });
+    } else {
+      expect(action.wakePolicy).toMatchObject({
+        type: "board_escalation",
+        reason: "no_invokable_recovery_owner",
+      });
+      // The receipt is the shared signature-scoped board escalation card.
+      const receipt = await db
+        .select()
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, input.companyId),
+          eq(issues.id, action.recoveryIssueId as string),
+        ))
+        .then((rows) => rows[0] ?? null);
+      expect(receipt).toMatchObject({ originKind: "recovery_loop_cap_escalation" });
+      expect(receipt?.title).toContain("BOARD ACTION REQUIRED");
+    }
 
-    // Fork-policy pin (TSMC-18233, 2026-07-28): the visible stranded-recovery
-    // card creator was deliberately restored alongside the source-scoped
-    // action, so exactly one recovery card issue exists per stranded source.
     const recoveryIssues = await db
       .select()
       .from(issues)
@@ -1159,62 +1274,119 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         eq(issues.originKind, "stranded_issue_recovery"),
         eq(issues.originId, input.issueId),
       ));
-    expect(recoveryIssues).toHaveLength(1);
-    // No status pin: the card is created as todo, but the live heartbeat in
-    // these tests can claim it and move it to in_progress before we read it.
-    expect(recoveryIssues[0]).toMatchObject({ parentId: input.issueId });
+    if (expectRecoveryCard) {
+      // Fork-policy pin (TSMC-18233, 2026-07-28): the visible stranded-recovery
+      // card creator was deliberately restored alongside the source-scoped
+      // action, so exactly one recovery card issue exists per stranded source.
+      expect(recoveryIssues).toHaveLength(1);
+      // No status pin: the card is created as todo, but the live heartbeat in
+      // these tests can claim it and move it to in_progress before we read it.
+      expect(recoveryIssues[0]).toMatchObject({ parentId: input.issueId });
+    } else {
+      // The card creator needs a ladder-resolvable owner distinct from the
+      // assignee (f606cb33d removed the assignee fallback); with none, no
+      // per-source card is minted. Board hand-offs use the receipt instead.
+      expect(recoveryIssues).toHaveLength(0);
+    }
 
-    const recoveryWakeup = await waitForValue(async () => {
-      const wakeups = await db
+    if (owner === "agent" && wakeMode !== "none") {
+      const recoveryWakeup = await waitForValue(async () => {
+        const wakeups = await db
+          .select()
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.agentId, input.agentId));
+        return wakeups.find((wakeup) => {
+          const payload = wakeup.payload as Record<string, unknown> | null;
+          return payload?.issueId === input.issueId &&
+            payload?.sourceIssueId === input.issueId &&
+            payload?.recoveryActionId === action.id &&
+            payload?.strandedRunId === input.runId;
+        }) ?? null;
+      });
+      if (wakeMode === "delivered") {
+        expect(recoveryWakeup).toMatchObject({
+          companyId: input.companyId,
+          reason: "source_scoped_recovery_action",
+          source: "assignment",
+          payload: expect.objectContaining({
+            modelProfile: "cheap",
+            allowDeliverableWork: false,
+            allowDocumentUpdates: false,
+            resumeRequiresNormalModel: true,
+          }),
+        });
+        const recoveryRun = recoveryWakeup?.runId
+          ? await db
+            .select()
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, recoveryWakeup.runId))
+            .then((rows) => rows[0] ?? null)
+          : null;
+        expect(recoveryRun?.contextSnapshot).toMatchObject({
+          issueId: input.issueId,
+          taskId: input.issueId,
+          source: "issue_recovery_action",
+          recoveryActionId: action.id,
+          sourceIssueId: input.issueId,
+          strandedRunId: input.runId,
+          modelProfile: "cheap",
+          allowDeliverableWork: false,
+          allowDocumentUpdates: false,
+          resumeRequiresNormalModel: true,
+        });
+      } else if (wakeMode === "suppressed_blocked") {
+        // 439ccb0a2: the wake is recorded, but as a skipped no-op echo because
+        // the source issue is already blocked. The status-only recovery payload
+        // is preserved on the skipped row for auditability.
+        expect(recoveryWakeup).toMatchObject({
+          companyId: input.companyId,
+          reason: "blocked_issue_noop_wake",
+          status: "skipped",
+          payload: expect.objectContaining({
+            modelProfile: "cheap",
+            allowDeliverableWork: false,
+            allowDocumentUpdates: false,
+            resumeRequiresNormalModel: true,
+            heartbeatSkip: expect.objectContaining({
+              requestedReason: "source_scoped_recovery_action",
+            }),
+          }),
+        });
+      } else {
+        // 38627cd79: an immediate lifecycle echo after a succeeded run with no
+        // issue-visible progress is suppressed until real input lands.
+        expect(recoveryWakeup).toMatchObject({
+          companyId: input.companyId,
+          reason: "issue_lifecycle_noop_suppressed",
+          status: "skipped",
+          payload: expect.objectContaining({
+            heartbeatSkip: expect.objectContaining({
+              requestedReason: "source_scoped_recovery_action",
+            }),
+          }),
+        });
+      }
+    }
+    await waitForHeartbeatIdle(db);
+    if (owner === "board" || wakeMode === "none") {
+      // Board escalations do not wake any agent for the source issue
+      // (enqueueSourceScopedStrandedRecoveryWake returns before enqueue when the
+      // action has no ownerAgentId).
+      const strayWakes = await db
         .select()
         .from(agentWakeupRequests)
-        .where(eq(agentWakeupRequests.agentId, input.agentId));
-      return wakeups.find((wakeup) => {
+        .where(eq(agentWakeupRequests.companyId, input.companyId));
+      expect(strayWakes.filter((wakeup) => {
         const payload = wakeup.payload as Record<string, unknown> | null;
-        return payload?.issueId === input.issueId &&
-          payload?.sourceIssueId === input.issueId &&
-          payload?.recoveryActionId === action.id &&
-          payload?.strandedRunId === input.runId;
-      }) ?? null;
-    });
-    expect(recoveryWakeup).toMatchObject({
-      companyId: input.companyId,
-      reason: "source_scoped_recovery_action",
-      source: "assignment",
-      payload: expect.objectContaining({
-        modelProfile: "cheap",
-        allowDeliverableWork: false,
-        allowDocumentUpdates: false,
-        resumeRequiresNormalModel: true,
-      }),
-    });
-
-    const recoveryRun = recoveryWakeup?.runId
-      ? await db
-        .select()
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, recoveryWakeup.runId))
-        .then((rows) => rows[0] ?? null)
-      : null;
-    expect(recoveryRun?.contextSnapshot).toMatchObject({
-      issueId: input.issueId,
-      taskId: input.issueId,
-      source: "issue_recovery_action",
-      recoveryActionId: action.id,
-      sourceIssueId: input.issueId,
-      strandedRunId: input.runId,
-      modelProfile: "cheap",
-      allowDeliverableWork: false,
-      allowDocumentUpdates: false,
-      resumeRequiresNormalModel: true,
-    });
-    await waitForHeartbeatIdle(db);
+        return payload?.recoveryActionId === action.id && wakeup.status !== "skipped";
+      })).toHaveLength(0);
+    }
     const sourceIssue = await db
       .select()
       .from(issues)
       .where(eq(issues.id, input.issueId))
       .then((rows) => rows[0] ?? null);
-    expect(sourceIssue?.status).toBe("blocked");
+    expect(sourceIssue?.status).toBe(input.sourceStatus ?? "blocked");
 
     return action;
   }
@@ -1355,6 +1527,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
+    const projectId = await seedLaunchableProjectWorkspace(companyId);
+
     await db.insert(agents).values({
       id: agentId,
       companyId,
@@ -1414,6 +1588,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         "External action: restore a live execution path for this issue or record the manual resolution, then move it out of blocked.",
       ].join("\n"),
       status: "blocked",
+      projectId,
       priority: "medium",
       assigneeAgentId: agentId,
       responsibleUserId: "responsible-user",
@@ -1777,6 +1952,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       previousStatus: "in_progress",
       retryReason: "issue_continuation_needed",
       cause: "process_lost",
+      // Single-agent company: process_lost still routes to the original
+      // assignee, but no distinct card owner exists since f606cb33d, so no
+      // visible recovery card is minted.
+      recoveryCard: false,
     });
   });
 
@@ -2724,7 +2903,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(run?.status).toBe("running");
   });
 
-  it("reaps a stale queued run on an idle, window-exempt agent with no in-progress issue", async () => {
+  it("gives a dispatchable stale queued run one admission attempt instead of reaping it", async () => {
+    // 2cf78552d (2026-08-04, stale-queued-run RCA): the reaper used to cancel
+    // any stale queued row while the agent looked idle, racing the queue pump
+    // and destroying dispatchable work ("no claim while idle" was a cause it
+    // never measured). It now attempts admission first: a claimable run is
+    // STARTED, never reaped.
     const { runId, agentId } = await seedRunFixture({
       runStatus: "queued",
       agentStatus: "idle",
@@ -2740,11 +2924,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       staleMs: 60_000,
       now: new Date("2026-07-22T22:00:00.000Z"),
     });
-    expect(result.reaped).toBe(1);
-    expect(result.runIds).toEqual([runId]);
+    expect(result.reaped).toBe(0);
+    expect(result.runIds).toEqual([]);
 
-    const run = await heartbeat.getRun(runId);
-    expect(run?.status).toBe("cancelled");
+    const run = await waitForRunToSettle(heartbeat, runId, 5_000);
+    expect(run?.status).toBe("succeeded");
   });
 
   it("leaves a non-exempt agent's stale queued run alone (closed-window queues are correctly deferred)", async () => {
@@ -2768,10 +2952,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect((await heartbeat.getRun(runId))?.status).toBe("queued");
   });
 
-  it("reaps a stale queued run for a non-exempt agent when the company has no activity window", async () => {
+  it("reaps a stale queued run only when admission cannot claim it and no gate defers it", async () => {
+    // 2cf78552d (2026-08-04): a dispatchable run is started, not reaped, so the
+    // reap outcome needs a lane that can never admit the row without being
+    // gate/quota-deferred. A paused agent is exactly that wedge: the run gate
+    // does not defer on agent status, and admission refuses non-invokable
+    // lanes, so the stale row would otherwise sit queued forever.
     const { runId } = await seedRunFixture({
       runStatus: "queued",
-      agentStatus: "idle",
+      agentStatus: "paused",
       adapterType: "claude_local",
       includeIssue: false,
     });
@@ -2789,7 +2978,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   it("never reaps a queued continuation of an in-progress issue (loop caveat)", async () => {
     const { runId, agentId } = await seedRunFixture({
       runStatus: "queued",
-      agentStatus: "idle",
+      // Paused lane: keeps the row unclaimable so this pins the REAP decision
+      // itself. Since 2cf78552d an idle lane would simply admit and start the
+      // run (covered above); the loop caveat protects the row from
+      // cancellation when admission cannot claim it.
+      agentStatus: "paused",
       includeIssue: true, // fixture seeds an in_progress issue referenced by contextSnapshot.issueId
     });
     await db
@@ -3079,6 +3272,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(blockedIssue?.checkoutRunId).toBeNull();
     if (!continuationRun?.id) throw new Error("Expected continuation recovery run to exist");
 
+    // Single-agent company + non-process_lost failure: since f606cb33d the
+    // ladder no longer falls back to the assignee, so the exhausted
+    // continuation hands off to the BOARD with a receipt card
+    // (TSMC-20155/20183) that also becomes the source's blocker.
     const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
       companyId,
       agentId,
@@ -3086,9 +3283,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runId: continuationRun.id,
       previousStatus: "in_progress",
       retryReason: "issue_continuation_needed",
+      owner: "board",
     });
 
-    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([
+      recoveryAction.recoveryIssueId,
+    ]);
 
     const comments = await waitForValue(async () => {
       const rows = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
@@ -3097,7 +3297,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried continuation");
     expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
-    expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
+    expect(comments[0]?.body).toContain("Recovery owner: board escalation");
   });
 
   it("blocks failed recovery work in place during immediate terminal-run cleanup", async () => {
@@ -3846,12 +4046,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issueRecoveryActions)
       .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId)))
       .then((rows) => rows[0] ?? null);
+    // f606cb33d + TSMC-20155/20183: with no distinct invokable recovery owner
+    // in this single-agent company, the manual-repair action is board-owned and
+    // must carry a board-visible receipt card instead of routing back to the
+    // assignee.
     expect(recoveryAction).toMatchObject({
       kind: "workspace_validation",
       cause: "workspace_validation_failed",
       status: "active",
-      ownerAgentId: agentId,
-      recoveryIssueId: null,
+      ownerType: "board",
+      ownerAgentId: null,
+      recoveryIssueId: expect.any(String),
     });
     expect(recoveryAction?.evidence).toMatchObject({
       sourceIssueId: issueId,
@@ -3939,12 +4144,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issueRecoveryActions)
       .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId)))
       .then((rows) => rows[0] ?? null);
+    // f606cb33d + TSMC-20155/20183: no distinct invokable recovery owner in
+    // this single-agent company, so the action is board-owned with a receipt.
     expect(recoveryAction).toMatchObject({
       kind: "configuration_validation",
       cause: "configuration_incomplete",
       status: "active",
-      ownerAgentId: agentId,
-      recoveryIssueId: null,
+      ownerType: "board",
+      ownerAgentId: null,
+      recoveryIssueId: expect.any(String),
     });
     expect(recoveryAction?.nextAction).toContain("Bind the missing secret");
 
@@ -4025,12 +4233,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issueRecoveryActions)
       .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId)))
       .then((rows) => rows[0] ?? null);
+    // f606cb33d + TSMC-20155/20183: no distinct invokable recovery owner in
+    // this single-agent company, so the action is board-owned with a receipt.
     expect(recoveryAction).toMatchObject({
       kind: "configuration_validation",
       cause: "configuration_incomplete",
       status: "active",
-      ownerAgentId: agentId,
-      recoveryIssueId: null,
+      ownerType: "board",
+      ownerAgentId: null,
+      recoveryIssueId: expect.any(String),
     });
     expect(recoveryAction?.nextAction).toContain("Set adapterConfig.command to an executable command.");
 
@@ -4051,6 +4262,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         createdByRunId: ctx.runId,
         body: "Implemented the backend detector, but did not choose a final issue state.",
       });
+      await recordRunCommentProgressActivity({ companyId, agentId, runId: ctx.runId, issueId });
       return {
         exitCode: 0,
         signal: null,
@@ -4089,15 +4301,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       resumeFromRunId: runId,
     });
     const handoffPayload = handoffWakeups[0]?.payload as Record<string, unknown>;
-    for (const key of [
-      "modelProfile",
-      "recoveryIntent",
-      "allowDeliverableWork",
-      "allowDocumentUpdates",
-      "resumeRequiresNormalModel",
-    ]) {
-      expect(handoffPayload).not.toHaveProperty(key);
-    }
+    // bfe6369ef ("Guard cheap recovery model usage"): the corrective handoff is
+    // a status_only recovery wake, so it carries the cheap-model guard hints —
+    // disposition-only work must not buy a normal-model deliverable session.
+    expect(handoffPayload).toMatchObject({
+      modelProfile: "cheap",
+      recoveryIntent: "status_only",
+      allowDeliverableWork: false,
+      allowDocumentUpdates: false,
+      resumeRequiresNormalModel: true,
+    });
     expect(handoffPayload.instruction).toContain("Retry transient Codex failure without blocking");
     expect(handoffPayload.instruction).toContain(
       "Verify the successful-run handoff and choose an honest disposition.",
@@ -4506,7 +4719,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     )).toBeNull();
   });
 
-  it("blocks an ACP live token-cap stop without buying a recovery generation run", async () => {
+  it("schedules one bounded continuation for an ACP live token-cap stop without buying a recovery generation run", async () => {
     expect(isTokenBudgetExhaustedRun({
       errorCode: "token_budget_exhausted",
       resultJson: { stopReason: "token_budget_exhausted" },
@@ -4548,20 +4761,34 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await heartbeat.resumeQueuedRuns();
     await waitForRunToSettle(heartbeat, runId, 5_000);
 
-    const issue = await waitForValue(async () =>
-      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
-        const row = rows[0] ?? null;
-        return row?.status === "blocked" ? row : null;
-      }),
-      5_000,
-    );
-    expect(issue?.status).toBe("blocked");
+    // TSMC-20820 (ef082e7cb + 456484457): a live token-cap stop no longer
+    // blocks the issue on a recovery owner. It schedules ONE bounded
+    // resource-ceiling continuation (scheduled_retry) for the same agent+issue
+    // and keeps the lane invokable; only the rolling-window cap stops the
+    // chain, loudly, without blocking. The original guard survives: no
+    // recovery generation run is bought.
+    const continuationRun = await waitForValue(async () => {
+      const rows = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`);
+      return rows.find((row) => row.id !== runId && row.status === "scheduled_retry") ?? null;
+    }, 5_000);
+    expect(continuationRun).toMatchObject({
+      status: "scheduled_retry",
+      retryOfRunId: runId,
+      scheduledRetryReason: "max_turns_continuation",
+    });
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
 
     const issueRuns = await db
       .select()
       .from(heartbeatRuns)
       .where(sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`);
-    expect(issueRuns).toHaveLength(1);
+    // Source run + the single bounded continuation; no extra generation runs.
+    expect(issueRuns).toHaveLength(2);
     const recoveryWakeups = await db
       .select()
       .from(agentWakeupRequests)
@@ -4573,9 +4800,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
     expect(activity).toContainEqual(expect.objectContaining({
-      action: "issue.token_cap_disposition_applied",
-      details: expect.objectContaining({ recoverySuppressed: true, stopReason: "token_budget_exhausted" }),
+      action: "issue.resource_ceiling_continuation_scheduled",
+      details: expect.objectContaining({ cause: "token_budget_exhausted", round: 1 }),
     }));
+    expect(activity.some((event) => event.action === "issue.token_cap_disposition_applied")).toBe(false);
   });
 
   it("treats the stage 12 blocked-dedup no-op as a quiet blocked wait with no recovery loop", async () => {
@@ -4663,8 +4891,19 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await waitForRunToSettle(heartbeat, runId, 5_000);
     await waitForHeartbeatIdle(db, 5_000);
 
-    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("in_progress");
+    // Quota-storm fix (efe5a1545, 2026-07-11): a quota-dead run cancels the
+    // wake AND deterministically moves the issue to `blocked` behind the
+    // quota-exhaustion gate ("Moving it to blocked instead of queueing another
+    // wake") — re-invoking the lane before reset would only burn more quota.
+    // The old `in_progress` read raced the async finalization and made this
+    // test flaky; wait for the terminal state instead.
+    const issue = await waitForValue(async () => {
+      const current = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+      return current?.status === "blocked" ? current : null;
+    }, 5_000);
+    expect(issue?.status).toBe("blocked");
+    const quotaComments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(quotaComments.some((comment) => comment.body.includes("quota exhaustion gate"))).toBe(true);
 
     const followupRuns = await db
       .select()
@@ -4718,6 +4957,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         createdByRunId: ctx.runId,
         body: "Implemented recovery handling, but did not choose a final issue state.",
       });
+      await recordRunCommentProgressActivity({ companyId, agentId, runId: ctx.runId, issueId });
       return {
         exitCode: 0,
         signal: null,
@@ -4760,6 +5000,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         createdByRunId: ctx.runId,
         body: "Drafted the Phase 3 test plan but did not choose a final issue disposition.",
       });
+      await recordRunCommentProgressActivity({ companyId, agentId, runId: ctx.runId, issueId });
       await db.insert(documents).values({
         id: documentId,
         companyId,
@@ -4834,8 +5075,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(handoffWakeups).toHaveLength(1);
     expect(handoffWakeups[0]?.idempotencyKey).toBe(`finish_successful_run_handoff:${issueId}:${runId}:1`);
 
-    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("in_progress");
+    // The delivered corrective wake runs to completion inside this test (the
+    // default adapter mock succeeds without recording a disposition), so the
+    // one-shot handoff exhausts and the 20885 keep-actionable law
+    // (981ef7100/6f2add23a) parks the source ACTIONABLE in `todo` — never
+    // blocked behind its own recovery wrapper.
+    const issue = await waitForValue(async () => {
+      const current = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+      return current?.status === "todo" ? current : null;
+    }, 5_000);
+    expect(issue?.status).toBe("todo");
     await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
@@ -4903,8 +5152,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await waitForRunToSettle(heartbeat, runId, 5_000);
     await waitForHeartbeatIdle(db, 5_000);
 
-    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("in_progress");
+    // Quota-storm fix (efe5a1545, 2026-07-11): the deferred wake is cancelled
+    // under the active quota cooldown AND the issue deterministically lands in
+    // `blocked` behind the quota-exhaustion gate. Reading `in_progress`
+    // mid-finalization raced that write and made this test flaky.
+    const issue = await waitForValue(async () => {
+      const current = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+      return current?.status === "blocked" ? current : null;
+    }, 5_000);
+    expect(issue?.status).toBe("blocked");
 
     const deferredWake = await db
       .select()
@@ -4978,6 +5234,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         createdByRunId: ctx.runId,
         body: "Implemented the backend detector, but did not choose a final issue state.",
       });
+      await recordRunCommentProgressActivity({ companyId, agentId, runId: ctx.runId, issueId });
       return {
         exitCode: 0,
         signal: null,
@@ -5063,6 +5320,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.successfulRunHandoffEscalated).toBe(1);
     expect(result.issueIds).toEqual([issueId]);
 
+    // 981ef7100/6f2add23a (TSMC-20885 law): an exhausted missing-disposition
+    // action whose only would-be blocker is its own recovery wrapper leaves the
+    // source card ACTIONABLE in `todo` instead of manufacturing a blocked wait
+    // state. The owner wake is still delivered (issue is not blocked).
     const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
       companyId,
       agentId,
@@ -5072,6 +5333,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryReason: null,
       cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
       kind: "missing_disposition",
+      recoveryCard: false,
+      wake: "delivered",
+      sourceStatus: "todo",
     });
     expect(recoveryAction.evidence).toMatchObject({
       sourceRunId,
@@ -5083,7 +5347,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(JSON.stringify(recoveryAction.evidence)).not.toContain("sk-test-successful-handoff-secret");
 
     const sourceIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
-    expect(sourceIssue?.status).toBe("blocked");
+    expect(sourceIssue?.status).toBe("todo");
     await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
@@ -5152,6 +5416,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.successfulContinuationObserved).toBe(0);
     expect(result.successfulRunHandoffEscalated).toBe(1);
 
+    // 981ef7100/6f2add23a (TSMC-20885 law): exhausted missing-disposition
+    // leaves the source ACTIONABLE in `todo`. The escalation's own todo
+    // transition writes an `issue.updated` activity row AFTER the corrective
+    // run finished, which counts as new issue input and clears the 38627cd79
+    // no-op-lifecycle suppression — so the owner wake is delivered.
     const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
       companyId,
       agentId,
@@ -5161,6 +5430,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryReason: null,
       cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
       kind: "missing_disposition",
+      recoveryCard: false,
+      wake: "delivered",
+      sourceStatus: "todo",
     });
     expect(recoveryAction.evidence).toMatchObject({
       sourceRunId,
@@ -5219,11 +5491,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .select()
       .from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    // f606cb33d + TSMC-20155/20183: single-agent company, so the
+    // close-evidence action is board-owned with a receipt card that becomes the
+    // source's blocker.
     expect(action).toMatchObject({
       kind: "close_evidence_unmet",
       cause: "close_evidence_unmet",
       status: "active",
-      ownerAgentId: agentId,
+      ownerType: "board",
+      ownerAgentId: null,
+      recoveryIssueId: expect.any(String),
     });
     expect(action?.evidence).toMatchObject({
       latestRunId: runId,
@@ -5237,7 +5514,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const sourceIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
     expect(sourceIssue?.status).toBe("blocked");
-    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([action?.recoveryIssueId]);
 
     delete process.env.PAPERCLIP_WORK_PRODUCTS_DIR;
     await fs.rm(tempRoot, { recursive: true, force: true });
@@ -5845,7 +6122,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     // With no real waiting target, the deliberate-wait conversion must not fire;
     // genuine-strand detection downstream is preserved.
     expect(result.waitingOnReviewResolved).toBe(0);
-    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
+    // The genuine strand then escalates: single-agent company, so the action is
+    // board-owned (f606cb33d) and its receipt card becomes the source blocker
+    // (TSMC-20155/20183) instead of leaving the source blocker-less.
+    const [strandAction] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(strandAction).toMatchObject({ ownerType: "board", recoveryIssueId: expect.any(String) });
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([strandAction?.recoveryIssueId]);
   });
 
   it("clears the detached warning when the run reports activity again", async () => {
@@ -6493,42 +6778,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const otherWakeId = randomUUID();
     const finishedAt = new Date("2026-03-19T00:05:00.000Z");
 
-  it("does not re-enqueue the DP-4234 terminalization fixture after a verified operator interrupt", async () => {
-    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
-      status: "todo",
-      runStatus: "cancelled",
-      runErrorCode: "operator_interrupted",
-    });
-    await db
-      .update(heartbeatRuns)
-      .set({
-        resultJson: {
-          operatorInterrupted: true,
-          interruptionSource: "issue_comment_interrupt",
-          interruptedIssueId: issueId,
-        },
-      })
-      .where(eq(heartbeatRuns.id, runId));
-
-    const heartbeat = heartbeatService(db);
-    const result = await heartbeat.reconcileStrandedAssignedIssues();
-
-    expect(result.dispatchRequeued).toBe(0);
-    expect(result.escalated).toBe(0);
-    expect(result.skipped).toBe(1);
-    expect(result.issueIds).toEqual([]);
-
-    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
-    expect(runs).toHaveLength(1);
-    expect(runs[0]?.id).toBe(runId);
-
-    const issue = await waitForValue(async () => {
-      const current = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
-      return current?.status === "todo" ? current : null;
-    }, 5_000);
-    expect(issue?.status).toBe("todo");
-  });
-
     await db
       .update(heartbeatRuns)
       .set({
@@ -6583,6 +6832,48 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       wakeup.reason === "execution_review_participant_recovery" &&
         wakeup.status !== "skipped"
     )).toBe(true);
+  });
+
+  // Structural repair (TSMC-20853): this test body had been pasted INSIDE the
+  // preceding test's fixture setup ("Calling the test function inside another
+  // test function is not allowed"), killing both tests. Moved out verbatim.
+  it("does not re-enqueue the DP-4234 terminalization fixture after a verified operator interrupt", async () => {
+    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "cancelled",
+      runErrorCode: "operator_interrupted",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        resultJson: {
+          operatorInterrupted: true,
+          interruptionSource: "issue_comment_interrupt",
+          interruptedIssueId: issueId,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    // Verified operator interrupts are counted on their own exemption counter,
+    // not as generic skips (reconcile's isOperatorCancelledRun branch).
+    expect(result.operatorCancelExempted).toBe(1);
+    expect(result.skipped).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(runId);
+
+    const issue = await waitForValue(async () => {
+      const current = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+      return current?.status === "todo" ? current : null;
+    }, 5_000);
+    expect(issue?.status).toBe("todo");
   });
 
   it("retries a pending execution-review participant when another agent has an active issue run", async () => {
@@ -6723,6 +7014,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       previousStatus: "in_review",
       retryReason: "execution_review_participant_recovery",
       cause: "execution_review_participant_recovery",
+      // Single-agent company: no ladder-resolvable card owner distinct from
+      // the assignee since f606cb33d, so no visible card is minted.
+      recoveryCard: false,
     });
     expect(recoveryAction.evidence).toMatchObject({
       latestRunId: reviewRecoveryRun?.id,
@@ -6834,6 +7128,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       cause: "execution_review_participant_recovery",
       previousOwnerAgentId: sourceAssigneeAgentId,
       returnOwnerAgentId: sourceAssigneeAgentId,
+      // No ladder-resolvable card owner (engineers only, no CTO/CEO) since
+      // f606cb33d, so no visible card is minted; the reviewer owns the action.
+      recoveryCard: false,
     });
     expect(recoveryAction.evidence).toMatchObject({
       latestRunId: runId,
@@ -7618,6 +7915,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       previousStatus: "todo",
       retryReason: "assignment_recovery",
       cause: "process_lost",
+      // Single-agent company: no ladder-resolvable card owner since f606cb33d.
+      recoveryCard: false,
     });
     expect(JSON.stringify(recoveryAction.evidence)).not.toContain("sk-test-recovery-secret");
 
@@ -7719,6 +8018,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.escalated).toBe(1);
     expect(result.issueIds).toEqual([issueId]);
 
+    // b2ec2d475 (2026-08-16 storm RCA): a shell-handler may own recovery only
+    // when the stalled work itself belongs to a shell handler. This non-routine
+    // model-lane issue therefore must NOT route to the RoutineOps catch-all;
+    // with no other invokable owner (no CTO/CEO), it is a board hand-off with a
+    // receipt (f606cb33d + TSMC-20155/20183). The core guarantee this test
+    // keeps: the shell-handler is never woken for non-shell recovery.
     await expectSourceScopedStrandedRecoveryAction({
       companyId,
       agentId,
@@ -7726,11 +8031,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runId,
       previousStatus: "todo",
       retryReason: "assignment_recovery",
+      owner: "board",
     });
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("blocked");
-    expect(issue?.assigneeAgentId).toBe(agentId);
+    // Board escalation releases the assignee so dispatch cannot silently hand
+    // the issue back to the exhausted lane.
+    expect(issue?.assigneeAgentId).toBeNull();
 
     const routineWakeups = await db
       .select()
@@ -7750,7 +8058,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.insert(agents).values({
       id: routineOpsAgentId,
       companyId,
-      name: "RoutineOps",
+      // Named like a primary Compiler so resolveCheapRecoveryReviewerAgentId
+      // deterministically selects this catch-all lane over the source lane.
+      name: "RoutineOps-Compiler",
       role: "engineer",
       status: "idle",
       adapterType: "paperclip_shell_handler",
@@ -7758,6 +8068,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runtimeConfig: {},
       permissions: {},
     });
+    // b2ec2d475 (2026-08-16 storm RCA): the shell-handler catch-all may own
+    // recovery only when the stalled work itself belongs to a shell handler
+    // ("recovering script work with scripts"). Make the source lane a shell
+    // handler so this remains the sanctioned positive-routing case.
+    await db.update(agents).set({ adapterType: "paperclip_shell_handler" }).where(eq(agents.id, agentId));
     await db.update(issues).set({ originKind: "routine_execution" }).where(eq(issues.id, issueId));
 
     const heartbeat = heartbeatService(db);
@@ -7845,7 +8160,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(pausedOwnerWakeups.filter((wake) => wake.reason === "source_scoped_recovery_action")).toHaveLength(0);
   });
 
-  it("escalates an all-paused leadership topology to the board, never the source operator", async () => {
+  it("treats an all-paused leadership topology as an intentional pause, never waking the source operator", async () => {
+    // TSMC-20760 (d95ce56ab, 2026-08-11) superseded the board-escalation
+    // expectation this test used to pin: when EVERY executable lane is
+    // intentionally paused there is no live sister to reassign to and no
+    // errored lane masking a failure, so automatic recovery is SUPPRESSED
+    // (`all_lanes_paused`) instead of escalated. The invariant this test
+    // still protects: the stranded issue is never silently handed back to
+    // the paused source operator lane.
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "todo",
       runStatus: "failed",
@@ -7865,10 +8187,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ]);
 
     const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
-    expect(result.escalated).toBe(1);
-    const action = await db.select().from(issueRecoveryActions)
-      .where(eq(issueRecoveryActions.sourceIssueId, issueId)).then((rows) => rows[0] ?? null);
-    expect(action).toMatchObject({ ownerType: "board", ownerAgentId: null });
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.issueIds).toEqual([]);
+    const actions = await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(actions).toHaveLength(0);
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakes.filter((wake) => wake.status !== "failed" && wake.status !== "cancelled")).toHaveLength(0);
   });
 
   it("blocks an already stranded recovery issue without creating a recovery child", async () => {
@@ -8154,16 +8480,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     const heartbeat = heartbeatService(db);
 
-    await db.insert(issueRecoveryActions).values({
-      companyId,
-      sourceIssueId: issueId,
-      kind: "stranded_assigned_issue",
-      ownerType: "agent",
-      ownerAgentId: agentId,
-      cause: "process_lost",
-      fingerprint: `test:${issueId}`,
-      nextAction: "Recover after the operator resumes the company.",
-    });
+    // Structural repair (TSMC-20853): d95ce56ab misapplied a patch hunk here,
+    // replacing this test's reconcile trigger with a stray issueRecoveryActions
+    // insert that referenced an undestructured `companyId` (ReferenceError).
+    // Restored to the pre-d95ce56ab body (236d11d36).
+    await heartbeat.reconcileStrandedAssignedIssues();
 
     const livenessWake = await waitForValue(async () => {
       const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
@@ -8276,6 +8597,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       previousStatus: "in_progress",
       retryReason: "issue_continuation_needed",
       cause: "process_lost",
+      // Single-agent company: no ladder-resolvable card owner since f606cb33d.
+      recoveryCard: false,
     });
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
@@ -8299,6 +8622,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.escalated).toBe(1);
 
+    // adapter_exit_code is not a route-to-original cause, and this single-agent
+    // company has no ladder-resolvable owner since f606cb33d: board hand-off.
     const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
       companyId,
       agentId,
@@ -8306,6 +8631,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runId,
       previousStatus: "in_progress",
       retryReason: "issue_continuation_needed",
+      owner: "board",
     });
     expect(recoveryAction.evidence).toMatchObject({
       latestRunErrorCode: "adapter_exit_code",
@@ -8395,6 +8721,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("blocked");
 
+    // Exhausted adapter_failed continuation in a single-agent company: board
+    // hand-off with a receipt (f606cb33d + TSMC-20155/20183).
     await expectSourceScopedStrandedRecoveryAction({
       companyId,
       agentId,
@@ -8402,6 +8730,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runId,
       previousStatus: "in_progress",
       retryReason: "issue_continuation_needed",
+      owner: "board",
     });
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
@@ -8532,6 +8861,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("blocked");
 
+    // Non-retryable failure in a single-agent company: board hand-off with a
+    // receipt (f606cb33d + TSMC-20155/20183).
     await expectSourceScopedStrandedRecoveryAction({
       companyId,
       agentId,
@@ -8539,6 +8870,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runId,
       previousStatus: "in_progress",
       retryReason: null,
+      owner: "board",
     });
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
@@ -8614,9 +8946,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         eq(issues.originKind, "stranded_issue_recovery"),
         eq(issues.originId, issueId),
       ));
-    // Fork-policy pin (TSMC-18233): the visible recovery card exists again, so
-    // the raced-creation guard is "exactly one card", not "no card".
-    expect(recoveries).toHaveLength(1);
+    // Raced-creation guard: at most ONE card can ever exist. In this
+    // single-agent fixture the card creator has no ladder-resolvable owner
+    // since f606cb33d, so the deduped count is zero — the guard being tested
+    // (8 concurrent reconciles never mint duplicates) is unchanged.
+    expect(recoveries).toHaveLength(0);
     await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
   });
 
@@ -9005,6 +9339,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("blocked");
 
+    // Repeated unmanaged wait in a single-agent company: board hand-off with a
+    // receipt (f606cb33d + TSMC-20155/20183).
     await expectSourceScopedStrandedRecoveryAction({
       companyId,
       agentId,
@@ -9012,12 +9348,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runId,
       previousStatus: "in_progress",
       retryReason: "issue_continuation_needed",
+      owner: "board",
     });
 
-    // Fork-policy pin (TSMC-18233): the restored recovery card adds its own
-    // runs on this agent, so count continuation retries structurally instead
-    // of pinning the total run count. The guard is: no further continuation
-    // of the source issue beyond the one being escalated.
+    // The guard is: no further continuation of the source issue beyond the one
+    // being escalated.
     const followupRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
     const continuationRetries = followupRuns.filter((row) => {
       const ctx = row.contextSnapshot as Record<string, unknown> | null;
@@ -9240,6 +9575,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("blocked");
 
+    // Exhausted productive continuation in a single-agent company: board
+    // hand-off with a receipt (f606cb33d + TSMC-20155/20183).
     const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
       companyId,
       agentId,
@@ -9247,6 +9584,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runId,
       previousStatus: "in_progress",
       retryReason: "issue_continuation_needed",
+      owner: "board",
     });
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
@@ -9254,7 +9592,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("automatically retried continuation");
     expect(comments[0]?.body).toContain("still has no live execution path");
     expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
-    expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
+    expect(comments[0]?.body).toContain("Recovery owner: board escalation");
   });
 
   it.each([

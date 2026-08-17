@@ -49,11 +49,27 @@ const RESOURCE_CEILING_ERROR_CODES = new Set([
   "issue_generation_ceiling_exceeded",
 ]);
 
+// Provider quota exhaustion is a provider-side capacity verdict with its own
+// first-class timed recovery path (provider_quota classification + scheduled
+// quota-recovery monitor that retries after resetAt). Feeding it to the
+// breaker double-punishes: the same quota storm that already deferred the lane
+// would ALSO block its issues behind Unblock cards, exactly the healthy-lane
+// strand the RESOURCE_CEILING exclusion above exists to prevent (TSMC-20853;
+// same class as TSMC-20910 instances 3 and 4). Two quota-dead runs carry no
+// more signal about the lane than one — the monitor owns the follow-up.
+const PROVIDER_QUOTA_ERROR_CODES = new Set([
+  "provider_quota",
+  "gemini_quota_exhausted",
+  "gemini_hello_probe_quota_exhausted",
+  "antigravity_quota_exhausted",
+]);
+
 function isGenuineFailure(observation: FailureObservation) {
   return (
     (observation.status === "failed" || observation.status === "timed_out") &&
     !TRANSIENT_LOCK_CONTENTION_ERROR_CODES.has(observation.errorCode ?? "") &&
-    !RESOURCE_CEILING_ERROR_CODES.has(observation.errorCode ?? "")
+    !RESOURCE_CEILING_ERROR_CODES.has(observation.errorCode ?? "") &&
+    !PROVIDER_QUOTA_ERROR_CODES.has(observation.errorCode ?? "")
   );
 }
 

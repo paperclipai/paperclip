@@ -5192,6 +5192,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     // (live 2026-08-15 16:26, TSM-6676: the null comparison bypassed this
     // guard and the card froze behind its own recovery issue anyway).
     const onlySelfReferentialBlockers = blockerIds.every((id) => id === ensuredRecoveryIssueId);
+    let leftActionableTodoDisposition = false;
     if (
       recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON &&
       onlySelfReferentialBlockers &&
@@ -5204,6 +5205,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (updated) {
         selectedAssigneeAgentId = input.issue.assigneeAgentId ?? null;
         preservedCurrentAssignee = true;
+        leftActionableTodoDisposition = true;
       }
     }
 
@@ -5433,7 +5435,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryCause,
     });
 
-    if (recoveryAction.ownerAgentId && recoveryAction.ownerAgentId === input.issue.assigneeAgentId) {
+    // TSMC-20853: when the TSMC-20885 keep-actionable law above deliberately
+    // left the source in `todo` (exhausted missing-disposition with only a
+    // self-referential blocker), this legacy re-block pass must NOT run: it
+    // would both revert the intentional todo disposition AND 422 against the
+    // blocked-state accountability validation (blocked_state_requires_wait_path)
+    // because `blockerIds` is empty and no external-wait gate is written here.
+    // That 422 escaped escalateStrandedAssignedIssue and made the reconciler
+    // skip the whole issue ("skipped stranded issue after recovery reconcile
+    // error"), silently dropping the escalation it had just built.
+    if (
+      !leftActionableTodoDisposition &&
+      recoveryAction.ownerAgentId && recoveryAction.ownerAgentId === input.issue.assigneeAgentId
+    ) {
       const [currentIssue] = await db
         .select({
           status: issues.status,
