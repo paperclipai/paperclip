@@ -237,6 +237,59 @@ describe("claude sandbox hello probe diagnostics", () => {
     warnSpy.mockRestore();
   });
 
+  it("does not flag a healthy probe whose assistant text repeats a token phrase", async () => {
+    // A healthy run prints an auth phrase in its answer text. The parsed result
+    // is a success, so the probe stays healthy and offers no login gate.
+    probeResult.value = {
+      exitCode: 0,
+      stdout: [
+        initLine,
+        '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello — authentication_failed means an invalid bearer token"}]},"session_id":"abc"}',
+        '{"type":"result","subtype":"success","is_error":false,"result":"hello","session_id":"abc"}',
+      ].join("\n"),
+      stderr: "",
+    };
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "claude" },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    expect(result.checks.some((check) => check.code === "adapter_auth_missing")).toBe(false);
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_auth_required")).toBe(false);
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_passed")).toBe(true);
+  });
+
+  it("keeps a transient failure with an assistant token phrase off the login gate", async () => {
+    // The probe fails on a 529 overload. The auth phrase appears only in the raw
+    // stdout assistant event, not the parsed result, so the run stays transient
+    // and never surfaces the login gate.
+    probeResult.value = {
+      exitCode: 1,
+      stdout: [
+        initLine,
+        '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"authentication_failed: the bearer token is invalid"}]},"session_id":"abc"}',
+        '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"API Error: 529 overloaded_error","session_id":"abc"}',
+      ].join("\n"),
+      stderr: "",
+    };
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "claude" },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    expect(result.checks.some((check) => check.code === "adapter_auth_missing")).toBe(false);
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_auth_required")).toBe(false);
+    expect(result.checks.some((check) => check.code === "claude_hello_probe_transient_upstream")).toBe(true);
+  });
+
   it("keeps an unexpected successful summary out of every check", async () => {
     // The probe exits 0 but does not return `hello`. The unexpected summary is
     // untrusted output. The check must not repeat its marker.

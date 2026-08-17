@@ -169,6 +169,54 @@ describe("probeClaudeAcpSandboxLogin", () => {
     expect(JSON.stringify(checks)).not.toContain(invalidTokenMarker);
   });
 
+  it("does not flag a healthy probe whose assistant text repeats a token phrase", async () => {
+    // A healthy run prints an auth phrase in its answer text. The parsed result
+    // is a success, so the probe stays healthy and offers no login gate.
+    probeResult.value = {
+      exitCode: 0,
+      stdout: [
+        initLine,
+        '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello — note authentication_failed means an invalid bearer token"}]},"session_id":"abc"}',
+        '{"type":"result","subtype":"success","is_error":false,"result":"hello","session_id":"abc"}',
+      ].join("\n"),
+      stderr: "",
+      timedOut: false,
+    };
+
+    const checks = await probeClaudeAcpSandboxLogin({
+      config: { engine: "acp" },
+      target: sandboxTarget,
+    });
+
+    // The parsed result is a success, so no login gate and no probe-unavailable
+    // check appears.
+    expect(checks).toEqual([]);
+  });
+
+  it("keeps a non-auth failed probe with a token phrase on the probe-unavailable path", async () => {
+    // The probe fails on a transient upstream error and prints an auth phrase in
+    // its assistant text. The parsed result is not an auth failure, so the probe
+    // stays on the neutral probe-unavailable code, not the login gate.
+    probeResult.value = {
+      exitCode: 1,
+      stdout: [
+        initLine,
+        '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"authentication_failed: the bearer token is invalid"}]},"session_id":"abc"}',
+        '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"API Error: 503 service unavailable","session_id":"abc"}',
+      ].join("\n"),
+      stderr: "",
+      timedOut: false,
+    };
+
+    const checks = await probeClaudeAcpSandboxLogin({
+      config: { engine: "acp" },
+      target: sandboxTarget,
+    });
+
+    expect(checks.some((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE)).toBe(false);
+    expect(checks.some((check) => check.code === "claude_acp_login_probe_unavailable")).toBe(true);
+  });
+
   it("never renders an untrusted login URL with sensitive query or fragment text", async () => {
     // The sandbox prints a login-required line that carries a malicious URL. The
     // URL has a non-allowlisted host, a query, and a fragment, each with a
