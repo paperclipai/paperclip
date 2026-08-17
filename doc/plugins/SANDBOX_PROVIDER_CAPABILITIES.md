@@ -84,8 +84,8 @@ provider eligible for reusable-lease acquisition, and it does not advertise
 provider-level reusable support. The host then always creates an ephemeral lease.
 
 The opt-in never removes the other prerequisites. The worker must still verify
-both `environmentResumeLease` and `environmentReleaseLease`, and per-run narrowing
-still applies.
+all three lifecycle methods, `environmentResumeLease`, `environmentReleaseLease`,
+and `environmentDestroyLease`, and per-run narrowing still applies.
 
 The two opt-in fields have a fixed precedence. The host keeps the legacy
 `supportsReusableLeases` field for backward compatibility, and it folds the field
@@ -103,16 +103,18 @@ Prefer the nested `sandboxCapabilities.reusableLeases` in a new manifest.
 
 | Capability | Required worker methods | Meaning |
 | --- | --- | --- |
-| `reusableLeases` | `environmentResumeLease` **and** `environmentReleaseLease` | The host retains a provider lease and resumes it across runs. |
+| `reusableLeases` | `environmentResumeLease`, `environmentReleaseLease`, **and** `environmentDestroyLease` | The host retains a provider lease and resumes it across runs. |
 | `nativeSyncIn` | `environmentSyncIn` | The host transfers files into the sandbox through the native inbound hook. |
 | `nativeSyncOut` | `environmentSyncOut` | The host transfers files out of the sandbox through the native outbound hook. |
 | `persistentProcessSessions` | `environmentExecute` | The provider keeps a persistent process session open across commands. |
 | `independentControlCommands` | `environmentExecute` | The provider runs a one-shot control command beside a long-lived command. |
 
-Reusable leases need both lifecycle methods. The host resumes a lease with
-`environmentResumeLease` and ends it with `environmentReleaseLease`. A worker that
-omits either method never gets reusable leases, even with a positive
-declaration. The host then always creates an ephemeral lease.
+Reusable leases need all three lifecycle methods. The host resumes a lease with
+`environmentResumeLease`, ends it with `environmentReleaseLease`, and tears down a
+stale lease with `environmentDestroyLease`. The reuse path destroys a stale lease
+when a resume fails, so a provider that cannot destroy a lease would strand it. A
+worker that omits any of the three methods never gets reusable leases, even with a
+positive declaration. The host then always creates an ephemeral lease.
 
 The host advertises and consumes the two native sync methods as a pair. Define
 both or neither. See [Sandbox file-sync lifecycle hooks](./SANDBOX_FILE_SYNC_HOOKS.md).
