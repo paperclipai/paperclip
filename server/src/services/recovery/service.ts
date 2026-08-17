@@ -41,6 +41,7 @@ import { instanceSettingsService } from "../instance-settings.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { TERMINAL_HEARTBEAT_RUN_STATUSES, issueService } from "../issues.js";
+import { resolveConfiguredOperationalReviewOwnerAgentId } from "../operational-review-routing.js";
 import {
   applyIssueMonitorPolicyTransition,
   normalizeIssueExecutionPolicy,
@@ -1813,6 +1814,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     sourceIssue: typeof issues.$inferSelect | null;
   }) {
     const candidateIds: string[] = [];
+    const configuredOwnerId = await resolveConfiguredOperationalReviewOwnerAgentId(db, input.run.companyId);
+    if (configuredOwnerId) candidateIds.push(configuredOwnerId);
     if (input.sourceIssue?.assigneeAgentId) {
       const sourceAssignee = await getAgent(input.sourceIssue.assigneeAgentId);
       if (sourceAssignee?.reportsTo) candidateIds.push(sourceAssignee.reportsTo);

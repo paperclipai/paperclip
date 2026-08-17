@@ -12,7 +12,9 @@ export interface InteractionResolverKindGovernance {
 
 export type InteractionResolverGovernance = Partial<
   Record<IssueThreadInteractionKind, InteractionResolverKindGovernance>
->;
+> & {
+  operationalReviewOwnerAgentId?: string;
+};
 
 export interface Company {
   id: string;

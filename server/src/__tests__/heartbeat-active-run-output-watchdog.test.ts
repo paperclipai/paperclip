@@ -131,6 +131,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     sourceStatus?: "in_progress" | "done" | "cancelled";
     sourceOriginKind?: string;
     sameRunTerminalEvidence?: "activity" | "comment";
+    operationalReviewOwnerAgentId?: string | null;
   }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
@@ -148,6 +149,9 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       name: "Watchdog Co",
       issuePrefix,
       defaultResponsibleUserId: "responsible-user",
+      interactionResolverGovernance: opts.operationalReviewOwnerAgentId
+        ? { operationalReviewOwnerAgentId: opts.operationalReviewOwnerAgentId }
+        : {},
       requireBoardApprovalForNewAgents: false,
     });
     await db.insert(agents).values([
@@ -286,6 +290,36 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     });
     expect(evaluations[0]?.description).toContain("Decision Checklist");
     expect(evaluations[0]?.description).not.toContain("sk-test-secret-value");
+  });
+
+  it("routes silent-run evaluations to the configured operational review owner before manager fallback", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const pmId = "c085a343-d57f-47fa-b114-0c6ed7f76c41";
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      operationalReviewOwnerAgentId: pmId,
+    });
+    await db.insert(agents).values({
+      id: pmId,
+      companyId,
+      name: "PM",
+      role: "pm",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const result = await heartbeatService(db).scanSilentActiveRuns({ now, companyId });
+
+    expect(result.created).toBe(1);
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation?.assigneeAgentId).toBe(pmId);
   });
 
   it("redacts sensitive values from actual run-log evidence", async () => {
