@@ -1,0 +1,78 @@
+name: GCP Preview Teardown
+
+# Deletes the Cloud Run preview service and drops its database when the PR
+# closes (merged or abandoned). Companion to gcp-preview.yml — this must
+# stay reliable or preview stacks accumulate silently.
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROJECT_ID: albert-489117
+  REGION: us-central1
+  SQL_CONNECTION_NAME: albert-489117:us-central1:paperclip-preview
+  SERVICE_NAME: pr-${{ github.event.pull_request.number }}
+  DB_NAME: pr_${{ github.event.pull_request.number }}
+  DEPLOYER_SA: github-actions-deployer@albert-489117.iam.gserviceaccount.com
+
+jobs:
+  teardown:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Authenticate to GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: projects/822861045819/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: ${{ env.DEPLOYER_SA }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Delete Cloud Run service
+        run: |
+          gcloud run services delete "${{ env.SERVICE_NAME }}" \
+            --project="${{ env.PROJECT_ID }}" \
+            --region="${{ env.REGION }}" \
+            --quiet || echo "::warning::service ${{ env.SERVICE_NAME }} was already gone"
+
+      - name: Install psql and Cloud SQL Auth Proxy
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          curl -sSL -o /usr/local/bin/cloud-sql-proxy \
+            https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.14.2/cloud-sql-proxy.linux.amd64
+          chmod +x /usr/local/bin/cloud-sql-proxy
+
+      - name: Start Cloud SQL Auth Proxy
+        run: |
+          cloud-sql-proxy --port 5432 "${{ env.SQL_CONNECTION_NAME }}" &
+          for _ in $(seq 1 30); do
+            if pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Cloud SQL Auth Proxy did not become ready in time" >&2
+          exit 1
+
+      - name: Drop per-PR database
+        run: |
+          DB_PASSWORD=$(gcloud secrets versions access latest --secret=paperclip-preview-db-password)
+          PGPASSWORD="$DB_PASSWORD" psql -h 127.0.0.1 -U postgres -c \
+            "DROP DATABASE IF EXISTS ${{ env.DB_NAME }} WITH (FORCE);"
+
+      - name: Comment teardown confirmation
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: "🧹 Preview environment torn down (Cloud Run service and database removed).",
+            });

@@ -1,0 +1,194 @@
+name: GCP Preview
+
+# Builds the server image, provisions a per-PR Postgres database on the
+# shared preview Cloud SQL instance, and deploys a scale-to-zero Cloud Run
+# service so a reviewer can click a live URL before merge. Teardown lives in
+# gcp-preview-teardown.yml (triggered on pull_request: closed).
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write # required for Workload Identity Federation
+
+concurrency:
+  group: gcp-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  PROJECT_ID: albert-489117
+  REGION: us-central1
+  AR_REPO: paperclip
+  SQL_INSTANCE: paperclip-preview
+  SQL_CONNECTION_NAME: albert-489117:us-central1:paperclip-preview
+  SERVICE_NAME: pr-${{ github.event.pull_request.number }}
+  DB_NAME: pr_${{ github.event.pull_request.number }}
+  DEPLOYER_SA: github-actions-deployer@albert-489117.iam.gserviceaccount.com
+
+jobs:
+  deploy-preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Authenticate to GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: projects/822861045819/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: ${{ env.DEPLOYER_SA }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push server image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: production
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/server:pr-${{ github.event.pull_request.number }}-${{ github.sha }}
+          build-args: |
+            PAPERCLIP_BUILD_VERSION=0.0.0-pr${{ github.event.pull_request.number }}
+            PAPERCLIP_BUILD_COMMIT=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install psql and Cloud SQL Auth Proxy
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          curl -sSL -o /usr/local/bin/cloud-sql-proxy \
+            https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.14.2/cloud-sql-proxy.linux.amd64
+          chmod +x /usr/local/bin/cloud-sql-proxy
+
+      - name: Start Cloud SQL Auth Proxy
+        run: |
+          cloud-sql-proxy --port 5432 "${{ env.SQL_CONNECTION_NAME }}" &
+          for _ in $(seq 1 30); do
+            if pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
+              echo "proxy ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Cloud SQL Auth Proxy did not become ready in time" >&2
+          exit 1
+
+      - name: Fetch preview DB password
+        id: secrets
+        run: |
+          # BETTER_AUTH_SECRET and PAPERCLIP_SECRETS_MASTER_KEY are injected
+          # straight from Secret Manager into Cloud Run via --set-secrets
+          # below; only the DB password needs to reach this job, to build
+          # DATABASE_URL and to run CREATE/DROP DATABASE over the proxy.
+          {
+            echo "db_password<<EOF"
+            gcloud secrets versions access latest --secret=paperclip-preview-db-password
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create per-PR database if it doesn't exist
+        id: db
+        env:
+          PGPASSWORD: ${{ steps.secrets.outputs.db_password }}
+        run: |
+          EXISTS=$(psql -h 127.0.0.1 -U postgres -tAc \
+            "SELECT 1 FROM pg_database WHERE datname = '${{ env.DB_NAME }}'")
+          if [ "$EXISTS" = "1" ]; then
+            echo "database ${{ env.DB_NAME }} already exists"
+            echo "fresh=false" >> "$GITHUB_OUTPUT"
+          else
+            psql -h 127.0.0.1 -U postgres -c "CREATE DATABASE ${{ env.DB_NAME }};"
+            echo "fresh=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy to Cloud Run
+        id: deploy
+        run: |
+          gcloud run deploy "${{ env.SERVICE_NAME }}" \
+            --project="${{ env.PROJECT_ID }}" \
+            --region="${{ env.REGION }}" \
+            --image="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/server:pr-${{ github.event.pull_request.number }}-${{ github.sha }}" \
+            --service-account="${{ env.DEPLOYER_SA }}" \
+            --add-cloudsql-instances="${{ env.SQL_CONNECTION_NAME }}" \
+            --allow-unauthenticated \
+            --execution-environment=gen2 \
+            --min-instances=0 \
+            --max-instances=1 \
+            --memory=1Gi \
+            --cpu=1 \
+            --timeout=1800 \
+            --port=3100 \
+            --set-env-vars="NODE_ENV=production,HOST=0.0.0.0,PORT=3100,SERVE_UI=true,PAPERCLIP_INSTANCE_ID=${{ env.SERVICE_NAME }},PAPERCLIP_DEPLOYMENT_MODE=authenticated,PAPERCLIP_DEPLOYMENT_EXPOSURE=public,PAPERCLIP_MIGRATION_AUTO_APPLY=true,PAPERCLIP_DB_BACKUP_ENABLED=false,DATABASE_URL=postgres://postgres:${{ steps.secrets.outputs.db_password }}@/${{ env.DB_NAME }}?host=/cloudsql/${{ env.SQL_CONNECTION_NAME }}" \
+            --set-secrets="BETTER_AUTH_SECRET=paperclip-preview-better-auth-secret:latest,PAPERCLIP_SECRETS_MASTER_KEY=paperclip-preview-master-key:latest" \
+            --quiet
+
+          URL=$(gcloud run services describe "${{ env.SERVICE_NAME }}" \
+            --project="${{ env.PROJECT_ID }}" --region="${{ env.REGION }}" \
+            --format="value(status.url)")
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Pin PAPERCLIP_PUBLIC_URL to the assigned Cloud Run URL
+        run: |
+          gcloud run services update "${{ env.SERVICE_NAME }}" \
+            --project="${{ env.PROJECT_ID }}" \
+            --region="${{ env.REGION }}" \
+            --update-env-vars="PAPERCLIP_PUBLIC_URL=${{ steps.deploy.outputs.url }}" \
+            --quiet
+
+      - name: Seed demo data (fresh databases only)
+        if: steps.db.outputs.fresh == 'true'
+        env:
+          PGPASSWORD: ${{ steps.secrets.outputs.db_password }}
+        run: |
+          curl -sSf --retry 10 --retry-delay 5 --retry-connrefused \
+            "${{ steps.deploy.outputs.url }}/api/health" -o /dev/null \
+            || echo "::warning::health check did not pass before seed attempt; seeding may race migrations"
+
+          corepack enable
+          pnpm install --filter @paperclipai/db... --frozen-lockfile
+          DATABASE_URL="postgres://postgres:${{ steps.secrets.outputs.db_password }}@127.0.0.1:5432/${{ env.DB_NAME }}?sslmode=disable" \
+            pnpm --filter @paperclipai/db seed || echo "::warning::seed failed; preview is still usable, sign up as the first user"
+
+      - name: Comment preview URL on the PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = "<!-- gcp-preview-bot -->";
+            const url = "${{ steps.deploy.outputs.url }}";
+            const body = `${marker}\n### 🚀 Preview deployed\n\n${url}\n\nSign up as the first user to claim instance admin. Redeploys on every push to this PR; torn down automatically when it's closed.`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((c) => c.body.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
