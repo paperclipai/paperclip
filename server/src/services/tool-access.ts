@@ -128,11 +128,34 @@ type ActorInfo = {
 const ACTIVE_BROKER_RUN_STATUSES = new Set(["running"]);
 const REMOTE_HTTP_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const MAX_REMOTE_HTTP_REDIRECTS = 5;
+// Budget for a whole remote OAuth exchange, redirects included. Generous for a
+// metadata, registration or token call, and overridable for a slow provider.
+const DEFAULT_REMOTE_HTTP_TIMEOUT_MS = 30_000;
+
 const MAX_OAUTH_DCR_CLIENT_ID_LENGTH = 4_096;
 const MAX_OAUTH_DCR_CLIENT_SECRET_LENGTH = 16_384;
 const OAUTH_REFRESH_LEASE_MS = 120_000;
 const OAUTH_REFRESH_LEASE_WAIT_MS = 30_000;
 const OAUTH_REFRESH_LEASE_POLL_MS = 25;
+
+function remoteHttpTimeoutMs() {
+  const parsed = Number.parseInt(process.env.PAPERCLIP_REMOTE_HTTP_TIMEOUT_MS ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_REMOTE_HTTP_TIMEOUT_MS;
+}
+
+// Translate an aborted remote request into a described gateway error. Without
+// this the raw AbortError escapes callers that do not wrap the call — for
+// example oauthProviderEndpoints — and surfaces as an unexplained 500.
+async function fetchRemoteHttpWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (err) {
+    if (init.signal?.aborted) {
+      throw new HttpError(504, "Remote endpoint did not respond in time", { code: "remote_http_timeout" });
+    }
+    throw err;
+  }
+}
 
 type OAuthProviderEndpoints = {
   provider: string;
@@ -1393,9 +1416,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function fetchRemoteHttpUrl(value: string, init: RequestInit = {}): Promise<Response> {
     let currentUrl = value;
     const method = (init.method ?? "GET").toUpperCase();
+    // `fetch` has no default timeout, and these endpoints are operator- or
+    // app-supplied, so a host that accepts the connection and never answers would
+    // hold this call — and the request handler awaiting it — open indefinitely.
+    // One signal for the whole loop, so a chain of slow redirects cannot spend
+    // MAX_REMOTE_HTTP_REDIRECTS times the budget. A caller-supplied signal is
+    // still honoured.
+    const timeout = AbortSignal.timeout(remoteHttpTimeoutMs());
+    const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
     for (let redirectCount = 0; redirectCount <= MAX_REMOTE_HTTP_REDIRECTS; redirectCount += 1) {
       const safeUrl = await assertRemoteHttpUrlAllowed(currentUrl);
-      const response = await fetch(safeUrl, { ...init, redirect: "manual" });
+      const response = await fetchRemoteHttpWithTimeout(safeUrl, { ...init, redirect: "manual", signal });
       const location = REMOTE_HTTP_REDIRECT_STATUSES.has(response.status)
         ? response.headers?.get?.("location") ?? null
         : null;
@@ -1907,20 +1938,22 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       body.set("requested_token_type", readConfigString(broker, "requestedTokenType") ?? "urn:ietf:params:oauth:token-type:access_token");
       body.set("actor_token", Buffer.from(JSON.stringify(actor)).toString("base64url"));
       body.set("actor_token_type", readConfigString(broker, "actorTokenType") ?? "urn:ietf:params:oauth:token-type:jwt");
-      response = await fetch(url, {
+      response = await fetchRemoteHttpWithTimeout(url, {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
         body,
+        signal: AbortSignal.timeout(remoteHttpTimeoutMs()),
       });
     } else {
       const namespace = isPages ? pagesNamespaceFromScope(input.scope) : null;
       const body = isPages && namespace
         ? { namespace, ttlSeconds: input.ttlSeconds, actions: ["publish"], actor }
         : { scope: input.scope, ttlSeconds: input.ttlSeconds, actor, audience: readConfigString(broker, "audience") };
-      response = await fetch(url, {
+      response = await fetchRemoteHttpWithTimeout(url, {
         method: "POST",
         headers: { authorization: `Bearer ${parentToken}`, "content-type": "application/json" },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(remoteHttpTimeoutMs()),
       });
     }
     const payload = await response.json().catch(() => ({})) as unknown;
@@ -2865,7 +2898,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function remoteTools(connection: typeof toolConnections.$inferSelect): Promise<McpToolDescriptor[]> {
     const headers = await resolveCredentialHeaders(connection);
     const endpoint = await assertRemoteEndpointAllowed(connection.config);
-    const response = await fetch(endpoint, {
+    const response = await fetchRemoteHttpWithTimeout(endpoint, {
       method: "POST",
       // MCP Streamable HTTP requires advertising that we accept both a JSON body
       // and an SSE stream; spec-compliant servers 406 without it (see mcp-http.ts).
@@ -2876,6 +2909,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         method: "tools/list",
         params: {},
       }),
+      signal: AbortSignal.timeout(remoteHttpTimeoutMs()),
     });
     if (!response.ok) {
       const authenticate = response.headers.get("www-authenticate") ?? "";
