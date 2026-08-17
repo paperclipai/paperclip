@@ -211,12 +211,14 @@ export function Costs() {
     mutationFn: (input: {
       scopeType: BudgetPolicySummary["scopeType"];
       scopeId: string;
+      metric: BudgetPolicySummary["metric"];
       amount: number;
       windowKind: BudgetPolicySummary["windowKind"];
     }) =>
       budgetsApi.upsertPolicy(companyId, {
         scopeType: input.scopeType,
         scopeId: input.scopeId,
+        metric: input.metric,
         amount: input.amount,
         windowKind: input.windowKind,
       }),
@@ -927,6 +929,7 @@ export function Costs() {
                               policyMutation.mutate({
                                 scopeType: summary.scopeType,
                                 scopeId: summary.scopeId,
+                                metric: summary.metric,
                                 amount,
                                 windowKind: summary.windowKind,
                               })}
