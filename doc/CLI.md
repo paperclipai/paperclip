@@ -500,13 +500,35 @@ npx paperclipai agent local-cli claudecoder --company-id <company-id>
 
 ## Token Commands
 
-Agent API keys are scoped to one company and one agent. Plaintext tokens are printed once at creation.
+Agent API keys are scoped to one company and one agent. Plaintext tokens are
+printed once at creation.
 
 ```sh
 npx paperclipai token agent create --company-id <company-id> --agent <agent-id-or-name> --name external-worker
 npx paperclipai token agent list --company-id <company-id> --agent <agent-id-or-name>
 npx paperclipai token agent revoke --company-id <company-id> --agent <agent-id-or-name> <key-id>
 ```
+
+The CLI command above creates a standard agent key. For a deterministic external
+task adapter, a board operator can create a `task_bridge` key in **Agent Detail →
+API Keys** or call `POST /api/agents/{agentId}/keys` with a bounded scope:
+
+```json
+{
+  "name": "content-task-bridge",
+  "scope": {
+    "kind": "task_bridge",
+    "projectId": "<project-uuid>",
+    "parentIssueId": "<optional-parent-issue-uuid>",
+    "allowedAssigneeAgentIds": ["<specialist-agent-uuid>"]
+  }
+}
+```
+
+A task-bridge scope requires at least one project or parent-issue boundary.
+Paperclip validates every referenced project, issue, and assignee against the
+key agent's company. If the scope must change, revoke the key and create a
+replacement; scope is not editable in place.
 
 Named board API keys use the board authorization model, support revocation and expiration metadata, and are audited server-side.
 

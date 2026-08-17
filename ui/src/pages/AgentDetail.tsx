@@ -123,6 +123,12 @@ import {
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
 import { Badge } from "@/components/ui/badge";
+import {
+  buildAgentKeyScopePayload,
+  describeAgentKeyScope,
+  validateAgentKeyScopeDraft,
+  type AgentKeyScopeMode,
+} from "../lib/agent-key-scope";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
@@ -4345,19 +4351,56 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
   const [newKeyName, setNewKeyName] = useState("");
   const [newToken, setNewToken] = useState<string | null>(null);
   const [tokenVisible, setTokenVisible] = useState(false);
+  const [scopeMode, setScopeMode] = useState<AgentKeyScopeMode>("standard");
+  const [projectBoundaryId, setProjectBoundaryId] = useState("");
+  const [parentBoundaryId, setParentBoundaryId] = useState("");
+  const [allowedAssigneeAgentIds, setAllowedAssigneeAgentIds] = useState<string[]>([]);
   const [copied, setCopied] = useState(false);
 
   const { data: keys, isLoading } = useQuery({
     queryKey: queryKeys.agents.keys(agentId),
     queryFn: () => agentsApi.listKeys(agentId, companyId),
   });
+  const { data: projects = [] } = useQuery({
+    queryKey: companyId ? queryKeys.projects.list(companyId) : ["projects", "none"],
+    queryFn: () => projectsApi.list(companyId!),
+    enabled: Boolean(companyId && scopeMode === "task_bridge"),
+  });
+  const { data: companyAgents = [] } = useQuery({
+    queryKey: companyId ? queryKeys.agents.list(companyId) : ["agents", "none"],
+    queryFn: () => agentsApi.list(companyId!),
+    enabled: Boolean(companyId && scopeMode === "task_bridge"),
+  });
+  const eligibleAssignees = companyAgents.filter(
+    (agent) =>
+      agent.id !== agentId &&
+      agent.status !== "terminated" &&
+      agent.status !== "pending_approval",
+  );
+  const scopeDraft = {
+    mode: scopeMode,
+    projectId: projectBoundaryId,
+    parentIssueId: parentBoundaryId,
+    allowedAssigneeAgentIds,
+  };
+  const scopeError = validateAgentKeyScopeDraft(scopeDraft);
 
   const createKey = useMutation({
-    mutationFn: () => agentsApi.createKey(agentId, newKeyName.trim() || "Default", companyId),
+    mutationFn: () =>
+      agentsApi.createKey(
+        agentId,
+        newKeyName.trim() || "Default",
+        companyId,
+        buildAgentKeyScopePayload(scopeDraft),
+      ),
     onSuccess: (data) => {
       setNewToken(data.token);
       setTokenVisible(true);
       setNewKeyName("");
+      setScopeMode("standard");
+      setProjectBoundaryId("");
+      setParentBoundaryId("");
+      setAllowedAssigneeAgentIds([]);
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.keys(agentId) });
     },
   });
@@ -4368,6 +4411,14 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.keys(agentId) });
     },
   });
+
+  function toggleAllowedAssignee(agentIdToToggle: string) {
+    setAllowedAssigneeAgentIds((current) =>
+      current.includes(agentIdToToggle)
+        ? current.filter((candidate) => candidate !== agentIdToToggle)
+        : [...current, agentIdToToggle],
+    );
+  }
 
   function copyToken() {
     if (!newToken) return;
@@ -4429,10 +4480,16 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
       <div className="border border-border rounded-lg p-4 space-y-3">
         <h3 className="text-xs font-medium text-muted-foreground flex items-center gap-2">
           <Key className="h-3.5 w-3.5" />
-          Create API Key
+          Create Paperclip API Key
         </h3>
         <p className="text-xs text-muted-foreground">
           API keys allow this agent to authenticate calls to the Paperclip server.
+          This credential does not create a model-provider API key or replace a
+          Codex OAuth/subscription login.
+          Task bridge keys are for deterministic external adapters and remain limited
+          to the project and/or parent issue selected below.
+          Store the one-time token only in the intended secret store; never paste it
+          into comments, docs, logs, screenshots, or fixtures.
         </p>
         <div className="flex items-center gap-2">
           <Input
@@ -4441,17 +4498,109 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
             onChange={(e) => setNewKeyName(e.target.value)}
             className="h-8 text-sm"
             onKeyDown={(e) => {
-              if (e.key === "Enter") createKey.mutate();
+              if (e.key === "Enter" && !scopeError) createKey.mutate();
             }}
           />
           <Button
             size="sm"
             onClick={() => createKey.mutate()}
-            disabled={createKey.isPending}
+            disabled={createKey.isPending || Boolean(scopeError)}
           >
             <Plus className="h-3.5 w-3.5 mr-1" />
             Create
           </Button>
+        </div>
+        <div className="space-y-3 border-t border-border/70 pt-3">
+          <div className="flex flex-wrap items-center gap-4 text-xs">
+            <label className="flex items-center gap-2">
+              <input
+                type="radio"
+                name={`agent-key-scope-${agentId}`}
+                checked={scopeMode === "standard"}
+                onChange={() => setScopeMode("standard")}
+              />
+              Standard agent key
+            </label>
+            <label className="flex items-center gap-2">
+              <input
+                type="radio"
+                name={`agent-key-scope-${agentId}`}
+                checked={scopeMode === "task_bridge"}
+                onChange={() => setScopeMode("task_bridge")}
+              />
+              Task bridge
+            </label>
+          </div>
+          {scopeMode === "task_bridge" && (
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="space-y-1 text-xs">
+                <span className="text-muted-foreground">Project boundary</span>
+                <select
+                  value={projectBoundaryId}
+                  onChange={(event) => setProjectBoundaryId(event.target.value)}
+                  className="h-8 w-full rounded-md border border-input bg-transparent px-2 text-sm"
+                >
+                  <option value="">No project boundary</option>
+                  {projects.map((project) => (
+                    <option key={project.id} value={project.id}>
+                      {project.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="space-y-1 text-xs">
+                <span className="text-muted-foreground">Parent issue UUID</span>
+                <Input
+                  value={parentBoundaryId}
+                  onChange={(event) => setParentBoundaryId(event.target.value)}
+                  placeholder="Optional parent/root issue UUID"
+                  className="h-8 text-sm"
+                />
+              </label>
+              <div className="space-y-1 text-xs md:col-span-2">
+                <span className="text-muted-foreground">Allowed specialist assignees</span>
+                <p className="text-[11px] text-muted-foreground">
+                  The bridge actor can always assign work to itself. Select only the
+                  specialists this external bridge may assign.
+                </p>
+                <div
+                  className="max-h-40 overflow-y-auto rounded-md border border-input p-2"
+                  role="group"
+                  aria-label="Allowed specialist assignees"
+                >
+                  {eligibleAssignees.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No eligible specialist agents.</p>
+                  ) : (
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {eligibleAssignees.map((agent) => (
+                        <label key={agent.id} className="flex items-start gap-2 text-xs">
+                          <input
+                            type="checkbox"
+                            checked={allowedAssigneeAgentIds.includes(agent.id)}
+                            onChange={() => toggleAllowedAssignee(agent.id)}
+                          />
+                          <span>
+                            <span className="block font-medium">{agent.name}</span>
+                            <span className="block text-[11px] text-muted-foreground">
+                              {agent.role} · {agent.id}
+                            </span>
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+              {scopeError && (
+                <p className="text-xs text-destructive md:col-span-2">{scopeError}</p>
+              )}
+            </div>
+          )}
+          {createKey.error && (
+            <p className="text-xs text-destructive">
+              {createKey.error instanceof Error ? createKey.error.message : "API key creation failed."}
+            </p>
+          )}
         </div>
       </div>
 
@@ -4474,6 +4623,9 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
                   <span className="text-sm font-medium">{key.name}</span>
                   <span className="text-xs text-muted-foreground ml-3">
                     Created {formatDate(key.createdAt)}
+                  </span>
+                  <span className="text-xs text-muted-foreground ml-3">
+                    {describeAgentKeyScope(key.scope)}
                   </span>
                 </div>
                 <Button
@@ -4504,6 +4656,9 @@ function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }
                   <span className="text-sm line-through">{key.name}</span>
                   <span className="text-xs text-muted-foreground ml-3">
                     Revoked {key.revokedAt ? formatDate(key.revokedAt) : ""}
+                  </span>
+                  <span className="text-xs text-muted-foreground ml-3">
+                    {describeAgentKeyScope(key.scope)}
                   </span>
                 </div>
               </div>

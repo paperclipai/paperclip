@@ -8567,6 +8567,7 @@ export function issueRoutes(
     const sourceIssueId = req.params.id as string;
     const sourceIssue = await getAccessibleResource(req, res, getIssueById(req, sourceIssueId), "Issue not found");
     if (!sourceIssue) return;
+    if (!(await assertIssueReadAllowed(req, res, sourceIssue))) return;
     const decompositions = await svc.listAcceptedPlanDecompositions(sourceIssue.id);
     res.json(decompositions);
   });
@@ -9351,6 +9352,26 @@ export function issueRoutes(
       updateFields.assigneeUserId === undefined ? existing.assigneeUserId : (updateFields.assigneeUserId as string | null);
     const assigneeWillChange =
       nextAssigneeAgentId !== existing.assigneeAgentId || nextAssigneeUserId !== existing.assigneeUserId;
+    const issueBoundaryWillChange = updateFields.projectId !== undefined || updateFields.parentId !== undefined;
+    if (isTaskBridgeKeyActor(req) && issueBoundaryWillChange) {
+      await assertCanAssignTasks(req, existing.companyId, {
+        issueId: existing.id,
+        projectId: await resolveAssignmentProjectId({
+          companyId: existing.companyId,
+          projectId: updateFields.projectId === undefined
+            ? existing.projectId
+            : updateFields.projectId as string | null | undefined,
+          parentIssueId: (updateFields.parentId === undefined
+            ? existing.parentId
+            : updateFields.parentId) as string | null | undefined,
+        }),
+        parentIssueId: (updateFields.parentId === undefined
+          ? existing.parentId
+          : updateFields.parentId) as string | null | undefined,
+        assigneeAgentId: nextAssigneeAgentId,
+        assigneeUserId: nextAssigneeUserId,
+      });
+    }
     const isAgentReturningIssueToCreator =
       req.actor.type === "agent" &&
       !!req.actor.agentId &&

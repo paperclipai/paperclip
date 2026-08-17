@@ -2101,9 +2101,13 @@ describeEmbeddedPostgres("authorization service", () => {
     const targetAgent = await createAgent(db, company.id);
     const project = await createProject(db, company.id, "Bridge");
     const parentIssue = await createIssue(db, company.id, { projectId: project.id });
-    const assignedIssue = await createIssue(db, company.id, { assigneeAgentId: bridgeAgent.id });
+    const assignedIssue = await createIssue(db, company.id, {
+      parentId: parentIssue.id,
+      assigneeAgentId: bridgeAgent.id,
+    });
     const keyId = randomUUID();
     const bridgeCreatedIssue = await createIssue(db, company.id, {
+      parentId: parentIssue.id,
       originKind: "task_bridge",
       originId: keyId,
     });
@@ -2207,6 +2211,141 @@ describeEmbeddedPostgres("authorization service", () => {
       allowed: false,
       reason: "deny_scope",
     });
+  });
+
+  it("enforces every task bridge boundary dimension and project company ownership", async () => {
+    const company = await createCompany(db, "TaskBridgeBoundary");
+    const otherCompany = await createCompany(db, "TaskBridgeForeign");
+    const bridgeAgent = await createAgent(db, company.id);
+    const targetAgent = await createAgent(db, company.id);
+    const allowedProject = await createProject(db, company.id, "Allowed");
+    const outsideProject = await createProject(db, company.id, "Outside");
+    const foreignProject = await createProject(db, otherCompany.id, "Foreign");
+    const allowedParent = await createIssue(db, company.id, {
+      projectId: allowedProject.id,
+    });
+    const outsideParent = await createIssue(db, company.id, {
+      projectId: outsideProject.id,
+    });
+    const unassignedParent = await createIssue(db, company.id);
+    const keyId = randomUUID();
+    const actor = {
+      type: "agent" as const,
+      agentId: bridgeAgent.id,
+      companyId: company.id,
+      source: "agent_key" as const,
+      keyId,
+      keyScope: {
+        kind: "task_bridge" as const,
+        projectId: allowedProject.id,
+        parentIssueId: allowedParent.id,
+        allowedAssigneeAgentIds: [targetAgent.id],
+      },
+    };
+    const authz = authorizationService(db);
+
+    await expect(authz.decide({
+      actor,
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        projectId: allowedProject.id,
+        parentIssueId: allowedParent.id,
+        assigneeAgentId: targetAgent.id,
+      },
+    })).resolves.toMatchObject({ allowed: true });
+
+    await expect(authz.decide({
+      actor,
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        projectId: allowedProject.id,
+        parentIssueId: outsideParent.id,
+        assigneeAgentId: targetAgent.id,
+      },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_scope" });
+
+    await expect(authz.decide({
+      actor,
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        projectId: outsideProject.id,
+        parentIssueId: allowedParent.id,
+        assigneeAgentId: targetAgent.id,
+      },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_scope" });
+
+    const unassignedParentActor = {
+      ...actor,
+      keyScope: {
+        kind: "task_bridge" as const,
+        projectId: allowedProject.id,
+        parentIssueId: unassignedParent.id,
+        allowedAssigneeAgentIds: [targetAgent.id],
+      },
+    };
+    for (const projectId of [allowedProject.id, outsideProject.id]) {
+      await expect(authz.decide({
+        actor: unassignedParentActor,
+        action: "tasks:assign",
+        resource: {
+          type: "issue",
+          companyId: company.id,
+          projectId,
+          parentIssueId: unassignedParent.id,
+          assigneeAgentId: targetAgent.id,
+        },
+      })).resolves.toMatchObject({
+        allowed: false,
+        reason: "deny_scope",
+      });
+    }
+
+    const foreignProjectActor = {
+      ...actor,
+      keyScope: {
+        kind: "task_bridge" as const,
+        projectId: foreignProject.id,
+        allowedAssigneeAgentIds: [targetAgent.id],
+      },
+    };
+    await expect(authz.decide({
+      actor: foreignProjectActor,
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        projectId: foreignProject.id,
+        assigneeAgentId: targetAgent.id,
+      },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_scope" });
+
+    const movedAssignedIssue = await createIssue(db, company.id, {
+      projectId: outsideProject.id,
+      assigneeAgentId: bridgeAgent.id,
+    });
+    const movedBridgeIssue = await createIssue(db, company.id, {
+      projectId: outsideProject.id,
+      originKind: "task_bridge",
+      originId: keyId,
+    });
+
+    for (const issue of [movedAssignedIssue, movedBridgeIssue]) {
+      await expect(authz.decide({
+        actor,
+        action: "issue:read",
+        resource: {
+          type: "issue",
+          companyId: company.id,
+          issueId: issue.id,
+        },
+      })).resolves.toMatchObject({ allowed: false, reason: "deny_scope" });
+    }
   });
 
   it("scopes skill-test keys to their own issue only", async () => {

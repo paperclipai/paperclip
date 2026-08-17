@@ -1089,30 +1089,68 @@ export function authorizationService(db: Db) {
   ) {
     const allowedProjectIds = taskBridgeScopeIds(scope, "projectId", "projectIds");
     const allowedParentIssueIds = taskBridgeScopeIds(scope, "parentIssueId", "parentIssueIds");
-    if (resource.projectId && allowedProjectIds.includes(resource.projectId)) return true;
-    if (await parentIssueMatchesTaskBridgeBoundary(resource.parentIssueId, resource.companyId, allowedParentIssueIds)) {
-      return true;
-    }
-    if (resource.parentIssueId && allowedProjectIds.length > 0) {
-      const parent = await loadIssue(resource.parentIssueId);
-      if (parent?.companyId === resource.companyId && parent.projectId && allowedProjectIds.includes(parent.projectId)) {
-        return true;
-      }
-    }
-    return false;
+    const hasProject = typeof resource.projectId === "string" && resource.projectId.length > 0;
+    const hasParent = typeof resource.parentIssueId === "string" && resource.parentIssueId.length > 0;
+    if (!hasProject && !hasParent) return false;
+
+    const [project, parent] = await Promise.all([
+      hasProject ? loadProject(resource.projectId as string) : Promise.resolve(null),
+      hasParent ? loadIssue(resource.parentIssueId as string) : Promise.resolve(null),
+    ]);
+    if (hasProject && (!project || project.companyId !== resource.companyId)) return false;
+    if (hasParent && (!parent || parent.companyId !== resource.companyId)) return false;
+
+    const parentProject = parent?.projectId ? await loadProject(parent.projectId) : null;
+    if (parent?.projectId && (!parentProject || parentProject.companyId !== resource.companyId)) return false;
+    if (hasProject && hasParent && parent?.projectId !== resource.projectId) return false;
+
+    const parentWithinParentBoundary = hasParent
+      ? await parentIssueMatchesTaskBridgeBoundary(
+        resource.parentIssueId,
+        resource.companyId,
+        allowedParentIssueIds,
+      )
+      : false;
+    const parentWithinProjectBoundary =
+      Boolean(parent?.projectId) && allowedProjectIds.includes(parent!.projectId!);
+    const projectWithinProjectBoundary =
+      hasProject && allowedProjectIds.includes(resource.projectId as string);
+    const projectWithinParentBoundary =
+      hasProject &&
+      parentWithinParentBoundary &&
+      (!parent?.projectId || parent.projectId === resource.projectId);
+
+    const suppliedProjectWithinBoundary =
+      !hasProject || projectWithinProjectBoundary || projectWithinParentBoundary;
+    const suppliedParentWithinBoundary =
+      !hasParent || parentWithinParentBoundary || parentWithinProjectBoundary;
+
+    return suppliedProjectWithinBoundary && suppliedParentWithinBoundary;
   }
 
   async function issueMatchesTaskBridgeWriteBoundary(input: {
     actorAgentId: string;
     keyId: string;
+    scope: TaskBridgeAgentKeyScope;
     resource: Extract<AuthorizationResource, { type: "issue" }>;
   }) {
     const issue = input.resource.issueId ? await loadIssue(input.resource.issueId) : null;
     const assigneeAgentId = issue?.assigneeAgentId ?? input.resource.assigneeAgentId ?? null;
-    if (assigneeAgentId === input.actorAgentId) return true;
     const originKind = issue?.originKind ?? input.resource.originKind ?? null;
     const originId = issue?.originId ?? input.resource.originId ?? null;
-    return originKind === "task_bridge" && originId === input.keyId;
+    const ownedByBridge =
+      assigneeAgentId === input.actorAgentId ||
+      (originKind === "task_bridge" && originId === input.keyId);
+    if (!ownedByBridge) return false;
+
+    return issueMatchesTaskBridgeCreateBoundary(input.scope, {
+      ...input.resource,
+      projectId: issue?.projectId ?? input.resource.projectId ?? null,
+      parentIssueId: issue?.parentId ?? input.resource.parentIssueId ?? null,
+      assigneeAgentId,
+      originKind,
+      originId,
+    });
   }
 
   async function decideTaskBridgeAccess(input: {
@@ -1178,10 +1216,11 @@ export function authorizationService(db: Db) {
       return await issueMatchesTaskBridgeWriteBoundary({
         actorAgentId: input.actorAgentId,
         keyId: input.keyId,
+        scope: input.scope,
         resource: input.resource,
       })
-        ? allowBridge("Allowed for bridge-created or assigned issue.")
-        : denyBridge("Task bridge key can only access assigned or bridge-created issues.");
+        ? allowBridge("Allowed for bridge-created or assigned issue inside the task bridge boundary.")
+        : denyBridge("Task bridge key can only access assigned or bridge-created issues inside its approved parent or project boundary.");
     }
 
     return denyBridge("Task bridge key cannot use this API action.");
