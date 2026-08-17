@@ -242,19 +242,29 @@ export function InviteLandingPage() {
     retry: false,
   });
 
-  // The company list is keyed by account now (#11488), so a list belonging to
-  // somebody else cannot be read here at all. The mount-scoped gate below is kept
-  // as a second line rather than removed with the first: this page turns the list
-  // into an authorization verdict, and it should not be the place that discovers
-  // a hole in the keying. `local_trusted` instances have no accounts, so there the
-  // shared list is the only identity there is and the gate stays open.
+  // Whose list this is, is no longer this page's problem: the entry is keyed by
+  // account, so another account's list is unreachable rather than merely
+  // distrusted. What is left for the gate below is narrower and still real — do
+  // we have an answer *yet*. Without it, a pending query reads as an empty list,
+  // which reads as "not a member", which auto-accepts an invite the customer may
+  // already hold.
+  //
+  // Hence `staleTime: 0` and a mount-scoped flag rather than `isSuccess`: a
+  // cached list is the right account's now, but it can be thirty seconds old, and
+  // acting on "not a member" is the direction that costs something.
+  //
+  // `local_trusted` has no accounts at all, so there is no identity to key on and
+  // nothing to check the list against; the gate stays open.
   const companiesQuery = useCompanyListQuery({
     enabled: !!sessionQuery.data && !!inviteQuery.data?.companyId,
     staleTime: 0,
   });
   const membershipIsAccountScoped = healthQuery.data?.deploymentMode !== "local_trusted";
+  // No `sessionQuery.data` term: the query only fetches while a session exists, so
+  // the flag cannot be true without one, and if the session lapses the observer
+  // re-keys to the anonymous entry and holds no data to leak.
   const membershipListIsCurrent = membershipIsAccountScoped
-    ? Boolean(sessionQuery.data) && companiesQuery.isFetchedAfterMount
+    ? companiesQuery.isFetchedAfterMount
     : true;
   const companyList = membershipListIsCurrent ? companiesQuery.data?.companies ?? [] : [];
 

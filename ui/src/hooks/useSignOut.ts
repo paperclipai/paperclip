@@ -62,12 +62,16 @@ export function useSignOut({ onSignedOut }: UseSignOutOptions = {}) {
 
       // Drop every account-scoped cache entry, rather than invalidating a
       // couple of them. `invalidateQueries` only marks an entry stale and goes
-      // on serving the old value until a refetch succeeds — and the companies
-      // query sets `retry: false`, so a single failed request is enough to
-      // leave the previous account's company list readable for the whole of
-      // the *next* account's session. Consumers that read a non-empty list as
-      // authoritative (company auto-selection, the invite-landing "already a
-      // member" check, the board-access gate) would then act on it.
+      // on serving the old value until a refetch succeeds, and several of these
+      // queries set `retry: false`, so a single failed request is enough to
+      // leave the previous account's data readable for the whole of the *next*
+      // account's session.
+      //
+      // The company list is no longer the example: it is keyed by account, so
+      // the next account reads a different entry regardless of what happens
+      // here. Everything else still is — the board-access gate, per-company
+      // details and stats, and every account-scoped key added since — which is
+      // why this sweeps by predicate rather than naming the keys it knows.
       //
       // `resetQueries` rather than `removeQueries`: removal empties the cache
       // but does not notify the observers already subscribed to those entries,
