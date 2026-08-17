@@ -90,6 +90,7 @@ function createSelectQuery(rows: Array<Record<string, unknown>>) {
 function createDbStub(options: {
   selectRows?: Array<Array<Record<string, unknown>>>;
   returningRows?: Array<Record<string, unknown>>;
+  returningError?: unknown;
   updateReturningRows?: Array<Array<Record<string, unknown>>>;
 } = {}) {
   const selectRows = [...(options.selectRows ?? [])];
@@ -99,6 +100,7 @@ function createDbStub(options: {
     values: vi.fn(() => insertChain),
     onConflictDoUpdate: vi.fn(() => insertChain),
     returning: vi.fn(async () => {
+      if (options.returningError !== undefined) throw options.returningError;
       const row = returningRows.shift();
       return row ? [row] : [];
     }),
@@ -262,6 +264,84 @@ describe("agent fallback sister routes", () => {
     expect(db.onConflictDoUpdate).toHaveBeenCalledTimes(1);
   });
 
+  it("returns 409 naming the claimant when the sister already actively backs another primary", async () => {
+    const claimantPrimaryId = "66666666-6666-4666-8666-666666666666";
+    const db = createDbStub({
+      selectRows: [
+        [
+          { id: primaryAgentId },
+          { id: sisterAgentId },
+        ],
+        // TSMC-20938 pre-flight: the sister is actively claimed by another lane.
+        [{ primaryAgentId: claimantPrimaryId, primaryAgentName: "Claimant Primary" }],
+      ],
+    });
+
+    const res = await request(await createApp(db.db))
+      .post(`/api/companies/${companyId}/agent-fallback-sisters`)
+      .send({ primaryAgentId, sisterAgentId });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("Claimant Primary");
+    expect(res.body.error).toContain(claimantPrimaryId);
+    expect(db.db.insert).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 naming the lane primary when the requested primary is an active sister elsewhere", async () => {
+    const lanePrimaryId = "77777777-7777-4777-8777-777777777777";
+    const db = createDbStub({
+      selectRows: [
+        [
+          { id: primaryAgentId },
+          { id: sisterAgentId },
+        ],
+        // TSMC-20938 pre-flight: nobody claims the requested sister...
+        [],
+        // ...but the requested primary is itself an active sister of another lane.
+        [{ primaryAgentId: lanePrimaryId, primaryAgentName: "Lane Primary" }],
+      ],
+    });
+
+    const res = await request(await createApp(db.db))
+      .post(`/api/companies/${companyId}/agent-fallback-sisters`)
+      .send({ primaryAgentId, sisterAgentId });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("Lane Primary");
+    expect(res.body.error).toContain(lanePrimaryId);
+    expect(db.db.insert).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a database rejection of the upsert as 409 with the underlying message, not a 500", async () => {
+    // A concurrent registration can slip past the pre-flight checks and still
+    // hit the registry guards; drizzle wraps the driver error, so the trigger's
+    // RAISE text sits under `.cause`.
+    const driverError = Object.assign(
+      new Error(
+        `agent ${primaryAgentId} already belongs to fallback lane primary 88888888-8888-4888-8888-888888888888 and cannot also become a primary in another active lane`,
+      ),
+      { code: "P0001" },
+    );
+    const wrappedError = new Error('Failed query: insert into "agent_fallback_sisters" ...');
+    (wrappedError as { cause?: unknown }).cause = driverError;
+    const db = createDbStub({
+      selectRows: [[
+        { id: primaryAgentId },
+        { id: sisterAgentId },
+      ]],
+      returningError: wrappedError,
+    });
+
+    const res = await request(await createApp(db.db))
+      .post(`/api/companies/${companyId}/agent-fallback-sisters`)
+      .send({ primaryAgentId, sisterAgentId });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("already belongs to fallback lane primary");
+    expect(res.body.error).toContain("cannot also become a primary in another active lane");
+    expect(res.body.error).not.toContain("Failed query");
+  });
+
   it("clears sister-only ignoreActivityWindow from a promoted windowed primary and enables it for the sister", async () => {
     const createdRow = {
       id: "77777777-7777-4777-8777-777777777777",
@@ -279,6 +359,9 @@ describe("agent fallback sister routes", () => {
           { id: primaryAgentId },
           { id: sisterAgentId },
         ],
+        // TSMC-20938 pre-flight conflict checks: neither side is claimed.
+        [],
+        [],
         [{ activityWindow: { timezone: "Europe/Dublin", startHour: 17, endHour: 3 } }],
         [
           // Sister-only residue is identified by its lane-coverage RECORD, not by a
@@ -326,6 +409,9 @@ describe("agent fallback sister routes", () => {
           { id: primaryAgentId },
           { id: sisterAgentId },
         ],
+        // TSMC-20938 pre-flight conflict checks: neither side is claimed.
+        [],
+        [],
         [{ activityWindow: { timezone: "Europe/Dublin", startHour: 17, endHour: 3 } }],
         [
           { id: primaryAgentId, runtimeConfig: {} },
@@ -366,6 +452,9 @@ describe("agent fallback sister routes", () => {
           { id: primaryAgentId },
           { id: sisterAgentId },
         ],
+        // TSMC-20938 pre-flight conflict checks: neither side is claimed.
+        [],
+        [],
         [{ activityWindow: { timezone: "Europe/Dublin", startHour: 17, endHour: 3 } }],
         [
           { id: primaryAgentId, runtimeConfig: { ignoreActivityWindow: true } },
@@ -405,6 +494,9 @@ describe("agent fallback sister routes", () => {
           { id: primaryAgentId },
           { id: sisterAgentId },
         ],
+        // TSMC-20938 pre-flight conflict checks: neither side is claimed.
+        [],
+        [],
         [{ activityWindow: { timezone: "Europe/Dublin", startHour: 17, endHour: 3 } }],
         [
           { id: primaryAgentId, runtimeConfig: { ignoreActivityWindow: true } },
@@ -445,6 +537,9 @@ describe("agent fallback sister routes", () => {
           { id: primaryAgentId },
           { id: sisterAgentId },
         ],
+        // TSMC-20938 pre-flight conflict checks: neither side is claimed.
+        [],
+        [],
         [{ activityWindow: { timezone: "Europe/Dublin", startHour: 17, endHour: 3 } }],
         [
           {
@@ -488,6 +583,9 @@ describe("agent fallback sister routes", () => {
           { id: primaryAgentId },
           { id: sisterAgentId },
         ],
+        // TSMC-20938 pre-flight conflict checks: neither side is claimed.
+        [],
+        [],
         [{ activityWindow: { timezone: "Europe/Dublin", startHour: 17, endHour: 3 } }],
         [
           { id: primaryAgentId, runtimeConfig: {} },
@@ -534,6 +632,9 @@ describe("agent fallback sister routes", () => {
           { id: primaryAgentId },
           { id: sisterAgentId },
         ],
+        // TSMC-20938 pre-flight conflict checks: neither side is claimed.
+        [],
+        [],
         [{ activityWindow: { timezone: "Europe/Dublin", startHour: 17, endHour: 3 } }],
         [
           { id: primaryAgentId, runtimeConfig: { ignoreActivityWindow: true } },
@@ -585,6 +686,9 @@ describe("agent fallback sister routes", () => {
           { id: primaryAgentId },
           { id: sisterAgentId },
         ],
+        // TSMC-20938 pre-flight conflict checks: neither side is claimed.
+        [],
+        [],
         [{ activityWindow: { timezone: "Europe/Dublin", startHour: 17, endHour: 3 } }],
         [
           {
@@ -624,6 +728,9 @@ describe("agent fallback sister routes", () => {
           { id: primaryAgentId },
           { id: sisterAgentId },
         ],
+        // TSMC-20938 pre-flight conflict checks: neither side is claimed.
+        [],
+        [],
         [{ activityWindow: { timezone: "Europe/Dublin", startHour: 17, endHour: 3 } }],
         [
           {
@@ -667,6 +774,9 @@ describe("agent fallback sister routes", () => {
           { id: primaryAgentId },
           { id: sisterAgentId },
         ],
+        // TSMC-20938 pre-flight conflict checks: neither side is claimed.
+        [],
+        [],
         [{ activityWindow: null }],
         [
           { id: primaryAgentId, runtimeConfig: { ignoreActivityWindow: true } },

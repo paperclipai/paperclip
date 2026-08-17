@@ -160,6 +160,26 @@ function readRunIssueId(context: Record<string, unknown> | null) {
   return typeof nestedIssueId === "string" && isUuidLike(nestedIssueId) ? nestedIssueId : null;
 }
 
+/**
+ * Walk an error's `cause` chain and return the deepest message. Drizzle wraps
+ * driver errors ("Failed query: ..."), so the actionable Postgres text — a
+ * unique-index violation or a trigger's RAISE message — sits under `.cause`.
+ */
+function deepestErrorMessage(error: unknown): string {
+  let message = error instanceof Error ? error.message : String(error);
+  let current: unknown = error;
+  for (let depth = 0; depth < 6 && current != null; depth++) {
+    if (current instanceof Error && current.message.length > 0) {
+      message = current.message;
+    }
+    current =
+      typeof current === "object" && current !== null && "cause" in current
+        ? (current as { cause?: unknown }).cause
+        : undefined;
+  }
+  return message;
+}
+
 export function agentRoutes(
   db: Db,
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
@@ -2447,31 +2467,90 @@ export function agentRoutes(
         throw notFound("Sister agent not found");
       }
 
+      // TSMC-20938: pre-flight the two known registry-topology conflicts so the
+      // caller gets an actionable 409 instead of a blind 500 when the partial
+      // unique index (one ACTIVE lane per sister) or the lane-topology trigger
+      // (an active sister cannot also be a primary) would reject the write. The
+      // un-revoke upsert path hits these too: ON CONFLICT DO UPDATE sets
+      // revoked_at=null, which can re-activate a row whose sister has since
+      // been claimed by another lane.
+      const [activeSisterClaim] = await db
+        .select({
+          primaryAgentId: agentFallbackSisters.primaryAgentId,
+          primaryAgentName: agentsTable.name,
+        })
+        .from(agentFallbackSisters)
+        .innerJoin(agentsTable, eq(agentFallbackSisters.primaryAgentId, agentsTable.id))
+        .where(and(
+          eq(agentFallbackSisters.companyId, companyId),
+          eq(agentFallbackSisters.sisterAgentId, sisterAgentId),
+          isNull(agentFallbackSisters.revokedAt),
+          not(eq(agentFallbackSisters.primaryAgentId, primaryAgentId)),
+        ))
+        .limit(1);
+      if (activeSisterClaim) {
+        throw conflict(
+          `Sister agent ${sisterAgentId} already actively backs primary ${activeSisterClaim.primaryAgentName} (${activeSisterClaim.primaryAgentId}). A sister can back only one active lane; revoke that relationship first.`,
+        );
+      }
+
+      const [primaryClaimedAsSister] = await db
+        .select({
+          primaryAgentId: agentFallbackSisters.primaryAgentId,
+          primaryAgentName: agentsTable.name,
+        })
+        .from(agentFallbackSisters)
+        .innerJoin(agentsTable, eq(agentFallbackSisters.primaryAgentId, agentsTable.id))
+        .where(and(
+          eq(agentFallbackSisters.companyId, companyId),
+          eq(agentFallbackSisters.sisterAgentId, primaryAgentId),
+          isNull(agentFallbackSisters.revokedAt),
+        ))
+        .limit(1);
+      if (primaryClaimedAsSister) {
+        throw conflict(
+          `Agent ${primaryAgentId} is already an active fallback sister in the lane of primary ${primaryClaimedAsSister.primaryAgentName} (${primaryClaimedAsSister.primaryAgentId}) and cannot also become a primary in another active lane. Revoke that relationship first.`,
+        );
+      }
+
       const actor = getActorInfo(req);
       const actorLabel = `${actor.actorType}:${actor.actorId}`;
-      const [row] = await db
-        .insert(agentFallbackSisters)
-        .values({
-          companyId,
-          primaryAgentId,
-          sisterAgentId,
-          priority,
-          createdBy: createdBy ?? actorLabel,
-          revokedAt: null,
-        })
-        .onConflictDoUpdate({
-          target: [
-            agentFallbackSisters.companyId,
-            agentFallbackSisters.primaryAgentId,
-            agentFallbackSisters.sisterAgentId,
-          ],
-          set: {
+      let insertedRows;
+      try {
+        insertedRows = await db
+          .insert(agentFallbackSisters)
+          .values({
+            companyId,
+            primaryAgentId,
+            sisterAgentId,
             priority,
             createdBy: createdBy ?? actorLabel,
             revokedAt: null,
-          },
-        })
-        .returning(fallbackSisterRowSelection);
+          })
+          .onConflictDoUpdate({
+            target: [
+              agentFallbackSisters.companyId,
+              agentFallbackSisters.primaryAgentId,
+              agentFallbackSisters.sisterAgentId,
+            ],
+            set: {
+              priority,
+              createdBy: createdBy ?? actorLabel,
+              revokedAt: null,
+            },
+          })
+          .returning(fallbackSisterRowSelection);
+      } catch (err) {
+        // Constraint/trigger rejections that slipped past the pre-flight checks
+        // (e.g. a concurrent registration) are registry-shape conflicts, not
+        // server faults: surface the database's own message as a 409 instead of
+        // the blind 500 this route used to return. Drizzle wraps the driver
+        // error, so walk the `cause` chain for the deepest message.
+        throw conflict(
+          `Fallback sister registration rejected by the registry: ${deepestErrorMessage(err)}`,
+        );
+      }
+      const [row] = insertedRows;
 
       try {
         await reconcileLanePromotionActivityWindowPolicy({
