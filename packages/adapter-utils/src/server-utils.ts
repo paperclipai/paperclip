@@ -3336,6 +3336,7 @@ export async function runChildProcess(
     })
       .then((target) => {
         const childEnv = { ...mergedEnv, ...target.env };
+        childEnv.PWD = target.cwd ?? opts.cwd;
         for (const [key, value] of Object.entries(childEnv)) {
           if (value === undefined) delete childEnv[key];
         }

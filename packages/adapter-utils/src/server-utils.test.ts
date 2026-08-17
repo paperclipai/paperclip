@@ -392,6 +392,32 @@ describe("adapter skill snapshots", () => {
 });
 
 describe("runChildProcess", () => {
+  it("sets PWD to the resolved child working directory", async () => {
+    const childCwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-child-pwd-"));
+    try {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        [
+          "-e",
+          "process.stdout.write(JSON.stringify({ cwd: process.cwd(), pwd: process.env.PWD }))",
+        ],
+        {
+          cwd: childCwd,
+          env: { PWD: "/stale/server/working-directory" },
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ cwd: childCwd, pwd: childCwd });
+    } finally {
+      await fs.rm(childCwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not arm a timeout when timeoutSec is 0", async () => {
     const result = await runChildProcess(
       randomUUID(),
