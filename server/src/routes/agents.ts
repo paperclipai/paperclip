@@ -113,6 +113,7 @@ import {
   type SetupTokenSessionScope,
 } from "../services/setup-token-session.js";
 import type { DeploymentMode } from "@paperclipai/shared";
+import { DEFAULT_CLAUDE_LOCAL_ENV } from "@paperclipai/adapter-claude-local";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import {
   checkStagedCredentialReadiness,
@@ -1682,6 +1683,12 @@ export function agentRoutes(
     adapterConfig: Record<string, unknown>,
   ): Record<string, unknown> {
     const next = { ...adapterConfig };
+    if (adapterType === "claude_local") {
+      // Spread the caller's env last so an explicit value always wins, and only
+      // fill keys the caller left unset.
+      next.env = { ...DEFAULT_CLAUDE_LOCAL_ENV, ...(asRecord(next.env) ?? {}) };
+      return ensureGatewayDeviceKey(adapterType, next);
+    }
     if (adapterType === "codex_local") {
       const hasBypassFlag =
         typeof next.dangerouslyBypassApprovalsAndSandbox === "boolean" ||
