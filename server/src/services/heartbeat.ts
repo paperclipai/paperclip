@@ -80,6 +80,7 @@ import {
 // Re-exported because heartbeat's workspace surface exposed the scrubber before the
 // git-credentials module became its canonical home; existing importers keep working.
 export { scrubGitCredentialText };
+import { resolveHeartbeatManagedInstructionsPatch } from "./agent-instructions.js";
 import { publishLiveEvent } from "./live-events.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
@@ -14053,6 +14054,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : null,
     });
     const config = parseObject(agent.adapterConfig);
+    const managedInstructionsPatch = await resolveHeartbeatManagedInstructionsPatch(agent);
+    if ("instructionsRootPath" in managedInstructionsPatch) {
+      logger.info(
+        {
+          event: "heartbeat_managed_instructions_root_corrected",
+          companyId: agent.companyId,
+          agentId: agent.id,
+          previousInstructionsRootPath: config.instructionsRootPath ?? null,
+          previousInstructionsFilePath: config.instructionsFilePath ?? null,
+          instructionsRootPath: managedInstructionsPatch.instructionsRootPath,
+          instructionsFilePath: managedInstructionsPatch.instructionsFilePath,
+          warnings: managedInstructionsPatch.warnings,
+        },
+        "Corrected stale managed instructions root at heartbeat config-assembly",
+      );
+      config.instructionsRootPath = managedInstructionsPatch.instructionsRootPath;
+      config.instructionsFilePath = managedInstructionsPatch.instructionsFilePath;
+    }
     const taskSession = taskKey
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
       : null;

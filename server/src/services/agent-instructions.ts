@@ -329,6 +329,51 @@ async function recoverManagedBundleState(agent: AgentLike, state: BundleState): 
   };
 }
 
+/**
+ * Re-derive the managed instructions root/entry-file for `agent` against the *current* process
+ * instance root (honoring `PAPERCLIP_HOME`/`PAPERCLIP_INSTANCE_ID` at call time), and report a
+ * config patch if the persisted `adapterConfig` disagrees with what is actually on disk.
+ *
+ * This exists so heartbeat config-assembly can correct a stale `instructionsRootPath`/
+ * `instructionsFilePath` pair *before* it is handed to an adapter (see heartbeat.ts, right after
+ * `parseObject(agent.adapterConfig)`). It intentionally reuses `deriveBundleState` +
+ * `recoverManagedBundleState` rather than reimplementing their on-disk recovery/precedence rules.
+ *
+ * Returns `{}` when:
+ * - the bundle is in `external` mode (external roots are never auto-corrected), or
+ * - the bundle is not in managed mode at all, or
+ * - the currently configured managed root/entry file already match what is on disk.
+ *
+ * Otherwise returns `{ instructionsRootPath, instructionsFilePath, warnings }` where `warnings`
+ * carries only the warning strings newly produced by this recovery pass (e.g. "Recovered managed
+ * instructions from disk ... ignoring stale configured root").
+ */
+export async function resolveHeartbeatManagedInstructionsPatch(
+  agent: AgentLike,
+): Promise<
+  | Record<string, never>
+  | { instructionsRootPath: string; instructionsFilePath: string; warnings: string[] }
+> {
+  const derived = deriveBundleState(agent);
+  const recovered = await recoverManagedBundleState(agent, derived);
+
+  // No correction was made (recoverManagedBundleState returns the exact same object by reference
+  // when the configured state already matches what's on disk, including the "nothing configured
+  // and nothing on disk" case).
+  if (recovered === derived) return {};
+
+  // Only managed-mode bundles are ever auto-corrected; `external` configs pass through untouched.
+  if (recovered.mode !== "managed" || !recovered.rootPath || !recovered.resolvedEntryPath) return {};
+
+  const newWarnings = recovered.warnings.filter((warning) => !derived.warnings.includes(warning));
+
+  return {
+    instructionsRootPath: recovered.rootPath,
+    instructionsFilePath: recovered.resolvedEntryPath,
+    warnings: newWarnings,
+  };
+}
+
 function toBundle(agent: AgentLike, state: BundleState, files: AgentInstructionsFileSummary[]): AgentInstructionsBundle {
   const nextFiles = [...files];
   if (state.legacyPromptTemplateActive && !nextFiles.some((file) => file.path === LEGACY_PROMPT_TEMPLATE_PATH)) {
