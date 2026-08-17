@@ -22,8 +22,23 @@ const CODEX_UNSUPPORTED_MODEL_RE =
   /(?:model_not_found|\bmodel\b[^\n]{0,120}?\bis not supported\b|\bis not supported\b[^\n]{0,120}?\bmodel\b|(?:requested |the )?model\s+[^\n]{0,120}?(?:does not exist|not found|is invalid|is unknown)|unknown model|invalid model|unsupported model|model\s+[^\n]{0,80}?\bis not available\b)/i;
 // Pull the offending id out of the provider message so the blocked-issue notice
 // can name the exact adapterConfig.model value an operator has to change.
-const CODEX_UNSUPPORTED_MODEL_ID_RE =
-  /['"`]([A-Za-z0-9._:\/-]{2,120})['"`]|\bmodel\s+([A-Za-z0-9._:\/-]{2,120})\b/i;
+// Ordered most-specific-first. A gateway (9router) wraps the provider message in
+// its own JSON envelope, so the *first* quoted token in the sentence is the JSON
+// key ("detail", "message"), not the model. Anchor on the id's position relative
+// to the word "model", and only fall back to a bare quoted token that is not a
+// JSON key (i.e. not followed by a colon).
+const CODEX_UNSUPPORTED_MODEL_ID_PATTERNS: readonly RegExp[] = [
+  // "The 'gpt-5.3-codex-spark' model is not supported" — id precedes "model"
+  /['"`]([A-Za-z0-9._:\/-]{2,120})['"`]\s+model\b/i,
+  // "model 'x' does not exist" / "model \"x\" not found"
+  /\bmodel\s+['"`]([A-Za-z0-9._:\/-]{2,120})['"`]/i,
+  // "[codex/gpt-5.3-codex-spark] [400]: ..." — gateway route prefix
+  /\[([A-Za-z0-9._-]+\/[A-Za-z0-9._:-]{2,120})\]/,
+  // "model gpt-5.3-codex-spark is unknown" — unquoted id after "model"
+  /\bmodel\s+([A-Za-z0-9._:\/-]{2,120})\b/i,
+  // Last resort: a quoted token that is not a JSON key.
+  /['"`]([A-Za-z0-9._:\/-]{2,120})['"`](?!\s*:)/i,
+];
 const CODEX_REFRESH_TOKEN_REUSED_RE =
   /(?:refresh[_\s-]?token[_\s-]?reused|refresh token (?:has )?already been used|token reuse detected)/i;
 const CODEX_REFRESH_TOKEN_EXPIRED_RE =
@@ -365,6 +380,10 @@ export function classifyCodexUnsupportedModelError(input: {
   const sentenceStart = haystack.lastIndexOf("\n", match.index ?? 0) + 1;
   const sentenceEnd = haystack.indexOf("\n", (match.index ?? 0) + match[0].length);
   const sentence = haystack.slice(sentenceStart, sentenceEnd === -1 ? undefined : sentenceEnd);
-  const idMatch = sentence.match(CODEX_UNSUPPORTED_MODEL_ID_RE);
-  return { modelId: idMatch?.[1] ?? idMatch?.[2] ?? null };
+  for (const pattern of CODEX_UNSUPPORTED_MODEL_ID_PATTERNS) {
+    const idMatch = sentence.match(pattern);
+    const candidate = idMatch?.[1];
+    if (candidate) return { modelId: candidate };
+  }
+  return { modelId: null };
 }
