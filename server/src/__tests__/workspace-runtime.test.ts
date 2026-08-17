@@ -3919,6 +3919,66 @@ describe("ensureRuntimeServicesForRun", () => {
     }
   });
 
+  it("fails readiness at the configured timeout when the service accepts connections but never responds", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-hung-"));
+    const workspace = buildWorkspace(workspaceRoot);
+    const runId = "run-paperclip-hung-readiness";
+    // Accepts the TCP connection and the request, then never writes a response.
+    // The child stays alive and healthy, so the spawn-error race arm never
+    // settles; only the readiness deadline can end the wait.
+    const serviceCommand =
+      "node -e \"require('node:http').createServer(() => {}).listen(Number(process.env.PORT), '127.0.0.1')\"";
+
+    const startedAt = Date.now();
+    try {
+      await expect(
+        ensureRuntimeServicesForRun({
+          runId,
+          agent: {
+            id: "agent-1",
+            name: "Codex Coder",
+            companyId: "company-1",
+          },
+          issue: null,
+          workspace,
+          config: {
+            workspaceRuntime: {
+              services: [
+                {
+                  name: "hung-service",
+                  command: serviceCommand,
+                  cwd: ".",
+                  port: { type: "auto" },
+                  readiness: {
+                    type: "http",
+                    urlTemplate: "http://127.0.0.1:{{port}}",
+                    timeoutSec: 1,
+                    intervalMs: 100,
+                  },
+                  expose: {
+                    type: "url",
+                    urlTemplate: "http://127.0.0.1:{{port}}",
+                  },
+                  lifecycle: "shared",
+                  stopPolicy: {
+                    type: "manual",
+                  },
+                },
+              ],
+            },
+          },
+          adapterEnv: {},
+        }),
+      ).rejects.toThrow(/Readiness check failed for http:\/\/127\.0\.0\.1:\d+/);
+      // The point of the test: the wait ends at the deadline instead of hanging
+      // on a single unbounded probe. Generous headroom over the 1s timeout so
+      // this asserts "bounded", not a specific scheduling latency.
+      expect(Date.now() - startedAt).toBeLessThan(4000);
+    } finally {
+      await releaseRuntimeServicesForRun(runId);
+    }
+  });
+
   it("uses explicit readiness URL when exposed URL is not the local probe address", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-explicit-readiness-"));
     const workspace = buildWorkspace(workspaceRoot);
