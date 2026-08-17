@@ -29,6 +29,7 @@ import {
   updateAgentSchema,
   supportedEnvironmentDriversForAdapter,
   LOW_TRUST_REVIEW_PRESET,
+  isHeartbeatRunTerminalStatus,
 } from "@paperclipai/shared";
 import {
   isForbiddenConfigEnvKey,
@@ -4612,8 +4613,26 @@ export function agentRoutes(
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
+    const safeOffset = Number.isFinite(offset) ? offset : 0;
+
+    // A run gets its log handle when the runner opens the file, so any
+    // NON-TERMINAL run (queued, running in its first moments, or waiting on a
+    // scheduled retry) legitimately has none. That is an empty log, not a
+    // missing resource: the transcript poller only stops re-requesting after a
+    // 404 on a TERMINAL run, so 404ing this case made every non-terminal run
+    // 404 once per poll interval for its entire life. A terminal run with no
+    // handle never got one, so that case still 404s below and the client stops
+    // asking.
+    if (!run.logStore || !run.logRef) {
+      if (!isHeartbeatRunTerminalStatus(run.status)) {
+        res.set("Cache-Control", "no-cache, no-store");
+        res.json({ runId, store: null, logRef: null, content: "", nextOffset: safeOffset });
+        return;
+      }
+    }
+
     const result = await heartbeat.readLog(run, {
-      offset: Number.isFinite(offset) ? offset : 0,
+      offset: safeOffset,
       limitBytes,
     });
 
