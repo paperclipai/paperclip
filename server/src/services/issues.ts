@@ -8213,11 +8213,24 @@ export function issueService(db: Db) {
         patch.requestDepth = clampIssueRequestDepth(issueData.requestDepth);
       }
 
-      const nextAssigneeAgentId =
+      let nextAssigneeAgentId =
         issueData.assigneeAgentId !== undefined ? issueData.assigneeAgentId : existing.assigneeAgentId;
-      const nextAssigneeUserId =
+      let nextAssigneeUserId =
         issueData.assigneeUserId !== undefined ? issueData.assigneeUserId : existing.assigneeUserId;
 
+      // Setting an agent assignee replaces a pre-existing user assignee (and vice versa)
+      // instead of 422ing on the inherited value. The old behavior made silently
+      // user-assigned cards un-reassignable through the natural single-field PATCH:
+      // 22 open cards sat parked on the board user, invisible to dispatch, until
+      // 2026-08-17. An explicit both-fields write in one request is still rejected.
+      if (issueData.assigneeAgentId && issueData.assigneeUserId === undefined && nextAssigneeUserId) {
+        nextAssigneeUserId = null;
+        patch.assigneeUserId = null;
+      }
+      if (issueData.assigneeUserId && issueData.assigneeAgentId === undefined && nextAssigneeAgentId) {
+        nextAssigneeAgentId = null;
+        patch.assigneeAgentId = null;
+      }
       if (nextAssigneeAgentId && nextAssigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
