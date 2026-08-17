@@ -66,7 +66,6 @@ describe("sandbox capability contract normalizer", () => {
     const narrowing = buildSandboxCapabilityNarrowing({
       leasePolicy: "ephemeral",
       leaseMetadata: { backend: "job" },
-      config: {},
     });
     const effective = resolveEffectiveSandboxCapabilities({
       verifiedMethods: ALL_PLUGIN_METHODS,
@@ -83,59 +82,44 @@ describe("sandbox capability contract normalizer", () => {
     const flaggedNarrowing = buildSandboxCapabilityNarrowing({
       leasePolicy: "ephemeral",
       leaseMetadata: { nativeFileSyncUnsupported: true },
-      config: {},
     });
     expect(flaggedNarrowing.nativeSyncIn).toBe(false);
     expect(flaggedNarrowing.nativeSyncOut).toBe(false);
   });
 
-  it("test_daytona_persistent_process_sessions_follows_use_sessions_config", () => {
+  it("test_persistent_process_sessions_follow_the_verified_and_declared_capability", () => {
+    // Session-output streaming now follows the capability snapshot alone, not a
+    // config flag. A provider that declares and verifies persistent process
+    // sessions keeps the capability when no narrowing removes it.
     const verifiedMethods = ["environmentExecute"];
     const declared = { persistentProcessSessions: true };
 
-    const sessionsOff = resolveEffectiveSandboxCapabilities({
-      verifiedMethods,
-      declared,
-      narrowing: buildSandboxCapabilityNarrowing({
-        leasePolicy: "ephemeral",
-        leaseMetadata: {},
-        config: { useSessions: false },
-      }),
-    });
-    expect(sessionsOff.persistentProcessSessions).toBe(false);
-
-    const sessionsOn = resolveEffectiveSandboxCapabilities({
-      verifiedMethods,
-      declared,
-      narrowing: buildSandboxCapabilityNarrowing({
-        leasePolicy: "ephemeral",
-        leaseMetadata: {},
-        config: { useSessions: true },
-      }),
-    });
-    expect(sessionsOn.persistentProcessSessions).toBe(true);
-
-    // A provider config that omits `useSessions` adds no narrowing here.
-    const noKey = buildSandboxCapabilityNarrowing({
+    const narrowing = buildSandboxCapabilityNarrowing({
       leasePolicy: "ephemeral",
       leaseMetadata: {},
-      config: {},
     });
-    expect(noKey.persistentProcessSessions).toBeUndefined();
+    // A normal lease adds no persistent-session narrowing.
+    expect(narrowing.persistentProcessSessions).toBeUndefined();
+
+    const effective = resolveEffectiveSandboxCapabilities({
+      verifiedMethods,
+      declared,
+      narrowing,
+    });
+    expect(effective.persistentProcessSessions).toBe(true);
   });
 
   it("test_config_resolution_failure_fails_closed_on_persistent_process_sessions", () => {
     const verifiedMethods = ["environmentExecute"];
     const declared = { persistentProcessSessions: true };
 
-    // Config resolution failed, so the runtime cannot read `useSessions`. The
-    // narrowing must deny persistent process sessions instead of allowing them
-    // through an empty config. Without the fail-closed guard this narrowing key
-    // stays undefined and `persistentProcessSessions` resolves to true.
+    // Config resolution failed, so the provider is untrusted. The narrowing must
+    // deny persistent process sessions instead of allowing them through. Without
+    // the fail-closed guard this narrowing key stays undefined and
+    // `persistentProcessSessions` resolves to true.
     const narrowing = buildSandboxCapabilityNarrowing({
       leasePolicy: "ephemeral",
       leaseMetadata: {},
-      config: {},
       configResolutionFailed: true,
     });
     expect(narrowing.persistentProcessSessions).toBe(false);
@@ -151,7 +135,6 @@ describe("sandbox capability contract normalizer", () => {
     const syncNarrowing = buildSandboxCapabilityNarrowing({
       leasePolicy: "reuse_by_environment",
       leaseMetadata: { backend: "job" },
-      config: {},
       configResolutionFailed: true,
     });
     expect(syncNarrowing.reusableLeases).toBe(true);

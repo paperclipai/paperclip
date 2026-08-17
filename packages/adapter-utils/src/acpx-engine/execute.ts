@@ -1747,12 +1747,15 @@ async function buildRuntime(input: {
     Boolean(executionTarget.runner) &&
     Boolean(agentCommandShell);
   // Stream the agent output through the persistent session log stream instead of
-  // the host output-file poll. Default OFF; an operator opts a sandbox
-  // environment in through the environment config.
+  // the host output-file poll. The decision comes from the effective capability
+  // snapshot alone: the provider must keep persistent process sessions and run
+  // independent control commands. The snapshot is absent when capability
+  // resolution failed, so this fails closed to the poll path.
   const streamAgentSessionOutput =
     executionTarget?.kind === "remote" &&
     executionTarget.transport === "sandbox" &&
-    executionTarget.streamAgentSessionOutput === true;
+    executionTarget.effectiveCapabilities?.persistentProcessSessions === true &&
+    executionTarget.effectiveCapabilities?.independentControlCommands === true;
   // The ACP `session/new` cwd and every cwd-keyed session-state site
   // (fingerprint, compat, persist, ensureSession, error) bind to THIS single
   // value so a warm/resumable session created with the in-sandbox cwd is reused

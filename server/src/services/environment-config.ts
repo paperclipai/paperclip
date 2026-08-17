@@ -77,7 +77,6 @@ const fakeSandboxEnvironmentConfigSchema = z.object({
     .default("ubuntu:24.04"),
   reuseLease: z.boolean().optional().default(false),
   streamRunLogs: z.boolean().optional(),
-  streamAgentSessionOutput: z.boolean().optional(),
   archiveOnRelease: z.boolean().optional(),
 }).strict();
 
@@ -94,7 +93,6 @@ const pluginSandboxEnvironmentConfigSchema = z.object({
   timeoutMs: z.coerce.number().int().min(1).max(86_400_000).optional(),
   reuseLease: z.boolean().optional().default(false),
   streamRunLogs: z.boolean().optional(),
-  streamAgentSessionOutput: z.boolean().optional(),
   archiveOnRelease: z.boolean().optional(),
 }).catchall(z.unknown());
 
@@ -123,10 +121,29 @@ function getSandboxProvider(raw: Record<string, unknown>) {
   return typeof raw.provider === "string" && raw.provider.trim().length > 0 ? raw.provider.trim() : "fake";
 }
 
+// Operator flags removed when session-output streaming moved to the verified
+// capability snapshot. A saved environment config can still carry a removed key.
+// The server now decides session-output streaming from the effective capability
+// snapshot alone, so no consumer reads these flags. Strip a removed key before
+// validation so a strict schema (the fake sandbox) still loads an old config,
+// and so the removed flag never reaches the parsed config.
+const REMOVED_SANDBOX_CONFIG_KEYS = ["streamAgentSessionOutput"] as const;
+
+function stripRemovedSandboxConfigKeys(raw: Record<string, unknown>): Record<string, unknown> {
+  if (!REMOVED_SANDBOX_CONFIG_KEYS.some((key) => key in raw)) {
+    return raw;
+  }
+  const next = { ...raw };
+  for (const key of REMOVED_SANDBOX_CONFIG_KEYS) {
+    delete next[key];
+  }
+  return next;
+}
+
 function parseSandboxEnvironmentConfig(
   input: Record<string, unknown> | null | undefined,
 ) {
-  const raw = parseObject(input);
+  const raw = stripRemovedSandboxConfigKeys(parseObject(input));
   const provider = getSandboxProvider(raw);
 
   if (provider === "fake") {
@@ -373,15 +390,14 @@ export function stripSandboxProviderEnvelope(config: SandboxEnvironmentConfig): 
   return driverConfig;
 }
 
-// The host owns these sandbox run-behavior flags, not the provider plugin. The
-// host reads them to select the run-log stream and the ACP session output
-// stream. The host passes the whole config to the plugin, so a plugin that
-// allowlists its own driver fields drops these flags from its normalized
-// config. Re-apply them from the parsed envelope after the plugin normalizes,
-// or a saved environment loses the operator opt-in and the stream never starts.
+// The host owns this sandbox run-behavior flag, not the provider plugin. The
+// host reads it to select the run-log stream. The host passes the whole config
+// to the plugin, so a plugin that allowlists its own driver fields drops the
+// flag from its normalized config. Re-apply it from the parsed envelope after
+// the plugin normalizes, or a saved environment loses the operator opt-in and
+// the stream never starts.
 const HOST_OWNED_SANDBOX_STREAM_FLAGS = [
   "streamRunLogs",
-  "streamAgentSessionOutput",
 ] as const;
 
 function applyHostOwnedSandboxStreamFlags(

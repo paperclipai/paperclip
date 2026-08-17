@@ -142,8 +142,6 @@ interface DaytonaDriverConfig {
   autoDeleteInterval: number | null;
   reuseLease: boolean;
   archiveOnRelease: boolean;
-  useSessions: boolean;
-  useLogStream: boolean;
 }
 
 type WorkspaceSentinelResult = {
@@ -263,17 +261,6 @@ function parseDriverConfig(raw: Record<string, unknown>): DaytonaDriverConfig {
     autoDeleteInterval: parseOptionalInteger(raw.autoDeleteInterval) ?? DEFAULT_AUTO_DELETE_INTERVAL_MINUTES,
     reuseLease: raw.reuseLease === true,
     archiveOnRelease: raw.archiveOnRelease === true,
-    // Session model opt-in. Default OFF. When off, the provider keeps the
-    // one-shot command path. When on, the exec hook opens one persistent
-    // Daytona session per lease and dispatches every command into it. The flag
-    // stays default off until a live leak soak passes.
-    useSessions: raw.useSessions === true,
-    // Log-stream opt-in. Default OFF. When off, the session dispatch polls the
-    // exit code every 50 ms and then reads the logs one time. When on, the
-    // dispatch streams stdout and stderr from the callback log form and reads
-    // the exit code one time after the stream ends. The flag stays default off
-    // until a live soak passes.
-    useLogStream: raw.useLogStream === true,
   };
 }
 
@@ -1753,38 +1740,37 @@ async function executeInSession(
     );
     const commandId = dispatched.cmdId;
 
-    // Log-stream path (opt-in). Stream stdout and stderr from the callback log
-    // form, then read the exit code one time. On a stream failure, fall through
-    // to the poll path below, because the command still runs to its exit on the
-    // server.
-    if (config.useLogStream) {
-      // Emit each genuinely new output chunk to the host during the active
-      // execute call. The host routes it to the runner log sink by the
-      // host-issued invocation id. This is a no-op when no plugin context is
-      // set (a direct test call) or when the host has no active execute route.
-      const streamResult = await runSessionLogStream(
-        sandbox,
-        sessionId,
-        commandId,
-        (stream, text) => pluginContext?.execution.log(stream, text),
-      );
-      if (streamResult.ok) {
-        const exitCode = await readSessionExitCode(sandbox, sessionId, commandId);
-        const durationMs = timingNow() - execStart;
-        return {
-          exitCode,
-          timedOut: false,
-          stdout: streamResult.stdout,
-          stderr: streamResult.stderr,
-          metadata: { durationMs },
-        };
-      }
+    // Log-stream path. A session command always tries the stream first: it
+    // streams stdout and stderr from the callback log form, then reads the exit
+    // code one time. On a stream failure, fall through to the poll path below,
+    // because the command still runs to its exit on the server.
+    //
+    // Emit each genuinely new output chunk to the host during the active execute
+    // call. The host routes it to the runner log sink by the host-issued
+    // invocation id. This is a no-op when no plugin context is set (a direct
+    // test call) or when the host has no active execute route.
+    const streamResult = await runSessionLogStream(
+      sandbox,
+      sessionId,
+      commandId,
+      (stream, text) => pluginContext?.execution.log(stream, text),
+    );
+    if (streamResult.ok) {
+      const exitCode = await readSessionExitCode(sandbox, sessionId, commandId);
+      const durationMs = timingNow() - execStart;
+      return {
+        exitCode,
+        timedOut: false,
+        stdout: streamResult.stdout,
+        stderr: streamResult.stderr,
+        metadata: { durationMs },
+      };
     }
 
     // Poll for the exit code; the SDK has no wait method. The poll deadline uses
     // the wall clock, separate from the injected timing clock that measures the
-    // reported `durationMs`. The poll path is the default when the log stream is
-    // off, and the fallback when the log stream fails.
+    // reported `durationMs`. The poll path is the fallback when the log stream
+    // fails.
     const deadlineMs = Date.now() + effectiveTimeoutMs;
     let exitCode: number | null = null;
     while (true) {
@@ -2505,20 +2491,19 @@ const plugin = definePlugin({
         providerLeaseId,
         config,
       };
-      // Dispatch the command. When the session model is on, open the persistent
-      // session on a cache miss and run the command in it. The provider never
-      // falls back to a one-shot command to open a session; a cache miss creates
-      // one. When the session model is off, run the command on the one-shot path.
+      // Dispatch the command. A normal command runs in the persistent session:
+      // the provider opens the one session on a cache miss and runs every command
+      // in it. The provider never falls back to a one-shot command to open a
+      // session; a cache miss creates one.
       //
-      // A `bypassSession` command runs one-shot even when the session model is
-      // on, and it does NOT open the session. The host sets this flag on a
-      // pre-run command (the workspace provision command) that runs before the
-      // run opens its trace root. Opening the session there would emit a
-      // `session.open` span with no run parent, and the span backend would drop
-      // it. With the bypass the session opens on the first in-run command, whose
-      // open span parents to the run trace.
+      // A `bypassSession` command runs one-shot and does NOT open the session.
+      // The host sets this flag on a pre-run command (the workspace provision
+      // command) that runs before the run opens its trace root. Opening the
+      // session there would emit a `session.open` span with no run parent, and
+      // the span backend would drop it. With the bypass the session opens on the
+      // first in-run command, whose open span parents to the run trace.
       let result: PluginEnvironmentExecuteResult;
-      if (config.useSessions && !params.bypassSession) {
+      if (!params.bypassSession) {
         const sessionId = await getOrCreateSession(sandbox, scope);
         result = await executeInSession(sandbox, sessionId, params, config);
       } else {

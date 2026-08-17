@@ -283,16 +283,6 @@ export async function resolveEnvironmentExecutionTarget(input: {
       !capabilityResolutionFailed &&
       (!effectiveCapabilities ||
         (effectiveCapabilities.nativeSyncIn && effectiveCapabilities.nativeSyncOut));
-    // The persistent-session output-streaming path needs the provider to keep a
-    // persistent process session AND to run independent one-shot control
-    // commands beside the long-lived agent command. When the snapshot removes
-    // either capability, drop back to the host output-file poll path. When the
-    // resolution failed, fail closed and keep the poll path too.
-    const sessionOutputStreamingAllowed =
-      !capabilityResolutionFailed &&
-      (!effectiveCapabilities ||
-        (effectiveCapabilities.persistentProcessSessions &&
-          effectiveCapabilities.independentControlCommands));
     // A command that opts onto the persistent session needs the provider to keep
     // persistent process sessions. When the snapshot removes that capability,
     // never force the session; the command runs one-shot instead. When the
@@ -315,13 +305,11 @@ export async function resolveEnvironmentExecutionTarget(input: {
       // output reaches the UI mid-run; `streamRunLogs: false` is an explicit
       // opt-out back to batch-at-end delivery.
       streamRunLogs: parsed.config.streamRunLogs !== false,
-      // Interactive ACP output streaming through the persistent session log
-      // stream. Default OFF: the process session bridge keeps the output-file
-      // poll unless an operator opts a sandbox environment in. The effective
-      // snapshot gates it too: a provider that cannot keep persistent process
-      // sessions or run independent control commands keeps the poll path.
-      streamAgentSessionOutput:
-        parsed.config.streamAgentSessionOutput === true && sessionOutputStreamingAllowed,
+      // Interactive ACP output streaming is decided downstream from the effective
+      // capability snapshot alone: the process session bridge streams only when
+      // the provider keeps persistent process sessions and runs independent
+      // control commands. The snapshot is absent when resolution failed, so the
+      // bridge fails closed to the output-file poll.
       runner: input.environmentRuntime && input.lease
         ? {
             // Provider-backed sandbox RPCs do not surface bounded mid-stream

@@ -207,22 +207,18 @@ export function resolveEffectiveSandboxCapabilities(input: {
  *   never reuses).
  * - a Kubernetes Job lease disables native sync (mirrors the native sync guard,
  *   which falls back for a `job` backend or a `nativeFileSyncUnsupported` lease).
- * - a session-based provider follows its `useSessions` config for persistent
- *   process sessions (default off); a config without the key adds no narrowing.
  * - `configResolutionFailed` marks that the runtime could not resolve the
- *   provider config. The runtime cannot read `useSessions`, so it fails closed
- *   and narrows `persistentProcessSessions` to false. An empty config alone does
- *   not fail closed; only a resolution error does.
+ *   provider config. A provider whose config cannot be resolved is untrusted, so
+ *   the runtime fails closed and narrows `persistentProcessSessions` to false.
+ *   An empty config alone does not fail closed; only a resolution error does.
  */
 export function buildSandboxCapabilityNarrowing(input: {
   leasePolicy?: EnvironmentLease["leasePolicy"] | null;
   leaseMetadata?: Record<string, unknown> | null;
-  config?: Record<string, unknown> | null;
   configResolutionFailed?: boolean;
 }): Partial<Record<SandboxCapabilityKey, boolean>> {
   const narrowing: Partial<Record<SandboxCapabilityKey, boolean>> = {};
   const metadata = input.leaseMetadata ?? {};
-  const config = input.config ?? {};
 
   narrowing.reusableLeases = input.leasePolicy === "reuse_by_environment";
 
@@ -232,11 +228,9 @@ export function buildSandboxCapabilityNarrowing(input: {
   }
 
   if (input.configResolutionFailed === true) {
-    // The runtime could not read `useSessions`, so it fails closed and denies
-    // persistent process sessions.
+    // The runtime could not resolve the provider config, so it fails closed and
+    // denies persistent process sessions.
     narrowing.persistentProcessSessions = false;
-  } else if ("useSessions" in config) {
-    narrowing.persistentProcessSessions = config.useSessions === true;
   }
 
   return narrowing;
@@ -1674,7 +1668,6 @@ function createSandboxEnvironmentDriver(
 
       let declared: SandboxProviderCapabilities | null = null;
       let verifiedMethods: readonly string[] = [];
-      let config: Record<string, unknown> = {};
       let configResolutionFailed = false;
 
       if (metadata.sandboxProviderPlugin) {
@@ -1712,15 +1705,16 @@ function createSandboxEnvironmentDriver(
         verifiedMethods = pluginWorkerManager?.getWorker(pluginId)?.supportedMethods ?? [];
         declared = resolveDeclaredSandboxCapabilities(resolvedDriver.driver);
         try {
-          config = (await resolvePluginSandboxRuntimeConfig({
+          // Resolve the provider config to confirm it is readable. A provider
+          // whose config cannot be resolved is untrusted, so a resolution error
+          // fails closed on persistent process sessions below. The resolved
+          // value itself is no longer read for the narrowing decision.
+          await resolvePluginSandboxRuntimeConfig({
             environment: input.environment,
             lease: input.lease,
             provider: providerKey,
-          })) as unknown as Record<string, unknown>;
+          });
         } catch {
-          // The runtime could not resolve the provider config. It cannot read
-          // `useSessions`, so it fails closed on persistent process sessions
-          // instead of leaving the config empty and allowing them.
           configResolutionFailed = true;
         }
       } else {
@@ -1734,7 +1728,6 @@ function createSandboxEnvironmentDriver(
       const narrowing = buildSandboxCapabilityNarrowing({
         leasePolicy: input.lease.leasePolicy,
         leaseMetadata: metadata,
-        config,
         configResolutionFailed,
       });
 

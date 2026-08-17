@@ -131,18 +131,15 @@ this run cannot use.
   unable to run native file sync, disables native sync. The host narrows
   `nativeSyncIn` and `nativeSyncOut` to off and keeps the base64-over-exec
   fallback.
-- **`useSessions` provider config.** A session-based provider follows its
-  `useSessions` config value for `persistentProcessSessions`. Sessions default to
-  off. A config that omits the key adds no narrowing.
 
 ## Failure behavior
 
 The host fails closed on two failure states. It never grants a capability from an
 unknown state.
 
-- **Config-resolution failure.** When the host cannot resolve the provider
-  config, it cannot read `useSessions`. It narrows `persistentProcessSessions` to
-  off instead of allowing it through an empty config.
+- **Config-resolution failure.** A provider whose config the host cannot resolve
+  is untrusted. The host narrows `persistentProcessSessions` to off instead of
+  allowing it through an empty config.
 - **Exact-plugin identity failure.** A retained lease pins the exact plugin that
   acquired it. When that plugin is absent, or when it no longer declares this
   provider key with the `sandbox_provider` kind, the host cannot establish the

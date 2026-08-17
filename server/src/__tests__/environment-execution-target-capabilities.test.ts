@@ -183,36 +183,36 @@ describe("effective snapshot gates the sync decision", () => {
   });
 });
 
-describe("effective snapshot gates the session-output-streaming decision", () => {
+// Session-output streaming is decided downstream from the carried snapshot
+// alone (see `streamAgentSessionOutput` in `acpx-engine/execute.ts`): the bridge
+// streams only when the snapshot grants both `persistentProcessSessions` and
+// `independentControlCommands`. These tests prove the target carries the exact
+// capabilities that drive that decision.
+describe("effective snapshot carries the session-output-streaming capabilities", () => {
   beforeEach(() => {
     mockResolveEnvironmentDriverConfigForRuntime.mockReset();
   });
 
-  it("keeps session output streaming on when the snapshot grants both session capabilities", async () => {
-    const { target } = await buildSandboxTarget({
-      snapshot: FULL_GRANT,
-      supportsSync: false,
-      config: { streamAgentSessionOutput: true },
-    });
-    expect(target.streamAgentSessionOutput).toBe(true);
+  it("carries both session capabilities when the snapshot grants them (stream on)", async () => {
+    const { target } = await buildSandboxTarget({ snapshot: FULL_GRANT, supportsSync: false });
+    expect(target.effectiveCapabilities?.persistentProcessSessions).toBe(true);
+    expect(target.effectiveCapabilities?.independentControlCommands).toBe(true);
   });
 
-  it("drops session output streaming when the snapshot removes persistent process sessions", async () => {
+  it("drops persistent process sessions when the snapshot removes it (poll)", async () => {
     const { target } = await buildSandboxTarget({
       snapshot: { ...FULL_GRANT, persistentProcessSessions: false },
       supportsSync: false,
-      config: { streamAgentSessionOutput: true },
     });
-    expect(target.streamAgentSessionOutput).toBe(false);
+    expect(target.effectiveCapabilities?.persistentProcessSessions).toBe(false);
   });
 
-  it("drops session output streaming when the snapshot removes independent control commands", async () => {
+  it("drops independent control commands when the snapshot removes it (poll)", async () => {
     const { target } = await buildSandboxTarget({
       snapshot: { ...FULL_GRANT, independentControlCommands: false },
       supportsSync: false,
-      config: { streamAgentSessionOutput: true },
     });
-    expect(target.streamAgentSessionOutput).toBe(false);
+    expect(target.effectiveCapabilities?.independentControlCommands).toBe(false);
   });
 });
 
@@ -257,16 +257,16 @@ describe("a rejected capability resolution fails closed for persistent-session b
     expect(target.effectiveCapabilities).toBeUndefined();
   });
 
-  it("drops session output streaming when the resolution rejects", async () => {
+  it("carries no snapshot for session-output streaming when the resolution rejects", async () => {
     // A rejected resolution must not read as an open grant that enables
-    // streaming; keep the host output-file poll path.
+    // streaming. The target carries no snapshot, so the bridge keeps the host
+    // output-file poll path.
     const { target } = await buildSandboxTarget({
       snapshot: null,
       supportsSync: false,
-      config: { streamAgentSessionOutput: true },
       rejectResolution: true,
     });
-    expect(target.streamAgentSessionOutput).toBe(false);
+    expect(target.effectiveCapabilities).toBeUndefined();
   });
 
   it("never forces the persistent session when the resolution rejects", async () => {

@@ -1882,12 +1882,16 @@ describe("environment routes", () => {
     expect(mockSecretService.create).not.toHaveBeenCalled();
   });
 
-  it("keeps host-owned stream flags when the provider plugin drops them from its normalized config", async () => {
-    // The host owns `streamRunLogs` and `streamAgentSessionOutput`. It reads
-    // them to select the run-log stream and the ACP session output stream. A
-    // provider plugin normalizes only its own driver fields, so it drops these
-    // host flags from its normalized config. The host must re-apply them, or the
-    // saved environment loses the operator opt-in and the streams never start.
+  it("keeps the host-owned stream flag and drops a removed flag a saved config still carries", async () => {
+    // The host owns `streamRunLogs`. It reads it to select the run-log stream. A
+    // provider plugin normalizes only its own driver fields, so it drops the host
+    // flag from its normalized config. The host must re-apply it, or the saved
+    // environment loses the operator opt-out and the stream never starts.
+    //
+    // `streamAgentSessionOutput` is a removed operator flag. A saved config can
+    // still carry it, but session-output streaming now follows the capability
+    // snapshot alone. The removed key must load and then drop, so it never
+    // reaches the persisted config.
     const environment = {
       ...createEnvironment(),
       id: "env-sandbox-fake-plugin",
@@ -1897,11 +1901,9 @@ describe("environment routes", () => {
     };
     mockEnvironmentService.create.mockResolvedValue(environment);
     mockValidatePluginSandboxProviderConfig.mockImplementation(async ({ provider, config }) => {
-      // Drop the host flags to reproduce a plugin that allowlists driver fields.
-      const { streamRunLogs, streamAgentSessionOutput, ...driverConfig } =
-        config as Record<string, unknown>;
+      // Drop the host flag to reproduce a plugin that allowlists driver fields.
+      const { streamRunLogs, ...driverConfig } = config as Record<string, unknown>;
       void streamRunLogs;
-      void streamAgentSessionOutput;
       return {
         normalizedConfig: driverConfig,
         pluginId: `plugin-${provider}`,
@@ -1936,7 +1938,8 @@ describe("environment routes", () => {
 
     expect(res.status).toBe(201);
     const persisted = mockEnvironmentService.create.mock.calls[0][0].config as Record<string, unknown>;
-    expect(persisted.streamAgentSessionOutput).toBe(true);
+    // The removed key never reaches the persisted config.
+    expect(persisted.streamAgentSessionOutput).toBeUndefined();
     expect(persisted.streamRunLogs).toBe(false);
   });
 
