@@ -36,6 +36,11 @@ Happy path:
 - [ ] `npm view paperclipai@beta version` shows the new `-beta.N`
 - [ ] `beta/v*` tag pushed; `:beta` and `:beta-cloud` images built
 - [ ] post-publish smoke (`smoke_beta`) is green
+- [ ] `draft_stable_notes` pushed `release-notes/v<beta-version>`; open the
+      notes PR from the job-summary link
+- [ ] during the soak: edit the notes PR into release voice and merge it
+      (the stable promotion reads `releases/beta/v<beta-version>.md` from
+      `master`)
 
 Fix path (cherry-picked candidate):
 
@@ -50,7 +55,8 @@ Fix path (cherry-picked candidate):
 
 - [ ] pick the beta to promote; its source commit is `source_ref`
 - [ ] the beta has soaked ≥ 3 days with no open beta-blocker issues
-- [ ] author `releases/vYYYY.MDD.P.md` on that source ref
+- [ ] the beta's notes PR (`releases/beta/v<beta-version>.md`) is merged on
+      `master` — preflight fails, before the approval gate, without it
 - [ ] dispatch `release.yml` with `channel: stable` (a dry run first shows
       the resolved version and soak state without publishing)
 - [ ] approve the `npm-stable` environment gate
@@ -59,10 +65,15 @@ Fix path (cherry-picked candidate):
       versioned Docker tags built
 - [ ] if the soak gate was bypassed, `skip_soak_justification` carries a
       real written reason (it lands in the job summary)
+- [ ] open and merge the canonicalization PR
+      (`release-notes/v<version>-canonicalize`) so the notes land at
+      `releases/vYYYY.MDD.P.md`
 
 Fix path: `candidate/release-<target>` from the beta's source commit; the
 soak gate will demand a justification because the exact bits were not
-soaked — write one that stands on its own.
+soaked — write one that stands on its own. A candidate branch carries its
+own `releases/vYYYY.MDD.P.md` (preflight prefers source-tree notes), so
+author the notes as a commit on the candidate.
 
 ## After any incomplete run
 
