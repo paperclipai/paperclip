@@ -18,6 +18,7 @@ const SNAPSHOT: EffectiveSandboxCapabilities = {
   nativeSyncOut: false,
   persistentProcessSessions: true,
   independentControlCommands: false,
+  incrementalSessionOutput: false,
 };
 
 // A snapshot that grants every capability. A test overrides one flag to prove
@@ -28,6 +29,7 @@ const FULL_GRANT: EffectiveSandboxCapabilities = {
   nativeSyncOut: true,
   persistentProcessSessions: true,
   independentControlCommands: true,
+  incrementalSessionOutput: true,
 };
 
 // Build a sandbox execution target with a fixed snapshot and a fixed
@@ -185,34 +187,46 @@ describe("effective snapshot gates the sync decision", () => {
 
 // Session-output streaming is decided downstream from the carried snapshot
 // alone (see `streamAgentSessionOutput` in `acpx-engine/execute.ts`): the bridge
-// streams only when the snapshot grants both `persistentProcessSessions` and
-// `independentControlCommands`. These tests prove the target carries the exact
-// capabilities that drive that decision.
-describe("effective snapshot carries the session-output-streaming capabilities", () => {
+// streams only when the snapshot grants `incrementalSessionOutput`. That key is
+// opt-in, so a generic one-shot provider that keeps persistent process sessions
+// and runs independent control commands, yet never declares incremental session
+// output, keeps the poll path. These tests prove the target carries the exact
+// capability that drives that decision.
+describe("effective snapshot carries the session-output-streaming capability", () => {
   beforeEach(() => {
     mockResolveEnvironmentDriverConfigForRuntime.mockReset();
   });
 
-  it("carries both session capabilities when the snapshot grants them (stream on)", async () => {
+  it("carries incremental session output when the snapshot grants it (stream on)", async () => {
     const { target } = await buildSandboxTarget({ snapshot: FULL_GRANT, supportsSync: false });
+    expect(target.effectiveCapabilities?.incrementalSessionOutput).toBe(true);
+  });
+
+  it("drops incremental session output when the snapshot removes it (poll)", async () => {
+    const { target } = await buildSandboxTarget({
+      snapshot: { ...FULL_GRANT, incrementalSessionOutput: false },
+      supportsSync: false,
+    });
+    expect(target.effectiveCapabilities?.incrementalSessionOutput).toBe(false);
+  });
+
+  it("keeps the poll path for a generic one-shot provider with broad caps but no streaming opt-in", async () => {
+    // The regression case: a generic one-shot provider (for example Modal)
+    // exposes the two broad session capabilities but never emits incremental
+    // session output. The streaming gate reads `incrementalSessionOutput`, so
+    // this provider keeps the poll path.
+    const { target } = await buildSandboxTarget({
+      snapshot: {
+        ...FULL_GRANT,
+        persistentProcessSessions: true,
+        independentControlCommands: true,
+        incrementalSessionOutput: false,
+      },
+      supportsSync: false,
+    });
     expect(target.effectiveCapabilities?.persistentProcessSessions).toBe(true);
     expect(target.effectiveCapabilities?.independentControlCommands).toBe(true);
-  });
-
-  it("drops persistent process sessions when the snapshot removes it (poll)", async () => {
-    const { target } = await buildSandboxTarget({
-      snapshot: { ...FULL_GRANT, persistentProcessSessions: false },
-      supportsSync: false,
-    });
-    expect(target.effectiveCapabilities?.persistentProcessSessions).toBe(false);
-  });
-
-  it("drops independent control commands when the snapshot removes it (poll)", async () => {
-    const { target } = await buildSandboxTarget({
-      snapshot: { ...FULL_GRANT, independentControlCommands: false },
-      supportsSync: false,
-    });
-    expect(target.effectiveCapabilities?.independentControlCommands).toBe(false);
+    expect(target.effectiveCapabilities?.incrementalSessionOutput).toBe(false);
   });
 });
 

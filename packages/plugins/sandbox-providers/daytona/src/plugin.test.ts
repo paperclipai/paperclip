@@ -128,6 +128,9 @@ describe("Daytona sandbox provider plugin", () => {
       supportsTemplateCapture: true,
       templateRefKind: "snapshot",
       supportsTemplateDelete: true,
+      // Daytona streams incremental session output, so it declares the opt-in
+      // capability that selects the session-output streaming path.
+      sandboxCapabilities: { incrementalSessionOutput: true },
     });
   });
 

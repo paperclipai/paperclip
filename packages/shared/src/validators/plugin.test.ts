@@ -285,6 +285,7 @@ describe("sandbox provider capability declaration validators", () => {
           nativeSyncOut: false,
           persistentProcessSessions: true,
           independentControlCommands: false,
+          incrementalSessionOutput: true,
         },
       }),
     );
@@ -295,6 +296,7 @@ describe("sandbox provider capability declaration validators", () => {
       nativeSyncOut: false,
       persistentProcessSessions: true,
       independentControlCommands: false,
+      incrementalSessionOutput: true,
     });
 
     const rejected = pluginManifestV1Schema.safeParse(

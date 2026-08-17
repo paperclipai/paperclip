@@ -153,6 +153,16 @@ export interface SandboxProviderCapabilities {
   persistentProcessSessions?: boolean;
   /** Provider can run a control command that does not wait for the main command. */
   independentControlCommands?: boolean;
+  /**
+   * Provider streams incremental stdout and stderr from a persistent session
+   * while the command runs. This is an opt-in behavioral guarantee, not a worker
+   * method property: a generic one-shot provider can keep persistent sessions and
+   * run independent control commands yet never emit incremental session output.
+   * An omitted key denies the capability. Only a provider that declares this key
+   * `true` selects the session-output streaming path; every other provider keeps
+   * the output-file poll path.
+   */
+  incrementalSessionOutput?: boolean;
 }
 
 export interface PluginEnvironmentDriverDeclaration {

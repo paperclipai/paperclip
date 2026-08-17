@@ -75,9 +75,23 @@ export const SANDBOX_CAPABILITY_KEYS = [
   "nativeSyncOut",
   "persistentProcessSessions",
   "independentControlCommands",
+  "incrementalSessionOutput",
 ] as const;
 
 export type SandboxCapabilityKey = (typeof SANDBOX_CAPABILITY_KEYS)[number];
+
+/**
+ * Opt-in capability keys. Most capabilities are a worker property: an absent
+ * declaration defers to the verified baseline and allows the capability. An
+ * opt-in capability is a behavioral guarantee that only some providers make, so
+ * an absent declaration denies it. A generic one-shot provider must not get an
+ * opt-in capability just because its worker verifies a shared verb such as
+ * `environmentExecute`. Only a provider that declares the key `true` (and still
+ * verifies the prerequisites and passes narrowing) gets the capability.
+ */
+const SANDBOX_CAPABILITY_OPT_IN_KEYS: ReadonlySet<SandboxCapabilityKey> = new Set([
+  "incrementalSessionOutput",
+]);
 
 /**
  * Verified prerequisite mapping: the worker methods each capability requires.
@@ -103,6 +117,10 @@ export type SandboxCapabilityKey = (typeof SANDBOX_CAPABILITY_KEYS)[number];
  *   before it acquires a fresh lease.
  * - `persistentProcessSessions` and `independentControlCommands` require
  *   `environmentExecute`; both run commands through it.
+ * - `incrementalSessionOutput` requires `environmentExecute` too, because the
+ *   provider tails the session log through it. The verified verb is necessary
+ *   but not sufficient: this key is opt-in, so the declaration is the real gate
+ *   (see {@link SANDBOX_CAPABILITY_OPT_IN_KEYS}).
  */
 const SANDBOX_CAPABILITY_PREREQUISITE_METHODS: Record<SandboxCapabilityKey, readonly (readonly string[])[]> = {
   // Reusable leases require ALL reuse verbs. Each verb is its own required
@@ -115,6 +133,7 @@ const SANDBOX_CAPABILITY_PREREQUISITE_METHODS: Record<SandboxCapabilityKey, read
   nativeSyncOut: [["environmentSyncOut"]],
   persistentProcessSessions: [["environmentExecute"]],
   independentControlCommands: [["environmentExecute"]],
+  incrementalSessionOutput: [["environmentExecute"]],
 };
 
 function capabilityIsVerified(
@@ -181,9 +200,11 @@ export function resolveEffectiveSandboxCapabilities(input: {
 
   const resolve = (key: SandboxCapabilityKey): boolean => {
     const verified = capabilityIsVerified(key, verifiedMethods);
-    // An absent declaration defers to the verified baseline (true = no extra
-    // restriction). A present declaration can only narrow.
-    const declaredAllows = declared[key] ?? true;
+    // An absent declaration defers to the verified baseline for a worker-property
+    // capability (true = no extra restriction), but denies an opt-in capability
+    // (false). A present declaration can only narrow.
+    const declaredDefault = SANDBOX_CAPABILITY_OPT_IN_KEYS.has(key) ? false : true;
+    const declaredAllows = declared[key] ?? declaredDefault;
     // An absent narrowing applies no restriction.
     const narrowingAllows = narrowing[key] ?? true;
     return verified && declaredAllows && narrowingAllows;
@@ -195,6 +216,7 @@ export function resolveEffectiveSandboxCapabilities(input: {
     nativeSyncOut: resolve("nativeSyncOut"),
     persistentProcessSessions: resolve("persistentProcessSessions"),
     independentControlCommands: resolve("independentControlCommands"),
+    incrementalSessionOutput: resolve("incrementalSessionOutput"),
   };
 }
 
@@ -209,8 +231,9 @@ export function resolveEffectiveSandboxCapabilities(input: {
  *   which falls back for a `job` backend or a `nativeFileSyncUnsupported` lease).
  * - `configResolutionFailed` marks that the runtime could not resolve the
  *   provider config. A provider whose config cannot be resolved is untrusted, so
- *   the runtime fails closed and narrows `persistentProcessSessions` to false.
- *   An empty config alone does not fail closed; only a resolution error does.
+ *   the runtime fails closed and narrows `persistentProcessSessions` and
+ *   `incrementalSessionOutput` to false. An empty config alone does not fail
+ *   closed; only a resolution error does.
  */
 export function buildSandboxCapabilityNarrowing(input: {
   leasePolicy?: EnvironmentLease["leasePolicy"] | null;
@@ -229,8 +252,11 @@ export function buildSandboxCapabilityNarrowing(input: {
 
   if (input.configResolutionFailed === true) {
     // The runtime could not resolve the provider config, so it fails closed and
-    // denies persistent process sessions.
+    // denies persistent process sessions and incremental session output. The
+    // session-output streaming gate reads `incrementalSessionOutput`, so it must
+    // narrow with the persistent-session gate to keep the fail-closed behavior.
     narrowing.persistentProcessSessions = false;
+    narrowing.incrementalSessionOutput = false;
   }
 
   return narrowing;

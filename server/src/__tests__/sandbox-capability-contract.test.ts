@@ -224,6 +224,72 @@ describe("sandbox capability contract normalizer", () => {
     expect(allReuseVerbs.reusableLeases).toBe(true);
   });
 
+  it("test_generic_one_shot_provider_does_not_get_session_output_streaming", () => {
+    // The regression: a generic one-shot provider (for example Modal) verifies
+    // `environmentExecute` and declares the two broad session capabilities, yet
+    // it never emits incremental session output. Both broad capabilities resolve
+    // true, but `incrementalSessionOutput` must stay false because the provider
+    // did not declare the opt-in behavior. The session-output streaming gate
+    // reads `incrementalSessionOutput`, so this provider keeps the poll path.
+    const effective = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["environmentExecute"],
+      declared: {
+        persistentProcessSessions: true,
+        independentControlCommands: true,
+      },
+    });
+
+    expect(effective.persistentProcessSessions).toBe(true);
+    expect(effective.independentControlCommands).toBe(true);
+    // Opt-in denied: the provider did not declare incremental session output.
+    expect(effective.incrementalSessionOutput).toBe(false);
+  });
+
+  it("test_incremental_session_output_is_opt_in_and_needs_a_declaration", () => {
+    // An absent declaration denies the opt-in capability even when the worker
+    // verifies the prerequisite verb. This differs from a worker-property
+    // capability, which defers to the verified baseline.
+    const undeclared = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["environmentExecute"],
+      declared: null,
+    });
+    expect(undeclared.incrementalSessionOutput).toBe(false);
+
+    // A provider that declares the capability and verifies the prerequisite gets
+    // the streaming path.
+    const declared = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["environmentExecute"],
+      declared: { incrementalSessionOutput: true },
+    });
+    expect(declared.incrementalSessionOutput).toBe(true);
+
+    // A declaration never grants the capability without the verified verb.
+    const declaredButUnverified = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: [],
+      declared: { incrementalSessionOutput: true },
+    });
+    expect(declaredButUnverified.incrementalSessionOutput).toBe(false);
+  });
+
+  it("test_config_resolution_failure_fails_closed_on_incremental_session_output", () => {
+    // Config resolution failed, so the provider is untrusted. The narrowing must
+    // deny incremental session output even with a positive declaration, so the
+    // session-output streaming gate fails closed to the poll path.
+    const narrowing = buildSandboxCapabilityNarrowing({
+      leasePolicy: "ephemeral",
+      leaseMetadata: {},
+      configResolutionFailed: true,
+    });
+    expect(narrowing.incrementalSessionOutput).toBe(false);
+
+    const effective = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["environmentExecute"],
+      declared: { incrementalSessionOutput: true },
+      narrowing,
+    });
+    expect(effective.incrementalSessionOutput).toBe(false);
+  });
+
   it("test_unknown_or_unavailable_verification_resolves_false", () => {
     const declaredAll = {
       reusableLeases: true,
@@ -231,6 +297,7 @@ describe("sandbox capability contract normalizer", () => {
       nativeSyncOut: true,
       persistentProcessSessions: true,
       independentControlCommands: true,
+      incrementalSessionOutput: true,
     };
 
     for (const verifiedMethods of [null, undefined, [] as string[]]) {
