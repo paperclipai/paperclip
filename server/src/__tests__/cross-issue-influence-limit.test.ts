@@ -198,7 +198,10 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([]);
   });
 
-  it("fails closed when the persisted run has no source issue", async () => {
+  it("counts instead of failing closed when the persisted run has no source issue", async () => {
+    // A run with an empty contextSnapshot (no issueId/taskId at all) must be
+    // treated as a "no home issue" run, not refused outright: it still gets
+    // capped at CROSS_ISSUE_INFLUENCE_LIMIT writes, starting from zero.
     const fake = counterDb(0, { contextSnapshot: {} });
 
     await expect(observeCrossIssueInfluence(fake.db as never, {
@@ -207,10 +210,45 @@ describe("cross-issue influence limit rollout", () => {
       agentId: "33333333-3333-4333-8333-333333333333",
       targetIssueId: "55555555-5555-4555-8555-555555555555",
       kind: "update",
-    })).rejects.toMatchObject({
-      status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
+    })).resolves.toMatchObject({ allowed: true, count: 1, cap: CROSS_ISSUE_INFLUENCE_LIMIT });
+    expect(fake.inserted).toHaveLength(1);
+    expect((fake.inserted[0] as { action: string }).action).toBe("issue.cross_issue_influence_observed");
+  });
+
+  it("accepts a same-issue write from a bare heartbeat_timer run against its own checked-out issue", async () => {
+    // Reproduces the scheduler's exact contextSnapshot shape for a plain timer
+    // wake (services/heartbeat.js enqueueWakeup): no issueId, no taskId, just
+    // scheduler bookkeeping fields. The run has legitimately checked out
+    // targetIssueId before this write (checkoutRunId matches), so the write
+    // must succeed rather than 403 unconditionally.
+    const fake = counterDb(0, {
+      contextSnapshot: { source: "scheduler", reason: "interval_elapsed", timerClaimWasFirstHeartbeat: true },
     });
-    expect(fake.inserted).toEqual([]);
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      targetIssueIdentifier: "TASK-482",
+      kind: "update",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toMatchObject({ allowed: true, mode: "enforce", count: 1, cap: CROSS_ISSUE_INFLUENCE_LIMIT });
+  });
+
+  it("still caps a no-source-issue run at the twenty-first write", async () => {
+    // Defense in depth: a homeless run does not get unlimited writes just
+    // because it has no recorded source issue. It hits the same 429 as any
+    // other cross-issue run once it exceeds the cap.
+    const fake = counterDb(CROSS_ISSUE_INFLUENCE_LIMIT, { contextSnapshot: {} });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "comment",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    })).resolves.toMatchObject({ allowed: false, mode: "enforce", count: CROSS_ISSUE_INFLUENCE_LIMIT + 1 });
   });
 });
