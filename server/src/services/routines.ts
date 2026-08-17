@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, not, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { resolveCreatedByRunId } from "./comment-run-id.js";
 import {
   agents,
   activityLog,
@@ -792,7 +793,7 @@ export function routineService(
           changeSummary: options.changeSummary ?? null,
           createdByAgentId: actor.agentId ?? null,
           createdByUserId: actor.userId ?? null,
-          createdByRunId: actor.runId ?? null,
+          createdByRunId: await resolveCreatedByRunId(executor, routine.companyId, actor.runId),
           createdAt: now,
         })
         .returning();
@@ -856,7 +857,7 @@ export function routineService(
         changeSummary: options.changeSummary ?? null,
         createdByAgentId: actor.agentId ?? null,
         createdByUserId: actor.userId ?? null,
-        createdByRunId: actor.runId ?? null,
+        createdByRunId: await resolveCreatedByRunId(executor, routine.companyId, actor.runId),
         createdAt: now,
       })
       .returning();
@@ -917,7 +918,7 @@ export function routineService(
         restoredFromRevisionId: options.restoredFromRevisionId ?? null,
         createdByAgentId: actor.agentId ?? null,
         createdByUserId: actor.userId ?? null,
-        createdByRunId: actor.runId ?? null,
+        createdByRunId: await resolveCreatedByRunId(executor, routine.companyId, actor.runId),
         responsibleUserId: snapshot.routine.responsibleUserId ?? null,
         createdAt: now,
       })

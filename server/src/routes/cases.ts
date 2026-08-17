@@ -30,6 +30,7 @@ import { badRequest, conflict, forbidden, notFound, unprocessable } from "../err
 import { validate } from "../middleware/validate.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { documentAnnotationService, logActivity } from "../services/index.js";
+import { resolveCreatedByRunId } from "../services/comment-run-id.js";
 import type { StorageService } from "../storage/types.js";
 import { assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
 
@@ -1016,7 +1017,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
         changeSummary: body.changeSummary ?? null,
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-        createdByRunId: actor.runId && isUuidLike(actor.runId) ? actor.runId : null,
+        createdByRunId: await resolveCreatedByRunId(tx, caseRow.companyId, actor.runId),
         createdAt: now,
       }).returning();
       await tx.update(documents).set({
@@ -1160,7 +1161,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
         changeSummary: `Restored from revision ${sourceRevision.revisionNumber}`,
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-        createdByRunId: actor.runId && isUuidLike(actor.runId) ? actor.runId : null,
+        createdByRunId: await resolveCreatedByRunId(tx, caseRow.companyId, actor.runId),
         createdAt: now,
       }).returning();
       const [document] = await tx.update(documents).set({

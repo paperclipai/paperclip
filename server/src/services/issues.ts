@@ -69,6 +69,7 @@ import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
+import { resolveCreatedByRunId } from "./comment-run-id.js";
 import {
   hydrateSuccessfulRunHandoffLiveness,
   SUCCESSFUL_RUN_HANDOFF_LIVE_WAKE_STATUSES,
@@ -381,25 +382,6 @@ type DerivedIssueCommentAttribution = {
   derivedCreatedByRunId: string;
   derivedAuthorSource: IssueCommentDerivedAuthorSource;
 };
-
-/**
- * Resolve a `created_by_run_id` safe for the heartbeat_runs FK; returns null for
- * missing/invalid ids so an unknown run id never 500s a comment insert.
- */
-async function resolveCommentCreatedByRunId(
-  dbOrTx: any,
-  companyId: string,
-  runId: string | null | undefined,
-): Promise<string | null> {
-  const normalized = typeof runId === "string" ? runId.trim() : "";
-  if (!normalized || !isUuidLike(normalized)) return null;
-  const existing = await dbOrTx
-    .select({ id: heartbeatRuns.id })
-    .from(heartbeatRuns)
-    .where(and(eq(heartbeatRuns.id, normalized), eq(heartbeatRuns.companyId, companyId)))
-    .then((rows: Array<{ id: string }>) => rows[0] ?? null);
-  return existing?.id ?? null;
-}
 
 async function resolveCommentResponsibleUserId(
   dbOrTx: any,
@@ -8722,7 +8704,7 @@ export function issueService(db: Db) {
       const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
       // Invalid/stale run ids must not 500 the insert — null out unknowns.
-      const createdByRunId = await resolveCommentCreatedByRunId(dbOrTx, issue.companyId, actor.runId);
+      const createdByRunId = await resolveCreatedByRunId(dbOrTx, issue.companyId, actor.runId);
       if (actor.runId && !createdByRunId) {
         logger.warn(
           { issueId, companyId: issue.companyId, runId: actor.runId },

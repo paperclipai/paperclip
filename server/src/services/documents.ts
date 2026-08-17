@@ -5,6 +5,7 @@ import { documentRevisions, documents, issueDocuments, issues } from "@paperclip
 import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { insertRowsInChunks } from "./batch-insert.js";
+import { resolveCreatedByRunId } from "./comment-run-id.js";
 import type { ImportIssueDocumentRow } from "./import-write-types.js";
 
 function normalizeDocumentKey(key: string) {
@@ -294,7 +295,7 @@ export function documentService(db: Db) {
                     changeSummary: input.changeSummary ?? null,
                     createdByAgentId: input.createdByAgentId ?? null,
                     createdByUserId: input.createdByUserId ?? null,
-                    createdByRunId: input.createdByRunId ?? null,
+                    createdByRunId: await resolveCreatedByRunId(tx, issue.companyId, input.createdByRunId),
                     createdAt: now,
                   })
                   .returning();
@@ -374,7 +375,7 @@ export function documentService(db: Db) {
                 changeSummary: input.changeSummary ?? null,
                 createdByAgentId: input.createdByAgentId ?? null,
                 createdByUserId: input.createdByUserId ?? null,
-                createdByRunId: input.createdByRunId ?? null,
+                createdByRunId: await resolveCreatedByRunId(tx, issue.companyId, input.createdByRunId),
                 createdAt: now,
               })
               .returning();
@@ -457,7 +458,7 @@ export function documentService(db: Db) {
               changeSummary: input.changeSummary ?? null,
               createdByAgentId: input.createdByAgentId ?? null,
               createdByUserId: input.createdByUserId ?? null,
-              createdByRunId: input.createdByRunId ?? null,
+              createdByRunId: await resolveCreatedByRunId(tx, issue.companyId, input.createdByRunId),
               createdAt: now,
             })
             .returning();
