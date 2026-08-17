@@ -76,8 +76,9 @@ function resolvePackageEntryPoint(packageDir: string): string {
   return pkg.main ?? "index.js";
 }
 
-// Matches relative-specifier imports/requires, e.g. `from './helper.ts'`.
-const LOCAL_IMPORT_RE = /(?:from\s*|import\s*\(\s*|require\s*\(\s*)['"](\.\.?\/[^'"]+)['"]/;
+// Matches relative-specifier imports/requires, e.g. `from './helper.ts'`,
+// `import './setup.ts'` (side-effect), or `import('./x.ts')` (dynamic).
+const LOCAL_IMPORT_RE = /(?:from\s*|import\s*(?:\(\s*)?|require\s*\(\s*)['"](\.\.?\/[^'"]+)['"]/;
 
 function entryPointHasLocalImports(packageDir: string): boolean {
   const entryPoint = resolvePackageEntryPoint(packageDir);

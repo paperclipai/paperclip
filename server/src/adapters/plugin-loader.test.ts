@@ -72,6 +72,25 @@ describe("getMultiFileReloadWarning", () => {
     expect(warning).toMatch(/fully restarted/);
   });
 
+  it("returns a warning for a side-effect local import (no `from`)", async () => {
+    tmpDir = writeAdapterPackage({
+      "package.json": JSON.stringify({ name: "side-effect-adapter", main: "index.js" }),
+      "index.js":
+        "import './setup.js';\n" +
+        "export const createServerAdapter = () => ({ type: 'side_effect_adapter' });\n",
+      "setup.js": "// side-effect only\n",
+    });
+    mockAdapterPluginStore.getAdapterPluginByType.mockReturnValue({
+      type: "side_effect_adapter",
+      packageName: "side-effect-adapter",
+      localPath: tmpDir,
+      installedAt: new Date(0).toISOString(),
+    });
+
+    const { getMultiFileReloadWarning } = await import("./plugin-loader.js");
+    expect(getMultiFileReloadWarning("side_effect_adapter")).toBeDefined();
+  });
+
   it("returns undefined for an unknown adapter type", async () => {
     mockAdapterPluginStore.getAdapterPluginByType.mockReturnValue(undefined);
     const { getMultiFileReloadWarning } = await import("./plugin-loader.js");
@@ -104,7 +123,7 @@ describe("reloadExternalAdapter (multi-file cache-bust limitation)", () => {
 
     const initial = await loadExternalAdapterPackage("repro-adapter", tmpDir);
     const initialResult = await initial.testEnvironment!({} as never);
-    expect((initialResult as { message: string }).message).toBe("v1");
+    expect((initialResult as unknown as { message: string }).message).toBe("v1");
 
     // index.ts untouched — only the sub-module changes on disk.
     fs.writeFileSync(path.join(tmpDir, "helper.js"), "export function greet() { return 'v2'; }\n");
@@ -115,7 +134,7 @@ describe("reloadExternalAdapter (multi-file cache-bust limitation)", () => {
     const reloadedResult = await reloaded!.testEnvironment!({} as never);
 
     // Bug: still 'v1' — reload doesn't cache-bust the sub-module.
-    expect((reloadedResult as { message: string }).message).toBe("v1");
+    expect((reloadedResult as unknown as { message: string }).message).toBe("v1");
     expect(getMultiFileReloadWarning("repro_adapter")).toBeDefined();
   });
 });
