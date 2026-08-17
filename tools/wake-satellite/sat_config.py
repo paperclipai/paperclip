@@ -49,7 +49,17 @@ TTS_FORMAT = "mp3_44100_128"
 # Auf der RTX, damit es nicht unter Studio-RAM-Contention verdrängt wird. Nur
 # der Satellit nutzt es; der Telegram-Jarvis bleibt auf seinem Env-/Default-
 # Modell. Modell muss geladen sein: `lms load "<ID>" --context-length 8192`.
-CHAT_MODEL = "mistral-small-3.2-24b-instruct-2506@q4_k_m"
+#
+# 17.08.2026 auf gemma-4-31b umgestellt (Walters Wunsch): es formuliert
+# gesprochenes Deutsch natuerlicher. Der Preis ist gemessen und bewusst:
+#   mistral-small-24b (RTX, lokal)  1,8 / 0,9 / 0,9 s
+#   gemma-4-31b-it-mlx (MacBook)    4,1 / 3,2 / 3,2 s
+# Das Modell liegt auf dem MacBook (`lms ps` -> MacbookM5Mx128), der
+# Sprachpfad haengt damit an LM Link statt nur am Studio. Abgefedert durch
+# den Fallback in llm.chat(): weil CHAT_MODEL hier == llm.FALLBACK_MODEL
+# ist, weicht der Modul-Default auf llm.DEFAULT_MODEL aus — ein lokales
+# Netz unter dem entfernten Modell. Zurueck geht es mit einer Zeile.
+CHAT_MODEL = "gemma-4-31b-it-mlx"
 
 # Mandant fest verdrahtet.
 TENANT = {

@@ -135,6 +135,42 @@ class TestRetryAndFallback(_NoSleep):
                          model="gleich", fallback_model="gleich")
         self.assertEqual(calls, ["gleich", "gleich"])
 
+    def test_module_default_fallback_avoids_the_primary_model(self):
+        """Ist das Primaermodell selbst FALLBACK_MODEL, weicht der Default aus.
+
+        Sonst haette ausgerechnet der Aufrufer keinen Fallback, der das
+        staerkste Modell direkt fuehrt — `chat()` ueberspringt den dritten
+        Versuch ja, wenn er auf dasselbe Modell zeigt. Betrifft den
+        Wake-Satelliten, sobald `sat_config.CHAT_MODEL` auf FALLBACK_MODEL
+        steht: dessen Modell liegt auf einem ANDEREN Geraet (LM Link), und
+        genau dann braucht es ein lokales Netz darunter.
+        """
+        calls = []
+        def fake_urlopen(req, timeout=None):
+            calls.append(json.loads(req.data.decode("utf-8"))["model"])
+            raise TimeoutError("timed out")
+        with mock.patch.object(llm.urllib.request, "urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(llm.LlmError):
+                llm.chat([{"role": "user", "content": "hi"}], model=llm.FALLBACK_MODEL)
+        self.assertEqual(calls, [llm.FALLBACK_MODEL, llm.FALLBACK_MODEL,
+                                 llm.DEFAULT_MODEL])
+
+    def test_explicit_identical_fallback_is_still_honoured(self):
+        """Ein ausdruecklich uebergebener Fallback bleibt das Wort des Aufrufers.
+
+        Nur der Modul-Default weicht aus (siehe Test darueber) — wer explizit
+        dasselbe Modell nennt, bekommt keinen dritten Versuch untergeschoben.
+        """
+        calls = []
+        def fake_urlopen(req, timeout=None):
+            calls.append(json.loads(req.data.decode("utf-8"))["model"])
+            raise TimeoutError("timed out")
+        with mock.patch.object(llm.urllib.request, "urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(llm.LlmError):
+                llm.chat([{"role": "user", "content": "hi"}],
+                         model=llm.FALLBACK_MODEL, fallback_model=llm.FALLBACK_MODEL)
+        self.assertEqual(calls, [llm.FALLBACK_MODEL, llm.FALLBACK_MODEL])
+
     def test_uses_configured_fallback_by_default(self):
         """Ohne explizites Argument greift FALLBACK_MODEL aus dem Modul."""
         calls = []

@@ -31,13 +31,32 @@ class LlmError(Exception):
     """LM Studio nicht erreichbar oder Antwort unbrauchbar."""
 
 
+_FALLBACK_UNGESETZT = object()
+
+
 def chat(messages, model=DEFAULT_MODEL, temperature=DEFAULT_TEMPERATURE,
-         url=LMSTUDIO_URL, timeout=90, fallback_model=FALLBACK_MODEL):
+         url=LMSTUDIO_URL, timeout=90, fallback_model=_FALLBACK_UNGESETZT):
     """Wie `_call`, aber mit Wiederholung und Ausweichmodell.
 
     Reihenfolge: `model`, nach `RETRY_DELAY_SEC` nochmal `model`, dann
     einmal `fallback_model`. Erst danach fliegt die letzte `LlmError`.
+
+    Ohne ausdruecklich uebergebenen `fallback_model` weicht der Default auf
+    `DEFAULT_MODEL` aus, falls `FALLBACK_MODEL` dasselbe Modell waere wie
+    `model` — sonst haette ausgerechnet der Aufrufer keinen Fallback, der
+    das staerkste Modell direkt fuehrt (der dritte Versuch wird ja
+    uebersprungen, wenn er auf dasselbe Modell zeigt). Praktisch betrifft
+    das den Wake-Satelliten, wenn `sat_config.CHAT_MODEL` auf FALLBACK_MODEL
+    steht: das liegt auf einem ANDEREN Geraet (LM Link), und genau dann
+    braucht es ein lokales Netz darunter.
+
+    Ein ausdruecklich uebergebener `fallback_model` bleibt unangetastet —
+    auch `None` (= gar kein Fallback) und auch ein bewusst identischer.
     """
+    if fallback_model is _FALLBACK_UNGESETZT:
+        fallback_model = FALLBACK_MODEL
+        if fallback_model == model and DEFAULT_MODEL != model:
+            fallback_model = DEFAULT_MODEL
     attempts = [model, model]
     if fallback_model and fallback_model != model:
         attempts.append(fallback_model)
