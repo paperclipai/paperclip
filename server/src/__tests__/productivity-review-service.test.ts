@@ -273,6 +273,40 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(reviews[0]?.assigneeAgentId).toBe(seeded.managerId);
   });
 
+  it("falls back when the configured productivity review owner is not assignable", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const invalidOwnerId = randomUUID();
+    const seeded = await seedAssignedIssue({ operationalReviewOwnerAgentId: invalidOwnerId });
+    await db.insert(agents).values({
+      id: invalidOwnerId,
+      companyId: seeded.companyId,
+      name: "PM with missing manager",
+      role: "pm",
+      status: "idle",
+      reportsTo: randomUUID(),
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const reviews = await listProductivityReviews(seeded.companyId);
+    expect(reviews[0]?.assigneeAgentId).toBe(seeded.managerId);
+  });
+
   it("refreshes open productivity reviews only once per interval and caps refresh comments", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
