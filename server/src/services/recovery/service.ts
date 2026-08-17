@@ -3315,6 +3315,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
 
+    // reconcileStrandedAssignedIssues checks hasActiveExecutionPath once per
+    // candidate near the top of its scan loop, but the scan itself walks every
+    // stranded candidate in the company before any one of them is escalated. A
+    // legitimate new checkout (or a queued wake) can land on this exact issue in
+    // that window — the agent that owns the issue is very much alive, just not
+    // yet visible when the scan read it. Re-verify immediately before creating a
+    // recovery action or reassigning anything, so a live run that started after
+    // the scan is never yanked out from under its agent.
+    if (await hasActiveExecutionPath(input.issue.companyId, input.issue.id)) {
+      logger.info(
+        { issueId: input.issue.id, companyId: input.issue.companyId },
+        "skipping stranded-issue escalation: an execution path appeared after the recovery scan",
+      );
+      return null;
+    }
+
     const recoveryCause = resolveStrandedRecoveryCause(input.latestRun, input.recoveryCause);
     const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({
       issue: input.issue,
