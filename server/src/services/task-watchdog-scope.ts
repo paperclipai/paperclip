@@ -28,6 +28,7 @@ export type TaskWatchdogMutationScope =
       watchedIssueId: string;
       watchdogIssueId: string | null;
       stopFingerprint: string | null;
+      runId: string;
     };
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -118,6 +119,7 @@ export async function resolveTaskWatchdogMutationScope(
     watchedIssueId: watchdog.issueId,
     watchdogIssueId: watchdog.watchdogIssueId ?? null,
     stopFingerprint: taskWatchdog.stopFingerprint,
+    runId: run.id,
   };
 }
 

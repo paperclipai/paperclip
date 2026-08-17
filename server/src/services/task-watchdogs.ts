@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -921,7 +921,11 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     return (Array.isArray(rows) ? rows : []) as TaskWatchdogClassifierIssue[];
   }
 
-  async function collectClassifierInput(companyId: string, watchdog: IssueWatchdogRow) {
+  async function collectClassifierInput(
+    companyId: string,
+    watchdog: IssueWatchdogRow,
+    opts: { excludeRunId?: string | null } = {},
+  ) {
     const issueRows = await loadWatchdogSubtreeIssues(companyId, watchdog.issueId);
     const subtreeIssueIds = issueRows.map((issue) => issue.id);
     if (subtreeIssueIds.length === 0) {
@@ -965,6 +969,15 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
             inArray(sql`${heartbeatRuns.contextSnapshot}->>'issueId'`, subtreeIssueIds),
             inArray(sql`${heartbeatRuns.contextSnapshot}->>'taskId'`, subtreeIssueIds),
           ),
+          ...(opts.excludeRunId ? [
+            ne(heartbeatRuns.id, opts.excludeRunId),
+            sql`not exists (
+              select 1 from ${agentWakeupRequests}
+              where ${agentWakeupRequests.id} = ${heartbeatRuns.wakeupRequestId}
+                and ${agentWakeupRequests.companyId} = ${companyId}
+                and ${agentWakeupRequests.requestedByRunId} = ${opts.excludeRunId}
+            )`,
+          ] : []),
         )),
       db
         .select({
@@ -980,6 +993,15 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           inArray(issues.id, subtreeIssueIds),
           visibleIssueCondition(),
           inArray(heartbeatRuns.status, [...TASK_WATCHDOG_LIVE_RUN_STATUSES]),
+          ...(opts.excludeRunId ? [
+            ne(heartbeatRuns.id, opts.excludeRunId),
+            sql`not exists (
+              select 1 from ${agentWakeupRequests}
+              where ${agentWakeupRequests.id} = ${heartbeatRuns.wakeupRequestId}
+                and ${agentWakeupRequests.companyId} = ${companyId}
+                and ${agentWakeupRequests.requestedByRunId} = ${opts.excludeRunId}
+            )`,
+          ] : []),
         )),
       db
         .select({
@@ -992,6 +1014,9 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         .where(and(
           eq(agentWakeupRequests.companyId, companyId),
           inArray(agentWakeupRequests.status, [...TASK_WATCHDOG_WAKE_REQUEST_STATUSES]),
+          ...(opts.excludeRunId
+            ? [sql`${agentWakeupRequests.requestedByRunId} is distinct from ${opts.excludeRunId}`]
+            : []),
           or(
             inArray(sql`${agentWakeupRequests.payload}->>'issueId'`, subtreeIssueIds),
             inArray(sql`${agentWakeupRequests.payload}->>'taskId'`, subtreeIssueIds),
@@ -1446,7 +1471,9 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       return { state: "skipped" as const, reason: "watched_issue_not_applicable" };
     }
 
-    const input = await collectClassifierInput(watchdog.companyId, watchdog);
+    const input = await collectClassifierInput(watchdog.companyId, watchdog, {
+      excludeRunId: opts.runId ?? null,
+    });
     const classification = classifyTaskWatchdogSubtree(input);
     if (classification.state !== "stopped") {
       return { state: classification.state, reason: classification.reason, classification };
@@ -1617,6 +1644,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     companyId: string;
     watchedIssueId: string;
     stopFingerprint: string | null;
+    runId?: string | null;
   }) {
     if (!scope.stopFingerprint) {
       return {
@@ -1642,7 +1670,9 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       };
     }
 
-    const input = await collectClassifierInput(watchdog.companyId, watchdog);
+    const input = await collectClassifierInput(watchdog.companyId, watchdog, {
+      excludeRunId: scope.runId,
+    });
     const classification = classifyTaskWatchdogSubtree(input);
     if (classification.state === "stopped" && classification.stopFingerprint === scope.stopFingerprint) {
       return { allowed: true as const, classification };
