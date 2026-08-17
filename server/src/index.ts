@@ -77,7 +77,7 @@ import {
   reconcileAdapterAvailability,
 } from "./services/adapter-registry-bootstrap.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
-import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
+import { resolveRuntimeApiUrl } from "./runtime-api.js";
 import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
@@ -774,26 +774,50 @@ export async function startServer(): Promise<StartedServer> {
   }
   
   const runtimeListenHost = config.host;
-  const runtimeApiUrl = choosePrimaryRuntimeApiUrl({
+  const runtimeApiOverride = process.env.PAPERCLIP_API_URL?.trim();
+  const runtimeApiResolverInput = {
     authPublicBaseUrl: config.authPublicBaseUrl ?? null,
     allowedHostnames: config.allowedHostnames,
     bindHost: runtimeListenHost,
     port: listenPort,
-  });
-  const configuredApiUrl = process.env.PAPERCLIP_API_URL?.trim() || runtimeApiUrl;
-  const runtimeApiCandidates = buildRuntimeApiCandidateUrls({
-    preferredApiUrl: configuredApiUrl,
-    authPublicBaseUrl: config.authPublicBaseUrl ?? null,
-    allowedHostnames: config.allowedHostnames,
-    bindHost: runtimeListenHost,
-    port: listenPort,
-  });
+  };
+  // DNS ranking only at this point: the listener is not open yet, so probing here
+  // would reject every candidate. `promoteReachableRuntimeApiUrl` below re-runs
+  // this with probing once the server is listening.
+  const initialRuntimeApi = await resolveRuntimeApiUrl({ ...runtimeApiResolverInput, probe: false });
+  let configuredApiUrl = runtimeApiOverride || initialRuntimeApi.url;
   process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
-  process.env.PAPERCLIP_RUNTIME_API_URL = runtimeApiUrl;
-  process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
+  process.env.PAPERCLIP_RUNTIME_API_URL = initialRuntimeApi.url;
   process.env.PAPERCLIP_API_URL = configuredApiUrl;
-  
+
+  // `allowedHostnames` is a Host-header accept list, so a name in it can resolve
+  // to an address nothing listens on — which is exactly what agents inherit as
+  // PAPERCLIP_API_URL. Once the listener is up, probe the ranked candidates and
+  // promote the first origin that actually answers. (AGE-519)
+  const promoteReachableRuntimeApiUrl = async (): Promise<void> => {
+    if (runtimeApiOverride) return;
+    if (initialRuntimeApi.reason !== "resolve-rank") return;
+
+    const probedRuntimeApi = await resolveRuntimeApiUrl(runtimeApiResolverInput);
+    if (probedRuntimeApi.reason === "unreachable-fallback") {
+      logger.warn(
+        { candidates: probedRuntimeApi.candidates, probed: probedRuntimeApi.probed, skipped: probedRuntimeApi.skipped },
+        `No runtime API candidate answered a probe; agents will use ${probedRuntimeApi.url}, which may be unreachable`,
+      );
+      return;
+    }
+    if (probedRuntimeApi.url === initialRuntimeApi.url) return;
+
+    logger.warn(
+      { previousApiUrl: initialRuntimeApi.url, probed: probedRuntimeApi.probed },
+      `Promoted runtime API URL to ${probedRuntimeApi.url} after probing; the derived URL did not answer`,
+    );
+    configuredApiUrl = probedRuntimeApi.url;
+    process.env.PAPERCLIP_RUNTIME_API_URL = probedRuntimeApi.url;
+    process.env.PAPERCLIP_API_URL = probedRuntimeApi.url;
+  };
+
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
     pluginWorkerManager,
   });
@@ -1495,7 +1519,9 @@ export async function startServer(): Promise<StartedServer> {
       resolveListen();
     });
   });
-  
+
+  await promoteReachableRuntimeApiUrl();
+
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
       await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
