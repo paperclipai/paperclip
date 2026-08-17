@@ -5,6 +5,7 @@ HTTP-Dienst sind duenne Huellen darum.
 """
 from __future__ import annotations
 
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
@@ -17,6 +18,37 @@ from backends import SearxngBackend
 # Pause zwischen zwei Abrufen derselben Domain. Greift praktisch nur bei
 # gleiche_domain_erlauben=True — sonst verhindert die Deduplizierung den Fall.
 PAUSE_GLEICHE_DOMAIN = 1.0
+
+# Zaehler der Abrufe, deren Thread beim Ueberschreiten der Deadline
+# zurueckgelassen wurde. Kein Ersatz fuer einen Waechter, aber der Unterschied
+# zwischen einem Leck, das jemand sieht, und einem, das niemand sieht. Der
+# HTTP-Dienst weist den Stand unter GET / aus.
+_aufgabe_sperre = threading.Lock()
+_aufgegebene_abrufe = 0
+
+
+def aufgegebene_abrufe() -> int:
+    """Wie viele Abruf-Threads seit dem Start aufgegeben wurden."""
+    with _aufgabe_sperre:
+        return _aufgegebene_abrufe
+
+
+def _vermerke_aufgabe(url: str, lauf, start: float) -> None:
+    global _aufgegebene_abrufe
+    with _aufgabe_sperre:
+        _aufgegebene_abrufe += 1
+        stand = _aufgegebene_abrufe
+    print(f"[websuche] Abruf bei Deadline aufgegeben, Thread laeuft weiter: "
+          f"{url} (aufgegeben seit Start: {stand})", file=sys.stderr, flush=True)
+
+    def spaet_fertig(_zukunft):
+        # Zeigt im Log, wie weit ueber das Budget der Thread wirklich lief —
+        # daran laesst sich ablesen, ob ein Waechter dringend wird.
+        print(f"[websuche] aufgegebener Abruf endete erst nach "
+              f"{time.monotonic() - start:.1f}s: {url}",
+              file=sys.stderr, flush=True)
+
+    lauf.add_done_callback(spaet_fertig)
 
 # Mehrteilige oeffentliche Endungen, die in unseren Recherchefeldern real
 # vorkommen. Bewusst eine kurze Liste statt einer PSL-Abhaengigkeit: tldextract
@@ -123,12 +155,24 @@ def recherchiere(frage: str, *, quellen: int = 3, zeichen: int = 12000,
     # duerfen, waehrend ein haengender Thread im Hintergrund weiterlaeuft.
     #
     # Im Dienst (wochenlang laufender Prozess) wird ein solcher Thread nicht
-    # eingesammelt — im CLI raeumt os._exit auf. Ein Waechter dafuer ist
-    # trotzdem nicht noetig, seit `abruf.hole_text` ein hartes Gesamtbudget
-    # je Seite fuehrt (robots + Weiterleitungen + Rumpf) und den Rumpf bei
-    # MAX_RUMPF_BYTES kappt: ein aufgegebener Thread endet damit von selbst
-    # kurz nach `seiten_timeout` und haelt hoechstens 2 MB. Vorher konnte er
-    # an einem troepfelnden Server beliebig lange leben — DAS war das Leck.
+    # eingesammelt — im CLI raeumt os._exit auf.
+    #
+    # Hier stand frueher, ein Waechter sei nicht noetig, weil `abruf.hole_text`
+    # ein HARTES Gesamtbudget je Seite fuehre und ein aufgegebener Thread
+    # deshalb von selbst kurz nach `seiten_timeout` ende. Das war unzutreffend
+    # und ist es auch nach dem Umbau des Abrufs nur noch fast: der Regelfall
+    # und der troepfelnde Server enden im Budget (gemessen 1,03 s bei 1,0 s),
+    # aber ein Server, der ununterbrochen gueltige Bytes ohne Nutzinhalt
+    # schickt (leere gzip-Bloecke, endlose chunked-Groessenzeile), haelt den
+    # Thread in einer Leseschleife unterhalb von urllib3 fest — gemessen 20
+    # bis 30 s bei 1,0 s Budget. Siehe abruf.py, "WAS DAS ZEITBUDGET WIRKLICH
+    # LEISTET".
+    #
+    # Ein solcher Thread haelt weiterhin hoechstens MAX_RUMPF_BYTES, aber die
+    # Begruendung fuer den fehlenden Waechter traegt nicht mehr. Bis es einen
+    # gibt, wird das Aufgeben wenigstens gezaehlt und protokolliert — ein
+    # stiller Verlust von Threads und Sockets ist das, was in einem
+    # wochenlang laufenden Dienst niemand bemerkt.
     pool = ThreadPoolExecutor(max_workers=max(1, len(gewaehlt)))
     laeufe = [pool.submit(hole, k.url, domain) for k, domain in gewaehlt]
 
@@ -141,8 +185,9 @@ def recherchiere(frage: str, *, quellen: int = 3, zeichen: int = 12000,
     pool.shutdown(wait=False)
 
     ergebnisse = []
-    for lauf in laeufe:
+    for lauf, (kandidat, _domain) in zip(laeufe, gewaehlt):
         if lauf in unfertig:
+            _vermerke_aufgabe(kandidat.url, lauf, start)
             ergebnisse.append(abruf.AbrufErgebnis(
                 fehler=f"Abbruch: Deadline von {deadline}s ueberschritten"))
             continue

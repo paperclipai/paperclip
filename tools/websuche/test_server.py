@@ -220,3 +220,30 @@ def test_dienst_bearbeitet_anfragen_nebenlaeufig(monkeypatch):
     assert antworten == [200, 200, 200]
     assert dauer < 1.2, (f"3 Anfragen a 0,6 s brauchten {dauer:.2f}s — "
                          f"sie liefen nacheinander")
+
+
+# --- Sichtbarkeit aufgegebener Abrufe (R2) --------------------------------
+
+def test_status_weist_aufgegebene_abrufe_aus():
+    """Ein bei der Deadline zurueckgelassener Abruf-Thread ist die einzige
+    Form von Leck, die dieser Dienst kennt — und die einzige Stelle, an der
+    sie von aussen sichtbar wird, ist dieser Zaehler."""
+    import json as _json
+    import threading
+    import urllib.request
+
+    import server as s
+
+    dienst = s.baue(0)
+    port = dienst.server_address[1]
+    threading.Thread(target=dienst.serve_forever, daemon=True).start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/",
+                                    timeout=10) as antwort:
+            ausgabe = _json.loads(antwort.read())
+    finally:
+        dienst.shutdown()
+        dienst.server_close()
+
+    assert ausgabe["status"] == "ok"
+    assert isinstance(ausgabe["aufgegebene_abrufe"], int)

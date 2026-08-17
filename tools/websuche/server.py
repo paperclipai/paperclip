@@ -12,7 +12,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from backends import BackendFehler
-from websuche import recherchiere
+from websuche import aufgegebene_abrufe, recherchiere
 
 PORT = 7789
 
@@ -116,7 +116,12 @@ class Handler(BaseHTTPRequestHandler):
         self._antworte(code, ausgabe)
 
     def do_GET(self):
-        self._antworte(200, {"dienst": "websuche", "status": "ok"})
+        # `aufgegebene_abrufe` ist die einzige Spur, die ein bei der Deadline
+        # zurueckgelassener Abruf-Thread hinterlaesst. Waechst der Wert im
+        # Betrieb, sammelt der Prozess Threads und Sockets an (siehe abruf.py,
+        # "WAS DAS ZEITBUDGET WIRKLICH LEISTET").
+        self._antworte(200, {"dienst": "websuche", "status": "ok",
+                             "aufgegebene_abrufe": aufgegebene_abrufe()})
 
     def _antworte(self, code: int, ausgabe: dict):
         daten = json.dumps(ausgabe, ensure_ascii=False).encode("utf-8")

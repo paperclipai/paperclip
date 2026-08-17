@@ -5,7 +5,7 @@ import pytest
 import abruf
 from abruf import AbrufErgebnis
 from backends import BackendFehler, Treffer
-from websuche import recherchiere, registrierbare_domain
+from websuche import aufgegebene_abrufe, recherchiere, registrierbare_domain
 
 
 class FakeBackend:
@@ -274,3 +274,46 @@ def test_gesamt_deadline_wird_durchgesetzt():
     quelle = ergebnis["quellen"][0]
     assert "fehler" in quelle
     assert "text" not in quelle
+
+
+def test_aufgegebener_abruf_wird_gezaehlt_und_gemeldet(capsys):
+    """Ein bei der Deadline zurueckgelassener Thread hinterliess bisher keine
+    Spur: kein Log, keine Metrik. In einem wochenlang laufenden Dienst faellt
+    ein solches Leck damit niemandem auf. Es gibt weiterhin keinen Waechter,
+    der den Thread beendet — aber er verschwindet nicht mehr lautlos.
+    """
+    def lahmer_abrufer(url, max_zeichen, timeout):
+        time.sleep(0.5)
+        return AbrufErgebnis(text="ok")
+
+    vorher = aufgegebene_abrufe()
+    backend = FakeBackend([t("https://a.de/1")])
+    recherchiere("f", quellen=1, deadline=0.1, backend=backend,
+                 abrufer=lahmer_abrufer)
+
+    assert aufgegebene_abrufe() == vorher + 1
+    meldung = capsys.readouterr().err
+    assert "aufgegeben" in meldung and "https://a.de/1" in meldung
+
+
+def test_zaehler_bleibt_stehen_wenn_alle_abrufe_fertig_werden(capsys):
+    vorher = aufgegebene_abrufe()
+    backend = FakeBackend([t("https://a.de/1"), t("https://b.de/2")])
+    recherchiere("f", quellen=2, deadline=5.0, backend=backend,
+                 abrufer=abrufer_ok)
+    assert aufgegebene_abrufe() == vorher
+    assert "aufgegeben" not in capsys.readouterr().err
+
+
+def test_spaet_beendeter_abruf_wird_protokolliert(capsys):
+    """Der zweite Teil der Spur: wann der aufgegebene Thread wirklich endete.
+    Erst daran laesst sich ablesen, ob ein Waechter dringend wird."""
+    def lahmer_abrufer(url, max_zeichen, timeout):
+        time.sleep(0.3)
+        return AbrufErgebnis(text="ok")
+
+    backend = FakeBackend([t("https://a.de/1")])
+    recherchiere("f", quellen=1, deadline=0.1, backend=backend,
+                 abrufer=lahmer_abrufer)
+    time.sleep(0.5)   # dem zurueckgelassenen Thread beim Fertigwerden zusehen
+    assert "endete erst nach" in capsys.readouterr().err
