@@ -354,12 +354,29 @@ def test_domain_reaches_followup_prompt(monkeypatch):
     assert "Nenne keine URLs" in followup
 
 
-def test_web_context_is_capped_for_voice_latency():
-    # Gemessen (17.08., gemma-4-12b) hängt die Wartezeit im Sprachpfad fast
-    # linear an der Kontextgröße: 3190 Zeichen -> 22,8/24,6s, 2165 -> 13,4/9,9s,
-    # 1165 -> 9,8/9,5s. Der Nutzer wartet dabei stumm, deshalb ist der Deckel
-    # eine Eigenschaft des Sprachpfads und kein Detail — er darf nicht
-    # unbemerkt wieder hochgezogen werden.
+def test_followup_names_source_with_laut_example(monkeypatch):
+    # Das Beispiel "laut tagesschau.de" traegt die Formulierung: gegen
+    # mistral-small (dem live konfigurierten Sprachmodell) gemessen liefert
+    # die Regel damit "Laut toom.de hat der Baumarkt ..." statt eines
+    # angehaengten "Quelle: toom.de", das vorgelesen wie ein abgelesenes
+    # Formular klingt. Ohne das Beispiel kippt die Form.
+    calls = []
+    def fake_chat(msgs, model=None, **kw):
+        calls.append(msgs)
+        return "WEB: Wetter" if len(calls) == 1 else "Laut wetter.example 24 Grad."
+    monkeypatch.setattr(jarvis_brain.llm, "chat", fake_chat)
+    monkeypatch.setattr(jarvis_brain.websuche_client, "suche", _lokale_quelle)
+    jarvis_brain.respond("wetter?", TENANT, "tok", "m")
+    assert "laut tagesschau.de" in calls[1][-1]["content"]
+
+
+def test_web_context_is_capped_for_voice_form():
+    # Der Deckel schützt die ANTWORTFORM, nicht die Wartezeit: mit dem live
+    # konfigurierten mistral-small bleibt die Zeit über alle Kontextgrößen gut
+    # (1-3,4s), aber ab ~2500 Zeichen fängt das Modell an aufzuzählen
+    # ("Laut ...: - Heute: 21 Grad - Morgen: ..."), und Aufzählungen sind im
+    # Sprachpfad genau der Fehler. Deshalb darf der Deckel nicht unbemerkt
+    # wieder hochgezogen werden.
     assert jarvis_brain.WEB_CONTEXT_ZEICHEN <= 1200
     quellen = {"quellen": [
         {"domain": "a.example", "titel": "A", "text": "x" * 5000,
@@ -412,11 +429,12 @@ def test_do_web_uses_short_timeouts(monkeypatch):
     jarvis_brain.respond("wetter?", TENANT, "tok", "m")
     assert seen["timeout"] == 8
     assert seen["deadline"] < seen["timeout"]
-    # Gemessen (17.08., gemma-4-12b, ~3250 Zeichen Kontext): 14,8s / 23,1s /
-    # 26,8s. Bei timeout=30 reisst der Aufruf gelegentlich die Grenze, und
-    # llm.chat startet dann seine Kaskade (30 + 5 + 30 + 5 + Fallback) — im
-    # Sprachpfad gemessene 77s stumme Wartezeit. Der Deckel muss deshalb ueber
-    # der Streuung liegen, nicht mittendrin.
+    # Mit dem live konfigurierten mistral-small greift der Deckel nie (1-3s).
+    # Er schützt den Rückfall auf llm.DEFAULT_MODEL: gemma-4-12b braucht für
+    # denselben Prompt gemessen 14,8-26,8s, riss bei timeout=30 gelegentlich
+    # die Grenze, und llm.chat startet dann seine Kaskade (30+5+30+5+Fallback)
+    # — gemessene 79,5s stumme Wartezeit. Deshalb über die Streuung, nicht
+    # mittendrin.
     assert seen["chat_timeout"] == jarvis_brain.WEB_CHAT_TIMEOUT
     assert jarvis_brain.WEB_CHAT_TIMEOUT > 30
 

@@ -258,21 +258,27 @@ def _do_lookup(messages, mode, query, tenant, chat_model):
     return _strip_or_fallback(answer)
 
 
-# Deckel fuer den Folge-Durchgang nach einer Websuche. Bewusst hoeher als die
-# frueheren 30s: der lokale Dienst liefert Seitentext (~3250 Zeichen) statt
-# Tavilys fertiger Kurzantwort (~500), und gemma-4-12b braucht dafuer gemessen
-# 14,8-26,8s. Bei 30s reisst der Aufruf gelegentlich die Grenze und llm.chat
-# startet seine Kaskade (30 + 5 + 30 + 5 + Fallback) — daraus wurden im
-# Sprachpfad gemessene 77s stumme Wartezeit. Der Deckel gehoert deshalb ueber
-# die Streuung, nicht mittendrin.
+# Deckel fuer den Folge-Durchgang nach einer Websuche. Mit dem live
+# konfigurierten Sprachmodell (sat_config.CHAT_MODEL = mistral-small auf der
+# RTX) greift er nie — das antwortet in 1-3s. Er schuetzt den Fall, dass der
+# Satellit auf llm.DEFAULT_MODEL zurueckfaellt: gemma-4-12b braucht fuer
+# denselben Prompt gemessen 14,8-26,8s, und bei timeout=30 riss der Aufruf
+# gelegentlich die Grenze. llm.chat startet dann seine Kaskade
+# (30 + 5 + 30 + 5 + Fallback) — daraus wurden gemessene 79,5s stumme
+# Wartezeit. Der Deckel gehoert deshalb ueber die Streuung, nicht mittendrin.
 WEB_CHAT_TIMEOUT = 45
 
-# Wieviel Seitentext in den Folge-Prompt darf. Gemessen (17.08., gemma-4-12b)
-# haengt die stumme Wartezeit im Sprachpfad fast linear daran:
-#   3190 Zeichen -> 22,8/24,6s | 2165 -> 13,4/9,9s | 1165 -> 9,8/9,5s
-# Bei ~1200 ist die Antwort noch konkret (Temperaturen, Domain), die Wartezeit
-# aber wieder bei ~10s. Mehr Text kauft hier keine bessere Antwort, sondern nur
-# Wartezeit — der grosse Rest der Seiten ist Navigationsgeruempel.
+# Wieviel Seitentext in den Folge-Prompt darf. Der Grund ist die ANTWORTFORM,
+# nicht die Wartezeit: mit mistral-small bleibt die Zeit ueber alle Groessen
+# hinweg gut (1-3,4s), aber die Form kippt mit wachsendem Kontext. Gemessen
+# (17.08.):
+#   1365 Zeichen -> "Laut wetteronline.de und wetter.com wird das Wetter ..."
+#   2665         -> "Laut wetteronline.de: Heute dicht bewoelkt, Regen. ..."
+#   5165         -> "Laut ...:  - Heute: 21 Grad ... - Morgen: ..."
+# Ab ~2500 Zeichen faengt das Modell an aufzuzaehlen, und Aufzaehlungen sind
+# im Sprachpfad genau der Fehler (siehe VOICE_OUTPUT_HINT). Mehr Text kauft
+# hier also keine bessere Antwort — der grosse Rest der Seiten ist ohnehin
+# Navigationsgeruempel.
 WEB_CONTEXT_ZEICHEN = 1200
 
 
