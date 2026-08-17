@@ -27,6 +27,7 @@ import { PageTabBar } from "../components/PageTabBar";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
+import { redactCommandText as redactCommandSecretText } from "@paperclipai/adapter-utils";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { assetsApi } from "../api/assets";
 import { getUIAdapter, buildTranscript, onAdapterChange } from "../adapters";
@@ -85,6 +86,7 @@ import {
   type AgentSkillEntry,
   type AgentSkillSnapshot,
   type AgentDetail as AgentDetailRecord,
+  type BudgetMetric,
   type BudgetPolicySummary,
   type HeartbeatRun,
   type HeartbeatRunEvent,
@@ -115,6 +117,7 @@ const RUN_LOG_PAGE_BYTES = 256_000;
 const REDACTED_ENV_VALUE = "***REDACTED***";
 const SECRET_ENV_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
+const COMMAND_ENV_KEY_RE = /(^command$|^cmd$|command[-_]?line|resolved[-_]?command|PAPERCLIP_RESOLVED_COMMAND)/i;
 const JWT_VALUE_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$/;
 
 function redactPathText(value: string, censorUsernameInLogs: boolean) {
@@ -123,6 +126,10 @@ function redactPathText(value: string, censorUsernameInLogs: boolean) {
 
 function redactPathValue<T>(value: T, censorUsernameInLogs: boolean): T {
   return redactHomePathUserSegmentsInValue(value, { enabled: censorUsernameInLogs });
+}
+
+function redactCommandText(value: string, censorUsernameInLogs: boolean): string {
+  return redactPathText(redactCommandSecretText(value, REDACTED_ENV_VALUE), censorUsernameInLogs);
 }
 
 function shouldRedactSecretValue(key: string, value: unknown): boolean {
@@ -142,6 +149,7 @@ function redactEnvValue(key: string, value: unknown, censorUsernameInLogs: boole
   }
   if (shouldRedactSecretValue(key, value)) return REDACTED_ENV_VALUE;
   if (value === null || value === undefined) return "";
+  if (typeof value === "string" && COMMAND_ENV_KEY_RE.test(key)) return redactCommandText(value, censorUsernameInLogs);
   if (typeof value === "string") return redactPathText(value, censorUsernameInLogs);
   try {
     return JSON.stringify(redactPathValue(value, censorUsernameInLogs));
@@ -302,7 +310,7 @@ export function RunInvocationCard({
   payload: Record<string, unknown>;
   censorUsernameInLogs: boolean;
 }) {
-  const commandLine = [
+  const rawCommandLine = [
     typeof payload.command === "string" ? payload.command : null,
     ...(Array.isArray(payload.commandArgs)
       ? payload.commandArgs.filter((value): value is string => typeof value === "string")
@@ -310,6 +318,7 @@ export function RunInvocationCard({
   ]
     .filter((value): value is string => Boolean(value))
     .join(" ");
+  const commandLine = rawCommandLine ? redactCommandText(rawCommandLine, censorUsernameInLogs) : "";
 
   const hasAdvancedDetails =
     commandLine.length > 0
@@ -698,37 +707,63 @@ export function AgentDetail() {
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   const reportsToAgent = (allAgents ?? []).find((a) => a.id === agent?.reportsTo);
   const directReports = (allAgents ?? []).filter((a) => a.reportsTo === agent?.id && a.status !== "terminated");
+  const [agentBudgetMetric, setAgentBudgetMetric] = useState<BudgetMetric>("billed_cents");
   const agentBudgetSummary = useMemo(() => {
+    const scopeId = agent?.id ?? routeAgentRef;
     const matched = budgetOverview?.policies.find(
-      (policy) => policy.scopeType === "agent" && policy.scopeId === (agent?.id ?? routeAgentRef),
+      (policy) => policy.scopeType === "agent" && policy.scopeId === scopeId && policy.metric === agentBudgetMetric,
     );
     if (matched) return matched;
-    const budgetMonthlyCents = agent?.budgetMonthlyCents ?? 0;
-    const spentMonthlyCents = agent?.spentMonthlyCents ?? 0;
+    if (agentBudgetMetric === "billed_cents") {
+      const budgetMonthlyCents = agent?.budgetMonthlyCents ?? 0;
+      const spentMonthlyCents = agent?.spentMonthlyCents ?? 0;
+      return {
+        policyId: "",
+        companyId: resolvedCompanyId ?? "",
+        scopeType: "agent",
+        scopeId,
+        scopeName: agent?.name ?? "Agent",
+        metric: "billed_cents",
+        windowKind: "calendar_month_utc",
+        amount: budgetMonthlyCents,
+        observedAmount: spentMonthlyCents,
+        remainingAmount: Math.max(0, budgetMonthlyCents - spentMonthlyCents),
+        utilizationPercent:
+          budgetMonthlyCents > 0 ? Number(((spentMonthlyCents / budgetMonthlyCents) * 100).toFixed(2)) : 0,
+        warnPercent: 80,
+        hardStopEnabled: true,
+        notifyEnabled: true,
+        isActive: budgetMonthlyCents > 0,
+        status: budgetMonthlyCents > 0 && spentMonthlyCents >= budgetMonthlyCents ? "hard_stop" : "ok",
+        paused: agent?.status === "paused",
+        pauseReason: agent?.pauseReason ?? null,
+        windowStart: new Date(),
+        windowEnd: new Date(),
+      } satisfies BudgetPolicySummary;
+    }
     return {
       policyId: "",
       companyId: resolvedCompanyId ?? "",
       scopeType: "agent",
-      scopeId: agent?.id ?? routeAgentRef,
+      scopeId,
       scopeName: agent?.name ?? "Agent",
-      metric: "billed_cents",
+      metric: agentBudgetMetric,
       windowKind: "calendar_month_utc",
-      amount: budgetMonthlyCents,
-      observedAmount: spentMonthlyCents,
-      remainingAmount: Math.max(0, budgetMonthlyCents - spentMonthlyCents),
-      utilizationPercent:
-        budgetMonthlyCents > 0 ? Number(((spentMonthlyCents / budgetMonthlyCents) * 100).toFixed(2)) : 0,
+      amount: 0,
+      observedAmount: 0,
+      remainingAmount: 0,
+      utilizationPercent: 0,
       warnPercent: 80,
       hardStopEnabled: true,
       notifyEnabled: true,
-      isActive: budgetMonthlyCents > 0,
-      status: budgetMonthlyCents > 0 && spentMonthlyCents >= budgetMonthlyCents ? "hard_stop" : "ok",
+      isActive: false,
+      status: "ok",
       paused: agent?.status === "paused",
       pauseReason: agent?.pauseReason ?? null,
       windowStart: new Date(),
       windowEnd: new Date(),
     } satisfies BudgetPolicySummary;
-  }, [agent, budgetOverview?.policies, resolvedCompanyId, routeAgentRef]);
+  }, [agent, agentBudgetMetric, budgetOverview?.policies, resolvedCompanyId, routeAgentRef]);
   const mobileLiveRun = useMemo(
     () => (heartbeats ?? []).find((r) => r.status === "running" || r.status === "queued") ?? null,
     [heartbeats],
@@ -802,6 +837,7 @@ export function AgentDetail() {
       budgetsApi.upsertPolicy(resolvedCompanyId!, {
         scopeType: "agent",
         scopeId: agent?.id ?? routeAgentRef,
+        metric: agentBudgetMetric,
         amount,
         windowKind: "calendar_month_utc",
       }),
@@ -1150,6 +1186,7 @@ export function AgentDetail() {
             summary={agentBudgetSummary}
             isSaving={budgetMutation.isPending}
             onSave={(amount) => budgetMutation.mutate(amount)}
+            onMetricChange={setAgentBudgetMetric}
             variant="plain"
           />
         </div>
@@ -2466,7 +2503,7 @@ function PromptEditorSkeleton() {
   );
 }
 
-function AgentSkillsTab({
+export function AgentSkillsTab({
   agent,
   companyId,
 }: {
@@ -2649,11 +2686,18 @@ function AgentSkillsTab({
   }, [skillSnapshot?.mode]);
   const unsupportedSkillMessage = useMemo(() => {
     if (skillSnapshot?.mode !== "unsupported") return null;
+    if (
+      agent.adapterType === "acpx_local" &&
+      typeof agent.adapterConfig.agent === "string" &&
+      agent.adapterConfig.agent === "custom"
+    ) {
+      return "Paperclip cannot manage skills for custom ACP commands yet.";
+    }
     if (agent.adapterType === "openclaw_gateway") {
       return "Paperclip cannot manage OpenClaw skills here. Visit your OpenClaw instance to manage this agent's skills.";
     }
     return "Paperclip cannot manage skills for this adapter yet. Manage them in the adapter directly.";
-  }, [agent.adapterType, skillSnapshot?.mode]);
+  }, [agent.adapterConfig.agent, agent.adapterType, skillSnapshot?.mode]);
   const hasUnsavedChanges = !arraysEqual(skillDraft, lastSavedSkills);
   const saveStatusLabel = syncSkills.isPending
     ? "Saving changes..."
