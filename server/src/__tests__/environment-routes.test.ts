@@ -152,6 +152,7 @@ function createDeleteBlastRadius(overrides: Partial<{
   activeLeaseCount: number;
   activeCustomImageSetupSessionCount: number;
   pendingCleanupLeaseCount: number;
+  reusableSandboxLeaseCount: number;
 }> = {}) {
   const staticReferences = {
     isManagedLocal: overrides.isManagedLocal ?? false,
@@ -170,16 +171,19 @@ function createDeleteBlastRadius(overrides: Partial<{
       || (overrides.activeCustomImageSetupSessionCount ?? 0) > 0,
   };
   const pendingCleanupLeaseCount = overrides.pendingCleanupLeaseCount ?? 0;
+  const reusableSandboxLeaseCount = overrides.reusableSandboxLeaseCount ?? 0;
   const deleteBlockedReasons = [
     ...(staticReferences.isManagedLocal ? ["managed_local" as const] : []),
     ...(staticReferences.isInstanceDefault ? ["instance_default" as const] : []),
     ...(pendingCleanupLeaseCount > 0 ? ["pending_sandbox_cleanup" as const] : []),
+    ...(reusableSandboxLeaseCount > 0 ? ["reusable_sandbox_lease" as const] : []),
   ];
   return {
     environmentId: "env-1",
     canDelete: deleteBlockedReasons.length === 0,
     deleteBlockedReasons,
     pendingCleanupLeaseCount,
+    reusableSandboxLeaseCount,
     staticReferences,
     activeRuntimeUse,
   };
@@ -1086,6 +1090,7 @@ describe("environment routes", () => {
       canDelete: true,
       deleteBlockedReasons: [],
       pendingCleanupLeaseCount: 0,
+      reusableSandboxLeaseCount: 0,
       staticReferences: {
         isManagedLocal: false,
         isInstanceDefault: false,
@@ -1563,6 +1568,38 @@ describe("environment routes", () => {
       "Cannot delete this environment while a sandbox cleanup is pending. Wait for the cleanup sweep to destroy the orphan sandbox, then retry.",
     );
     expect(res.body.details).toEqual({ deleteBlockedReasons: ["pending_sandbox_cleanup"] });
+    expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
+  });
+
+  it("rejects deleting an environment with a live reusable sandbox lease", async () => {
+    const environment = {
+      ...createEnvironment(),
+      driver: "sandbox" as const,
+      name: "Reusable Sandbox Fixture",
+      config: {
+        provider: "fake-plugin",
+        image: "fixture:test",
+        reuseLease: true,
+      },
+    };
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(createDeleteBlastRadius({
+      activeLeaseCount: 1,
+      reusableSandboxLeaseCount: 1,
+    }));
+    const app = createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app).delete("/api/environments/env-1");
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe(
+      "Cannot delete this environment while it has a reusable sandbox lease. Remove the associated execution workspace or issue so Paperclip can destroy the sandbox, then retry.",
+    );
+    expect(res.body.details).toEqual({ deleteBlockedReasons: ["reusable_sandbox_lease"] });
     expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
   });
 

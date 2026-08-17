@@ -39,6 +39,7 @@ import * as sandboxProviderRuntime from "../services/sandbox-provider-runtime.ts
 import * as environmentsModule from "../services/environments.ts";
 import { logger } from "../middleware/logger.ts";
 import { environmentService } from "../services/environments.ts";
+import { heartbeatService } from "../services/heartbeat.ts";
 import { secretService } from "../services/secrets.ts";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.ts";
 import {
@@ -5634,6 +5635,71 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     await expect(environmentService(db).getLeaseById(reusableLease.id)).resolves.toMatchObject({
       status: "expired",
       failureReason: "execution_workspace_closed",
+      cleanupStatus: "success",
+    });
+  });
+
+  it("sweeps reusable cleanup with the configuration recorded on the lease", async () => {
+    const { pluginId, environment, reusableLease } = await seedReusablePluginSandboxLease();
+    const environmentsSvc = environmentService(db);
+    await environmentsSvc.releaseLease(reusableLease.id, "pending_cleanup", {
+      failureReason: "release_cleanup_failed",
+      cleanupStatus: "failed",
+    });
+
+    // Re-point the environment after the reusable sandbox was provisioned.
+    // The pending-cleanup sweep still enters destroyRunLease because the
+    // environment exists, but destroy must target the provider and config
+    // captured on the lease rather than this current configuration.
+    await environmentsSvc.update(environment.id, {
+      config: {
+        provider: "replacement-provider",
+        image: "replacement:test",
+        timeoutMs: 9999,
+        reuseLease: true,
+      },
+    });
+
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentDestroyLease") return undefined;
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+      getWorker: vi.fn(() => ({
+        supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"],
+      })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    const heartbeat = heartbeatService(db, { environmentRuntime: runtimeWithPlugin });
+
+    const result = await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 });
+
+    expect(result).toEqual({ swept: 1, destroyed: 1, capped: 0 });
+    expect(workerManager.call).toHaveBeenCalledWith(
+      pluginId,
+      "environmentDestroyLease",
+      expect.objectContaining({
+        driverKey: "fake-plugin",
+        environmentId: environment.id,
+        providerLeaseId: "reusable-plugin-lease",
+        config: expect.objectContaining({
+          image: "fake:test",
+          timeoutMs: 1234,
+          reuseLease: true,
+        }),
+      }),
+      31234,
+    );
+    const destroyInput = vi.mocked(workerManager.call).mock.calls[0]?.[2] as {
+      config?: Record<string, unknown>;
+    };
+    expect(destroyInput.config).not.toMatchObject({
+      image: "replacement:test",
+      timeoutMs: 9999,
+    });
+    await expect(environmentsSvc.getLeaseById(reusableLease.id)).resolves.toMatchObject({
+      status: "expired",
       cleanupStatus: "success",
     });
   });

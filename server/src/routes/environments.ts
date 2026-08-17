@@ -586,6 +586,9 @@ export function environmentRoutes(
     if (impact.pendingCleanupLeaseCount > 0) {
       return "Cannot delete this environment while a sandbox cleanup is pending. Wait for the cleanup sweep to destroy the orphan sandbox, then retry.";
     }
+    if (impact.reusableSandboxLeaseCount > 0) {
+      return "Cannot delete this environment while it has a reusable sandbox lease. Remove the associated execution workspace or issue so Paperclip can destroy the sandbox, then retry.";
+    }
     return null;
   }
 

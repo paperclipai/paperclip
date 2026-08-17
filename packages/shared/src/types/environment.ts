@@ -96,6 +96,7 @@ export interface Environment {
 export type EnvironmentDeleteBlockedReason =
   | "managed_local"
   | "instance_default"
+  | "reusable_sandbox_lease"
   | "pending_sandbox_cleanup";
 
 export interface EnvironmentDeleteBlastRadius {
@@ -123,6 +124,12 @@ export interface EnvironmentDeleteBlastRadius {
    * reference, so a count above zero blocks the delete.
    */
   pendingCleanupLeaseCount: number;
+  /**
+   * Count of reusable sandbox leases whose provider resource is still live.
+   * Deleting the environment would remove the context used by their normal
+   * release and destroy paths, so these leases block deletion.
+   */
+  reusableSandboxLeaseCount: number;
 }
 
 export interface EnvironmentLease {

@@ -398,6 +398,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
       canDelete: false,
       deleteBlockedReasons: ["instance_default"],
       pendingCleanupLeaseCount: 0,
+      reusableSandboxLeaseCount: 0,
       staticReferences: {
         isManagedLocal: false,
         isInstanceDefault: true,
@@ -534,6 +535,99 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("atomically blocks delete while a reusable sandbox lease is still live", async () => {
+    const companyId = randomUUID();
+    const environmentId = randomUUID();
+    const now = new Date();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(environments).values({
+      id: environmentId,
+      name: "Reusable Sandbox Guard",
+      driver: "sandbox",
+      status: "active",
+      config: {
+        provider: "fake",
+        image: "ubuntu:24.04",
+        reuseLease: true,
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+    const lease = await svc.acquireLease({
+      companyId,
+      environmentId,
+      leasePolicy: "reuse_by_environment",
+      provider: "fake",
+      providerLeaseId: "sandbox-reusable-1",
+      metadata: {
+        driver: "sandbox",
+        provider: "fake",
+        image: "ubuntu:24.04",
+        reuseLease: true,
+      },
+    });
+
+    const activeImpact = await svc.getDeleteBlastRadius(environmentId);
+    expect(activeImpact?.canDelete).toBe(false);
+    expect(activeImpact?.deleteBlockedReasons).toContain("reusable_sandbox_lease");
+    expect(activeImpact?.reusableSandboxLeaseCount).toBe(1);
+    expect(await svc.removeIfDeletable(environmentId)).toBeNull();
+
+    // A released reusable lease still owns a provider sandbox that may be
+    // resumed, so it must remain protected until scoped cleanup destroys it.
+    await svc.releaseLease(lease.id, "released");
+    const releasedImpact = await svc.getDeleteBlastRadius(environmentId);
+    expect(releasedImpact?.canDelete).toBe(false);
+    expect(releasedImpact?.reusableSandboxLeaseCount).toBe(1);
+    expect(await svc.removeIfDeletable(environmentId)).toBeNull();
+
+    const rows = await db.select().from(environments).where(eq(environments.id, environmentId));
+    expect(rows).toHaveLength(1);
+    const storedLease = await svc.getLeaseById(lease.id);
+    expect(storedLease?.environmentId).toBe(environmentId);
+  });
+
+  it("allows delete with an active ephemeral lease", async () => {
+    const companyId = randomUUID();
+    const environmentId = randomUUID();
+    const now = new Date();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(environments).values({
+      id: environmentId,
+      name: "Ephemeral Sandbox",
+      driver: "sandbox",
+      status: "active",
+      config: { provider: "fake", image: "ubuntu:24.04" },
+      createdAt: now,
+      updatedAt: now,
+    });
+    await svc.acquireLease({
+      companyId,
+      environmentId,
+      leasePolicy: "ephemeral",
+      provider: "fake",
+      providerLeaseId: "sandbox-ephemeral-1",
+    });
+
+    const impact = await svc.getDeleteBlastRadius(environmentId);
+    expect(impact?.activeRuntimeUse.activeLeaseCount).toBe(1);
+    expect(impact?.reusableSandboxLeaseCount).toBe(0);
+    expect(impact?.canDelete).toBe(true);
+    expect((await svc.removeIfDeletable(environmentId))?.id).toBe(environmentId);
+  });
+
   it("allows delete once the pending_cleanup lease resolves", async () => {
     const companyId = randomUUID();
     const environmentId = randomUUID();
@@ -573,6 +667,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
     const impact = await svc.getDeleteBlastRadius(environmentId);
     expect(impact?.canDelete).toBe(true);
     expect(impact?.pendingCleanupLeaseCount).toBe(0);
+    expect(impact?.reusableSandboxLeaseCount).toBe(0);
     expect(await svc.hasUnresolvedPendingCleanupLeases(environmentId)).toBe(false);
 
     const removed = await svc.removeIfDeletable(environmentId);

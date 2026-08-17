@@ -1121,6 +1121,17 @@ export function environmentService(db: Db) {
               where ${environmentLeases.environmentId} = ${environments.id}
                 and ${environmentLeases.status} = 'pending_cleanup'
             )`,
+            // A reusable lease keeps a live provider sandbox after a run
+            // releases it. Deleting the environment would set its reference to
+            // null, and both the normal release path and scoped reusable cleanup
+            // require that environment context. Refuse the delete atomically
+            // until the owning issue/workspace destroys the reusable sandbox.
+            sql`not exists (
+              select 1 from ${environmentLeases}
+              where ${environmentLeases.environmentId} = ${environments.id}
+                and ${environmentLeases.leasePolicy} = 'reuse_by_environment'
+                and ${environmentLeases.status} in ('active', 'released', 'retained')
+            )`,
           ),
         )
         .returning()
@@ -1168,6 +1179,7 @@ export function environmentService(db: Db) {
         secretBindingRows,
         activeLeaseRows,
         pendingCleanupLeaseRows,
+        reusableSandboxLeaseRows,
         activeSetupRows,
       ] = await Promise.all([
         db
@@ -1219,6 +1231,16 @@ export function environmentService(db: Db) {
           ),
         db
           .select({ count: sql<number>`count(*)::int` })
+          .from(environmentLeases)
+          .where(
+            and(
+              eq(environmentLeases.environmentId, id),
+              eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+              inArray(environmentLeases.status, ["active", "released", "retained"]),
+            ),
+          ),
+        db
+          .select({ count: sql<number>`count(*)::int` })
           .from(environmentCustomImageSetupSessions)
           .where(
             and(
@@ -1231,6 +1253,7 @@ export function environmentService(db: Db) {
       const isManagedLocal = environment.driver === "local";
       const isInstanceDefault = countFromRows(instanceDefaultRows) > 0;
       const pendingCleanupLeaseCount = countFromRows(pendingCleanupLeaseRows);
+      const reusableSandboxLeaseCount = countFromRows(reusableSandboxLeaseRows);
       const deleteBlockedReasons: EnvironmentDeleteBlockedReason[] = [];
       if (isManagedLocal) deleteBlockedReasons.push("managed_local");
       if (isInstanceDefault) deleteBlockedReasons.push("instance_default");
@@ -1240,6 +1263,7 @@ export function environmentService(db: Db) {
       // delete until the sweep resolves the lease, so the operator resolves the
       // cleanup first and the lease keeps its environment link.
       if (pendingCleanupLeaseCount > 0) deleteBlockedReasons.push("pending_sandbox_cleanup");
+      if (reusableSandboxLeaseCount > 0) deleteBlockedReasons.push("reusable_sandbox_lease");
       const activeLeaseCount = countFromRows(activeLeaseRows);
       const activeCustomImageSetupSessionCount = countFromRows(activeSetupRows);
 
@@ -1248,6 +1272,7 @@ export function environmentService(db: Db) {
         canDelete: deleteBlockedReasons.length === 0,
         deleteBlockedReasons,
         pendingCleanupLeaseCount,
+        reusableSandboxLeaseCount,
         staticReferences: {
           isManagedLocal,
           isInstanceDefault,

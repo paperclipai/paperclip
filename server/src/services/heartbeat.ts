@@ -13368,8 +13368,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // `retryPendingSandboxTeardown`, which never reads the environment row. So
       // the sweep uses that path whenever the lease is an orphan ephemeral lease
       // or its environment row is gone. A reuse_by_environment lease whose
-      // environment still exists tears down through `destroyRunLease`, which
-      // resolves the current environment config.
+      // environment still exists tears down through `destroyRunLease`. That
+      // path uses the provider and configuration recorded on the lease first;
+      // the environment is lifecycle context and only a legacy fallback.
       const isOrphanEphemeralLease = lease.leasePolicy === "ephemeral";
       const useRecordedTeardown = isOrphanEphemeralLease || !environment;
 
