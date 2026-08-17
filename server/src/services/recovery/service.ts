@@ -1814,7 +1814,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     sourceIssue: typeof issues.$inferSelect | null;
   }) {
     const candidateIds: string[] = [];
-    const configuredOwnerId = await resolveConfiguredOperationalReviewOwnerAgentId(db, input.run.companyId);
+    const configuredOwnerId = await resolveConfiguredOperationalReviewOwnerAgentId(db, input.run.companyId, {
+      excludeAgentIds: [input.runningAgent.id],
+    });
     if (configuredOwnerId) candidateIds.push(configuredOwnerId);
     if (input.sourceIssue?.assigneeAgentId) {
       const sourceAssignee = await getAgent(input.sourceIssue.assigneeAgentId);

@@ -596,7 +596,9 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
 
   async function resolveReviewOwnerAgentId(sourceIssue: IssueRow, sourceAgent: AgentRow) {
     const candidateIds: string[] = [];
-    const configuredOwnerId = await resolveConfiguredOperationalReviewOwnerAgentId(db, sourceIssue.companyId);
+    const configuredOwnerId = await resolveConfiguredOperationalReviewOwnerAgentId(db, sourceIssue.companyId, {
+      excludeAgentIds: [sourceAgent.id],
+    });
     if (configuredOwnerId) candidateIds.push(configuredOwnerId);
     if (sourceAgent.reportsTo) candidateIds.push(sourceAgent.reportsTo);
     if (sourceIssue.createdByAgentId) candidateIds.push(sourceIssue.createdByAgentId);

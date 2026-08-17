@@ -322,6 +322,28 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(evaluation?.assigneeAgentId).toBe(pmId);
   });
 
+  it("does not route silent-run evaluations back to the stale-run agent", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, managerId, coderId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      operationalReviewOwnerAgentId: null,
+    });
+    await db
+      .update(companies)
+      .set({ interactionResolverGovernance: { operationalReviewOwnerAgentId: coderId } })
+      .where(eq(companies.id, companyId));
+
+    const result = await heartbeatService(db).scanSilentActiveRuns({ now, companyId });
+
+    expect(result.created).toBe(1);
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation?.assigneeAgentId).toBe(managerId);
+  });
+
   it("redacts sensitive values from actual run-log evidence", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const leakedJwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
