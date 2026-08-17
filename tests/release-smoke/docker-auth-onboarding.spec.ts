@@ -14,7 +14,7 @@ const MISSION = "Ship a reliable release smoke suite for Paperclip.";
 const AGENT_NAME = "CEO";
 // Seeded by the wizard's launch step (DEFAULT_TASK_TITLE in
 // ui/src/components/OnboardingWizard.tsx).
-const FIRST_TASK_TITLE = "Hire your first engineer and create a hiring plan";
+const FIRST_TASK_TITLE = "Paperclip onboarding";
 
 async function signIn(page: Page) {
   await page.goto("/");
@@ -28,7 +28,7 @@ async function signIn(page: Page) {
 }
 
 async function openOnboarding(page: Page) {
-  const wizardHeading = page.locator("h3", { hasText: "Name your company" });
+  const wizardHeading = page.locator("h3", { hasText: "Name your organization" });
   const startButton = page.getByRole("button", { name: "Start Onboarding" });
 
   await expect(wizardHeading.or(startButton)).toBeVisible({ timeout: 20_000 });
@@ -67,24 +67,24 @@ test.describe("Docker authenticated onboarding smoke", () => {
     await leadNameInput.fill(AGENT_NAME);
     await page.getByRole("button", { name: "Next" }).click();
 
-    // Step 4: keep the default adapter and hire the lead. The adapter
-    // environment test runs inside the smoke container, where no agent CLIs
-    // are installed; an unhealthy report is expected and must not block the
-    // hire. Allow generous time for the env probe + hire + auto-approval.
-    const heartbeatButton = page.getByRole("button", {
-      name: "Give it a heartbeat",
-    });
-    await expect(heartbeatButton).toBeVisible({ timeout: 10_000 });
-    await expect(heartbeatButton).toBeEnabled({ timeout: 30_000 });
-    await heartbeatButton.click();
+    // Step 4: keep the default adapter and connect (hire) the lead. The
+    // adapter environment check runs inside the smoke container, where no
+    // agent CLIs are installed; an unhealthy report is expected and must not
+    // block the hire. Allow generous time for the env probe + hire +
+    // auto-approval.
+    const connectButton = page.getByRole("button", { name: "Connect" });
+    await expect(connectButton).toBeVisible({ timeout: 10_000 });
+    await expect(connectButton).toBeEnabled({ timeout: 30_000 });
+    await connectButton.click();
 
     // Step 5: review, then launch. "Get started" provisions the onboarding
-    // goal/project and navigates to the dashboard only on success.
+    // goal/project/first task and, only on success, drops the user into the
+    // seeded first task's thread (not the dashboard).
     const getStartedButton = page.getByRole("button", { name: "Get started" });
     await expect(getStartedButton).toBeVisible({ timeout: 60_000 });
     await expect(getStartedButton).toBeEnabled({ timeout: 10_000 });
     await getStartedButton.click();
-    await expect(page).toHaveURL(/\/dashboard/, { timeout: 30_000 });
+    await expect(page).toHaveURL(/\/issues\//, { timeout: 30_000 });
 
     const baseUrl = new URL(page.url()).origin;
 
@@ -135,12 +135,20 @@ test.describe("Docker authenticated onboarding smoke", () => {
     expect(issuesRes.ok()).toBe(true);
     const issues = (await issuesRes.json()) as Array<{
       id: string;
+      identifier: string | null;
       title: string;
       assigneeAgentId: string | null;
     }>;
     const seededIssue = issues.find((entry) => entry.title === FIRST_TASK_TITLE);
     expect(seededIssue).toBeTruthy();
     expect(seededIssue!.assigneeAgentId).toBe(ceoAgent!.id);
+
+    // The launch must have landed on the seeded task itself, not merely on
+    // some issue route.
+    const seededRef = seededIssue!.identifier ?? seededIssue!.id;
+    expect(new URL(page.url()).pathname.endsWith(`/issues/${seededRef}`)).toBe(
+      true
+    );
 
     await expect.poll(
       async () => {
