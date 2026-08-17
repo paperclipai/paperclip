@@ -296,6 +296,77 @@ describe("approval routes idempotent retries", () => {
     expect(mockApprovalService.reject).toHaveBeenCalledWith("approval-5", "user-1", "not now");
   });
 
+  it("wakes the requesting agent when a rejection is applied", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-rej-wake",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-requester",
+    });
+    mockApprovalService.reject.mockResolvedValue({
+      approval: {
+        id: "approval-rej-wake",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "rejected",
+        payload: {},
+        requestedByAgentId: "agent-requester",
+      },
+      applied: true,
+    });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+      { id: "issue-impl", assigneeAgentId: "agent-requester" },
+    ]);
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-rej-wake/reject")
+      .send({ decisionNote: "not this time" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "agent-requester",
+      expect.objectContaining({
+        reason: "approval_rejected",
+        payload: expect.objectContaining({
+          approvalId: "approval-rej-wake",
+          approvalStatus: "rejected",
+        }),
+      }),
+    );
+  });
+
+  it("does not wake any agent when rejection is a no-op (already resolved)", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-rej-noop",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "rejected",
+      payload: {},
+      requestedByAgentId: "agent-requester",
+    });
+    mockApprovalService.reject.mockResolvedValue({
+      approval: {
+        id: "approval-rej-noop",
+        companyId: "company-1",
+        type: "request_board_approval",
+        status: "rejected",
+        payload: {},
+        requestedByAgentId: "agent-requester",
+      },
+      applied: false,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-rej-noop/reject")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockIssueApprovalService.listIssuesForApproval).not.toHaveBeenCalled();
+  });
+
   it("derives approval attribution from the authenticated actor on request revision", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-6",
