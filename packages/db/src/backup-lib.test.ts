@@ -22,6 +22,7 @@ const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : 
 
 async function importBackupLibWithMocks(options?: {
   spawn?: typeof import("node:child_process").spawn;
+  randomUUID?: () => string;
 }) {
   vi.resetModules();
   vi.doMock("postgres", () => ({
@@ -41,12 +42,22 @@ async function importBackupLibWithMocks(options?: {
       spawn: options.spawn,
     }));
   }
+  if (options?.randomUUID) {
+    vi.doMock("node:crypto", async () => {
+      const actual = await vi.importActual<typeof import("node:crypto")>("node:crypto");
+      return {
+        ...actual,
+        randomUUID: options.randomUUID,
+      };
+    });
+  }
 
   try {
     return await import("./backup-lib.js");
   } finally {
     vi.doUnmock("postgres");
     vi.doUnmock("node:child_process");
+    vi.doUnmock("node:crypto");
   }
 }
 
@@ -176,6 +187,53 @@ describe("runDatabaseBackup preflight", () => {
   });
 
   it(
+    "fails with EEXIST when the pg_dump partial backup path already exists",
+    async () => {
+      const backupDir = createTempDir("paperclip-db-backup-pgdump-eexist-");
+      const realPgDumpPath = process.env.PAPERCLIP_PG_DUMP_PATH;
+      const fakePgDumpPath = path.join(backupDir, "fake-pg-dump.sh");
+      const fixedDate = new Date("2026-08-17T12:11:12+02:00");
+      const fixedUuid = "12345678-1234-5678-1234-567812345678";
+      const partialBackupFile = path.join(
+        backupDir,
+        `paperclip-test-20260817-121112-${process.pid}-${fixedUuid.slice(0, 8)}.sql.gz.partial`,
+      );
+
+      fs.writeFileSync(fakePgDumpPath, "#!/bin/sh\nsleep 1\nprintf '%s\\n' '-- fake backup' 'SELECT 1;'\n");
+      fs.chmodSync(fakePgDumpPath, 0o755);
+      fs.writeFileSync(partialBackupFile, "existing partial");
+
+      vi.useFakeTimers();
+      vi.setSystemTime(fixedDate);
+      process.env.PAPERCLIP_PG_DUMP_PATH = fakePgDumpPath;
+
+      try {
+        const { runDatabaseBackup: runDatabaseBackupWithMocks } = await importBackupLibWithMocks({
+          randomUUID: () => fixedUuid,
+        });
+
+        await expect(runDatabaseBackupWithMocks({
+          connectionString: "postgres://paperclip:paperclip@127.0.0.1:54329/paperclip",
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-test",
+          backupEngine: "pg_dump",
+        })).rejects.toMatchObject({
+          code: "EEXIST",
+        });
+      } finally {
+        vi.useRealTimers();
+        if (realPgDumpPath === undefined) {
+          delete process.env.PAPERCLIP_PG_DUMP_PATH;
+        } else {
+          process.env.PAPERCLIP_PG_DUMP_PATH = realPgDumpPath;
+        }
+      }
+    },
+    30_000,
+  );
+
+  it(
     "kills pg_dump and destroys the custom output stream when it fails before opening",
     async () => {
       const backupDir = createTempDir("paperclip-db-backup-pgdump-early-fail-");
@@ -303,6 +361,42 @@ describe("runDatabaseBackup preflight", () => {
         } else {
           process.env.PAPERCLIP_PG_DUMP_PATH = realPgDumpPath;
         }
+      }
+    },
+    30_000,
+  );
+
+  it(
+    "fails with EEXIST when the javascript backup partial path already exists",
+    async () => {
+      const backupDir = createTempDir("paperclip-db-backup-js-eexist-");
+      const fixedDate = new Date("2026-08-17T12:11:12+02:00");
+      const fixedUuid = "12345678-1234-5678-1234-567812345678";
+      const partialBackupFile = path.join(
+        backupDir,
+        `paperclip-test-20260817-121112-${process.pid}-${fixedUuid.slice(0, 8)}.sql.gz.partial`,
+      );
+      fs.writeFileSync(partialBackupFile, "existing partial");
+
+      vi.useFakeTimers();
+      vi.setSystemTime(fixedDate);
+
+      try {
+        const { runDatabaseBackup: runDatabaseBackupWithMocks } = await importBackupLibWithMocks({
+          randomUUID: () => fixedUuid,
+        });
+
+        await expect(runDatabaseBackupWithMocks({
+          connectionString: "postgres://paperclip:paperclip@127.0.0.1:54329/paperclip",
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-test",
+          backupEngine: "javascript",
+        })).rejects.toMatchObject({
+          code: "EEXIST",
+        });
+      } finally {
+        vi.useRealTimers();
       }
     },
     30_000,
