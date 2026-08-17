@@ -1,4 +1,35 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const { runChildProcess } = vi.hoisted(() => ({
+  runChildProcess: vi.fn(async (_runId: string, command: string, args: string[]) => {
+    if (command === "__paperclip_missing_opencode_command__") {
+      throw new Error("Failed to start command");
+    }
+    if (args.includes("models")) {
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+        pid: 123,
+        startedAt: new Date().toISOString(),
+      };
+    }
+    throw new Error("Unexpected command");
+  }),
+}));
+
+vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
+  const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/server-utils")>(
+    "@paperclipai/adapter-utils/server-utils",
+  );
+  return {
+    ...actual,
+    runChildProcess,
+  };
+});
+
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
   listOpenCodeModels,
@@ -6,16 +37,128 @@ import {
   resetOpenCodeModelsCacheForTests,
 } from "./models.js";
 
+function setMockOpenCodeDiscovery(stdout: string) {
+  runChildProcess.mockImplementation(async (_runId: string, command: string, args: string[]) => {
+    if (command === "__paperclip_missing_opencode_command__") {
+      throw new Error("Failed to start command");
+    }
+    if (args.includes("models")) {
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout,
+        stderr: "",
+        pid: 123,
+        startedAt: new Date().toISOString(),
+      };
+    }
+    throw new Error("Unexpected command");
+  });
+}
+
+function mockOpenRouterResponse(payload: unknown, ok = true, status = 200) {
+  return {
+    ok,
+    status,
+    statusText: "",
+    json: vi.fn(async () => payload),
+  } as unknown as Response;
+}
+
 describe("openCode models", () => {
+  const originalAllowlist = process.env.PAPERCLIP_OPENROUTER_MODEL_ALLOWLIST;
+  const originalOpenRouterApiKey = process.env.OPENROUTER_API_KEY;
+
+  beforeEach(() => {
+    setMockOpenCodeDiscovery("");
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.PAPERCLIP_OPENROUTER_MODEL_ALLOWLIST;
+  });
+
   afterEach(() => {
     delete process.env.PAPERCLIP_OPENCODE_COMMAND;
     delete process.env.OPENCODE_ALLOW_ALL_MODELS;
+    if (originalAllowlist === undefined) {
+      delete process.env.PAPERCLIP_OPENROUTER_MODEL_ALLOWLIST;
+    } else {
+      process.env.PAPERCLIP_OPENROUTER_MODEL_ALLOWLIST = originalAllowlist;
+    }
+    if (originalOpenRouterApiKey === undefined) {
+      delete process.env.OPENROUTER_API_KEY;
+    } else {
+      process.env.OPENROUTER_API_KEY = originalOpenRouterApiKey;
+    }
+    vi.restoreAllMocks();
+    runChildProcess.mockReset();
     resetOpenCodeModelsCacheForTests();
   });
 
   it("returns an empty list when discovery command is unavailable", async () => {
     process.env.PAPERCLIP_OPENCODE_COMMAND = "__paperclip_missing_opencode_command__";
     await expect(listOpenCodeModels()).resolves.toEqual([]);
+  });
+
+  it("merges discovered models with curated OpenRouter models", async () => {
+    setMockOpenCodeDiscovery("openrouter/openai/gpt-5\nopenai/gpt-4o\n");
+    process.env.OPENROUTER_API_KEY = "or-test-key";
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockOpenRouterResponse({
+        data: [
+          { id: "openai/gpt-5", name: "OpenAI GPT-5" },
+          { id: "deepseek/deepseek-chat", name: "DeepSeek Chat" },
+        ],
+      }),
+    );
+
+    await expect(listOpenCodeModels()).resolves.toEqual([
+      { id: "openai/gpt-4o", label: "openai/gpt-4o" },
+      { id: "openrouter/deepseek/deepseek-chat", label: "DeepSeek Chat" },
+      { id: "openrouter/openai/gpt-5", label: "OpenAI GPT-5" },
+    ]);
+  });
+
+  it("falls back to discovery models when OpenRouter fetch fails", async () => {
+    setMockOpenCodeDiscovery("openai/gpt-4o\n");
+    process.env.OPENROUTER_API_KEY = "or-test-key";
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("OpenRouter request failed"));
+
+    await expect(listOpenCodeModels()).resolves.toEqual([
+      { id: "openai/gpt-4o", label: "openai/gpt-4o" },
+    ]);
+  });
+
+  it("skips OpenRouter discovery when the key is missing", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    setMockOpenCodeDiscovery("openai/gpt-4o\n");
+
+    await expect(listOpenCodeModels()).resolves.toEqual([
+      { id: "openai/gpt-4o", label: "openai/gpt-4o" },
+    ]);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("respects the OpenRouter model cache TTL", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockOpenRouterResponse({
+        data: [{ id: "openai/gpt-5", name: "OpenAI GPT-5" }],
+      }),
+    );
+    setMockOpenCodeDiscovery("");
+    process.env.OPENROUTER_API_KEY = "or-test-key";
+
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    await expect(listOpenCodeModels()).resolves.toEqual([{ id: "openrouter/openai/gpt-5", label: "OpenAI GPT-5" }]);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    await expect(listOpenCodeModels()).resolves.toEqual([{ id: "openrouter/openai/gpt-5", label: "OpenAI GPT-5" }]);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    vi.setSystemTime(60_001);
+    await expect(listOpenCodeModels()).resolves.toEqual([{ id: "openrouter/openai/gpt-5", label: "OpenAI GPT-5" }]);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
   });
 
   it("rejects when model is missing", async () => {
@@ -54,7 +197,10 @@ describe("openCode models", () => {
         env: { OPENCODE_ALLOW_ALL_MODELS: "true" },
       }),
     ).resolves.toEqual([
-      { id: "anthropic/tensorix/deepseek/deepseek-chat-v3.1", label: "anthropic/tensorix/deepseek/deepseek-chat-v3.1" },
+      {
+        id: "anthropic/tensorix/deepseek/deepseek-chat-v3.1",
+        label: "anthropic/tensorix/deepseek/deepseek-chat-v3.1",
+      },
     ]);
   });
 
@@ -63,7 +209,9 @@ describe("openCode models", () => {
     process.env.OPENCODE_ALLOW_ALL_MODELS = "1";
     await expect(
       ensureOpenCodeModelConfiguredAndAvailable({ model: "anthropic/gateway/some-model" }),
-    ).resolves.toEqual([{ id: "anthropic/gateway/some-model", label: "anthropic/gateway/some-model" }]);
+    ).resolves.toEqual([
+      { id: "anthropic/gateway/some-model", label: "anthropic/gateway/some-model" },
+    ]);
   });
 
   it("still enforces provider/model format when OPENCODE_ALLOW_ALL_MODELS is set", async () => {
