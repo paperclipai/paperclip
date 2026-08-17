@@ -157,21 +157,24 @@ def recherchiere(frage: str, *, quellen: int = 3, zeichen: int = 12000,
     # Im Dienst (wochenlang laufender Prozess) wird ein solcher Thread nicht
     # eingesammelt — im CLI raeumt os._exit auf.
     #
-    # Hier stand frueher, ein Waechter sei nicht noetig, weil `abruf.hole_text`
-    # ein HARTES Gesamtbudget je Seite fuehre und ein aufgegebener Thread
-    # deshalb von selbst kurz nach `seiten_timeout` ende. Das war unzutreffend
-    # und ist es auch nach dem Umbau des Abrufs nur noch fast: der Regelfall
-    # und der troepfelnde Server enden im Budget (gemessen 1,03 s bei 1,0 s),
-    # aber ein Server, der ununterbrochen gueltige Bytes ohne Nutzinhalt
-    # schickt (leere gzip-Bloecke, endlose chunked-Groessenzeile), haelt den
-    # Thread in einer Leseschleife unterhalb von urllib3 fest — gemessen 20
-    # bis 30 s bei 1,0 s Budget. Siehe abruf.py, "WAS DAS ZEITBUDGET WIRKLICH
-    # LEISTET".
+    # Die Begruendung fuer den fehlenden Waechter lautete: `abruf.hole_text`
+    # fuehre ein hartes Gesamtbudget je Seite, ein aufgegebener Thread ende
+    # deshalb von selbst kurz nach `seiten_timeout`. Sie war zwischenzeitlich
+    # widerlegt (leere gzip-Bloecke und eine troepfelnde chunked-Groessenzeile
+    # hielten den Thread 20 bis 30 s bei 1,0 s Budget fest) und traegt seit
+    # dem Socket-Waechter in abruf.py fuer alle Rumpf-Formen wieder: gemessen
+    # 1,00 bis 1,01 s bei 1,0 s Budget, quer durch troepfelnde Seite,
+    # troepfelnde robots.txt, Schweigen nach den Kopfzeilen, gzip-Leerbloecke
+    # und chunked-Groessenzeile.
     #
-    # Ein solcher Thread haelt weiterhin hoechstens MAX_RUMPF_BYTES, aber die
-    # Begruendung fuer den fehlenden Waechter traegt nicht mehr. Bis es einen
-    # gibt, wird das Aufgeben wenigstens gezaehlt und protokolliert — ein
-    # stiller Verlust von Threads und Sockets ist das, was in einem
+    # Lueckenlos ist sie damit NICHT. Ein Server, der die KOPFZEILEN
+    # troepfelt, laeuft in `requests.get` — dort gibt es noch keinen Socket
+    # zum Zuklappen; gemessen 20,54 s bei 1,0 s Budget und 200 ms je
+    # Kopfzeile. Siehe abruf.py, "WAS WEITERHIN NICHT GEDECKELT IST".
+    #
+    # Ein solcher Thread haelt weiterhin hoechstens MAX_RUMPF_BYTES. Solange
+    # die eine Luecke offen ist, bleibt es beim Zaehlen und Protokollieren —
+    # ein stiller Verlust von Threads und Sockets ist das, was in einem
     # wochenlang laufenden Dienst niemand bemerkt.
     pool = ThreadPoolExecutor(max_workers=max(1, len(gewaehlt)))
     laeufe = [pool.submit(hole, k.url, domain) for k, domain in gewaehlt]

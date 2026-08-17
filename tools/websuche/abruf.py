@@ -131,9 +131,14 @@ LESE_STUECK = 16384
 # Obergrenze fuer eine EINZELNE Socket-Operation (Verbinden bzw. ein recv).
 # Sie begrenzt den Fall "Server schweigt": ohne sie stuende dort das volle
 # Restbudget noch einmal. Ein Server, der laenger als 5 s gar nichts sendet,
-# ist fuer eine Recherche ohnehin verloren. Gegen einen Server, der
-# ununterbrochen gueltige Bytes ohne Nutzinhalt schickt, hilft sie nicht —
-# siehe Modul-Docstring.
+# ist fuer eine Recherche ohnehin verloren.
+#
+# Sie wird je Sprung EINMAL berechnet und nicht nachgezogen — gegen einen
+# Server, der bis kurz vor die Frist troepfelt und dann verstummt, hing
+# dadurch eine volle SOCKET_FRIST hinten dran. Nachgezogen wird sie jetzt
+# nicht rechnerisch, sondern durch den Socket-Waechter, der bei Fristablauf
+# zuklappt. Fuer die Kopfzeilen-Phase gilt das nicht (siehe Modul-Docstring,
+# "WAS WEITERHIN NICHT GEDECKELT IST").
 SOCKET_FRIST = 5.0
 
 # Name der Waechter-Faeden. Er ist Teil der Zusicherung, nicht Kosmetik: der
@@ -499,7 +504,14 @@ def _hole_gedeckelt(url: str, frist: float, *, accept: str, max_bytes: int,
     - `pruefe_ziel()` vor jedem Verbindungsaufbau UND vor jedem Sprung,
     - `allow_redirects=False` mit eigener, gedeckelter Sprungkontrolle,
     - stroemendes Lesen mit Groessendeckel und Fristpruefung je Leseschritt,
-    - jede einzelne Socket-Operation auf `min(Restbudget, SOCKET_FRIST)`.
+    - ein Socket-Timeout von `min(Restbudget, SOCKET_FRIST)`, je Sprung
+      einmal gesetzt,
+    - ein Socket-Waechter ueber den Rumpf, der die Frist hart durchsetzt,
+      auch wenn die wartende Schleife unter `read1` liegt.
+
+    NICHT zugesichert ist die Frist waehrend der Kopfzeilen — die liest
+    `requests.get`, bevor es einen Socket zum Zuklappen gibt. Siehe
+    Modul-Docstring, "WAS WEITERHIN NICHT GEDECKELT IST".
 
     `vor_abruf(ziel)` darf jeden Sprung mit einem Grund ablehnen (die Seite
     haengt dort ihre robots.txt-Pruefung ein). `kopf_pruefung(antwort)` darf
