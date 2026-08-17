@@ -92,11 +92,13 @@ import type {
   PreTurnFailedCause,
   SessionFingerprintIdentity,
   SessionKeyIdentity,
+  SettlementCause,
   StartupReady,
   StartupResult,
   TurnCompletion,
 } from "./run-contracts.js";
 import { createRunResourceLedger } from "./run-resource-ledger.js";
+import { settleAcpRun, type SettlementSteps } from "./settlement-sequence.js";
 import { runAttempt, type RunPlan, type SettlementReason } from "./run-coordinator.js";
 import {
   runTurn as runTurnSequence,
@@ -4062,12 +4064,31 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         currentRunParentContext = runRootSpan.parentContext;
       }
       };
+      // The settlement sequence is the one cleanup owner (Phase 22). It claims
+      // the ledger and produces the final per-resource disposition report. Its
+      // effect steps no-op in this phase, because the turn and startup step
+      // wrappers still own the live teardown inline. The remaining swap is the
+      // inline-to-settlement inversion: register the runtime in the ledger and let
+      // `settleAcpRun` own every close, warm save, bridge stop, and sync-back. The
+      // cold-`ensureSession` runtime-leak fix rides that inversion, so it stays
+      // pinned in the startup characterization baseline until the inversion lands.
+      const settlementSteps: SettlementSteps = {
+        // The inline teardown already made the live save-versus-close decision, so
+        // the settlement decision holds nothing to save in this phase.
+        reuseCandidate: () => null,
+        endSession: () => {},
+        settleReuse: () => {},
+        stopTransport: () => {},
+        syncBack: () => {},
+        releaseStagingLease: () => {},
+        recordError: async (step, error) => {
+          await recordTeardownError(`settlement-${step}`, error);
+        },
+      };
       // Drive the attempt through the coordinator routing table. The startup step
       // returns `ready` or `settle` (or throws on a build or partial-bridge
       // failure); the coordinator runs the turn on the ready path, settles, then
-      // reproduces the recorded result. The turn and settlement teardown still run
-      // inline in the step wrappers above (Phases 21-22 extract them), so `settle`
-      // is a no-op wrapper here and `reproduceResult` returns the recorded result.
+      // reproduces the recorded result.
       const plan: RunPlan<AdapterExecutionResult> = {
         ledger: runResourceLedger,
         startup,
@@ -4077,10 +4098,18 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // own partial-bring-up rollback in this phase.
         rollbackStartup: () => {},
         recordDisposition: () => {},
-        // The step wrappers ran the inline teardown already, so `settle` returns
-        // synchronously and adds no awaited boundary — the run's timing stays
+        // The settlement sequence claims the ledger and records the disposition
+        // report. Its effect steps no-op here, so the run's teardown behavior is
         // exactly as it was before the coordinator drove it.
-        settle: (_reason: SettlementReason) => {},
+        settle: async (reason: SettlementReason) => {
+          const cause: SettlementCause | null =
+            reason.kind === "pre_turn"
+              ? reason.cause
+              : reason.completion.kind === "finalized"
+                ? null
+                : reason.completion.cause;
+          await settleAcpRun(runResourceLedger, cause, settlementSteps);
+        },
         reproduceResult: (): AdapterExecutionResult => {
           if (!capturedResult) {
             throw new Error("run coordinator reproduced a result before the run recorded one");
