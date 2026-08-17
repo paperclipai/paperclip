@@ -354,6 +354,39 @@ def test_domain_reaches_followup_prompt(monkeypatch):
     assert "Nenne keine URLs" in followup
 
 
+def test_followup_forbids_appended_source_list(monkeypatch):
+    # Live beobachtet (17.08.): mistral-small antwortete "... Schauer und
+    # Gewitter möglich.\n\nQuellen: wetteronline.de, wetter.com" — die Quelle
+    # angehängt statt im Satz. Vorgelesen klingt das wie ein abgelesenes
+    # Formular. Tritt selten auf (0/6 in einer Messreihe), aber es tritt auf,
+    # deshalb wird die Form ausdrücklich verboten statt nur vorgemacht.
+    calls = []
+    def fake_chat(msgs, model=None, **kw):
+        calls.append(msgs)
+        return "WEB: Wetter" if len(calls) == 1 else "Laut wetter.example 24 Grad."
+    monkeypatch.setattr(jarvis_brain.llm, "chat", fake_chat)
+    monkeypatch.setattr(jarvis_brain.websuche_client, "suche", _lokale_quelle)
+    jarvis_brain.respond("wetter?", TENANT, "tok", "m")
+    followup = calls[1][-1]["content"]
+    # Distinktive Zeichenkette: darf NICHT zufällig auch im Kontext stehen
+    # (genau daran ist ein früherer Anlauf dieses Tests gescheitert).
+    assert 'NICHT als "Quelle:' in followup
+
+
+def test_web_context_header_does_not_model_the_forbidden_form():
+    # Der Kontext-Kopf darf nicht selbst mit "Quelle:" beginnen, sonst zeigt
+    # der Prompt genau die Form vor, die er im selben Atemzug verbietet.
+    ctx = jarvis_brain._web_context_lokal({"quellen": [
+        {"domain": "a.example", "titel": "A", "text": "Text",
+         "abgerufen_am": "2026-08-17"}]})
+    assert not ctx.startswith("Quelle:")
+    assert "Quelle:" not in ctx
+    # Domain und Abrufdatum muessen trotzdem ankommen — sie sind der Grund,
+    # warum ueberhaupt der lokale Dienst benutzt wird.
+    assert "a.example" in ctx
+    assert "2026-08-17" in ctx
+
+
 def test_followup_names_source_with_laut_example(monkeypatch):
     # Das Beispiel "laut tagesschau.de" traegt die Formulierung: gegen
     # mistral-small (dem live konfigurierten Sprachmodell) gemessen liefert

@@ -296,9 +296,11 @@ def _web_context_lokal(result, max_zeichen=WEB_CONTEXT_ZEICHEN):
     budget = max_zeichen // len(quellen)
     teile = []
     for q in quellen:
-        kopf = "Quelle: {} ({}, abgerufen {})".format(
-            q.get("titel") or "ohne Titel", q.get("domain") or "unbekannt",
-            q.get("abgerufen_am") or "unbekannt")
+        # Bewusst NICHT "Quelle: ..." — der Kopf wuerde sonst genau die Form
+        # vormachen, die der Folge-Prompt im selben Atemzug verbietet.
+        kopf = "[{}, abgerufen {}] {}".format(
+            q.get("domain") or "unbekannt", q.get("abgerufen_am") or "unbekannt",
+            q.get("titel") or "ohne Titel")
         teile.append("{}\n{}".format(kopf, (q.get("text") or "")[:budget]))
     return "\n\n".join(teile)
 
@@ -324,8 +326,15 @@ def _do_web(messages, query, chat_model, api_key):
         traceback.print_exc()
     if result is not None:
         context = _web_context_lokal(result)
-        quellen_regel = ("Nenne die Domain der Quelle, wenn du dich auf sie "
-                         "stützt (z.B. \"laut tagesschau.de\"). Nenne keine URLs.")
+        # Das Beispiel traegt die Formulierung, das Verbot faengt den
+        # Rueckfall: live beobachtet antwortete mistral-small einmal mit
+        # angehaengtem "Quellen: wetteronline.de, wetter.com" statt die
+        # Domain in den Satz zu weben. Vorgelesen klingt das wie ein
+        # abgelesenes Formular.
+        quellen_regel = ("Nenne die Domain der Quelle IM SATZ (z.B. \"laut "
+                         "tagesschau.de sind es 20 Grad\"). Hänge sie NICHT "
+                         "als \"Quelle: ...\" oder \"Quellen: ...\" an. "
+                         "Nenne keine URLs.")
     elif api_key:
         try:
             tavily = web_search.search(query, api_key, timeout=8)
