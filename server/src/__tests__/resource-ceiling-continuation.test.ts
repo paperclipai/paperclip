@@ -202,11 +202,20 @@ describeEmbeddedPostgres("resource-ceiling bounded auto-continuation", () => {
         status: heartbeatRuns.status,
         scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
         scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+        scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         wakeupRequestId: heartbeatRuns.wakeupRequestId,
       })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.retryOfRunId, sourceRunId));
+  }
+
+  async function agentStatusOf(agentId: string) {
+    return db
+      .select({ status: agents.status, errorReason: agents.errorReason })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
   }
 
   async function continuationWakesOf(agentId: string) {
@@ -265,6 +274,49 @@ describeEmbeddedPostgres("resource-ceiling bounded auto-continuation", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue).toMatchObject({ status: "in_progress", executionRunId: continuation.id });
+  });
+
+  it("keeps the agent invokable (idle, not error) so the scheduled continuation can claim", async () => {
+    // Production gap observed live (Astra-Hermes 08-16): the failed ceiling
+    // run also transitioned the AGENT to 'error', so the continuation it had
+    // just scheduled was cancelled agent_not_invokable at promotion time.
+    const { agentId, issueId } = await seedFixture(CEILING_MAX_TURN_ADAPTER);
+
+    const run = await invokeAutomationRun(agentId, issueId);
+    expect(run).not.toBeNull();
+    const finished = await waitForRunToFinish(heartbeat, run!.id);
+    expect(finished).toMatchObject({ status: "failed", errorCode: "max_turns_exhausted" });
+
+    await expect
+      .poll(() => continuationRunsOf(run!.id).then((rows) => rows.length), {
+        timeout: 10_000,
+        interval: 50,
+      })
+      .toBe(1);
+
+    // The failed run scheduled a continuation, so the agent must NOT be in
+    // 'error' — an error-status agent is not invokable and the continuation
+    // would be cancelled agent_not_invokable when it becomes due.
+    await expect
+      .poll(() => agentStatusOf(agentId).then((row) => row?.status), {
+        timeout: 10_000,
+        interval: 50,
+      })
+      .toBe("idle");
+    expect((await agentStatusOf(agentId))?.errorReason ?? null).toBeNull();
+
+    // And the scheduled continuation is actually claimable: promoting it at
+    // its due time passes the invokability gate and lands it in the queued
+    // run pool instead of being cancelled agent_not_invokable.
+    const [continuation] = await continuationRunsOf(run!.id);
+    expect(continuation.status).toBe("scheduled_retry");
+    expect(continuation.scheduledRetryAt).not.toBeNull();
+    const promotion = await heartbeat.promoteDueScheduledRetries(
+      new Date(continuation.scheduledRetryAt!),
+    );
+    expect(promotion.runIds).toContain(continuation.id);
+    const promoted = await heartbeat.getRun(continuation.id);
+    expect(promoted?.status).toBe("queued");
   });
 
   it("queues one bounded continuation for token_budget_exhausted instead of the token-cap block", async () => {
@@ -368,6 +420,16 @@ describeEmbeddedPostgres("resource-ceiling bounded auto-continuation", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("in_progress");
     expect(issue?.unblockDescriptor ?? null).toBeNull();
+
+    // At the cap no continuation was scheduled, so the ordinary failure
+    // disposition stands: the agent DOES land in 'error' (the idle carve-out
+    // only applies when a continuation is actually scheduled).
+    await expect
+      .poll(() => agentStatusOf(agentId).then((row) => row?.status), {
+        timeout: 10_000,
+        interval: 50,
+      })
+      .toBe("error");
   });
 
   it("never auto-continues an operator-requested run", async () => {

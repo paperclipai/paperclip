@@ -19426,6 +19426,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         error: runErrorMessage,
       });
 
+      // TSMC-20820 production gap: when a resource-ceiling failure schedules a
+      // bounded continuation, the agent must NOT be left in 'error' — the
+      // continuation is promoted through evaluateScheduledRetryGate, where an
+      // error-status agent is not invokable, so the scheduled run would be
+      // cancelled agent_not_invokable (observed live: Astra-Hermes 08-16).
+      // Hoisted so finalizeAgentStatus below can keep the lane idle. When the
+      // cap is hit (no continuation scheduled) the error state stays correct.
+      let ceilingContinuationScheduled = false;
       const finalizedRun = persistedRun ?? (await getRun(run.id));
       if (finalizedRun) {
         await appendRunEvent(finalizedRun, seq++, {
@@ -19512,8 +19520,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               cause: maxTurnExhausted ? "max_turns_exhausted" : "token_budget_exhausted",
             })
             : null;
+        ceilingContinuationScheduled = ceilingContinuation?.outcome === "scheduled";
         const ceilingContinuationEngaged =
-          ceilingContinuation?.outcome === "scheduled" ||
+          ceilingContinuationScheduled ||
           ceilingContinuation?.outcome === "cap_exhausted";
         if (
           highTokenGuard.decision === "none" &&
@@ -19640,7 +19649,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         {
           keepIdleOnFailure:
             outcome === "failed" &&
-            ((finalizedRun ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota" : runErrorCode === "provider_quota") ||
+            // A resource-ceiling stop with a bounded continuation scheduled is
+            // a scoping verdict, not a lane failure: the lane must stay
+            // invokable (idle) or the continuation is cancelled
+            // agent_not_invokable at promotion time (TSMC-20820).
+            (ceilingContinuationScheduled ||
+              (finalizedRun ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota" : runErrorCode === "provider_quota") ||
               isWorkspaceSyncConflictFailure(adapterResult.errorMessage) ||
               isRecoverableDevWatchReloadFailure(adapterResult)),
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
