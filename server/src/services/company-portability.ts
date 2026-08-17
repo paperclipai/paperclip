@@ -3757,21 +3757,21 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const companyRelativePath = parsed.companyPath === "COMPANY.md"
       ? [parsed.basePath, "COMPANY.md"].filter(Boolean).join("/")
       : parsed.companyPath;
-    let companyMarkdown: string | null = null;
-    try {
+    // A missing ref is reported by fetchOptionalText as null (its 404 case), not
+    // as a throw, so key the master fallback off that. Keying it off a thrown
+    // error instead meant it never fired for an absent ref, while every real
+    // transport failure — a timeout, a response over the size limit, an
+    // unreachable host — was relabelled "ref main not found" and retried against
+    // master, which cannot fix it and hides the original cause.
+    let companyMarkdown = await fetchOptionalText(
+      resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, companyRelativePath),
+    );
+    if (companyMarkdown === null && ref === "main") {
+      ref = "master";
+      warnings.push("GitHub ref main not found; falling back to master.");
       companyMarkdown = await fetchOptionalText(
         resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, companyRelativePath),
       );
-    } catch (err) {
-      if (ref === "main") {
-        ref = "master";
-        warnings.push("GitHub ref main not found; falling back to master.");
-        companyMarkdown = await fetchOptionalText(
-          resolveRawGitHubUrl(parsed.hostname, parsed.owner, parsed.repo, ref, companyRelativePath),
-        );
-      } else {
-        throw err;
-      }
     }
     if (!companyMarkdown) {
       throw unprocessable("GitHub company package is missing COMPANY.md");
