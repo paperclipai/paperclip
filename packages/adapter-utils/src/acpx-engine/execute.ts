@@ -99,6 +99,11 @@ import type {
 import { createRunResourceLedger } from "./run-resource-ledger.js";
 import { runAttempt, type RunPlan, type SettlementReason } from "./run-coordinator.js";
 import {
+  runTurn as runTurnSequence,
+  type StartedTurn,
+  type TurnFinalizeInput,
+} from "./turn-sequence.js";
+import {
   createHostRunSite,
   type AcpxAgentProcessIdentity,
   type AcpxProcessIdentitySink,
@@ -3727,22 +3732,20 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         context: { sessionKey: prepared.sessionKey } as unknown as AcpRunContext,
       };
       };
-      // The turn step: build the prompt, run the turn, and settle the runtime
-      // inline (today's behavior). It never rejects; it returns a `TurnCompletion`
-      // and records the external result for the coordinator to reproduce. Phase 21
-      // moves the turn sequence into its own module.
+      // The turn step: run the turn sequence and settle the runtime inline
+      // (today's behavior). The sequence owns the wall-clock timer and the abort
+      // controller and never rejects; it returns a `TurnCompletion`. The step
+      // bodies below record the external result for the coordinator to reproduce.
       const runTurn = async (_ready: StartupReady): Promise<TurnCompletion> => {
-      let cancelActiveTurn: ((reason: string) => Promise<void>) | null = null;
-      let controller: AbortController | null = null;
-      let timeout: NodeJS.Timeout | null = null;
-      let timedOut = false;
       const textParts: string[] = [];
       let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
       let eventCostUsd: number | null = null;
-      // `turnStarted` separates a pre-turn preparation failure (prompt build or
-      // metadata emit) from a failure of the running turn, so the turn catch below
-      // reports the right phase and settles the runtime on both.
-      let turnStarted = false;
+      // The turn-local state the sequence steps share. `promptBuild` sets the
+      // prompt, `preTurnUsage` sets the pre-turn status, `turnStart` sets the
+      // active turn, and `turnFinalize` reads all three.
+      let runPrompt = "";
+      let preTurnStatus: AcpRuntimeStatus | null = null;
+      let activeTurn: AcpRuntimeTurn | null = null;
       // Open the agent turn span as a child of the run root span. It wraps the
       // whole turn: the executor holds `turnSpan.parentContext` for later exec
       // parenting, and the `finally` below ends the span once on every path. The
@@ -3752,12 +3755,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // a detached exec during the turn parents to `agent.turn`. The turn
       // `finally` resets the holder to the `task.run` token.
       currentRunParentContext = turnSpan.parentContext;
-      try {
+      const stepPromptBuild = async (_signal: AbortSignal): Promise<void> => {
         // Build the prompt and emit the run metadata inside the turn failure
-        // boundary. A failure here settles the runtime through the turn catch and
-        // returns an error result with phase `prepare_turn`.
+        // boundary. A failure here returns an error result with phase
+        // `prepare_turn`.
         const { prompt, promptMetrics, commandNotes } = await buildPrompt(ctx, resumedSession, prepared.env);
-        const runPrompt = joinPromptSections([prepared.skillPromptInstructions, prompt]);
+        runPrompt = joinPromptSections([prepared.skillPromptInstructions, prompt]);
         await emitAcpxLog(ctx, {
           type: "acpx.session",
           agent: prepared.acpxAgent,
@@ -3801,30 +3804,30 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             context: ctx.context,
           });
         }
+      };
+      const stepPreTurnUsage = async (): Promise<void> => {
         // Snapshot pre-turn usage so cumulative agent-reported cost can be
         // attributed to this run alone.
-        const preTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
-        const timeoutMs = prepared.timeoutSec > 0 ? prepared.timeoutSec * 1000 : undefined;
-        controller = new AbortController();
-        if (timeoutMs) {
-          timeout = setTimeout(() => {
-            timedOut = true;
-            controller?.abort();
-            void cancelActiveTurn?.(formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)).catch(() => {});
-          }, timeoutMs);
-        }
+        preTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
+      };
+      const stepTurnStart = (signal: AbortSignal, startTimeoutMs: number | undefined): StartedTurn => {
         const turn = runtime.startTurn({
           handle: sessionHandle,
           text: runPrompt,
           mode: "prompt",
           requestId: ctx.runId,
-          timeoutMs,
-          signal: controller?.signal,
+          timeoutMs: startTimeoutMs,
+          signal,
         });
-        turnStarted = true;
-        cancelActiveTurn = async (reason: string) => {
-          await turn.cancel({ reason });
+        activeTurn = turn;
+        return {
+          cancel: async (reason: string) => {
+            await turn.cancel({ reason });
+          },
         };
+      };
+      const stepEventRelay = async (): Promise<AcpRuntimeTurnResult> => {
+        const turn = activeTurn as AcpRuntimeTurn;
         const toolTitles = new Map<string, string>();
         for await (const event of turn.events) {
           if (event.type === "text_delta") textParts.push(event.text);
@@ -3834,8 +3837,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           }
           await emitRuntimeEvent(ctx, event, toolTitles);
         }
-        const terminal = await turn.result;
-        if (timeout) clearTimeout(timeout);
+        return await turn.result;
+      };
+      const stepTurnFinalize = async (
+        input: TurnFinalizeInput<AcpRuntimeTurnResult>,
+      ): Promise<TurnCompletion> => {
+        if (input.kind === "terminal") {
+        const terminal = input.terminal;
+        const timedOut = input.timedOut;
         // Read usage before the close/warm-handle paths below can discard state.
         const postTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
         const turnUsage = summarizeAcpxTurnUsage({
@@ -3965,31 +3974,31 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           summary: textParts.join("").trim() || terminalStopReason || terminal.status,
           clearSession,
         };
-        // The turn ran to a terminal result and settled its resources inline.
-        // Phase 21 returns the typed per-outcome completion; this phase records
-        // only that the turn finished so the coordinator reproduces the result.
+        // The turn ran to a terminal result and settled its resources inline. The
+        // finalize records only that the turn finished so the coordinator
+        // reproduces the recorded result.
         return { kind: "finalized" };
-      } catch (err) {
-        if (timeout) clearTimeout(timeout);
-        // A failure before `startTurn` returned is a turn-preparation failure; a
-        // failure after it is a running-turn failure. The teardown is the same;
-        // only the reported phase differs.
-        const phase: AcpxExecutionPhase = turnStarted ? "turn" : "prepare_turn";
+        }
+        const err = input.error;
+        const timedOut = input.timedOut;
+        // The failure phase comes from the sequence: a failure before the turn
+        // started is `prepare_turn`; a failure after it is `turn`. The teardown is
+        // the same; only the reported phase differs.
+        const phase: AcpxExecutionPhase = input.phase;
         const messageOverride = timedOut
           ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
           : undefined;
-        const cancel = cancelActiveTurn as ((reason: string) => Promise<void>) | null;
         const preEmitMessage =
           messageOverride ?? (err instanceof Error ? err.message : String(err));
         // Skip the cancel, close, and staged-runtime drop when the success path
         // already ran them: a result-mapping throw after the close reaches this
-        // catch, and the turn teardown must not run twice. The close records its
+        // finalize, and the turn teardown must not run twice. The close records its
         // error and never blocks the later teardown; `settleRunResources` in the
         // finally stops the bridges, releases the staging lease, and flushes the
         // child stderr even if the emission throws.
         if (!turnTeardownDone) {
           turnTeardownDone = true;
-          if (cancel) await cancel(preEmitMessage).catch(() => {});
+          if (activeTurn) await activeTurn.cancel({ reason: preEmitMessage }).catch(() => {});
           await runtime.close({
             handle: sessionHandle,
             reason: timedOut ? "paperclip timeout cleanup" : "paperclip error cleanup",
@@ -4024,13 +4033,24 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             resultJson: { phase },
             summary: message,
           };
-          // The turn failed and settled its resources inline. Phase 21 returns the
-          // typed per-outcome completion; this phase records only that the turn
-          // finished so the coordinator reproduces the error result.
+          // The turn failed and settled its resources inline. The finalize records
+          // only that the turn finished so the coordinator reproduces the error
+          // result.
           return { kind: "finalized" };
         } finally {
           await settleRunResources();
         }
+      };
+      try {
+        return await runTurnSequence<AcpRuntimeTurnResult>({
+          timeoutMs: prepared.timeoutSec > 0 ? prepared.timeoutSec * 1000 : undefined,
+          timeoutMessage: formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution),
+          promptBuild: stepPromptBuild,
+          preTurnUsage: stepPreTurnUsage,
+          turnStart: stepTurnStart,
+          eventRelay: stepEventRelay,
+          turnFinalize: stepTurnFinalize,
+        });
       } finally {
         // End the agent turn span exactly once, on every return and on a throw.
         // `runFailed` is `false` only on a completed, non-timed-out turn, so the
