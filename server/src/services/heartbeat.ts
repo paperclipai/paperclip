@@ -136,6 +136,16 @@ import {
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
 import { isBlockedDedupNoOpResult } from "./blocked-dedup-noop.js";
+import {
+  RESOURCE_CEILING_CONTINUATION_MAX_ROUNDS_PER_WINDOW,
+  RESOURCE_CEILING_CONTINUATION_RETRY_REASON,
+  RESOURCE_CEILING_CONTINUATION_WINDOW_MS,
+  buildResourceCeilingCapComment,
+  computeResourceCeilingContinuationDelayMs,
+  countResourceCeilingContinuationRounds,
+  findRecentResourceCeilingCapComment,
+  type ResourceCeilingContinuationCause,
+} from "./resource-ceiling-continuation.js";
 import { hasUnblockDescriptor } from "./issue-blocked-gate.js";
 import {
   ADAPTER_POLICY_ECHO_ERROR_CODE,
@@ -758,7 +768,12 @@ const GIT_SENSITIVE_LOCAL_ADAPTER_TYPES = new Set([
   "opencode_local",
   "pi_local",
 ]);
-export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
+// Single source of truth for the reason string lives in
+// resource-ceiling-continuation.ts (the bounded auto-continuation policy).
+export const MAX_TURN_CONTINUATION_RETRY_REASON = RESOURCE_CEILING_CONTINUATION_RETRY_REASON;
+// Distinct wake-reason string on purpose: the K40 skipped-wake suppression
+// dedupes on the reason string, so continuation wakes can never be eaten by a
+// suppression slot recorded for another reconciler's wake.
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 
 type ReadExecutor = Pick<Db, "select">;
@@ -10506,6 +10521,175 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { decision: "blocked" as const, interactionId: interaction.id };
   }
 
+  // Bounded auto-continuation for resource-ceiling stops (TSMC-20820).
+  //
+  // `max_turns_exhausted` / `token_budget_exhausted` runs used to queue NO
+  // retry, after which the missing-disposition path blocked the issue on a
+  // recovery owner — stranding legitimate round-based work (benches, staged
+  // QA, consolidations) after round 1 while the operator's clear-error path
+  // just re-fired the same doomed wake. Instead, queue ONE bounded
+  // continuation wake for the same agent+issue through the existing
+  // `max_turns_continuation` scheduled-retry machinery, with the round count
+  // persisted as the scheduled-continuation run rows themselves and capped
+  // per (agent, issue) per rolling 24h window. On cap: say so LOUDLY on the
+  // issue and stop — do NOT block the issue on a recovery owner. Operator-
+  // requested runs (on_demand source or a user wake actor) never
+  // auto-continue. The equivalent-failure breaker keeps ignoring these codes
+  // (RESOURCE_CEILING_ERROR_CODES in recovery/equivalent-failure.ts).
+  async function maybeScheduleResourceCeilingContinuation(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    agent: typeof agents.$inferSelect;
+    cause: ResourceCeilingContinuationCause;
+  }) {
+    const { run, agent, cause } = input;
+    const context = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    if (!issueId) return { outcome: "not_applicable" as const };
+
+    const wakeActorType = run.wakeupRequestId
+      ? await db
+          .select({ requestedByActorType: agentWakeupRequests.requestedByActorType })
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, run.wakeupRequestId))
+          .then((rows) => rows[0]?.requestedByActorType ?? null)
+      : null;
+    if (run.invocationSource === "on_demand" || wakeActorType === "user") {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: "Resource-ceiling continuation skipped: operator-requested runs never auto-continue",
+        payload: {
+          issueId,
+          cause,
+          invocationSource: run.invocationSource,
+          requestedByActorType: wakeActorType,
+        },
+      });
+      return { outcome: "operator_requested" as const };
+    }
+
+    const issue = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue || issue.status === "done" || issue.status === "cancelled") {
+      return { outcome: "not_applicable" as const };
+    }
+
+    const now = new Date();
+    const roundsConsumed = await countResourceCeilingContinuationRounds(db, {
+      companyId: run.companyId,
+      agentId: run.agentId,
+      issueId,
+      now,
+    });
+
+    if (roundsConsumed >= RESOURCE_CEILING_CONTINUATION_MAX_ROUNDS_PER_WINDOW) {
+      const existingCapComment = await findRecentResourceCeilingCapComment(db, {
+        companyId: run.companyId,
+        issueId,
+        now,
+      });
+      if (!existingCapComment) {
+        await issuesSvc.addComment(
+          issueId,
+          buildResourceCeilingCapComment({
+            runId: run.id,
+            cause,
+            roundsConsumed,
+            cap: RESOURCE_CEILING_CONTINUATION_MAX_ROUNDS_PER_WINDOW,
+          }),
+          { runId: run.id },
+          { authorType: "system" },
+        );
+      }
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message:
+          `Resource-ceiling continuation cap reached (${roundsConsumed}/${RESOURCE_CEILING_CONTINUATION_MAX_ROUNDS_PER_WINDOW} rounds in 24h); ` +
+          "no continuation queued and the issue was NOT blocked on a recovery owner",
+        payload: {
+          issueId,
+          cause,
+          roundsConsumed,
+          cap: RESOURCE_CEILING_CONTINUATION_MAX_ROUNDS_PER_WINDOW,
+          windowMs: RESOURCE_CEILING_CONTINUATION_WINDOW_MS,
+        },
+      });
+      await logActivity(db, {
+        companyId: run.companyId,
+        actorType: "system",
+        actorId: "heartbeat",
+        agentId: run.agentId,
+        runId: run.id,
+        action: "issue.resource_ceiling_continuation_cap_reached",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          label: "Bounded continuation cap reached; no further automatic continuation this window",
+          cause,
+          roundsConsumed,
+          cap: RESOURCE_CEILING_CONTINUATION_MAX_ROUNDS_PER_WINDOW,
+          windowMs: RESOURCE_CEILING_CONTINUATION_WINDOW_MS,
+          issue: issueUiLink(issue),
+        },
+      });
+      return { outcome: "cap_exhausted" as const, roundsConsumed };
+    }
+
+    const delayMs = computeResourceCeilingContinuationDelayMs(roundsConsumed);
+    const scheduled = await scheduleBoundedRetryForRun(run, agent, {
+      now,
+      retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      // The rolling-window count above is the sole cap authority; keep the
+      // chain-attempt exhaustion check inside scheduleBoundedRetryForRun from
+      // pre-empting it when a continuation chain spans expired rounds.
+      maxAttempts: Math.max(
+        RESOURCE_CEILING_CONTINUATION_MAX_ROUNDS_PER_WINDOW,
+        (run.scheduledRetryAttempt ?? 0) + 1,
+      ),
+      delayMs,
+    });
+    if (scheduled.outcome !== "scheduled") {
+      return {
+        outcome: "not_scheduled" as const,
+        reason: "reason" in scheduled ? scheduled.reason : scheduled.outcome,
+      };
+    }
+    await logActivity(db, {
+      companyId: run.companyId,
+      actorType: "system",
+      actorId: "heartbeat",
+      agentId: run.agentId,
+      runId: run.id,
+      action: "issue.resource_ceiling_continuation_scheduled",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        label: "Bounded continuation queued after a resource-ceiling stop",
+        cause,
+        round: roundsConsumed + 1,
+        cap: RESOURCE_CEILING_CONTINUATION_MAX_ROUNDS_PER_WINDOW,
+        windowMs: RESOURCE_CEILING_CONTINUATION_WINDOW_MS,
+        delayMs,
+        retryRunId: scheduled.run.id,
+        issue: issueUiLink(issue),
+      },
+    });
+    return { outcome: "scheduled" as const, retryRun: scheduled.run, round: roundsConsumed + 1 };
+  }
+
   async function readRunOwnedTerminalDisposition(input: {
     run: typeof heartbeatRuns.$inferSelect;
     issueId: string | null;
@@ -19284,6 +19468,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const maxTurnExhausted = outcome === "failed" && (
           runErrorCode === "max_turns_exhausted" || isMaxTurnExhaustionRun(livenessRun)
         );
+        const tokenBudgetExhausted = outcome === "failed" && (
+          runErrorCode === "token_budget_exhausted" || isTokenBudgetExhaustedRun(livenessRun)
+        );
         // A max-turn stop owns its route review. Do not pile a second generic
         // high-token interaction onto the same event.
         const highTokenGuard = maxTurnExhausted
@@ -19313,13 +19500,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             );
           }
         }
-        if (highTokenGuard.decision === "none" && outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
+        // Bounded auto-continuation for resource-ceiling stops (TSMC-20820):
+        // schedule BEFORE the execution lock is released so the continuation
+        // run can inherit the issue's execution lock atomically (the same
+        // handoff the process-loss retry path relies on).
+        const ceilingContinuation =
+          (maxTurnExhausted || tokenBudgetExhausted) && highTokenGuard.decision === "none"
+            ? await maybeScheduleResourceCeilingContinuation({
+              run: livenessRun,
+              agent,
+              cause: maxTurnExhausted ? "max_turns_exhausted" : "token_budget_exhausted",
+            })
+            : null;
+        const ceilingContinuationEngaged =
+          ceilingContinuation?.outcome === "scheduled" ||
+          ceilingContinuation?.outcome === "cap_exhausted";
+        if (
+          highTokenGuard.decision === "none" &&
+          outcome === "failed" &&
+          !ceilingContinuationEngaged &&
+          readTransientRecoveryContractFromRun(livenessRun)
+        ) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
-        // A failed max-turn run is already headed to a durable human review;
-        // a mechanical "missing issue comment" wake would only re-run the
-        // same incomplete work and undermine the stop/escalate contract.
-        const issueCommentPolicyResult = maxTurnExhausted
+        // A failed max-turn run is already headed to a durable human review
+        // (or a bounded ceiling continuation); a mechanical "missing issue
+        // comment" wake would only re-run the same incomplete work and
+        // undermine the stop/escalate contract.
+        const issueCommentPolicyResult = maxTurnExhausted || ceilingContinuationEngaged
           ? await (async () => {
               await patchRunIssueCommentStatus(livenessRun.id, {
                 issueCommentStatus: "not_applicable",
@@ -19330,7 +19538,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 eventType: "lifecycle",
                 stream: "system",
                 level: "info",
-                message: "Missing-comment follow-up suppressed for max-turn stop",
+                message: "Missing-comment follow-up suppressed for resource-ceiling stop",
               });
               return { outcome: "not_applicable" as const, queuedRun: null };
             })()
@@ -19338,11 +19546,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // Release the execution lock before applying the max-turn disposition
         // so the guarded state cannot be overwritten by the normal failure
         // release path. Suppression also prevents that release path from
-        // creating its own immediate-recovery wake in the gap.
+        // creating its own immediate-recovery wake in the gap. When a bounded
+        // ceiling continuation engaged (scheduled or loudly capped), the
+        // token-cap blocked disposition inside the release path is suppressed
+        // too: the continuation owns the follow-up, and a cap stop must stay
+        // a visible comment — not a block on a recovery owner.
         await releaseIssueExecutionAndPromote(livenessRun, {
-          suppressImmediateRecovery: maxTurnExhausted,
+          suppressImmediateRecovery: maxTurnExhausted || ceilingContinuationEngaged,
+          suppressResourceCeilingDisposition: ceilingContinuationEngaged,
         });
-        if (maxTurnExhausted) {
+        if (maxTurnExhausted && !ceilingContinuationEngaged) {
           await enforceMaxTurnDispositionGuard({ run: livenessRun, agent });
         }
         if (highTokenGuard.decision === "none") {
@@ -19823,7 +20036,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function releaseIssueExecutionAndPromote(
     run: typeof heartbeatRuns.$inferSelect,
-    options: { suppressImmediateRecovery?: boolean } = {},
+    options: {
+      suppressImmediateRecovery?: boolean;
+      /**
+       * Set when the bounded resource-ceiling continuation policy already
+       * handled this run (continuation queued, or the cap comment written).
+       * Suppresses the token-cap blocked disposition below so a capped stop
+       * stays a loud comment instead of a block on a recovery owner.
+       */
+      suppressResourceCeilingDisposition?: boolean;
+    } = {},
   ) {
     const runContext = parseObject(run.contextSnapshot);
     const contextIssueId = readNonEmptyString(runContext.issueId);
@@ -19951,7 +20173,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // A live token-cap stop is also terminal for this issue invocation. Do not
       // turn the safety stop into a second paid recovery wake; surface a visible,
       // machine-readable blocked disposition for deliberate operator review.
+      // (Skipped when the bounded ceiling-continuation policy already owns the
+      // follow-up for this run — see suppressResourceCeilingDisposition.)
       if (
+        !options.suppressResourceCeilingDisposition &&
         isTokenBudgetExhaustedRun(run) &&
         (issue.status === "todo" || issue.status === "in_progress") &&
         !issue.assigneeUserId &&
