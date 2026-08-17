@@ -56,3 +56,26 @@ def test_parse_handles_list_valued_type_in_graph():
     s = parse_page("https://x.de/g", YOAST_GRAPH)
     assert "WebSite" in s.jsonld_types
     assert "CreativeWork" in s.jsonld_types
+
+
+IMGS = """
+<html><head><title>T</title></head><body><h1>H</h1>
+<img src="/wp-content/uploads/2024/01/foto-a.jpg" alt="hat alt">
+<img src="/wp-content/uploads/2024/01/foto-b.jpg">
+<img src="https://x.de/wp-content/uploads/2024/02/foto-c.png" alt="   ">
+</body></html>
+"""
+
+def test_parse_records_which_images_lack_alt():
+    s = parse_page("https://x.de/p", IMGS)
+    assert s.images_total == 3
+    assert s.images_missing_alt == 2
+    # Nicht nur zaehlen: die konkreten Quellen merken, sonst kann niemand sie zuordnen
+    assert s.images_without_alt == [
+        "/wp-content/uploads/2024/01/foto-b.jpg",
+        "https://x.de/wp-content/uploads/2024/02/foto-c.png",
+    ]
+
+def test_images_without_alt_empty_when_all_have_alt():
+    s = parse_page("https://x.de/p", '<html><body><img src="a.jpg" alt="da"></body></html>')
+    assert s.images_without_alt == []

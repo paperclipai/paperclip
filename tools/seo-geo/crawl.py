@@ -13,6 +13,7 @@ class PageSignals:
     h1_count: int = 0
     images_total: int = 0
     images_missing_alt: int = 0
+    images_without_alt: list[str] = field(default_factory=list)
     jsonld_types: list[str] = field(default_factory=list)
 
 def _meta(soup, **attrs):
@@ -24,6 +25,10 @@ def parse_page(url: str, html: str) -> PageSignals:
     title = soup.title.get_text().strip() if soup.title else None
     canonical_tag = soup.find("link", rel="canonical")
     imgs = soup.find_all("img")
+    # Nicht nur zählen — die konkreten Quellen merken, sonst kann niemand sie
+    # einer WordPress-Media-ID zuordnen.
+    no_alt = [i.get("src", "").strip() for i in imgs
+              if not i.get("alt", "").strip() and i.get("src", "").strip()]
     types = []
     for s in soup.find_all("script", type="application/ld+json"):
         try:
@@ -54,5 +59,6 @@ def parse_page(url: str, html: str) -> PageSignals:
         h1_count=len(soup.find_all("h1")),
         images_total=len(imgs),
         images_missing_alt=sum(1 for i in imgs if not i.get("alt", "").strip()),
+        images_without_alt=no_alt,
         jsonld_types=types,
     )
