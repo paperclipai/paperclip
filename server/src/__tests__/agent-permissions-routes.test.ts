@@ -958,6 +958,136 @@ describe.sequential("agent permission routes", () => {
     expect(mockAgentService.list).not.toHaveBeenCalled();
   });
 
+  it("rejects an unknown body field on agent update instead of silently dropping it (LOOA-364)", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ description: "Social Editor" }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("description");
+    expect(res.body.details.unknownFields).toEqual(["description"]);
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("points a rejected unknown agent field at the real seat field (LOOA-364)", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ description: "Social Editor" }));
+
+    // `title` is the field the caller actually wanted; the 400 has to name it, otherwise the
+    // caller is left guessing which key holds the seat.
+    expect(res.body.details.acceptedFields).toContain("title");
+    expect(res.body.details.acceptedFields).toContain("capabilities");
+    expect(res.body.error).toContain("title");
+  });
+
+  it("rejects an unknown body field on agent creation (LOOA-364)", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({ name: "Vera", adapterType: "process", zzzNotAField: "xxx" }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toContain("zzzNotAField");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("still accepts a known agent field after unknown-field rejection is enabled (LOOA-364)", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ title: "Social Editor" }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({ title: "Social Editor" }),
+      expect.anything(),
+    );
+  });
+
+  it.each(["budgetMonthlyCents", "spentMonthlyCents", "status", "reportsTo"])(
+    "blocks an agent from mutating its own governance field %s via self-PATCH (LOOA-161)",
+    async (field) => {
+      // Simulate the allow_self grant on agent_config:update so the block is proven to be an
+      // independent field-level guard, not merely an authorization denial.
+      mockAccessService.canUser.mockResolvedValue(true);
+      const values: Record<string, unknown> = {
+        budgetMonthlyCents: 999_999,
+        spentMonthlyCents: 0,
+        status: "idle",
+        reportsTo: "33333333-3333-4333-8333-333333333333",
+      };
+      const app = await createApp({
+        type: "agent",
+        agentId,
+        companyId,
+        source: "agent_key",
+        runId: "run-1",
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}`)
+        .send({ [field]: values[field] }));
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toContain("governance");
+      expect(res.body.error).toContain(field);
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    },
+  );
+
+  it("lets a board actor set governance fields that agents are blocked from (LOOA-161)", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ budgetMonthlyCents: 5_000 }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({ budgetMonthlyCents: 5_000 }),
+      expect.anything(),
+    );
+  });
+
   it("normalizes direct agent creation to disable timer heartbeats by default", async () => {
     const app = await createApp({
       type: "board",
