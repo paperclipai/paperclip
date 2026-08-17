@@ -46,12 +46,21 @@ function pruneCloudTenantWriteDebounce(
 }
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
-import { forbidden, unprocessable } from "../errors.js";
+import { forbidden, unauthorized, unprocessable } from "../errors.js";
 
 export { isCloudManagedInstance } from "../services/cloud-instance.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
+}
+
+const UNSUPPORTED_AUTH_HEADERS = ["x-api-key", "api-key", "x-auth-token"] as const;
+
+function findUnsupportedAuthHeader(req: Request): string | null {
+  for (const name of UNSUPPORTED_AUTH_HEADERS) {
+    if (req.header(name)?.trim()) return name;
+  }
+  return null;
 }
 
 function normalizeOptionalString(value: string | null | undefined) {
@@ -208,6 +217,24 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
+      // A caller that sends an auth-shaped header we do not support meant to authenticate.
+      // Falling through would silently downgrade them to the implicit local board actor
+      // (instance admin on local_trusted), so fail loudly instead.
+      const unsupportedHeader = findUnsupportedAuthHeader(req);
+      if (unsupportedHeader) {
+        req.actor = { type: "none", source: "none" };
+        logger.warn(
+          { header: unsupportedHeader, method: req.method, url: req.originalUrl },
+          "Rejected request carrying an unsupported authentication header",
+        );
+        next(
+          unauthorized(
+            `Unsupported authentication header "${unsupportedHeader}". Use "Authorization: Bearer <token>".`,
+          ),
+        );
+        return;
+      }
+
       if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
         const cloudTenantActor = await resolveCloudTenantActor(db, req);
         if (cloudTenantActor) {
