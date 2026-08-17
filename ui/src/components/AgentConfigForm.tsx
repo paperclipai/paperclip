@@ -454,6 +454,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // independently. The claim never carries a token value.
   const claudeStoredSessionId = isCreate ? val!.claudeStoredSessionId ?? null : null;
 
+  // After a login binds CLAUDE_CODE_OAUTH_TOKEN, the user-secret-definitions list
+  // in the cache is stale. The form reads that list once at page load, so it does
+  // not contain the definition the login just bound. The bound row then compares
+  // its key against the stale list and shows a false "no longer exists" health
+  // error. Invalidate the list so the row reads the fresh definitions and clears
+  // the error.
+  const invalidateUserSecretDefinitions = () => {
+    if (!selectedCompanyId) return;
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.secrets.userDefinitions(selectedCompanyId),
+    });
+  };
+
   // Add the fixed binding to the create-mode form state after the login stores.
   // Keep every unrelated binding. Hold the claim so the create request sends it.
   const handleClaudeLoginStored = (storedSessionId: string) => {
@@ -463,6 +476,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       envBindings: { ...existingBindings, ...buildFixedClaudeOAuthBinding() },
       claudeStoredSessionId: storedSessionId,
     });
+    invalidateUserSecretDefinitions();
   };
 
   // Edit mode: after a login stores the token, add the fixed binding to the
@@ -494,6 +508,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ...buildAgentUpdatePatch(props.agent, nextOverlay),
       applyStoredClaudeLogin: true,
     });
+    invalidateUserSecretDefinitions();
   };
 
   // Create mode: bind the fixed reference to an existing stored login with no new
@@ -507,6 +522,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       envBindings: { ...existingBindings, ...buildFixedClaudeOAuthBinding() },
       claudeApplyStoredLogin: true,
     });
+    invalidateUserSecretDefinitions();
   };
 
   // Edit mode: bind the fixed reference to an existing stored login with no new
@@ -529,6 +545,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ...buildAgentUpdatePatch(props.agent, nextOverlay),
       applyStoredClaudeLogin: true,
     });
+    invalidateUserSecretDefinitions();
   };
 
   const rawCurrentDefaultEnvironmentId = isCreate

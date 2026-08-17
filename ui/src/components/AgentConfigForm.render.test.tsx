@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Agent, Environment } from "@paperclipai/shared";
+import type { Agent, Environment, UserSecretDefinition } from "@paperclipai/shared";
 import { getEnvironmentCapabilities } from "@paperclipai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastProvider } from "../context/ToastContext";
@@ -50,6 +50,7 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
 const mockSecretsApi = vi.hoisted(() => ({
   list: vi.fn(),
   listProposals: vi.fn(),
+  listUserSecretDefinitions: vi.fn(async () => [] as unknown[]),
 }));
 
 vi.mock("../api/agents", () => ({
@@ -1497,6 +1498,79 @@ describe("AgentConfigForm environment selector", () => {
       adapterConfig: {},
     });
     expect("storedSessionId" in payload).toBe(false);
+  });
+
+  it("clears the false missing-definition error on the bound row after a login stores the token", async () => {
+    // Regression: the user-secret-definitions list read at page load does not
+    // yet contain the Claude token key, but it is not empty. A stale non-empty
+    // list makes the bound row show a false "no longer exists" error. The login
+    // must invalidate the list so the refetch clears the error.
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+    });
+    const makeDefinition = (key: string): UserSecretDefinition => ({
+      id: `def-${key}`,
+      companyId: "company-1",
+      key,
+      name: key.toUpperCase(),
+      description: null,
+      status: "active",
+      provider: "local_encrypted",
+      managedMode: "paperclip_managed",
+      providerConfigId: null,
+      providerMetadata: null,
+      usageGuidance: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      updatedByAgentId: null,
+      updatedByUserId: null,
+      deletedAt: null,
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+    });
+    const staleList = [makeDefinition("OTHER_SECRET")];
+    const freshList = [makeDefinition("OTHER_SECRET"), makeDefinition("CLAUDE_CODE_OAUTH_TOKEN")];
+    mockSecretsApi.listUserSecretDefinitions.mockReset();
+    mockSecretsApi.listUserSecretDefinitions
+      .mockResolvedValueOnce(staleList)
+      .mockResolvedValue(freshList);
+
+    const result = await renderStatefulCreateClaudeSandbox([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+      makeEnvironment({
+        id: "sandbox-1",
+        name: "Daytona",
+        driver: "sandbox",
+        config: { provider: "daytona" },
+      }),
+    ]);
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() => result.valuesRef.current.claudeStoredSessionId != null);
+
+    // The login bound the fixed Claude token row.
+    expect("CLAUDE_CODE_OAUTH_TOKEN" in (result.valuesRef.current.envBindings ?? {})).toBe(true);
+
+    // The invalidation refetched the definitions, so the stale list no longer
+    // drives the row.
+    await flushUntil(() => mockSecretsApi.listUserSecretDefinitions.mock.calls.length >= 2);
+    await flushUntil(() => {
+      const inputs = Array.from(result.container.querySelectorAll("input"));
+      return inputs.some((input) => (input as HTMLInputElement).value === "CLAUDE_CODE_OAUTH_TOKEN");
+    });
+
+    // Vacuous-pass guard: the bound row rendered.
+    const inputs = Array.from(result.container.querySelectorAll("input"));
+    expect(inputs.some((input) => (input as HTMLInputElement).value === "CLAUDE_CODE_OAUTH_TOKEN")).toBe(true);
+    // The row shows no false missing-definition error.
+    expect(result.container.textContent ?? "").not.toContain("no longer exists");
   });
 
   it("reports the non-secret stored-session claim to the parent on success", async () => {
