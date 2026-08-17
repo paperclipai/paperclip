@@ -612,7 +612,11 @@ export async function startSandboxCallbackBridgeWorker(input: {
   client: SandboxCallbackBridgeQueueClient;
   queueDir: string;
   pollIntervalMs?: number | null;
-  authorizeRequest?: (request: SandboxCallbackBridgeRequest) => string | null | Promise<string | null>;
+  // Returning `undefined` falls through to the default route allowlist;
+  // `null` explicitly allows; a string denies with that reason.
+  authorizeRequest?: (
+    request: SandboxCallbackBridgeRequest,
+  ) => string | null | undefined | Promise<string | null | undefined>;
   handleRequest: (request: SandboxCallbackBridgeRequest) => Promise<{
     status: number;
     headers?: Record<string, string>;
@@ -647,8 +651,12 @@ export async function startSandboxCallbackBridgeWorker(input: {
   const settledPromise = new Promise<void>((resolve) => {
     settleResolve = resolve;
   });
-  const authorizeRequest = input.authorizeRequest ??
-    ((request: SandboxCallbackBridgeRequest) => authorizeSandboxCallbackBridgeRequestWithRoutes(request));
+  const defaultAuthorizeRequest = (request: SandboxCallbackBridgeRequest) =>
+    authorizeSandboxCallbackBridgeRequestWithRoutes(request);
+  const authorizeRequest = async (request: SandboxCallbackBridgeRequest) => {
+    const result = await input.authorizeRequest?.(request);
+    return result === undefined ? defaultAuthorizeRequest(request) : result;
+  };
   const buildWorkerFailureMessage = (error: unknown) =>
     `Sandbox callback bridge worker failed: ${error instanceof Error ? error.message : String(error)}`;
 

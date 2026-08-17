@@ -464,6 +464,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timeoutSec,
       hostApiToken: env.PAPERCLIP_API_KEY,
       onLog,
+      netFetch: { companyId: agent.companyId },
     });
     if (paperclipBridge) {
       Object.assign(env, paperclipBridge.env);

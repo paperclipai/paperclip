@@ -2113,6 +2113,7 @@ async function buildRuntime(input: {
           timeoutSec,
           hostApiToken: env.PAPERCLIP_API_KEY,
           onLog: input.ctx.onLog,
+          netFetch: { companyId: input.ctx.agent.companyId },
         }),
         concurrentBridgeStepMetrics,
       );

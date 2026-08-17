@@ -35,3 +35,43 @@ The invariant is pinned by the `no-remote-git contract` case in
 remote-only commit propagates to the local worktree through the
 prepare → restore round-trip with no git remote configured at any point. Do
 not regress that test.
+
+## Sandboxed network fetches (the net-fetch door)
+
+Sandbox providers may intentionally deny direct outbound traffic, so a lane's
+own `curl`/DNS fails even when the host resolves fine. A network error from
+inside a sandbox is never evidence that an external service is down. Instead
+of raising an infrastructure blocker, sandboxed adapter runs use
+`PAPERCLIP_NET_FETCH_URL` — a run-scoped bridge endpoint the HOST fulfills:
+
+```sh
+curl -sS -X POST "$PAPERCLIP_NET_FETCH_URL" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data '{"url":"https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?actor=example"}'
+```
+
+The response is a JSON envelope: `{url, status, headers, body, bytes}` (body
+is UTF-8 text — the door targets JSON/text APIs). Optional manifest field
+`maxBytes` lowers the response cap for that request; it can never raise it.
+
+Enforced host-side (see [`src/sandbox-net-fetch.ts`](./src/sandbox-net-fetch.ts)):
+
+- **GET only**, `http`/`https` only, no credentials in URLs.
+- **Deny-default domain allowlist.** Built-in defaults cover the standard job
+  and social APIs; additions live in the operator config file
+  `<instance-root>/net-fetch-allowlist.json` (override with
+  `PAPERCLIP_NET_FETCH_ALLOWLIST_FILE`), shape
+  `{"allowlist": ["extra.example"], "companies": {"<companyId>": ["per-co.example"]}}`.
+  A malformed config never widens access. Entries match the exact hostname
+  and its subdomains on a dot boundary.
+- **Public destinations only.** The host resolves the hostname, requires a
+  public unicast address, and pins the socket to it — the door is not a path
+  to loopback, RFC1918, or link-local services, and cannot be rebound.
+- **Response size cap** (2 MiB default) and a bounded timeout. Redirects are
+  returned, not followed.
+- **No credential pass-through.** Lane-supplied headers are never forwarded;
+  the run token and bridge token never leave the host.
+- **Company-scoped audit log.** Every request — allowed or denied — appends
+  `{ts, runId, companyId, url, method, outcome, status, bytes, durationMs}`
+  to `<instance-root>/companies/<companyId>/logs/net-fetch.jsonl`.

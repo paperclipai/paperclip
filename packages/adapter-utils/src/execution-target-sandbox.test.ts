@@ -999,6 +999,115 @@ describe("sandbox adapter execution targets", () => {
     }
   });
 
+  it("serves allowlisted net-fetch requests through the bridge and denies the rest", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-net-fetch-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    const runtimeRootDir = path.join(remoteCwd, ".paperclip-runtime", "codex");
+    await mkdir(runtimeRootDir, { recursive: true });
+
+    // The public target the sandboxed lane wants to read. In the test it lives
+    // on loopback, so the door's DNS + public-address checks are overridden via
+    // the dedicated test seams; the allowlist itself runs unmodified from the
+    // operator config file.
+    const targetServer = createServer((req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, path: req.url }));
+    });
+    await new Promise<void>((resolve, reject) => {
+      targetServer.once("error", reject);
+      targetServer.listen(0, "127.0.0.1", () => resolve());
+    });
+    const targetAddress = targetServer.address();
+    if (!targetAddress || typeof targetAddress === "string") {
+      throw new Error("Expected the net-fetch target server to listen on a TCP port.");
+    }
+
+    const allowlistFile = path.join(rootDir, "net-fetch-allowlist.json");
+    await writeFile(allowlistFile, JSON.stringify({ companies: { "co-net-fetch": ["localhost"] } }), "utf8");
+    const logFile = path.join(rootDir, "net-fetch.jsonl");
+
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "e2b",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+      timeoutMs: 30_000,
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-net-fetch",
+      target,
+      runtimeRootDir,
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: "http://127.0.0.1:9",
+      netFetch: {
+        companyId: "co-net-fetch",
+        allowlistFile,
+        logFile,
+        resolve: async () => [{ address: "127.0.0.1", family: 4 }],
+        allowAddress: () => true,
+      },
+    });
+    try {
+      expect(bridge?.env.PAPERCLIP_NET_FETCH_URL).toBe(`${bridge?.env.PAPERCLIP_API_URL}/paperclip/net-fetch`);
+
+      const doorHeaders = {
+        authorization: `Bearer ${bridge!.env.PAPERCLIP_API_KEY}`,
+        "content-type": "application/json",
+      };
+
+      // Allowed: the config-file company allowlist admits the target domain.
+      const allowed = await fetch(bridge!.env.PAPERCLIP_NET_FETCH_URL, {
+        method: "POST",
+        headers: doorHeaders,
+        body: JSON.stringify({ url: `http://localhost:${targetAddress.port}/feed.json` }),
+      });
+      expect(allowed.status).toBe(200);
+      const envelope = await allowed.json() as { status: number; body: string; bytes: number };
+      expect(envelope.status).toBe(200);
+      expect(JSON.parse(envelope.body)).toEqual({ ok: true, path: "/feed.json" });
+      expect(envelope.bytes).toBe(Buffer.byteLength(envelope.body));
+
+      // Denied: a domain outside the allowlist never leaves the host.
+      const denied = await fetch(bridge!.env.PAPERCLIP_NET_FETCH_URL, {
+        method: "POST",
+        headers: doorHeaders,
+        body: JSON.stringify({ url: "https://example.com/" }),
+      });
+      expect(denied.status).toBe(403);
+      expect(((await denied.json()) as { error: string }).error).toMatch(/allowlist/);
+
+      // GET-only: a non-GET manifest is rejected before any fetch.
+      const rejected = await fetch(bridge!.env.PAPERCLIP_NET_FETCH_URL, {
+        method: "POST",
+        headers: doorHeaders,
+        body: JSON.stringify({ url: `http://localhost:${targetAddress.port}/x`, method: "POST" }),
+      });
+      expect(rejected.status).toBe(400);
+
+      // Every request — allowed and denied — landed in the company-scoped log.
+      const entries = (await readFile(logFile, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as {
+        runId: string; companyId: string; url: string; outcome: string; status: number | null; bytes: number | null;
+      });
+      expect(entries.map((entry) => entry.outcome)).toEqual(["ok", "denied", "rejected"]);
+      expect(entries[0]).toMatchObject({
+        runId: "run-net-fetch",
+        companyId: "co-net-fetch",
+        url: `http://localhost:${targetAddress.port}/feed.json`,
+        status: 200,
+        bytes: envelope.bytes,
+      });
+    } finally {
+      await bridge?.stop();
+      await new Promise<void>((resolve) => targetServer.close(() => resolve()));
+    }
+  });
+
   it("creates a sandbox run log tail factory when bridge streaming is enabled", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-stream-"));
     cleanupDirs.push(rootDir);

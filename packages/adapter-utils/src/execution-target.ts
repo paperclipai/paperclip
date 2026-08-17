@@ -33,6 +33,12 @@ import {
   syncRemoteTextFileWithHashSkip,
 } from "./sandbox-callback-bridge.js";
 import {
+  SANDBOX_NET_FETCH_BRIDGE_PATH,
+  createSandboxNetFetchBridgeHandler,
+  loadSandboxNetFetchAllowlist,
+  type SandboxNetFetchExecuteOptions,
+} from "./sandbox-net-fetch.js";
+import {
   createSandboxRunLogTailFactory,
   type SandboxRunLogTailFactory,
 } from "./sandbox-run-log-stream.js";
@@ -162,6 +168,20 @@ export interface AdapterExecutionTargetShellOptions {
   timeoutSec?: number;
   graceSec?: number;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+}
+
+export interface AdapterExecutionTargetPaperclipBridgeNetFetchOptions {
+  /** Scopes the allowlist config lookup and the audit log destination. */
+  companyId?: string | null;
+  /** Operator allowlist config path override (defaults to the instance-root file). */
+  allowlistFile?: string | null;
+  /** Audit log override; defaults to the company-scoped instance log. */
+  logFile?: string | null;
+  maxResponseBytes?: number | null;
+  timeoutMs?: number | null;
+  /** Test seams — production wiring leaves DNS + public-address checks in place. */
+  resolve?: SandboxNetFetchExecuteOptions["resolve"];
+  allowAddress?: SandboxNetFetchExecuteOptions["allowAddress"];
 }
 
 export interface AdapterExecutionTargetPaperclipBridgeHandle {
@@ -1739,6 +1759,11 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   hostApiUrl?: string | null;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   maxBodyBytes?: number | null;
+  /**
+   * Standard net-fetch door (TSMC-20877). Enabled for every bridge; the
+   * options scope the allowlist config and audit log to the calling company.
+   */
+  netFetch?: AdapterExecutionTargetPaperclipBridgeNetFetchOptions | null;
 }): Promise<AdapterExecutionTargetPaperclipBridgeHandle | null> {
   if (!adapterExecutionTargetUsesPaperclipBridge(input.target)) {
     return null;
@@ -1783,6 +1808,29 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     `[paperclip] Starting sandbox callback bridge for ${input.adapterKey} in ${bridgeRuntimeDir}.\n`,
   );
 
+  // Net-fetch door: resolve the deny-default domain allowlist once per bridge
+  // start (config edits apply on the next run). A malformed config never
+  // widens access — the loader falls back to defaults and reports warnings.
+  const netFetchOptions = input.netFetch ?? {};
+  const netFetchAllowlist = await loadSandboxNetFetchAllowlist({
+    configFile: netFetchOptions.allowlistFile,
+    companyId: netFetchOptions.companyId,
+  });
+  for (const warning of netFetchAllowlist.warnings) {
+    await onLog("stderr", `[paperclip] ${warning}\n`);
+  }
+  const netFetchHandler = createSandboxNetFetchBridgeHandler({
+    allowlist: netFetchAllowlist.allowlist,
+    companyId: netFetchOptions.companyId,
+    runId: input.runId,
+    logFile: netFetchOptions.logFile,
+    maxResponseBytes: netFetchOptions.maxResponseBytes,
+    timeoutMs: netFetchOptions.timeoutMs,
+    resolve: netFetchOptions.resolve,
+    allowAddress: netFetchOptions.allowAddress,
+    onLogError: (message) => void onLog("stderr", `[paperclip] ${message}\n`),
+  });
+
   const bridgeAsset = await createSandboxCallbackBridgeAsset();
   let server: Awaited<ReturnType<typeof startSandboxCallbackBridgeServer>> | null = null;
   let worker: Awaited<ReturnType<typeof startSandboxCallbackBridgeWorker>> | null = null;
@@ -1803,9 +1851,17 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     worker = await startSandboxCallbackBridgeWorker({
       client,
       queueDir,
-      maxBodyBytes,
+      // The worker's response cap is a backstop shared by every route. The
+      // net-fetch envelope (JSON-escaped body up to its own raw cap) must fit
+      // through it; API proxy responses stay bounded by the tighter
+      // `maxBodyBytes` via readBridgeForwardResponseBody below.
+      maxBodyBytes: Math.max(maxBodyBytes, netFetchHandler.envelopeMaxBytes),
+      authorizeRequest: (request) => (netFetchHandler.matches(request) ? null : undefined),
       handleRequest: async (request) => {
         const method = request.method.trim().toUpperCase() || "GET";
+        if (netFetchHandler.matches(request)) {
+          return await netFetchHandler.handle(request);
+        }
         if (bridgeDebugEnabled) {
           await onLog(
             "stdout",
@@ -1872,6 +1928,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   return {
     env: {
       PAPERCLIP_API_URL: server.baseUrl,
+      PAPERCLIP_NET_FETCH_URL: `${server.baseUrl}${SANDBOX_NET_FETCH_BRIDGE_PATH}`,
       PAPERCLIP_API_KEY: bridgeToken,
       PAPERCLIP_API_BRIDGE_MODE: "queue_v1",
       PAPERCLIP_BRIDGE_QUEUE_DIR: queueDir,
