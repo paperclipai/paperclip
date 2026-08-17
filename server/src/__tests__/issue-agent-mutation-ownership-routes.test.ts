@@ -1683,6 +1683,117 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  // A stranded_assigned_issue recovery reassigns the issue to a
+  // recovery owner, but names a returnOwnerAgentId (and/or previousOwnerAgentId)
+  // — the agent the work should come back to. That agent must never be treated
+  // as "another owner" of the recovery action they did not create.
+  it("allows the recovery action's return owner to resolve a status update even though someone else owns the recovery action", async () => {
+    // A stranded_assigned_issue recovery always leaves the source issue
+    // `blocked` with the recovery owner as its new assignee (see
+    // escalateStrandedAssignedIssue). The return owner named on that action
+    // must still be able to move it back to `todo`.
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }),
+    );
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }),
+      ...patch,
+    }));
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+      id: recoveryActionId,
+      ownerAgentId,
+      returnOwnerAgentId: peerAgentId,
+      previousOwnerAgentId: peerAgentId,
+    });
+
+    const res = await request(await createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ status: "todo" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(issueId, expect.objectContaining({ status: "todo" }));
+  });
+
+  it("allows the recovery action's previous owner (not just the return owner) to resolve a status update", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }),
+    );
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }),
+      ...patch,
+    }));
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+      id: recoveryActionId,
+      ownerAgentId,
+      returnOwnerAgentId: null,
+      previousOwnerAgentId: peerAgentId,
+    });
+
+    const res = await request(await createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ status: "todo" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(issueId, expect.objectContaining({ status: "todo" }));
+  });
+
+  it("lets the recovery action's return owner comment even when the cross-issue-influence run-cap check would otherwise fail closed", async () => {
+    // Simulates the AGE-471 failure mode: the run-cap guard rejects with the
+    // generic run-context error. The return owner posting on the very issue the
+    // recovery action is tracking must never be blocked by that guard — it is
+    // not a cross-issue write, and comments are never gated by recovery-action
+    // ownership in the first place.
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }),
+    );
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+      id: recoveryActionId,
+      ownerAgentId,
+      returnOwnerAgentId: peerAgentId,
+      previousOwnerAgentId: peerAgentId,
+    });
+    mockObserveCrossIssueInfluence.mockRejectedValue(
+      Object.assign(new Error("run context required"), {
+        status: 403,
+        details: { code: "cross_issue_influence_run_context_required" },
+      }),
+    );
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Recording what happened on my own stranded issue." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Recording what happened on my own stranded issue.",
+      expect.any(Object),
+      expect.any(Object),
+    );
+    expect(mockObserveCrossIssueInfluence).not.toHaveBeenCalled();
+  });
+
+  it("still runs the cross-issue run-cap check for a comment with no recovery return-path relationship", async () => {
+    // The bypass is scoped to the recovery action's named return/previous
+    // owner — it must not silently exempt every comment just because a
+    // recovery action happens to be active on the issue.
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }),
+    );
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+      id: recoveryActionId,
+      ownerAgentId,
+      returnOwnerAgentId: ownerAgentId,
+      previousOwnerAgentId: ownerAgentId,
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Unrelated cross-issue comment." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockObserveCrossIssueInfluence).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ targetIssueId: issueId }),
+    );
+  });
+
   it("rejects peer-agent recovery resolution on a board-owned source issue", async () => {
     mockIssueService.getById.mockResolvedValue(
       makeIssue({ status: "blocked", assigneeAgentId: null, assigneeUserId: "board-user" }),
