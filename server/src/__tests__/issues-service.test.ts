@@ -6924,6 +6924,15 @@ describeEmbeddedPostgres("issueService.update productivity review auto-cancel", 
     expect(await getIssueStatus(inProgressReviewId)).toBe("in_progress");
   });
 
+  it("does not cancel in_review productivity review tasks when source issue closes", async () => {
+    const sourceId = await insertSourceIssue();
+    const inReviewId = await insertProductivityReview(sourceId, "in_review");
+
+    await svc.update(sourceId, { status: "done", actorUserId: "test-board" });
+
+    expect(await getIssueStatus(inReviewId)).toBe("in_review");
+  });
+
   it("does not cancel productivity review tasks for an unrelated source issue", async () => {
     const sourceA = await insertSourceIssue();
     const sourceB = await insertSourceIssue();
