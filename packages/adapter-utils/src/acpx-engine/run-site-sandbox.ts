@@ -172,6 +172,21 @@ export interface SandboxRunSite {
   syncBack(context: AcpRunContext): Promise<void>;
   /** The staged workspace the run installed or reused, or null before `placeWorkspace`. */
   readonly staged: StagedWorkspace | null;
+  /**
+   * The paperclip callback bridge the run started, or null before
+   * `startTransport` or on the host lane. `startTransport` sets it before it
+   * rethrows a partial-bring-up failure, so an abandon path can stop the bridge
+   * that started when its sibling threw.
+   */
+  readonly controlBridge: AdapterExecutionTargetPaperclipBridgeHandle | null;
+  /** The process-session bridge the run started, or null before `startTransport`. */
+  readonly agentBridge: AdapterExecutionTargetProcessSessionBridgeHandle | null;
+  /**
+   * Release the per-session staging lease `placeWorkspace` acquired, or null
+   * before `placeWorkspace`. An abandon path calls it to free the lease when the
+   * run never reaches sync-back.
+   */
+  readonly stagingLeaseRelease: (() => void) | null;
 }
 
 /** Create the sandbox run site over the engine's staged-runtime map and ledger. */
@@ -394,6 +409,18 @@ export function createSandboxRunSite(options: SandboxRunSiteOptions): SandboxRun
 
     get staged(): StagedWorkspace | null {
       return staged;
+    },
+
+    get controlBridge(): AdapterExecutionTargetPaperclipBridgeHandle | null {
+      return controlBridge;
+    },
+
+    get agentBridge(): AdapterExecutionTargetProcessSessionBridgeHandle | null {
+      return agentBridge;
+    },
+
+    get stagingLeaseRelease(): (() => void) | null {
+      return leaseRelease;
     },
   };
 }
