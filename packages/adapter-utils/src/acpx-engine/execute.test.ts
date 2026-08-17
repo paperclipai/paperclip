@@ -50,6 +50,23 @@ async function makeTempRoot() {
   return root;
 }
 
+// The engine reads Paperclip-level state (`mcp-servers.json`, managed homes)
+// out of the instance root, which defaults to the real `~/.paperclip`. Point
+// every test at an empty temp instance so a developer's own host config cannot
+// leak into a run. Tests that need a populated instance root set these two
+// variables themselves, and their `finally` restores the value set here.
+let defaultPaperclipHome = "";
+beforeEach(async () => {
+  defaultPaperclipHome = await makeTempRoot();
+  process.env.PAPERCLIP_HOME = defaultPaperclipHome;
+  process.env.PAPERCLIP_INSTANCE_ID = "default";
+});
+
+afterEach(() => {
+  delete process.env.PAPERCLIP_HOME;
+  delete process.env.PAPERCLIP_INSTANCE_ID;
+});
+
 afterEach(async () => {
   // A remote run stages a process-session bridge whose detached event writer can
   // still be flushing a trailing event file into `.../process-sessions/<id>/events`
@@ -4452,6 +4469,233 @@ describe("ACPX engine per-step startup timing (run.startup.step events)", () => 
     expect(emitted.has("stage.sync")).toBe(false);
     expect(emitted.has("bridge.paperclip")).toBe(false);
     expect(emitted.has("bridge.process-session")).toBe(false);
+  });
+
+  describe("locally-configured stdio MCP servers", () => {
+    // Headless/SDK mode never reads the user-scope `~/.claude.json` MCP
+    // registry, so these must reach `mcpServers` through the Paperclip-level
+    // config file or they are invisible to every run.
+    async function withPaperclipInstance<T>(
+      instanceRoot: string,
+      run: () => Promise<T>,
+    ): Promise<T> {
+      const previousHome = process.env.PAPERCLIP_HOME;
+      const previousInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+      process.env.PAPERCLIP_HOME = path.dirname(path.dirname(instanceRoot));
+      process.env.PAPERCLIP_INSTANCE_ID = path.basename(instanceRoot);
+      try {
+        return await run();
+      } finally {
+        if (previousHome === undefined) delete process.env.PAPERCLIP_HOME;
+        else process.env.PAPERCLIP_HOME = previousHome;
+        if (previousInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+        else process.env.PAPERCLIP_INSTANCE_ID = previousInstanceId;
+      }
+    }
+
+    async function writeInstanceMcpConfig(root: string, document: unknown): Promise<string> {
+      const instanceRoot = path.join(root, "paperclip-home", "instances", "default");
+      await fs.mkdir(instanceRoot, { recursive: true });
+      await fs.writeFile(path.join(instanceRoot, "mcp-servers.json"), JSON.stringify(document), "utf8");
+      return instanceRoot;
+    }
+
+    it("passes an instance-configured stdio server to the runtime and into the session identity", async () => {
+      const root = await makeTempRoot();
+      const instanceRoot = await writeInstanceMcpConfig(root, {
+        mcpServers: {
+          mem0: { type: "stdio", command: "/opt/mem0/run.sh", args: ["--user", "${PAPERCLIP_AGENT_ID}"] },
+        },
+      });
+
+      const { runtimeOptions, result } = await withPaperclipInstance(instanceRoot, () =>
+        runExecutor({
+          agent: "custom",
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+        }),
+      );
+
+      expect(runtimeOptions[0]?.mcpServers).toEqual([
+        { name: "mem0", command: "/opt/mem0/run.sh", args: ["--user", "agent-1"], env: [] },
+      ]);
+      // Session identity feeds the fingerprint, so a config change invalidates a
+      // warm handle instead of silently reusing a session without the server.
+      const sessionParams = (result as { sessionParams?: Record<string, unknown> }).sessionParams;
+      expect(sessionParams?.mcpServers).toEqual([
+        {
+          name: "mem0",
+          command: "/opt/mem0/run.sh",
+          args: ["--user", "agent-1"],
+          // Hashed, never carried in cleartext: session params are persisted.
+          envHash: expect.any(String),
+        },
+      ]);
+    });
+
+    it("changes the fingerprint when only a local server's env changes", async () => {
+      const fingerprintFor = async (envValue: string): Promise<string> => {
+        const root = await makeTempRoot();
+        const instanceRoot = await writeInstanceMcpConfig(root, {
+          mcpServers: { mem0: { command: "/opt/mem0/run.sh", env: { MEM0_PROFILE: envValue } } },
+        });
+        const { result } = await withPaperclipInstance(instanceRoot, () =>
+          runExecutor({
+            agent: "custom",
+            agentCommand: "node ./fake-acp.js",
+            // A fixed stateDir keeps every other fingerprint input equal, so the
+            // env value is the only thing that can move the hash.
+            stateDir: "/tmp/paperclip-local-mcp-fingerprint-state",
+            cwd: "/tmp/paperclip-local-mcp-fingerprint-cwd",
+          }),
+        );
+        const sessionParams = (result as { sessionParams?: { configFingerprint?: string } }).sessionParams;
+        return String(sessionParams?.configFingerprint);
+      };
+
+      const [first, second, firstAgain] = [
+        await fingerprintFor("alpha"),
+        await fingerprintFor("beta"),
+        await fingerprintFor("alpha"),
+      ];
+      expect(first).not.toBe(second);
+      expect(first).toBe(firstAgain);
+    });
+
+    it("keeps Paperclip-managed http connections ahead of local stdio servers and never lets a local entry shadow one", async () => {
+      const root = await makeTempRoot();
+      const instanceRoot = await writeInstanceMcpConfig(root, {
+        mcpServers: {
+          managed: { command: "/opt/impostor.sh" },
+          mem0: { command: "/opt/mem0/run.sh" },
+        },
+      });
+
+      const { runtimeOptions, logs } = await withPaperclipInstance(instanceRoot, () =>
+        runExecutor(
+          {
+            agent: "custom",
+            agentCommand: "node ./fake-acp.js",
+            stateDir: path.join(root, "state"),
+          },
+          {
+            runtimeMcp: {
+              getServers: () => [
+                { name: "managed", url: "https://mcp.test/managed", token: "t0ken", connectionId: "conn-1" },
+              ],
+            } as never,
+          },
+        ),
+      );
+
+      expect(runtimeOptions[0]?.mcpServers).toEqual([
+        {
+          type: "http",
+          name: "managed",
+          url: "https://mcp.test/managed",
+          headers: [{ name: "Authorization", value: "Bearer t0ken" }],
+        },
+        { name: "mem0", command: "/opt/mem0/run.sh", args: [], env: [] },
+      ]);
+      expect(logs.some((entry) => entry.text.includes("collides with a Paperclip-managed connection"))).toBe(true);
+    });
+
+    it("skips local stdio servers on a remote execution target", async () => {
+      const root = await makeTempRoot();
+      const instanceRoot = await writeInstanceMcpConfig(root, {
+        mcpServers: { mem0: { command: "/opt/mem0/run.sh" } },
+      });
+
+      const { runtimeOptions, logs } = await withPaperclipInstance(instanceRoot, () =>
+        runExecutor(
+          {
+            agent: "custom",
+            agentCommand: "node ./fake-acp.js",
+            stateDir: path.join(root, "state"),
+          },
+          {
+            executionTarget: {
+              kind: "remote",
+              transport: "ssh",
+              remoteCwd: "/remote/work",
+              spec: {
+                host: "build-host",
+                port: 22,
+                username: "paperclip",
+                remoteCwd: "/remote/work",
+              },
+            },
+          },
+        ),
+      );
+
+      expect(runtimeOptions[0]?.mcpServers).toEqual([]);
+      expect(logs.some((entry) => entry.text.includes("remote execution environment"))).toBe(true);
+    });
+
+    it("still reports a malformed local config on a remote execution target", async () => {
+      const root = await makeTempRoot();
+      const instanceRoot = path.join(root, "paperclip-home", "instances", "default");
+      await fs.mkdir(instanceRoot, { recursive: true });
+      await fs.writeFile(path.join(instanceRoot, "mcp-servers.json"), "{ not json", "utf8");
+
+      const { runtimeOptions, logs } = await withPaperclipInstance(instanceRoot, () =>
+        runExecutor(
+          {
+            agent: "custom",
+            agentCommand: "node ./fake-acp.js",
+            stateDir: path.join(root, "state"),
+          },
+          {
+            executionTarget: {
+              kind: "remote",
+              transport: "ssh",
+              remoteCwd: "/remote/work",
+              spec: { host: "build-host", port: 22, username: "paperclip", remoteCwd: "/remote/work" },
+            },
+          },
+        ),
+      );
+
+      expect(runtimeOptions[0]?.mcpServers).toEqual([]);
+      expect(logs.some((entry) => entry.text.includes("invalid JSON"))).toBe(true);
+    });
+
+    it("skips a malformed entry with a warning instead of failing the run", async () => {
+      const root = await makeTempRoot();
+      const instanceRoot = await writeInstanceMcpConfig(root, {
+        mcpServers: { broken: { args: ["--nope"] }, mem0: { command: "/opt/mem0/run.sh" } },
+      });
+
+      const { runtimeOptions, logs } = await withPaperclipInstance(instanceRoot, () =>
+        runExecutor({
+          agent: "custom",
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+        }),
+      );
+
+      expect(runtimeOptions[0]?.mcpServers).toEqual([
+        { name: "mem0", command: "/opt/mem0/run.sh", args: [], env: [] },
+      ]);
+      expect(logs.some((entry) => entry.text.includes("has no 'command'"))).toBe(true);
+    });
+
+    it("leaves mcpServers untouched when no local config exists", async () => {
+      const root = await makeTempRoot();
+      const instanceRoot = path.join(root, "paperclip-home", "instances", "default");
+      await fs.mkdir(instanceRoot, { recursive: true });
+
+      const { runtimeOptions } = await withPaperclipInstance(instanceRoot, () =>
+        runExecutor({
+          agent: "custom",
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+        }),
+      );
+
+      expect(runtimeOptions[0]?.mcpServers).toEqual([]);
+    });
   });
 });
 

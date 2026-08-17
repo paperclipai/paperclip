@@ -84,6 +84,7 @@ import {
   DEFAULT_ACP_ENGINE_TIMEOUT_SEC,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "./constants.js";
+import { resolveLocalStdioMcpServers } from "./local-mcp-servers.js";
 import {
   createRuntimeSpanRunner,
   emitSkippedStartupStep,
@@ -102,6 +103,14 @@ import {
 } from "./startup-timing.js";
 
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
+
+// Session-identity view of one MCP server. Paperclip-managed connections keep
+// their historical `{name,url,connectionId}` shape; locally-configured stdio
+// servers carry the launch identity that actually determines what tools the
+// session sees.
+type AcpxMcpIdentityEntry =
+  | { name: string; url: string; connectionId: string }
+  | { name: string; command: string; args: string[]; envHash: string };
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
 const BENIGN_NES_CLOSE_STDERR = /method: ['"]nes\/close['"].*-32601/;
 
@@ -414,7 +423,10 @@ interface AcpxPreparedRuntime {
   childStderrLogPath: string | null;
   paperclipClaudeSettings: PaperclipClaudeSettingsResult | null;
   mcpServers: NonNullable<AcpRuntimeOptions["mcpServers"]>;
-  mcpIdentity: Array<{ name: string; url: string; connectionId: string }>;
+  // Paperclip-managed http connections first, then locally-configured stdio
+  // servers. The two shapes stay distinct so an http-only run hashes exactly as
+  // it did before local stdio support existed (no fleet-wide warm-handle churn).
+  mcpIdentity: AcpxMcpIdentityEntry[];
   // Per-step round-trip / provider-duration readers sourced from the sandbox
   // runner's counters (Open Q1). Empty for local runs and the runner-less
   // fallback, where no host→sandbox exec seam exists. Threaded into the
@@ -1542,7 +1554,7 @@ async function buildRuntime(input: {
   const requestedThinkingEffort = normalizeRequestedThinkingEffort(config);
   const fastMode = acpxAgent === "codex" && config.fastMode === true;
   const runtimeMcpServers = input.ctx.runtimeMcp?.getServers() ?? [];
-  const mcpIdentity = runtimeMcpServers.map(({ name, url, connectionId }) => ({
+  const mcpIdentity: AcpxMcpIdentityEntry[] = runtimeMcpServers.map(({ name, url, connectionId }) => ({
     name,
     url,
     connectionId,
@@ -1652,6 +1664,60 @@ async function buildRuntime(input: {
       );
     }
     if (codexStartupConfig.value) env.CODEX_CONFIG = codexStartupConfig.value;
+  }
+
+  // Locally-configured stdio MCP servers (mem0, browsermcp, ...). Headless/SDK
+  // mode never reads the user-scope `~/.claude.json` MCP registry, so without
+  // this every such server is invisible to every Paperclip run. Resolved here —
+  // after `env` is fully assembled — so `${VAR}` refs in the config expand
+  // against the same environment the agent process will get (per-agent values
+  // such as MEM0_USER_ID included).
+  //
+  // Local-execution only: the command paths are host paths, so a remote/sandbox
+  // execution target would spawn something that does not exist there.
+  const localMcp = await resolveLocalStdioMcpServers({
+    instanceRoot: defaultPaperclipInstanceDir(),
+    env,
+    adapterConfigValue: config.mcpServers,
+    reservedNames: mcpServers.map((server) => server.name),
+  });
+  // Config problems are worth reporting on every lane, including the remote one
+  // that ends up applying nothing — otherwise an unreadable or malformed file is
+  // completely silent there.
+  for (const warning of localMcp.warnings) {
+    await input.ctx.onLog("stderr", `[paperclip] Local MCP config: ${warning}\n`);
+  }
+  if (localMcp.servers.length > 0) {
+    if (executionTargetIsRemote) {
+      await input.ctx.onLog(
+        "stderr",
+        `[paperclip] Skipping ${localMcp.servers.length} locally-configured stdio MCP server(s) — this run targets a remote execution environment where the host command paths do not exist.\n`,
+      );
+    } else {
+      for (const server of localMcp.servers) {
+        mcpServers.push({
+          name: server.name,
+          command: server.command,
+          args: server.args,
+          env: server.env,
+        });
+        // Hash the env rather than carrying it: a changed value (rotated
+        // credential, different profile) must still invalidate a warm handle,
+        // but session params are persisted and must not hold secret values.
+        mcpIdentity.push({
+          name: server.name,
+          command: server.command,
+          args: server.args,
+          envHash: shortHash(server.env),
+        });
+      }
+      await input.ctx.onLog(
+        "stderr",
+        `[paperclip] Passing ${localMcp.servers.length} locally-configured stdio MCP server(s) to the agent: ${localMcp.servers
+          .map((server) => server.name)
+          .join(", ")} (from ${localMcp.sources.join(", ")}).\n`,
+      );
+    }
   }
 
   let skillPromptInstructions = "";
