@@ -1916,10 +1916,21 @@ function isConfigurationIncompleteFailure(error: unknown): error is Configuratio
 }
 
 export function isConfigurationIncompleteFailedRun(
-  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode"> | null | undefined,
-) {
-  return run?.errorCode === CONFIGURATION_INCOMPLETE_FAILURE_CODE || run?.errorCode === "model_not_found";
-}
+    run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode"> | null | undefined,
+  ) {
+    // VIR-880 / VIR-881: include the new `missing_local_agent_jwt` failure
+    // code so the fail-fast path skips issue-comment handling, blocks the
+    // issue immediately, and routes to manual repair via the configuration
+    // blocker. Without this predicate update the typed failure would be
+    // persisted with `errorCode: missing_local_agent_jwt` but would fall
+    // through to the normal issue-comment recovery path, which is exactly
+    // what Greptile flagged as P1 on PR #11333.
+    return (
+      run?.errorCode === CONFIGURATION_INCOMPLETE_FAILURE_CODE ||
+      run?.errorCode === "model_not_found" ||
+      run?.errorCode === MISSING_LOCAL_AGENT_JWT_CODE
+    );
+  }
 
 async function hasGitMetadata(cwd: string | null | undefined) {
   const normalized = readNonEmptyString(cwd);

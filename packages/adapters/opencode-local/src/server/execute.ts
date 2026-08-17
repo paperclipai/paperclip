@@ -316,32 +316,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // selection is already handled via the --model CLI flag.  Set after the
   // envConfig loop so user overrides cannot disable this guard.
   env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
-  // VIR-880 / VIR-881: copy the parent-supplied JWT into the child env, then
-  // emit a `jwt_env_race` telemetry event if the server-side token was set but
-  // the child env was already empty before the assignment. This isolates the
-  // race condition observed in the 18:35-18:44 / 18:45-19:15 / 19:20-20:07
-  // plan_only clusters from a plain missing-secret case (which now fails fast
-  // in the heartbeat with `errorCode: missing_local_agent_jwt`). The telemetry
-  // line is written as a stderr JSON record so the host adapter worker log
-  // captures it without depending on a shared logger module.
-  const telemetryIssueId =
-    typeof context.issueId === "string" && context.issueId.trim().length > 0
-      ? context.issueId.trim()
-      : null;
+  // VIR-880 / VIR-881: copy the parent-supplied JWT into the child env so the
+  // child process can authenticate against the local Paperclip API. The plain
+  // missing-secret case is now handled fail-fast in heartbeat.ts with
+  // `errorCode: missing_local_agent_jwt`, which routes the failure to the
+  // configuration-blocker recovery path. The previous version of this call
+  // site also emitted a `jwt_env_race` telemetry event, but that signal fired
+  // on every fresh first-time write (Greptile P1 review on PR #11333), so
+  // it has been removed; see jwt-env.ts for the full rationale.
   applyLocalAgentJwtToEnv({
     env,
     parentAuthToken: authToken ?? null,
-    runId,
-    issueId: telemetryIssueId,
-    agentId: agent?.id ?? null,
-    adapterType: agent?.adapterType ?? null,
-    onTelemetry: (event) => {
-      try {
-        process.stderr.write(`${JSON.stringify(event)}\n`);
-      } catch {
-        // best-effort: never let telemetry itself break the run
-      }
-    },
   });
   const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
   const localRuntimeConfigHome =
