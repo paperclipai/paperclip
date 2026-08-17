@@ -16,10 +16,12 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueLabels,
   issueRelations,
   issueTreeHoldMembers,
   issueTreeHolds,
   issues,
+  labels,
   projects,
   projectWorkspaces,
   workspaceOperations,
@@ -72,6 +74,7 @@ import { instanceSettingsService } from "../services/instance-settings.ts";
 import { issueService } from "../services/issues.ts";
 import { runningProcesses } from "../adapters/index.ts";
 import { DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS } from "../services/recovery/service.ts";
+import { PARKED_V1_LABEL_ID } from "../services/issue-liveness.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -110,7 +113,9 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     await db.delete(issueComments);
     await db.delete(issueTreeHoldMembers);
     await db.delete(issueTreeHolds);
+    await db.delete(issueLabels);
     await db.delete(issueRelations);
+    await db.delete(labels);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -368,6 +373,79 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
     expect(escalations).toHaveLength(0);
+  });
+
+  it.each([
+    { blockerAssigneeAgentId: null, state: "blocked_by_unassigned_issue" },
+    { blockerAssigneeAgentId: "manager" as const, state: "blocked_by_assigned_backlog_issue" },
+  ])("suppresses $state after hydrating the parked-v1 issue label", async ({
+    blockerAssigneeAgentId,
+  }) => {
+    await enableAutoRecovery();
+    const { companyId, blockedIssueId, blockerIssueId } = await seedBlockedChain({
+      blockerStatus: "backlog",
+      blockerAssigneeAgentId,
+    });
+    await db.insert(labels).values({
+      id: PARKED_V1_LABEL_ID,
+      companyId,
+      name: "parked",
+      color: "#64748b",
+    });
+    await db.insert(issueLabels).values({ companyId, issueId: blockerIssueId, labelId: PARKED_V1_LABEL_ID });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(0);
+    expect(result.escalationsCreated).toBe(0);
+    expect(await db.select().from(issues).where(eq(issues.originKind, "harness_liveness_escalation")))
+      .toHaveLength(0);
+    expect(await db.select({ id: issues.id, status: issues.status }).from(issues).where(eq(issues.id, blockedIssueId)))
+      .toEqual([{ id: blockedIssueId, status: "blocked" }]);
+    expect(await db.select({ id: issues.id, status: issues.status }).from(issues).where(eq(issues.id, blockerIssueId)))
+      .toEqual([{ id: blockerIssueId, status: "backlog" }]);
+    expect(await db.select().from(issueRelations).where(and(
+      eq(issueRelations.issueId, blockerIssueId),
+      eq(issueRelations.relatedIssueId, blockedIssueId),
+    ))).toHaveLength(1);
+  });
+
+  it.each([
+    { blockerAssigneeAgentId: null, state: "blocked_by_unassigned_issue" },
+    { blockerAssigneeAgentId: "manager" as const, state: "blocked_by_assigned_backlog_issue" },
+  ])("restores the original parked backlog finding and reconciliation when the flag is exactly false for $state", async ({
+    blockerAssigneeAgentId,
+  }) => {
+    await enableAutoRecovery();
+    const { companyId, blockedIssueId, blockerIssueId } = await seedBlockedChain({
+      blockerStatus: "backlog",
+      blockerAssigneeAgentId,
+    });
+    await db.insert(labels).values({ id: PARKED_V1_LABEL_ID, companyId, name: "parked", color: "#64748b" });
+    await db.insert(issueLabels).values({ companyId, issueId: blockerIssueId, labelId: PARKED_V1_LABEL_ID });
+    const previous = process.env.PAPERCLIP_ENABLE_PARKED_V1_LIVENESS_SUPPRESSION;
+    process.env.PAPERCLIP_ENABLE_PARKED_V1_LIVENESS_SUPPRESSION = "false";
+
+    try {
+      const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+      expect(result.findings).toBe(1);
+      expect(result.escalationsCreated).toBe(1);
+      expect(result.issueIds).toEqual([blockedIssueId]);
+      expect(await db.select().from(issues).where(eq(issues.originKind, "harness_liveness_escalation")))
+        .toHaveLength(1);
+      expect(await db.select().from(issueRelations).where(and(
+        eq(issueRelations.issueId, blockerIssueId),
+        eq(issueRelations.relatedIssueId, blockedIssueId),
+      ))).toHaveLength(1);
+      expect(await db.select({ status: issues.status }).from(issues).where(eq(issues.id, blockedIssueId)))
+        .toEqual([{ status: "blocked" }]);
+      expect(await db.select({ status: issues.status }).from(issues).where(eq(issues.id, blockerIssueId)))
+        .toEqual([{ status: "backlog" }]);
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_ENABLE_PARKED_V1_LIVENESS_SUPPRESSION;
+      else process.env.PAPERCLIP_ENABLE_PARKED_V1_LIVENESS_SUPPRESSION = previous;
+    }
   });
 
   it("runs exactly one bounded review-path recovery before surfacing a stalled decision", async () => {
