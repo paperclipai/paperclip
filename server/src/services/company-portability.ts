@@ -72,7 +72,14 @@ import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/serv
 import { findServerAdapter } from "../adapters/index.js";
 import { formatAttachmentSize, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { forbidden, notFound, unprocessable } from "../errors.js";
-import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
+import {
+  ghFetch,
+  gitHubApiBase,
+  readGitHubResponseBytes,
+  readGitHubResponseJson,
+  readGitHubResponseText,
+  resolveRawGitHubUrl,
+} from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
@@ -2883,7 +2890,7 @@ async function fetchText(url: string) {
   if (!response.ok) {
     throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
   }
-  return response.text();
+  return readGitHubResponseText(response, url);
 }
 
 async function fetchOptionalText(url: string) {
@@ -2892,7 +2899,7 @@ async function fetchOptionalText(url: string) {
   if (!response.ok) {
     throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
   }
-  return response.text();
+  return readGitHubResponseText(response, url);
 }
 
 async function fetchBinary(url: string) {
@@ -2900,7 +2907,7 @@ async function fetchBinary(url: string) {
   if (!response.ok) {
     throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
   }
-  return Buffer.from(await response.arrayBuffer());
+  return readGitHubResponseBytes(response, url);
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -2912,7 +2919,7 @@ async function fetchJson<T>(url: string): Promise<T> {
   if (!response.ok) {
     throw unprocessable(`Failed to fetch ${url}: ${response.status}`);
   }
-  return response.json() as Promise<T>;
+  return readGitHubResponseJson<T>(response, url);
 }
 
 function dedupeEnvInputs(values: CompanyPortabilityManifest["envInputs"]) {

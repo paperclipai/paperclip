@@ -28,6 +28,7 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_HIDDEN_SETTINGS` | (unset) | Comma-separated settings surfaces to hide from the UI and floor at the API, for operators hosting Paperclip for others (managed cloud, internal shared server). See [Hiding settings surfaces](#hiding-settings-surfaces). |
 | `PAPERCLIP_SETTING_DEFAULTS` | (unset) | JSON object replacing the schema default of selected instance settings, for hosting operators. See [Operator setting defaults](#operator-setting-defaults). |
 | `PAPERCLIP_GITHUB_REQUEST_TIMEOUT_MS` | `30000` | Timeout for each GitHub / GitHub Enterprise request (skill imports, company exports). Raise it for slow GitHub Enterprise instances. |
+| `PAPERCLIP_GITHUB_MAX_RESPONSE_BYTES` | `10485760` | Maximum size of a single GitHub / GitHub Enterprise response body. Raise it if a legitimate import exceeds 10 MiB. |
 
 Daytona connectivity for `paperclip_runner` uses authenticated provider
 WebSocket ingress and follows the instance experimental setting
