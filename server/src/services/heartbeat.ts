@@ -14063,14 +14063,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           agentId: agent.id,
           previousInstructionsRootPath: config.instructionsRootPath ?? null,
           previousInstructionsFilePath: config.instructionsFilePath ?? null,
+          previousInstructionsEntryFile: config.instructionsEntryFile ?? null,
           instructionsRootPath: managedInstructionsPatch.instructionsRootPath,
           instructionsFilePath: managedInstructionsPatch.instructionsFilePath,
+          instructionsEntryFile: managedInstructionsPatch.instructionsEntryFile,
           warnings: managedInstructionsPatch.warnings,
         },
         "Corrected stale managed instructions root at heartbeat config-assembly",
       );
       config.instructionsRootPath = managedInstructionsPatch.instructionsRootPath;
       config.instructionsFilePath = managedInstructionsPatch.instructionsFilePath;
+      // Session-freshness fingerprinting (resolveInstructionsConfigFingerprintMetadata below) prefers
+      // instructionsEntryFile over instructionsFilePath, so this must be corrected too or the
+      // fingerprint would keep resolving against the stale entry file name.
+      config.instructionsEntryFile = managedInstructionsPatch.instructionsEntryFile;
     }
     const taskSession = taskKey
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)

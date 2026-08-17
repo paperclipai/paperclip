@@ -425,10 +425,39 @@ describe("resolveHeartbeatManagedInstructionsPatch", () => {
     expect(patch).toMatchObject({
       instructionsRootPath: rootB,
       instructionsFilePath: path.join(rootB, "AGENTS.md"),
+      instructionsEntryFile: "AGENTS.md",
     });
     expect((patch as { warnings: string[] }).warnings).toEqual([
       `Recovered managed instructions from disk at ${rootB}; ignoring stale configured root ${rootA}.`,
     ]);
+  });
+
+  it("corrects a stale instructionsEntryFile too, not just the root (fingerprint resolution prefers entryFile over instructionsFilePath)", async () => {
+    const paperclipHome = await makeTempDir("paperclip-heartbeat-instructions-entry-");
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "instance-a";
+
+    // The configured entry file (docs/MISSING.md) no longer exists on disk; only AGENTS.md does,
+    // so recovery must fall back to it as the recovered entry file.
+    const managedRoot = managedRootFor(paperclipHome, "instance-a");
+    await fs.mkdir(managedRoot, { recursive: true });
+    await fs.writeFile(path.join(managedRoot, "AGENTS.md"), "# Recovered Agent\n", "utf8");
+
+    const agent = makeAgent({
+      instructionsBundleMode: "managed",
+      instructionsRootPath: managedRoot,
+      instructionsEntryFile: "docs/MISSING.md",
+      instructionsFilePath: path.join(managedRoot, "docs", "MISSING.md"),
+    });
+
+    const patch = await resolveHeartbeatManagedInstructionsPatch(agent);
+
+    expect(patch).toMatchObject({
+      instructionsRootPath: managedRoot,
+      instructionsFilePath: path.join(managedRoot, "AGENTS.md"),
+      instructionsEntryFile: "AGENTS.md",
+    });
   });
 
   it("returns {} for an external-mode config, even if it points at a nonexistent path", async () => {

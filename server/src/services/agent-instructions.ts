@@ -344,15 +344,25 @@ async function recoverManagedBundleState(agent: AgentLike, state: BundleState): 
  * - the bundle is not in managed mode at all, or
  * - the currently configured managed root/entry file already match what is on disk.
  *
- * Otherwise returns `{ instructionsRootPath, instructionsFilePath, warnings }` where `warnings`
- * carries only the warning strings newly produced by this recovery pass (e.g. "Recovered managed
- * instructions from disk ... ignoring stale configured root").
+ * Otherwise returns `{ instructionsRootPath, instructionsFilePath, instructionsEntryFile, warnings }`
+ * where `warnings` carries only the warning strings newly produced by this recovery pass (e.g.
+ * "Recovered managed instructions from disk ... ignoring stale configured root"). `entryFile` is
+ * included alongside the resolved file path because
+ * `resolveInstructionsConfigFingerprintMetadata` in heartbeat.ts resolves the session-freshness
+ * fingerprint path from `config.instructionsEntryFile` *in preference to* `config.instructionsFilePath`
+ * — leaving the stale entry file name in place would silently defeat the path correction for that
+ * fingerprint even though the adapter's own `instructionsFilePath` read is fixed.
  */
 export async function resolveHeartbeatManagedInstructionsPatch(
   agent: AgentLike,
 ): Promise<
   | Record<string, never>
-  | { instructionsRootPath: string; instructionsFilePath: string; warnings: string[] }
+  | {
+      instructionsRootPath: string;
+      instructionsFilePath: string;
+      instructionsEntryFile: string;
+      warnings: string[];
+    }
 > {
   const derived = deriveBundleState(agent);
   const recovered = await recoverManagedBundleState(agent, derived);
@@ -370,6 +380,7 @@ export async function resolveHeartbeatManagedInstructionsPatch(
   return {
     instructionsRootPath: recovered.rootPath,
     instructionsFilePath: recovered.resolvedEntryPath,
+    instructionsEntryFile: recovered.entryFile,
     warnings: newWarnings,
   };
 }
