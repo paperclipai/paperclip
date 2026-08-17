@@ -420,7 +420,45 @@ export function environmentRunOrchestrator(
       (typeof lease.metadata?.remoteCwd === "string" && lease.metadata.remoteCwd.trim().length > 0
         ? lease.metadata.remoteCwd.trim()
         : executionWorkspace.cwd);
-    if (provisionCommand && environment.driver !== "local") {
+    // `executionWorkspace.created` only carries a meaningful reuse signal for the
+    // `git_worktree` strategy (isolated per-issue worktrees, which are explicitly
+    // created or reused). For `project_primary` (shared workspace) realizations the
+    // local directory always reports `created: false` — it is the project's
+    // long-lived primary checkout, not something freshly created per run — so gating
+    // on that flag would silently skip provisioning forever for every shared-workspace
+    // remote/sandbox environment, including the very first run. Treat non-worktree
+    // strategies as always requiring provisioning, matching prior behavior for that
+    // strategy, and only apply the reuse skip where "created" is well-defined.
+    //
+    // A reused local worktree says nothing about the remote environment/lease —
+    // those are independent facts. Non-local drivers acquire a brand new remote
+    // lease (and typically a brand new backing sandbox/SSH target) on every run
+    // unless that lease is explicitly using a reuse policy; "ephemeral" leases in
+    // particular are fresh every time by construction. When the driver's own
+    // realization result reports an explicit `isNew`/`created` flag for the
+    // remote side, trust it.
+    //
+    // Built-in realization records carry no such field, so fall back to a
+    // genuine per-lease signal: `lease.metadata.wasResumed`, set by the sandbox
+    // driver only when it actually resumed an existing provider-side lease
+    // (environment-runtime.ts). `lease.leasePolicy` is a config-level setting —
+    // "does this environment's config say to reuse a lease when one exists" —
+    // not a fact about whether THIS lease was actually just created or is truly
+    // being reused. A brand new sandbox with `reuseLease: true` has policy
+    // `reuse_by_environment` on its very first, never-provisioned lease, so
+    // policy alone must never stand in for freshness. Anything without an
+    // explicit `wasResumed: true` fails safe toward re-provisioning.
+    const hasRemoteFreshnessSignal =
+      typeof workspaceRealization.isNew === "boolean" || typeof workspaceRealization.created === "boolean";
+    const leaseWasResumed = lease.metadata?.wasResumed === true;
+    const remoteRealizationIsFresh = hasRemoteFreshnessSignal
+      ? workspaceRealization.isNew === true || workspaceRealization.created === true
+      : !leaseWasResumed;
+    const isNew =
+      executionWorkspace.strategy !== "git_worktree" ||
+      executionWorkspace.created === true ||
+      remoteRealizationIsFresh;
+    if (provisionCommand && environment.driver !== "local" && isNew) {
       try {
         const provisionResult = await environmentRuntime.execute({
           environment,
@@ -454,6 +492,19 @@ export function environmentRunOrchestrator(
           },
         );
       }
+    }
+
+    // Record the provisioning decision on the realization metadata so operators viewing
+    // run/workspace details can tell whether a workspace was freshly provisioned or reused
+    // without the provision command re-running.
+    if (provisionCommand && environment.driver !== "local") {
+      workspaceRealization = {
+        ...workspaceRealization,
+        provisioning: {
+          ran: isNew,
+          reason: isNew ? "new_workspace" : "reused_existing_workspace",
+        },
+      };
     }
 
     // Step 3: Persist realization metadata on lease and execution workspace

@@ -2900,6 +2900,7 @@ async function provisionExecutionWorktree(input: {
   created: boolean;
   recorder?: WorkspaceOperationRecorder | null;
 }) {
+  if (!input.created) return;
   const provisionCommand = asString(input.strategy.provisionCommand, "").trim();
   if (!provisionCommand) return;
   const resolvedProvisionCommand = resolveRepoManagedWorkspaceCommand(provisionCommand, input.repoRoot);
@@ -3414,7 +3415,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     : [];
   const restoreCurrentBaseRefSha = restoreBaseRef ? await resolveBaseRefSha(repoRoot, restoreBaseRef) : null;
 
-  let created = false;
+  let created = true;
   try {
     await recordGitOperation(input.recorder, {
       phase: "worktree_prepare",
