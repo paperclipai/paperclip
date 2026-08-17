@@ -174,6 +174,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     const agentId = randomUUID();
     const blockerId = randomUUID();
     const blockedIssueId = randomUUID();
+    const descendantIssueId = randomUUID();
     const readyIssueId = randomUUID();
 
     await db.insert(companies).values({
@@ -218,6 +219,14 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         responsibleUserId: "responsible-user",
       },
       {
+        id: descendantIssueId,
+        companyId,
+        title: "Mission 3",
+        status: "todo",
+        priority: "low",
+        assigneeAgentId: agentId,
+      },
+      {
         id: readyIssueId,
         companyId,
         title: "Mission 1",
@@ -227,12 +236,20 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         responsibleUserId: "responsible-user",
       },
     ]);
-    await db.insert(issueRelations).values({
-      companyId,
-      issueId: blockerId,
-      relatedIssueId: blockedIssueId,
-      type: "blocks",
-    });
+    await db.insert(issueRelations).values([
+      {
+        companyId,
+        issueId: blockerId,
+        relatedIssueId: blockedIssueId,
+        type: "blocks",
+      },
+      {
+        companyId,
+        issueId: blockedIssueId,
+        relatedIssueId: descendantIssueId,
+        type: "blocks",
+      },
+    ]);
 
     const blockedWake = await heartbeat.wakeup(agentId, {
       source: "assignment",
@@ -273,41 +290,30 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       .then((rows) => rows[0]?.count ?? 0);
     expect(blockedRunsBeforeResolution).toBe(0);
 
-    const interactionWake = await heartbeat.wakeup(agentId, {
-      source: "automation",
-      triggerDetail: "system",
-      reason: "issue_commented",
-      payload: { issueId: blockedIssueId, commentId: randomUUID() },
-      contextSnapshot: {
-        issueId: blockedIssueId,
-        wakeReason: "issue_commented",
-      },
-    });
-    expect(interactionWake).not.toBeNull();
+    const interactionWakeResults = await Promise.all(
+      ["issue_commented", "issue_comment_mentioned"].map((reason) =>
+        heartbeat.wakeup(agentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason,
+          payload: { issueId: blockedIssueId, commentId: randomUUID() },
+          contextSnapshot: {
+            issueId: blockedIssueId,
+            wakeReason: reason,
+          },
+        }),
+      ),
+    );
+    expect(interactionWakeResults).toEqual([null, null]);
 
-    await waitForCondition(async () => {
-      const run = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, interactionWake!.id))
-        .then((rows) => rows[0] ?? null);
-      return run?.status === "succeeded";
-    });
-
-    const interactionRun = await db
-      .select({
-        status: heartbeatRuns.status,
-        contextSnapshot: heartbeatRuns.contextSnapshot,
-      })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, interactionWake!.id))
-      .then((rows) => rows[0] ?? null);
-
-    expect(interactionRun?.status).toBe("succeeded");
-    expect(interactionRun?.contextSnapshot).toMatchObject({
-      dependencyBlockedInteraction: true,
-      unresolvedBlockerIssueIds: [blockerId],
-    });
+    const blockedInteractionWakeRequests = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(sql`${agentWakeupRequests.payload} ->> 'issueId' = ${blockedIssueId}`);
+    expect(blockedInteractionWakeRequests).toHaveLength(3);
+    expect(blockedInteractionWakeRequests.every(
+      (wakeup) => wakeup.status === "skipped" && wakeup.reason === "issue_dependencies_blocked",
+    )).toBe(true);
 
     let finishReadyRun!: () => void;
     const readyRunCanFinish = new Promise<void>((resolve) => {
@@ -396,6 +402,22 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, promotedWake!.id))
       .then((rows) => rows[0] ?? null);
+    const descendantCommentWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId: descendantIssueId, commentId: randomUUID() },
+      contextSnapshot: {
+        issueId: descendantIssueId,
+        wakeReason: "issue_commented",
+      },
+    });
+    expect(descendantCommentWake).toBeNull();
+    const descendantRuns = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${descendantIssueId}`)
+      .then((rows) => rows[0]?.count ?? 0);
     const blockedWakeRequestCount = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(agentWakeupRequests)
@@ -408,6 +430,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       .then((rows) => rows[0]?.count ?? 0);
 
     expect(promotedBlockedRun?.status).toBe("succeeded");
+    expect(descendantRuns).toBe(0);
     expect(blockedWakeRequestCount).toBeGreaterThanOrEqual(2);
 
     const noActiveRuns = await waitForCondition(async () => {

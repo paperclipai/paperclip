@@ -1875,7 +1875,7 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   // Only human comments should implicitly reopen finished work.
   // Agent-authored comments remain communicative unless reopen was explicit.
   if (input.actorType !== "user") return false;
-  if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
+  if (input.issueStatus !== "blocked") return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
 }
@@ -10366,7 +10366,8 @@ export function issueRoutes(
           logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
         }
 
-        for (const mentionedId of mentionedIds) {
+        if (reopened || !isClosed) {
+      for (const mentionedId of mentionedIds) {
           if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
           addWakeup(mentionedId, {
             source: "automation",
@@ -10385,6 +10386,7 @@ export function issueRoutes(
             },
           });
         }
+      }
       }
 
       const becameDone = existing.status !== "done" && issue.status === "done";
