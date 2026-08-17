@@ -60,6 +60,25 @@ test("drafts grouped notes from the newest stable tag to the beta source", () =>
   assert.doesNotMatch(body, /ancient work/);
 });
 
+test("uses the nearest ancestor stable tag, not the newest by version", () => {
+  const dir = makeFixtureRepo();
+  commit(dir, "feat: old work (#1)");
+  git(dir, "tag", "v2026.100.0");
+  commit(dir, "feat: mid work (#2)");
+  git(dir, "tag", "beta/v2026.150.0-beta.0");
+  commit(dir, "feat: new work (#3)");
+  git(dir, "tag", "v2026.200.0");
+
+  // Promoting the older source must draft against its own lineage's last
+  // stable (v2026.100.0), not the newer v2026.200.0 that already contains
+  // it — that range would be empty.
+  const { body } = runDraft(dir, "2026.150.0-beta.0");
+
+  assert.match(body, /- feat: mid work \(#2\)/);
+  assert.doesNotMatch(body, /old work/);
+  assert.doesNotMatch(body, /new work/);
+});
+
 test("falls back to the previous beta tag when no stable tag exists", () => {
   const dir = makeFixtureRepo();
   commit(dir, "feat: first-train work (#1)");

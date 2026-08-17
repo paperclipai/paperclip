@@ -75,13 +75,16 @@ if [ -z "$out_file" ]; then
   out_file="${repo_dir}/releases/beta/v${beta_version}.md"
 fi
 
-# Range start: the newest stable tag. Before the first stable exists, fall
-# back to the previous beta so the draft stays bounded; with no earlier
-# marker at all, cover the source commit's full history.
-range_start="$(git -C "$repo_dir" tag -l 'v[0-9]*' --sort=-v:refname | head -1 || true)"
+# Range start: the newest stable tag reachable from the source commit —
+# not the newest by version, which can sit on a divergent lineage (a
+# stable cut from a candidate branch, or a source that predates it) and
+# would produce an empty or wrong range. Before the first reachable
+# stable, fall back to the nearest beta tag strictly before the source;
+# with no marker at all, cover the source commit's full history.
+range_start="$(git -C "$repo_dir" describe --tags --match 'v[0-9]*' --abbrev=0 "$source_sha" 2>/dev/null || true)"
 range_label="$range_start"
 if [ -z "$range_start" ]; then
-  range_start="$(git -C "$repo_dir" tag -l 'beta/v*' --sort=-v:refname | grep -Fxv "$beta_tag" | head -1 || true)"
+  range_start="$(git -C "$repo_dir" describe --tags --match 'beta/v*' --abbrev=0 "${source_sha}^" 2>/dev/null || true)"
   range_label="$range_start"
 fi
 if [ -n "$range_start" ]; then

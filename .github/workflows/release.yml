@@ -714,6 +714,7 @@ jobs:
       stable_version: ${{ steps.notes.outputs.stable_version }}
       notes_mode: ${{ steps.notes.outputs.notes_mode }}
       notes_path: ${{ steps.notes.outputs.notes_path }}
+      notes_ref: ${{ steps.notes.outputs.notes_ref }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -821,6 +822,11 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
+
+          # Pin the master revision the notes were resolved at, so the
+          # publish and canonicalization steps read the same content even
+          # when master advances during the approval delay.
+          echo "notes_ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
           args=(stable --print-version)
           if [ -n "${STABLE_DATE}" ]; then
@@ -951,9 +957,13 @@ jobs:
       # so release.sh still runs against a clean source checkout.
       - name: Materialize stable release notes from master
         if: needs.preflight_stable.outputs.notes_mode == 'master_beta'
+        env:
+          NOTES_REF: ${{ needs.preflight_stable.outputs.notes_ref }}
+          NOTES_PATH: ${{ needs.preflight_stable.outputs.notes_path }}
         run: |
+          set -euo pipefail
           git fetch origin master --quiet
-          git show "origin/master:${{ needs.preflight_stable.outputs.notes_path }}" > "$RUNNER_TEMP/stable-notes.md"
+          git show "${NOTES_REF}:${NOTES_PATH}" > "$RUNNER_TEMP/stable-notes.md"
           echo "STABLE_NOTES_FILE=$RUNNER_TEMP/stable-notes.md" >> "$GITHUB_ENV"
 
       - name: Publish stable
@@ -1071,11 +1081,20 @@ jobs:
         env:
           STABLE_VERSION: ${{ needs.publish_stable.outputs.stable_version }}
           NOTES_PATH: ${{ needs.preflight_stable.outputs.notes_path }}
+          NOTES_REF: ${{ needs.preflight_stable.outputs.notes_ref }}
         run: |
           set -euo pipefail
           branch="release-notes/v${STABLE_VERSION}-canonicalize"
           git checkout -B "$branch"
-          git mv "${NOTES_PATH}" "releases/v${STABLE_VERSION}.md"
+          # Canonicalize exactly what shipped: take the notes at the pinned
+          # revision the release read them from, so a master edit made
+          # during the run surfaces as a reviewable diff in this PR instead
+          # of silently diverging from the published GitHub Release.
+          git show "${NOTES_REF}:${NOTES_PATH}" > "releases/v${STABLE_VERSION}.md"
+          git add "releases/v${STABLE_VERSION}.md"
+          if git ls-files --error-unmatch "${NOTES_PATH}" >/dev/null 2>&1; then
+            git rm -q "${NOTES_PATH}"
+          fi
           git commit -m "docs(release): canonicalize stable notes for v${STABLE_VERSION}"
           git push -f origin "$branch"
           {
