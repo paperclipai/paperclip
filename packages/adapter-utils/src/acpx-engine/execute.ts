@@ -89,10 +89,15 @@ import type {
   AcquiredRunResources,
   LaunchEnvironment,
   LaunchEnvironmentContribution,
+  PreTurnFailedCause,
   SessionFingerprintIdentity,
   SessionKeyIdentity,
+  StartupReady,
+  StartupResult,
+  TurnCompletion,
 } from "./run-contracts.js";
 import { createRunResourceLedger } from "./run-resource-ledger.js";
+import { runAttempt, type RunPlan, type SettlementReason } from "./run-coordinator.js";
 import {
   createHostRunSite,
   type AcpxAgentProcessIdentity,
@@ -2239,25 +2244,23 @@ function resolveRuntimeEnv(env: Record<string, string>): Record<string, string> 
 }
 
 async function cleanupRemoteBridges(prepared: AcpxPreparedRuntime): Promise<void> {
-  try {
-    await Promise.allSettled([
-      prepared.processSessionBridge?.stop(),
-      prepared.paperclipBridge?.stop(),
-    ]);
-    // Runs AFTER the bridges stop (mirrors the CLI finally: stop bridge → restore
-    // workspace). Fires the codex auth copy-back via `restoreWorkspace()` and
-    // removes staged temp dirs. The seam logs and swallows its own failures — an
-    // unclean-teardown copy-back miss is the accepted, loud `refresh_token_reused`
-    // residual on the next host Codex use, never silent HOST-credential corruption
-    // — so a teardown fault never masks or fails the run result here.
-    if (prepared.remoteManagedHomeTeardown) {
-      await prepared.remoteManagedHomeTeardown().catch(() => {});
-    }
-  } finally {
-    // Release the per-session staging lease in a finally, so an earlier teardown
-    // fault never strands it and deadlocks the next run of this session.
-    prepared.sessionStagingLeaseRelease?.();
+  await Promise.allSettled([
+    prepared.processSessionBridge?.stop(),
+    prepared.paperclipBridge?.stop(),
+  ]);
+  // Runs AFTER the bridges stop (mirrors the CLI finally: stop bridge → restore
+  // workspace). Fires the codex auth copy-back via `restoreWorkspace()` and
+  // removes staged temp dirs. The seam logs and swallows its own failures — an
+  // unclean-teardown copy-back miss is the accepted, loud `refresh_token_reused`
+  // residual on the next host Codex use, never silent HOST-credential corruption
+  // — so a teardown fault never masks or fails the run result here.
+  if (prepared.remoteManagedHomeTeardown) {
+    await prepared.remoteManagedHomeTeardown().catch(() => {});
   }
+  // The per-session staging lease does NOT release here. The coordinator releases
+  // it as the run's final settlement act, in the run root `finally`, so a
+  // same-session second run cannot re-stage until this run fully settles and the
+  // caller observes the result.
 }
 
 function renderPaperclipEnvNote(env: Record<string, string>): string {
@@ -3197,6 +3200,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     // until the run reaches a clean completed turn, so every failure and every
     // early exit closes the span with error status.
     let runFailed = true;
+    // The run's per-session staging lease release. `buildRuntime` returns it on
+    // `prepared` after it acquires the lease; the startup step captures it here so
+    // the run root `finally` can release it as the final settlement act. It stays
+    // null on the host lane (no staging) and on a build failure (where
+    // `buildRuntime` already released its own partial lease).
+    let releaseStagingLease: (() => void) | null = null;
     try {
       // Evict idle staged runtimes BEFORE building the runtime, since buildRuntime
       // consults the staged cache to decide whether a compatible resume may reuse
@@ -3292,7 +3301,37 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           await recordTeardownError("flush-child-stderr", teardownErr);
         }
       };
-      try {
+      // The run coordinator owns the one ledger for the attempt. The engine
+      // creates it here, passes it into `buildRuntime` (the sandbox site registers
+      // what it acquires into it), and hands it to `runAttempt` as the plan
+      // ledger. The turn and settlement code still runs inline in the step
+      // wrappers below; Phases 21-22 move it into its own modules.
+      const runResourceLedger = createRunResourceLedger();
+      // The step wrappers build the external result inline (today's behavior) and
+      // record it here; the coordinator reproduces it after settlement. An empty
+      // consumed set satisfies the `settle` result shape without claiming the run
+      // ledger, because the inline teardown reads `prepared.*`, not the ledger, in
+      // this phase.
+      let capturedResult: AdapterExecutionResult | null = null;
+      const emptyConsumed = createRunResourceLedger().takeForSettlement();
+      // Build the `settle` startup result for a pre-turn failure. The step wrapper
+      // already recorded the external result and ran the inline teardown; this
+      // carries only the routing kind and the cause for the coordinator.
+      const settleFor = (phase: PreTurnFailedCause["phase"], error: unknown): StartupResult => ({
+        kind: "settle",
+        cause: {
+          kind: "pre_turn_failed",
+          phase,
+          error: error instanceof Error ? error : new Error(String(error)),
+        },
+        resources: emptyConsumed,
+      });
+      // The startup step: bring up the runtime, establish the session, and apply
+      // the session config. It returns `ready` on success, `settle` on a pre-turn
+      // failure after the ledger acquired resources, and throws on a build failure
+      // or a partial-bridge failure (the coordinator owns that rollback).
+      const startup = async (): Promise<StartupResult> => {
+       try {
         // Publish the `sandbox.startup` context to the runtime-parent store for
         // the whole bring-up. A startup-body exec that runs outside a measured
         // step reads this token and parents its span to `sandbox.startup`, not to
@@ -3300,11 +3339,6 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // run inside this wrap and overrides the store, so an in-step exec still
         // parents to its step span. On a local or SSH target
         // `spanParent.parentContext` is a no-op token, so the wrap is inert.
-        // One run resource ledger for the attempt. Until the run coordinator lands
-        // (Phase 20), the engine creates the single ledger here and passes it to
-        // the sandbox run site, which registers what it acquires into it. The
-        // ledger records only; the existing settlement path still drives teardown.
-        const runResourceLedger = createRunResourceLedger();
         prepared = await runWithRuntimeParent(spanParent.parentContext, () =>
           buildRuntime({
             ctx,
@@ -3319,6 +3353,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           }),
         );
         buildRuntimeSettled = true;
+        // Capture the run's staging lease release now that the runtime built. The
+        // run root `finally` releases it as the final settlement act.
+        releaseStagingLease = prepared.sessionStagingLeaseRelease;
         // Per-project staging outcomes for the referenced (mentioned) projects, surfaced back to the
         // server on the run result. A referenced project that failed to stage into the sandbox is a
         // first-class, counted failure in the requested-vs-synced observability, not only a warning. The
@@ -3526,7 +3563,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               err,
               phase: "ensure_session",
             });
-            return {
+            capturedResult = {
               exitCode: 1,
               signal: null,
               timedOut: false,
@@ -3539,6 +3576,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               resultJson: { phase: "ensure_session" },
               summary: message,
             };
+            return settleFor("handshake", err);
           } finally {
             await settleRunResources();
           }
@@ -3560,7 +3598,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           }).catch((closeErr) => recordTeardownError("runtime-close", closeErr));
           await discardStagedRuntime({ handles: stagedRuntimes, prepared });
           try {
-            return {
+            capturedResult = {
               exitCode: 1,
               signal: null,
               timedOut: false,
@@ -3572,6 +3610,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               resultJson: { phase: "ensure_session" },
               summary: "ACPX did not return a runtime session handle.",
             };
+            return settleFor(
+              "session_handle_missing",
+              new Error("ACPX did not return a runtime session handle."),
+            );
           } finally {
             await settleRunResources();
           }
@@ -3598,7 +3640,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             err,
             phase: "create_runtime",
           });
-          return {
+          capturedResult = {
             exitCode: 1,
             signal: null,
             timedOut: false,
@@ -3611,6 +3653,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             resultJson: { phase: "create_runtime" },
             summary: message,
           };
+          return settleFor("runtime_create", err);
         } finally {
           await settleRunResources();
         }
@@ -3650,7 +3693,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             err,
             phase: "configure_session",
           });
-          return {
+          capturedResult = {
             exitCode: 1,
             signal: null,
             timedOut: false,
@@ -3669,10 +3712,26 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             },
             summary: message,
           };
+          return settleFor("session_configuration", err);
         } finally {
           await settleRunResources();
         }
       }
+      // Startup succeeded: seal the ledger (promotes the startup_rollback entries
+      // that survived to `per_run`) and hand the ready resources to the turn. The
+      // turn wrapper reads the run state through the shared closure locals in this
+      // phase, so the sealed view and the context are the contract carriers only.
+      return {
+        kind: "ready",
+        resources: runResourceLedger.seal([]),
+        context: { sessionKey: prepared.sessionKey } as unknown as AcpRunContext,
+      };
+      };
+      // The turn step: build the prompt, run the turn, and settle the runtime
+      // inline (today's behavior). It never rejects; it returns a `TurnCompletion`
+      // and records the external result for the coordinator to reproduce. Phase 21
+      // moves the turn sequence into its own module.
+      const runTurn = async (_ready: StartupReady): Promise<TurnCompletion> => {
       let cancelActiveTurn: ((reason: string) => Promise<void>) | null = null;
       let controller: AbortController | null = null;
       let timeout: NodeJS.Timeout | null = null;
@@ -3876,7 +3935,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // The one clean-completion path clears the run failure flag; every other
         // path keeps it set, so the run root span closes with error status.
         runFailed = terminal.status === "completed" && !timedOut ? false : true;
-        return {
+        capturedResult = {
           exitCode: terminal.status === "completed" ? 0 : 1,
           signal: timedOut ? "SIGTERM" : null,
           timedOut,
@@ -3906,6 +3965,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           summary: textParts.join("").trim() || terminalStopReason || terminal.status,
           clearSession,
         };
+        // The turn ran to a terminal result and settled its resources inline.
+        // Phase 21 returns the typed per-outcome completion; this phase records
+        // only that the turn finished so the coordinator reproduces the result.
+        return { kind: "finalized" };
       } catch (err) {
         if (timeout) clearTimeout(timeout);
         // A failure before `startTurn` returned is a turn-preparation failure; a
@@ -3947,7 +4010,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             phase,
             messageOverride,
           });
-          return {
+          capturedResult = {
             exitCode: 1,
             signal: timedOut ? "SIGTERM" : null,
             timedOut,
@@ -3961,6 +4024,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             resultJson: { phase },
             summary: message,
           };
+          // The turn failed and settled its resources inline. Phase 21 returns the
+          // typed per-outcome completion; this phase records only that the turn
+          // finished so the coordinator reproduces the error result.
+          return { kind: "finalized" };
         } finally {
           await settleRunResources();
         }
@@ -3974,9 +4041,46 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // exec after the turn parents to `task.run`.
         currentRunParentContext = runRootSpan.parentContext;
       }
+      };
+      // Drive the attempt through the coordinator routing table. The startup step
+      // returns `ready` or `settle` (or throws on a build or partial-bridge
+      // failure); the coordinator runs the turn on the ready path, settles, then
+      // reproduces the recorded result. The turn and settlement teardown still run
+      // inline in the step wrappers above (Phases 21-22 extract them), so `settle`
+      // is a no-op wrapper here and `reproduceResult` returns the recorded result.
+      const plan: RunPlan<AdapterExecutionResult> = {
+        ledger: runResourceLedger,
+        startup,
+        runTurn,
+        // The step wrappers already ran the inline teardown; the ledger claim on
+        // the throw path replays no release yet, because `buildRuntime` owns its
+        // own partial-bring-up rollback in this phase.
+        rollbackStartup: () => {},
+        recordDisposition: () => {},
+        // The step wrappers ran the inline teardown already, so `settle` returns
+        // synchronously and adds no awaited boundary — the run's timing stays
+        // exactly as it was before the coordinator drove it.
+        settle: (_reason: SettlementReason) => {},
+        reproduceResult: (): AdapterExecutionResult => {
+          if (!capturedResult) {
+            throw new Error("run coordinator reproduced a result before the run recorded one");
+          }
+          return capturedResult;
+        },
+      };
+      return await runAttempt(plan);
     } finally {
       // End the run root span exactly once, on every return and on a throw.
       runRootSpan.end(runFailed);
+      // Release the per-session staging lease as the run's final settlement act,
+      // AFTER the coordinator reproduces the result. It stays null on a build
+      // failure (where `buildRuntime` already released its own partial lease) and
+      // on the host lane (no staging). This ordering keeps a same-session second
+      // run blocked on the lease until this run fully settles, and it runs in the
+      // `finally`, so an earlier teardown fault never strands the lease.
+      // TypeScript narrows this `let` to its `null` initializer because the only
+      // assignment runs inside the `startup` closure, so assert the declared type.
+      (releaseStagingLease as (() => void) | null)?.();
     }
   };
 }
