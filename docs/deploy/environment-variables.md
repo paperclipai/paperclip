@@ -28,6 +28,34 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_SECRETS_MASTER_KEY_FILE` | `~/.paperclip/.../secrets/master.key` | Path to key file |
 | `PAPERCLIP_SECRETS_STRICT_MODE` | `false` | Require secret refs for sensitive env vars |
 
+## Agent Environment Inheritance
+
+An agent process inherits the environment of the Paperclip server process, then
+adapter and agent config env applies on top. The server environment can hold
+values that agents must not read. In `docker-compose.quickstart.yml`, for
+example, `BETTER_AUTH_SECRET` and the database password are in the same env
+block as the LLM provider keys.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PAPERCLIP_AGENT_ENV_INHERIT` | `all` | `all` gives agent processes the full server environment. `allowlist` gives them only the toolchain keys they need, plus the keys in `PAPERCLIP_AGENT_ENV_ALLOW`. |
+| `PAPERCLIP_AGENT_ENV_ALLOW` | (unset) | Comma-separated keys to add in `allowlist` mode. A trailing `*` matches a prefix, for example `ANTHROPIC_API_KEY,AWS_*`. |
+
+In `allowlist` mode Paperclip inherits `PATH`, `HOME`, `PWD`, `SHELL`, `USER`,
+`LOGNAME`, `TERM`, `TZ`, the temporary directory keys, `LANG` and `LC_*`,
+`XDG_*`, the proxy and TLS trust-store keys, the Node.js toolchain keys, and the
+Windows platform keys. It removes all other inherited keys and writes their
+names, not their values, to the server log one time.
+
+The proxy keys are inherited as routing information. If a proxy address embeds
+credentials, as in `HTTPS_PROXY=http://user:password@proxy.internal:3128`, that
+value is removed unless you name the key in `PAPERCLIP_AGENT_ENV_ALLOW`.
+
+Adapter and agent config env is not affected. A variable that an agent declares
+in its own config always reaches the agent process. If your deployment gives
+provider keys to agents through the server environment, list those keys in
+`PAPERCLIP_AGENT_ENV_ALLOW` before you set `allowlist`.
+
 ## Agent Runtime (Injected into agent processes)
 
 These are set automatically by the server when invoking agents:
