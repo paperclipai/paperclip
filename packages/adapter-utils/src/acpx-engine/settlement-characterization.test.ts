@@ -354,9 +354,11 @@ describe("ACP settlement — Layer A: engine teardown orchestration", () => {
     expect(stagingLocks.size).toBe(0);
   });
 
-  it("test_clean_persistent_local_run_warm_saves_instead_of_closing", async () => {
-    // execute.ts:3886 keeps a clean persistent local turn warm (no runtime.close)
-    // when warmIdleMs>0 and there is no process-session bridge.
+  it("test_clean_persistent_local_run_closes_and_relaunches_amendment_b", async () => {
+    // Amendment B: a clean persistent local turn closes the runtime instead of
+    // warm-saving it. The host-lane reuse candidate carries the run-minted API key,
+    // which is never revoked, so the credential gate fails and the settlement
+    // discards (close-and-relaunch).
     const root = await makeTempRoot();
     const closeSpy = vi.fn(async () => {});
     const warmHandles = new Map();
@@ -393,16 +395,9 @@ describe("ACP settlement — Layer A: engine teardown orchestration", () => {
     } as never);
 
     expect(result.exitCode).toBe(0);
-    // The runtime stayed warm: no close, one warm entry.
-    expect(closeSpy).not.toHaveBeenCalled();
-    expect(warmHandles.size).toBe(1);
-
-    // Clear the scheduled idle-cleanup timer so no timer outlives the test. The
-    // long idle window kept the timer from racing the assertions above; clearing
-    // it here makes cleanup deterministic instead of a timed drain.
-    for (const entry of warmHandles.values()) {
-      if (entry.cleanupTimer) clearTimeout(entry.cleanupTimer);
-    }
+    // The runtime closed and relaunched: one close, no warm entry.
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(warmHandles.size).toBe(0);
   });
 
   it("test_completed_non_persistent_local_run_closes_runtime_once", async () => {
@@ -543,12 +538,12 @@ describe("ACP settlement — Layer A: engine teardown orchestration", () => {
     }
   });
 
-  it("test_handshake_failure_after_warm_hit_closes_runtime_and_removes_warm_entry", async () => {
-    // Mirror execute.test.ts F2 test_handshake_failure_closes_runtime_and_removes_warm_entry
-    // (:4666). The first run warms a handle; the second run reuses it and fails
-    // while persisting process identity (onSpawn throws). Because the warm hit
-    // already holds the handle, the handshake failure closes the reused runtime
-    // (execute.ts:3591) and removes the warm entry.
+  it("test_handshake_failure_on_second_run_closes_the_recreated_runtime", async () => {
+    // Amendment B: the first clean persistent turn closes and relaunches instead of
+    // warm-saving, so the second run finds no warm handle. The second run re-creates
+    // the runtime and fails while persisting process identity (onSpawn throws); the
+    // handshake failure closes the re-created runtime. The host-lane warm-hit
+    // teardown path itself is characterized by the composed fault matrix.
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const startedAt = "2026-01-01T00:00:00.000Z";
@@ -591,7 +586,8 @@ describe("ACP settlement — Layer A: engine teardown orchestration", () => {
       onSpawn: async () => {},
     } as never);
     expect(first.exitCode).toBe(0);
-    expect(warmHandles.size).toBe(1);
+    // Amendment B: no warm entry survives the first clean persistent turn.
+    expect(warmHandles.size).toBe(0);
     expect(created).toBe(1);
 
     const second = await execute({
@@ -607,11 +603,12 @@ describe("ACP settlement — Layer A: engine teardown orchestration", () => {
       },
     } as never);
 
-    // The reused runtime (no new create) is closed and the warm entry removed.
-    expect(created).toBe(1);
+    // The second run re-created the runtime (no warm reuse) and closed it on the
+    // failure, reporting the ensure_session phase. Both runtimes closed.
+    expect(created).toBe(2);
     expect(second.exitCode).toBe(1);
     expect(second.resultJson?.phase).toBe("ensure_session");
-    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(closeSpy).toHaveBeenCalledTimes(2);
     expect(warmHandles.size).toBe(0);
   });
 

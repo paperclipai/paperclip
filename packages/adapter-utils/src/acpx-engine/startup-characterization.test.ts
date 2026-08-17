@@ -629,7 +629,7 @@ describe("ACPX engine startup characterization", () => {
       expect(stop).toHaveBeenCalledTimes(1);
     });
 
-    it("cold ensure_session throw: ensure_session error, and the handshake-catch close does NOT fire (no handle yet)", async () => {
+    it("cold ensure_session throw: ensure_session error, and the runtime closes (the cold-handshake leak is fixed)", async () => {
       const root = await makeTempRoot();
       const closeSpy = vi.fn(async () => {});
       const execute = createAcpxEngineExecutor({
@@ -655,11 +655,10 @@ describe("ACPX engine startup characterization", () => {
 
       expect(result.exitCode).toBe(1);
       expect(result.resultJson?.phase).toBe("ensure_session");
-      // Current behavior (execute.ts ~:3590): the handshake catch closes the runtime
-      // only `if (handle)`. A cold `ensureSession` throw never assigns a handle, so
-      // this close never fires. The warm-hit path below has a cached handle and does
-      // close. This pins the real cold-path behavior, not an aspiration.
-      expect(closeSpy).not.toHaveBeenCalled();
+      // The runtime enters the ledger the moment it is created, so a cold
+      // `ensureSession` throw (before any handle exists) still closes it through the
+      // settlement `endSession` step. This closes the former cold-handshake leak.
+      expect(closeSpy).toHaveBeenCalledTimes(1);
     });
 
     it("missing session handle: ensure_session error and the minimal runtime closes", async () => {
@@ -728,7 +727,7 @@ describe("ACPX engine startup characterization", () => {
       expect(closeSpy).toHaveBeenCalledTimes(1);
     });
 
-    it("warm-hit failure: reuses the runtime, fails with ensure_session, closes it, drops the warm entry", async () => {
+    it("persistent host failure: the first run closes and relaunches, so a failing second run re-creates and closes", async () => {
       const root = await makeTempRoot();
       const stateDir = path.join(root, "state");
       const startedAt = "2026-01-01T00:00:00.000Z";
@@ -771,10 +770,13 @@ describe("ACPX engine startup characterization", () => {
         onSpawn: async () => {},
       } as never);
       expect(first.exitCode).toBe(0);
-      expect(warmHandles.size).toBe(1);
+      // Amendment B: the first clean persistent turn closes and relaunches instead
+      // of warm-saving the runtime, so no warm handle survives.
+      expect(warmHandles.size).toBe(0);
       expect(created).toBe(1);
 
-      // The warm-hit reuses runtime #1 and fails while persisting process identity.
+      // The second run finds no warm handle, so it re-creates the runtime and fails
+      // while persisting process identity during ensure_session.
       const second = await execute({
         runId: "warm-2",
         agent: { id: "agent-1", companyId: "company-1" },
@@ -788,12 +790,12 @@ describe("ACPX engine startup characterization", () => {
         },
       } as never);
 
-      // No new runtime was created; the reused runtime is closed and the warm entry
-      // removed, with the failure reported on the ensure_session phase.
-      expect(created).toBe(1);
+      // The second run built runtime #2 (no warm reuse), closed it on the failure,
+      // and reported the ensure_session phase. Both runtimes closed (one per run).
+      expect(created).toBe(2);
       expect(second.exitCode).toBe(1);
       expect(second.resultJson?.phase).toBe("ensure_session");
-      expect(closeSpy).toHaveBeenCalledTimes(1);
+      expect(closeSpy).toHaveBeenCalledTimes(2);
       expect(warmHandles.size).toBe(0);
     });
   });
@@ -820,7 +822,7 @@ describe("ACPX engine startup characterization", () => {
       expect(runtimeOptions[0]?.cwd).toBe(localCwd);
     });
 
-    it("persistent host lane: warm-saves the handle so a second run reuses the runtime", async () => {
+    it("persistent host lane: closes and relaunches the handle, so a second run re-creates the runtime", async () => {
       const root = await makeTempRoot();
       const stateDir = path.join(root, "state");
       let created = 0;
@@ -857,9 +859,11 @@ describe("ACPX engine startup characterization", () => {
 
       expect(first.exitCode).toBe(0);
       expect(second.exitCode).toBe(0);
-      // The warm handle survives, so the second run reuses runtime #1.
-      expect(created).toBe(1);
-      expect(warmHandles.size).toBe(1);
+      // Amendment B: the host lane never warm-saves a live runtime (the run-minted
+      // API key is never revoked), so the first run closes and relaunches. No warm
+      // handle survives, so the second run re-creates runtime #2.
+      expect(created).toBe(2);
+      expect(warmHandles.size).toBe(0);
     });
 
     it("remote process-session lane: does NOT warm-save the handle, so a second run re-creates the runtime", async () => {

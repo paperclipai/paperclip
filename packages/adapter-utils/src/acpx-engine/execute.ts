@@ -99,7 +99,12 @@ import type {
 } from "./run-contracts.js";
 import { createRunResourceLedger } from "./run-resource-ledger.js";
 import { settleAcpRun, type SettlementSteps } from "./settlement-sequence.js";
-import { runAttempt, type RunPlan, type SettlementReason } from "./run-coordinator.js";
+import {
+  runAttempt,
+  type RunPlan,
+  type SettlementReason,
+  type SettlementDispositionReport,
+} from "./run-coordinator.js";
 import {
   runTurn as runTurnSequence,
   type StartedTurn,
@@ -355,6 +360,14 @@ export interface AcpxEngineExecutorOptions {
   prepareRemoteManagedHome?: (
     input: AcpxRemoteManagedHomeContext,
   ) => Promise<AcpxRemoteManagedHomeResult>;
+  /**
+   * Observe the final per-resource disposition report the run records at the end
+   * of the attempt (`finalized` vs `transferred`). The coordinator records it on
+   * every exit path: the settlement path reports what the settlement decided, and
+   * the startup-rollback path reports every rolled-back entry as `finalized`. The
+   * engine never reads it back; a test injects this hook to assert the report.
+   */
+  onSettlementDisposition?: (report: SettlementDispositionReport) => void;
 }
 
 interface AcpxPreparedRuntime {
@@ -395,8 +408,8 @@ interface AcpxPreparedRuntime {
   stagedRuntime: PreparedAdapterExecutionTargetRuntime | null;
   // Per-run copy-back hook from the per-adapter remote managed-home seam: runs
   // the codex auth copy-back (via `restoreWorkspace()`). Invoked once on every
-  // exit path by `cleanupRemoteBridges`; it never removes staged temp, so it is
-  // safe on every compatible resume. Null for local runs, the runner-less
+  // exit path by the settlement `syncBack` step; it never removes staged temp, so
+  // it is safe on every compatible resume. Null for local runs, the runner-less
   // fallback, and adapters with no seam.
   remoteManagedHomeTeardown: (() => Promise<void>) | null;
   // One-time host-side staged-resource cleanup from the seam (remove staged temp
@@ -2091,9 +2104,9 @@ async function buildRuntime(input: {
   } catch (err) {
     // On a partial concurrent bring-up failure, ONE bridge may have started while
     // the other threw; `Promise.allSettled` stops whichever started so no live
-    // bridge leaks (mirrors `cleanupRemoteBridges`). The site sets its started
-    // bridges before it rethrows, so read them from the site here (the local
-    // handles stay null when `startTransport` throws before it returns).
+    // bridge leaks (mirrors the settlement `stopTransport` step). The site sets its
+    // started bridges before it rethrows, so read them from the site here (the
+    // local handles stay null when `startTransport` throws before it returns).
     const startedControl = sandboxSite?.controlBridge ?? paperclipBridge;
     const startedAgent = sandboxSite?.agentBridge ?? processSessionBridge;
     await Promise.allSettled([startedControl?.stop(), startedAgent?.stop()]);
@@ -2104,7 +2117,7 @@ async function buildRuntime(input: {
     // dispose here (it no longer rides the per-run copy-back) — the run is being
     // abandoned, so its staged temp must be released — and release the per-session
     // staging lease so the abandoned run does not strand the next same-session run
-    // (cleanupRemoteBridges, which normally releases it, is never reached here).
+    // (the run root `finally`, which normally releases it, is never reached here).
     //
     // Route the dispose through the same ownership-guarded removal
     // `discardStagedRuntime` uses. When this run BORROWED the cached staged runtime
@@ -2250,24 +2263,50 @@ function resolveRuntimeEnv(env: Record<string, string>): Record<string, string> 
   );
 }
 
-async function cleanupRemoteBridges(prepared: AcpxPreparedRuntime): Promise<void> {
+// Stop both host-side bridges in one `allSettled`. This is the settlement
+// `stopTransport` effect. The bridge tokens are run-scoped, so they die with the
+// bridges here (Amendment B).
+async function stopRunTransport(prepared: AcpxPreparedRuntime): Promise<void> {
   await Promise.allSettled([
     prepared.processSessionBridge?.stop(),
     prepared.paperclipBridge?.stop(),
   ]);
-  // Runs AFTER the bridges stop (mirrors the CLI finally: stop bridge → restore
-  // workspace). Fires the codex auth copy-back via `restoreWorkspace()` and
-  // removes staged temp dirs. The seam logs and swallows its own failures — an
-  // unclean-teardown copy-back miss is the accepted, loud `refresh_token_reused`
-  // residual on the next host Codex use, never silent HOST-credential corruption
-  // — so a teardown fault never masks or fails the run result here.
+}
+
+// The site sync-back. This is the settlement `syncBack` effect. It runs AFTER the
+// bridges stop (mirrors the CLI finally: stop bridge → restore workspace). It
+// fires the codex auth copy-back via `restoreWorkspace()` and removes staged temp
+// dirs. The seam logs and swallows its own failures — an unclean-teardown
+// copy-back miss is the accepted, loud `refresh_token_reused` residual on the
+// next host Codex use, never silent HOST-credential corruption — so a teardown
+// fault never masks or fails the run result here.
+async function syncBackManagedHome(prepared: AcpxPreparedRuntime): Promise<void> {
   if (prepared.remoteManagedHomeTeardown) {
     await prepared.remoteManagedHomeTeardown().catch(() => {});
   }
-  // The per-session staging lease does NOT release here. The coordinator releases
-  // it as the run's final settlement act, in the run root `finally`, so a
-  // same-session second run cannot re-stage until this run fully settles and the
-  // caller observes the result.
+  // The per-session staging lease does NOT release here. The settlement releases
+  // it last, in its own `finally`, so a same-session second run cannot re-stage
+  // until this run fully settles and the caller observes the result.
+}
+
+/** How the settlement `endSession` step releases the runtime a run acquired. */
+interface RuntimeSettlementPlan {
+  // "direct" closes the runtime itself and swallows or records the close error;
+  // "warm_or_close" prefers a matching warm entry (which also flushes its stderr).
+  readonly mode: "direct" | "warm_or_close";
+  readonly handle: AcpRuntimeHandle;
+  readonly reason: string;
+  readonly discardPersistentState: boolean;
+  // Drop a matching warm entry after a direct close (the pre-turn and turn-error
+  // paths remove a warm-hit entry that failed).
+  readonly dropWarmEntry: boolean;
+  // Record a direct-close error to the run log; a warm_or_close error is
+  // swallowed. This keeps today's split (the failure paths log, the turn path
+  // swallows).
+  readonly recordCloseError: boolean;
+  // Cancel the running turn with this reason before the close (the turn-error
+  // path cancels before it closes). Null on every other path.
+  readonly cancelTurnReason: string | null;
 }
 
 function renderPaperclipEnvNote(env: Record<string, string>): string {
@@ -2742,7 +2781,7 @@ function isResumeFailure(err: unknown): boolean {
 // Drop staged-runtime entries the session has not touched within the warm-idle
 // window, so the cache does not accumulate abandoned sessions (e.g. every time
 // a config change shifts the fingerprint to a new key). The per-run copy-back
-// already ran on the entry's last run's `cleanupRemoteBridges`; eviction fires
+// already ran on the entry's last run's settlement `syncBack`; eviction fires
 // the entry's one-time `dispose` (host staged-temp cleanup) — the only place
 // the staged temp is removed now that it no longer rides the per-run teardown.
 // A later run of the same session simply re-stages fresh (re-shipping into the
@@ -3278,36 +3317,29 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       let referencedProjectStagingFailuresField:
         | { referencedProjectStagingFailures: Array<{ projectId: string }> }
         | Record<string, never> = {};
-      // One teardown policy for the run. `settleRunResources` stops the bridges,
-      // runs the managed-home copy-back, releases the staging lease (in a finally
-      // inside cleanupRemoteBridges), and flushes the child stderr. It runs at most
-      // once, records each step error, and never throws, so a result-emission
-      // failure or an earlier teardown fault never skips a later step.
-      let runResourcesSettled = false;
-      // `turnTeardownDone` marks that the turn path already closed the runtime and
-      // settled the staged runtime, so a result-mapping throw after the close does
-      // not run the turn teardown a second time.
-      let turnTeardownDone = false;
       const recordTeardownError = async (step: string, teardownErr: unknown) => {
         const reason = teardownErr instanceof Error ? teardownErr.message : String(teardownErr);
         await ctx
           .onLog("stderr", `[paperclip] ACPX teardown step "${step}" failed: ${reason}\n`)
           .catch(() => {});
       };
-      const settleRunResources = async () => {
-        if (runResourcesSettled) return;
-        runResourcesSettled = true;
-        try {
-          await cleanupRemoteBridges(prepared);
-        } catch (teardownErr) {
-          await recordTeardownError("cleanup-remote-bridges", teardownErr);
-        }
-        try {
-          if (childStderrState) flushChildStderr(childStderrState);
-        } catch (teardownErr) {
-          await recordTeardownError("flush-child-stderr", teardownErr);
-        }
-      };
+      // The turn the run started. It is hoisted to the run scope so the settlement
+      // `endSession` step can cancel a running turn before it closes the runtime
+      // (the cancel-before-close order). The turn wrapper assigns it in `turnStart`.
+      let activeTurn: AcpRuntimeTurn | null = null;
+      // How the settlement `endSession` step must release the runtime for the path
+      // this run took. Each exit path that acquired the runtime records it before it
+      // returns; a build or create-runtime failure never registers the runtime, so
+      // the step no-ops on the empty slot and this stays null.
+      let runtimeSettlement: RuntimeSettlementPlan | null = null;
+      // A synthetic close handle from the prepared identity, for a close that has no
+      // established session handle (a cold `ensureSession` throw or a missing
+      // handle). `runtime.close` reads the session key and the runtime session name.
+      const syntheticCloseHandle = (): AcpRuntimeHandle => ({
+        sessionKey: prepared.sessionKey,
+        backend: prepared.acpxAgent,
+        runtimeSessionName: prepared.sessionKey,
+      });
       // The run coordinator owns the one ledger for the attempt. The engine
       // creates it here, passes it into `buildRuntime` (the sandbox site registers
       // what it acquires into it), and hands it to `runAttempt` as the plan
@@ -3453,6 +3485,24 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           runtime = createRuntime(runtimeOptions);
           createRuntimeMs = now() - createRuntimeStart;
         }
+        // Register the runtime composite in the ledger now that it exists. The
+        // settlement `endSession` step closes it on every path the reuse decision
+        // does not transfer. Registration here (before `ensureSession`) closes the
+        // cold-handshake leak: a cold `ensureSession` throw before a handle exists
+        // still leaves the runtime in the ledger for `endSession` to close. A
+        // create-runtime failure throws before this line, so the runtime never
+        // enters the ledger and the settlement no-ops on the empty slot. The
+        // session handle fills in below; the payload carries the best-known handle
+        // for the composite (`runtime.close` is the one release boundary).
+        runResourceLedger.register({
+          id: "acp_runtime",
+          payload: {
+            runtime,
+            sessionHandle: cached?.handle ?? syntheticCloseHandle(),
+            childProcessPid: processIdentitySink.latest?.pid ?? null,
+          },
+          scope: "per_run",
+        });
         if (!canResume && asString(previousParams.runtimeSessionName, "")) {
           await ctx.onLog(
             "stdout",
@@ -3543,109 +3593,29 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             });
           }
         } catch (err) {
-          // Close the runtime on a pre-turn handshake failure and drop the matching
-          // warm entry, the same as the configuration failure path. A warm-hit
-          // reuse already cleared the idle timer before the handshake ran, so the
-          // failure must close and remove the entry, never re-arm it. The close and
-          // the staged-runtime drop run before the result emission, so a throwing
-          // emission never skips them; `settleRunResources` in the finally stops the
-          // bridges, releases the staging lease, and flushes the child stderr.
-          if (handle) {
-            await runtime.close({
-              handle,
-              reason: "paperclip handshake cleanup",
-              discardPersistentState: false,
-            }).catch((closeErr) => recordTeardownError("runtime-close", closeErr));
-            const existing = warmHandles.get(prepared.sessionKey);
-            if (warmHandleMatches(existing, runtime, handle) && existing) {
-              clearWarmHandleTimer(existing);
-              warmHandles.delete(prepared.sessionKey);
-            }
-          }
-          await discardStagedRuntime({ handles: stagedRuntimes, prepared });
-          try {
-            const { classified, message } = await emitAcpxFailure({
-              ctx,
-              prepared,
-              err,
-              phase: "ensure_session",
-            });
-            capturedResult = {
-              exitCode: 1,
-              signal: null,
-              timedOut: false,
-              errorMessage: message,
-              ...classified,
-              ...billingFields,
-              ...referencedProjectStagingFailuresField,
-              model: prepared.requestedModel || null,
-              clearSession,
-              resultJson: { phase: "ensure_session" },
-              summary: message,
-            };
-            return settleFor("handshake", err);
-          } finally {
-            await settleRunResources();
-          }
-        }
-
-        if (!handle) {
-          // ensureSession returned no session handle. Close the runtime the run
-          // constructed so its child process cannot leak. There is no established
-          // handle, so build a minimal one from the prepared identity; the close is
-          // best effort and never blocks the error result.
-          await runtime.close({
-            handle: {
-              sessionKey: prepared.sessionKey,
-              backend: prepared.acpxAgent,
-              runtimeSessionName: prepared.sessionKey,
-            },
-            reason: "paperclip missing-handle cleanup",
+          // Record how the settlement closes the runtime on a pre-turn handshake
+          // failure: a direct close that drops a matching warm entry, the same as
+          // the configuration-failure path. A warm-hit reuse already cleared the
+          // idle timer before the handshake ran, so the failure must close and
+          // remove the entry, never re-arm it. A cold `ensureSession` throw has no
+          // established handle, so the settlement closes the synthetic handle — the
+          // ledger now holds the runtime, so `endSession` closes it and the former
+          // cold-handshake leak is gone. The settlement stops the bridges, releases
+          // the staging lease, and flushes the child stderr on every exit path.
+          runtimeSettlement = {
+            mode: "direct",
+            handle: handle ?? syntheticCloseHandle(),
+            reason: "paperclip handshake cleanup",
             discardPersistentState: false,
-          }).catch((closeErr) => recordTeardownError("runtime-close", closeErr));
-          await discardStagedRuntime({ handles: stagedRuntimes, prepared });
-          try {
-            capturedResult = {
-              exitCode: 1,
-              signal: null,
-              timedOut: false,
-              errorMessage: "ACPX did not return a runtime session handle.",
-              errorCode: "acpx_runtime_error",
-              ...billingFields,
-              ...referencedProjectStagingFailuresField,
-              model: prepared.requestedModel || null,
-              resultJson: { phase: "ensure_session" },
-              summary: "ACPX did not return a runtime session handle.",
-            };
-            return settleFor(
-              "session_handle_missing",
-              new Error("ACPX did not return a runtime session handle."),
-            );
-          } finally {
-            await settleRunResources();
-          }
-        }
-        sessionHandle = handle;
-        startupFailed = false;
-      } catch (err) {
-        if (!buildRuntimeSettled) {
-          // buildRuntime failed before it staged or bridged anything, so there is
-          // nothing to settle here. The finally below ends the sandbox.startup
-          // span; let the failure propagate.
-          throw err;
-        }
-        // The post-build runtime-creation window failed after buildRuntime returned
-        // live bridges and a held staging lease. Drop the staged runtime, then emit
-        // and settle: `settleRunResources` in the finally stops the bridges,
-        // releases the staging lease, and flushes the child stderr even if the
-        // emission throws.
-        await discardStagedRuntime({ handles: stagedRuntimes, prepared });
-        try {
+            dropWarmEntry: true,
+            recordCloseError: true,
+            cancelTurnReason: null,
+          };
           const { classified, message } = await emitAcpxFailure({
             ctx,
             prepared,
             err,
-            phase: "create_runtime",
+            phase: "ensure_session",
           });
           capturedResult = {
             exitCode: 1,
@@ -3657,13 +3627,77 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ...referencedProjectStagingFailuresField,
             model: prepared.requestedModel || null,
             clearSession,
-            resultJson: { phase: "create_runtime" },
+            resultJson: { phase: "ensure_session" },
             summary: message,
           };
-          return settleFor("runtime_create", err);
-        } finally {
-          await settleRunResources();
+          return settleFor("handshake", err);
         }
+
+        if (!handle) {
+          // ensureSession returned no session handle. The ledger holds the runtime
+          // the run constructed, so record a direct close of the synthetic handle
+          // for the settlement `endSession` step (the child process cannot leak).
+          runtimeSettlement = {
+            mode: "direct",
+            handle: syntheticCloseHandle(),
+            reason: "paperclip missing-handle cleanup",
+            discardPersistentState: false,
+            dropWarmEntry: false,
+            recordCloseError: true,
+            cancelTurnReason: null,
+          };
+          capturedResult = {
+            exitCode: 1,
+            signal: null,
+            timedOut: false,
+            errorMessage: "ACPX did not return a runtime session handle.",
+            errorCode: "acpx_runtime_error",
+            ...billingFields,
+            ...referencedProjectStagingFailuresField,
+            model: prepared.requestedModel || null,
+            resultJson: { phase: "ensure_session" },
+            summary: "ACPX did not return a runtime session handle.",
+          };
+          return settleFor(
+            "session_handle_missing",
+            new Error("ACPX did not return a runtime session handle."),
+          );
+        }
+        sessionHandle = handle;
+        startupFailed = false;
+      } catch (err) {
+        if (!buildRuntimeSettled) {
+          // buildRuntime failed before it staged or bridged anything, so there is
+          // nothing to settle here. The finally below ends the sandbox.startup
+          // span; let the failure propagate.
+          throw err;
+        }
+        // The post-build runtime-creation window failed after buildRuntime returned
+        // live bridges and a held staging lease. `createRuntime` throws before the
+        // ledger registers the runtime, so the settlement `endSession` step no-ops
+        // on the empty slot (create_runtime never closes a runtime). The settlement
+        // still stops the bridges, discards the staged runtime, releases the staging
+        // lease, and flushes the child stderr.
+        const { classified, message } = await emitAcpxFailure({
+          ctx,
+          prepared,
+          err,
+          phase: "create_runtime",
+        });
+        capturedResult = {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorMessage: message,
+          ...classified,
+          ...billingFields,
+          ...referencedProjectStagingFailuresField,
+          model: prepared.requestedModel || null,
+          clearSession,
+          resultJson: { phase: "create_runtime" },
+          summary: message,
+        };
+        return settleFor("runtime_create", err);
       } finally {
         // End the sandbox.startup span exactly once, on every return and on every
         // throw. It covers buildRuntime through acp.handshake and no further; the
@@ -3678,51 +3712,45 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           onLog: ctx.onLog,
         });
       } catch (err) {
-        // Close the runtime and drop the matching warm entry and the staged runtime
-        // before the result emission, so a throwing emission never skips them.
-        // `settleRunResources` in the finally stops the bridges, releases the
-        // staging lease, and flushes the child stderr.
-        await runtime.close({
+        // Record a direct close that drops the matching warm entry for the
+        // settlement `endSession` step. The settlement stops the bridges, discards
+        // the staged runtime, releases the staging lease, and flushes the child
+        // stderr on this exit path too.
+        runtimeSettlement = {
+          mode: "direct",
           handle: sessionHandle,
           reason: "paperclip config cleanup",
           discardPersistentState: false,
-        }).catch((closeErr) => recordTeardownError("runtime-close", closeErr));
-        const existing = warmHandles.get(prepared.sessionKey);
-        if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
-          clearWarmHandleTimer(existing);
-          warmHandles.delete(prepared.sessionKey);
-        }
-        await discardStagedRuntime({ handles: stagedRuntimes, prepared });
-        try {
-          const { classified, message } = await emitAcpxFailure({
-            ctx,
-            prepared,
-            err,
+          dropWarmEntry: true,
+          recordCloseError: true,
+          cancelTurnReason: null,
+        };
+        const { classified, message } = await emitAcpxFailure({
+          ctx,
+          prepared,
+          err,
+          phase: "configure_session",
+        });
+        capturedResult = {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorMessage: message,
+          ...classified,
+          ...billingFields,
+          ...referencedProjectStagingFailuresField,
+          model: prepared.requestedModel || null,
+          clearSession,
+          resultJson: {
             phase: "configure_session",
-          });
-          capturedResult = {
-            exitCode: 1,
-            signal: null,
-            timedOut: false,
-            errorMessage: message,
-            ...classified,
-            ...billingFields,
-            ...referencedProjectStagingFailuresField,
-            model: prepared.requestedModel || null,
-            clearSession,
-            resultJson: {
-              phase: "configure_session",
-              agent: prepared.acpxAgent,
-              requestedModel: prepared.requestedModel || null,
-              requestedThinkingEffort: prepared.requestedThinkingEffort || null,
-              fastMode: prepared.fastMode,
-            },
-            summary: message,
-          };
-          return settleFor("session_configuration", err);
-        } finally {
-          await settleRunResources();
-        }
+            agent: prepared.acpxAgent,
+            requestedModel: prepared.requestedModel || null,
+            requestedThinkingEffort: prepared.requestedThinkingEffort || null,
+            fastMode: prepared.fastMode,
+          },
+          summary: message,
+        };
+        return settleFor("session_configuration", err);
       }
       // Startup succeeded: seal the ledger (promotes the startup_rollback entries
       // that survived to `per_run`) and hand the ready resources to the turn. The
@@ -3744,10 +3772,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       let eventCostUsd: number | null = null;
       // The turn-local state the sequence steps share. `promptBuild` sets the
       // prompt, `preTurnUsage` sets the pre-turn status, `turnStart` sets the
-      // active turn, and `turnFinalize` reads all three.
+      // active turn, and `turnFinalize` reads all three. `activeTurn` is the run-
+      // scoped hoisted local, so the settlement `endSession` step can cancel it.
       let runPrompt = "";
       let preTurnStatus: AcpRuntimeStatus | null = null;
-      let activeTurn: AcpRuntimeTurn | null = null;
       // Open the agent turn span as a child of the run root span. It wraps the
       // whole turn: the executor holds `turnSpan.parentContext` for later exec
       // parenting, and the `finally` below ends the span once on every path. The
@@ -3847,7 +3875,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         if (input.kind === "terminal") {
         const terminal = input.terminal;
         const timedOut = input.timedOut;
-        // Read usage before the close/warm-handle paths below can discard state.
+        // Read usage before the settlement can discard runtime state.
         const postTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
         const turnUsage = summarizeAcpxTurnUsage({
           preStatus: preTurnStatus,
@@ -3855,76 +3883,29 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           eventBreakdown,
           eventCostUsd,
         });
-        if (terminal.status === "failed" || terminal.status === "cancelled" || timedOut) {
-          const existing = warmHandles.get(prepared.sessionKey);
-          if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
-            await closeWarmHandle({
-              handles: warmHandles,
-              key: prepared.sessionKey,
-              entry: existing,
-              reason: timedOut ? "paperclip timeout cleanup" : `paperclip turn ${terminal.status}`,
-              discardPersistentState: terminal.status === "cancelled" || timedOut,
-            });
-          } else {
-            await runtime.close({
-              handle: sessionHandle,
-              reason: timedOut ? "paperclip timeout cleanup" : `paperclip turn ${terminal.status}`,
-              discardPersistentState: terminal.status === "cancelled" || timedOut,
-            }).catch(() => {});
-          }
-        } else if (prepared.mode === "persistent" && warmIdleMs > 0 && !prepared.processSessionBridge) {
-          const existing = warmHandles.get(prepared.sessionKey);
-          if (existing && !warmHandleMatches(existing, runtime, sessionHandle)) {
-            await runtime.close({
-              handle: sessionHandle,
-              reason: "paperclip duplicate warm handle cleanup",
-              discardPersistentState: false,
-            }).catch(() => {});
-          } else {
-            const entry: RuntimeCacheEntry = {
-              runtime,
-              handle: sessionHandle,
-              childStderrState,
-              processIdentitySink,
-              fingerprint: prepared.fingerprint,
-              lastUsedAt: now(),
-            };
-            // Save the warm entry through the host store, which arms its per-entry
-            // idle timer so the runtime closes on its own if no later run reuses it.
-            hostStore.save(prepared.sessionKey, entry);
-          }
-        } else {
-          const existing = warmHandles.get(prepared.sessionKey);
-          if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
-            await closeWarmHandle({
-              handles: warmHandles,
-              key: prepared.sessionKey,
-              entry: existing,
-              reason: "paperclip completed turn cleanup",
-            });
-          } else {
-            await runtime.close({
-              handle: sessionHandle,
-              reason: "paperclip completed turn cleanup",
-              discardPersistentState: false,
-            }).catch(() => {});
-          }
-        }
-
-        // PR 3: keep the staged runtime warm for the next compatible resume only
-        // after a clean turn; a failed/cancelled/timed-out turn discards it so the
-        // next run stages fresh instead of reusing a torn-down session's staged
-        // credentials. Copy-back still fires for every outcome via
-        // `cleanupRemoteBridges` below (unchanged from PR 2).
-        if (terminal.status === "completed" && !timedOut) {
-          saveStagedRuntimeAfterCleanTurn({ handles: stagedRuntimes, prepared, now: now() });
-        } else {
-          await discardStagedRuntime({ handles: stagedRuntimes, prepared });
-        }
-        // The turn path has closed the runtime and settled the staged runtime. Mark
-        // it done so a result-mapping throw below runs the turn teardown once, not a
-        // second time through the catch.
-        turnTeardownDone = true;
+        const failedTurn = terminal.status === "failed" || terminal.status === "cancelled" || timedOut;
+        // Record how the settlement `endSession` step closes the runtime for this
+        // outcome. A clean persistent host turn is save-eligible, but the
+        // Amendment B credential gate fails on the host lane (the run API key is
+        // never revoked), so the reuse decision discards and `endSession` closes it
+        // (close-and-relaunch). The sandbox lane always closes the runtime; its
+        // staged files are the reuse. A matching warm entry closes through the warm
+        // store (which also flushes its stderr); otherwise the runtime closes
+        // directly. The settlement then stops the bridges, saves or discards the
+        // staged runtime, releases the staging lease, and flushes the child stderr.
+        runtimeSettlement = {
+          mode: "warm_or_close",
+          handle: sessionHandle,
+          reason: timedOut
+            ? "paperclip timeout cleanup"
+            : failedTurn
+              ? `paperclip turn ${terminal.status}`
+              : "paperclip completed turn cleanup",
+          discardPersistentState: terminal.status === "cancelled" || timedOut,
+          dropWarmEntry: false,
+          recordCloseError: false,
+          cancelTurnReason: null,
+        };
 
         const errorMessage = timedOut
           ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
@@ -3936,13 +3917,6 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           stopReason: terminalStopReason,
           message: errorMessage,
         });
-        // Settle the run resources once: stop the bridges, run the copy-back,
-        // release the staging lease (in a finally inside cleanupRemoteBridges), and
-        // flush the child stderr. Mark them settled first so a result-mapping throw
-        // below does not run the teardown again through the turn catch.
-        runResourcesSettled = true;
-        await cleanupRemoteBridges(prepared);
-        flushChildStderr(childStderrState);
         // The one clean-completion path clears the run failure flag; every other
         // path keeps it set, so the run root span closes with error status.
         runFailed = terminal.status === "completed" && !timedOut ? false : true;
@@ -3976,9 +3950,35 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           summary: textParts.join("").trim() || terminalStopReason || terminal.status,
           clearSession,
         };
-        // The turn ran to a terminal result and settled its resources inline. The
-        // finalize records only that the turn finished so the coordinator
-        // reproduces the recorded result.
+        // Return the typed turn completion so the coordinator settles for the right
+        // cause. The completion carries no live resources; the settlement claims the
+        // ledger and owns the release. A clean completed turn carries no cause, so
+        // the reuse decision can permit a save; a timed-out, failed, or cancelled
+        // turn carries its cause, which forbids the save.
+        if (timedOut) {
+          return {
+            kind: "timed_out",
+            cause: { kind: "turn_timed_out", timeoutSec: prepared.timeoutSec },
+            resources: emptyConsumed,
+          };
+        }
+        if (terminal.status === "failed") {
+          return {
+            kind: "failed",
+            cause: {
+              kind: "turn_failed",
+              error: terminal.error instanceof Error ? terminal.error : new Error(String(terminal.error)),
+            },
+            resources: emptyConsumed,
+          };
+        }
+        if (terminal.status === "cancelled") {
+          return {
+            kind: "cancelled",
+            cause: { kind: "turn_cancelled", reason: terminal.stopReason ?? "cancelled" },
+            resources: emptyConsumed,
+          };
+        }
         return { kind: "finalized" };
         }
         const err = input.error;
@@ -3992,56 +3992,51 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           : undefined;
         const preEmitMessage =
           messageOverride ?? (err instanceof Error ? err.message : String(err));
-        // Skip the cancel, close, and staged-runtime drop when the success path
-        // already ran them: a result-mapping throw after the close reaches this
-        // finalize, and the turn teardown must not run twice. The close records its
-        // error and never blocks the later teardown; `settleRunResources` in the
-        // finally stops the bridges, releases the staging lease, and flushes the
-        // child stderr even if the emission throws.
-        if (!turnTeardownDone) {
-          turnTeardownDone = true;
-          if (activeTurn) await activeTurn.cancel({ reason: preEmitMessage }).catch(() => {});
-          await runtime.close({
-            handle: sessionHandle,
-            reason: timedOut ? "paperclip timeout cleanup" : "paperclip error cleanup",
-            discardPersistentState: timedOut,
-          }).catch((closeErr) => recordTeardownError("runtime-close", closeErr));
-          const existing = warmHandles.get(prepared.sessionKey);
-          if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
-            clearWarmHandleTimer(existing);
-            warmHandles.delete(prepared.sessionKey);
-          }
-          await discardStagedRuntime({ handles: stagedRuntimes, prepared });
-        }
+        // Record a direct close for the settlement `endSession` step: cancel the
+        // running turn first (cancel-before-close), then close the runtime and drop
+        // a matching warm entry. The settlement discards the staged runtime, stops
+        // the bridges, releases the staging lease, and flushes the child stderr.
+        runtimeSettlement = {
+          mode: "direct",
+          handle: sessionHandle,
+          reason: timedOut ? "paperclip timeout cleanup" : "paperclip error cleanup",
+          discardPersistentState: timedOut,
+          dropWarmEntry: true,
+          recordCloseError: true,
+          cancelTurnReason: preEmitMessage,
+        };
+        // Emit the failure best-effort. `turnFinalize` must not reject, so a
+        // failing emission never propagates: the settlement owns the teardown, and
+        // it runs only after this returns a completion. On an emission failure the
+        // run records a degraded result from the pre-emit message.
+        let emitted: Awaited<ReturnType<typeof emitAcpxFailure>> | null = null;
         try {
-          const { classified, message } = await emitAcpxFailure({
-            ctx,
-            prepared,
-            err,
-            phase,
-            messageOverride,
-          });
-          capturedResult = {
-            exitCode: 1,
-            signal: timedOut ? "SIGTERM" : null,
-            timedOut,
-            errorMessage: message,
-            errorCode: timedOut ? "acpx_timeout" : classified.errorCode,
-            errorMeta: classified.errorMeta,
-            ...billingFields,
-            ...referencedProjectStagingFailuresField,
-            model: prepared.requestedModel || null,
-            clearSession: clearSession || timedOut,
-            resultJson: { phase },
-            summary: message,
-          };
-          // The turn failed and settled its resources inline. The finalize records
-          // only that the turn finished so the coordinator reproduces the error
-          // result.
-          return { kind: "finalized" };
-        } finally {
-          await settleRunResources();
+          emitted = await emitAcpxFailure({ ctx, prepared, err, phase, messageOverride });
+        } catch {
+          emitted = null;
         }
+        const message = emitted?.message ?? preEmitMessage;
+        capturedResult = {
+          exitCode: 1,
+          signal: timedOut ? "SIGTERM" : null,
+          timedOut,
+          errorMessage: message,
+          errorCode: timedOut ? "acpx_timeout" : (emitted?.classified.errorCode ?? null),
+          errorMeta: emitted?.classified.errorMeta,
+          ...billingFields,
+          ...referencedProjectStagingFailuresField,
+          model: prepared.requestedModel || null,
+          clearSession: clearSession || timedOut,
+          resultJson: { phase },
+          summary: message,
+        };
+        // Return a typed failed completion so the coordinator settles for a cause
+        // that forbids the save. The reported phase lives on the recorded result.
+        return {
+          kind: "failed",
+          cause: { kind: "turn_failed", error: err instanceof Error ? err : new Error(String(err)) },
+          resources: emptyConsumed,
+        };
       };
       try {
         return await runTurnSequence<AcpRuntimeTurnResult>({
@@ -4064,22 +4059,119 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         currentRunParentContext = runRootSpan.parentContext;
       }
       };
-      // The settlement sequence is the one cleanup owner (Phase 22). It claims
-      // the ledger and produces the final per-resource disposition report. Its
-      // effect steps no-op in this phase, because the turn and startup step
-      // wrappers still own the live teardown inline. The remaining swap is the
-      // inline-to-settlement inversion: register the runtime in the ledger and let
-      // `settleAcpRun` own every close, warm save, bridge stop, and sync-back. The
-      // cold-`ensureSession` runtime-leak fix rides that inversion, so it stays
-      // pinned in the startup characterization baseline until the inversion lands.
+      // A live run-scoped credential marker. The host-lane reuse candidate carries
+      // it, so the Amendment B credential gate blocks the host warm save: the
+      // run-minted API key is never revoked, so it stays valid and forces a
+      // close-and-relaunch. It is a non-secret marker; the settlement reads only its
+      // presence, and no report or reuse payload carries it.
+      const LIVE_RUN_SCOPED_API_KEY = "paperclip-run-scoped-api-key";
+      // Record the final per-resource disposition report where a test can observe
+      // it. The engine never reads it back.
+      const recordDispositionReport = (report: SettlementDispositionReport): void => {
+        deps.onSettlementDisposition?.(report);
+      };
+      // The settlement sequence is the one live cleanup owner for every settled path
+      // (Phase 22). It claims the ledger once, makes the pure reuse decision, then
+      // runs the ordered steps: `endSession`, `settleReuse`, `stopTransport`,
+      // `syncBack`, and `releaseStagingLease` (in a finally). Each step reads the run
+      // state through the shared closure locals and no-ops on an empty ledger slot.
+      // The Phase 3 error policy governs every step. The coordinator alone owns the
+      // startup rollback.
       const settlementSteps: SettlementSteps = {
-        // The inline teardown already made the live save-versus-close decision, so
-        // the settlement decision holds nothing to save in this phase.
-        reuseCandidate: () => null,
-        endSession: () => {},
-        settleReuse: () => {},
-        stopTransport: () => {},
-        syncBack: () => {},
+        // Derive the reuse candidate. Only a clean turn (no cause) can save. The
+        // host lane would save the live runtime, but the Amendment B credential gate
+        // fails there: the run-minted API key is never revoked, so a live run-scoped
+        // credential stays valid and the decision discards (close-and-relaunch). The
+        // sandbox lane saves its staged files, which carry no credential.
+        reuseCandidate: (slots, cause) => {
+          const clean = cause === null;
+          if (prepared.processSessionBridge) {
+            // Sandbox lane: the staged files are the reuse. Save only after a clean
+            // turn and only when the run holds a staged runtime.
+            if (!clean || !slots.has("staged_runtime")) return null;
+            return { kind: "sandbox", causePermitsSave: true, liveRunScopedCredentials: [] };
+          }
+          // Host lane: save a clean persistent warm-eligible turn, but carry the
+          // live run-scoped credential so the gate blocks the transfer.
+          if (!slots.has("acp_runtime")) return null;
+          const permits = clean && prepared.mode === "persistent" && warmIdleMs > 0;
+          if (!permits) return null;
+          return { kind: "host", causePermitsSave: true, liveRunScopedCredentials: [LIVE_RUN_SCOPED_API_KEY] };
+        },
+        // Close every runtime the decision did not transfer, and drop the warm entry
+        // on close.
+        endSession: async (slots, decision) => {
+          if (!slots.has("acp_runtime")) return;
+          if (decision.kind === "save" && decision.savedId === "acp_runtime") return;
+          const settlement: RuntimeSettlementPlan = runtimeSettlement ?? {
+            mode: "direct",
+            handle: syntheticCloseHandle(),
+            reason: "paperclip cleanup",
+            discardPersistentState: false,
+            dropWarmEntry: false,
+            recordCloseError: true,
+            cancelTurnReason: null,
+          };
+          // Cancel a running turn before the close (the turn-error path).
+          if (settlement.cancelTurnReason && activeTurn) {
+            await activeTurn.cancel({ reason: settlement.cancelTurnReason }).catch(() => {});
+          }
+          const existing = warmHandles.get(prepared.sessionKey);
+          if (
+            settlement.mode === "warm_or_close" &&
+            warmHandleMatches(existing, runtime, settlement.handle) &&
+            existing
+          ) {
+            // A matching warm entry closes through the warm store, which also
+            // clears its idle timer and flushes its child stderr.
+            await closeWarmHandle({
+              handles: warmHandles,
+              key: prepared.sessionKey,
+              entry: existing,
+              reason: settlement.reason,
+              discardPersistentState: settlement.discardPersistentState,
+            });
+            return;
+          }
+          const onCloseError = settlement.recordCloseError
+            ? (closeErr: unknown) => recordTeardownError("runtime-close", closeErr)
+            : () => {};
+          await runtime
+            .close({
+              handle: settlement.handle,
+              reason: settlement.reason,
+              discardPersistentState: settlement.discardPersistentState,
+            })
+            .catch(onCloseError);
+          if (settlement.dropWarmEntry && warmHandleMatches(existing, runtime, settlement.handle) && existing) {
+            clearWarmHandleTimer(existing);
+            warmHandles.delete(prepared.sessionKey);
+          }
+        },
+        // Perform the reuse decision. A save transfers the staged files to the site
+        // store (which arms the idle policy); every other case discards the staged
+        // runtime. The host warm save is closed in `endSession`.
+        settleReuse: async (slots, decision) => {
+          if (!slots.has("staged_runtime")) return;
+          if (decision.kind === "save" && decision.savedId === "staged_runtime") {
+            saveStagedRuntimeAfterCleanTurn({ handles: stagedRuntimes, prepared, now: now() });
+            return;
+          }
+          await discardStagedRuntime({ handles: stagedRuntimes, prepared });
+        },
+        // Stop both bridges in one allSettled.
+        stopTransport: async () => {
+          await stopRunTransport(prepared);
+        },
+        // The site sync-back (the managed-home copy-back).
+        syncBack: async () => {
+          await syncBackManagedHome(prepared);
+        },
+        // The staging lease releases as the run's final act, AFTER the coordinator
+        // reproduces the result, in the run root `finally` below. This step stays a
+        // no-op in the live engine: a same-session second run must stay blocked on
+        // the lease until this run fully returns, not merely until the settlement
+        // sync-back finishes, so the release cannot move earlier into settlement.
         releaseStagingLease: () => {},
         recordError: async (step, error) => {
           await recordTeardownError(`settlement-${step}`, error);
@@ -4093,14 +4185,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         ledger: runResourceLedger,
         startup,
         runTurn,
-        // The step wrappers already ran the inline teardown; the ledger claim on
-        // the throw path replays no release yet, because `buildRuntime` owns its
-        // own partial-bring-up rollback in this phase.
+        // The coordinator owns the startup rollback: `buildRuntime` runs its own
+        // partial-bring-up rollback and throws, so no ledger resource is left to
+        // release here.
         rollbackStartup: () => {},
-        recordDisposition: () => {},
-        // The settlement sequence claims the ledger and records the disposition
-        // report. Its effect steps no-op here, so the run's teardown behavior is
-        // exactly as it was before the coordinator drove it.
+        recordDisposition: recordDispositionReport,
+        // The settlement sequence is the one live cleanup owner. It claims the
+        // ledger, releases every settled resource, and returns the final
+        // disposition report. The child stderr flushes after the sync-back on every
+        // settled exit path (it stays null before the run reads the warm entry).
         settle: async (reason: SettlementReason) => {
           const cause: SettlementCause | null =
             reason.kind === "pre_turn"
@@ -4108,7 +4201,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               : reason.completion.kind === "finalized"
                 ? null
                 : reason.completion.cause;
-          await settleAcpRun(runResourceLedger, cause, settlementSteps);
+          const report = await settleAcpRun(runResourceLedger, cause, settlementSteps);
+          recordDispositionReport(report);
+          if (childStderrState) flushChildStderr(childStderrState);
         },
         reproduceResult: (): AdapterExecutionResult => {
           if (!capturedResult) {
@@ -4121,14 +4216,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     } finally {
       // End the run root span exactly once, on every return and on a throw.
       runRootSpan.end(runFailed);
-      // Release the per-session staging lease as the run's final settlement act,
-      // AFTER the coordinator reproduces the result. It stays null on a build
-      // failure (where `buildRuntime` already released its own partial lease) and
-      // on the host lane (no staging). This ordering keeps a same-session second
-      // run blocked on the lease until this run fully settles, and it runs in the
-      // `finally`, so an earlier teardown fault never strands the lease.
-      // TypeScript narrows this `let` to its `null` initializer because the only
-      // assignment runs inside the `startup` closure, so assert the declared type.
+      // Release the per-session staging lease as the run's final act, AFTER the
+      // coordinator settled every other resource and reproduced the result. It runs
+      // last, in this `finally`, so a same-session second run stays blocked on the
+      // lease until this run fully returns (not merely until the settlement
+      // sync-back finishes) and an earlier teardown fault never strands the lease.
+      // It stays null on a build failure (where `buildRuntime` released its own
+      // partial lease) and on the host lane (no staging). The settlement stopped the
+      // bridges and ran the sync-back before this point, so the ordering is
+      // bridge-stop → sync-back → lease release.
       (releaseStagingLease as (() => void) | null)?.();
     }
   };
