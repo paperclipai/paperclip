@@ -465,6 +465,10 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
   "codex_transient_upstream",
   "codex_harness_crash",
   "claude_transient_upstream",
+  // A bare non-zero agy exit has no diagnostic signature and is known to flake
+  // across otherwise healthy lanes. Retry it with the normal bounded backoff
+  // before recovery decides the issue needs intervention (TSMC-20910).
+  "antigravity_transient_silent_exit",
   "provider_quota",
   "timeout",
 ]);

@@ -21,6 +21,19 @@ export interface AntigravityQuotaExhaustedMatch {
   resetAt: Date | null;
 }
 
+/**
+ * A bare non-zero `agy` exit has been observed to be an intermittent provider
+ * flake: the identical model can succeed on another lane moments later.  Keep
+ * this deliberately narrow so a diagnostic emitted on stderr remains a normal
+ * (and breaker-eligible) adapter failure rather than being masked as transient.
+ */
+export function isAntigravityTransientSilentExit(input: {
+  exitCode: number | null | undefined;
+  stderr: string | null | undefined;
+}) {
+  return input.exitCode != null && input.exitCode !== 0 && !(input.stderr ?? "").trim();
+}
+
 const CONVERSATION_ID_RE =
   /(?:conversation|session)(?:\s+id)?\s*[:=]\s*([A-Za-z0-9._:-]+)/i;
 const ANTIGRAVITY_QUOTA_EXHAUSTED_RE =

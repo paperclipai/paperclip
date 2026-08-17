@@ -33,12 +33,27 @@ export type EquivalentFailureMatch =
 const TRANSIENT_LOCK_CONTENTION_ERROR_CODES = new Set([
   "lock_contention",
   "transient_lock_contention",
+  // The Antigravity adapter emits this only for a non-zero `agy` exit with no
+  // stderr signature. It receives bounded backoff retries before any structural
+  // circuit-breaker judgment (TSMC-20910).
+  "antigravity_transient_silent_exit",
+]);
+
+// Resource ceilings are scoping verdicts, not lane failures: the task did not fit the budget it
+// was given. Feeding them to the breaker pauses a healthy lane and strands its whole queue
+// (Coder-Hermes 08-16, Architect-Codex 08-17 — TSMC-20910 instances 3 and 4). The oversized
+// card still fails loudly per-run; the lane stays available for the rest of its work.
+const RESOURCE_CEILING_ERROR_CODES = new Set([
+  "token_budget_exhausted",
+  "max_turns_exhausted",
+  "issue_generation_ceiling_exceeded",
 ]);
 
 function isGenuineFailure(observation: FailureObservation) {
   return (
     (observation.status === "failed" || observation.status === "timed_out") &&
-    !TRANSIENT_LOCK_CONTENTION_ERROR_CODES.has(observation.errorCode ?? "")
+    !TRANSIENT_LOCK_CONTENTION_ERROR_CODES.has(observation.errorCode ?? "") &&
+    !RESOURCE_CEILING_ERROR_CODES.has(observation.errorCode ?? "")
   );
 }
 

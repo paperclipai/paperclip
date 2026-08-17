@@ -101,6 +101,19 @@ def _eval_check(output, chk, parsed_json):
         if not found or not isinstance(val, (list, str)):
             return False
         return len(val) == int(chk["value"])
+    if t == "command":
+        import subprocess, tempfile
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            f.write(text)
+            f_name = f.name
+        try:
+            cmd = chk["command"].replace("{output_file}", f_name)
+            res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            return res.returncode == 0
+        finally:
+            import os
+            if os.path.exists(f_name):
+                os.remove(f_name)
     if t == "json_path_max_chars":
         found, val = benchlib.dotted_get(parsed_json, chk["path"]) if parsed_json is not None else (False, None)
         if not found or not isinstance(val, str):

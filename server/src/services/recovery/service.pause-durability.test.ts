@@ -32,6 +32,13 @@ describe("pause durability: continuation retry classification", () => {
     expect(c.maxAttempts).toBeGreaterThan(0);
   });
 
+  it("retries Antigravity silent exits as transient infrastructure", () => {
+    const c = classifyContinuationFailure(run("antigravity_transient_silent_exit"));
+    expect(c.kind).toBe("transient_infra");
+    expect(c.maxAttempts).toBeGreaterThan(0);
+    expect(c.baseBackoffMs).toBeGreaterThan(0);
+  });
+
   it("generic cancelled (non-pause cancellation) is NOT non-retryable", () => {
     // non-pause cancellations (the internal invokability cancel and budget pause) keep errorCode "cancelled" -> default branch
     expect(classifyContinuationFailure(run("cancelled")).kind).toBe("default");

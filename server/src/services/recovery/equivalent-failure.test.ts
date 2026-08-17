@@ -52,5 +52,25 @@ describe("classifyEquivalentFailure", () => {
       failure(),
       failure({ errorCode: "transient_lock_contention" }),
     ], now)).toBeNull();
+    expect(classifyEquivalentFailure([
+      failure({ errorCode: "antigravity_transient_silent_exit" }),
+      failure({
+        occurredAt: new Date("2026-08-10T10:00:00.000Z"),
+        errorCode: "antigravity_transient_silent_exit",
+      }),
+    ], now)).toBeNull();
+  });
+it("excludes resource ceilings from breaker judgment (TSMC-20910 instances 3-4)", () => {
+    for (const code of ["token_budget_exhausted", "max_turns_exhausted", "issue_generation_ceiling_exceeded"]) {
+      expect(classifyEquivalentFailure([
+        failure({ errorCode: code }),
+        failure({ occurredAt: new Date("2026-08-10T10:00:00.000Z"), errorCode: code }),
+      ], now)).toBeNull();
+    }
+    // A ceiling paired with one genuine failure is still only ONE genuine failure.
+    expect(classifyEquivalentFailure([
+      failure({ errorCode: "token_budget_exhausted" }),
+      failure({ occurredAt: new Date("2026-08-10T10:00:00.000Z") }),
+    ], now)).toBeNull();
   });
 });

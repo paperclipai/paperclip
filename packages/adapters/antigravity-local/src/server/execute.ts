@@ -43,6 +43,7 @@ import {
   parseAntigravityOutput,
   isAntigravityUnknownSessionError,
   detectAntigravityQuotaExhausted,
+  isAntigravityTransientSilentExit,
 } from "./parse.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -499,6 +500,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const failed = (attempt.proc.exitCode ?? 0) !== 0;
       const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
       const fallbackErrorMessage = stderrLine || `Antigravity exited with code ${attempt.proc.exitCode ?? -1}`;
+      const transientSilentExit = failed && isAntigravityTransientSilentExit({
+        exitCode: attempt.proc.exitCode,
+        stderr: attempt.proc.stderr,
+      });
       const canFallbackToRuntimeSession = !isRetry;
       const resolvedSessionId =
         attempt.parsed.sessionId ??
@@ -525,7 +530,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           : failed ? fallbackErrorMessage : null,
         errorCode: tokenBudgetExceeded
           ? "antigravity_token_budget_exhausted"
-          : failed && quotaMeta.exhausted ? "antigravity_quota_exhausted" : null,
+          : failed && quotaMeta.exhausted ? "antigravity_quota_exhausted"
+            : transientSilentExit ? "antigravity_transient_silent_exit" : null,
+        errorFamily: transientSilentExit ? "transient_upstream" : null,
         usage: attempt.parsed.usage,
         usageBasis: "per_run",
         sessionId: resolvedSessionId,
@@ -557,6 +564,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                   resetAt: quotaMeta.resetAt?.toISOString() ?? null,
                 },
                 ...(quotaMeta.resetAt ? { resetAt: quotaMeta.resetAt.toISOString() } : {}),
+              }
+              : {}),
+            ...(transientSilentExit
+              ? {
+                transientFailure: {
+                  provider: "antigravity",
+                  kind: "silent_nonzero_exit",
+                  exitCode: attempt.proc.exitCode,
+                },
               }
               : {}),
           }

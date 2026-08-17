@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   detectAntigravityQuotaExhausted,
   inspectAntigravityStream,
+  isAntigravityTransientSilentExit,
   parseAntigravityOutput,
 } from "./parse.js";
 
@@ -28,6 +29,14 @@ describe("detectAntigravityQuotaExhausted", () => {
       matchedLine: null,
       resetAt: null,
     });
+  });
+});
+
+describe("Antigravity transient silent exits", () => {
+  it("classifies only a non-zero exit with no stderr diagnostic as transient", () => {
+    expect(isAntigravityTransientSilentExit({ exitCode: 1, stderr: " \n" })).toBe(true);
+    expect(isAntigravityTransientSilentExit({ exitCode: 0, stderr: "" })).toBe(false);
+    expect(isAntigravityTransientSilentExit({ exitCode: 1, stderr: "quota reached" })).toBe(false);
   });
 });
 
