@@ -64,4 +64,40 @@ describe("heartbeat cost accounting", () => {
       cacheAdjustedCostUsd: 1.5,
     })).toBe(1.5);
   });
+
+  it("estimates a subscription-billed run against known public model pricing", () => {
+    expect(resolveLedgerCostStatus({
+      costUsd: null,
+      inputTokens: 1_000_000,
+      cachedInputTokens: 0,
+      outputTokens: 1_000_000,
+      billingType: "subscription_included",
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+    })).toBe("estimated");
+  });
+
+  it("keeps a subscription-billed run unpriced when the model has no known rate", () => {
+    expect(resolveLedgerCostStatus({
+      costUsd: null,
+      inputTokens: 1_000_000,
+      cachedInputTokens: 0,
+      outputTokens: 1_000_000,
+      billingType: "subscription_included",
+      provider: "openai",
+      model: "some-future-model-nobody-has-priced-yet",
+    })).toBe("unpriced");
+  });
+
+  it("does not mark a subscription run priced when it has no token usage at all", () => {
+    expect(resolveLedgerCostStatus({
+      costUsd: null,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      billingType: "subscription_included",
+      provider: "anthropic",
+      model: "claude-sonnet-5",
+    })).toBe("reported");
+  });
 });
