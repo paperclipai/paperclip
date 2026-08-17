@@ -349,6 +349,22 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       .where(and(eq(companies.id, policy.scopeId), eq(companies.pauseReason, "budget")));
   }
 
+  // A scope can have several active hard-stop policies at once (e.g. billed_cents
+  // and token_count both active on the same agent). Resuming must not un-pause a
+  // scope that is still over a *different* policy's threshold -- otherwise raising
+  // or resolving one metric would silently clear a still-exceeded one.
+  async function resumeScopeIfClear(policy: PolicyRow) {
+    const stillExceeded = await findExceededActivePolicy(
+      db,
+      policy.companyId,
+      policy.scopeType as BudgetScopeType,
+      policy.scopeId,
+    );
+    if (!stillExceeded) {
+      await resumeScopeFromBudget(policy);
+    }
+  }
+
   async function getPolicyRow(policyId: string) {
     const policy = await db
       .select()
@@ -644,7 +660,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
       if (amount > 0) {
         const observedAmount = await computeObservedAmount(db, row);
         if (observedAmount < amount) {
-          await resumeScopeFromBudget(row);
+          await resumeScopeIfClear(row);
           await resolveOpenIncidentsForPolicy(row.id, actorUserId ? "approved" : null, actorUserId);
         } else {
           const softThreshold = Math.ceil((row.amount * row.warnPercent) / 100);
@@ -658,7 +674,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           }
         }
       } else {
-        await resumeScopeFromBudget(row);
+        await resumeScopeIfClear(row);
         await resolveOpenIncidentsForPolicy(row.id, actorUserId ? "approved" : null, actorUserId);
       }
 
@@ -918,7 +934,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
             .where(eq(agents.id, policy.scopeId));
         }
 
-        await resumeScopeFromBudget(policy);
+        await resumeScopeIfClear(policy);
         await db
           .update(budgetIncidents)
           .set({

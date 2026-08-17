@@ -345,4 +345,86 @@ describeEmbeddedPostgres("budget service token_count / run_count metrics", () =>
     expect(incident?.metric).toBe("billed_cents");
     expect(incident?.amountObserved).toBe(600);
   });
+
+  it("does not resume a scope when raising one exceeded metric while another metric is still over its hard stop", async () => {
+    const { companyId, agentId } = await createCompanyAndAgent("Cross Metric Agent");
+    await db.insert(budgetPolicies).values([
+      {
+        companyId,
+        scopeType: "agent",
+        scopeId: agentId,
+        metric: "token_count",
+        windowKind: "calendar_month_utc",
+        amount: 100,
+        warnPercent: 80,
+        hardStopEnabled: true,
+        notifyEnabled: false,
+        isActive: true,
+      },
+      {
+        companyId,
+        scopeType: "agent",
+        scopeId: agentId,
+        metric: "run_count",
+        windowKind: "calendar_month_utc",
+        amount: 1,
+        warnPercent: 80,
+        hardStopEnabled: true,
+        notifyEnabled: false,
+        isActive: true,
+      },
+    ]);
+
+    const costs = costService(db, { cancelWorkForScope: async () => {} });
+    // One run, well over both the token_count and run_count thresholds -- both
+    // policies hard-stop and pause the agent.
+    await costs.createEvent(companyId, {
+      heartbeatRunId: (await db.insert(heartbeatRuns).values({ companyId, agentId }).returning())[0]!.id,
+      agentId,
+      provider: "openai",
+      biller: "openai",
+      billingType: "subscription_included",
+      model: "gpt-5",
+      inputTokens: 100,
+      cachedInputTokens: 0,
+      outputTokens: 100,
+      costCents: 0,
+      occurredAt: new Date(),
+    });
+
+    expect((await getAgentRow(agentId))?.status).toBe("paused");
+
+    // Raising only the token_count budget must not resume the agent: run_count
+    // is still over its own hard-stop threshold.
+    await budgets.upsertPolicy(
+      companyId,
+      {
+        scopeType: "agent",
+        scopeId: agentId,
+        metric: "token_count",
+        amount: 100_000,
+        windowKind: "calendar_month_utc",
+      },
+      "test-board-user",
+    );
+
+    expect((await getAgentRow(agentId))?.status).toBe("paused");
+
+    // Now raise run_count too -- with no policy left exceeded, the agent resumes.
+    await budgets.upsertPolicy(
+      companyId,
+      {
+        scopeType: "agent",
+        scopeId: agentId,
+        metric: "run_count",
+        amount: 100,
+        windowKind: "calendar_month_utc",
+      },
+      "test-board-user",
+    );
+
+    const agentRow = await getAgentRow(agentId);
+    expect(agentRow?.status).not.toBe("paused");
+    expect(agentRow?.pauseReason).toBeNull();
+  });
 });
