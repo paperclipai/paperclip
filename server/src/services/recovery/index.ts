@@ -29,6 +29,32 @@ export type {
   IssueLivenessState,
 } from "./issue-graph-liveness.js";
 export {
+  FEEDBACK_DELIVERY_MAX_AUTOMATIC_RETRIES,
+  FEEDBACK_DELIVERY_RECOVERY_ACTION_KIND,
+  FEEDBACK_DELIVERY_RECOVERY_CAUSE,
+  FEEDBACK_DELIVERY_RETRY_REASON,
+  FEEDBACK_DELIVERY_RETRY_WAKE_REASON,
+  FEEDBACK_DELIVERY_IDEMPOTENCY_INDEX,
+  STRANDED_FEEDBACK_DELIVERY_BACKSTOP_INSTRUCTION,
+  STRANDED_FEEDBACK_DELIVERY_BACKSTOP_NEXT_ACTION,
+  STRANDED_FEEDBACK_DELIVERY_BACKSTOP_SOURCE,
+  buildFeedbackDeliveryFingerprint,
+  buildFeedbackDeliveryRetryIdempotencyKey,
+  carriesExplicitFeedbackResume,
+  decideStrandedFeedbackDeliveryBackstop,
+  isEligibleFeedbackDeliveryWake,
+  isFeedbackDeliveryIdempotencyConflict,
+  isSuccessfulFeedbackDeliveryRecoveryMatch,
+  readFeedbackDeliveryRetryGeneration,
+  readFeedbackDeliveryRunContext,
+  readFeedbackDeliveryWakeCommentIds,
+} from "./feedback-delivery.js";
+export type {
+  FeedbackDeliveryRunContext,
+  StrandedFeedbackDeliveryBackstopDecision,
+  StrandedFeedbackDeliveryBackstopProbe,
+} from "./feedback-delivery.js";
+export {
   recoveryService,
 } from "./service.js";
 export {

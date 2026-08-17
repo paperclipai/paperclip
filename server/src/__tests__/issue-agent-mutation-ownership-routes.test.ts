@@ -205,6 +205,9 @@ function registerRouteMocks() {
       listIssueVotesForUser: vi.fn(async () => []),
       saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
     }),
+    feedbackDeliveryCommentStateService: () => ({
+      listForIssue: vi.fn(async () => new Map()),
+    }),
     goalService: () => ({}),
     heartbeatService: () => mockHeartbeatService,
     instanceSettingsService: () => ({

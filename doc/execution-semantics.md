@@ -332,6 +332,54 @@ Document-scoped activity may still route work when it is converted into an expli
 
 Freeform document approval text is not auto-acceptance. Plan approval, implementation approval, or review acceptance must flow through the explicit interaction, approval, execution-policy, assignment, or blocker primitives that define who owns the next move.
 
+### Durable human-feedback delivery
+
+A top-level issue comment from a board user or other user that is eligible to wake the current agent assignee creates a durable feedback-delivery obligation. Creating a wake request or run row does not satisfy that obligation. Paperclip continues to owe delivery until one of these durable outcomes exists:
+
+- the current assignee records handling evidence for the delivered comment batch
+- the issue becomes human-owned or unassigned and the outstanding feedback is represented as an explicit human waiting path
+- the issue becomes terminal and Paperclip records terminal suppression without waking or resurrecting it
+- automatic replay is exhausted and Paperclip opens one explicit feedback-delivery recovery action with a named owner and next action
+
+When a human comment supersedes the issue's pending review interaction, committing the comment, terminalizing the superseded interaction, and establishing the replacement feedback-delivery path are one logical transition. The old interaction remains terminal audit evidence and must not be reopened. If the replacement run is lost, the outstanding feedback obligation—not the expired interaction—owns review continuity.
+
+Handling evidence must prove that an eligible assignee run received the batch and durably acted on it. The evidence record must identify the company, issue, assignee, delivery lane, run, handled-through comment id, evidence kind, evidence record id, and timestamp. Qualifying evidence is an assignee-authored issue mutation causally attributed to a run whose wake context included the handled comments, such as:
+
+- a substantive issue-thread response or explicit structured acknowledgement/disposition
+- a document or plan revision made in response to the feedback
+- a fresh revision-bound interaction or approval request that replaces the superseded review path
+- a valid status, assignment, monitor, blocker, delegation, recovery, or terminal disposition that explains what happens next
+
+Run creation, transition to `running`, process/PID persistence, environment or workspace allocation, checkout, log output, token use, or a generic heartbeat event is useful launch/diagnostic evidence but is not handling evidence. Unrelated activity that merely happened after the comment also does not count. If an agent reads newer thread activity while running, it may record handling through a later comment only when the durable evidence explicitly carries that later handled-through boundary.
+
+Paperclip serializes delivery per `(companyId, issueId, assigneeAgentId)` lane. Each lane has an immutable root wake request and earliest unhandled comment. Each delivery attempt has a deduplication fingerprint derived from at least:
+
+- company id, issue id, and current assignee agent id
+- root feedback wake request id
+- the ordered comment ids included through the attempt's batch upper bound
+- retry generation
+
+The original attempt uses retry generation `0`. One automatic replay of the same unhandled batch uses generation `1`; automatic retry is exhausted when generation `1` terminalizes without handling evidence and no equivalent live attempt already exists. A unique claim on the attempt fingerprint must prevent startup reconciliation, immediate terminalization handling, periodic recovery, and concurrent wake dispatch from creating parallel attempts. Automatic source-work replay uses the original/normal model lane.
+
+Later eligible comments join the existing outstanding lane in issue-activity order; they do not create a competing lane or reset the retry generation for an older unhandled comment. Before adapter launch, Paperclip may expand the queued attempt's batch and replace its fingerprint atomically. After launch, the run's batch boundary is immutable: later comments remain appended to the lane, and Paperclip queues at most one follow-up attempt after the current attempt terminalizes or records handling through its boundary. If handling evidence covers only a prefix, the remaining ordered suffix becomes a generation `0` delivery batch without weakening exhaustion for an older still-unhandled prefix.
+
+Every path that terminalizes or abandons a feedback-carrying run must execute the same post-run feedback disposition evaluator after persisting the run outcome. This parity includes normal completion, adapter exit/failure, setup or workspace failure, timeout/cancellation, startup orphan reaping, hot-restart adoption/reconciliation, and periodic stranded-work recovery. The evaluator must, idempotently:
+
+1. close the obligation through the recorded handled-through boundary when qualifying handling evidence exists
+2. preserve one equivalent active or queued attempt when one already owns delivery
+3. queue generation `1` when the same current assignee can safely receive the still-open generation `0` batch
+4. otherwise create or update one source-scoped `feedback_delivery_exhausted` recovery action instead of dropping the review path or creating another automatic attempt
+
+The exhaustion action must expose the root wake and ordered outstanding comment ids, failed run and attempt fingerprints, generations tried, last failure reason, current owner, and an exact action such as retry delivery explicitly, restore an invokable assignee/workspace, resolve a pause or budget gate, hand ownership to a named participant, or record a valid manual disposition. Exhaustion alone does not justify `blocked`: keep the source issue on the source-scoped recovery path unless a real named dependency prevents productive work, in which case use the normal blocker contract. A later human comment may add context to the same lane, but must never be required to recover an earlier comment or silently authorize another automatic retry generation.
+
+Replay and recovery revalidate company, issue, current ownership, execution policy, workspace, credentials, pause state, and budget immediately before dispatch. They must not cross a company boundary, deliver to a stale assignee, bypass an approval or governance gate, reuse invalid execution context, or resurrect `done`/`cancelled`. Reassignment to another agent closes the stale assignee lane and creates a generation `0` lane for the new assignee when the issue remains eligible; reassignment to a user or no assignee converts the obligation to an explicit human waiting path. Terminalization closes outstanding delivery as `suppressed_terminal` audit evidence and suppresses all queued retries.
+
+This contract preserves the three liveness invariants:
+
+1. **Productive work continues.** A transient pre-launch or in-flight infrastructure loss replays the original feedback once, and later comments batch without requiring another human nudge.
+2. **Only real blockers stop work.** Pause, budget, ownership, governance, workspace, or dependency gates remain authoritative and visible; retry exhaustion uses explicit recovery rather than pretending every infrastructure failure is a blocker.
+3. **No infinite loops.** Fingerprinted single-lane delivery, one automatic replay generation, terminalization parity, and one deduplicated exhaustion action bound recovery.
+
 ### Comment interrupts and ownership handoffs
 
 A board comment can be an interrupt, an ownership change, both, or neither. Paperclip must keep those concepts separate in the product contract.

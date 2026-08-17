@@ -46,7 +46,7 @@ function pruneCloudTenantWriteDebounce(
 }
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
-import { forbidden, unprocessable } from "../errors.js";
+import { forbidden, unauthorized, unprocessable } from "../errors.js";
 
 export { isCloudManagedInstance } from "../services/cloud-instance.js";
 
@@ -58,13 +58,18 @@ function normalizeOptionalString(value: string | null | undefined) {
   return value?.trim() || null;
 }
 
-async function resolveLegacyRunResponsibleUserId(
+async function loadAgentJwtRun(
   db: Db,
   input: { companyId: string; agentId: string; runId: string },
 ) {
   if (!isUuidLike(input.runId)) return null;
-  const run = await db
-    .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+  return db
+    .select({
+      id: heartbeatRuns.id,
+      status: heartbeatRuns.status,
+      finishedAt: heartbeatRuns.finishedAt,
+      responsibleUserId: heartbeatRuns.responsibleUserId,
+    })
     .from(heartbeatRuns)
     .where(
       and(
@@ -74,7 +79,6 @@ async function resolveLegacyRunResponsibleUserId(
       ),
     )
     .then((rows) => rows[0] ?? null);
-  return normalizeOptionalString(run?.responsibleUserId);
 }
 
 async function loadResponsibleUserMemberships(
@@ -301,22 +305,6 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         return;
       }
 
-      const agentRecord = await db
-        .select()
-        .from(agents)
-        .where(eq(agents.id, claims.sub))
-        .then((rows) => rows[0] ?? null);
-
-      if (!agentRecord || agentRecord.companyId !== claims.company_id) {
-        next();
-        return;
-      }
-
-      if (agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
-        next();
-        return;
-      }
-
       const normalizedRunIdHeader = normalizeOptionalString(runIdHeader);
       if (normalizedRunIdHeader && normalizedRunIdHeader !== claims.run_id) {
         await auditAgentJwtRunHeaderMismatch(db, {
@@ -337,13 +325,43 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         return;
       }
 
+      const [agentRecord, jwtRun] = await Promise.all([
+        db
+          .select()
+          .from(agents)
+          .where(eq(agents.id, claims.sub))
+          .then((rows) => rows[0] ?? null),
+        loadAgentJwtRun(db, {
+          companyId: claims.company_id,
+          agentId: claims.sub,
+          runId: claims.run_id,
+        }),
+      ]);
+
+      if (!agentRecord || agentRecord.companyId !== claims.company_id) {
+        next();
+        return;
+      }
+
+      if (agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
+        next();
+        return;
+      }
+
+      // A local-agent JWT is a capability for exactly one live heartbeat run,
+      // not a long-lived agent credential. Revalidate the persisted lifecycle
+      // on every request so terminalizing the run revokes the capability
+      // immediately instead of leaving it usable until the JWT's expiry.
+      // `finishedAt` is checked as a fail-closed guard for an inconsistent row
+      // whose status was not updated atomically with finalization.
+      if (!jwtRun || jwtRun.status !== "running" || jwtRun.finishedAt !== null) {
+        next(unauthorized("Agent run is not active"));
+        return;
+      }
+
       const onBehalfOfUserId = claims.responsible_user_id !== undefined
         ? normalizeOptionalString(claims.responsible_user_id)
-        : await resolveLegacyRunResponsibleUserId(db, {
-            companyId: claims.company_id,
-            agentId: claims.sub,
-            runId: claims.run_id,
-          });
+        : normalizeOptionalString(jwtRun.responsibleUserId);
       const onBehalfOfMemberships = await loadResponsibleUserMemberships(db, {
         companyId: claims.company_id,
         userId: onBehalfOfUserId,

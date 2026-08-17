@@ -6840,6 +6840,13 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "post",
+  path: "/api/issues/{id}/feedback-delivery/retry",
+  tags: ["issues"],
+  summary: "Retry exhausted human feedback delivery",
+});
+
+registerCurrentRoute({
+  method: "post",
   path: "/api/issues/{id}/monitor/check-now",
   tags: ["issues"],
   summary: "Run an issue monitor check now",

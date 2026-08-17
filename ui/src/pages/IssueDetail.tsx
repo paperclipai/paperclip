@@ -100,6 +100,7 @@ import {
   type IssueChatRunFinalizationAction,
 } from "../components/IssueChatThread";
 import { TaskChatThread } from "../components/TaskChatThread";
+import { feedbackDeliveryRetryErrorMessage } from "../components/FeedbackDeliveryState";
 import type { TaskChatIssueBrief } from "../components/task-chat/TaskChatDescriptionBubble";
 import { useClassicTaskInterfaceEnabled } from "../hooks/useClassicTaskInterfaceEnabled";
 import { workModeMetaFor } from "../lib/work-mode-meta";
@@ -959,6 +960,10 @@ type IssueDetailChatTabProps = {
   successfulRunHandoff: Issue["successfulRunHandoff"] | null;
   scheduledRetry: Issue["scheduledRetry"] | null;
   recoveryAction: Issue["activeRecoveryAction"];
+  onRetryFeedbackDelivery?: (commentId: string) => void;
+  retryingFeedbackDeliveryCommentId?: string | null;
+  failedFeedbackDeliveryRetryCommentId?: string | null;
+  feedbackDeliveryRetryErrorMessage?: string | null;
   onResolveRecoveryAction?: (outcome: import("../components/IssueRecoveryActionCard").RecoveryResolveOutcome) => void;
   onReissueIsolatedRecoveryAction?: (request: import("../components/IssueRecoveryActionCard").RecoveryReissueRequest) => void;
   reissueIsolatedRecoveryActionPending?: boolean;
@@ -1064,6 +1069,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   blockerAttention,
   successfulRunHandoff,
   scheduledRetry,
+  onRetryFeedbackDelivery,
+  retryingFeedbackDeliveryCommentId,
+  failedFeedbackDeliveryRetryCommentId,
+  feedbackDeliveryRetryErrorMessage,
   recoveryAction,
   onResolveRecoveryAction,
   onReissueIsolatedRecoveryAction,
@@ -1340,6 +1349,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         successfulRunHandoff={successfulRunHandoff}
         scheduledRetry={scheduledRetry}
         recoveryAction={recoveryAction ?? null}
+        onRetryFeedbackDelivery={onRetryFeedbackDelivery}
+        retryingFeedbackDeliveryCommentId={retryingFeedbackDeliveryCommentId ?? null}
+        failedFeedbackDeliveryRetryCommentId={failedFeedbackDeliveryRetryCommentId ?? null}
+        feedbackDeliveryRetryErrorMessage={feedbackDeliveryRetryErrorMessage ?? null}
         onResolveRecoveryAction={onResolveRecoveryAction}
         onReissueIsolatedRecoveryAction={onReissueIsolatedRecoveryAction}
         reissueIsolatedRecoveryActionPending={reissueIsolatedRecoveryActionPending}
@@ -4180,6 +4193,56 @@ export function IssueDetail() {
     });
   }, [reconcileExecutionWorkspaceId, reconcileRecoveryAction.mutateAsync, pushToast]);
 
+  // Explicit operator retry for an exhausted feedback delivery. Errors surface
+  // inline inside the banner (not only as a toast) so the operator sees the
+  // failure next to the control they just pressed.
+  const [failedFeedbackDeliveryRetryCommentId, setFailedFeedbackDeliveryRetryCommentId] =
+    useState<string | null>(null);
+  const [retryingFeedbackDeliveryCommentId, setRetryingFeedbackDeliveryCommentId] =
+    useState<string | null>(null);
+  const [feedbackDeliveryRetryFailureMessage, setFeedbackDeliveryRetryFailureMessage] =
+    useState<string | null>(null);
+  const retryFeedbackDelivery = useMutation({
+    // The commentId is carried so the banner that was pressed owns the pending
+    // and error state; the request itself is scoped to the issue's one open
+    // delivery obligation.
+    mutationFn: (_input: { commentId: string }) => issuesApi.retryFeedbackDelivery(issueId!),
+    onMutate: (input) => {
+      setRetryingFeedbackDeliveryCommentId(input.commentId);
+      setFailedFeedbackDeliveryRetryCommentId(null);
+      setFeedbackDeliveryRetryFailureMessage(null);
+    },
+    onSuccess: (result, variables) => {
+      // The delivery state lives on the comment, so the thread is the cache that
+      // has to move; the detail card carries the attention count.
+      void refetchComments();
+      invalidateIssueDetail();
+      if (result.outcome === "queued" || result.outcome === "already_queued") return;
+      setFailedFeedbackDeliveryRetryCommentId(variables.commentId);
+      setFeedbackDeliveryRetryFailureMessage(feedbackDeliveryRetryErrorMessage(result));
+      pushToast({ title: "Couldn't retry delivery", body: result.message, tone: "error" });
+    },
+    onError: (err, variables) => {
+      setFailedFeedbackDeliveryRetryCommentId(variables.commentId);
+      setFeedbackDeliveryRetryFailureMessage(
+        err instanceof Error ? err.message : "Unable to retry feedback delivery.",
+      );
+      pushToast({
+        title: "Couldn't retry delivery",
+        body: err instanceof Error ? err.message : "Unable to retry feedback delivery.",
+        tone: "error",
+      });
+    },
+    onSettled: () => setRetryingFeedbackDeliveryCommentId(null),
+  });
+  const handleRetryFeedbackDelivery = useCallback(
+    (commentId: string) => {
+      if (!issueId) return;
+      void retryFeedbackDelivery.mutateAsync({ commentId }).catch(() => {});
+    },
+    [issueId, retryFeedbackDelivery.mutateAsync],
+  );
+
   const treePreviewAffectedIssues = useMemo(
     () => (treeControlPreview?.issues ?? []).filter((candidate) => !candidate.skipped),
     [treeControlPreview],
@@ -5208,6 +5271,10 @@ export function IssueDetail() {
               successfulRunHandoff={issue.successfulRunHandoff ?? null}
               scheduledRetry={issue.scheduledRetry ?? null}
               recoveryAction={issue.activeRecoveryAction ?? null}
+              onRetryFeedbackDelivery={handleRetryFeedbackDelivery}
+              retryingFeedbackDeliveryCommentId={retryingFeedbackDeliveryCommentId}
+              failedFeedbackDeliveryRetryCommentId={failedFeedbackDeliveryRetryCommentId}
+              feedbackDeliveryRetryErrorMessage={feedbackDeliveryRetryFailureMessage}
               onResolveRecoveryAction={handleResolveRecoveryAction}
               onReissueIsolatedRecoveryAction={handleReissueIsolatedRecoveryAction}
               reissueIsolatedRecoveryActionPending={reissueIsolatedRecoveryAction.isPending}

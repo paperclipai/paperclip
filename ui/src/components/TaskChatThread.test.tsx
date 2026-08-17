@@ -532,6 +532,61 @@ describe("TaskChatThread queued message actions", () => {
   });
 });
 
+describe("TaskChatThread feedback delivery recovery", () => {
+  it("renders the exhausted notice, deep-link anchor, and Retry action on the default thread", () => {
+    const onRetryFeedbackDelivery = vi.fn();
+    const comment = {
+      id: "comment-feedback",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorType: "user" as const,
+      authorAgentId: null,
+      authorUserId: "user-1",
+      body: "Please use the updated requirements.",
+      presentation: null,
+      metadata: null,
+      feedbackDelivery: {
+        state: "exhausted_needs_attention" as const,
+        sourceCommentId: "comment-feedback",
+        attempt: 3,
+        maxAttempts: 3,
+        nextAttemptAt: null,
+        lastAttemptAt: "2026-08-14T12:00:00.000Z",
+        deliveredAt: null,
+        targetRunId: null,
+        targetRunAgentId: null,
+        canRetry: true,
+        retryInFlight: false,
+        safeFailureReason: "The agent could not be reached.",
+        batchedCommentCount: 1,
+      },
+      createdAt: new Date("2026-08-14T12:00:00.000Z"),
+      updatedAt: new Date("2026-08-14T12:00:00.000Z"),
+    };
+
+    render(
+      <TaskChatThread
+        comments={[comment]}
+        onAdd={async () => {}}
+        onRetryFeedbackDelivery={onRetryFeedbackDelivery}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="task-chat-thread"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="feedback-delivery-exhausted"]')).not.toBeNull();
+    expect(container.querySelector("#feedback-delivery-comment-feedback")).not.toBeNull();
+    expect(container.textContent).toContain("Feedback wasn't delivered");
+
+    const retry = container.querySelector<HTMLButtonElement>(
+      '[data-testid="feedback-delivery-retry"]',
+    );
+    expect(retry?.disabled).toBe(false);
+    flushSync(() => retry!.click());
+    expect(onRetryFeedbackDelivery).toHaveBeenCalledOnce();
+    expect(onRetryFeedbackDelivery).toHaveBeenCalledWith("comment-feedback");
+  });
+});
+
 describe("TaskChatThread mobile composer dock (PAP-495)", () => {
   it("pins the composer to the nav-aware bottom offset so its action row clears the auto-hiding bottom nav", () => {
     sidebarState.isMobile = true;

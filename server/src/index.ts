@@ -1130,6 +1130,8 @@ export async function startServer(): Promise<StartedServer> {
           reconciled.dispatchRequeued > 0 ||
           reconciled.continuationRequeued > 0 ||
           reconciled.successfulRunHandoffEscalated > 0 ||
+          reconciled.strandedFeedbackRequeued > 0 ||
+          reconciled.strandedFeedbackRecoveryActions > 0 ||
           reconciled.escalated > 0
         ) {
           logger.warn(
@@ -1344,6 +1346,8 @@ export async function startServer(): Promise<StartedServer> {
                 reconciled.dispatchRequeued > 0 ||
                 reconciled.continuationRequeued > 0 ||
                 reconciled.successfulRunHandoffEscalated > 0 ||
+                reconciled.strandedFeedbackRequeued > 0 ||
+                reconciled.strandedFeedbackRecoveryActions > 0 ||
                 reconciled.escalated > 0
               ) {
                 logger.warn(

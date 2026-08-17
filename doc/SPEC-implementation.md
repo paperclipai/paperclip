@@ -511,6 +511,7 @@ V1 non-terminal liveness rule:
 - unmanaged shell jobs, detached sessions, adapter child processes, local polling loops, PIDs, logs, and comments are evidence rather than liveness; a managed runtime service counts only when paired with a persisted monitor, wake, blocker, or delegated issue that owns the next check
 - heartbeat finalization evaluates liveness from persisted Paperclip state; an issue cannot remain healthy `in_progress` solely because the exiting heartbeat started a local/background watcher
 - invalid external-wait recovery queues at most one normal-model continuation per source-state fingerprint, then requires a real blocker or explicit recovery action instead of repeating equivalent recovery wakes; new durable source activity may establish a new fingerprint
+- eligible top-level human feedback on an agent-owned non-terminal issue remains a durable delivery obligation until the current assignee records structured handling evidence, the issue transitions to an explicit human waiting or terminal-suppression outcome, or bounded replay opens one visible recovery action; wake/run creation alone is not delivery
 - when Paperclip cannot safely infer the next action, it surfaces the problem through visible blocked/recovery work instead of silently completing or reassigning work
 - explicit recovery actions are the liveness primitive; source-scoped actions are the default form, issue-backed recovery is a fallback for independent repair work or safety boundaries, and comments alone are evidence rather than a healthy liveness path
 - source-scoped recovery routing is cause-keyed: lost processes, missing successful-run dispositions, and output-inactivity terminations retry the original agent when invokable; provider-quota failures create/reuse a scheduled wait-recovery monitor without a takeover wake; workspace validation and unknown causes route to the manager ladder
@@ -597,6 +598,13 @@ records the write-policy reason, and spoof attempts fail with an audited 422.
 Every issue PATCH emits an `issue.updated` activity receipt containing the
 actor, responsible user, run, authorization reason, and field-level before/after
 changes so both agent and board edits are visible in the issue activity stream.
+
+Local-agent run JWTs are valid only while their exact persisted heartbeat run is
+`running` and has no completion timestamp. The server revalidates that lifecycle
+state on every authenticated request. Moving the run to any terminal status
+revokes the run JWT immediately; there is no post-terminal grace window for
+agent API reads or writes. Server-owned finalization and recovery bookkeeping
+uses internal authority rather than the terminated run's credential.
 
 ## 9.4 Permission Terminology and Default Visibility Rule
 
@@ -1207,6 +1215,21 @@ Scheduler must skip invocation when:
 - agent is paused/terminated
 - an existing run is active
 - hard budget limit has been hit
+
+## 11.7 Durable Human-Feedback Delivery
+
+For an eligible top-level board/user comment on an agent-assigned non-terminal issue, V1 must maintain one serialized feedback-delivery lane per company, issue, and current assignee.
+
+- Committing feedback that supersedes a pending review interaction must also establish its replacement delivery path. The expired interaction remains terminal audit evidence.
+- Delivery remains outstanding until an assignee run records durable handling evidence with a handled-through comment boundary. A run row, PID, checkout, workspace, log, or start event is diagnostic evidence only.
+- Qualifying handling evidence is an assignee-authored durable issue action causally attributed to a run that received the batch: a substantive response, responsive document/plan revision, fresh revision-bound interaction, or valid status/ownership/waiting/recovery/terminal disposition.
+- Attempt fingerprints include at least company, issue, current assignee, root wake request, ordered comment batch, and retry generation. Generation `0` is the original attempt; generation `1` is the only automatic replay of the same unhandled batch.
+- Later comments append in order to the existing lane. They may be coalesced before launch or delivered once as the outstanding suffix after the current immutable run batch, but they do not create concurrent runs or reset retry exhaustion for older feedback.
+- Normal completion, adapter/setup/workspace failure, timeout/cancellation, startup reaping, hot-restart reconciliation, and periodic recovery must all invoke the same idempotent post-run disposition logic.
+- If generation `1` ends without handling evidence, Paperclip creates or updates one source-scoped `feedback_delivery_exhausted` recovery action naming the owner, outstanding comments, attempts, failure, and exact next action. It does not silently leave `in_review`, require another human comment, or enqueue generation `2` automatically.
+- Dispatch and recovery revalidate company, current assignee, status, execution policy, workspace, credentials, pause, budget, and governance gates. Ownership changes terminate the stale lane; terminal issues record suppression and are never resurrected.
+
+This contract preserves productive continuation after transient loss, stops work only for real named gates, and bounds recovery through one fingerprinted automatic replay plus one deduplicated explicit recovery outcome. Detailed semantics are defined in `doc/execution-semantics.md`.
 
 ## 12. Governance and Approval Flows
 

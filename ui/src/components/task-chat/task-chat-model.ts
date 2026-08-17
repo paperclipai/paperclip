@@ -12,7 +12,11 @@
  * inventory for the mapping. No timing/motion values live here — those are
  * CSS motion tokens in ui/src/index.css.
  */
-import type { IssueCommentMetadata, IssueCommentPresentation } from "@paperclipai/shared";
+import type {
+  IssueCommentFeedbackDelivery,
+  IssueCommentMetadata,
+  IssueCommentPresentation,
+} from "@paperclipai/shared";
 import type { IssueThreadInteraction } from "@/lib/issue-thread-interactions";
 
 /** Who authored a thread row — the primary legibility signal. */
@@ -109,6 +113,8 @@ export interface TaskChatMessageItem {
   runAgentId?: string | null;
   /** Raw comment timestamp (ISO) — the collapsed system row shows relative time. */
   createdAtIso?: string;
+  /** Delivery state projected onto a human comment by the feedback recovery flow. */
+  feedbackDelivery?: IssueCommentFeedbackDelivery | null;
 }
 
 /** Collapsed chain-of-thought (ACP agent_thought_chunk). */

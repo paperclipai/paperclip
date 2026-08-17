@@ -14,6 +14,7 @@ import type {
   IssueReferenceSourceKind,
   IssueExecutionStageType,
   IssueExecutionStateStatus,
+  IssueFeedbackDeliveryState,
   IssueHarnessKind,
   IssueOriginKind,
   IssuePriority,
@@ -941,6 +942,70 @@ export type IssueCommentDerivedAuthorSource =
   | "run_id"
   | "run_log_comment_post";
 
+/**
+ * Delivery state projected onto a single human feedback comment.
+ *
+ * Every field here is safe to render to any operator who can already read the
+ * comment: raw adapter errors, stack traces, request bodies, credentials, and
+ * filesystem paths are mapped to a short `safeFailureReason` code server-side
+ * and never passed through verbatim.
+ */
+export interface IssueCommentFeedbackDelivery {
+  state: IssueFeedbackDeliveryState;
+  /** The human comment this delivery obligation belongs to. */
+  sourceCommentId: string;
+  /** Completed automatic replay generations, or `null` when unknown. */
+  attempt: number | null;
+  /** Automatic replay budget, or `null` when unknown. */
+  maxAttempts: number | null;
+  nextAttemptAt: string | null;
+  lastAttemptAt: string | null;
+  deliveredAt: string | null;
+  /**
+   * Run the operator may open for context. Omitted (`null`) when no run exists
+   * or the viewer is not authorized to read it — never rendered as a disabled
+   * mystery action.
+   */
+  targetRunId: string | null;
+  /** Agent that owns `targetRunId`; both are needed to build the run route. */
+  targetRunAgentId: string | null;
+  /** True when the viewer may ask for one more explicit delivery attempt. */
+  canRetry: boolean;
+  /**
+   * True when a replay is already queued for this obligation. Keeps the
+   * "Retrying…" affordance durable across reloads instead of living only in
+   * button-local component state.
+   */
+  retryInFlight: boolean;
+  /** Short operator-safe reason code, never a raw adapter error. */
+  safeFailureReason: string | null;
+  /**
+   * How many human comments share this one delivery obligation (a batched wake
+   * can cover several). Used for the thread rollup copy.
+   */
+  batchedCommentCount: number;
+}
+
+export type IssueFeedbackDeliveryRetryNoInvokableAssigneeReason =
+  | "missing"
+  | "paused"
+  | "terminated"
+  | "pending_approval"
+  | "unknown_status"
+  | "manager_missing"
+  | "manager_company_mismatch"
+  | "manager_terminated"
+  | "reporting_cycle"
+  | "reporting_chain_too_deep";
+
+export interface IssueFeedbackDeliveryRetryResponse {
+  outcome: "queued" | "already_queued" | "not_exhausted" | "no_invokable_assignee";
+  /** Present only when `outcome` is `no_invokable_assignee`. */
+  reason: IssueFeedbackDeliveryRetryNoInvokableAssigneeReason | null;
+  message: string;
+  feedbackDelivery: IssueCommentFeedbackDelivery | null;
+}
+
 export interface IssueComment {
   id: string;
   companyId: string;
@@ -964,6 +1029,12 @@ export interface IssueComment {
   deletedByRunId?: string | null;
   sourceTrust?: SourceTrustMetadata | null;
   followUpRequested?: boolean;
+  /**
+   * Present only while this human comment's delivery is retrying, exhausted, or
+   * freshly recovered. Absent for the overwhelming majority of comments, which
+   * were delivered on the first attempt.
+   */
+  feedbackDelivery?: IssueCommentFeedbackDelivery | null;
   createdAt: Date;
   updatedAt: Date;
 }

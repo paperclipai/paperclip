@@ -3853,6 +3853,166 @@ describe("IssueChatThread", () => {
     })).toBe(false);
   });
 
+  it("anchors an exhausted feedback delivery banner under its source comment", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[{
+              id: "comment-feedback",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "user-board",
+              authorType: "user",
+              body: "Please pick this up again",
+              presentation: null,
+              metadata: null,
+              feedbackDelivery: {
+                state: "exhausted_needs_attention",
+                sourceCommentId: "comment-feedback",
+                attempt: 1,
+                maxAttempts: 1,
+                nextAttemptAt: null,
+                lastAttemptAt: "2026-04-06T11:58:00.000Z",
+                deliveredAt: null,
+                targetRunId: "a1b2c3d4e5f6",
+                targetRunAgentId: "agent-1",
+                canRetry: true,
+                retryInFlight: false,
+                safeFailureReason: null,
+                batchedCommentCount: 1,
+              },
+              createdAt: new Date("2026-04-06T12:00:00.000Z"),
+              updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+            }]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            currentUserId="user-board"
+            onAdd={async () => {}}
+            onRetryFeedbackDelivery={() => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const banner = container.querySelector('[data-testid="feedback-delivery-exhausted"]');
+    expect(banner).not.toBeNull();
+    expect(banner?.id).toBe("feedback-delivery-comment-feedback");
+    // Inside the same anchored block as the comment it describes, so the
+    // attention deep link lands on both at once.
+    expect(container.querySelector("#comment-comment-feedback")?.contains(banner!)).toBe(true);
+    expect(container.textContent).toContain("Feedback wasn't delivered");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("leaves comments with no delivery obligation completely undecorated", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[{
+              id: "comment-plain",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "user-board",
+              authorType: "user",
+              body: "Delivered on the first attempt",
+              presentation: null,
+              metadata: null,
+              createdAt: new Date("2026-04-06T12:00:00.000Z"),
+              updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+            }]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            currentUserId="user-board"
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="feedback-delivery-exhausted"]')).toBeNull();
+    expect(container.querySelector('[data-testid="feedback-delivery-footer-status"]')).toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("represents an exhausted feedback delivery once, not also as a recovery card", () => {
+    const root = createRoot(container);
+    const feedbackDeliveryAction = {
+      id: "action-1",
+      companyId: "company-1",
+      sourceIssueId: "issue-1",
+      recoveryIssueId: null,
+      kind: "feedback_delivery" as const,
+      status: "active" as const,
+      ownerType: "agent" as const,
+      ownerAgentId: "agent-1",
+      ownerUserId: null,
+      previousOwnerAgentId: "agent-1",
+      returnOwnerAgentId: "agent-1",
+      cause: "feedback_delivery_exhausted",
+      fingerprint: "feedback_delivery:company-1:issue-1:agent-1:root-1",
+      evidence: { outstandingCommentIds: ["comment-feedback"] },
+      nextAction: "Handle the outstanding human feedback comment(s).",
+      wakePolicy: null,
+      monitorPolicy: null,
+      attemptCount: 1,
+      maxAttempts: 1,
+      timeoutAt: null,
+      lastAttemptAt: null,
+      outcome: null,
+      resolutionNote: null,
+      resolvedAt: null,
+      createdAt: new Date("2026-04-06T11:59:00.000Z"),
+      updatedAt: new Date("2026-04-06T11:59:00.000Z"),
+    };
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            issueId="issue-1"
+            recoveryAction={feedbackDeliveryAction}
+            onAdd={async () => {}}
+            showComposer
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    // The comment-anchored banner is the single detailed representation; the
+    // generic recovery card would duplicate the same state in the same thread.
+    expect(container.textContent).not.toContain("RECOVERY NEEDED");
+    expect(container.textContent).not.toContain("Feedback Delivery");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("uses company profile data to distinguish the current user from other humans", () => {
     const userProfileMap = new Map([
       ["user-1", { label: "Dotta", image: "/avatars/dotta.png" }],

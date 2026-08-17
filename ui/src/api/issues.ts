@@ -16,6 +16,7 @@ import type {
   IssueDocument,
   IssueLabel,
   IssueRecoveryAction,
+  IssueFeedbackDeliveryRetryResponse,
   IssueRetryNowResponse,
   StalledReviewDecision,
   StalledReviewDecisionResponse,
@@ -215,6 +216,8 @@ export const issuesApi = {
   checkMonitorNow: (id: string) => api.post<{ ok: true }>(`/issues/${id}/monitor/check-now`, {}),
   retryScheduledRetryNow: (id: string) =>
     api.post<IssueRetryNowResponse>(`/issues/${id}/scheduled-retry/retry-now`, {}),
+  retryFeedbackDelivery: (id: string) =>
+    api.post<IssueFeedbackDeliveryRetryResponse>(`/issues/${id}/feedback-delivery/retry`, {}),
   remove: (id: string) => api.delete<Issue>(`/issues/${id}`),
   checkout: (id: string, agentId: string) =>
     api.post<Issue>(`/issues/${id}/checkout`, {

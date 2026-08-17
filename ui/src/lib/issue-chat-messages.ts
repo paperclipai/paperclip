@@ -526,6 +526,7 @@ function createCommentMessage(args: {
     queueReason: comment.queueReason ?? null,
     interruptedRunId: comment.interruptedRunId ?? null,
     followUpRequested: comment.followUpRequested === true,
+    feedbackDelivery: comment.feedbackDelivery ?? null,
     presentation: comment.presentation ?? null,
     commentMetadata: comment.metadata ?? null,
     deletedAt: comment.deletedAt ? toDate(comment.deletedAt).toISOString() : null,
