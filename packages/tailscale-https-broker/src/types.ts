@@ -157,6 +157,14 @@ export type BrokerErrorCode =
   | "listener_absent"
   | "listener_not_loopback"
   | "listener_ownership_mismatch"
+  // The port carries a listener the broker cannot name (no socket identity), so
+  // it cannot prove the socket it publishes is the socket it verified. Present
+  // but unattributable is refused rather than treated as permission.
+  | "listener_unattributable"
+  // The verified socket was replaced between verification and publication. The
+  // three predicates above cannot catch this on their own, because a different
+  // process under the same managed-runtime UID satisfies all of them.
+  | "listener_substituted"
   | "manual_mapping_present"
   // An operator-declared protected port was requested, or a protected entry
   // changed across a mutation. Distinct from `manual_mapping_present` (which is

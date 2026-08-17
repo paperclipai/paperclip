@@ -31,6 +31,33 @@ describe("proc listener parsing", () => {
     expect(facts.present).toBe(true);
     expect(facts.loopbackOnly).toBe(true);
     expect(facts.uids).toEqual([999]);
+    // The socket inode is the listener's identity. It is what lets the broker
+    // tell "the socket I verified" from "some socket on this port owned by the
+    // same uid", so it must survive the reduction to facts.
+    expect(facts.inodes).toEqual(["12345"]);
+  });
+
+  it("distinguishes two different sockets on the same port and uid", () => {
+    // Same port, same uid, different socket: only the inode changes. This is the
+    // substitution the broker must be able to detect.
+    const first = listenerFactsForPort(parseProcNetTable(`${HEADER}\n${LOOPBACK_ROW}`), [], 42010);
+    const replaced = parseProcNetTable(`${HEADER}\n${LOOPBACK_ROW.replace(" 12345 ", " 55555 ")}`);
+    const second = listenerFactsForPort(replaced, [], 42010);
+    expect(second.uids).toEqual(first.uids);
+    expect(second.loopbackOnly).toBe(first.loopbackOnly);
+    expect(second.inodes).not.toEqual(first.inodes);
+  });
+
+  it("returns inodes in a stable order so two snapshots compare equal", () => {
+    // Dual-stack listeners can be reported in either table order. Identity must
+    // not depend on that, or a legitimate listener would look substituted.
+    const v6 = `   3: ${"0".repeat(31)}1:A41A 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000   999        0 12300 1`;
+    const rows = parseProcNetTable(`${HEADER}\n${LOOPBACK_ROW}`);
+    const rows6 = parseProcNetTable(`${HEADER}\n${v6}`);
+    expect(listenerFactsForPort(rows, rows6, 42010).inodes).toEqual(
+      listenerFactsForPort(rows, rows6, 42010).inodes,
+    );
+    expect(listenerFactsForPort(rows, rows6, 42010).inodes).toEqual(["12300", "12345"]);
   });
 
   it("flags a wildcard bind as not loopback-only", () => {

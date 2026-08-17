@@ -130,6 +130,7 @@ function makeCore(
     present: true,
     loopbackOnly: true,
     ownerUidMatches: true,
+    inodes: ["5001"],
   }),
 ) {
   const audit = new MemoryAuditSink();

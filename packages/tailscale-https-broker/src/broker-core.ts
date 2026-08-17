@@ -69,6 +69,20 @@ export interface ListenerOwnership {
   present: boolean;
   loopbackOnly: boolean;
   ownerUidMatches: boolean;
+  /**
+   * Socket inodes of the listening sockets on the port, sorted. This is the
+   * listener's *identity*, and it is required rather than optional: a caller
+   * that cannot name the socket must fail closed, not fall through to
+   * "permitted". `present: true` with an empty array is contradictory and is
+   * refused as `listener_unattributable`.
+   *
+   * The three booleans above only describe "something acceptable is on this
+   * port". They are re-read but cannot detect substitution, because a different
+   * process under the same managed-runtime UID satisfies all three. Comparing
+   * inode sets across the reserve/expose window is what proves the socket the
+   * broker verified is the socket it publishes.
+   */
+  inodes: string[];
 }
 
 export interface BrokerDeps {
@@ -284,6 +298,76 @@ export class BrokerCore {
     return { ok: true, op: "reserve", requestId: request.requestId, handle, reservedPorts: requestedPorts };
   }
 
+  /**
+   * Prove the port carries an acceptable, attributable managed listener, or
+   * deny. Each predicate keeps its own reason code so a deployed failure can be
+   * attributed to a missing listener, an off-loopback bind, a foreign owner, or
+   * a socket the broker could not name.
+   */
+  private verifyListener(port: number): ListenerOwnership {
+    const ownership = this.config.deps.verifyListenerOwnership(port);
+    if (!ownership.present) {
+      denied("listener_absent", `no loopback listener on port ${port}`);
+    }
+    if (!ownership.loopbackOnly) {
+      denied("listener_not_loopback", `listener on ${port} is not loopback-only`);
+    }
+    if (!ownership.ownerUidMatches) {
+      denied("listener_ownership_mismatch", `listener on ${port} not owned by managed runtime`);
+    }
+    // Present but unnameable is not permission. Without a socket identity the
+    // broker cannot prove that the socket it publishes is the socket it
+    // verified, so it refuses rather than publishing on trust.
+    if (ownership.inodes.length === 0) {
+      denied("listener_unattributable", `listener on ${port} has no identifiable socket`);
+    }
+    return ownership;
+  }
+
+  /**
+   * Re-prove that `port` still carries the exact socket verified earlier. A
+   * changed identity means the listener was substituted inside the window, so
+   * publishing would expose a service the broker never authorized.
+   */
+  private assertListenerUnchanged(port: number, expected: string | undefined): void {
+    if (expected === undefined) {
+      denied("listener_substituted", `port ${port} was not verified before mutation`);
+    }
+    const current = listenerIdentity(this.verifyListener(port));
+    if (current !== expected) {
+      denied(
+        "listener_substituted",
+        `listener on ${port} changed after verification; refusing to expose a substituted service`,
+      );
+    }
+  }
+
+  /**
+   * Current socket identity without denying on a failed predicate. Used by the
+   * post-publication sweep, which must classify *every* port before it throws:
+   * an absent or unnameable listener is as much a substitution as a swapped one,
+   * and each case still needs the mapping withdrawn.
+   *
+   * SCOPE. Every check here is point-in-time, and it bounds the transaction only.
+   * A same-UID process can still replace a listener *after* a successful expose
+   * returns, while the Serve mapping persists. No check inside this transaction
+   * can close that, because the mapping outlives the transaction; the broker has
+   * no way to pin a Serve entry to a socket. That case is a lifecycle concern and
+   * is handled above the broker: the server re-verifies listener ownership on
+   * every readiness and health check, and reconciliation fails closed when a
+   * reserved pair is held by a different execution workspace. What this
+   * transaction guarantees is narrower and worth stating plainly — a *successful*
+   * expose published the socket it verified, and a failed one leaves nothing of
+   * ours published.
+   */
+  private currentListenerIdentity(port: number): string {
+    try {
+      return listenerIdentity(this.config.deps.verifyListenerOwnership(port));
+    } catch {
+      return "";
+    }
+  }
+
   private doExpose(
     request: Extract<BrokerRequest, { op: "expose" }>,
     peer: PeerCredentials,
@@ -306,8 +390,20 @@ export class BrokerCore {
     // it, so an operator declaration made *after* a lease existed still holds.
     this.assertNoProtectedPort(lease.ports);
 
+    // Captured before the transaction can promote the lease: true means a prior
+    // expose already published these ports, so the broker owns whatever mapping
+    // is on them. This is the provenance the withdrawal path uses.
+    const leaseWasExposed = lease.state === "exposed";
+
     // Pre-flight every requested port: allowlist, quarantine, and the
     // immediately-before /proc ownership check (req #2).
+    //
+    // The verified socket identity per port is retained, because the checks
+    // below are not the last thing to happen before Serve is mutated: reading
+    // Serve status runs a `tailscale` subprocess, which is unbounded wall-clock
+    // time during which the verified listener can close and another process can
+    // take the port. Every mutation therefore re-proves this identity.
+    const verifiedIdentities = new Map<number, string>();
     for (const port of lease.ports) {
       if (!this.config.isAllowedPort(port)) {
         denied("port_not_allowlisted", `port ${port} is outside the dedicated range`);
@@ -321,16 +417,8 @@ export class BrokerCore {
       // returned `listener_ownership_mismatch` and only the root-owned audit
       // file carried the reason, so a deployed failure could not be attributed
       // to a missing listener, an off-loopback bind, or a foreign owner.
-      const ownership = this.config.deps.verifyListenerOwnership(port);
-      if (!ownership.present) {
-        denied("listener_absent", `no loopback listener on port ${port}`);
-      }
-      if (!ownership.loopbackOnly) {
-        denied("listener_not_loopback", `listener on ${port} is not loopback-only`);
-      }
-      if (!ownership.ownerUidMatches) {
-        denied("listener_ownership_mismatch", `listener on ${port} not owned by managed runtime`);
-      }
+      const ownership = this.verifyListener(port);
+      verifiedIdentities.set(port, listenerIdentity(ownership));
     }
 
     const before = this.readServe();
@@ -353,6 +441,10 @@ export class BrokerCore {
         if (already && isSameNumberLoopbackEntry(already, port)) {
           continue; // idempotent
         }
+        // Immediately before this port's mutation, and again after the whole
+        // batch below. Checking only once before `readServe()` left the verified
+        // socket free to be replaced during that subprocess.
+        this.assertListenerUnchanged(port, verifiedIdentities.get(port));
         const result = this.config.deps.runTailscale(
           buildExposeArgv(this.config.tailscaleBinPath, port, this.protectedPorts),
         );
@@ -381,6 +473,44 @@ export class BrokerCore {
         if (!isSameNumberLoopbackEntry(after.entries.get(port), port)) {
           denied("unexpected_serve_diff", `port ${port} not exactly exposed`);
         }
+      }
+
+      // Final proof, after the last mutation and the status read that follows
+      // it: every published port must still carry the socket that was verified.
+      //
+      // Classify all ports before throwing. A port skipped above as idempotent
+      // was never added to `appliedPorts`, so denying alone would leave its
+      // pre-existing mapping active and now pointing at the replacement service.
+      // Any port whose identity no longer matches is therefore made eligible for
+      // withdrawal, whether this request published it or found it already
+      // correct. Which of those ports are ours to withdraw is decided below from
+      // the registry, not from the shape of the Serve entry.
+      const substituted = lease.ports.filter(
+        (port) => this.currentListenerIdentity(port) !== verifiedIdentities.get(port),
+      );
+      if (substituted.length > 0) {
+        // Provenance for a withdrawal comes from the broker's own registry, not
+        // from the shape of a Serve entry. An already-`exposed` lease means the
+        // broker published these ports itself, so they are ours to withdraw — and
+        // that holds even if Serve cannot be read at this moment, which is why
+        // this does not depend on a live status read that might fail and silently
+        // preserve the substituted mapping. A still-`reserved` lease published
+        // nothing, so there is nothing of ours to withdraw.
+        //
+        // Shape alone would be the wrong test in both directions: it cannot prove
+        // an identically-shaped entry is ours, and it cannot be evaluated at all
+        // when the status read fails. An operator who needs a mapping to survive
+        // managed lifecycle declares the port protected, which is refused far
+        // above this point.
+        if (leaseWasExposed) {
+          for (const port of substituted) {
+            if (!appliedPorts.includes(port)) appliedPorts.push(port);
+          }
+        }
+        denied(
+          "listener_substituted",
+          `listener on ${substituted.join(",")} changed after verification; withdrawing the mapping`,
+        );
       }
 
       lease.state = "exposed";
@@ -674,6 +804,15 @@ function sameNumbers(left: readonly number[], right: readonly number[]): boolean
 
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+/**
+ * Stable, comparable identity for the listening socket(s) on a port. Inodes are
+ * already sorted by the verifier; joining them makes two snapshots comparable
+ * with a single equality check.
+ */
+function listenerIdentity(ownership: ListenerOwnership): string {
+  return ownership.inodes.join(",");
 }
 
 function codeForError(error: unknown): string {

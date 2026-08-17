@@ -68,6 +68,14 @@ export interface ListenerFacts {
   present: boolean;
   loopbackOnly: boolean;
   uids: number[];
+  /**
+   * Socket inodes of the matching listening sockets, sorted. The inode names
+   * *this* socket, not merely "something on this port", so comparing two
+   * snapshots detects a listener that was closed and replaced by another
+   * process between the two reads. UID equality cannot do that: a different
+   * process under the same runtime UID satisfies `ownerUidMatches`.
+   */
+  inodes: string[];
 }
 
 /**
@@ -81,12 +89,14 @@ export function listenerFactsForPort(
 ): ListenerFacts {
   const wantHex = port.toString(16).toUpperCase().padStart(4, "0");
   const uids: number[] = [];
+  const inodes: string[] = [];
   let present = false;
   let loopbackOnly = true;
   for (const row of tcp) {
     if (row.localPortHex.toUpperCase() !== wantHex || row.state !== TCP_STATE_LISTEN) continue;
     present = true;
     uids.push(row.uid);
+    inodes.push(row.inode);
     if (isWildcardHex(row.localAddressHex) || !isLoopbackIpv4Hex(row.localAddressHex)) {
       loopbackOnly = false;
     }
@@ -95,11 +105,12 @@ export function listenerFactsForPort(
     if (row.localPortHex.toUpperCase() !== wantHex || row.state !== TCP_STATE_LISTEN) continue;
     present = true;
     uids.push(row.uid);
+    inodes.push(row.inode);
     if (isWildcardHex(row.localAddressHex) || !isLoopbackIpv6Hex(row.localAddressHex)) {
       loopbackOnly = false;
     }
   }
-  return { present, loopbackOnly, uids };
+  return { present, loopbackOnly, uids, inodes: [...inodes].sort() };
 }
 
 /**
@@ -125,6 +136,7 @@ export function createProcListenerVerifier(expectedUid: number) {
       present: facts.present,
       loopbackOnly: facts.loopbackOnly,
       ownerUidMatches: facts.present && facts.uids.every((uid) => uid === expectedUid),
+      inodes: facts.inodes,
     };
   };
 }
