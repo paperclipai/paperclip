@@ -62,6 +62,7 @@ import {
   routineService,
   statusCardService,
   toolAccessService,
+  workspaceOperationService,
 } from "./services/index.js";
 import { queueIssueAssignmentWakeup } from "./services/issue-assignment-wakeup.js";
 import { createSecretProposalsService } from "./services/secret-proposals.js";
@@ -816,11 +817,38 @@ export async function startServer(): Promise<StartedServer> {
     },
   });
 
+  try {
+    const result = await workspaceOperationService(db as any)
+      .reconcileStaleRuntimeControlOperations();
+    if (result.reconciled > 0) {
+      logger.warn(
+        { reconciled: result.reconciled, operationIds: result.operationIds },
+        "reconciled stale managed runtime control operations from a previous server process",
+      );
+    }
+  } catch (err) {
+    logger.error({ err }, "startup reconciliation of managed runtime control operations failed");
+  }
+
   void reconcilePersistedRuntimeServicesOnStartup(db as any)
     .then((result) => {
-      if (result.reconciled > 0) {
+      if (
+        result.reconciled > 0
+        || result.restarted > 0
+        || result.restartFailed > 0
+        || result.backfilled > 0
+      ) {
         logger.warn(
-          { reconciled: result.reconciled },
+          {
+            reconciled: result.reconciled,
+            adopted: result.adopted,
+            stopped: result.stopped,
+            // Managed HTTP-only services taken down so they come back on a
+            // verified HTTPS origin (PAP-17158).
+            httpsBackfilled: result.backfilled,
+            restarted: result.restarted,
+            restartFailed: result.restartFailed,
+          },
           "reconciled persisted runtime services from a previous server process",
         );
       }

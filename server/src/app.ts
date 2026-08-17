@@ -1,9 +1,10 @@
 import express, { Router, type Request as ExpressRequest } from "express";
+import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
-import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import { derivePaperclipViteHmrPort, type DeploymentExposure, type DeploymentMode } from "@paperclipai/shared";
 import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
@@ -131,16 +132,41 @@ export function isDatabaseConnectionUnavailableError(err: unknown): boolean {
 }
 
 export function resolveViteHmrPort(serverPort: number): number {
-  if (serverPort <= 55_535) {
-    return serverPort + 10_000;
-  }
-  return Math.max(1_024, serverPort - 10_000);
+  return derivePaperclipViteHmrPort(serverPort);
 }
 
 export function resolveViteHmrHost(bindHost: string): string | undefined {
   const normalized = bindHost.trim().toLowerCase();
-  if (normalized === "0.0.0.0" || normalized === "::") return undefined;
+  if (
+    normalized === "0.0.0.0"
+    || normalized === "::"
+    || normalized === "127.0.0.1"
+    || normalized === "::1"
+    || normalized === "localhost"
+  ) return undefined;
   return bindHost;
+}
+
+export function resolveViteHmrProtocol(value: string | undefined): "ws" | "wss" | undefined {
+  if (!value) return undefined;
+  if (value === "ws" || value === "wss") return value;
+  throw new Error("PAPERCLIP_VITE_HMR_PROTOCOL must be ws or wss");
+}
+
+export function listenViteHmrServer(server: HttpServer, port: number, bindHost: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onError = (error: Error) => {
+      server.off("listening", onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      resolve();
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(port, bindHost);
+  });
 }
 
 export function shouldServeViteDevHtml(req: ExpressRequest): boolean {
@@ -512,6 +538,8 @@ export async function createApp(
   });
   const hostServiceCleanup = createPluginHostServiceCleanup(lifecycle, hostServicesDisposers);
   let viteHtmlRenderer: ReturnType<typeof createCachedViteHtmlRenderer> | null = null;
+  let viteDevServer: { close(): Promise<void> } | null = null;
+  let viteHmrServer: HttpServer | null = null;
   const loader = pluginLoader(
     db,
     {
@@ -642,20 +670,39 @@ export async function createApp(
     const publicUiRoot = path.resolve(uiRoot, "public");
     const hmrPort = resolveViteHmrPort(opts.serverPort);
     const hmrHost = resolveViteHmrHost(opts.bindHost);
+    const hmrProtocol = resolveViteHmrProtocol(process.env.PAPERCLIP_VITE_HMR_PROTOCOL);
+    const hmrServer = createHttpServer((_req, res) => {
+      res.writeHead(426, { "Content-Type": "text/plain" });
+      res.end("Upgrade Required");
+    });
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       root: uiRoot,
       appType: "custom",
       server: {
+        // Listener binding and browser HMR hostname are deliberately separate:
+        // exposed branch runtimes stay loopback-only while the browser uses the
+        // current MagicDNS hostname through the broker's HTTPS listener.
+        host: opts.bindHost,
         middlewareMode: true,
         hmr: {
+          server: hmrServer,
           ...(hmrHost ? { host: hmrHost } : {}),
+          ...(hmrProtocol ? { protocol: hmrProtocol } : {}),
           port: hmrPort,
           clientPort: hmrPort,
         },
         allowedHosts: privateHostnameGateEnabled ? Array.from(privateHostnameAllowSet) : undefined,
       },
     });
+    try {
+      await listenViteHmrServer(hmrServer, hmrPort, opts.bindHost);
+    } catch (error) {
+      await vite.close();
+      throw error;
+    }
+    viteDevServer = vite;
+    viteHmrServer = hmrServer;
     viteHtmlRenderer = createCachedViteHtmlRenderer({
       vite,
       uiRoot,
@@ -829,6 +876,8 @@ export async function createApp(
     }
     devWatcher?.close();
     viteHtmlRenderer?.dispose();
+    void viteDevServer?.close().catch(() => undefined);
+    viteHmrServer?.close();
     hostServiceCleanup.disposeAll();
     hostServiceCleanup.teardown();
     // Cancel every live setup-token login session, so each direct child stops

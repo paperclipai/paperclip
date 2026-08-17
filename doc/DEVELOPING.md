@@ -648,6 +648,22 @@ For project execution worktrees, Paperclip can also run a project-defined provis
 
 Heavier setup that is only needed by a managed runtime service can use `workspaceStrategy.runtimeProvisionCommand`. Paperclip runs this command lazily before spawning the first service in a start batch, serializes concurrent provisioning for the same workspace, and records the attempt as `workspace_runtime_provision`. The command receives the same workspace environment as `provisionCommand` and should be idempotent because later service-start batches invoke it again.
 
+Managed runtime control actions (`start`, `stop`, `restart`, and job `run`) are mutually exclusive per execution workspace. An overlapping control is rejected with `409 workspace_runtime_control_in_progress` instead of racing the active operation, and authorization is still checked first, so the conflict never widens who may control a workspace.
+
+Every managed control reaches a terminal operation state. Each one stamps the owning server process and pid on its `workspace_operations` row and heartbeats while it runs, and each one carries a wall-clock ceiling (30 minutes for lifecycle controls, 4 hours for workspace jobs) so a hung provider or listener fails the operation rather than leaving it active. When a start fails part-way, Paperclip tears the workspace's runtime services down through the ordinary stop path and records a stopped desired state, so the lane is retryable and a startup reconcile will not resurrect a service that never came up.
+
+Recovery of stranded controls is bounded and cannot steal a live operation. A `running` control is only terminalized when its owning process is gone, when the owning request in this process no longer exists, or after 60 seconds without a heartbeat; the terminalizing write is a compare-and-swap on `updated_at`, so an owner that heartbeats concurrently keeps its operation. Recovery runs on server startup and before each managed control, appends reconciliation evidence to the workspace-operation log, and stays inside the requested workspace's scope.
+
+Readiness probes and port allocation are bounded for the same reason. Each HTTP readiness probe is aborted after at most 5 seconds (never past the service's readiness budget), so a foreign listener that accepts a connection but never answers cannot park a start forever. Auto-allocated loopback ports are reserved in-process for the duration of a start and re-checked for a live owner, and a configured port already claimed by another in-flight start fails that start terminally — so two isolated workspaces asking for the same app/HMR pair either get distinct healthy ports or one fails cleanly and retryably.
+
+Beyond that in-flight guard, `start`, `stop`, and `restart` also take a durable exclusivity lease on the execution workspace (`execution_workspace_runtime_leases`). The lease is keyed by execution workspace and owned by the controlling issue (or, when a run has no issue in scope, by the run or agent), so it survives across calls, heartbeats, and server processes. The owning issue can keep operating; a different issue or run is rejected with `409 workspace_runtime_lease_conflict` before any workspace operation is recorded and before any runtime service is touched. Board/operator actions bypass the lease entirely and never take the lane away from an agent.
+
+Lease recovery is bounded and explicit. Another issue may reclaim the lane once the owner becomes ineligible — the owning issue reaches a terminal status, is hidden, or is deleted; the owning run reaches a terminal status — or once the lease's 30-minute TTL elapses without the owner touching it. Archiving the execution workspace releases the lease outright. Conflict responses carry the owning issue/run ids and the lease expiry so an operator can tell who holds the lane.
+
+For Tailscale HTTPS exposure, readiness includes stable listener-ownership checks for every requested loopback port (the app and, when configured, its Vite HMR companion). Each listener must belong to the spawned managed process group; an unrelated listener that races onto either reserved port fails the start closed before the broker is asked to expose it.
+
+In Vite middleware mode, Paperclip gives HMR a dedicated HTTP server bound to the managed runtime's loopback host. The browser still derives the HMR hostname from the public HTTPS page, so listener containment does not break remote hot reload.
+
 ## App-Shipped Skills Catalog
 
 The Paperclip app ships a curated catalog of company skills out of the box. The
