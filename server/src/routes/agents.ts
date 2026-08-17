@@ -4419,11 +4419,10 @@ export function agentRoutes(
 
   // --- Setup-token login session routes --------------------------------------
   //
-  // The routes give the harness the operations against one live login session.
-  // Every operation verifies the company, the owner user, and the target agent
-  // through the session scope. A missing session and a cross-scope session both
-  // return the same 404. The confidential responses (read-prompt and
-  // receive-token) pass through the fail-closed transport guard and set
+  // The routes give the UI operations against one live login session. Every
+  // operation verifies the company and owner user through the session scope. A
+  // missing session and a cross-scope session both return the same 404. The
+  // confidential responses pass through the transport assessment and set
   // `Cache-Control: no-store`. The routes write no prompt, code, token, or raw
   // process chunk to a log or an activity detail, and they return fixed error
   // text only.
@@ -4443,10 +4442,8 @@ export function agentRoutes(
   /**
    * Derives the immutable owner of a setup-token login session from the actor.
    * Only a board user owns a login session. It returns the owner id, or it
-   * throws a forbidden error. The agent-scoped route and the
-   * company-and-environment route both call this helper, so the owner-derivation
-   * rule stays identical. The owner is never a client field; it comes
-   * only from the authenticated actor.
+   * throws a forbidden error. The owner is never a client field; it comes only
+   * from the authenticated actor.
    */
   const deriveSetupTokenOwnerUserId = (req: Request): string => {
     const actor = getActorInfo(req);
@@ -4488,33 +4485,6 @@ export function agentRoutes(
   };
 
   /**
-   * Builds the immutable session scope from the authenticated owner user and the
-   * target agent (SR-3, FU-1). Only a user actor owns a login session; the route
-   * uses this dedicated login scope, not the broad agent-manage permission.
-   *
-   * The route fails closed on the environment. The durable cleanup store binds a
-   * non-null environment UUID (the migration foreign key requires it), so the
-   * route never persists an empty environment scope. An agent with no default
-   * sandbox environment cannot start a login.
-   */
-  const buildSetupTokenScope = (
-    req: Request,
-    agent: { id: string; companyId: string; adapterType: string; defaultEnvironmentId: string | null },
-  ): SetupTokenSessionScope => {
-    const ownerUserId = deriveSetupTokenOwnerUserId(req);
-    if (!agent.defaultEnvironmentId) {
-      throw badRequest("A default sandbox environment is required for a Claude login.");
-    }
-    return {
-      companyId: agent.companyId,
-      ownerUserId,
-      targetAgentId: agent.id,
-      adapterType: agent.adapterType,
-      environmentId: agent.defaultEnvironmentId,
-    };
-  };
-
-  /**
    * Assesses the setup-token confidential transport. The product
    * owner set a non-negotiable requirement: do not force TLS. Many users run
    * Paperclip over plain HTTP on a home server or a Tailscale tailnet. So the
@@ -4544,142 +4514,6 @@ export function agentRoutes(
     }
     throw err;
   };
-
-  /**
-   * Resolves the target agent for a login-session route and verifies it is a
-   * `claude_local` agent. Returns null and sends the response when the agent is
-   * missing, inaccessible, or the wrong adapter type.
-   */
-  const resolveSetupTokenAgent = async (req: Request, res: Response) => {
-    const id = req.params.id as string;
-    const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
-    if (!agent) return null;
-    if (agent.adapterType !== "claude_local") {
-      res.status(400).json({ error: "Login is only supported for claude_local agents" });
-      return null;
-    }
-    return agent;
-  };
-
-  router.post("/agents/:id/setup-token-login-sessions", async (req, res) => {
-    const agent = await resolveSetupTokenAgent(req, res);
-    if (!agent) return;
-    const scope = buildSetupTokenScope(req, agent);
-    res.setHeader("Cache-Control", "no-store");
-    // Reject the agent default environment before the service starts, so the
-    // agent-scoped start route enforces the same sandbox environment guard as the
-    // company-scoped device-login route. Without this guard the route passes the
-    // agent default environment straight into session startup, and the transport
-    // acquires the sandbox with no independent driver, status, or provider check.
-    // The guard rejects a missing, an archived, a local, an SSH, or a
-    // fake-provider environment. It also rejects an environment that binds to
-    // another company; an environment with no company binding stays open to every
-    // member. It fails closed when the provider does not advertise the setup-token
-    // login capability, so an unsupported provider never reaches a session row, a
-    // lease, or a pseudo-terminal.
-    await assertSandboxLoginEnvironment(agent.companyId, scope.environmentId, {
-      requireSetupTokenLoginProvider: true,
-    });
-    if (!SETUP_TOKEN_LOGIN_TRANSPORT_READY) {
-      // The live login transport binds at a later call site. Fail closed with the
-      // fixed no-secret error until then.
-      res.status(503).json({ error: SETUP_TOKEN_START_FAILED });
-      return;
-    }
-    try {
-      const started = await setupTokenLoginService.start(scope);
-      res.status(201).json({ sessionId: started.sessionId, state: started.state });
-    } catch (err) {
-      sendSetupTokenError(res, err);
-    }
-  });
-
-  router.get("/agents/:id/setup-token-login-sessions/:sessionId/prompt", async (req, res) => {
-    const agent = await resolveSetupTokenAgent(req, res);
-    if (!agent) return;
-    const scope = buildSetupTokenScope(req, agent);
-    res.setHeader("Cache-Control", "no-store");
-    // The full login URL is a confidential response. The route
-    // does not force TLS. It attaches a non-blocking advisory instead.
-    const transportAdvisory = assessSetupTokenTransport(req);
-    try {
-      const view = setupTokenLoginService.readPrompt(req.params.sessionId as string, scope);
-      // SR-5: the full login URL rides only in this authorized owner response.
-      res.json({ state: view.state, loginUrl: view.loginUrl, transportAdvisory });
-    } catch (err) {
-      sendSetupTokenError(res, err);
-    }
-  });
-
-  router.post("/agents/:id/setup-token-login-sessions/:sessionId/code", async (req, res) => {
-    const agent = await resolveSetupTokenAgent(req, res);
-    if (!agent) return;
-    const scope = buildSetupTokenScope(req, agent);
-    res.setHeader("Cache-Control", "no-store");
-    // SR-6 and SR-7: the browser code is the confidential OAuth authorization
-    // secret. The route does not force TLS. It attaches a non-blocking advisory
-    // to the response instead, so the client can show a disclaimer.
-    const transportAdvisory = assessSetupTokenTransport(req);
-    // Parse the request with the shared strict validator before the route forwards
-    // the code to the live process. `.strict()` rejects an unknown field, and the
-    // grammar rejects an empty, an oversized, or a control-byte code. The route
-    // echoes no input; it returns fixed error text only.
-    const parsed = submitBrowserCodeRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: "A valid browser code is required." });
-      return;
-    }
-    try {
-      const result = setupTokenLoginService.submitCode(req.params.sessionId as string, scope, parsed.data.browserCode);
-      res.json({ state: result.state, transportAdvisory });
-    } catch (err) {
-      sendSetupTokenError(res, err);
-    }
-  });
-
-  router.post("/agents/:id/setup-token-login-sessions/:sessionId/cancel", async (req, res) => {
-    const agent = await resolveSetupTokenAgent(req, res);
-    if (!agent) return;
-    const scope = buildSetupTokenScope(req, agent);
-    try {
-      const result = await setupTokenLoginService.cancel(req.params.sessionId as string, scope);
-      res.json({ state: result.state });
-    } catch (err) {
-      sendSetupTokenError(res, err);
-    }
-  });
-
-  router.post("/agents/:id/setup-token-login-sessions/:sessionId/expire", async (req, res) => {
-    const agent = await resolveSetupTokenAgent(req, res);
-    if (!agent) return;
-    const scope = buildSetupTokenScope(req, agent);
-    try {
-      const result = await setupTokenLoginService.expire(req.params.sessionId as string, scope);
-      res.json({ state: result.state });
-    } catch (err) {
-      sendSetupTokenError(res, err);
-    }
-  });
-
-  router.post("/agents/:id/setup-token-login-sessions/:sessionId/token", async (req, res) => {
-    const agent = await resolveSetupTokenAgent(req, res);
-    if (!agent) return;
-    const scope = buildSetupTokenScope(req, agent);
-    res.setHeader("Cache-Control", "no-store");
-    // The completion read is a confidential response. The route
-    // does not force TLS. It attaches a non-blocking advisory instead.
-    const transportAdvisory = assessSetupTokenTransport(req);
-    try {
-      // The service returns the non-secret `storedSessionId` claim from a
-      // completed session whose owner-bound secret write succeeded. It returns the
-      // fixed unavailable error when the session is not completed with a stored
-      // secret. The response carries no token.
-      const result = setupTokenLoginService.completeSession(req.params.sessionId as string, scope);
-      res.json({ storedSessionId: result.storedSessionId, transportAdvisory });
-    } catch (err) {
-      sendSetupTokenError(res, err);
-    }
-  });
 
   // --- Company-and-environment setup-token login routes ----------------------
   //
