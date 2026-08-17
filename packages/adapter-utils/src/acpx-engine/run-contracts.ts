@@ -371,8 +371,19 @@ export interface SessionReuseStoreOptions {
 export interface SessionReuseStore<T> {
   borrow(sessionKey: string): T | undefined;
   save(sessionKey: string, entry: T): void;
-  discard(sessionKey: string): void;
-  evictIdle(now: number): void;
+  /**
+   * Identity-guarded removal that fires the idempotent release. It removes the
+   * key synchronously, so a later reuse never reads a discarded entry. It
+   * returns a promise the caller can await when the release must finish before
+   * the run releases a downstream resource (e.g. the staging lease).
+   */
+  discard(sessionKey: string): void | Promise<void>;
+  /**
+   * Run-start idle sweep. It removes each stale key synchronously, so
+   * `buildRuntime` never reuses an expired entry. It returns a promise the
+   * caller can await so the sweep completes before the run reads the cache.
+   */
+  evictIdle(now: number): void | Promise<void>;
 }
 
 /**
