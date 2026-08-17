@@ -90,13 +90,14 @@ describe("boardMutationGuard", () => {
     expect([200, 204]).toContain(res.status);
   });
 
-  it("allows board mutations when x-forwarded-host matches origin", async () => {
+  it("allows HTTPS branch-runtime mutations when forwarded MagicDNS host and non-standard port match", async () => {
     const app = createApp("board");
     const res = await request(app)
       .post("/mutate")
       .set("Host", "127.0.0.1")
-      .set("X-Forwarded-Host", "10.90.10.20:3443")
-      .set("Origin", "https://10.90.10.20:3443")
+      .set("X-Forwarded-Host", "branch-runner.tail123.ts.net:42000")
+      .set("X-Forwarded-Proto", "https")
+      .set("Origin", "https://branch-runner.tail123.ts.net:42000")
       .send({ ok: true });
     expect([200, 204]).toContain(res.status);
   });

@@ -28,7 +28,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { resolveEnvironmentDriverConfigForRuntime } from "../services/environment-config.ts";
-import { environmentRuntimeService, findReusableSandboxLeaseId } from "../services/environment-runtime.ts";
+import { SANDBOX_CAPABILITY_KEYS, environmentRuntimeService, findReusableSandboxLeaseId } from "../services/environment-runtime.ts";
 import { environmentService } from "../services/environments.ts";
 import { secretService } from "../services/secrets.ts";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.ts";
@@ -673,6 +673,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
@@ -799,6 +800,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
@@ -871,6 +873,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
@@ -919,6 +922,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
@@ -994,6 +998,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
@@ -1107,6 +1112,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
@@ -1352,6 +1358,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
@@ -1555,6 +1562,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, {
       pluginWorkerManager: workerManager,
@@ -1631,6 +1639,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       call: vi.fn(async (_pluginId: string, method: string) => {
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, {
       pluginWorkerManager: workerManager,
@@ -1730,6 +1739,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, {
       pluginWorkerManager: workerManager,
@@ -1818,6 +1828,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
@@ -1984,6 +1995,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
@@ -2022,6 +2034,376 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     await expect(environmentService(db).getLeaseById(staleLease.id)).resolves.toMatchObject({
       status: "expired",
       cleanupStatus: "success",
+    });
+  });
+
+  it("fails closed and does not resume when a worker restart drops the resume method after the capability snapshot", async () => {
+    const pluginId = randomUUID();
+    const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const providerConfig = {
+      provider: "fake-plugin",
+      image: "fake:test",
+      timeoutMs: 1234,
+      reuseLease: true,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Reusable Plugin Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.fake-sandbox-provider",
+      packageName: "@acme/fake-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.fake-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Fake Sandbox Provider",
+        description: "Test schema-driven provider",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin",
+            supportsReusableLeases: true,
+            configSchema: {
+              type: "object",
+              properties: {
+                image: { type: "string" },
+                timeoutMs: { type: "number" },
+                reuseLease: { type: "boolean" },
+              },
+            },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    const executionWorkspaceId = randomUUID();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: `Workspace ${projectId.slice(0, 8)}`,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Reusable workspace",
+      status: "active",
+      providerType: "local_fs",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const staleLease = await environmentService(db).acquireLease({
+      companyId,
+      environmentId: environment.id,
+      executionWorkspaceId,
+      heartbeatRunId: runId,
+      leasePolicy: "reuse_by_environment",
+      provider: "fake-plugin",
+      providerLeaseId: "stale-plugin-lease",
+      metadata: {
+        agentId,
+        driver: "sandbox",
+        pluginId,
+        pluginKey: "acme.fake-sandbox-provider",
+        sandboxProviderPlugin: true,
+        provider: "fake-plugin",
+        image: "fake:test",
+        timeoutMs: 1234,
+        reuseLease: true,
+        reusableSandboxLease: {
+          version: 1,
+          companyId,
+          environmentId: environment.id,
+          executionWorkspaceId,
+          agentId,
+          adapterType: null,
+          provider: "fake-plugin",
+          runtimeFingerprint: reusableRuntimeFingerprint({
+            provider: "fake-plugin",
+            adapterType: null,
+            config: providerConfig,
+          }),
+        },
+      },
+    });
+
+    // The runtime reads the worker methods once to decide reuse, then does
+    // asynchronous database work before the resume dispatch. A worker restart
+    // in that window drops `environmentResumeLease`. The first read returns the
+    // reuse verbs, so the runtime treats the lease as resumable. Every later
+    // read returns the restarted worker's methods, which no longer include
+    // `environmentResumeLease`.
+    let getWorkerReads = 0;
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentResumeLease") {
+          // A regression that reads the stale snapshot dispatches the resume
+          // RPC and fails here. The live worker cannot serve the method.
+          throw new Error("worker no longer advertises environmentResumeLease");
+        }
+        if (method === "environmentDestroyLease") {
+          return undefined;
+        }
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "fresh-plugin-lease",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+      getWorker: vi.fn(() => {
+        getWorkerReads += 1;
+        return {
+          supportedMethods:
+            getWorkerReads === 1
+              ? ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"]
+              : ["environmentReleaseLease", "environmentDestroyLease"],
+        };
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    // The runtime re-checks the live worker before the resume dispatch. The
+    // restarted worker no longer advertises `environmentResumeLease`, so the
+    // runtime must not dispatch the resume RPC.
+    expect(workerManager.call).not.toHaveBeenCalledWith(
+      pluginId,
+      "environmentResumeLease",
+      expect.anything(),
+      expect.anything(),
+    );
+    // It destroys the stale reusable lease and acquires a fresh one.
+    expect(workerManager.call).toHaveBeenCalledWith(
+      pluginId,
+      "environmentDestroyLease",
+      expect.objectContaining({ driverKey: "fake-plugin", providerLeaseId: "stale-plugin-lease" }),
+      31234,
+    );
+    expect(workerManager.call).toHaveBeenCalledWith(
+      pluginId,
+      "environmentAcquireLease",
+      expect.objectContaining({ driverKey: "fake-plugin", agentId, executionWorkspaceId, runId }),
+      31234,
+    );
+    expect(acquired.lease.providerLeaseId).toBe("fresh-plugin-lease");
+    await expect(environmentService(db).getLeaseById(staleLease.id)).resolves.toMatchObject({
+      status: "expired",
+      cleanupStatus: "success",
+    });
+  });
+
+  // Seed a reusable plugin sandbox lease that a worker created under an earlier
+  // capability set. The worker restarts and no longer advertises the lifecycle
+  // methods. The lease lifecycle paths must verify the live worker before they
+  // dispatch a lifecycle RPC, so the runtime fails closed instead of a doomed
+  // dispatch.
+  async function seedStaleLifecycleReusableLease(
+    leasePolicy: "reuse_by_environment" | "retain_on_failure" = "reuse_by_environment",
+  ) {
+    const pluginId = randomUUID();
+    const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const providerConfig = {
+      provider: "fake-plugin",
+      image: "fake:test",
+      timeoutMs: 1234,
+      reuseLease: true,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Reusable Plugin Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.fake-sandbox-provider",
+      packageName: "@acme/fake-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.fake-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Fake Sandbox Provider",
+        description: "Test schema-driven provider",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin",
+            supportsReusableLeases: true,
+            configSchema: { type: "object" },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    const executionWorkspaceId = randomUUID();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: `Workspace ${projectId.slice(0, 8)}`,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Reusable workspace",
+      status: "active",
+      providerType: "local_fs",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const lease = await environmentService(db).acquireLease({
+      companyId,
+      environmentId: environment.id,
+      executionWorkspaceId,
+      heartbeatRunId: runId,
+      leasePolicy,
+      provider: "fake-plugin",
+      providerLeaseId: "stale-lifecycle-lease",
+      metadata: {
+        agentId,
+        driver: "sandbox",
+        pluginId,
+        pluginKey: "acme.fake-sandbox-provider",
+        sandboxProviderPlugin: true,
+        provider: "fake-plugin",
+        image: "fake:test",
+        timeoutMs: 1234,
+        reuseLease: true,
+      },
+    });
+
+    // The worker is running, but its discovery list dropped the reusable-lease
+    // lifecycle methods. `call` throws on any lifecycle RPC so a regression that
+    // dispatches one fails the test through the `not.toHaveBeenCalledWith` check.
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentAcquireLease", "environmentExecute"] })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    return { pluginId, environment, runId, lease, workerManager, runtimeWithPlugin };
+  }
+
+  it("routes release to pending_cleanup when the worker no longer advertises the release lifecycle method", async () => {
+    const { pluginId, lease, workerManager, runtimeWithPlugin } = await seedStaleLifecycleReusableLease();
+
+    const released = await runtimeWithPlugin.releaseRunLeases(lease.heartbeatRunId!);
+
+    expect(released).toHaveLength(1);
+    expect(workerManager.call).not.toHaveBeenCalledWith(
+      pluginId,
+      "environmentReleaseLease",
+      expect.anything(),
+      expect.anything(),
+    );
+    // The failed release verification must enter the pending-cleanup retry flow.
+    // The reaper sweeps only `pending_cleanup` leases, so a `released` status
+    // here would strand the still-active provider resource.
+    await expect(environmentService(db).getLeaseById(lease.id)).resolves.toMatchObject({
+      status: "pending_cleanup",
+      cleanupStatus: "failed",
+      failureReason: "release_cleanup_failed",
+    });
+  });
+
+  it("retains a retain_on_failure lease on failed release instead of routing to pending_cleanup", async () => {
+    const { lease, runtimeWithPlugin } = await seedStaleLifecycleReusableLease("retain_on_failure");
+
+    const released = await runtimeWithPlugin.releaseRunLeases(lease.heartbeatRunId!, "failed");
+
+    expect(released).toHaveLength(1);
+    // A retain_on_failure lease keeps the provider resource for reuse. The
+    // reaper destroys `pending_cleanup` leases, so the retained lease must not
+    // enter that flow even when the release verification fails.
+    await expect(environmentService(db).getLeaseById(lease.id)).resolves.toMatchObject({
+      status: "retained",
+      cleanupStatus: "failed",
+    });
+  });
+
+  it("fails closed on expiry destruction when the worker no longer advertises the destroy lifecycle method", async () => {
+    const { pluginId, lease, workerManager, runtimeWithPlugin } = await seedStaleLifecycleReusableLease();
+
+    await runtimeWithPlugin.releaseRunLeases(lease.heartbeatRunId!, "expired");
+
+    expect(workerManager.call).not.toHaveBeenCalledWith(
+      pluginId,
+      "environmentDestroyLease",
+      expect.anything(),
+      expect.anything(),
+    );
+    await expect(environmentService(db).getLeaseById(lease.id)).resolves.toMatchObject({
+      status: "pending_cleanup",
+      cleanupStatus: "failed",
     });
   });
 
@@ -2126,6 +2508,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
@@ -2315,6 +2698,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
@@ -2404,6 +2788,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
@@ -2552,6 +2937,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
@@ -2573,6 +2959,336 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.anything(), 31234);
   });
 
+  it("does not resume a lease when the nested capability disables reusable leases", async () => {
+    // The provider declares the legacy `supportsReusableLeases: true` flag but
+    // the nested `sandboxCapabilities.reusableLeases: false`. The nested value
+    // wins through the capability contract, so acquisition must acquire a fresh
+    // lease and must never resume the existing reusable lease.
+    const pluginId = randomUUID();
+    const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const providerConfig = {
+      provider: "fake-plugin",
+      image: "fake:test",
+      timeoutMs: 1234,
+      reuseLease: true,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Nested-disabled Plugin Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.nested-disabled-sandbox-provider",
+      packageName: "@acme/nested-disabled-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.nested-disabled-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Nested-disabled Sandbox Provider",
+        description: "Test provider with a legacy flag and a disabled nested capability",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin",
+            supportsReusableLeases: true,
+            sandboxCapabilities: { reusableLeases: false },
+            configSchema: {
+              type: "object",
+              properties: {
+                image: { type: "string" },
+                timeoutMs: { type: "number" },
+                reuseLease: { type: "boolean" },
+              },
+            },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    const executionWorkspaceId = randomUUID();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: `Workspace ${projectId.slice(0, 8)}`,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Nested-disabled workspace",
+      status: "active",
+      providerType: "local_fs",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await environmentService(db).acquireLease({
+      companyId,
+      environmentId: environment.id,
+      executionWorkspaceId,
+      heartbeatRunId: runId,
+      leasePolicy: "reuse_by_environment",
+      provider: "fake-plugin",
+      providerLeaseId: "old-plugin-lease",
+      metadata: {
+        agentId,
+        provider: "fake-plugin",
+        image: "fake:test",
+        timeoutMs: 1234,
+        reuseLease: true,
+        reusableSandboxLease: {
+          version: 1,
+          companyId,
+          environmentId: environment.id,
+          executionWorkspaceId,
+          agentId,
+          adapterType: null,
+          provider: "fake-plugin",
+          runtimeFingerprint: reusableRuntimeFingerprint({
+            provider: "fake-plugin",
+            adapterType: null,
+            config: providerConfig,
+          }),
+        },
+      },
+    });
+
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "fresh-plugin-lease",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    expect(acquired.lease.providerLeaseId).toBe("fresh-plugin-lease");
+    expect(acquired.lease.leasePolicy).toBe("ephemeral");
+    expect(workerManager.call).toHaveBeenCalledTimes(1);
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.anything(), 31234);
+    expect(workerManager.call).not.toHaveBeenCalledWith(
+      pluginId,
+      "environmentResumeLease",
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it("fails closed and does not resume when the worker does not verify the reuse methods", async () => {
+    // The provider declares `reusableLeases: true`, but its worker advertises
+    // neither `environmentResumeLease` nor `environmentReleaseLease`. The runtime
+    // must not resume or reuse the lease, because it cannot dispatch a resume or
+    // a release the worker does not serve. It acquires a fresh ephemeral lease
+    // and leaves the old reusable lease untouched.
+    const pluginId = randomUUID();
+    const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const providerConfig = {
+      provider: "fake-plugin",
+      image: "fake:test",
+      timeoutMs: 1234,
+      reuseLease: true,
+    };
+    const environment = {
+      ...baseEnvironment,
+      name: "Unverified-worker Plugin Sandbox",
+      driver: "sandbox",
+      config: providerConfig,
+    };
+    await environmentService(db).update(environment.id, {
+      driver: "sandbox",
+      name: environment.name,
+      config: providerConfig,
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "acme.unverified-worker-sandbox-provider",
+      packageName: "@acme/unverified-worker-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.unverified-worker-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Unverified-worker Sandbox Provider",
+        description: "Test provider that declares reusable leases but whose worker lacks the reuse methods",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin",
+            sandboxCapabilities: { reusableLeases: true },
+            configSchema: {
+              type: "object",
+              properties: {
+                image: { type: "string" },
+                timeoutMs: { type: "number" },
+                reuseLease: { type: "boolean" },
+              },
+            },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      updatedAt: new Date(),
+    } as any);
+    const executionWorkspaceId = randomUUID();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: `Workspace ${projectId.slice(0, 8)}`,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Unverified-worker workspace",
+      status: "active",
+      providerType: "local_fs",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const existingLease = await environmentService(db).acquireLease({
+      companyId,
+      environmentId: environment.id,
+      executionWorkspaceId,
+      heartbeatRunId: runId,
+      leasePolicy: "reuse_by_environment",
+      provider: "fake-plugin",
+      providerLeaseId: "old-plugin-lease",
+      metadata: {
+        agentId,
+        provider: "fake-plugin",
+        image: "fake:test",
+        timeoutMs: 1234,
+        reuseLease: true,
+        reusableSandboxLease: {
+          version: 1,
+          companyId,
+          environmentId: environment.id,
+          executionWorkspaceId,
+          agentId,
+          adapterType: null,
+          provider: "fake-plugin",
+          runtimeFingerprint: reusableRuntimeFingerprint({
+            provider: "fake-plugin",
+            adapterType: null,
+            config: providerConfig,
+          }),
+        },
+      },
+    });
+
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return {
+            providerLeaseId: "fresh-plugin-lease",
+            metadata: {
+              provider: "fake-plugin",
+              image: "fake:test",
+              timeoutMs: 1234,
+              reuseLease: true,
+              remoteCwd: "/workspace",
+            },
+          };
+        }
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+      // The worker verifies only `environmentExecute`. It advertises neither
+      // reuse verb, so the reusable-lease capability fails closed.
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentExecute"] })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      agentId,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: {
+        id: executionWorkspaceId,
+        mode: "shared_workspace",
+      },
+    });
+
+    expect(acquired.lease.providerLeaseId).toBe("fresh-plugin-lease");
+    expect(acquired.lease.leasePolicy).toBe("ephemeral");
+    expect(workerManager.call).toHaveBeenCalledTimes(1);
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentAcquireLease", expect.anything(), 31234);
+    expect(workerManager.call).not.toHaveBeenCalledWith(
+      pluginId,
+      "environmentResumeLease",
+      expect.anything(),
+      expect.anything(),
+    );
+    // The runtime leaves the old reusable lease untouched: it neither resumes
+    // nor destroys a lease it cannot serve.
+    await expect(environmentService(db).getLeaseById(existingLease.id)).resolves.toMatchObject({
+      status: "active",
+      leasePolicy: "reuse_by_environment",
+    });
+  });
+
   it("destroys scoped reusable plugin-backed sandbox leases", async () => {
     const { pluginId, companyId, executionWorkspaceId, reusableLease } =
       await seedReusablePluginSandboxLease();
@@ -2585,6 +3301,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
@@ -2620,6 +3337,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const offlineWorkerManager = {
       isRunning: vi.fn(() => false),
       call: vi.fn(),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
     } as unknown as PluginWorkerManager;
     const runtimeWithOfflinePlugin = environmentRuntimeService(db, {
       pluginWorkerManager: offlineWorkerManager,
@@ -2649,6 +3367,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
     } as unknown as PluginWorkerManager;
     const runtimeWithRecoveredPlugin = environmentRuntimeService(db, {
       pluginWorkerManager: recoveredWorkerManager,
@@ -2677,6 +3396,262 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       failureReason: "cleanup_retry",
       cleanupStatus: "success",
     });
+  });
+
+  it("resolves effective capabilities from the lease's exact plugin, not an earlier plugin that shares the driver key", async () => {
+    // The helper seeds the plugin that owns the lease. Pin it to `pluginId`
+    // through the lease metadata and give it a lower-priority sibling.
+    const { pluginId, environment, reusableLease } = await seedReusablePluginSandboxLease();
+
+    // Rewrite the owner plugin so it DENIES reusable leases through the nested
+    // capability declaration.
+    await db
+      .update(plugins)
+      .set({
+        manifestJson: {
+          id: "acme.reusable-sandbox-provider",
+          apiVersion: 1,
+          version: "1.0.0",
+          displayName: "Reusable Sandbox Provider",
+          description: "Owner plugin that denies reusable leases",
+          author: "Paperclip",
+          categories: ["automation"],
+          capabilities: ["environment.drivers.register"],
+          entrypoints: { worker: "dist/worker.js" },
+          environmentDrivers: [
+            {
+              driverKey: "fake-plugin",
+              kind: "sandbox_provider",
+              displayName: "Fake Plugin",
+              sandboxCapabilities: { reusableLeases: false },
+              configSchema: { type: "object", properties: {} },
+            },
+          ],
+        },
+        updatedAt: new Date(),
+      } as any)
+      .where(eq(plugins.id, pluginId));
+
+    // Install an EARLIER plugin that shares the driver key and grants reusable
+    // leases. It is not ready and never acquired this lease. A resolver keyed by
+    // driver key alone would read this declaration and grant a capability the
+    // owner plugin denied.
+    const collidingPluginId = randomUUID();
+    await db.insert(plugins).values({
+      id: collidingPluginId,
+      pluginKey: "acme.colliding-sandbox-provider",
+      packageName: "@acme/colliding-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.colliding-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Colliding Sandbox Provider",
+        description: "Earlier plugin that shares the driver key",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "fake-plugin",
+            kind: "sandbox_provider",
+            displayName: "Fake Plugin",
+            supportsReusableLeases: true,
+            configSchema: { type: "object", properties: {} },
+          },
+        ],
+      },
+      status: "installed",
+      installOrder: 0,
+      updatedAt: new Date(),
+    } as any);
+
+    // The owner worker verifies the reuse verbs and the sync verbs, so every
+    // capability is verified. Only the owner's declaration can narrow one.
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(),
+      getWorker: vi.fn((id: string) =>
+        id === pluginId
+          ? {
+              supportedMethods: [
+                "environmentResumeLease",
+                "environmentReleaseLease",
+                "environmentSyncIn",
+                "environmentSyncOut",
+              ],
+            }
+          : undefined,
+      ),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    expect(reusableLease.metadata?.pluginId).toBe(pluginId);
+
+    const effective = await runtimeWithPlugin.effectiveSandboxCapabilities({
+      environment,
+      lease: reusableLease,
+    });
+
+    // The runtime read the owner plugin's declaration, so it denies reusable
+    // leases even though the earlier plugin grants them.
+    expect(effective?.reusableLeases).toBe(false);
+    // The owner plugin does not restrict native sync, and its worker verifies
+    // the sync verbs, so those stay granted. This proves the resolver read the
+    // owner declaration and did not fail every capability closed.
+    expect(effective?.nativeSyncIn).toBe(true);
+    expect(effective?.nativeSyncOut).toBe(true);
+  });
+
+  it("fails every effective capability closed when the pinned plugin id is absent from the registry", async () => {
+    // The lease pins a plugin id, but that plugin record is gone. A stale worker
+    // entry still advertises every method. The runtime must not read the stale
+    // methods; it must fail closed because the exact-plugin identity is gone.
+    const { pluginId, environment, reusableLease } = await seedReusablePluginSandboxLease();
+    await db.delete(plugins).where(eq(plugins.id, pluginId));
+
+    const workerManager = {
+      isRunning: vi.fn(() => true),
+      call: vi.fn(),
+      getWorker: vi.fn(() => ({
+        supportedMethods: [
+          "environmentResumeLease",
+          "environmentReleaseLease",
+          "environmentExecute",
+          "environmentSyncIn",
+          "environmentSyncOut",
+        ],
+      })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const effective = await runtimeWithPlugin.effectiveSandboxCapabilities({
+      environment,
+      lease: reusableLease,
+    });
+
+    for (const key of SANDBOX_CAPABILITY_KEYS) {
+      expect(effective?.[key]).toBe(false);
+    }
+  });
+
+  it("fails every effective capability closed when the pinned plugin no longer declares this provider key", async () => {
+    // The pinned plugin still exists, but it no longer declares a
+    // `sandbox_provider` driver with this key (here it changed the driver kind).
+    // A running worker still advertises every method. The runtime must fail
+    // closed because the exact-plugin declaration is gone.
+    const { pluginId, environment, reusableLease } = await seedReusablePluginSandboxLease();
+    await db
+      .update(plugins)
+      .set({
+        manifestJson: {
+          id: "acme.reusable-sandbox-provider",
+          apiVersion: 1,
+          version: "1.0.0",
+          displayName: "Reusable Sandbox Provider",
+          description: "Owner plugin that no longer declares the provider key",
+          author: "Paperclip",
+          categories: ["automation"],
+          capabilities: ["environment.drivers.register"],
+          entrypoints: { worker: "dist/worker.js" },
+          environmentDrivers: [
+            {
+              driverKey: "fake-plugin",
+              // The key exists, but the kind is now a plain environment driver,
+              // not a sandbox provider. The by-id resolver fails closed.
+              kind: "environment_driver",
+              displayName: "Fake Plugin",
+              configSchema: { type: "object", properties: {} },
+            },
+          ],
+        },
+        updatedAt: new Date(),
+      } as any)
+      .where(eq(plugins.id, pluginId));
+
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(),
+      getWorker: vi.fn(() => ({
+        supportedMethods: [
+          "environmentResumeLease",
+          "environmentReleaseLease",
+          "environmentExecute",
+          "environmentSyncIn",
+          "environmentSyncOut",
+        ],
+      })),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const effective = await runtimeWithPlugin.effectiveSandboxCapabilities({
+      environment,
+      lease: reusableLease,
+    });
+
+    for (const key of SANDBOX_CAPABILITY_KEYS) {
+      expect(effective?.[key]).toBe(false);
+    }
+  });
+
+  it("defers to verified worker discovery for a valid pinned plugin that omits sandboxCapabilities", async () => {
+    // A valid, identified plugin whose manifest declares no `sandboxCapabilities`
+    // and no legacy reuse flag. Its worker verifies the sync verbs. An omitted
+    // declaration is NOT an identity failure: the runtime defers to the verified
+    // baseline, so native sync stays granted while unverified capabilities stay
+    // false.
+    const { pluginId, environment, reusableLease } = await seedReusablePluginSandboxLease();
+    await db
+      .update(plugins)
+      .set({
+        manifestJson: {
+          id: "acme.reusable-sandbox-provider",
+          apiVersion: 1,
+          version: "1.0.0",
+          displayName: "Reusable Sandbox Provider",
+          description: "Owner plugin that omits the capability declaration",
+          author: "Paperclip",
+          categories: ["automation"],
+          capabilities: ["environment.drivers.register"],
+          entrypoints: { worker: "dist/worker.js" },
+          environmentDrivers: [
+            {
+              driverKey: "fake-plugin",
+              kind: "sandbox_provider",
+              displayName: "Fake Plugin",
+              configSchema: { type: "object", properties: {} },
+            },
+          ],
+        },
+        updatedAt: new Date(),
+      } as any)
+      .where(eq(plugins.id, pluginId));
+
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(),
+      getWorker: vi.fn((id: string) =>
+        id === pluginId
+          ? { supportedMethods: ["environmentSyncIn", "environmentSyncOut"] }
+          : undefined,
+      ),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+
+    const effective = await runtimeWithPlugin.effectiveSandboxCapabilities({
+      environment,
+      lease: reusableLease,
+    });
+
+    // The worker verified the sync verbs and the omitted declaration adds no
+    // restriction, so native sync stays granted.
+    expect(effective?.nativeSyncIn).toBe(true);
+    expect(effective?.nativeSyncOut).toBe(true);
+    // The worker did not verify the reuse verbs, so reusable leases stay false.
+    expect(effective?.reusableLeases).toBe(false);
   });
 
   it("releases a sandbox run lease from metadata after the environment config changes", async () => {
@@ -2810,6 +3785,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
@@ -2856,6 +3832,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         }
         return undefined;
       }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, {
       pluginWorkerManager: workerManager,
@@ -3011,6 +3988,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         }
         return undefined;
       }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, {
       pluginWorkerManager: workerManager,

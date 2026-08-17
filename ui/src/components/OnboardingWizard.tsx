@@ -5,7 +5,7 @@ import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { companiesApi } from "../api/companies";
-import { companiesListQueryOptions } from "../api/companies-query";
+import { useCompanyListQuery } from "../api/companies-query";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
@@ -194,34 +194,20 @@ export function OnboardingWizard() {
   }, []);
 
   // Whether this account owns the company the draft names is an authorization
-  // question, and the shared company cache cannot answer it.
+  // question, and the answer has to be about the account asking now.
   //
-  // `main.tsx` sets `staleTime: 30_000` for every query, so for thirty seconds
-  // after a sign-in a mounted observer of the company list serves whatever is
-  // cached with no request at all. `Auth.tsx` invalidates the list on sign-in,
-  // but invalidation keeps serving the old data while it refetches. Neither
-  // shows up as loading and neither shows up as an error, so the previous
-  // account's companies arrive looking perfectly healthy - and a check that
-  // trusts "not loading, no error" finds the old company id in them and hands
-  // one account's onboarding draft to the next.
+  // The shared company cache could not answer it at all: one entry for every
+  // account, served for thirty seconds after a switch with no loading state and
+  // no error, so a check that trusted "not loading, no error" handed one
+  // account's draft to the next. The entry is keyed by account now, and that
+  // trap is gone with it.
   //
-  // Sign-out is no longer the hole it was: `useSignOut` now resets every
-  // account-scoped cache entry rather than invalidating two of them, so the
-  // ordinary A-signs-out-then-B-signs-in path does not leave A's companies in
-  // hand.
-  //
-  // That covers the button, not the question. An account can change without
-  // it - a session lapsing server-side, a second account signing in on a warm
-  // tab, a caller supplying the company context from somewhere else - so this
-  // gate stays independent of that fix rather than deferring to it.
-  //
-  // So this asks for a list fetched *for this mount*, rather than reading the
-  // one in hand. `isFetchedAfterMount` is the part that matters; `staleTime: 0`
-  // is what makes that reachable while the shared entry is still fresh. It
-  // shares the query key, so the result populates the same cache entry the
-  // rest of the app reads.
-  const companiesQuery = useQuery({
-    ...companiesListQueryOptions,
+  // What survives is smaller and still worth a request. A cached list is the
+  // right account's but can be thirty seconds old, so a company created moments
+  // ago in another tab is missing from it — and missing reads as "you do not own
+  // this", which deletes the draft rather than withholding it. So this still
+  // asks for a list fetched for this mount.
+  const companiesQuery = useCompanyListQuery({
     staleTime: 0,
     // Only a *parseable* saved draft poses the question. Without one there is
     // nothing to authorize, and this must not add a request to every wizard
@@ -230,27 +216,28 @@ export function OnboardingWizard() {
     enabled: rawBlob !== undefined && rawBlob !== null,
   });
 
-  // Decidable only with a list that succeeded, was fetched since this
-  // component mounted, actually arrived, and that the server was willing to
-  // give us.
+  // Decidable only with a list that succeeded, actually arrived, and that the
+  // server was willing to give us.
   //
-  // `isSuccess` is what ties the answer to this session. React Query keeps the
-  // last good `data` when a refetch fails, so after an account switch the
-  // retained value is the *previous* account's list - but a failed refetch
-  // flips status to error, so `isSuccess` rejects it. Combined with
-  // `staleTime: 0`, which makes every mount refetch, and the mount gate below
-  // holding while that is in flight, a success here is always this session's.
+  // Whose list it is stopped being a question here: the entry is keyed by
+  // account, so the previous account's list is unreachable rather than merely
+  // rejected. What the checks still answer is whether there is an answer at all,
+  // and the reason that matters is the *destructive* branch below — an
+  // undecidable draft is withheld and recoverable, but a draft judged
+  // not-yours is deleted.
   //
-  // `isFetchedAfterMount` looks like it belongs here too and does not: it is
-  // true after a *failed* refetch as well, so it never rejects anything
-  // `isSuccess` has not already rejected. Left out rather than kept as
-  // decoration - no test could distinguish it, which is how a guard rots.
+  // `isSuccess`: React Query keeps the last good `data` through a failed
+  // refetch, and a retained list is not evidence about now.
   //
-  // The `unauthorized` check is the last one: `companiesListQueryOptions`
-  // folds 401 and 403 into `{ companies: [], unauthorized: true }` rather than
-  // throwing, so an auth blip arrives as a *successful* fetch of an empty list
-  // and would otherwise read as "this account owns nothing" and delete the
-  // draft.
+  // `staleTime: 0` on the query, still: a cached list is the right account's but
+  // can be thirty seconds old, and a company created moments ago in another tab
+  // would be missing from it — which reads as "this draft belongs to a company
+  // you do not own" and deletes it.
+  //
+  // `unauthorized`: the query folds 401 and 403 into
+  // `{ companies: [], unauthorized: true }` rather than throwing, so an auth
+  // blip arrives as a *successful* fetch of an empty list and would otherwise
+  // read as "this account owns nothing" and delete the draft.
   const ownershipDecidable =
     companiesQuery.isSuccess &&
     companiesQuery.data !== undefined &&

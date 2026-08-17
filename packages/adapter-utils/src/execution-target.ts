@@ -89,10 +89,31 @@ export interface AdapterSshExecutionTarget extends AdapterExecutionTargetWorkspa
   spec: SshRemoteExecutionSpec;
 }
 
+/**
+ * Read-only snapshot of the effective sandbox capabilities for one execution
+ * target. Each flag is the resolved result of the provider's declaration, the
+ * live worker's verified methods, and any narrowing from the config or lease.
+ * The host computes it once and attaches it to the target; a consumer reads it
+ * but never changes it, so every field is `readonly`.
+ */
+export interface EffectiveSandboxCapabilities {
+  readonly reusableLeases: boolean;
+  readonly nativeSyncIn: boolean;
+  readonly nativeSyncOut: boolean;
+  readonly persistentProcessSessions: boolean;
+  readonly independentControlCommands: boolean;
+}
+
 export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWorkspaceMetadata {
   kind: "remote";
   transport: "sandbox";
   providerKey?: string | null;
+  /**
+   * Read-only effective capability snapshot for this sandbox target. The host
+   * resolves it from the provider declaration ∩ the verified worker methods ∩
+   * narrowing, then attaches it here. Absent when no snapshot was resolved.
+   */
+  readonly effectiveCapabilities?: EffectiveSandboxCapabilities | null;
   shellCommand?: "bash" | "sh" | null;
   environmentId?: string | null;
   leaseId?: string | null;
@@ -211,6 +232,22 @@ function parseObject(value: unknown): Record<string, unknown> {
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+// Read a serialized effective-capability snapshot back into a full record. A
+// missing or non-boolean field reads as `false`, so a round-tripped target
+// never grants a capability that the snapshot did not carry. Returns null when
+// there is no object to read.
+function parseEffectiveSandboxCapabilities(value: unknown): EffectiveSandboxCapabilities | null {
+  const parsed = parseObject(value);
+  if (Object.keys(parsed).length === 0) return null;
+  return {
+    reusableLeases: parsed.reusableLeases === true,
+    nativeSyncIn: parsed.nativeSyncIn === true,
+    nativeSyncOut: parsed.nativeSyncOut === true,
+    persistentProcessSessions: parsed.persistentProcessSessions === true,
+    independentControlCommands: parsed.independentControlCommands === true,
+  };
 }
 
 function readStringMeta(parsed: Record<string, unknown>, key: string): string | null {
@@ -1085,6 +1122,7 @@ export function parseAdapterExecutionTarget(value: unknown): AdapterExecutionTar
   if (kind === "remote" && readStringMeta(parsed, "transport") === "sandbox") {
     const remoteCwd = readStringMeta(parsed, "remoteCwd");
     if (!remoteCwd) return null;
+    const effectiveCapabilities = parseEffectiveSandboxCapabilities(parsed.effectiveCapabilities);
     return {
       kind: "remote",
       transport: "sandbox",
@@ -1094,6 +1132,7 @@ export function parseAdapterExecutionTarget(value: unknown): AdapterExecutionTar
       remoteCwd,
       timeoutMs: typeof parsed.timeoutMs === "number" ? parsed.timeoutMs : null,
       streamRunLogs: typeof parsed.streamRunLogs === "boolean" ? parsed.streamRunLogs : null,
+      ...(effectiveCapabilities ? { effectiveCapabilities } : {}),
     };
   }
 

@@ -395,6 +395,11 @@ Rules:
   - `projects` → `projects.managed`
   - `routines` → `routines.managed`
   - `skills` → `skills.managed`
+- an `environmentDrivers` entry with `kind: "sandbox_provider"` declares sandbox
+  capabilities through `sandboxCapabilities`. See the
+  [sandbox provider capability contract](./SANDBOX_PROVIDER_CAPABILITIES.md) for
+  the supported keys, the worker-method prerequisites, and the narrowing and
+  failure rules.
 
 ## 11. Agent Tools
 

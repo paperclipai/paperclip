@@ -41,13 +41,17 @@ import {
   resolveWorkspaceRuntimeReadinessTimeoutSec,
   resolveShell,
   sanitizeRuntimeServiceBaseEnv,
+  setWorkspaceRuntimeExposureDepsForTests,
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
+  stopRuntimeServicesForProjectWorkspace,
+  WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS,
   type RealizedExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
 import {
   findAdoptableLocalService,
   isLocalServiceRegistryCwdCompatible,
+  isLocalServiceProcessOwnedBy,
   isLocalServiceProcessInWorkspace,
   readLocalServicePortOwner,
   writeLocalServiceRegistryRecord,
@@ -57,7 +61,7 @@ import {
   buildWorkspaceRealizationRequest,
   readWorkspaceRealizationRequest,
 } from "../services/workspace-realization.ts";
-import type { Environment, EnvironmentLease } from "@paperclipai/shared";
+import { deriveViteHmrPort, type Environment, type EnvironmentLease } from "@paperclipai/shared";
 import { resolvePaperclipConfigPath } from "../paths.ts";
 import type { WorkspaceOperation } from "@paperclipai/shared";
 import type { WorkspaceOperationRecorder } from "../services/workspace-operations.ts";
@@ -280,6 +284,48 @@ function buildWorkspace(cwd: string): RealizedExecutionWorkspace {
     warnings: [],
     created: false,
   };
+}
+
+async function closeNetServer(server: net.Server) {
+  if (!server.listening) return;
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
+}
+
+async function listenOnPort(port: number) {
+  const server = net.createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", resolve);
+  });
+  return server;
+}
+
+async function findFreePort() {
+  const server = await listenOnPort(0);
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : null;
+  await closeNetServer(server);
+  if (!port) throw new Error("Failed to find a free test port");
+  return port;
+}
+
+async function reserveContiguousPorts(count: number) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const basePort = await findFreePort();
+    if (basePort + count - 1 > 65_535) continue;
+    const servers: net.Server[] = [];
+    try {
+      for (let offset = 0; offset < count; offset += 1) {
+        servers.push(await listenOnPort(basePort + offset));
+      }
+      return { basePort, servers };
+    } catch {
+      await Promise.all(servers.map((server) => closeNetServer(server).catch(() => undefined)));
+    }
+  }
+  throw new Error(`Failed to reserve ${count} contiguous test ports`);
 }
 
 function createWorkspaceOperationRecorderDouble() {
@@ -4675,6 +4721,35 @@ describe("readLocalServicePortOwner", () => {
     }
   });
 
+  it("attributes a Windows listener to a descendant of the launched process", async () => {
+    const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-windows-tools-"));
+    const previousPath = process.env.PATH;
+    const port = 43_123;
+    const listenerPid = 43_210;
+    const launchedPid = 32_000;
+    await fs.writeFile(
+      path.join(fakeBin, "netstat"),
+      `#!/bin/sh\nprintf '  TCP    127.0.0.1:${port}    0.0.0.0:0    LISTENING    ${listenerPid}\\n'\n`,
+      { mode: 0o755 },
+    );
+    await fs.writeFile(
+      path.join(fakeBin, "powershell.exe"),
+      `#!/bin/sh\nprintf '${launchedPid}\\n'\n`,
+      { mode: 0o755 },
+    );
+    process.env.PATH = `${fakeBin}${path.delimiter}${previousPath ?? ""}`;
+    Object.defineProperty(process, "platform", { value: "win32" });
+
+    try {
+      await expect(readLocalServicePortOwner(port)).resolves.toBe(listenerPid);
+      await expect(isLocalServiceProcessOwnedBy(listenerPid, launchedPid)).resolves.toBe(true);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await fs.rm(fakeBin, { recursive: true, force: true });
+    }
+  });
+
   it("accepts service cwd nested within the requested workspace", async () => {
     const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-workspace-"));
     const serviceCwd = path.join(workspace, "server");
@@ -5714,6 +5789,797 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
       else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
     }
   }, 15_000);
+
+  async function createRuntimeFixture(input?: {
+    companyId?: string;
+    workspaceModes?: Array<"isolated_workspace" | "shared_workspace">;
+  }) {
+    const companyId = input?.companyId ?? randomUUID();
+    const agentId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const baseRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-port-fixture-"));
+    const workspaceModes = input?.workspaceModes ?? ["isolated_workspace"];
+    const workspaceRows = await Promise.all(workspaceModes.map(async (mode, index) => {
+      const cwd = await fs.mkdtemp(path.join(baseRoot, `workspace-${index}-`));
+      return {
+        id: randomUUID(),
+        cwd,
+        mode,
+      };
+    }));
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: `Runtime ports ${companyId.slice(0, 8)}`,
+      issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 7).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Runtime Port Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Runtime port allocation",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      cwd: baseRoot,
+      isPrimary: true,
+    });
+    await db.insert(executionWorkspaces).values(workspaceRows.map((workspace, index) => ({
+      id: workspace.id,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: workspace.mode,
+      strategyType: workspace.mode === "isolated_workspace" ? "git_worktree" : "project_primary",
+      name: `Runtime workspace ${index + 1}`,
+      status: "active",
+      providerType: "local_fs",
+      cwd: workspace.cwd,
+      providerRef: workspace.cwd,
+    })));
+
+    const realizedWorkspace = (workspace: typeof workspaceRows[number]): RealizedExecutionWorkspace => ({
+      baseCwd: baseRoot,
+      source: "task_session",
+      projectId,
+      workspaceId: projectWorkspaceId,
+      repoUrl: null,
+      repoRef: "HEAD",
+      strategy: workspace.mode === "isolated_workspace" ? "git_worktree" : "project_primary",
+      cwd: workspace.cwd,
+      branchName: null,
+      worktreePath: workspace.mode === "isolated_workspace" ? workspace.cwd : null,
+      warnings: [],
+      created: false,
+    });
+
+    return {
+      companyId,
+      agentId,
+      projectId,
+      projectWorkspaceId,
+      workspaces: workspaceRows,
+      actor: { id: agentId, name: "Runtime Port Agent", companyId },
+      realizedWorkspace,
+      cleanup: async () => await fs.rm(baseRoot, { recursive: true, force: true }),
+    };
+  }
+
+  function fixedPortRuntimeConfig(port: number, command?: string) {
+    const serverCommand = command ?? [
+      JSON.stringify(process.execPath),
+      "-e",
+      JSON.stringify(
+        "require('node:http').createServer((_req,res)=>res.end('ok')).listen(Number(process.env.PORT),'127.0.0.1')",
+      ),
+    ].join(" ");
+    return {
+      workspaceRuntime: {
+        services: [{
+          name: "web",
+          command: serverCommand,
+          port: { type: "fixed", value: port, envKey: "PORT" },
+          readiness: {
+            type: "http",
+            urlTemplate: "http://127.0.0.1:{{port}}",
+            timeoutSec: 5,
+            intervalMs: 25,
+          },
+          expose: { type: "url", urlTemplate: "http://127.0.0.1:{{port}}" },
+          lifecycle: "shared",
+          reuseScope: "execution_workspace",
+          stopPolicy: { type: "manual" },
+        }],
+      },
+    };
+  }
+
+  async function createRuntimeHome() {
+    const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-port-home-"));
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = `runtime-ports-${randomUUID()}`;
+    return async () => {
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
+      await fs.rm(paperclipHome, { recursive: true, force: true });
+    };
+  }
+
+  async function isLoopbackPortFree(port: number) {
+    const probe = net.createServer();
+    return await new Promise<boolean>((resolve) => {
+      probe.once("error", () => resolve(false));
+      probe.listen(port, "127.0.0.1", () => {
+        probe.close(() => resolve(true));
+      });
+    });
+  }
+
+  function httpsRuntimeConfig(command: string) {
+    return {
+      workspaceRuntime: {
+        services: [{
+          name: "paperclip-dev",
+          command,
+          port: { type: "fixed", value: 45_439, envKey: "PORT" },
+          readiness: {
+            type: "http",
+            urlTemplate: "http://127.0.0.1:{{port}}",
+            timeoutSec: 5,
+            intervalMs: 25,
+          },
+          expose: {
+            type: "tailscale_https",
+            hostname: "auto",
+            publicPort: "same",
+            includePaperclipViteHmr: true,
+            failurePolicy: "fail_closed",
+          },
+          lifecycle: "shared",
+          reuseScope: "execution_workspace",
+          stopPolicy: { type: "manual" },
+        }],
+      },
+    };
+  }
+
+  it("waits for every managed process-tree listener before requesting HTTPS exposure", async () => {
+    const fixture = await createRuntimeFixture();
+    const cleanupRuntimeHome = await createRuntimeHome();
+    const workspace = fixture.workspaces[0]!;
+    const delayedHmrScript = [
+      "const http=require('node:http');",
+      "const port=Number(process.env.PORT);",
+      "http.createServer((_req,res)=>res.end('ok')).listen(port,'127.0.0.1');",
+      "setTimeout(()=>http.createServer((_req,res)=>res.end('hmr')).listen(port+10000,'127.0.0.1'),750);",
+      "setInterval(()=>{},1000);",
+    ].join("");
+    const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(delayedHmrScript)}`;
+    let reservedListeners: Array<{ purpose: "app" | "vite_hmr"; port: number }> = [];
+    let exposeCalls = 0;
+    const broker = {
+      async reserve(_runtimeId: string, listeners: Array<{ purpose: "app" | "vite_hmr"; port: number }>) {
+        reservedListeners = listeners.map((listener) => ({ ...listener }));
+        return {
+          handle: "managed-listener-handle-1234",
+          reservedPorts: listeners.map((listener) => listener.port),
+        };
+      },
+      async expose(_runtimeId: string, handle: string) {
+        exposeCalls += 1;
+        const owners = await Promise.all(
+          reservedListeners.map((listener) => readLocalServicePortOwner(listener.port)),
+        );
+        if (owners.some((owner) => owner === null)) {
+          throw new Error("listener_ownership_mismatch");
+        }
+        return {
+          handle,
+          publicPorts: reservedListeners.map((listener) => listener.port),
+        };
+      },
+      async remove() {
+        return { removedPorts: reservedListeners.map((listener) => listener.port) };
+      },
+      async list() {
+        return [];
+      },
+    };
+    setWorkspaceRuntimeExposureDepsForTests({
+      broker,
+      isPortAvailable: isLoopbackPortFree,
+      isBrokerAvailable: async () => true,
+      resolveHostname: async () => "runner.tail123.ts.net",
+      probeHealth: async () => true,
+      now: () => new Date().toISOString(),
+    });
+
+    try {
+      const started = (await startRuntimeServicesForWorkspaceControl({
+        db,
+        actor: fixture.actor,
+        issue: null,
+        workspace: fixture.realizedWorkspace(workspace),
+        executionWorkspaceId: workspace.id,
+        config: httpsRuntimeConfig(command),
+        adapterEnv: {},
+      }))[0]!;
+
+      expect(exposeCalls).toBe(1);
+      expect(reservedListeners.map((listener) => listener.port)).toEqual([
+        started.port,
+        deriveViteHmrPort(started.port!),
+      ]);
+      expect(started).toMatchObject({
+        status: "running",
+        healthStatus: "healthy",
+        url: `https://runner.tail123.ts.net:${started.port}`,
+        exposure: { state: "ready" },
+      });
+    } finally {
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId: workspace.id,
+        workspaceCwd: workspace.cwd,
+      }).catch(() => undefined);
+      await resetRuntimeServicesForTests({ terminateProcesses: true });
+      await cleanupRuntimeHome();
+      await fixture.cleanup();
+    }
+  }, 15_000);
+
+  it("rejects a foreign listener that races onto a reserved HTTPS companion port", async () => {
+    const fixture = await createRuntimeFixture();
+    const cleanupRuntimeHome = await createRuntimeHome();
+    const workspace = fixture.workspaces[0]!;
+    const appOnlyScript = [
+      "const http=require('node:http');",
+      "http.createServer((_req,res)=>res.end('ok')).listen(Number(process.env.PORT),'127.0.0.1');",
+      "setInterval(()=>{},1000);",
+    ].join("");
+    const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(appOnlyScript)}`;
+    let foreignHmr: net.Server | null = null;
+    let exposeCalls = 0;
+    let reservedPorts: number[] = [];
+    const broker = {
+      async reserve(_runtimeId: string, listeners: Array<{ purpose: "app" | "vite_hmr"; port: number }>) {
+        reservedPorts = listeners.map((listener) => listener.port);
+        const hmrPort = listeners.find((listener) => listener.purpose === "vite_hmr")!.port;
+        foreignHmr = net.createServer((socket) => socket.destroy());
+        await new Promise<void>((resolve, reject) => {
+          foreignHmr!.once("error", reject);
+          foreignHmr!.listen(hmrPort, "127.0.0.1", resolve);
+        });
+        return { handle: "foreign-listener-handle-1234", reservedPorts };
+      },
+      async expose(_runtimeId: string, handle: string) {
+        exposeCalls += 1;
+        return { handle, publicPorts: reservedPorts };
+      },
+      async remove() {
+        return { removedPorts: reservedPorts };
+      },
+      async list() {
+        return [];
+      },
+    };
+    setWorkspaceRuntimeExposureDepsForTests({
+      broker,
+      isPortAvailable: isLoopbackPortFree,
+      isBrokerAvailable: async () => true,
+      resolveHostname: async () => "runner.tail123.ts.net",
+      probeHealth: async () => true,
+      now: () => new Date().toISOString(),
+    });
+
+    try {
+      await expect(startRuntimeServicesForWorkspaceControl({
+        db,
+        actor: fixture.actor,
+        issue: null,
+        workspace: fixture.realizedWorkspace(workspace),
+        executionWorkspaceId: workspace.id,
+        config: httpsRuntimeConfig(command),
+        adapterEnv: {},
+      })).rejects.toThrow(/could not bind allocated port/);
+      expect(exposeCalls).toBe(0);
+    } finally {
+      if (foreignHmr) {
+        await new Promise<void>((resolve) => foreignHmr!.close(() => resolve()));
+      }
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId: workspace.id,
+        workspaceCwd: workspace.cwd,
+      }).catch(() => undefined);
+      await resetRuntimeServicesForTests({ terminateProcesses: true });
+      await cleanupRuntimeHome();
+      await fixture.cleanup();
+    }
+  }, 15_000);
+
+  it("allocates distinct persisted ports for concurrent isolated siblings without stopping either service", async () => {
+    const fixture = await createRuntimeFixture({
+      workspaceModes: ["isolated_workspace", "isolated_workspace"],
+    });
+    const cleanupRuntimeHome = await createRuntimeHome();
+    const basePort = await findFreePort();
+    const config = fixedPortRuntimeConfig(basePort);
+    const startedWorkspaceIds: string[] = [];
+
+    try {
+      const [first, second] = await Promise.all(fixture.workspaces.map(async (workspace) => {
+        const result = await startRuntimeServicesForWorkspaceControl({
+          db,
+          actor: fixture.actor,
+          issue: null,
+          workspace: fixture.realizedWorkspace(workspace),
+          executionWorkspaceId: workspace.id,
+          config,
+          adapterEnv: {},
+        });
+        startedWorkspaceIds.push(workspace.id);
+        return result[0]!;
+      }));
+
+      expect(first.port).toBe(basePort);
+      expect(second.port).not.toBe(first.port);
+      expect(second.port).toBeGreaterThan(basePort);
+      expect(first.url).toBe(`http://127.0.0.1:${first.port}`);
+      expect(second.url).toBe(`http://127.0.0.1:${second.port}`);
+      await expect(fetch(first.url!)).resolves.toMatchObject({ ok: true });
+      await expect(fetch(second.url!)).resolves.toMatchObject({ ok: true });
+
+      const persisted = await db
+        .select()
+        .from(workspaceRuntimeServices)
+        .where(eq(workspaceRuntimeServices.companyId, fixture.companyId));
+      expect(persisted).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          executionWorkspaceId: fixture.workspaces[0]!.id,
+          port: first.port,
+          url: first.url,
+          status: "running",
+        }),
+        expect.objectContaining({
+          executionWorkspaceId: fixture.workspaces[1]!.id,
+          port: second.port,
+          url: second.url,
+          status: "running",
+        }),
+      ]));
+    } finally {
+      await Promise.all(startedWorkspaceIds.map(async (executionWorkspaceId) => {
+        const workspace = fixture.workspaces.find((entry) => entry.id === executionWorkspaceId)!;
+        await stopRuntimeServicesForExecutionWorkspace({
+          db,
+          executionWorkspaceId,
+          workspaceCwd: workspace.cwd,
+        }).catch(() => undefined);
+      }));
+      await cleanupRuntimeHome();
+      await fixture.cleanup();
+    }
+  }, 20_000);
+
+  it("commits fixed-port reservations before readiness windows longer than 60 seconds", async () => {
+    const fixture = await createRuntimeFixture();
+    const cleanupRuntimeHome = await createRuntimeHome();
+    const workspace = fixture.workspaces[0]!;
+    const basePort = await findFreePort();
+    const spawnedMarkerPath = path.join(workspace.cwd, "slow-readiness-spawned.marker");
+    const releaseMarkerPath = path.join(workspace.cwd, "slow-readiness-release.marker");
+    const serverScript = [
+      "const fs=require('node:fs');",
+      "const http=require('node:http');",
+      `const spawned=${JSON.stringify(spawnedMarkerPath)};`,
+      `const release=${JSON.stringify(releaseMarkerPath)};`,
+      "fs.writeFileSync(spawned,'spawned');",
+      "const timer=setInterval(()=>{",
+      "if(!fs.existsSync(release))return;",
+      "clearInterval(timer);",
+      "http.createServer((_req,res)=>res.end('ok')).listen(Number(process.env.PORT),'127.0.0.1');",
+      "},25);",
+      "setInterval(()=>{},1000);",
+    ].join("");
+    const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(serverScript)}`;
+    const config = fixedPortRuntimeConfig(basePort, command);
+    config.workspaceRuntime.services[0]!.readiness.timeoutSec = 70;
+    let startPromise: ReturnType<typeof startRuntimeServicesForWorkspaceControl> | null = null;
+
+    try {
+      startPromise = startRuntimeServicesForWorkspaceControl({
+        db,
+        actor: fixture.actor,
+        issue: null,
+        workspace: fixture.realizedWorkspace(workspace),
+        executionWorkspaceId: workspace.id,
+        config,
+        adapterEnv: {},
+      });
+      startPromise.catch(() => undefined);
+
+      const markerDeadline = Date.now() + 5_000;
+      while (!existsSync(spawnedMarkerPath) && Date.now() < markerDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(existsSync(spawnedMarkerPath)).toBe(true);
+
+      const parentWrite = (async () => await db
+        .update(executionWorkspaces)
+        .set({ updatedAt: new Date() })
+        .where(eq(executionWorkspaces.id, workspace.id)))();
+      const parentWriteOutcome = await Promise.race([
+        parentWrite.then(() => "committed" as const),
+        new Promise<"locked">((resolve) => setTimeout(() => resolve("locked"), 2_000)),
+      ]);
+
+      const readinessWaitStartedAt = Date.now();
+      await new Promise((resolve) => setTimeout(resolve, 60_250));
+      expect(Date.now() - readinessWaitStartedAt).toBeGreaterThanOrEqual(60_000);
+
+      await fs.writeFile(releaseMarkerPath, "release");
+      const started = (await startPromise)[0]!;
+      await parentWrite;
+
+      expect(parentWriteOutcome).toBe("committed");
+      expect(started).toMatchObject({
+        port: basePort,
+        url: `http://127.0.0.1:${basePort}`,
+        status: "running",
+        healthStatus: "healthy",
+      });
+      const persisted = await db
+        .select()
+        .from(workspaceRuntimeServices)
+        .where(eq(workspaceRuntimeServices.executionWorkspaceId, workspace.id))
+        .then((rows) => rows[0] ?? null);
+      expect(persisted).toMatchObject({
+        port: basePort,
+        url: `http://127.0.0.1:${basePort}`,
+        status: "running",
+      });
+    } finally {
+      await fs.writeFile(releaseMarkerPath, "release").catch(() => undefined);
+      await startPromise?.catch(() => undefined);
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId: workspace.id,
+        workspaceCwd: workspace.cwd,
+      }).catch(() => undefined);
+      await cleanupRuntimeHome();
+      await fixture.cleanup();
+    }
+  }, 80_000);
+
+  it("reuses a stopped isolated workspace's actual port when it is free", async () => {
+    const fixture = await createRuntimeFixture();
+    const cleanupRuntimeHome = await createRuntimeHome();
+    const workspace = fixture.workspaces[0]!;
+    const config = fixedPortRuntimeConfig(await findFreePort());
+
+    try {
+      const first = (await startRuntimeServicesForWorkspaceControl({
+        db,
+        actor: fixture.actor,
+        issue: null,
+        workspace: fixture.realizedWorkspace(workspace),
+        executionWorkspaceId: workspace.id,
+        config,
+        adapterEnv: {},
+      }))[0]!;
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId: workspace.id,
+        workspaceCwd: workspace.cwd,
+      });
+
+      const restarted = (await startRuntimeServicesForWorkspaceControl({
+        db,
+        actor: fixture.actor,
+        issue: null,
+        workspace: fixture.realizedWorkspace(workspace),
+        executionWorkspaceId: workspace.id,
+        config,
+        adapterEnv: {},
+      }))[0]!;
+
+      expect(restarted.id).toBe(first.id);
+      expect(restarted.port).toBe(first.port);
+      expect(restarted.url).toBe(first.url);
+      await expect(fetch(restarted.url!)).resolves.toMatchObject({ ok: true });
+    } finally {
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId: workspace.id,
+        workspaceCwd: workspace.cwd,
+      }).catch(() => undefined);
+      await cleanupRuntimeHome();
+      await fixture.cleanup();
+    }
+  }, 20_000);
+
+  it("retries a bind race on the next bounded port and persists the selected URL", async () => {
+    const fixture = await createRuntimeFixture();
+    const cleanupRuntimeHome = await createRuntimeHome();
+    const workspace = fixture.workspaces[0]!;
+    const basePort = await findFreePort();
+    const markerPath = path.join(workspace.cwd, "bind-race.marker");
+    const blockerPidPath = path.join(workspace.cwd, "bind-race.pid");
+    const blockerScript = [
+      "const net=require('node:net');",
+      "const port=Number(process.argv[1]);",
+      "net.createServer((socket)=>socket.destroy()).listen(port,'127.0.0.1');",
+    ].join("");
+    const raceScript = [
+      "const fs=require('node:fs');",
+      "const http=require('node:http');",
+      "const {spawn}=require('node:child_process');",
+      `const marker=${JSON.stringify(markerPath)};`,
+      `const pidFile=${JSON.stringify(blockerPidPath)};`,
+      `const blockerScript=${JSON.stringify(blockerScript)};`,
+      "const port=Number(process.env.PORT);",
+      "const start=()=>http.createServer((_req,res)=>res.end('ok')).listen(port,'127.0.0.1');",
+      "if(!fs.existsSync(marker)){",
+      "fs.writeFileSync(marker,String(port));",
+      "const blocker=spawn(process.execPath,['-e',blockerScript,String(port)],{detached:true,stdio:'ignore'});",
+      "fs.writeFileSync(pidFile,String(blocker.pid));blocker.unref();setTimeout(start,200);",
+      "}else{start();}",
+      "setInterval(()=>{},1000);",
+    ].join("");
+    const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(raceScript)}`;
+
+    try {
+      const started = (await startRuntimeServicesForWorkspaceControl({
+        db,
+        actor: fixture.actor,
+        issue: null,
+        workspace: fixture.realizedWorkspace(workspace),
+        executionWorkspaceId: workspace.id,
+        config: fixedPortRuntimeConfig(basePort, command),
+        adapterEnv: {},
+      }))[0]!;
+
+      expect(await fs.readFile(markerPath, "utf8")).toBe(String(basePort));
+      expect(started.port).toBeGreaterThan(basePort);
+      expect(started.url).toBe(`http://127.0.0.1:${started.port}`);
+      await expect(fetch(started.url!)).resolves.toMatchObject({ ok: true });
+      const persisted = await db
+        .select()
+        .from(workspaceRuntimeServices)
+        .where(eq(workspaceRuntimeServices.executionWorkspaceId, workspace.id))
+        .then((rows) => rows[0] ?? null);
+      expect(persisted).toMatchObject({ port: started.port, url: started.url, status: "running" });
+    } finally {
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId: workspace.id,
+        workspaceCwd: workspace.cwd,
+      }).catch(() => undefined);
+      const blockerPid = Number.parseInt(await fs.readFile(blockerPidPath, "utf8").catch(() => ""), 10);
+      if (Number.isInteger(blockerPid) && blockerPid > 0) {
+        try {
+          process.kill(blockerPid, "SIGTERM");
+        } catch {
+          // The bind-race process already exited.
+        }
+      }
+      await cleanupRuntimeHome();
+      await fixture.cleanup();
+    }
+  }, 20_000);
+
+  it("does not accept an occupied allocated port when listener ownership is unavailable", async () => {
+    const fixture = await createRuntimeFixture();
+    const cleanupRuntimeHome = await createRuntimeHome();
+    const workspace = fixture.workspaces[0]!;
+    const basePort = await findFreePort();
+    const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-no-lsof-"));
+    const fakeLsof = path.join(fakeBin, "lsof");
+    const previousPath = process.env.PATH;
+    await fs.writeFile(fakeLsof, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    process.env.PATH = `${fakeBin}${path.delimiter}${previousPath ?? ""}`;
+
+    try {
+      await expect(startRuntimeServicesForWorkspaceControl({
+        db,
+        actor: fixture.actor,
+        issue: null,
+        workspace: fixture.realizedWorkspace(workspace),
+        executionWorkspaceId: workspace.id,
+        config: fixedPortRuntimeConfig(basePort),
+        adapterEnv: {},
+      })).rejects.toMatchObject({
+        status: 409,
+        details: {
+          code: "workspace_runtime_port_allocation_exhausted",
+          port: basePort,
+          attemptedPortCount: WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS,
+        },
+      });
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId: workspace.id,
+        workspaceCwd: workspace.cwd,
+      }).catch(() => undefined);
+      await fs.rm(fakeBin, { recursive: true, force: true });
+      await cleanupRuntimeHome();
+      await fixture.cleanup();
+    }
+  }, 20_000);
+
+  it("returns a bounded structured conflict and exposes only same-company workspace references", async () => {
+    const fixture = await createRuntimeFixture({
+      workspaceModes: ["isolated_workspace", "isolated_workspace"],
+    });
+    const otherCompanyFixture = await createRuntimeFixture();
+    const cleanupRuntimeHome = await createRuntimeHome();
+    const reservation = await reserveContiguousPorts(WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS);
+    const [baseReservation, ...otherReservations] = reservation.servers;
+    await closeNetServer(baseReservation!);
+    const firstWorkspace = fixture.workspaces[0]!;
+    const secondWorkspace = fixture.workspaces[1]!;
+    const otherCompanyWorkspace = otherCompanyFixture.workspaces[0]!;
+    const config = fixedPortRuntimeConfig(reservation.basePort);
+
+    try {
+      const first = (await startRuntimeServicesForWorkspaceControl({
+        db,
+        actor: fixture.actor,
+        issue: null,
+        workspace: fixture.realizedWorkspace(firstWorkspace),
+        executionWorkspaceId: firstWorkspace.id,
+        config,
+        adapterEnv: {},
+      }))[0]!;
+      expect(first.port).toBe(reservation.basePort);
+
+      let sameCompanyError: unknown;
+      try {
+        await startRuntimeServicesForWorkspaceControl({
+          db,
+          actor: fixture.actor,
+          issue: null,
+          workspace: fixture.realizedWorkspace(secondWorkspace),
+          executionWorkspaceId: secondWorkspace.id,
+          config,
+          adapterEnv: {},
+        });
+      } catch (error) {
+        sameCompanyError = error;
+      }
+      expect(sameCompanyError).toMatchObject({
+        status: 409,
+        details: {
+          code: "workspace_runtime_port_allocation_exhausted",
+          port: reservation.basePort,
+          attemptedPortCount: WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS,
+          conflictingExecutionWorkspaceId: firstWorkspace.id,
+          remediation: expect.any(String),
+        },
+      });
+      expect(JSON.stringify(sameCompanyError)).not.toMatch(/(?:pid|cwd)/i);
+
+      let otherCompanyError: unknown;
+      try {
+        await startRuntimeServicesForWorkspaceControl({
+          db,
+          actor: otherCompanyFixture.actor,
+          issue: null,
+          workspace: otherCompanyFixture.realizedWorkspace(otherCompanyWorkspace),
+          executionWorkspaceId: otherCompanyWorkspace.id,
+          config,
+          adapterEnv: {},
+        });
+      } catch (error) {
+        otherCompanyError = error;
+      }
+      expect(otherCompanyError).toMatchObject({
+        status: 409,
+        details: {
+          code: "workspace_runtime_port_allocation_exhausted",
+          port: reservation.basePort,
+          attemptedPortCount: WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS,
+        },
+      });
+      expect(otherCompanyError).not.toMatchObject({
+        details: {
+          conflictingExecutionWorkspaceId: firstWorkspace.id,
+        },
+      });
+      expect(JSON.stringify(otherCompanyError)).not.toContain(firstWorkspace.id);
+    } finally {
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId: firstWorkspace.id,
+        workspaceCwd: firstWorkspace.cwd,
+      }).catch(() => undefined);
+      await Promise.all(otherReservations.map((server) => closeNetServer(server).catch(() => undefined)));
+      await cleanupRuntimeHome();
+      await fixture.cleanup();
+      await otherCompanyFixture.cleanup();
+    }
+  }, 30_000);
+
+  it("keeps fixed ports strict for shared persisted workspaces and identity-less starts", async () => {
+    const fixture = await createRuntimeFixture({ workspaceModes: ["shared_workspace"] });
+    const cleanupRuntimeHome = await createRuntimeHome();
+    const workspace = fixture.workspaces[0]!;
+    const occupiedPort = await findFreePort();
+    const occupant = await listenOnPort(occupiedPort);
+    const config = fixedPortRuntimeConfig(occupiedPort);
+
+    try {
+      let sharedWorkspaceError: unknown;
+      try {
+        await startRuntimeServicesForWorkspaceControl({
+          db,
+          actor: fixture.actor,
+          issue: null,
+          workspace: fixture.realizedWorkspace(workspace),
+          executionWorkspaceId: workspace.id,
+          config,
+          adapterEnv: {},
+        });
+      } catch (error) {
+        sharedWorkspaceError = error;
+      }
+      expect(sharedWorkspaceError).toBeInstanceOf(Error);
+      expect(sharedWorkspaceError).not.toMatchObject({ status: 409 });
+
+      const identitylessCwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-identityless-"));
+      try {
+        await expect(startRuntimeServicesForWorkspaceControl({
+          actor: { id: null, name: "Board", companyId: fixture.companyId },
+          issue: null,
+          workspace: buildWorkspace(identitylessCwd),
+          config,
+          adapterEnv: {},
+        })).rejects.toBeInstanceOf(Error);
+      } finally {
+        await fs.rm(identitylessCwd, { recursive: true, force: true });
+      }
+
+      const rows = await db
+        .select()
+        .from(workspaceRuntimeServices)
+        .where(eq(workspaceRuntimeServices.executionWorkspaceId, workspace.id));
+      expect(rows.every((row) => row.port === occupiedPort)).toBe(true);
+    } finally {
+      await closeNetServer(occupant);
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId: workspace.id,
+        workspaceCwd: workspace.cwd,
+      }).catch(() => undefined);
+      await cleanupRuntimeHome();
+      await fixture.cleanup();
+    }
+  }, 20_000);
 });
 
 describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
@@ -5738,6 +6604,379 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     await db.delete(agents);
     await db.delete(companies);
   });
+
+  it("restores desired services when one row is stopped and a live registered service has no row", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-desired-reconcile-"));
+    const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-home-"));
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = `runtime-desired-reconcile-${randomUUID()}`;
+
+    const reservePort = async () => {
+      const probe = net.createServer();
+      await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+      const address = probe.address();
+      const port = typeof address === "object" && address ? address.port : null;
+      await new Promise<void>((resolve, reject) => {
+        probe.close((error) => error ? reject(error) : resolve());
+      });
+      if (!port) throw new Error("Failed to reserve runtime reconciliation test port");
+      return port;
+    };
+    const stoppedPort = await reservePort();
+    const livePort = await reservePort();
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const command =
+      "node -e \"require('node:http').createServer((req,res)=>res.end(process.env.PORT)).listen(Number(process.env.PORT), '127.0.0.1')\"";
+    const workspaceRuntime = {
+      services: [
+        {
+          name: "persisted-service",
+          command,
+          port: stoppedPort,
+          expose: { urlTemplate: "http://127.0.0.1:{{port}}" },
+          readiness: { type: "http", urlTemplate: "http://127.0.0.1:{{port}}", timeoutSec: 10, intervalMs: 50 },
+          lifecycle: "shared",
+          reuseScope: "execution_workspace",
+          stopPolicy: { type: "manual" },
+        },
+        {
+          name: "registry-only-service",
+          command,
+          port: livePort,
+          expose: { urlTemplate: "http://127.0.0.1:{{port}}" },
+          readiness: { type: "http", urlTemplate: "http://127.0.0.1:{{port}}", timeoutSec: 10, intervalMs: 50 },
+          lifecycle: "shared",
+          reuseScope: "execution_workspace",
+          stopPolicy: { type: "manual" },
+        },
+      ],
+    };
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Runtime desired reconciliation",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      cwd: workspaceRoot,
+      isPrimary: true,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Runtime desired reconciliation workspace",
+      status: "active",
+      cwd: workspaceRoot,
+      providerType: "local_fs",
+      providerRef: workspaceRoot,
+      metadata: {
+        config: {
+          workspaceRuntime,
+          desiredState: "running",
+          serviceStates: { "0": "running", "1": "running" },
+        },
+      },
+    });
+
+    const actor = { id: null, name: "Paperclip", companyId };
+    const workspace = {
+      ...buildWorkspace(workspaceRoot),
+      projectId,
+      workspaceId: projectWorkspaceId,
+    };
+    let stoppedServiceId: string | null = null;
+    let registryOnlyServiceId: string | null = null;
+
+    try {
+      const persisted = await startRuntimeServicesForWorkspaceControl({
+        db,
+        actor,
+        issue: null,
+        workspace,
+        executionWorkspaceId,
+        config: { workspaceRuntime },
+        adapterEnv: {},
+        serviceIndex: 0,
+      });
+      stoppedServiceId = persisted[0]?.id ?? null;
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId,
+        workspaceCwd: workspaceRoot,
+        runtimeServiceId: stoppedServiceId,
+      });
+
+      const registryOnly = await startRuntimeServicesForWorkspaceControl({
+        actor,
+        issue: null,
+        workspace,
+        executionWorkspaceId,
+        config: { workspaceRuntime },
+        adapterEnv: {},
+        serviceIndex: 1,
+      });
+      registryOnlyServiceId = registryOnly[0]?.id ?? null;
+      expect(registryOnlyServiceId).toBeTruthy();
+      expect(await db.select().from(workspaceRuntimeServices)).toHaveLength(1);
+
+      await resetRuntimeServicesForTests();
+      const result = await reconcilePersistedRuntimeServicesOnStartup(db);
+
+      expect(result).toMatchObject({ reconciled: 0, adopted: 0, stopped: 0, restarted: 1, restartFailed: 0 });
+      const rows = await db.select().from(workspaceRuntimeServices);
+      expect(rows).toHaveLength(2);
+      expect(rows).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: stoppedServiceId, port: stoppedPort, status: "running" }),
+        expect.objectContaining({ id: registryOnlyServiceId, port: livePort, status: "running" }),
+      ]));
+      await expect(fetch(`http://127.0.0.1:${stoppedPort}`)).resolves.toMatchObject({ ok: true });
+      await expect(fetch(`http://127.0.0.1:${livePort}`)).resolves.toMatchObject({ ok: true });
+    } finally {
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId,
+        workspaceCwd: workspaceRoot,
+      });
+      await fs.rm(paperclipHome, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it("backfills a pre-existing HTTP-only managed worktree runtime to verified HTTPS in place", async () => {
+    // PAP-17158: an eligible workspace created before the feature must come
+    // forward on the *same* workspace/runtime-service row — not by recreating it
+    // — and must never keep its HTTP URL as a healthy fallback.
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-https-backfill-"));
+    const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-home-"));
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    const previousHttpsMode = process.env.PAPERCLIP_MANAGED_RUNTIME_HTTPS;
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = `runtime-https-backfill-${randomUUID()}`;
+
+    const reservePort = async () => {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const probe = net.createServer();
+        await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+        const address = probe.address();
+        const port = typeof address === "object" && address ? address.port : null;
+        await new Promise<void>((resolve, reject) => {
+          probe.close((error) => error ? reject(error) : resolve());
+        });
+        if (port && port <= 55_535 && (port < 42_000 || port > 42_999)) return port;
+      }
+      throw new Error("Failed to reserve an HTTPS backfill test port outside the broker range");
+    };
+    const isLoopbackPortFree = async (port: number) => {
+      const probe = net.createServer();
+      return await new Promise<boolean>((resolve) => {
+        probe.once("error", () => resolve(false));
+        probe.listen(port, "127.0.0.1", () => {
+          probe.close(() => resolve(true));
+        });
+      });
+    };
+
+    // Stands in for the persisted template's hard-coded 45439: a pinned port
+    // outside the broker's dedicated allowlist, so the backfill has to relocate.
+    const legacyPort = await reservePort();
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    // Binds the app port and its HMR companion, both loopback-only.
+    const command =
+      "node -e \"const http=require('node:http');const p=Number(process.env.PORT);for(const q of [p,p+10000])http.createServer((req,res)=>res.end('ok')).listen(q,'127.0.0.1');setInterval(()=>{},1000)\"";
+    const workspaceRuntime = {
+      services: [
+        {
+          name: "paperclip-dev",
+          command,
+          port: legacyPort,
+          // The pre-feature block: backend URL only, no exposure declaration.
+          expose: { type: "url", urlTemplate: "http://127.0.0.1:{{port}}" },
+          readiness: { type: "http", urlTemplate: "http://127.0.0.1:{{port}}", timeoutSec: 10, intervalMs: 50 },
+          lifecycle: "shared",
+          reuseScope: "project_workspace",
+          stopPolicy: { type: "manual" },
+        },
+      ],
+    };
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Runtime HTTPS backfill",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      cwd: workspaceRoot,
+      isPrimary: true,
+      metadata: {
+        runtimeConfig: {
+          workspaceRuntime,
+          desiredState: "running",
+          serviceStates: { "0": "running" },
+        },
+      },
+    });
+
+    const actor = { id: null, name: "Paperclip", companyId };
+    const workspace = {
+      ...buildWorkspace(workspaceRoot),
+      projectId,
+      workspaceId: projectWorkspaceId,
+    };
+
+    // A broker fake that remembers what it published, so a second reconciliation
+    // can recognize its own live listeners instead of tearing them down.
+    const exposedByRuntimeId = new Map<string, { port: number; purpose: "app" | "vite_hmr" }[]>();
+    const pendingByHandle = new Map<string, { runtimeId: string; listeners: { port: number; purpose: "app" | "vite_hmr" }[] }>();
+    let handleCounter = 0;
+    const brokerCalls: string[] = [];
+    const broker = {
+      async reserve(runtimeId: string, listeners: { port: number; purpose: "app" | "vite_hmr" }[]) {
+        brokerCalls.push("reserve");
+        handleCounter += 1;
+        const handle = `backfill-handle-${handleCounter}`;
+        pendingByHandle.set(handle, { runtimeId, listeners: listeners.map((l) => ({ ...l })) });
+        return { handle, reservedPorts: listeners.map((listener) => listener.port) };
+      },
+      async expose(runtimeId: string, handle: string) {
+        brokerCalls.push("expose");
+        const pending = pendingByHandle.get(handle);
+        if (!pending || pending.runtimeId !== runtimeId) throw new Error("listener_ownership_mismatch");
+        exposedByRuntimeId.set(runtimeId, pending.listeners);
+        return { handle, publicPorts: pending.listeners.map((listener) => listener.port) };
+      },
+      async remove(runtimeId: string, handle: string) {
+        brokerCalls.push("remove");
+        const listeners = exposedByRuntimeId.get(runtimeId) ?? pendingByHandle.get(handle)?.listeners ?? [];
+        exposedByRuntimeId.delete(runtimeId);
+        pendingByHandle.delete(handle);
+        return { removedPorts: listeners.map((listener) => listener.port) };
+      },
+      async list() {
+        return [...exposedByRuntimeId.entries()].flatMap(([runtimeId, listeners]) =>
+          listeners.map((listener) => ({ runtimeId, port: listener.port, purpose: listener.purpose })),
+        );
+      },
+    };
+    const installExposureDeps = () => setWorkspaceRuntimeExposureDepsForTests({
+      broker,
+      isPortAvailable: isLoopbackPortFree,
+      isBrokerAvailable: async () => true,
+      resolveHostname: async () => "runner.tail123.ts.net",
+      probeHealth: async () => true,
+      now: () => new Date().toISOString(),
+    });
+
+    try {
+      // ---- Before: the workspace as it exists today, on plain HTTP. ----
+      process.env.PAPERCLIP_MANAGED_RUNTIME_HTTPS = "off";
+      const before = await startRuntimeServicesForWorkspaceControl({
+        db,
+        actor,
+        issue: null,
+        workspace,
+        config: { workspaceRuntime, desiredState: "running", serviceStates: { "0": "running" } },
+        adapterEnv: {},
+      });
+      const runtimeServiceId = before[0]?.id;
+      expect(runtimeServiceId).toBeTruthy();
+      expect(before[0]?.port).toBe(legacyPort);
+      expect(before[0]?.url).toBe(`http://127.0.0.1:${legacyPort}`);
+      const [httpRow] = await db.select().from(workspaceRuntimeServices);
+      expect(httpRow.exposure).toBeNull();
+      expect(httpRow.url).toBe(`http://127.0.0.1:${legacyPort}`);
+      await expect(fetch(`http://127.0.0.1:${legacyPort}`)).resolves.toMatchObject({ ok: true });
+      expect(brokerCalls).toEqual([]);
+
+      // ---- Deploy: the feature turns on and Paperclip restarts. ----
+      await resetRuntimeServicesForTests();
+      delete process.env.PAPERCLIP_MANAGED_RUNTIME_HTTPS;
+      installExposureDeps();
+
+      const result = await reconcilePersistedRuntimeServicesOnStartup(db);
+      expect(result).toMatchObject({ backfilled: 1, restarted: 1, restartFailed: 0 });
+      expect(brokerCalls).toEqual(["reserve", "expose"]);
+
+      // ---- After: same row, verified HTTPS URL, no HTTP anywhere. ----
+      const afterRows = await db.select().from(workspaceRuntimeServices);
+      expect(afterRows).toHaveLength(1);
+      const httpsRow = afterRows[0]!;
+      expect(httpsRow.id).toBe(runtimeServiceId);
+      expect(httpsRow.status).toBe("running");
+      expect(httpsRow.port).not.toBe(legacyPort);
+      expect(httpsRow.port).toBeGreaterThanOrEqual(42_000);
+      expect(httpsRow.port).toBeLessThanOrEqual(42_999);
+      expect(httpsRow.url).toBe(`https://runner.tail123.ts.net:${httpsRow.port}`);
+      expect(httpsRow.exposure).toMatchObject({
+        provider: "tailscale_https",
+        state: "ready",
+        publicUrl: `https://runner.tail123.ts.net:${httpsRow.port}`,
+        hostname: "runner.tail123.ts.net",
+      });
+      expect(httpsRow.exposureHandle).toBeTruthy();
+      // The old HTTP backend is gone, not merely shadowed.
+      await expect(fetch(`http://127.0.0.1:${legacyPort}`)).rejects.toThrow();
+
+      // ---- Repeat deploy: converges, no listener churn, same port. ----
+      await resetRuntimeServicesForTests();
+      installExposureDeps();
+      brokerCalls.length = 0;
+      const second = await reconcilePersistedRuntimeServicesOnStartup(db);
+      expect(second).toMatchObject({ backfilled: 0 });
+      expect(brokerCalls).toEqual([]);
+      const [repeatRow] = await db.select().from(workspaceRuntimeServices);
+      expect(repeatRow.port).toBe(httpsRow.port);
+      expect(repeatRow.url).toBe(httpsRow.url);
+      expect(repeatRow.status).toBe("running");
+    } finally {
+      await stopRuntimeServicesForProjectWorkspace({
+        db,
+        projectWorkspaceId,
+        workspaceCwd: workspaceRoot,
+      }).catch(() => undefined);
+      await resetRuntimeServicesForTests();
+      await fs.rm(paperclipHome, { recursive: true, force: true });
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
+      if (previousHttpsMode === undefined) delete process.env.PAPERCLIP_MANAGED_RUNTIME_HTTPS;
+      else process.env.PAPERCLIP_MANAGED_RUNTIME_HTTPS = previousHttpsMode;
+    }
+  }, 40_000);
 
   it("adopts a live auto-port shared service after runtime state is reset", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-reconcile-"));

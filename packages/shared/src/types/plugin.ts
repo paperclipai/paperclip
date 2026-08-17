@@ -132,6 +132,29 @@ export interface PluginEnvironmentTemplateConfigBinding {
   unsetFields?: string[];
 }
 
+/**
+ * Optional capability declaration for a sandbox provider driver.
+ *
+ * Each flag states that the provider intends to support one behavior. The
+ * declaration is a request, not a grant: the host resolves the effective
+ * capability as the intersection of the declaration, the live worker's verified
+ * methods, and any narrowing from the provider config or lease. A declared flag
+ * never grants a capability the live worker did not verify. Every flag is
+ * optional; an absent flag defers to the verified discovery baseline.
+ */
+export interface SandboxProviderCapabilities {
+  /** Provider can retain and resume a provider lease across runs. */
+  reusableLeases?: boolean;
+  /** Provider can transfer files into the sandbox through a native inbound hook. */
+  nativeSyncIn?: boolean;
+  /** Provider can transfer files out of the sandbox through a native outbound hook. */
+  nativeSyncOut?: boolean;
+  /** Provider can keep a persistent process session open across commands. */
+  persistentProcessSessions?: boolean;
+  /** Provider can run a control command that does not wait for the main command. */
+  independentControlCommands?: boolean;
+}
+
 export interface PluginEnvironmentDriverDeclaration {
   /** Stable driver key, unique within the plugin. Namespaced by plugin ID at runtime. */
   driverKey: string;
@@ -153,6 +176,13 @@ export interface PluginEnvironmentDriverDeclaration {
    * behavior even if their config schema exposes a reuse-like setting.
    */
   supportsReusableLeases?: boolean;
+  /**
+   * Fine-grained sandbox capability declaration. Optional and partial. The host
+   * resolves the effective capability as declaration ∩ verified ∩ narrowing;
+   * see {@link SandboxProviderCapabilities}. When both `supportsReusableLeases`
+   * and `sandboxCapabilities.reusableLeases` are present, the nested value wins.
+   */
+  sandboxCapabilities?: SandboxProviderCapabilities;
   /** Provider can keep a temporary setup sandbox alive for user-driven sandbox customization and capture. */
   supportsInteractiveSetup?: boolean;
   /** Connection types the setup sandbox can expose. Initially `ssh`; providers may add custom values. */

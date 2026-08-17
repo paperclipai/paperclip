@@ -8,11 +8,14 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Company } from "@paperclipai/shared";
-import { authApi } from "../api/auth";
 import { companiesApi } from "../api/companies";
-import { companiesListQueryOptions, type CompanyListResult } from "../api/companies-query";
+import {
+  fetchCompanyListForCurrentAccount,
+  useAccountIdentity,
+  useCompanyListQuery,
+} from "../api/companies-query";
 import { queryKeys } from "../lib/queryKeys";
 import type { CompanySelectionSource } from "../lib/company-selection";
 type CompanySelectionOptions = { source?: CompanySelectionSource };
@@ -103,8 +106,20 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   const [selectionSource, setSelectionSource] = useState<CompanySelectionSource>("bootstrap");
   const [selectedCompanyId, setSelectedCompanyIdState] = useState<string | null>(null);
 
+  // Keyed by account, so there is no such thing here as "the list, but whose?".
+  // A change of account changes the key, which leaves this observer pending
+  // rather than holding the previous account's answer.
   const { data: companiesResult = { companies: [], unauthorized: false }, isLoading, error } =
-    useQuery<CompanyListResult>(companiesListQueryOptions);
+    useCompanyListQuery({
+      // `retry: 1` against the shared `retry: false`, and it is load-bearing
+      // here even though an earlier measurement found retries pointless. That
+      // measurement was taken against an implementation that removed the cache
+      // entry on an account change, which made the observer rebind and issue a
+      // second request for free. Keying by account replaced that mechanism, and
+      // the free attempt went with it: without this, one blip during a switch
+      // leaves the customer with no companies until they find Try again.
+      retry: 1,
+    });
   const companies = companiesResult.companies;
   const companyListUnauthorized = companiesResult.unauthorized;
   const sidebarCompanies = useMemo(
@@ -112,86 +127,31 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
     [companies],
   );
 
-  // The `["companies"]` entry is shared app-wide and carries no account identity,
-  // so it outlives a change of account in this tab: the previous account's list
-  // keeps being served, and the effect below would auto-select from it and write
-  // that company id to localStorage. Signing in through the app drops the entry,
-  // but nothing does when the session lapses server-side or a second account
-  // signs in on another tab — so watch the account itself.
-  const { data: session, isPending: isSessionPending } = useQuery({
-    queryKey: queryKeys.auth.session,
-    queryFn: () => authApi.getSession(),
-    retry: false,
-  });
-  const sessionUserId = session?.user.id ?? null;
+  // The list is account-keyed, but the *selection* is component state and does
+  // not change key with it. It belongs to the account that just went away, so it
+  // is dropped here. The stored id deliberately survives:
+  // resolveBootstrapCompanySelection re-validates it against the incoming list,
+  // so an account signing back in keeps its company while an unrelated account
+  // cannot inherit it.
+  const { userId: sessionUserId, settled: isSessionSettled } = useAccountIdentity();
   const observedUserIdRef = useRef<string | null | undefined>(undefined);
-  const [awaitingAccountScopedList, setAwaitingAccountScopedList] = useState(false);
 
   useEffect(() => {
     // Until the session settles the account is unknown, not changed.
-    if (isSessionPending) return;
+    if (!isSessionSettled) return;
     const previousUserId = observedUserIdRef.current;
     observedUserIdRef.current = sessionUserId;
     // First settled observation is this tab's boot: no previous account to leave.
     if (previousUserId === undefined || previousUserId === sessionUserId) return;
 
-    // The live selection belongs to the account that just went away. The stored
-    // one deliberately survives: resolveBootstrapCompanySelection re-validates it
-    // against the incoming list, so an account signing back in keeps its company
-    // while an unrelated account cannot inherit it.
     setSelectedCompanyIdState(null);
     setSelectionSource("bootstrap");
-    setAwaitingAccountScopedList(true);
-    // `removeQueries`, not `resetQueries`: reset rewinds the update counters
-    // `isFetchedAfterMount` is derived from while mounted observers keep their
-    // pre-reset baseline, which strands consumers gating on that flag (see
-    // AppsConnect.tsx). Removal is what fits *here*, for a reason worth saying
-    // out loud: removal notifies nobody, so on its own it would leave mounted
-    // observers serving the previous account. What rebinds them is the render
-    // the state updates above just scheduled — every observer re-binds to a
-    // fresh query on the next render. Do not lift this call anywhere that lacks
-    // that guarantee; the sign-out sweep is exactly such a place.
-    queryClient.removeQueries({ queryKey: queryKeys.companies.all, exact: true });
-
-    // Coalescing keys on the request path alone, so without this the fetch below
-    // can join a `/companies` request issued under the previous session and be
-    // answered with that account's companies.
-    companiesApi.detachInflightList();
-
-    // Drive the replacement fetch here rather than leaning on observer refetch
-    // semantics, so the gate below lifts exactly when a list for this account
-    // has landed.
-    //
-    // No `retry` override, though `companiesListQueryOptions` sets
-    // `retry: false`. A transient blip already gets a second attempt: the
-    // observer above rebinds to a fresh query on the render these state updates
-    // schedule and issues its own request, so a single failure self-heals
-    // (measured: two attempts either way). Adding retries here only buys extra
-    // failed round trips before a real outage is reported, and the outage is
-    // what needs a way out — see `companyListUnavailable` below.
-    // The rejection is caught only to keep it from going unhandled — it is not
-    // lost. `fetchQuery` records it on the query itself, so it arrives as
-    // `error` below, which is where `companyListUnavailable` reads it from.
-    // Carrying a second copy in component state is what let the two fall out of
-    // step: the copy outlived the failure and kept reporting "couldn't load"
-    // over a later, honest empty list.
-    let cancelled = false;
-    void queryClient
-      .fetchQuery({ ...companiesListQueryOptions, staleTime: 0 })
-      .catch(() => undefined)
-      .finally(() => {
-        if (!cancelled) setAwaitingAccountScopedList(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [isSessionPending, queryClient, sessionUserId]);
+  }, [isSessionSettled, sessionUserId]);
 
   // Auto-select first company when list loads
   useEffect(() => {
-    // Nothing may be derived from the list until one has been fetched for the
-    // account signed in now.
-    if (awaitingAccountScopedList) return;
+    // `isLoading` covers the account change too: the key moved, so this observer
+    // is pending on a list for the new account rather than holding the old one.
     if (isLoading) return;
     // An errored list says nothing about which companies this account has, and
     // `retry: false` makes a single network blip stick. Treat it as undecided
@@ -223,7 +183,6 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
     setSelectionSource("bootstrap");
     localStorage.setItem(STORAGE_KEY, next);
   }, [
-    awaitingAccountScopedList,
     companies,
     companyListUnauthorized,
     error,
@@ -247,13 +206,12 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   // its old error, so the recovery affordance would keep telling the customer
   // the list is unavailable after a retry had already succeeded.
   const retryCompanies = useCallback(async () => {
-    setAwaitingAccountScopedList(true);
     try {
-      await queryClient.fetchQuery({ ...companiesListQueryOptions, staleTime: 0 });
+      await fetchCompanyListForCurrentAccount(queryClient);
     } catch {
-      // Recorded on the query, same as the replacement fetch above.
-    } finally {
-      setAwaitingAccountScopedList(false);
+      // Not swallowed — `fetchQuery` records it on the query, which is where
+      // `companyListUnavailable` below reads it from. Caught only so the
+      // rejection does not go unhandled.
     }
   }, [queryClient]);
 

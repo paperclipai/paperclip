@@ -10,7 +10,10 @@ import type {
   IssueExecutionWorkspaceSettings,
   PluginEnvironmentConfig,
   SandboxEnvironmentConfig,
+  SandboxProviderCapabilities,
 } from "@paperclipai/shared";
+import { resolveDeclaredSandboxCapabilities } from "@paperclipai/shared";
+import type { EffectiveSandboxCapabilities } from "@paperclipai/adapter-utils/execution-target";
 import type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentExecuteResult,
@@ -50,15 +53,194 @@ import {
 import { pluginRegistryService } from "./plugin-registry.js";
 import type { ExecuteLogSink, PluginWorkerManager } from "./plugin-worker-manager.js";
 import {
+  REUSABLE_LEASE_WORKER_METHODS,
   destroyPluginEnvironmentLease,
   executePluginEnvironmentCommand,
   realizePluginEnvironmentWorkspace,
   resolvePluginSandboxProviderDriverByKey,
+  resolvePluginSandboxProviderDriverById,
   resolvePluginExecuteRpcTimeoutMs,
   resumePluginEnvironmentLease,
 } from "./plugin-environment-driver.js";
 import { collectSecretRefPaths } from "./json-schema-secret-refs.js";
 import { buildWorkspaceRealizationRecordFromDriverInput } from "./workspace-realization.js";
+
+// ---------------------------------------------------------------------------
+// Sandbox capability contract — one normalizer for both branches
+// ---------------------------------------------------------------------------
+
+export const SANDBOX_CAPABILITY_KEYS = [
+  "reusableLeases",
+  "nativeSyncIn",
+  "nativeSyncOut",
+  "persistentProcessSessions",
+  "independentControlCommands",
+] as const;
+
+export type SandboxCapabilityKey = (typeof SANDBOX_CAPABILITY_KEYS)[number];
+
+/**
+ * Verified prerequisite mapping: the worker methods each capability requires.
+ *
+ * Each capability maps to a list of requirement groups. A group holds one or
+ * more verbs; the group is met when the runtime verified AT LEAST ONE verb in
+ * it. A capability verifies only when EVERY group is met.
+ *
+ * The verbs are the worker method names from the worker discovery list (the
+ * plugin worker reports them from `handleInitialize`). A built-in provider maps
+ * its own methods to the same verb names through
+ * {@link builtinSandboxProviderVerifiedMethods}, so both branches share this
+ * mapping and the one normalizer below.
+ *
+ * The mapping was audited against the worker discovery list and the runtime
+ * execution guards:
+ * - `nativeSyncIn`/`nativeSyncOut` require the matching sync verb; the native
+ *   sync guard checks both verbs before it routes a lease to the native hook.
+ * - `reusableLeases` requires `environmentResumeLease` (reattach),
+ *   `environmentReleaseLease` (end-of-run release), and `environmentDestroyLease`
+ *   (stale-lease teardown). All three run on the reuse path: the runtime resumes
+ *   or releases the lease, and it destroys the stale lease when a resume fails
+ *   before it acquires a fresh lease.
+ * - `persistentProcessSessions` and `independentControlCommands` require
+ *   `environmentExecute`; both run commands through it.
+ */
+const SANDBOX_CAPABILITY_PREREQUISITE_METHODS: Record<SandboxCapabilityKey, readonly (readonly string[])[]> = {
+  // Reusable leases require ALL reuse verbs. Each verb is its own required
+  // group, so every one must be verified. The list function that publishes
+  // provider-level reusable support checks the same verbs; both read from
+  // `REUSABLE_LEASE_WORKER_METHODS`, so the runtime guard and the published
+  // value cannot drift.
+  reusableLeases: REUSABLE_LEASE_WORKER_METHODS.map((method) => [method]),
+  nativeSyncIn: [["environmentSyncIn"]],
+  nativeSyncOut: [["environmentSyncOut"]],
+  persistentProcessSessions: [["environmentExecute"]],
+  independentControlCommands: [["environmentExecute"]],
+};
+
+function capabilityIsVerified(
+  key: SandboxCapabilityKey,
+  verifiedMethods: ReadonlySet<string>,
+): boolean {
+  return SANDBOX_CAPABILITY_PREREQUISITE_METHODS[key].every((group) =>
+    group.some((verb) => verifiedMethods.has(verb)),
+  );
+}
+
+/**
+ * Map a built-in sandbox provider's own methods to the worker verb names the
+ * prerequisite mapping uses, so the built-in branch and the plug-in branch feed
+ * the SAME normalizer. A built-in provider has no native sync hooks, so it never
+ * verifies a sync verb. It verifies `environmentExecute` when it implements
+ * `execute`, and the reuse verbs only when it declares `supportsReusableLeases`.
+ * A built-in reusable provider destroys its own leases in-process, so it
+ * verifies `environmentDestroyLease` with the two reuse verbs.
+ */
+export function builtinSandboxProviderVerifiedMethods(
+  provider: { supportsReusableLeases?: boolean; execute?: unknown } | null | undefined,
+): string[] {
+  if (!provider) return [];
+  const methods: string[] = [];
+  if (typeof provider.execute === "function") {
+    methods.push("environmentExecute");
+  }
+  if (provider.supportsReusableLeases === true) {
+    methods.push(
+      "environmentResumeLease",
+      "environmentReleaseLease",
+      "environmentDestroyLease",
+    );
+  }
+  return methods;
+}
+
+/**
+ * The one normalizer for the sandbox capability contract. It resolves the
+ * effective capability as verified ∩ declared ∩ narrowing.
+ *
+ * - `verifiedMethods` is the runtime's verified worker verb list (the plug-in
+ *   worker's `supportedMethods`, or a built-in provider mapped through
+ *   {@link builtinSandboxProviderVerifiedMethods}). A missing or empty list
+ *   verifies nothing, so every capability resolves `false` (fail closed).
+ * - `declared` is the provider's declaration. An absent flag defers to the
+ *   verified discovery baseline; it never grants a capability. A present flag
+ *   can only remove a verified capability, never add one.
+ * - `narrowing` is the per-target restriction from the config or lease. An
+ *   absent key applies no restriction; a `false` value removes the capability.
+ *
+ * A declaration never grants a capability the runtime did not verify, so a
+ * declared capability whose worker lacks a prerequisite verb resolves `false`.
+ */
+export function resolveEffectiveSandboxCapabilities(input: {
+  verifiedMethods?: readonly string[] | null;
+  declared?: Partial<SandboxProviderCapabilities> | null;
+  narrowing?: Partial<Record<SandboxCapabilityKey, boolean>> | null;
+}): EffectiveSandboxCapabilities {
+  const verifiedMethods = new Set(input.verifiedMethods ?? []);
+  const declared = input.declared ?? {};
+  const narrowing = input.narrowing ?? {};
+
+  const resolve = (key: SandboxCapabilityKey): boolean => {
+    const verified = capabilityIsVerified(key, verifiedMethods);
+    // An absent declaration defers to the verified baseline (true = no extra
+    // restriction). A present declaration can only narrow.
+    const declaredAllows = declared[key] ?? true;
+    // An absent narrowing applies no restriction.
+    const narrowingAllows = narrowing[key] ?? true;
+    return verified && declaredAllows && narrowingAllows;
+  };
+
+  return {
+    reusableLeases: resolve("reusableLeases"),
+    nativeSyncIn: resolve("nativeSyncIn"),
+    nativeSyncOut: resolve("nativeSyncOut"),
+    persistentProcessSessions: resolve("persistentProcessSessions"),
+    independentControlCommands: resolve("independentControlCommands"),
+  };
+}
+
+/**
+ * Build the per-target narrowing for a sandbox lease. Narrowing removes a
+ * capability that the provider verified and declared but that this specific
+ * lease or config cannot use. Each source is grounded in existing runtime
+ * behavior:
+ * - `reusableLeases` follows this lease's resolved policy (an ephemeral lease
+ *   never reuses).
+ * - a Kubernetes Job lease disables native sync (mirrors the native sync guard,
+ *   which falls back for a `job` backend or a `nativeFileSyncUnsupported` lease).
+ * - a session-based provider follows its `useSessions` config for persistent
+ *   process sessions (default off); a config without the key adds no narrowing.
+ * - `configResolutionFailed` marks that the runtime could not resolve the
+ *   provider config. The runtime cannot read `useSessions`, so it fails closed
+ *   and narrows `persistentProcessSessions` to false. An empty config alone does
+ *   not fail closed; only a resolution error does.
+ */
+export function buildSandboxCapabilityNarrowing(input: {
+  leasePolicy?: EnvironmentLease["leasePolicy"] | null;
+  leaseMetadata?: Record<string, unknown> | null;
+  config?: Record<string, unknown> | null;
+  configResolutionFailed?: boolean;
+}): Partial<Record<SandboxCapabilityKey, boolean>> {
+  const narrowing: Partial<Record<SandboxCapabilityKey, boolean>> = {};
+  const metadata = input.leaseMetadata ?? {};
+  const config = input.config ?? {};
+
+  narrowing.reusableLeases = input.leasePolicy === "reuse_by_environment";
+
+  if (metadata.backend === "job" || metadata.nativeFileSyncUnsupported === true) {
+    narrowing.nativeSyncIn = false;
+    narrowing.nativeSyncOut = false;
+  }
+
+  if (input.configResolutionFailed === true) {
+    // The runtime could not read `useSessions`, so it fails closed and denies
+    // persistent process sessions.
+    narrowing.persistentProcessSessions = false;
+  } else if ("useSessions" in config) {
+    narrowing.persistentProcessSessions = config.useSessions === true;
+  }
+
+  return narrowing;
+}
 
 export function buildEnvironmentLeaseContext(input: {
   persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
@@ -243,6 +425,11 @@ export interface EnvironmentRuntimeDriver {
   syncOut?(input: EnvironmentDriverSyncInput): Promise<PluginEnvironmentSyncResult>;
   /** True when the lease's plugin worker advertises both sync verbs. */
   supportsSync?(input: EnvironmentDriverLeaseInput): boolean;
+  /**
+   * Resolve the read-only effective sandbox capability snapshot for a lease.
+   * Only the sandbox driver implements it; other drivers omit it.
+   */
+  effectiveSandboxCapabilities?(input: EnvironmentDriverLeaseInput): Promise<EffectiveSandboxCapabilities>;
 }
 
 export interface EnvironmentRuntimeLeaseRecord {
@@ -754,7 +941,7 @@ function createSandboxEnvironmentDriver(
         config: sandboxConfigForLeaseMetadata(metadataConfig),
       });
       if (parsed.driver === "sandbox") {
-        return parsed.config as unknown as Record<string, unknown>;
+        return dropInternalPluginSandboxConfigKeys(parsed.config as unknown as Record<string, unknown>);
       }
     }
 
@@ -766,7 +953,7 @@ function createSandboxEnvironmentDriver(
           input.environment,
         );
         if (parsed.driver === "sandbox" && parsed.config.provider === input.provider) {
-          return parsed.config as unknown as Record<string, unknown>;
+          return dropInternalPluginSandboxConfigKeys(parsed.config as unknown as Record<string, unknown>);
         }
       } catch {
         // Lease metadata below is intentionally kept sufficient for cleanup
@@ -776,7 +963,7 @@ function createSandboxEnvironmentDriver(
 
     return {
       provider: input.provider,
-      ...sanitizePluginSandboxConfigFromLeaseMetadata(input.lease.metadata),
+      ...dropInternalPluginSandboxConfigKeys(input.lease.metadata),
     };
   }
 
@@ -873,7 +1060,24 @@ function createSandboxEnvironmentDriver(
         const workerConfig = stripSandboxProviderEnvelope(parsed.config);
         const storedConfig = storedParsed.config;
         const providerConfigForLease = sandboxConfigForLeaseMetadata(storedConfig);
-        const supportsReusableLeases = pluginProvider.resolved.driver.supportsReusableLeases === true;
+        // Require the reusable-lease capability AND a worker that verifies the
+        // reuse methods. The provider must first opt in through the declaration:
+        // the nested `sandboxCapabilities.reusableLeases` wins over the legacy
+        // `supportsReusableLeases` flag. The worker must also verify
+        // `environmentResumeLease`, `environmentReleaseLease`, and
+        // `environmentDestroyLease` (the reuse prerequisite verbs) before the
+        // runtime resumes, releases, or tears down a reusable lease. A provider
+        // that declares `reusableLeases` true but whose worker does not verify
+        // all three methods fails closed and uses an ephemeral lease, so the
+        // runtime never dispatches a resume, a release, or a destroy the worker
+        // cannot serve, and it never strands a stale lease it cannot destroy.
+        const declaredReusableLeases =
+          resolveDeclaredSandboxCapabilities(pluginProvider.resolved.driver).reusableLeases === true;
+        const pluginVerifiedMethods = new Set(
+          pluginWorkerManager.getWorker(pluginProvider.resolved.plugin.id)?.supportedMethods ?? [],
+        );
+        const supportsReusableLeases =
+          declaredReusableLeases && capabilityIsVerified("reusableLeases", pluginVerifiedMethods);
         const leaseFingerprint =
           supportsReusableLeases &&
           parsed.config.reuseLease &&
@@ -955,33 +1159,48 @@ function createSandboxEnvironmentDriver(
 
         let providerLease: PluginEnvironmentLease | null = null;
         if (reusableLease?.providerLeaseId) {
-          try {
-            const resumed = await pluginWorkerManager.call(
-                pluginProvider.resolved.plugin.id,
-                "environmentResumeLease",
-                {
-                  driverKey: parsed.config.provider,
-                  companyId: input.companyId,
-                  environmentId: input.environment.id,
-                  issueId: input.issueId,
-                  config: workerConfig,
-                  providerLeaseId: reusableLease.providerLeaseId,
-                  leaseMetadata: reusableLease.metadata ?? undefined,
-                },
-                resolvePluginSandboxRpcTimeoutMs(workerConfig),
-              );
-            providerLease =
-              typeof resumed.providerLeaseId === "string" && resumed.providerLeaseId.length > 0
-                ? resumed
-                : null;
-          } catch {
-            providerLease = null;
+          // The `supportsReusableLeases` check above reads a snapshot of the
+          // worker methods. The runtime then does asynchronous database work
+          // (list, fingerprint, obsolete-lease cleanup) before this dispatch. A
+          // worker restart in that window can drop `environmentResumeLease`
+          // while the snapshot still marks the method verified. Re-check the
+          // live worker here and fail closed when the method is absent: skip the
+          // resume, destroy the stale reusable lease, and acquire a fresh lease
+          // below. The runtime never dispatches a resume the live worker cannot
+          // serve.
+          const workerVerifiesResume = pluginWorkerVerifiesLifecycleMethod(
+            pluginProvider.resolved.plugin.id,
+            "environmentResumeLease",
+          );
+          if (workerVerifiesResume) {
+            try {
+              const resumed = await pluginWorkerManager.call(
+                  pluginProvider.resolved.plugin.id,
+                  "environmentResumeLease",
+                  {
+                    driverKey: parsed.config.provider,
+                    companyId: input.companyId,
+                    environmentId: input.environment.id,
+                    issueId: input.issueId,
+                    config: workerConfig,
+                    providerLeaseId: reusableLease.providerLeaseId,
+                    leaseMetadata: reusableLease.metadata ?? undefined,
+                  },
+                  resolvePluginSandboxRpcTimeoutMs(workerConfig),
+                );
+              providerLease =
+                typeof resumed.providerLeaseId === "string" && resumed.providerLeaseId.length > 0
+                  ? resumed
+                  : null;
+            } catch {
+              providerLease = null;
+            }
           }
           if (!providerLease) {
             await destroyReusableSandboxLease({
               environment: input.environment,
               lease: reusableLease,
-              failureReason: "resume_failed",
+              failureReason: workerVerifiesResume ? "resume_failed" : "resume_capability_lost",
             });
           }
         }
@@ -1067,7 +1286,12 @@ function createSandboxEnvironmentDriver(
       // heartbeat run that shares it. Filter to reusable policies and statuses
       // so non-reusable, cleanup-pending, or terminal rows can never be matched.
       const builtinSandboxProvider = getBuiltinSandboxProvider(parsed.config.provider);
-      const supportsReusableLeases = builtinSandboxProvider?.supportsReusableLeases === true;
+      // Resolve the DECLARED reusable-lease capability through the same contract
+      // as the plugin path, so the nested capability wins over the legacy flag.
+      const supportsReusableLeases =
+        resolveDeclaredSandboxCapabilities({
+          supportsReusableLeases: builtinSandboxProvider?.supportsReusableLeases,
+        }).reusableLeases === true;
       const providerConfigForLease = sandboxConfigForLeaseMetadata(parsed.config);
       const leaseFingerprint =
         supportsReusableLeases &&
@@ -1437,6 +1661,86 @@ function createSandboxEnvironmentDriver(
       return await callPluginEnvironmentSync("environmentSyncOut", input);
     },
 
+    async effectiveSandboxCapabilities(input) {
+      const metadata = input.lease.metadata ?? {};
+      const providerKey =
+        readString(metadata.provider) ??
+        (input.environment.driver === "sandbox"
+          ? readString((parseEnvironmentDriverConfig(input.environment).config as SandboxEnvironmentConfig).provider)
+          : null);
+      if (!providerKey) {
+        return resolveEffectiveSandboxCapabilities({ verifiedMethods: [], declared: null, narrowing: null });
+      }
+
+      let declared: SandboxProviderCapabilities | null = null;
+      let verifiedMethods: readonly string[] = [];
+      let config: Record<string, unknown> = {};
+      let configResolutionFailed = false;
+
+      if (metadata.sandboxProviderPlugin) {
+        const pluginId = readString(metadata.pluginId);
+        // Read the declaration from the exact plugin that acquired the lease,
+        // not the first installed plugin with this driver key. A driver key is
+        // only unique inside one manifest, so two plugins can share it. The
+        // by-key resolver could intersect this lease's verified methods with a
+        // different plugin's declaration. This resolver fails closed: it returns
+        // null when the pinned plugin id is absent, or when that exact plugin no
+        // longer declares this provider key with the `sandbox_provider` kind.
+        const resolvedDriver = pluginId
+          ? await resolvePluginSandboxProviderDriverById({
+              db,
+              pluginId,
+              driverKey: providerKey,
+            })
+          : null;
+        if (!pluginId || !resolvedDriver) {
+          // Exact-plugin identity failure. The lease pins a plugin id, but the
+          // id is missing, that plugin is absent, or it no longer declares this
+          // provider key. Fail closed: resolve every effective capability to
+          // false, no matter what methods a stale or running worker still
+          // advertises. Do not read the worker methods here; passing them would
+          // let an identity-less lease keep a verified baseline. This differs
+          // from a valid plugin whose manifest merely omits
+          // `sandboxCapabilities`: that case keeps `declared` null below and
+          // defers to verified worker discovery.
+          return resolveEffectiveSandboxCapabilities({
+            verifiedMethods: [],
+            declared: null,
+            narrowing: null,
+          });
+        }
+        verifiedMethods = pluginWorkerManager?.getWorker(pluginId)?.supportedMethods ?? [];
+        declared = resolveDeclaredSandboxCapabilities(resolvedDriver.driver);
+        try {
+          config = (await resolvePluginSandboxRuntimeConfig({
+            environment: input.environment,
+            lease: input.lease,
+            provider: providerKey,
+          })) as unknown as Record<string, unknown>;
+        } catch {
+          // The runtime could not resolve the provider config. It cannot read
+          // `useSessions`, so it fails closed on persistent process sessions
+          // instead of leaving the config empty and allowing them.
+          configResolutionFailed = true;
+        }
+      } else {
+        const builtin = getBuiltinSandboxProvider(providerKey);
+        verifiedMethods = builtinSandboxProviderVerifiedMethods(builtin);
+        declared = resolveDeclaredSandboxCapabilities({
+          supportsReusableLeases: builtin?.supportsReusableLeases,
+        });
+      }
+
+      const narrowing = buildSandboxCapabilityNarrowing({
+        leasePolicy: input.lease.leasePolicy,
+        leaseMetadata: metadata,
+        config,
+        configResolutionFailed,
+      });
+
+      return resolveEffectiveSandboxCapabilities({ verifiedMethods, declared, narrowing });
+    },
+
     async destroyRunLease(input) {
       return await destroyReusableSandboxLease({
         environment: input.environment,
@@ -1446,6 +1750,21 @@ function createSandboxEnvironmentDriver(
     },
   };
 
+  /**
+   * Verify that the live plugin worker still advertises a reusable-lease
+   * lifecycle method before the runtime dispatches that RPC. The worker reports
+   * `supportedMethods` from its discovery list on every start. A worker restart
+   * can drop a lifecycle method a reusable lease was created under. The runtime
+   * must not dispatch a lifecycle RPC the live worker does not advertise. It
+   * fails closed when the worker is absent or the method is stale, so a lease
+   * that a worker can no longer clean up goes to the cleanup reaper instead of
+   * a doomed RPC.
+   */
+  function pluginWorkerVerifiesLifecycleMethod(pluginId: string, method: string): boolean {
+    const advertised = pluginWorkerManager?.getWorker(pluginId)?.supportedMethods ?? [];
+    return advertised.includes(method);
+  }
+
   async function releasePluginBackedSandboxLease(
     input: EnvironmentDriverReleaseInput,
   ): Promise<EnvironmentLease | null> {
@@ -1454,7 +1773,12 @@ function createSandboxEnvironmentDriver(
     const providerKey = readString(metadata.provider);
 
     let cleanupStatus: "success" | "failed" = "success";
-    if (pluginId && providerKey && pluginWorkerManager?.isRunning(pluginId)) {
+    if (
+      pluginId &&
+      providerKey &&
+      pluginWorkerManager?.isRunning(pluginId) &&
+      pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentReleaseLease")
+    ) {
       try {
         const config = await resolvePluginSandboxRuntimeConfig({
           environment: input.environment,
@@ -1479,12 +1803,26 @@ function createSandboxEnvironmentDriver(
       cleanupStatus = "failed";
     }
 
-    const releaseStatus =
-      input.lease.leasePolicy === "retain_on_failure" && input.status === "failed"
-        ? ("retained" as const)
+    // A failed release verification leaves the provider resource active. The
+    // cleanup reaper retries only `pending_cleanup` leases, so route a failed
+    // release into that retry flow. A `retain_on_failure` lease keeps the
+    // resource on purpose for reuse, so it stays `retained` and never enters the
+    // reaper, which would destroy the resource the retain policy wants to keep.
+    const retained =
+      input.lease.leasePolicy === "retain_on_failure" && input.status === "failed";
+    const releaseStatus = retained
+      ? ("retained" as const)
+      : cleanupStatus === "failed"
+        ? ("pending_cleanup" as const)
         : input.status;
+    const failureReason =
+      input.status === "failed"
+        ? "adapter_or_run_failure"
+        : cleanupStatus === "failed"
+          ? "release_cleanup_failed"
+          : undefined;
     return await environmentsSvc.releaseLease(input.lease.id, releaseStatus, {
-      failureReason: input.status === "failed" ? "adapter_or_run_failure" : undefined,
+      failureReason,
       cleanupStatus,
     });
   }
@@ -1501,7 +1839,12 @@ function createSandboxEnvironmentDriver(
       if (metadata.sandboxProviderPlugin) {
         const pluginId = readString(metadata.pluginId);
         const providerKey = readString(metadata.provider);
-        if (!pluginId || !providerKey || !pluginWorkerManager?.isRunning(pluginId)) {
+        if (
+          !pluginId ||
+          !providerKey ||
+          !pluginWorkerManager?.isRunning(pluginId) ||
+          !pluginWorkerVerifiesLifecycleMethod(pluginId, "environmentDestroyLease")
+        ) {
           cleanupStatus = "failed";
         } else {
           const config = await resolvePluginSandboxRuntimeConfig({
@@ -1568,21 +1911,32 @@ function readString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+// Keys the runtime stores in the lease metadata that are not part of the
+// provider driver config. Some are host-internal control fields. `remoteCwd` is
+// a per-lease runtime value. The host reads `remoteCwd` from the lease metadata
+// directly, so the worker never needs it as config. Drop every key here before
+// the runtime sends a config to a lifecycle RPC.
 const INTERNAL_PLUGIN_SANDBOX_CONFIG_KEYS = new Set([
   "driver",
   "executionWorkspaceMode",
   "pluginId",
   "pluginKey",
   "providerMetadata",
+  "remoteCwd",
   "shellCommand",
   "sandboxProviderPlugin",
 ]);
 
-function sanitizePluginSandboxConfigFromLeaseMetadata(
-  metadata: Record<string, unknown> | null | undefined,
+// Drop the host-internal and per-lease runtime keys from a sandbox config
+// record. The runtime stores these keys in the lease metadata and in some
+// resolved configs, but the plugin worker must receive only the provider driver
+// config. Use this on every config the runtime sends to a lifecycle RPC, so no
+// host-internal field reaches the worker.
+function dropInternalPluginSandboxConfigKeys(
+  config: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> {
   const sanitized: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(metadata ?? {})) {
+  for (const [key, value] of Object.entries(config ?? {})) {
     if (INTERNAL_PLUGIN_SANDBOX_CONFIG_KEYS.has(key)) continue;
     sanitized[key] = value;
   }
@@ -2112,6 +2466,13 @@ export function environmentRuntimeService(
     supportsSync(input: EnvironmentDriverLeaseInput): boolean {
       const driver = getDriver(getLeaseDriverKey(input.lease, input.environment));
       return driver?.supportsSync?.(input) ?? false;
+    },
+
+    async effectiveSandboxCapabilities(
+      input: EnvironmentDriverLeaseInput,
+    ): Promise<EffectiveSandboxCapabilities | null> {
+      const driver = getDriver(getLeaseDriverKey(input.lease, input.environment));
+      return (await driver?.effectiveSandboxCapabilities?.(input)) ?? null;
     },
 
     async syncIn(input: EnvironmentDriverSyncInput): Promise<PluginEnvironmentSyncResult> {

@@ -130,7 +130,7 @@ import {
   hasVisibleMonitorSurface,
 } from "../components/IssueMonitorBanner";
 import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
-import { IssueProperties } from "../components/IssueProperties";
+import { IssueProperties, type IssuePropertiesDocumentDeepLink } from "../components/IssueProperties";
 import { PauseAffectsSummaryView } from "../components/interrupt-handoff/InterruptHandoffViews";
 import { computePauseAffectsSummary } from "../lib/interrupt-handoff";
 import { useIssueExternalObjects } from "../hooks/useIssueExternalObjects";
@@ -171,6 +171,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { formatIssueActivityAction } from "@/lib/activity-format";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { buildIssuePropertiesPanelKey } from "../lib/issue-properties-panel-key";
+import { resolveIssueDocumentDeepLink } from "../lib/issue-document-deep-link";
 import { buildIssueSiblingNavigation, shouldRenderRichSubIssuesSection } from "../lib/issue-detail-subissues";
 import { filterIssueDescendants } from "../lib/issue-tree";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
@@ -1698,7 +1699,10 @@ export function IssueDetail() {
   // legacy title/description block, sub-tasks table, plan decompositions and
   // Documents section are gated off (plan lives in the properties-pane Plan
   // tab). Flag ON restores the legacy page.
-  const { enabled: classicTaskInterfaceEnabled } = useClassicTaskInterfaceEnabled();
+  const {
+    enabled: classicTaskInterfaceEnabled,
+    loaded: classicTaskInterfaceLoaded,
+  } = useClassicTaskInterfaceEnabled();
   const taskChatShellEnabled = !classicTaskInterfaceEnabled;
   // Chat-style: the page wrapper spans the full center pane so the thread's
   // scroll viewport (and its scrollbar) reaches the properties-pane border;
@@ -1718,6 +1722,9 @@ export function IssueDetail() {
   const [moreOpen, setMoreOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
+  const [documentDeepLink, setDocumentDeepLink] = useState<
+    (IssuePropertiesDocumentDeepLink & { issueId: string }) | null
+  >(null);
   const [fileViewerPromptOpen, setFileViewerPromptOpen] = useState(false);
   const [detailTab, setDetailTab] = useState("chat");
   // Redesign: the center tab strip is hidden, so chat is the only surface —
@@ -3508,6 +3515,7 @@ export function IssueDetail() {
         onRetryExternalObjects={externalObjectsState.isEnabled ? externalObjectsState.refetch : undefined}
         onCheckMonitorNow={() => checkIssueMonitorNow.mutate()}
         checkingMonitorNow={checkIssueMonitorNow.isPending}
+        documentDeepLink={documentDeepLink?.issueId === panelIssue.id ? documentDeepLink : null}
       />
     );
     return () => closePanel();
@@ -3528,6 +3536,7 @@ export function IssueDetail() {
     externalObjectsState.isLoading,
     externalObjectsState.isError,
     externalObjectsState.refetch,
+    documentDeepLink,
   ]);
 
   const goToInboxShortcutArmedRef = useRef(false);
@@ -3655,14 +3664,81 @@ export function IssueDetail() {
     };
   }, [fileViewerEnabled, keyboardShortcutsEnabled, navigate, sourceBreadcrumb.href]);
 
+  const routeIssueDocumentDeepLink = useCallback((hash: string) => {
+    const route = resolveIssueDocumentDeepLink(hash);
+    if (!route) return false;
+
+    if (route.kind === "continuation-summary") {
+      setDocumentDeepLink(null);
+      setDetailTab("activity");
+      setHandoffFocusSignal((current) => current + 1);
+      return true;
+    }
+
+    // The classic interface owns document links in its center-column
+    // Documents section. Do not open its tab-less properties panel.
+    if (!classicTaskInterfaceLoaded || !taskChatShellEnabled) return false;
+
+    if (isMobile) {
+      setMobilePropsOpen(true);
+    } else {
+      if (suppressPanelForFirstTask && issue?.id) {
+        setFirstTaskPanelOverrideIssueId(issue.id);
+      }
+      setPanelVisible(true);
+    }
+    const targetIssueId = issue?.id ?? issueId ?? "";
+    setDocumentDeepLink((current) => ({
+      issueId: targetIssueId,
+      tab: route.tab,
+      documentKey: route.documentKey,
+      requestId: current?.issueId === targetIssueId ? current.requestId + 1 : 1,
+    }));
+    return true;
+  }, [
+    classicTaskInterfaceLoaded,
+    isMobile,
+    issue?.id,
+    issueId,
+    setPanelVisible,
+    suppressPanelForFirstTask,
+    taskChatShellEnabled,
+  ]);
+
   useEffect(() => {
-    const hash = location.hash;
-    if (!hash.startsWith("#document-")) return;
-    const documentKey = decodeURIComponent(hash.slice("#document-".length));
-    if (documentKey !== ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY) return;
-    setDetailTab("activity");
-    setHandoffFocusSignal((current) => current + 1);
-  }, [location.hash]);
+    if (!routeIssueDocumentDeepLink(location.hash)) {
+      setDocumentDeepLink(null);
+    }
+  }, [issueId, location.hash, routeIssueDocumentDeepLink]);
+
+  // React Router does not emit a location update when the user clicks a link
+  // whose hash is already current. Capture that repeated intent so a manually
+  // collapsed document reopens and scrolls back into view.
+  useEffect(() => {
+    const handleSameHashDocumentClick = (event: MouseEvent) => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const anchor = target.closest<HTMLAnchorElement>("a[href]");
+      if (!anchor) return;
+      const rawHref = anchor.getAttribute("href");
+      if (!rawHref) return;
+
+      let targetUrl: URL;
+      try {
+        targetUrl = new URL(rawHref, window.location.href);
+      } catch {
+        return;
+      }
+      const sameIssue = rawHref.startsWith("#")
+        || (targetUrl.pathname === location.pathname && targetUrl.search === location.search);
+      if (!sameIssue || targetUrl.hash !== location.hash) return;
+      routeIssueDocumentDeepLink(targetUrl.hash);
+    };
+
+    document.addEventListener("click", handleSameHashDocumentClick, true);
+    return () => document.removeEventListener("click", handleSameHashDocumentClick, true);
+  }, [location.hash, location.pathname, location.search, routeIssueDocumentDeepLink]);
 
   // Scroll + briefly highlight work-product / direct-attachment anchors so the
   // company Artifacts page (PAP-10359) can deep-link to a specific artifact in
@@ -5519,6 +5595,7 @@ export function IssueDetail() {
                 onRetryExternalObjects={externalObjectsState.isEnabled ? externalObjectsState.refetch : undefined}
                 onCheckMonitorNow={() => checkIssueMonitorNow.mutate()}
                 checkingMonitorNow={checkIssueMonitorNow.isPending}
+                documentDeepLink={documentDeepLink?.issueId === issue.id ? documentDeepLink : null}
               />
             </div>
           </ScrollArea>

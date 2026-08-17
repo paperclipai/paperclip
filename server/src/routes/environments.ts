@@ -8,6 +8,7 @@ import {
   finishEnvironmentCustomImageSetupSessionSchema,
   getEnvironmentCapabilities,
   probeEnvironmentConfigSchema,
+  resolveDeclaredSandboxCapabilities,
   redactEnvironmentCustomImageSetupSession,
   redactEnvironmentCustomImageTemplate,
   startEnvironmentCustomImageSetupSessionSchema,
@@ -715,9 +716,19 @@ export function environmentRoutes(
             supportsSavedProbe: true,
             supportsUnsavedProbe: true,
             supportsRunExecution: true,
-            // Default absent to false, so the presentation agrees with the
-            // execution guard (=== true).
-            supportsReusableLeases: driver.supportsReusableLeases ?? false,
+            // Publish reusable-lease support only when the declaration allows it
+            // AND the live worker verified all reuse lifecycle methods, so the
+            // presentation matches the acquisition guard, which requires them.
+            // The declaration part uses the same resolver acquisition uses, so
+            // the nested `sandboxCapabilities` override wins over the legacy
+            // `supportsReusableLeases` flag: a manifest with legacy `true` and
+            // nested `false` presents as not reusable. Default an absent value
+            // to false with `=== true`. A ready worker that omits any reuse
+            // lifecycle method presents as not reusable, because acquisition
+            // would always fall back to an ephemeral lease.
+            supportsReusableLeases:
+              resolveDeclaredSandboxCapabilities(driver).reusableLeases === true
+              && driver.reusableLeaseMethodsVerified,
             supportsInteractiveSetup: driver.supportsInteractiveSetup,
             interactiveSetupConnectionTypes: driver.interactiveSetupConnectionTypes,
             supportsTemplateCapture: driver.supportsTemplateCapture,

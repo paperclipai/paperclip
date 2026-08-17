@@ -109,6 +109,9 @@ vi.mock("../services/execution-workspaces.js", () => ({
 }));
 
 vi.mock("../services/plugin-environment-driver.js", () => ({
+  // The runtime reads this published constant at import time. Mirror the real
+  // value so the mocked module keeps the same reusable-lease method contract.
+  REUSABLE_LEASE_WORKER_METHODS: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"],
   listReadyPluginEnvironmentDrivers: mockListReadyPluginEnvironmentDrivers,
   resolvePluginSandboxProviderDriverByKey: mockResolvePluginSandboxProviderDriverByKey,
   startPluginEnvironmentInteractiveSetup: mockStartPluginEnvironmentInteractiveSetup,
@@ -1190,6 +1193,87 @@ describe("environment routes", () => {
     });
     expect(res.body.adapters.find((row: any) => row.adapterType === "codex_local").sandboxProviders["secure-plugin"])
       .toBe("supported");
+  });
+
+  it("publishes reusable leases from the nested capability, not the legacy flag, so the API agrees with acquisition", async () => {
+    // The manifest sets the legacy flag `true` but the nested override `false`.
+    // Acquisition lets the nested value win and refuses reuse. The published
+    // API value must derive from the same declaration resolver and present the
+    // provider as not reusable, even when the worker verified both lifecycle
+    // methods.
+    mockListReadyPluginEnvironmentDrivers.mockResolvedValue([
+      {
+        pluginId: "plugin-1",
+        pluginKey: "acme.legacy-override-provider",
+        driverKey: "override-plugin",
+        displayName: "Override Sandbox",
+        supportsReusableLeases: true,
+        sandboxCapabilities: { reusableLeases: false },
+        reusableLeaseMethodsVerified: true,
+        configSchema: { type: "object", properties: {} },
+      },
+    ]);
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app).get("/api/companies/company-1/environments/capabilities");
+
+    expect(res.status).toBe(200);
+    expect(res.body.sandboxProviders["override-plugin"].supportsReusableLeases).toBe(false);
+  });
+
+  it("publishes reusable leases from the legacy flag when the manifest omits the nested override and the worker verified both methods", async () => {
+    mockListReadyPluginEnvironmentDrivers.mockResolvedValue([
+      {
+        pluginId: "plugin-1",
+        pluginKey: "acme.legacy-only-provider",
+        driverKey: "legacy-plugin",
+        displayName: "Legacy Sandbox",
+        supportsReusableLeases: true,
+        reusableLeaseMethodsVerified: true,
+        configSchema: { type: "object", properties: {} },
+      },
+    ]);
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app).get("/api/companies/company-1/environments/capabilities");
+
+    expect(res.status).toBe(200);
+    expect(res.body.sandboxProviders["legacy-plugin"].supportsReusableLeases).toBe(true);
+  });
+
+  it("does not publish reusable leases when the declaration allows them but the worker omits a lifecycle method", async () => {
+    // A positive declaration alone is not enough. Acquisition verifies both
+    // reuse lifecycle methods live and falls back to an ephemeral lease when one
+    // is missing. The published value must agree and present as not reusable.
+    mockListReadyPluginEnvironmentDrivers.mockResolvedValue([
+      {
+        pluginId: "plugin-1",
+        pluginKey: "acme.unverified-reuse-provider",
+        driverKey: "unverified-plugin",
+        displayName: "Unverified Reuse Sandbox",
+        sandboxCapabilities: { reusableLeases: true },
+        reusableLeaseMethodsVerified: false,
+        configSchema: { type: "object", properties: {} },
+      },
+    ]);
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app).get("/api/companies/company-1/environments/capabilities");
+
+    expect(res.status).toBe(200);
+    expect(res.body.sandboxProviders["unverified-plugin"].supportsReusableLeases).toBe(false);
   });
 
   it("rejects agent list reads for instance-scoped environments", async () => {

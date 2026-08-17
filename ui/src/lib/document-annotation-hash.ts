@@ -11,7 +11,13 @@ export function parseDocumentAnnotationHash(hash: string): DocumentAnnotationHas
   const stripped = hash.slice(DOCUMENT_HASH_PREFIX.length);
   const [rawKey, ...rest] = stripped.split("&");
   if (!rawKey) return null;
-  const documentKey = decodeURIComponent(rawKey);
+  let documentKey: string;
+  try {
+    documentKey = decodeURIComponent(rawKey);
+  } catch {
+    return null;
+  }
+  if (!documentKey) return null;
   const params = new URLSearchParams(rest.join("&"));
   const threadId = params.get("thread");
   const commentId = params.get("comment");

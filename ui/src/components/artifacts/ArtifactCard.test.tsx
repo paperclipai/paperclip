@@ -40,7 +40,9 @@ function makeArtifact(overrides: Partial<CompanyArtifact> = {}): CompanyArtifact
     issue: { id: "issue-1", identifier: "PAP-10306", title: "Landing visuals" },
     project: { id: "proj-1", name: "Paperclip App" },
     createdByAgent: { id: "agent-1", name: "ClaudeCoder" },
-    updatedAt: "2026-06-01T12:00:00.000Z",
+    // Local, not UTC: the card renders "Last edited" from the local calendar
+    // day, and noon UTC is already the 2nd at UTC+14.
+    updatedAt: new Date(2026, 5, 1, 12, 0, 0, 0).toISOString(),
     href: "/issues/PAP-10306#attachment-art-1",
     ...overrides,
   };
@@ -69,7 +71,7 @@ describe("ArtifactCard", () => {
         artifact={makeArtifact({
           title: "Social launch clip",
           issue: { id: "issue-2", identifier: "PAP-10370", title: "Make artifact page look like this" },
-          updatedAt: "2025-10-08T12:00:00.000Z",
+          updatedAt: new Date(2025, 9, 8, 12, 0, 0, 0).toISOString(),
           createdByAgent: null,
         })}
       />,

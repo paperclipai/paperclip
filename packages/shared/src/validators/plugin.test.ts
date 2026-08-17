@@ -1,6 +1,30 @@
 import { describe, expect, it } from "vitest";
 import { PLUGIN_CAPABILITIES } from "../constants.js";
+import { resolveDeclaredSandboxCapabilities } from "../environment-support.js";
 import { pluginManagedRoutineDeclarationSchema, pluginManifestV1Schema, pluginUiSlotDeclarationSchema } from "./plugin.js";
+
+function buildSandboxProviderManifest(driver: Record<string, unknown>) {
+  return {
+    id: "paperclip.capability-provider",
+    apiVersion: 1,
+    version: "0.1.0",
+    displayName: "Capability Provider",
+    description: "Sandbox provider that declares fine-grained capabilities.",
+    author: "Paperclip",
+    categories: ["automation"],
+    capabilities: ["environment.drivers.register"],
+    entrypoints: { worker: "./dist/worker.js" },
+    environmentDrivers: [
+      {
+        driverKey: "capability-provider",
+        kind: "sandbox_provider",
+        displayName: "Capability Provider",
+        configSchema: { type: "object" },
+        ...driver,
+      },
+    ],
+  };
+}
 
 describe("plugin capability constants", () => {
   it("exposes each capability once", () => {
@@ -248,5 +272,79 @@ describe("plugin UI slot validators", () => {
     expect(parsed.success).toBe(false);
     if (parsed.success) return;
     expect(parsed.error.issues.some((issue) => issue.message.includes("reserved by the host"))).toBe(true);
+  });
+});
+
+describe("sandbox provider capability declaration validators", () => {
+  it("test_manifest_accepts_sandbox_capabilities_and_rejects_unknown_capability_keys", () => {
+    const parsed = pluginManifestV1Schema.parse(
+      buildSandboxProviderManifest({
+        sandboxCapabilities: {
+          reusableLeases: true,
+          nativeSyncIn: true,
+          nativeSyncOut: false,
+          persistentProcessSessions: true,
+          independentControlCommands: false,
+        },
+      }),
+    );
+
+    expect(parsed.environmentDrivers?.[0]?.sandboxCapabilities).toEqual({
+      reusableLeases: true,
+      nativeSyncIn: true,
+      nativeSyncOut: false,
+      persistentProcessSessions: true,
+      independentControlCommands: false,
+    });
+
+    const rejected = pluginManifestV1Schema.safeParse(
+      buildSandboxProviderManifest({
+        sandboxCapabilities: {
+          reusableLeases: true,
+          // A typo or unknown capability name must fail validation, not drop
+          // silently. The nested schema is `.strict()`.
+          nativeSync: true,
+        },
+      }),
+    );
+
+    expect(rejected.success).toBe(false);
+  });
+
+  it("test_removed_concurrency_capabilities_are_rejected_as_unknown_keys", () => {
+    // The concurrency flags left the public contract because no runtime path
+    // enforced them. The strict schema now rejects them, so a manifest cannot
+    // declare a capability the host does not honor.
+    for (const key of ["concurrentSyncAndExec", "concurrentSyncOperations"]) {
+      const rejected = pluginManifestV1Schema.safeParse(
+        buildSandboxProviderManifest({
+          sandboxCapabilities: { [key]: true },
+        }),
+      );
+      expect(rejected.success).toBe(false);
+    }
+  });
+
+  it("test_supports_reusable_leases_compat_maps_to_reusable_leases", () => {
+    const parsed = pluginManifestV1Schema.parse(
+      buildSandboxProviderManifest({ supportsReusableLeases: true }),
+    );
+    const driver = parsed.environmentDrivers?.[0];
+
+    expect(driver?.sandboxCapabilities).toBeUndefined();
+    expect(resolveDeclaredSandboxCapabilities(driver!).reusableLeases).toBe(true);
+  });
+
+  it("test_sandbox_capabilities_reusable_leases_wins_over_compat_field", () => {
+    const parsed = pluginManifestV1Schema.parse(
+      buildSandboxProviderManifest({
+        supportsReusableLeases: true,
+        sandboxCapabilities: { reusableLeases: false },
+      }),
+    );
+    const driver = parsed.environmentDrivers?.[0];
+
+    // The nested declaration wins over the legacy compat flag when both exist.
+    expect(resolveDeclaredSandboxCapabilities(driver!).reusableLeases).toBe(false);
   });
 });

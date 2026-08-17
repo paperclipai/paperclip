@@ -5616,6 +5616,7 @@ export function issueRoutes(
       startedAt: service.startedAt,
       stoppedAt: service.stoppedAt,
       healthStatus: service.healthStatus,
+      exposure: service.exposure ?? null,
       configIndex: service.configIndex ?? null,
     };
   }
