@@ -120,6 +120,7 @@ import {
 import { createSandboxRunSite, type SandboxRunSite } from "./run-site-sandbox.js";
 import {
   createRuntimeSpanRunner,
+  emitRunPhaseTiming,
   emitSkippedStartupStep,
   getActiveStepContext,
   measureStartupStep,
@@ -2067,7 +2068,9 @@ async function buildRuntime(input: {
     // Place the workspace (stage fresh or reuse the already-staged runtime) under
     // the per-session staging lease, then read the staged result back onto the
     // prepared-runtime fields the settlement path consumes.
+    const placeWorkspaceStart = nowMs();
     await sandboxSite.placeWorkspace({ sessionKey } as unknown as AcpRunContext);
+    await emitRunPhaseTiming(input.ctx, "place_workspace", nowMs() - placeWorkspaceStart, "ok");
     const placedStaged = sandboxSite.staged;
     stagedRuntime = placedStaged?.stagedRuntime ?? null;
     remoteManagedHomeTeardown = placedStaged?.teardown ?? null;
@@ -2084,6 +2087,7 @@ async function buildRuntime(input: {
   let paperclipBridge: AdapterExecutionTargetPaperclipBridgeHandle | null = null;
   let processSessionBridge: AdapterExecutionTargetProcessSessionBridgeHandle | null = null;
   let runtimeEnv: Record<string, string> = {};
+  const startTransportStart = nowMs();
   try {
     if (useRemoteProcessSession && sandboxSite) {
       // The sandbox run site brings up both host-side bridges concurrently, keeps
@@ -2095,6 +2099,7 @@ async function buildRuntime(input: {
       paperclipBridge = transport.controlBridge;
       processSessionBridge = transport.agentBridge;
       runtimeEnv = transport.launchEnv;
+      await emitRunPhaseTiming(input.ctx, "start_transport", nowMs() - startTransportStart, "ok");
     } else {
       // Local / runner-less lanes never start a bridge, so they add no
       // contribution. `finalizeLaunchEnvironment` still produces the one branded
@@ -2134,6 +2139,7 @@ async function buildRuntime(input: {
       dispose: remoteStagingDispose,
     });
     sessionStagingLeaseRelease?.();
+    await emitRunPhaseTiming(input.ctx, "start_transport", nowMs() - startTransportStart, "failed");
     throw err;
   }
   const overrideCommand = processSessionBridge?.agentCommand ?? agentCommand;
@@ -3323,6 +3329,24 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           .onLog("stderr", `[paperclip] ACPX teardown step "${step}" failed: ${reason}\n`)
           .catch(() => {});
       };
+      // Emit one per-phase timing telemetry event. It is observability-only: it
+      // carries the phase name (from the closed allowlist), the wall time, and the
+      // outcome, and never a command, a path, an environment value, or an
+      // identifier. Telemetry failure never fails the run.
+      const emitPhase = (phase: string, startMs: number, outcome: "ok" | "failed"): Promise<void> =>
+        emitRunPhaseTiming(ctx, phase, now() - startMs, outcome);
+      // Time a settlement step and emit its phase timing on every path. A step
+      // error still emits `failed` before it re-throws to the Phase 3 error policy.
+      const timedPhase = async (phase: string, run: () => Promise<void> | void): Promise<void> => {
+        const start = now();
+        try {
+          await run();
+        } catch (error) {
+          await emitPhase(phase, start, "failed");
+          throw error;
+        }
+        await emitPhase(phase, start, "ok");
+      };
       // The turn the run started. It is hoisted to the run scope so the settlement
       // `endSession` step can cancel a running turn before it closes the runtime
       // (the cancel-before-close order). The turn wrapper assigns it in `turnStart`.
@@ -3484,6 +3508,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           const createRuntimeStart = now();
           runtime = createRuntime(runtimeOptions);
           createRuntimeMs = now() - createRuntimeStart;
+          // The create_runtime phase runs only on a cold start.
+          await emitRunPhaseTiming(ctx, "create_runtime", createRuntimeMs, "ok");
         }
         // Register the runtime composite in the ledger now that it exists. The
         // settlement `endSession` step closes it on every path the reuse decision
@@ -3511,6 +3537,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         }
 
         let handle = cached?.handle ?? null;
+        // The ensure_session phase covers the handshake (session establishment or
+        // resume) up to the established handle.
+        const ensureSessionPhaseStart = now();
         resumedSession = Boolean(handle ?? resumeSessionId);
 
         try {
@@ -3611,6 +3640,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             recordCloseError: true,
             cancelTurnReason: null,
           };
+          await emitPhase("ensure_session", ensureSessionPhaseStart, "failed");
           const { classified, message } = await emitAcpxFailure({
             ctx,
             prepared,
@@ -3646,6 +3676,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             recordCloseError: true,
             cancelTurnReason: null,
           };
+          await emitPhase("ensure_session", ensureSessionPhaseStart, "failed");
           capturedResult = {
             exitCode: 1,
             signal: null,
@@ -3665,6 +3696,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         }
         sessionHandle = handle;
         startupFailed = false;
+        await emitPhase("ensure_session", ensureSessionPhaseStart, "ok");
       } catch (err) {
         if (!buildRuntimeSettled) {
           // buildRuntime failed before it staged or bridged anything, so there is
@@ -3704,6 +3736,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // agent turn runs after and is out of the span's scope.
         rootSpan.end(startupFailed);
       }
+      const configureSessionStart = now();
       try {
         await applySessionConfigOptions({
           runtime,
@@ -3711,6 +3744,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           prepared,
           onLog: ctx.onLog,
         });
+        await emitPhase("configure_session", configureSessionStart, "ok");
       } catch (err) {
         // Record a direct close that drops the matching warm entry for the
         // settlement `endSession` step. The settlement stops the bridges, discards
@@ -3725,6 +3759,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           recordCloseError: true,
           cancelTurnReason: null,
         };
+        await emitPhase("configure_session", configureSessionStart, "failed");
         const { classified, message } = await emitAcpxFailure({
           ctx,
           prepared,
@@ -3776,6 +3811,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // scoped hoisted local, so the settlement `endSession` step can cancel it.
       let runPrompt = "";
       let preTurnStatus: AcpRuntimeStatus | null = null;
+      // Phase-timing markers for the prepare_turn and turn phases. The prepare
+      // phase covers the prompt build and the pre-turn usage snapshot; the turn
+      // phase covers the started turn and the event relay.
+      let preparePhaseStart = now();
+      let turnPhaseStart = now();
       // Open the agent turn span as a child of the run root span. It wraps the
       // whole turn: the executor holds `turnSpan.parentContext` for later exec
       // parenting, and the `finally` below ends the span once on every path. The
@@ -3789,6 +3829,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // Build the prompt and emit the run metadata inside the turn failure
         // boundary. A failure here returns an error result with phase
         // `prepare_turn`.
+        preparePhaseStart = now();
         const { prompt, promptMetrics, commandNotes } = await buildPrompt(ctx, resumedSession, prepared.env);
         runPrompt = joinPromptSections([prepared.skillPromptInstructions, prompt]);
         await emitAcpxLog(ctx, {
@@ -3839,6 +3880,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // Snapshot pre-turn usage so cumulative agent-reported cost can be
         // attributed to this run alone.
         preTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
+        // The prepare phase (prompt build + usage snapshot) finished; the turn
+        // phase starts next.
+        await emitPhase("prepare_turn", preparePhaseStart, "ok");
+        turnPhaseStart = now();
       };
       const stepTurnStart = (signal: AbortSignal, startTimeoutMs: number | undefined): StartedTurn => {
         const turn = runtime.startTurn({
@@ -3950,6 +3995,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           summary: textParts.join("").trim() || terminalStopReason || terminal.status,
           clearSession,
         };
+        // The turn phase finished. A completed, non-timed-out turn is `ok`; every
+        // other terminal outcome is `failed`.
+        await emitPhase(
+          "turn",
+          turnPhaseStart,
+          terminal.status === "completed" && !timedOut ? "ok" : "failed",
+        );
         // Return the typed turn completion so the coordinator settles for the right
         // cause. The completion carries no live resources; the settlement claims the
         // ledger and owns the release. A clean completed turn carries no cause, so
@@ -3987,6 +4039,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // started is `prepare_turn`; a failure after it is `turn`. The teardown is
         // the same; only the reported phase differs.
         const phase: AcpxExecutionPhase = input.phase;
+        // Emit the failed phase timing for the phase the sequence reported.
+        if (phase === "prepare_turn") {
+          await emitPhase("prepare_turn", preparePhaseStart, "failed");
+        } else {
+          await emitPhase("turn", turnPhaseStart, "failed");
+        }
         const messageOverride = timedOut
           ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
           : undefined;
@@ -4100,7 +4158,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         },
         // Close every runtime the decision did not transfer, and drop the warm entry
         // on close.
-        endSession: async (slots, decision) => {
+        endSession: (slots, decision) => timedPhase("end_session", async () => {
           if (!slots.has("acp_runtime")) return;
           if (decision.kind === "save" && decision.savedId === "acp_runtime") return;
           const settlement: RuntimeSettlementPlan = runtimeSettlement ?? {
@@ -4147,26 +4205,26 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             clearWarmHandleTimer(existing);
             warmHandles.delete(prepared.sessionKey);
           }
-        },
+        }),
         // Perform the reuse decision. A save transfers the staged files to the site
         // store (which arms the idle policy); every other case discards the staged
         // runtime. The host warm save is closed in `endSession`.
-        settleReuse: async (slots, decision) => {
+        settleReuse: (slots, decision) => timedPhase("settle_reuse", async () => {
           if (!slots.has("staged_runtime")) return;
           if (decision.kind === "save" && decision.savedId === "staged_runtime") {
             saveStagedRuntimeAfterCleanTurn({ handles: stagedRuntimes, prepared, now: now() });
             return;
           }
           await discardStagedRuntime({ handles: stagedRuntimes, prepared });
-        },
+        }),
         // Stop both bridges in one allSettled.
-        stopTransport: async () => {
+        stopTransport: () => timedPhase("stop_transport", async () => {
           await stopRunTransport(prepared);
-        },
+        }),
         // The site sync-back (the managed-home copy-back).
-        syncBack: async () => {
+        syncBack: () => timedPhase("sync_back", async () => {
           await syncBackManagedHome(prepared);
-        },
+        }),
         // The staging lease releases as the run's final act, AFTER the coordinator
         // reproduces the result, in the run root `finally` below. This step stays a
         // no-op in the live engine: a same-session second run must stay blocked on
@@ -4225,7 +4283,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // partial lease) and on the host lane (no staging). The settlement stopped the
       // bridges and ran the sync-back before this point, so the ordering is
       // bridge-stop → sync-back → lease release.
-      (releaseStagingLease as (() => void) | null)?.();
+      const leaseRelease = releaseStagingLease as (() => void) | null;
+      if (leaseRelease) {
+        const leaseStart = now();
+        leaseRelease();
+        // Fire-and-forget the phase timing: the release is the run's final act, so
+        // the run must not await telemetry here. `emitRunPhaseTiming` swallows a
+        // sink failure, so this never rejects.
+        void emitRunPhaseTiming(ctx, "release_staging_lease", now() - leaseStart, "ok");
+      }
     }
   };
 }

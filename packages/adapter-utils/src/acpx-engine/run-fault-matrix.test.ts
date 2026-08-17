@@ -839,3 +839,45 @@ describe("composed ACPX run fault matrix", () => {
     assertDispositionReport(capture.last(), { acquired: ["acp_runtime"], transferred: null });
   });
 });
+
+describe("composed ACPX run per-phase telemetry", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("emits a run.phase.timing event for each lifecycle phase a clean host run reaches", async () => {
+    const root = await makeTempRoot();
+    const events: Array<{ eventType: string; payload?: Record<string, unknown> }> = [];
+    const execute = createAcpxEngineExecutor({
+      warmHandles: new Map(),
+      createRuntime: () => completedRuntime(),
+    });
+
+    const result = await execute({
+      runId: "phase-telemetry",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+      onEvent: async (event: { eventType: string; payload?: Record<string, unknown> }) => {
+        events.push(event);
+      },
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    const phases = events
+      .filter((event) => event.eventType === "run.phase.timing")
+      .map((event) => String(event.payload?.phase));
+    // A clean host run runs the runtime, session, prepare, turn, and settlement
+    // phases. Each phase emits a phase-timing event.
+    for (const phase of ["create_runtime", "ensure_session", "prepare_turn", "turn", "end_session"]) {
+      expect(phases, `missing phase telemetry for ${phase}`).toContain(phase);
+    }
+    // Every phase-timing event carries exactly the three closed fields.
+    for (const event of events.filter((entry) => entry.eventType === "run.phase.timing")) {
+      expect(Object.keys(event.payload ?? {}).sort()).toEqual(["durationMs", "outcome", "phase"]);
+    }
+  });
+});
