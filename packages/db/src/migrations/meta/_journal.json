@@ -1485,6 +1485,13 @@
       "when": 1786013700000,
       "tag": "9012_issue_status_events",
       "breakpoints": true
+    },
+    {
+      "idx": 211,
+      "version": "7",
+      "when": 1786981800000,
+      "tag": "9013_agent_fallback_sisters_registry_guards",
+      "breakpoints": true
     }
   ]
 }

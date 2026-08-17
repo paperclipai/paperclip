@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { agentFallbackSisters, agents, companies, companyMemberships, createDb } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -28,10 +28,12 @@ if (!embeddedPostgresSupport.supported) {
  * trigger (an active sister cannot also become a primary). The route now
  * pre-flights both shapes and answers 409 naming the claiming lane.
  *
- * The production guards live only in the live database (applied out-of-band,
- * not in repo migrations), so this suite recreates them in the test database:
- * if the route-level pre-checks ever regress, these scenarios degrade to the
- * raw database rejection instead of silently passing.
+ * The registry guards are created by repo migration
+ * 9013_agent_fallback_sisters_registry_guards.sql, which the embedded-postgres
+ * harness applies via applyPendingMigrations — so this suite exercises the
+ * migration-created objects directly (no manual recreation): if the
+ * route-level pre-checks ever regress, these scenarios degrade to the raw
+ * database rejection instead of silently passing.
  */
 describeEmbeddedPostgres("agent fallback sister registry conflicts", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -40,39 +42,6 @@ describeEmbeddedPostgres("agent fallback sister registry conflicts", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-agent-fallback-registry-");
     db = createDb(tempDb.connectionString);
-
-    // Mirror the production registry guards (present in the live DB, not in
-    // repo migrations): the partial unique index and the lane-topology trigger.
-    await db.execute(sql`
-      CREATE UNIQUE INDEX IF NOT EXISTS agent_fallback_sisters_company_active_sister_idx
-        ON agent_fallback_sisters (company_id, sister_agent_id)
-        WHERE revoked_at IS NULL
-    `);
-    await db.execute(sql`
-      CREATE OR REPLACE FUNCTION agent_fallback_sisters_primary_not_sister_guard() RETURNS trigger AS $guard$
-        DECLARE claiming_primary uuid;
-        BEGIN
-          IF NEW.revoked_at IS NULL THEN
-            SELECT primary_agent_id INTO claiming_primary
-              FROM agent_fallback_sisters
-              WHERE company_id = NEW.company_id
-                AND sister_agent_id = NEW.primary_agent_id
-                AND revoked_at IS NULL
-              LIMIT 1;
-            IF claiming_primary IS NOT NULL THEN
-              RAISE EXCEPTION 'agent % already belongs to fallback lane primary % and cannot also become a primary in another active lane',
-                NEW.primary_agent_id, claiming_primary;
-            END IF;
-          END IF;
-          RETURN NEW;
-        END
-      $guard$ LANGUAGE plpgsql
-    `);
-    await db.execute(sql`
-      CREATE TRIGGER agent_fallback_sisters_primary_not_sister_trigger
-        BEFORE INSERT OR UPDATE ON agent_fallback_sisters
-        FOR EACH ROW EXECUTE FUNCTION agent_fallback_sisters_primary_not_sister_guard()
-    `);
   }, 30_000);
 
   afterAll(async () => {
