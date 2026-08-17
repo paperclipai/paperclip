@@ -20,6 +20,32 @@ SAMPLE = json.dumps([
 ])
 
 
+# ECHTES n8n-Dedup-Array (an Live-Execution 458395 angelehnt): Fehler-Feldwerte sind
+# String-Index-POINTER ins Top-Level-Array, nicht Inline-Strings. 'node' zeigt auf ein
+# Node-Objekt mit eigenem 'name'-Pointer; 'description' traegt die aussagekraeftige
+# Meldung hinter dem generischen 'message'. Frueher schrieb der Detektor hier die rohen
+# Indizes (Node: 7, HTTP 22, message: 23) in die Issues — dieser Test deckt das ab.
+# Array programmatisch aufgebaut, damit Pointer-Ziele exakt an ihren Indizes liegen.
+def _build_dedup():
+    arr = ["n/a"] * 25
+    arr[0] = {"resultData": 2}
+    arr[2] = {"error": 5, "lastNodeExecuted": "7"}      # lastNodeExecuted -> Pointer
+    arr[5] = {"level": "error", "name": "19", "message": "23",
+              "description": "16", "httpCode": "22", "node": "20", "stack": "24"}
+    arr[7] = "Telegram Send Digest"
+    arr[16] = ("Bad Request: can't parse entities: "
+               "Can't find end tag corresponding to start tag \"b\"")
+    arr[19] = "NodeApiError"
+    arr[20] = {"name": "7", "type": "x"}                # Node-Objekt -> name -> 7
+    arr[22] = "400"
+    arr[23] = "Bad request - please check your parameters"
+    arr[24] = "NodeApiError: Bad request\n    at ExecuteContext.apiRequest"
+    return json.dumps(arr)
+
+
+DEDUP = _build_dedup()
+
+
 class ExtractError(unittest.TestCase):
     def test_extracts_message_node_httpcode(self):
         out = ee.extract_error(SAMPLE)
@@ -28,6 +54,34 @@ class ExtractError(unittest.TestCase):
         self.assertEqual(out["http_code"], "400")
         self.assertEqual(out["name"], "NodeApiError")
         self.assertIn("NodeApiError: Bad request", out["stack_excerpt"])
+
+    def test_dedup_pointers_are_resolved(self):
+        """Regression: Index-Pointer muessen aufgeloest werden, nicht als Rohzahl landen."""
+        out = ee.extract_error(DEDUP)
+        self.assertEqual(out["node"], "Telegram Send Digest")
+        self.assertEqual(out["http_code"], "400")
+        self.assertEqual(out["name"], "NodeApiError")
+        self.assertEqual(out["last_node"], "Telegram Send Digest")
+        # message kombiniert generischen Wrapper + aussagekraeftige description
+        self.assertIn("can't parse entities", out["message"])
+        self.assertIn("Bad request - please check your parameters", out["message"])
+        # kein roher Index mehr
+        self.assertNotIn(out["node"], ("7", "20"))
+        self.assertNotEqual(out["http_code"], "22")
+
+    def test_combine_message_dedups_substring(self):
+        # message == description -> nicht doppeln
+        same = json.dumps([{"message": "Boom", "description": "Boom", "name": "E", "stack": "s"}])
+        self.assertEqual(ee.extract_error(same)["message"], "Boom")
+        # description Substring von message -> nur message
+        sub = json.dumps([{"message": "connect ECONNREFUSED 127.0.0.1:5432",
+                           "description": "127.0.0.1:5432", "name": "E", "stack": "s"}])
+        self.assertEqual(ee.extract_error(sub)["message"], "connect ECONNREFUSED 127.0.0.1:5432")
+
+    def test_httpcode_not_over_resolved(self):
+        # '400' darf nach einem Hop NICHT als weiterer Index gelten
+        out = ee.extract_error(DEDUP)
+        self.assertEqual(out["http_code"], "400")
 
     def test_last_node_executed_string(self):
         out = ee.extract_error(SAMPLE)
