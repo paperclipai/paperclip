@@ -22,8 +22,18 @@ import { heartbeatRuns, issueComments } from "@paperclipai/db";
  *   (agent, issue) per rolling 24h window;
  * - on cap: a LOUD issue comment naming the cap and rounds consumed — and the
  *   issue is deliberately NOT blocked on a recovery owner;
- * - operator-requested runs (`on_demand` source or a `user` wake actor) never
- *   auto-continue.
+ * - operator-requested runs (`on_demand` invocation source — a direct
+ *   operator kick) never auto-continue. The wake-request actor type is NOT
+ *   part of that gate: automation/assignment wakes stamp the upstream
+ *   cascade's actor, so user-authored comments/approvals produce
+ *   `requestedByActorType = "user"` on routine automation wakes — keying the
+ *   skip on it made hermes-path ceilings (lanes fed almost entirely by
+ *   user-authored board comments) miss the continuation systematically;
+ * - a granted continuation round runs with its FRESH configured per-run
+ *   token budget — it is never clamped to the issue's residual aggregate
+ *   budget (which handed rounds shrinking micro-budgets that exhausted
+ *   instantly and burned the cap). The issue-generation admission gate still
+ *   denies the next round once the aggregate ceiling is crossed.
  */
 export const RESOURCE_CEILING_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 

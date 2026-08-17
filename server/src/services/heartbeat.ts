@@ -10533,9 +10533,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   // persisted as the scheduled-continuation run rows themselves and capped
   // per (agent, issue) per rolling 24h window. On cap: say so LOUDLY on the
   // issue and stop — do NOT block the issue on a recovery owner. Operator-
-  // requested runs (on_demand source or a user wake actor) never
-  // auto-continue. The equivalent-failure breaker keeps ignoring these codes
-  // (RESOURCE_CEILING_ERROR_CODES in recovery/equivalent-failure.ts).
+  // requested runs (on_demand invocation source — a direct operator kick)
+  // never auto-continue. The equivalent-failure breaker keeps ignoring these
+  // codes (RESOURCE_CEILING_ERROR_CODES in recovery/equivalent-failure.ts).
   async function maybeScheduleResourceCeilingContinuation(input: {
     run: typeof heartbeatRuns.$inferSelect;
     agent: typeof agents.$inferSelect;
@@ -10546,6 +10546,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     if (!issueId) return { outcome: "not_applicable" as const };
 
+    // "Operator-requested" means the operator explicitly invoked THIS run: an
+    // on-demand kick (every direct manual-wake surface forces
+    // invocationSource "on_demand"). The wake-request actor type is
+    // deliberately NOT part of the gate: automation/assignment wakes stamp
+    // requestedByActorType from whatever actor triggered the cascade upstream,
+    // so a user comment (issue_commented), a user approval
+    // (approval_approved), or a user closing a child issue
+    // (issue_children_completed) all produce actorType="user" on a routine
+    // automation wake. Keying the skip on that actor stranded exactly the
+    // round-based work this continuation exists for — verified live 08-17:
+    // Engineer-Hermes run 2a74fa52 failed token_budget_exhausted on an
+    // invocationSource="automation" wake whose request row carried
+    // requestedByActorType="user" (issue_children_completed) and was skipped
+    // as "operator-requested". Hermes lanes take nearly all their work from
+    // user-authored board comments, so hermes-path ceilings systematically
+    // missed the continuation while codex/claude system-actor chains engaged.
+    // The actor type is still read for observability below.
     const wakeActorType = run.wakeupRequestId
       ? await db
           .select({ requestedByActorType: agentWakeupRequests.requestedByActorType })
@@ -10553,7 +10570,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(eq(agentWakeupRequests.id, run.wakeupRequestId))
           .then((rows) => rows[0]?.requestedByActorType ?? null)
       : null;
-    if (run.invocationSource === "on_demand" || wakeActorType === "user") {
+    if (run.invocationSource === "on_demand") {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
         eventType: "lifecycle",
         stream: "system",
@@ -17578,11 +17595,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
     if (issueGenerationAdmission?.decision === "allow") {
-      const issueScopedCap = resolveIssueScopedRunTokenCap({
-        adapterType: agent.adapterType,
-        configuredMaxTokensPerRun: runtimeConfig.maxTokensPerRun,
-        remainingIssueInputTokens: issueGenerationAdmission.remainingInputTokens,
-      });
+      // TSMC-20820: a granted resource-ceiling continuation round runs with
+      // its FRESH configured per-run budget. Clamping continuations to the
+      // issue's residual aggregate budget (ceiling minus consumed) handed
+      // each round a shrinking micro-budget — observed live 08-17 on
+      // Engineer-Hermes: 200000 -> 85999 -> 3354, the last exhausting within
+      // seconds — so granted rounds burned the 24h continuation cap without
+      // doing any work. The aggregate ceiling stays enforced by the admission
+      // gate above, which denies the NEXT round outright once the issue
+      // crosses it; the rolling round cap — not the residual — is the loop
+      // bound for continuations. Ordinary (non-continuation) runs keep the
+      // residual clamp so a single wake cannot blow far past the ceiling.
+      const isCeilingContinuationRun =
+        readNonEmptyString(context.retryReason) === MAX_TURN_CONTINUATION_RETRY_REASON;
+      const issueScopedCap = isCeilingContinuationRun
+        ? null
+        : resolveIssueScopedRunTokenCap({
+          adapterType: agent.adapterType,
+          configuredMaxTokensPerRun: runtimeConfig.maxTokensPerRun,
+          remainingIssueInputTokens: issueGenerationAdmission.remainingInputTokens,
+        });
       if (issueScopedCap) {
         runtimeConfig.maxTokensPerRun = issueScopedCap;
         context.paperclipIssueGenerationBudget = {
@@ -17593,6 +17625,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           inputTokenCeiling: issueGenerationAdmission.effectiveInputTokenCeiling,
           generationRunCeiling: ISSUE_GENERATION_RUN_CEILING,
           exceptionId: issueGenerationAdmission.exceptionId,
+        };
+      } else if (isCeilingContinuationRun) {
+        context.paperclipIssueGenerationBudget = {
+          aggregateInputTokensBeforeRun: issueGenerationAdmission.aggregateInputTokens,
+          priorGenerationRuns: issueGenerationAdmission.priorGenerationRuns,
+          remainingInputTokens: issueGenerationAdmission.remainingInputTokens,
+          maxTokensPerRun:
+            typeof runtimeConfig.maxTokensPerRun === "number" && Number.isFinite(runtimeConfig.maxTokensPerRun)
+              ? runtimeConfig.maxTokensPerRun
+              : null,
+          inputTokenCeiling: issueGenerationAdmission.effectiveInputTokenCeiling,
+          generationRunCeiling: ISSUE_GENERATION_RUN_CEILING,
+          exceptionId: issueGenerationAdmission.exceptionId,
+          ceilingContinuationFreshBudget: true,
         };
       }
     }
