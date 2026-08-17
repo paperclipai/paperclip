@@ -641,6 +641,7 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     loadConfigMock.mockReturnValue(buildTestConfig());
     process.env.BETTER_AUTH_SECRET = "test-secret";
     delete process.env.PAPERCLIP_API_URL;
+    delete process.env.PAPERCLIP_RUNTIME_API_URL;
   });
 
   afterEach(() => {
@@ -674,6 +675,20 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
       expect.arrayContaining(["http://custom-api:3100"]),
     );
     expect(JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")[0]).toBe("http://custom-api:3100");
+  });
+
+  it("preserves an explicit PAPERCLIP_RUNTIME_API_URL independently of the public API URL", async () => {
+    process.env.PAPERCLIP_API_URL = "https://paperclip.example";
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://127.0.0.1:3210";
+
+    const started = await startServer();
+
+    expect(started.apiUrl).toBe("https://paperclip.example");
+    expect(process.env.PAPERCLIP_API_URL).toBe("https://paperclip.example");
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://127.0.0.1:3210");
+    expect(JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")[0]).toBe(
+      "http://127.0.0.1:3210",
+    );
   });
 
   it("falls back to host-based URL when PAPERCLIP_API_URL is not set", async () => {
