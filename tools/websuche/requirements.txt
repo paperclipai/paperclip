@@ -2,3 +2,9 @@ requests==2.32.3
 beautifulsoup4==4.12.3
 pytest==8.3.2
 requests-mock==1.12.1
+# Direkte Abhaengigkeit, nicht bloss die von requests: abruf.py importiert
+# urllib3 und haengt an `raw.read1(...)` (nur 2.x) und `raw.shutdown()` (nur
+# 2.3+). requests selbst laesst >=1.21.1,<3 zu — ein Neuaufbau des venv durch
+# deploy.sh koennte dort bei 1.26 landen und jeden Abruf in einen
+# AttributeError kippen, den `recherchiere` still je Quelle wegfaengt.
+urllib3>=2.3,<3

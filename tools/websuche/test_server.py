@@ -227,23 +227,54 @@ def test_dienst_bearbeitet_anfragen_nebenlaeufig(monkeypatch):
 def test_status_weist_aufgegebene_abrufe_aus():
     """Ein bei der Deadline zurueckgelassener Abruf-Thread ist die einzige
     Form von Leck, die dieser Dienst kennt — und die einzige Stelle, an der
-    sie von aussen sichtbar wird, ist dieser Zaehler."""
+    sie von aussen sichtbar wird, ist dieser Zaehler.
+
+    Geprueft wird deshalb, dass der Zaehler MITZAEHLT: die frueher hier
+    stehende Zusicherung `isinstance(..., int)` haette auch eine fest
+    verdrahtete Null bestanden — also genau den Fall, gegen den der Zaehler
+    da ist.
+    """
     import json as _json
     import threading
+    import time as _time
     import urllib.request
 
+    import abruf as a
     import server as s
+    import websuche as w
+    from backends import Treffer
 
     dienst = s.baue(0)
     port = dienst.server_address[1]
     threading.Thread(target=dienst.serve_forever, daemon=True).start()
-    try:
+
+    def stand():
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/",
                                     timeout=10) as antwort:
-            ausgabe = _json.loads(antwort.read())
+            return _json.loads(antwort.read())
+
+    class EinTreffer:
+        def suche(self, frage, limit):
+            return [Treffer(url="https://a.de/1", titel="T", snippet="s")]
+
+    def lahmer_abrufer(url, max_zeichen, timeout):
+        _time.sleep(0.5)
+        return a.AbrufErgebnis(text="ok")
+
+    try:
+        vorher = stand()
+        assert vorher["status"] == "ok"
+
+        # Einen Abruf sicher in die Deadline laufen lassen.
+        w.recherchiere("f", quellen=1, deadline=0.1, backend=EinTreffer(),
+                       abrufer=lahmer_abrufer)
+
+        nachher = stand()
     finally:
         dienst.shutdown()
         dienst.server_close()
 
-    assert ausgabe["status"] == "ok"
-    assert isinstance(ausgabe["aufgegebene_abrufe"], int)
+    assert isinstance(nachher["aufgegebene_abrufe"], int)
+    assert nachher["aufgegebene_abrufe"] == vorher["aufgegebene_abrufe"] + 1, (
+        f"Zaehler blieb bei {vorher['aufgegebene_abrufe']} stehen, obwohl ein "
+        f"Abruf aufgegeben wurde")

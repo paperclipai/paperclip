@@ -6,6 +6,7 @@ import time
 import pytest
 import requests
 import requests_mock
+import urllib3
 
 import abruf
 from abruf import (AbrufErgebnis, extrahiere_text, hole_text, kappe,
@@ -533,9 +534,49 @@ def test_riesige_robots_txt_wird_gedeckelt(monkeypatch):
 # dessen iter_content liefert sofort. Deshalb hier ein echter Socket-Server,
 # der die Verbindung offen haelt und tropfenweise sendet.
 
-def _starte_troepfel_server(troepfelnde_pfade, dauer=3.0, pause=0.02):
+def _rinnsal(art):
+    """Die Bytes, die der Server tropfenweise nachschiebt — je Angriffsform.
+
+    Alle drei Formen sind aus Sicht des Protokolls einwandfrei. Sie
+    unterscheiden sich nur darin, WO die wartende Schleife sitzt:
+
+    - "text":    Nutzbytes. Die Schleife sitzt in `_lies_gedeckelt`, die
+                 Fristpruefung dort greift.
+    - "gzip":    gueltige, aber leer dekodierende Deflate-Bloecke
+                 (Z_SYNC_FLUSH). `read1` bekommt Bytes, gibt aber nichts
+                 zurueck — die Schleife sitzt in urllib3s Dekoder.
+    - "chunked": die Groessenzeile eines Chunks, Ziffer fuer Ziffer. Die
+                 Schleife sitzt in `http.client.readline()`.
+
+    Gibt (Kopfzeilen, Nachschub-Funktion) zurueck.
+    """
+    if art == "gzip":
+        import zlib
+        packer = zlib.compressobj(9, zlib.DEFLATED, 16 + zlib.MAX_WBITS)
+        kopf = (b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
+                b"Content-Encoding: gzip\r\nContent-Length: 100000000\r\n"
+                b"Connection: close\r\n\r\n")
+        return kopf, lambda: packer.compress(b"") + packer.flush(
+            zlib.Z_SYNC_FLUSH)
+    if art == "chunked":
+        kopf = (b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
+                b"Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+        return kopf, lambda: b"0"
+    kopf = (b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
+            b"Content-Length: 100000000\r\nConnection: close\r\n\r\n")
+    return kopf, lambda: b"<p>x</p>"
+
+
+def _starte_troepfel_server(troepfelnde_pfade, dauer=3.0, pause=0.02,
+                            art="text", nachlauf=0.0):
     """Antwortet auf `troepfelnde_pfade` mit einem nie endenden Rinnsal,
-    auf alles andere sofort mit 404. Gibt (Port, Socket) zurueck."""
+    auf alles andere sofort mit 404. Gibt (Port, Socket) zurueck.
+
+    `art` waehlt die Angriffsform (siehe `_rinnsal`). `nachlauf` laesst den
+    Server nach dem Rinnsal verstummen, OHNE die Verbindung zu schliessen —
+    nur so laesst sich pruefen, ob die Socket-Frist wirklich nachgezogen wird
+    (ein Verbindungsabbau wuerde den Lesevorgang sofort beenden).
+    """
     lauscher = socket.socket()
     lauscher.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     lauscher.bind(("127.0.0.1", 0))
@@ -551,13 +592,14 @@ def _starte_troepfel_server(troepfelnde_pfade, dauer=3.0, pause=0.02):
                     b"HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n"
                     b"Content-Length: 4\r\nConnection: close\r\n\r\nleer")
                 return
-            verbindung.sendall(
-                b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
-                b"Content-Length: 100000000\r\nConnection: close\r\n\r\n")
+            kopf, nachschub = _rinnsal(art)
+            verbindung.sendall(kopf)
             ende = time.monotonic() + dauer
             while time.monotonic() < ende:
                 time.sleep(pause)
-                verbindung.sendall(b"<p>x</p>")
+                verbindung.sendall(nachschub())
+            if nachlauf:
+                time.sleep(nachlauf)
         except OSError:
             pass
         finally:
@@ -587,8 +629,9 @@ def troepfel(monkeypatch):
     monkeypatch.setattr(abruf, "pruefe_ziel", lambda url, **k: None)
     offen = []
 
-    def starte(pfade, dauer=3.0, pause=0.02):
-        port, lauscher = _starte_troepfel_server(pfade, dauer=dauer, pause=pause)
+    def starte(pfade, dauer=3.0, pause=0.02, art="text", nachlauf=0.0):
+        port, lauscher = _starte_troepfel_server(
+            pfade, dauer=dauer, pause=pause, art=art, nachlauf=nachlauf)
         offen.append(lauscher)
         return port
 
@@ -661,3 +704,201 @@ def test_pruefe_ziel_haelt_seine_eigene_aufloesungsfrist(monkeypatch):
     dauer = time.monotonic() - start
     assert dauer < 1.5, f"lief {dauer:.2f}s trotz 0,2s Frist"
     assert grund is not None and "lahm.example" in grund
+
+
+# --- Der Socket-Waechter ---------------------------------------------------
+#
+# Die beiden Formen unten galten als unbehebbar: die wartende Schleife liegt
+# in urllib3s Dekoder bzw. in `http.client.readline()`, also unterhalb jeder
+# Stelle, an der dieser Code eine Frist pruefen koennte. Das stimmt — und ist
+# trotzdem kein Grund aufzugeben: ein blockierender Lesevorgang laesst sich
+# zwar nicht UNTERBRECHEN, der Socket darunter aber aus einem zweiten Faden
+# SCHLIESSEN. Genau das tut `_Fristwaechter`.
+
+def test_leere_gzip_bloecke_enden_im_zeitbudget(troepfel):
+    """Gueltige Deflate-Bloecke, die zu null Nutzbytes dekodieren.
+
+    `read1()` bekommt staendig Bytes und gibt trotzdem nichts zurueck: die
+    Schleife dreht in urllib3, die Fristpruefung in `_lies_gedeckelt` kommt
+    nie an die Reihe. Gemessen ohne Waechter: 4,02 s bei 0,3 s Budget.
+    """
+    port = troepfel(["/gzip"], dauer=4.0, art="gzip")
+    start = time.monotonic()
+    ergebnis = hole_text(f"http://127.0.0.1:{port}/gzip", timeout=0.3)
+    dauer = time.monotonic() - start
+    assert dauer < 1.5, f"lief {dauer:.2f}s trotz 0,3s Budget"
+    assert ergebnis.text is None
+
+
+def test_troepfelnde_chunked_groessenzeile_endet_im_zeitbudget(troepfel):
+    """Die Laengenzeile eines Chunks, Ziffer fuer Ziffer.
+
+    Hier wartet `http.client.readline()` auf das Zeilenende — noch eine Ebene
+    tiefer als der Dekoder. Gemessen ohne Waechter: 4,00 s bei 0,3 s Budget.
+    """
+    port = troepfel(["/chunk"], dauer=4.0, art="chunked")
+    start = time.monotonic()
+    ergebnis = hole_text(f"http://127.0.0.1:{port}/chunk", timeout=0.3)
+    dauer = time.monotonic() - start
+    assert dauer < 1.5, f"lief {dauer:.2f}s trotz 0,3s Budget"
+    assert ergebnis.text is None
+
+
+def test_troepfelnder_server_der_verstummt_zieht_die_frist_nach(troepfel,
+                                                               monkeypatch):
+    """Die Socket-Frist wurde einmal beim Anfragestart berechnet und nie
+    nachgezogen.
+
+    Folge: ein Server, der bis kurz vor die Frist tropft und dann schweigt,
+    haengt danach noch eine volle SOCKET_FRIST an — gemessen 2,93 s bei 2,0 s
+    Budget und SOCKET_FRIST=1,0. Mit den Produktionswerten waeren das 15 s
+    statt 10 s. Der Waechter deckelt das auf die Frist.
+    """
+    monkeypatch.setattr(abruf, "SOCKET_FRIST", 1.0)
+    port = troepfel(["/spaet"], dauer=0.45, pause=0.02, nachlauf=5.0)
+    start = time.monotonic()
+    ergebnis = hole_text(f"http://127.0.0.1:{port}/spaet", timeout=0.5)
+    dauer = time.monotonic() - start
+    assert dauer < 0.9, (f"lief {dauer:.2f}s bei 0,5s Budget — die "
+                         f"SOCKET_FRIST von 1,0s wurde angehaengt")
+    assert ergebnis.text is None
+
+
+def test_socket_kette_greift_bei_einer_echten_antwort(troepfel):
+    """Der Waechter greift ueber private urllib3-Interna auf den Socket zu.
+
+    Dieser Test wird rot, wenn keine Stufe der Kette mehr passt — ohne ihn
+    waere der Waechter nach einem urllib3-Update still wirkungslos, und die
+    beiden Tests darueber wuerden es erst am Zeitverbrauch merken.
+    """
+    port = troepfel(["/troepfel"], dauer=4.0)
+    antwort = requests.get(f"http://127.0.0.1:{port}/troepfel", stream=True,
+                           timeout=(2.0, 2.0))
+    try:
+        assert abruf._socket_zuklappen(antwort) is True, (
+            "keine Stufe der Attributkette griff — der Waechter ist wirkungslos")
+    finally:
+        antwort.close()
+
+
+def test_privater_rueckfallweg_zum_socket_passt_noch(troepfel):
+    """Der Rueckfallweg fuer den Fall, dass `raw.shutdown()` verschwindet.
+
+    Nebenbefund, der in die Kette gehoert: `raw._connection.sock` — der in
+    aelteren urllib3-Staenden ueblich war — ist unter 2.7.0 immer `None`, weil
+    die Verbindung den Socket beim `getresponse()` an die Antwort abgibt.
+    Deshalb steht dieser Weg in der Kette hinten, nicht vorn.
+    """
+    port = troepfel(["/troepfel"], dauer=4.0)
+    antwort = requests.get(f"http://127.0.0.1:{port}/troepfel", stream=True,
+                           timeout=(2.0, 2.0))
+    try:
+        rueckfall = antwort.raw._fp.fp.raw._sock
+        assert isinstance(rueckfall, socket.socket)
+    finally:
+        antwort.close()
+
+
+def test_socket_waechter_bricht_ab_wenn_kein_weg_greift():
+    """Private Attribute duerfen verschwinden — sie duerfen nur nicht mit
+    einer Ausnahme mitten im Abruf verschwinden."""
+    class Nichts:
+        pass
+
+    attrappe = Nichts()
+    attrappe.raw = Nichts()
+    assert abruf._socket_zuklappen(attrappe) is False
+    assert abruf._socket_zuklappen(Nichts()) is False
+
+
+def test_waechter_bestellt_seinen_timer_ab():
+    """Ein nicht abbestellter Timer haelt je Abruf einen Faden bis zur Frist
+    am Leben — bei 10 s Seitenbudget und einem wochenlang laufenden Dienst
+    ist das ein Fadenleck mit Ansage."""
+    with requests_mock.Mocker() as m:
+        m.get("https://a.de/robots.txt", status_code=404)
+        m.get("https://a.de/seite", text=SEITE,
+              headers={"Content-Type": "text/html"})
+        ergebnis = hole_text("https://a.de/seite", timeout=30.0)
+    assert ergebnis.text is not None
+
+    def waechter_faeden():
+        return [f for f in threading.enumerate()
+                if f.name.startswith(abruf.WAECHTER_FADEN_NAME)]
+
+    # `cancel()` weckt den Faden nur — bis er wirklich austritt, vergeht ein
+    # Scheduler-Moment. Zwei Sekunden Geduld; ein NICHT abbestellter Timer
+    # laege hier volle 30 s (das Budget oben) und faellt sicher durch.
+    ende = time.monotonic() + 2.0
+    while waechter_faeden() and time.monotonic() < ende:
+        time.sleep(0.01)
+    assert not waechter_faeden(), (
+        f"Timer nicht abbestellt: {waechter_faeden()}")
+
+
+# --- Kopfzeilen sind case-insensitiv (RFC 9110, 5.1) -----------------------
+
+def test_kleingeschriebener_content_type_wird_erkannt():
+    """`dict(antwort.headers)` warf requests' CaseInsensitiveDict weg.
+
+    Der zweite Formatdurchgang in `hole_text` suchte danach `"Content-Type"`
+    und fand bei einem Server, der `content-type:` klein schreibt, nichts —
+    der Rumpf entschied dann allein, und UTF-16-Text ist voller Nullbytes.
+    Gemessen an identischer Seite: gross geschrieben Text extrahiert, klein
+    geschrieben "Binaerinhalt ohne Content-Type". Das kostet still eine Quelle.
+    """
+    seite = "<html><body><p>Der erste Absatz.</p></body></html>".encode("utf-16")
+    with requests_mock.Mocker() as m:
+        m.get("https://a.de/robots.txt", status_code=404)
+        m.get("https://a.de/seite", content=seite,
+              headers={"content-type": "text/html; charset=utf-16"})
+        ergebnis = hole_text("https://a.de/seite")
+    assert ergebnis.fehler is None, ergebnis.fehler
+    assert "Der erste Absatz." in ergebnis.text
+
+
+def test_kopf_der_rohantwort_ist_case_insensitiv():
+    """Dieselbe Zusicherung eine Ebene tiefer, damit auch kuenftige Leser von
+    `RohAntwort.kopf` sie bekommen."""
+    with requests_mock.Mocker() as m:
+        m.get("https://a.de/x", text="hallo",
+              headers={"content-type": "text/plain"})
+        roh = abruf._hole_gedeckelt("https://a.de/x", time.monotonic() + 5.0,
+                                    accept="*/*", max_bytes=1000)
+    assert roh.kopf["Content-Type"] == "text/plain"
+    assert roh.kopf["CONTENT-TYPE"] == "text/plain"
+
+
+# --- urllib3 ist eine direkte Abhaengigkeit --------------------------------
+
+def test_requirements_deklariert_urllib3_mit_2er_spanne():
+    """`abruf.py` importiert urllib3 direkt und haengt an `raw.read1(...)`
+    und `raw.shutdown()` — beides gibt es nur in urllib3 2.x.
+
+    In `requirements.txt` stand urllib3 gar nicht, und `deploy.sh` baut das
+    venv damit neu auf. Ein Neuaufbau, der ueber requests' weite Spanne
+    (>=1.21.1,<3) bei 1.26 landet, macht aus jedem Abruf einen AttributeError
+    — den das breite `except Exception` in `recherchiere` je Quelle in ein
+    harmloses "Abbruch: ..." verwandelt. Der Dienst liefe scheinbar weiter
+    und faende nie wieder etwas.
+    """
+    import pathlib
+    import re as _re
+
+    zeilen = (pathlib.Path(__file__).with_name("requirements.txt")
+              .read_text().splitlines())
+    genannt = [z.strip() for z in zeilen
+               if z.strip().lower().startswith("urllib3")]
+    assert genannt, "requirements.txt nennt urllib3 nicht"
+    zeile = genannt[0]
+    assert _re.search(r">=\s*2(\.|\b)", zeile), (
+        f"keine 2.x-Untergrenze in {zeile!r}")
+    assert _re.search(r"<\s*3(\.|\b)", zeile), f"keine Obergrenze in {zeile!r}"
+
+
+def test_installiertes_urllib3_erfuellt_die_deklarierte_spanne():
+    """Damit die Spanne nicht bloss auf dem Papier steht: die beiden APIs,
+    an denen `abruf.py` haengt, muessen im installierten Stand da sein."""
+    assert int(urllib3.__version__.split(".")[0]) == 2, urllib3.__version__
+    assert hasattr(urllib3.response.HTTPResponse, "read1")
+    assert hasattr(urllib3.response.HTTPResponse, "shutdown")

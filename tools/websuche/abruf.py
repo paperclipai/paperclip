@@ -6,43 +6,77 @@ herausgeht, ist entweder Text oder eine Fehlermeldung — nie beides.
 WAS DAS ZEITBUDGET WIRKLICH LEISTET
 -----------------------------------
 `hole_text(timeout=T)` deckelt Namensaufloesung, robots.txt, alle
-Weiterleitungen und den Rumpf gemeinsam. Durchgesetzt wird das an drei
-Stellen: eine eigene Frist fuer `getaddrinfo`, `min(Restbudget,
-SOCKET_FRIST)` auf jeder einzelnen Socket-Operation und eine Fristpruefung
-nach jedem Leseschritt (`read1`, nicht `iter_content` — siehe dort).
+Weiterleitungen und den Rumpf gemeinsam. Durchgesetzt wird das an vier
+Stellen, und jede deckt einen Abschnitt ab, den die anderen nicht erreichen:
 
-Es ist trotzdem KEINE harte Garantie, und das ist eine Eigenschaft der
-blockierenden Sockets von Python, keine Nachlaessigkeit hier: ein Lesevorgang
-laesst sich von aussen nicht abbrechen, und es gibt Antworten, bei denen
-urllib3 intern weiterliest, ohne uns dazwischen zu lassen. Gemessen gegen
-echte Server bei 1,0 s Budget:
+1. eine eigene Frist fuer `getaddrinfo` (`_aufloesen_mit_frist`),
+2. `min(Restbudget, SOCKET_FRIST)` als Timeout je Socket-Operation — EINMAL
+   je Sprung berechnet, unmittelbar vor `requests.get`, und danach nicht
+   nachgezogen (frueher stand hier "auf jeder einzelnen Socket-Operation";
+   das war zu viel versprochen),
+3. eine Fristpruefung nach jedem Leseschritt (`read1`, nicht `iter_content`
+   — siehe `_lies_gedeckelt`),
+4. der Socket-Waechter (`_Fristwaechter`): ein Timer ueber die Restfrist, der
+   den Socket unter der laufenden Antwort zuklappt. Er ist der einzige
+   Mechanismus, der auch dort greift, wo die wartende Schleife unterhalb von
+   `read1` liegt — und er zieht die zu frueh berechnete Frist aus Punkt 2
+   nachtraeglich wieder gerade.
 
-    troepfelnde Seite (8 Bytes/50 ms)      1,03 s   (vorher 30,0 s)
-    troepfelnde robots.txt                 1,04 s   (vorher 30,0 s; in der
+Gemessen gegen echte Server bei 1,0 s Budget (Median aus drei Laeufen):
+
+    troepfelnde Seite (8 Bytes/20 ms)      1,01 s   (vor 3.: 30,0 s)
+    troepfelnde robots.txt                 1,00 s   (vor 3.: 30,0 s; in der
                                                      Praxis 81 s gemessen)
-    Server schweigt nach den Kopfzeilen    1,00 s
+    Server schweigt nach den Kopfzeilen     1,00 s
+    troepfelt bis kurz vor die Frist,
+      dann Schweigen                        1,01 s   (vor 4.: Budget + volle
+                                                     SOCKET_FRIST — gemessen
+                                                     2,93 s bei 2,0 s Budget
+                                                     und SOCKET_FRIST 1,0)
     gueltige, leer dekodierende
-      gzip-Bloecke (Z_SYNC_FLUSH)         30,01 s   <- Restrisiko
-    troepfelnde chunked-Groessenzeile     20,05 s   <- Restrisiko
+      gzip-Bloecke (Z_SYNC_FLUSH)           1,01 s   (vor 4.: 30,0 s)
+    troepfelnde chunked-Groessenzeile       1,01 s   (vor 4.: 20,1 s)
 
-Die beiden letzten Formen haben dieselbe Wurzel: der Angreifer sendet
-staendig gueltige Bytes, die keinen einzigen Nutzbyte ergeben, und die
-Schleife, die darauf wartet, liegt in urllib3 bzw. http.client — unterhalb
-jeder Stelle, an der wir die Frist pruefen koennten. Der normale Fall und der
-gewoehnliche langsame Server enden im Budget; ein gezielt darauf gebauter
-Server kann es ueberziehen, bis er selbst die Verbindung schliesst.
+Die beiden letzten Formen galten als unbehebbar, weil ihre wartende Schleife
+in urllib3 bzw. `http.client` liegt — unterhalb jeder Stelle, an der dieser
+Code eine Frist pruefen koennte. Das stimmt und war trotzdem der falsche
+Schluss: es verwechselt Unterbrechen mit Schliessen. Der Lesevorgang laesst
+sich nicht unterbrechen, der Socket darunter aber aus einem zweiten Faden
+schliessen; danach kehrt jedes wartende `recv` sofort zurueck. Siehe
+`_socket_zuklappen`.
+
+WAS WEITERHIN NICHT GEDECKELT IST
+---------------------------------
+Eine Luecke bleibt, und sie ist beim Nachmessen neu aufgefallen: die
+KOPFZEILEN-Phase. Sie laeuft in `requests.get`, also bevor es ein
+Antwortobjekt und damit einen Socket gibt, den der Waechter greifen koennte.
+`http.client` liest dort Zeile fuer Zeile; jedes einzelne `recv` ist durch
+Punkt 2 gedeckelt, aber ein Server, der ununterbrochen gueltige Kopfzeilen
+troepfelt, laeuft in keins davon. Begrenzt wird er allein durch
+`http.client._MAXHEADERS` (100 Zeilen). Gemessen bei 1,0 s Budget:
+
+    troepfelnde Kopfzeilen, 50 ms/Zeile     5,40 s
+    troepfelnde Kopfzeilen, 200 ms/Zeile   20,54 s
+
+Der Deckel ist also 100 x Tropfabstand, nach oben nur durch die Geduld des
+Angreifers begrenzt. Das ist bewusst nicht in dieser Runde behoben: die
+Abhilfe liegt nicht mehr im Socket-Waechter, sondern erforderte einen
+eigenen Weg an `requests.get` vorbei. Bis dahin gilt: das Budget ist fuer
+Verbindungsaufbau, Rumpf und alles danach hart; fuer die Kopfzeilen ist es
+weich.
 
 Folge fuer `websuche.recherchiere`: die Annahme "ein aufgegebener Thread
-endet von selbst kurz nach dem Seitenbudget" traegt nicht mehr. Sie war die
-Begruendung dafuer, auf einen Waechter fuer die Abruf-Threads zu verzichten.
-Solange es keinen gibt, zaehlt und meldet `recherchiere` die aufgegebenen
-Abrufe wenigstens, statt sie still zu verlieren.
+endet von selbst kurz nach dem Seitenbudget" traegt fuer alle oben
+gemessenen Rumpf-Formen wieder — aber nicht fuer die Kopfzeilen-Form.
+Deshalb bleibt es beim Zaehlen und Melden aufgegebener Abrufe, statt den
+Waechter fuer die Abruf-Threads fuer erledigt zu erklaeren.
 """
 from __future__ import annotations
 
 import ipaddress
 import re
 import socket
+import sys
 import threading
 import time
 import urllib.robotparser
@@ -52,6 +86,7 @@ from urllib.parse import urljoin, urlparse
 import requests
 import urllib3
 from bs4 import BeautifulSoup
+from requests.structures import CaseInsensitiveDict
 
 USER_AGENT = ("WHITESTAG-Websuche/1.0 "
               "(Recherche-Agent; kontakt: ws@whitestag.ai)")
@@ -100,6 +135,10 @@ LESE_STUECK = 16384
 # ununterbrochen gueltige Bytes ohne Nutzinhalt schickt, hilft sie nicht —
 # siehe Modul-Docstring.
 SOCKET_FRIST = 5.0
+
+# Name der Waechter-Faeden. Er ist Teil der Zusicherung, nicht Kosmetik: der
+# Test, der das Abbestellen prueft, erkennt sie daran wieder.
+WAECHTER_FADEN_NAME = "websuche-frist"
 
 # Eigene Schranke fuer die Namensaufloesung: `socket.getaddrinfo` kennt kein
 # timeout-Argument und haengt an einem stummen Resolver, bis das System
@@ -323,6 +362,87 @@ def _formatfehler(content_type: str, rumpf: bytes) -> str | None:
     return None
 
 
+def _socket_zuklappen(antwort) -> bool:
+    """Klappt den Socket unter einer stroemenden Antwort zu. `True`, wenn ein
+    Weg gegriffen hat.
+
+    Der Punkt, an dem die frueher hier notierte Einschaetzung "nicht behebbar"
+    falsch war: ein blockierender Lesevorgang laesst sich in Python zwar nicht
+    UNTERBRECHEN, der Socket darunter aber aus einem zweiten Faden
+    SCHLIESSEN. Danach kehrt jedes wartende `recv` sofort zurueck — egal, wie
+    tief unter uns die Schleife sitzt, die darauf gewartet hat.
+
+    Der Zugriff geht ueber Interna von urllib3, deshalb eine Kette mit
+    Rueckfall und einem sauberen `False` am Ende:
+
+    1. `raw.shutdown()` — seit urllib3 2.3 oeffentlich und genau dafuer
+       gebaut. Wirft `ValueError`, wenn der Socket nicht mehr gehalten wird,
+       und `RuntimeError`, wenn die Verbindung schon zurueck im Pool ist.
+    2. `raw._fp.fp.raw._sock` — der Socket, den `http.client` haelt. Sein
+       repr sagt "[closed]", weil urllib3 ihn abgeloest hat; `shutdown()`
+       wirkt trotzdem.
+    3. `raw._connection.sock` — der Weg aelterer urllib3-Staende. Unter 2.7.0
+       ist er immer `None`, weil die Verbindung den Socket beim
+       `getresponse()` an die Antwort abgibt; er steht deshalb hinten.
+
+    Greift keine Stufe, wird das gemeldet statt verschluckt: der Waechter ist
+    dann wirkungslos, und ein wirkungsloser Waechter, von dem niemand weiss,
+    ist schlimmer als gar keiner.
+    """
+    roh = getattr(antwort, "raw", None)
+    if roh is None:
+        return False
+    for weg in (lambda: roh.shutdown(),
+                lambda: roh._fp.fp.raw._sock.shutdown(socket.SHUT_RDWR),
+                lambda: roh._connection.sock.shutdown(socket.SHUT_RDWR)):
+        try:
+            weg()
+            return True
+        except (AttributeError, ValueError, RuntimeError, OSError):
+            continue
+    return False
+
+
+class _Fristwaechter:
+    """Schliesst bei Fristablauf den Socket unter einem blockierten Lesevorgang.
+
+    Damit wird das Seitenbudget fuer den Rumpf zu einer harten Grenze, statt
+    zu einer, die nur der gutwillige Server einhaelt. Der Timer laeuft ueber
+    die Restfrist und wird in JEDEM Fall abbestellt — sonst haelt jeder Abruf
+    bis zum Ende seines Budgets einen Faden am Leben.
+    """
+
+    def __init__(self, antwort, frist: float):
+        self._antwort = antwort
+        self._frist = frist
+        self._timer: threading.Timer | None = None
+        self.ausgeloest = False
+
+    def __enter__(self) -> "_Fristwaechter":
+        rest = max(0.0, self._frist - time.monotonic())
+        self._timer = threading.Timer(rest, self._zuschlagen)
+        self._timer.name = WAECHTER_FADEN_NAME
+        self._timer.daemon = True
+        self._timer.start()
+        return self
+
+    def _zuschlagen(self) -> None:
+        # Zuerst merken, dann handeln: der Lesevorgang darf danach mit einer
+        # beliebigen Ausnahme abbrechen — der Aufrufer muss sie als
+        # abgelaufene Zeit lesen koennen, nicht als Serverfehler.
+        self.ausgeloest = True
+        if not _socket_zuklappen(self._antwort):
+            print("[websuche] Fristwaechter fand keinen Socket — die "
+                  "urllib3-Attributkette in _socket_zuklappen passt nicht "
+                  "mehr; das Seitenbudget ist nur noch weich",
+                  file=sys.stderr, flush=True)
+
+    def __exit__(self, *_) -> bool:
+        if self._timer is not None:
+            self._timer.cancel()
+        return False
+
+
 def _lies_gedeckelt(antwort, frist: float,
                     max_bytes: int) -> tuple[bytes, str | None]:
     """Liest stroemend bis zur Groessen- oder Zeitgrenze.
@@ -357,7 +477,8 @@ class RohAntwort:
     keine Antwort zustande (Netzfehler, Zeit abgelaufen oder verweigertes
     Ziel) — was davon, steht in `fehler` bzw. `zeit_aus`."""
     status: int = 0
-    kopf: dict | None = None
+    # CaseInsensitiveDict, nicht dict — HTTP-Feldnamen sind case-insensitiv.
+    kopf: "CaseInsensitiveDict | None" = None
     rumpf: bytes = b""
     fehler: str | None = None
     zeit_aus: bool = False
@@ -435,7 +556,13 @@ def _hole_gedeckelt(url: str, frist: float, *, accept: str, max_bytes: int,
             fehler=f"Mehr als {MAX_WEITERLEITUNGEN} Weiterleitungen — Kette "
                    f"abgebrochen (letztes Ziel: {aktuell})")
 
-    kopf = dict(antwort.headers)
+    # CaseInsensitiveDict statt dict: HTTP-Feldnamen sind case-insensitiv
+    # (RFC 9110, 5.1), und `dict(antwort.headers)` warf genau diese Eigenschaft
+    # weg. Ein Server, der `content-type:` klein schreibt — voellig legal und
+    # verbreitet —, kam beim zweiten Formatdurchgang in `hole_text` als
+    # "ohne Content-Type" an; bei UTF-16-Text hiess das "Binaerinhalt" und
+    # kostete still eine Quelle.
+    kopf = CaseInsensitiveDict(antwort.headers)
     if kopf_pruefung is not None:
         grund = kopf_pruefung(antwort)
         if grund:
@@ -443,19 +570,30 @@ def _hole_gedeckelt(url: str, frist: float, *, accept: str, max_bytes: int,
             return RohAntwort(status=antwort.status_code, kopf=kopf,
                               fehler=grund)
 
-    try:
-        rumpf, zeitfehler = _lies_gedeckelt(antwort, frist, max_bytes)
-    # `raw.read1()` geht an `requests` vorbei und wirft deshalb die rohen
-    # urllib3-Ausnahmen, die `iter_content()` sonst uebersetzt haette.
-    except (requests.exceptions.Timeout, urllib3.exceptions.TimeoutError):
-        return RohAntwort(status=antwort.status_code, kopf=kopf, zeit_aus=True)
-    except (requests.exceptions.RequestException,
-            urllib3.exceptions.HTTPError, OSError) as e:
-        return RohAntwort(status=antwort.status_code, kopf=kopf,
-                          fehler=f"Abruf fehlgeschlagen: {e}")
-    finally:
-        antwort.close()
-    if zeitfehler:
+    with _Fristwaechter(antwort, frist) as waechter:
+        try:
+            rumpf, zeitfehler = _lies_gedeckelt(antwort, frist, max_bytes)
+        # `raw.read1()` geht an `requests` vorbei und wirft deshalb die rohen
+        # urllib3-Ausnahmen, die `iter_content()` sonst uebersetzt haette.
+        except (requests.exceptions.Timeout, urllib3.exceptions.TimeoutError):
+            return RohAntwort(status=antwort.status_code, kopf=kopf,
+                              zeit_aus=True)
+        except (requests.exceptions.RequestException,
+                urllib3.exceptions.HTTPError, OSError) as e:
+            # Hat der Waechter zugeschlagen, ist dieser Fehler unsere eigene
+            # Wirkung — ein abgerissener Socket. Ihn als Serverfehler zu
+            # melden waere eine Falschaussage im Ergebnis.
+            if waechter.ausgeloest:
+                return RohAntwort(status=antwort.status_code, kopf=kopf,
+                                  zeit_aus=True)
+            return RohAntwort(status=antwort.status_code, kopf=kopf,
+                              fehler=f"Abruf fehlgeschlagen: {e}")
+        finally:
+            antwort.close()
+    # Der Waechter zaehlt auch dann als Zeitueberschreitung, wenn das
+    # Zuklappen zu einem sauberen Dateiende statt zu einer Ausnahme fuehrt
+    # (chunked): der Rumpf ist dann unvollstaendig, ohne dass es jemand saehe.
+    if zeitfehler or waechter.ausgeloest:
         return RohAntwort(status=antwort.status_code, kopf=kopf, rumpf=rumpf,
                           zeit_aus=True)
     return RohAntwort(status=antwort.status_code, kopf=kopf, rumpf=rumpf)
