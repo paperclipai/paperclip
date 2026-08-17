@@ -3351,12 +3351,42 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         agentId: recoveryAction.returnOwnerAgentId,
       });
     }
+    // Hold a row lock on the issue for the remainder of this decision so a
+    // concurrent checkout's own UPDATE on the same row cannot land between the
+    // recheck above and the reassignment below — the checkout either commits
+    // first (and this recheck sees it) or waits behind this lock and then fails
+    // its own expected-status guard once this transaction sets `blocked`,
+    // instead of being silently overwritten. This only tightens the window
+    // further; it is not full cross-subsystem atomicity with checkout, which
+    // does not participate in this lock by design (see recheck above for the
+    // documented invariant this replaces).
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
-    const updated = await issuesSvc.update(input.issue.id, {
-      status: "blocked",
-      blockedByIssueIds: blockerIds,
-      assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
+    const updated = await db.transaction(async (tx) => {
+      await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, input.issue.id)).for("update");
+      if (await hasActiveExecutionPath(input.issue.companyId, input.issue.id)) {
+        return "raced" as const;
+      }
+      return issuesSvc.update(input.issue.id, {
+        status: "blocked",
+        blockedByIssueIds: blockerIds,
+        assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
+      }, tx);
     });
+    if (updated === "raced") {
+      logger.info(
+        { issueId: input.issue.id, companyId: input.issue.companyId, recoveryActionId: recoveryAction.id },
+        "cancelling stranded-issue recovery action: an execution path appeared just before the reassignment committed",
+      );
+      await recoveryActionsSvc.resolveActiveForIssue({
+        companyId: input.issue.companyId,
+        sourceIssueId: input.issue.id,
+        actionId: recoveryAction.id,
+        status: "resolved",
+        outcome: "false_positive",
+        resolutionNote: "A live execution path appeared for this issue just before the recovery reassignment committed; the escalation was cancelled instead of overwriting it.",
+      });
+      return null;
+    }
     if (!updated) return null;
     if (isProviderQuotaWait) return updated;
 
