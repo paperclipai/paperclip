@@ -24,6 +24,7 @@ import {
   issueApprovals,
   issueRecoveryActions,
   issueRelations,
+  issueLabels,
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
@@ -4343,6 +4344,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       approvalRows,
       recoveryIssueRows,
       recoveryActionRows,
+      issueLabelRows,
     ] = await Promise.all([
       issueRowsPromise,
       db
@@ -4452,7 +4454,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               ),
             );
       }),
+      issueRowsPromise.then((rows) => {
+        const issueIdsUnderAnalysis = rows.map((row) => row.id);
+        return issueIdsUnderAnalysis.length === 0
+          ? []
+          : db
+            .select({ issueId: issueLabels.issueId, labelId: issueLabels.labelId })
+            .from(issueLabels)
+            .where(inArray(issueLabels.issueId, issueIdsUnderAnalysis));
+      }),
     ]);
+
+    const labelIdsByIssueId = new Map<string, string[]>();
+    for (const row of issueLabelRows) {
+      const labelIds = labelIdsByIssueId.get(row.issueId) ?? [];
+      labelIds.push(row.labelId);
+      labelIdsByIssueId.set(row.issueId, labelIds);
+    }
 
     const openRecoveryIssues = recoveryIssueRows.flatMap((row) => {
       if (row.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation) {
@@ -4482,7 +4500,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
 
     return classifyIssueGraphLiveness({
-      issues: issueRows,
+      issues: issueRows.map((issue) => ({ ...issue, labelIds: labelIdsByIssueId.get(issue.id) ?? [] })),
       relations: relationRows,
       agents: agentRows,
       activeRuns: activeRunRows.map((row) => ({
@@ -4506,6 +4524,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       pendingApprovals: approvalRows,
       openRecoveryIssues: openRecoveryIssues.concat(recoveryActionRows),
       now: new Date(),
+      enableParkedV1Suppression: process.env.PAPERCLIP_ENABLE_PARKED_V1_LIVENESS_SUPPRESSION !== "false",
+      onSuppression: (suppression) => logger.info({ event: "issue_graph_liveness_suppressed", ...suppression }, "Suppressed issue graph liveness finding"),
     });
   }
 
