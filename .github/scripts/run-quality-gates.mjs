@@ -102,11 +102,21 @@ async function main() {
   }
 
   // Fetch PR data once — gates use this, no redundant API calls
-  const [pr, files, commits] = await Promise.all([
+  const [pr, files] = await Promise.all([
     ghFetch(`/repos/${GH_REPO}/pulls/${prNumber}`, GH_TOKEN),
     fetchAllPullRequestFiles(ghFetch, GH_REPO, prNumber, GH_TOKEN),
-    fetchAllPullRequestCommits(ghFetch, GH_REPO, prNumber, GH_TOKEN),
   ]);
+
+  // Separate, and allowed to fail. The co-author note is informational: it
+  // cannot fail a PR by design, so it must not be able to fail the workflow by
+  // accident either. Sharing the Promise.all above would let one transient
+  // 5xx on this request take down every gate, including the ones that block.
+  let commits = [];
+  try {
+    commits = await fetchAllPullRequestCommits(ghFetch, GH_REPO, prNumber, GH_TOKEN);
+  } catch (error) {
+    console.error(`co-author lookup skipped: ${error.message}`);
+  }
 
   const prBody = pr.body ?? '';
   const author = PR_AUTHOR ?? pr.user.login;

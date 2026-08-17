@@ -132,3 +132,32 @@ test('fetchAllPullRequestCommits: stops at the API ceiling instead of looping', 
   assert.equal(calls, 3);
   assert.equal(commits.length, 300);
 });
+
+test('checkCoauthors: counts one person once when their git name varies across commits', () => {
+  // People change their git config. Keying the dedup on the rendered trailer
+  // would put two lines for the same contributor into the squash body.
+  const result = checkCoauthors(
+    [commit('stubbi', 'Jannes Stubbemann'), commit('stubbi', 'J. Stubbemann')],
+    'tonio-alucema'
+  );
+
+  const trailers = result.informational[0].match(/Co-Authored-By:/g) ?? [];
+  assert.equal(trailers.length, 1);
+  assert.doesNotMatch(result.informational[0], /other contributors/);
+});
+
+test('checkCoauthors: does not credit the PR author as a co-author of themselves', () => {
+  // Their own commit, authored with an email GitHub could not match to the
+  // account. Without the guard they appear in their own trailer list.
+  const byName = checkCoauthors(
+    [{ author: null, commit: { author: { name: 'tonio-alucema', email: 'tonio@example.com' } } }],
+    'tonio-alucema'
+  );
+  const byEmail = checkCoauthors(
+    [{ author: null, commit: { author: { name: 'Tonio', email: 'tonio-alucema@users.noreply.github.com' } } }],
+    'tonio-alucema'
+  );
+
+  assert.deepEqual(byName.informational, []);
+  assert.deepEqual(byEmail.informational, []);
+});

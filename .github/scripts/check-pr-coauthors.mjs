@@ -50,6 +50,7 @@ function noReplyEmail(login) {
 }
 
 export function checkCoauthors(commits, prAuthor) {
+  const author = (prAuthor ?? '').toLowerCase();
   const contributors = new Map();
 
   for (const entry of commits ?? []) {
@@ -59,11 +60,20 @@ export function checkCoauthors(commits, prAuthor) {
 
     // The PR author's own commits need no trailer — the squash is already
     // theirs. Compared case-insensitively because GitHub logins are.
-    if (login && prAuthor && login.toLowerCase() === prAuthor.toLowerCase()) continue;
+    if (login && author && login.toLowerCase() === author) continue;
 
     // Bots author plenty of commits and crediting them is noise.
     if (login && /\[bot\]$/.test(login)) continue;
     if (!login && !gitName) continue;
+
+    // A commit GitHub could not match to an account may still be the PR
+    // author's own — their git config carrying an email GitHub does not know.
+    // Without this they are listed as a co-author of themselves.
+    if (!login && author) {
+      const nameMatches = gitName && gitName.toLowerCase() === author;
+      const emailMatches = gitEmail && gitEmail.toLowerCase().startsWith(`${author}@`);
+      if (nameMatches || emailMatches) continue;
+    }
 
     // Prefer the GitHub identity, so the trailer links to a profile. Fall back
     // to the raw git author for a commit GitHub could not match to an account.
@@ -71,14 +81,23 @@ export function checkCoauthors(commits, prAuthor) {
     const email = login ? noReplyEmail(login) : gitEmail;
     if (!email) continue;
 
-    const trailer = `Co-Authored-By: ${gitName && login ? gitName : name} <${email}>`;
-    if (!contributors.has(trailer)) contributors.set(trailer, name);
+    // Keyed on identity, not on the rendered line. One person whose git config
+    // name changed across commits is still one person, and emitting them twice
+    // would put two trailers for the same contributor into the squash body.
+    const key = (login ?? gitEmail ?? name).toLowerCase();
+    if (contributors.has(key)) continue;
+
+    const displayName = gitName && login ? gitName : name;
+    contributors.set(key, {
+      trailer: `Co-Authored-By: ${displayName} <${email}>`,
+      name: displayName,
+    });
   }
 
   if (contributors.size === 0) return { passed: true, informational: [] };
 
-  const trailers = [...contributors.keys()].sort();
-  const names = [...new Set(contributors.values())].sort();
+  const trailers = [...contributors.values()].map(c => c.trailer).sort();
+  const names = [...new Set([...contributors.values()].map(c => c.name))].sort();
   const who = names.length === 1 ? names[0] : `${names.length} other contributors`;
 
   return {
