@@ -2153,7 +2153,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         lastAttemptAt: new Date(Date.now() - 60 * 60 * 1000),
         attemptCount: 1,
       });
-      const enqueueWakeup = vi.fn(async () => null);
+      const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() } as never));
       const recovery = recoveryService(db, { enqueueWakeup });
 
       const result = await recovery.reconcileStrandedAssignedIssues();
@@ -2166,6 +2166,40 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       );
       const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, actionId));
       expect(action?.attemptCount).toBe(2);
+      const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      expect(updatedIssue?.status).toBe("blocked");
+    });
+
+    it("does not consume the retry attempt or backoff window when enqueueWakeup does not create a wake (AGE-691)", async () => {
+      // `enqueueWakeup` can return `null` without throwing (idempotency
+      // dedupe, budget block). Recording the retry attempt regardless would
+      // silently burn this issue's bounded recovery budget and backoff
+      // window on a tick that never actually woke the owner.
+      const { companyId, managerId, sourceIssueId } = await seedCompany();
+      await db.update(issues).set({ status: "blocked", assigneeAgentId: managerId }).where(eq(issues.id, sourceIssueId));
+      const lastAttemptAt = new Date(Date.now() - 60 * 60 * 1000);
+      const actionId = await seedOrphanedBlockedAction({
+        companyId,
+        sourceIssueId,
+        ownerAgentId: managerId,
+        lastAttemptAt,
+        attemptCount: 1,
+      });
+      const enqueueWakeup = vi.fn(async () => null);
+      const recovery = recoveryService(db, { enqueueWakeup });
+
+      const result = await recovery.reconcileStrandedAssignedIssues();
+
+      expect(result.orphanedBlockedRecoveryRewoken).toBe(0);
+      expect(result.orphanedBlockedRecoveryReminded).toBe(0);
+      expect(result.skipped).toBeGreaterThanOrEqual(1);
+      expect(enqueueWakeup).toHaveBeenCalledWith(
+        managerId,
+        expect.objectContaining({ reason: "source_scoped_recovery_action" }),
+      );
+      const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, actionId));
+      expect(action?.attemptCount).toBe(1);
+      expect(action?.lastAttemptAt?.getTime()).toBe(lastAttemptAt.getTime());
       const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
       expect(updatedIssue?.status).toBe("blocked");
     });

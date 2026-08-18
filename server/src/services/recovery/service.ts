@@ -3801,16 +3801,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
-      await db
-        .update(issueRecoveryActions)
-        .set({
-          attemptCount: action.attemptCount + 1,
-          lastAttemptAt: now,
-          updatedAt: now,
-        })
-        .where(eq(issueRecoveryActions.id, action.id));
-
-      await deps.enqueueWakeup(ownerAgentId!, {
+      // Enqueue the wake before recording the retry attempt: `enqueueWakeup`
+      // can return `null` (idempotency dedupe, budget block) without
+      // throwing. Bumping `attemptCount`/`lastAttemptAt` first would consume
+      // this issue's bounded retry budget and backoff window even when no
+      // wake was actually created, silently losing a retry instead of
+      // re-checking on the next tick.
+      const wakeRun = await deps.enqueueWakeup(ownerAgentId!, {
         source: "assignment",
         triggerDetail: "system",
         reason: "source_scoped_recovery_action",
@@ -3832,6 +3829,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           sourceIssueId: issue.id,
         },
       });
+      if (!wakeRun) {
+        result.skipped += 1;
+        continue;
+      }
+
+      await db
+        .update(issueRecoveryActions)
+        .set({
+          attemptCount: action.attemptCount + 1,
+          lastAttemptAt: now,
+          updatedAt: now,
+        })
+        .where(eq(issueRecoveryActions.id, action.id));
 
       result.rewoken += 1;
       result.issueIds.push(issue.id);
