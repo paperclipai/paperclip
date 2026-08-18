@@ -12,6 +12,7 @@ import {
   Boxes,
   Repeat,
   Layers,
+  CalendarDays,
   GitBranch,
   Package,
   Settings,
@@ -230,6 +231,7 @@ export function Sidebar() {
             <SidebarNavItem to="/cases" label="Cases" icon={Layers} textBadge="beta" />
           ) : null}
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
+          <SidebarNavItem to="/calendar" label="Calendar" icon={CalendarDays} />
           {showPipelines ? (
             <SidebarNavItem to="/pipelines" label="Pipelines" icon={GitBranch} />
           ) : null}

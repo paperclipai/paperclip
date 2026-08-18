@@ -842,6 +842,14 @@ export type {
   WorkTimelineEdge,
   WorkTimelineResult,
 } from "./work-timeline.js";
+export type {
+  CalendarEventKind,
+  CalendarEventTense,
+  CalendarEventStatus,
+  CalendarEvent,
+  CalendarTruncatedSeries,
+  CalendarResult,
+} from "./calendar.js";
 export type { ActivityEvent } from "./activity.js";
 export type {
   UserProfileActivitySummary,

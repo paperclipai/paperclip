@@ -1964,6 +1964,21 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   background-color: var(--sc);
 }
 
+/* Calendar chips.
+   A projected occurrence is a *forecast* — it has not happened. It is drawn as
+   a dashed outline with no fill; a recorded run keeps the solid `.status-chip`
+   fill. The distinction is structural rather than hue-only, so it survives a
+   monochrome display and does not rely on colour vision, and text colour is
+   unchanged between the two so nothing about the forecast state costs
+   contrast. */
+.calendar-chip[data-tense="projected"] {
+  background-color: transparent;
+  border-style: dashed;
+}
+.dark .calendar-chip[data-tense="projected"] {
+  background-color: transparent;
+}
+
 /* ── Extracted verbatim tokens (Phase 2, design/token-extraction) ── */
 /* Batch 1/4: color literals only. Reused-from-existing-token sites (see
    TOKEN-AUDIT.md section 1.1) are NOT duplicated here — they reference

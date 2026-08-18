@@ -41,6 +41,7 @@ import { Approvals } from "./pages/Approvals";
 import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Costs } from "./pages/Costs";
 import { CompanyActivity } from "./pages/audit/CompanyActivity";
+import { Calendar } from "./pages/Calendar";
 import { Inbox } from "./pages/Inbox";
 import { WhatNeedsMe } from "./pages/WhatNeedsMe";
 import { DecisionQueuePage } from "./pages/DecisionQueuePage";
@@ -264,9 +265,10 @@ function boardRoutes() {
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
       <Route path="costs" element={<Costs />} />
       <Route path="activity" element={<CompanyActivity />} />
-      {/* `/audit` merged into the single Activity page (PAP-16302). Existing deep
+      {/* `/audit` merged into the single Activity page. Existing deep
           links keep working, preset to the agent-actions scope. */}
       <Route path="audit" element={<Navigate to="/activity?mode=agents" replace />} />
+      <Route path="calendar" element={<Calendar />} />
       {/* Conference Room Chat surfaces (PAP-136/PAP-137): routes stay
           registered but redirect to the company home while the experimental
           flag is off. The board-level `artifacts` mount below is the new

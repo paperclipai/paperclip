@@ -635,6 +635,68 @@ const environmentCustomImageTemplateRollbackResultSchema = z.object({
   supersededTemplate: environmentCustomImageTemplateSchema,
 }).strict();
 
+const calendarEventKindSchema = z.enum([
+  "routine_scheduled",
+  "routine_run",
+  "task_monitor",
+  "task_activity",
+  "agent_run",
+]);
+
+const calendarQuerySchema = z.object({
+  from: z.string().optional(),
+  to: z.string().optional(),
+  kinds: z.string().optional(),
+  agentId: z.string().uuid().optional(),
+  projectId: z.string().uuid().optional(),
+  routineId: z.string().uuid().optional(),
+}).strict();
+
+const calendarResponseSchema = z.object({
+  events: z.array(z.object({
+    id: z.string(),
+    kind: calendarEventKindSchema,
+    tense: z.enum(["projected", "actual"]),
+    status: z.enum(["scheduled", "running", "succeeded", "failed", "skipped", "cancelled"]),
+    title: z.string(),
+    at: z.string(),
+    endAt: z.string().nullable(),
+    agentId: z.string().nullable(),
+    agentName: z.string().nullable(),
+    routineId: z.string().nullable(),
+    routineTitle: z.string().nullable(),
+    issueId: z.string().nullable(),
+    issueIdentifier: z.string().nullable(),
+    projectId: z.string().nullable(),
+    scheduleTimezone: z.string().nullable(),
+    cronExpression: z.string().nullable(),
+    href: z.string().nullable(),
+  }).strict()),
+  window: z.object({
+    from: z.string(),
+    to: z.string(),
+    capped: z.boolean(),
+  }).strict(),
+  counts: z.record(calendarEventKindSchema, z.number().int()),
+  truncated: z.object({
+    series: z.array(z.object({
+      routineId: z.string(),
+      routineTitle: z.string(),
+      triggerId: z.string(),
+      cronExpression: z.string(),
+      returned: z.number().int(),
+    }).strict()),
+    droppedEvents: z.number().int(),
+    sources: z.array(calendarEventKindSchema),
+  }).strict().nullable(),
+  unschedulable: z.array(z.object({
+    routineId: z.string(),
+    routineTitle: z.string(),
+    triggerId: z.string(),
+    reason: z.string(),
+  }).strict()),
+}).strict();
+
 const workTimelineQuerySchema = z.object({
   from: z.string().optional(),
   to: z.string().optional(),
@@ -1297,6 +1359,23 @@ registry.registerPath({
   },
   responses: {
     200: r.ok(workTimelineResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/calendar",
+  tags: ["companies"],
+  summary: "Get the company calendar, including projected future occurrences",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: calendarQuerySchema,
+  },
+  responses: {
+    200: r.ok(calendarResponseSchema),
     400: r.badRequest,
     401: r.unauthorized,
     403: r.forbidden,

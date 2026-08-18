@@ -27,6 +27,7 @@ export { toolAccessRoutes } from "./tool-access.js";
 export { smokeLabRoutes } from "./smoke-lab.js";
 export { costRoutes } from "./costs.js";
 export { activityRoutes } from "./activity.js";
+export { calendarRoutes } from "./calendar.js";
 export { dashboardRoutes } from "./dashboard.js";
 export { attentionRoutes } from "./attention.js";
 export { decisionRoutes } from "./decisions.js";
