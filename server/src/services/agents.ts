@@ -19,6 +19,7 @@ import {
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   getAgentWorkEligibility,
+  isAgentAssignableToWork,
   isUuidLike,
   normalizeAgentApiKeyScope,
   normalizeAgentUrlKey,
@@ -912,21 +913,75 @@ export function agentService(db: Db) {
       const existing = await getById(id);
       if (!existing) return null;
 
-      await db
-        .update(agents)
-        .set({
-          status: "terminated",
-          pauseReason: null,
-          pausedAt: null,
-          errorReason: null,
-          updatedAt: new Date(),
+      await db.transaction(async (tx) => {
+        const now = new Date();
+        // Agent lifecycle changes can race each other. Lock the complete
+        // company graph before deriving a replacement so a concurrent
+        // termination cannot make that replacement ineligible between the
+        // eligibility check and the issue/report reassignment writes.
+        await tx.execute(
+          sql`select ${agents.id} from ${agents} where ${agents.companyId} = ${existing.companyId} order by ${agents.id} for update`,
+        );
+        const companyAgents = await tx.select().from(agents).where(eq(agents.companyId, existing.companyId));
+        const eligibilityAgents = companyAgents.map(toEligibilityAgent);
+        const sourceAgent = companyAgents.find((candidate) => candidate.id === id) ?? null;
+        const manager = sourceAgent?.reportsTo
+          ? companyAgents.find((candidate) => candidate.id === sourceAgent.reportsTo) ?? null
+          : null;
+        const replacementAssigneeId = manager && isAgentAssignableToWork({
+          agent: toEligibilityAgent(manager),
+          agents: eligibilityAgents,
         })
-        .where(eq(agents.id, id));
+          ? manager.id
+          : null;
+        const releasableIssues = await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(and(
+            eq(issues.assigneeAgentId, id),
+            eq(issues.companyId, existing.companyId),
+            inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
+          ));
 
-      await db
-        .update(agentApiKeys)
-        .set({ revokedAt: new Date() })
-        .where(eq(agentApiKeys.agentId, id));
+        await tx
+          .update(agents)
+          .set({
+            status: "terminated",
+            pauseReason: null,
+            pausedAt: null,
+            errorReason: null,
+            updatedAt: now,
+          })
+          .where(eq(agents.id, id));
+        await tx
+          .update(agents)
+          .set({ reportsTo: replacementAssigneeId, updatedAt: now })
+          .where(and(eq(agents.reportsTo, id), eq(agents.companyId, existing.companyId)));
+        await tx
+          .update(issues)
+          .set({ assigneeAgentId: replacementAssigneeId, updatedAt: now })
+          .where(and(
+            eq(issues.assigneeAgentId, id),
+            eq(issues.companyId, existing.companyId),
+            inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
+          ));
+        if (releasableIssues.length > 0) {
+          await tx.insert(issueComments).values(releasableIssues.map((issue) => ({
+            companyId: existing.companyId,
+            issueId: issue.id,
+            authorType: "system" as const,
+            body: replacementAssigneeId
+              ? `System: assignment released from source agent ${id}; reason: agent was terminated; reassigned to its manager.`
+              : `System: assignment released from source agent ${id}; reason: agent was terminated; moved to the unassigned queue.`,
+            createdAt: now,
+            updatedAt: now,
+          })));
+        }
+        await tx
+          .update(agentApiKeys)
+          .set({ revokedAt: now })
+          .where(eq(agentApiKeys.agentId, id));
+      });
 
       return getById(id);
     },
