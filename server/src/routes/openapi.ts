@@ -264,6 +264,13 @@ function unwrapSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
   if (typeName === "ZodEffects") {
     return unwrapSchema(schema._def.schema);
   }
+  if (typeName === "ZodPipeline") {
+    // `.pipe(out)` (e.g. `multilineTextSchema.pipe(z.string().min(1))`) chains a
+    // transform (`in`) into a second validator (`out`). `out` carries the
+    // effective, client-facing constraints (length, format, enum, ...), so
+    // document the pipeline as `out`'s shape rather than dropping it to `{}`.
+    return unwrapSchema(schema._def.out);
+  }
   return schema;
 }
 
@@ -274,6 +281,9 @@ function isOptionalSchema(schema: z.ZodTypeAny): boolean {
   }
   if (typeName === "ZodEffects") {
     return isOptionalSchema(schema._def.schema);
+  }
+  if (typeName === "ZodPipeline") {
+    return isOptionalSchema(schema._def.out);
   }
   if (typeName === "ZodNullable") {
     return isOptionalSchema(schema._def.innerType);
