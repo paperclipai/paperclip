@@ -5947,12 +5947,20 @@ async function findHealthyRunningRuntimeService(reuseKey: string | null) {
   const existingId = reuseKey ? runtimeServicesByReuseKey.get(reuseKey) : null;
   const existing = existingId ? runtimeServicesById.get(existingId) : null;
   if (!existing || existing.status !== "running") return null;
-  const healthy = await isRuntimeServiceUrlHealthy(existing.url, {
+  const healthInput = {
     serviceName: existing.serviceName,
     command: existing.command,
     provider: existing.provider,
     port: existing.port,
-  });
+  };
+  let healthy = await isRuntimeServiceUrlHealthy(existing.url, healthInput);
+  if (!healthy) {
+    // A single timeout or connection reset is not enough evidence to destroy a
+    // shared runtime that active runs may still use. Confirm the failure after
+    // a short bounded delay before entering the destructive replacement path.
+    await delay(250);
+    healthy = await isRuntimeServiceUrlHealthy(existing.url, healthInput);
+  }
   if (healthy) return existing;
   await stopRuntimeService(existing.id);
   return null;
