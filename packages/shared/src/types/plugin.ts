@@ -163,6 +163,16 @@ export interface SandboxProviderCapabilities {
    * the output-file poll path.
    */
   incrementalSessionOutput?: boolean;
+  /**
+   * Provider can run file transfers into and out of the sandbox in parallel, in
+   * both directions. This is an opt-in behavioral guarantee. An omitted key
+   * denies the capability, so the host keeps the serial transfer path. The host
+   * resolves the capability `true` only when the provider declares this key
+   * `true` and the live worker verifies both sync verbs (`environmentSyncIn` and
+   * `environmentSyncOut`). A provider that verifies only one verb resolves
+   * `false`.
+   */
+  concurrentSyncOperations?: boolean;
 }
 
 export interface PluginEnvironmentDriverDeclaration {

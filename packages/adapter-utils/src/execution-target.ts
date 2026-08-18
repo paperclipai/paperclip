@@ -115,6 +115,7 @@ export interface EffectiveSandboxCapabilities {
   readonly persistentProcessSessions: boolean;
   readonly independentControlCommands: boolean;
   readonly incrementalSessionOutput: boolean;
+  readonly concurrentSyncOperations: boolean;
 }
 
 export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWorkspaceMetadata {
@@ -254,6 +255,7 @@ function parseEffectiveSandboxCapabilities(value: unknown): EffectiveSandboxCapa
     persistentProcessSessions: parsed.persistentProcessSessions === true,
     independentControlCommands: parsed.independentControlCommands === true,
     incrementalSessionOutput: parsed.incrementalSessionOutput === true,
+    concurrentSyncOperations: parsed.concurrentSyncOperations === true,
   };
 }
 

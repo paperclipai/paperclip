@@ -166,6 +166,7 @@ export const sandboxProviderCapabilitiesSchema = z.object({
   persistentProcessSessions: z.boolean().optional(),
   independentControlCommands: z.boolean().optional(),
   incrementalSessionOutput: z.boolean().optional(),
+  concurrentSyncOperations: z.boolean().optional(),
 }).strict();
 
 export type SandboxProviderCapabilitiesInput = z.infer<typeof sandboxProviderCapabilitiesSchema>;

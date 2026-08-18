@@ -89,6 +89,7 @@ export const SANDBOX_CAPABILITY_KEYS = [
   "persistentProcessSessions",
   "independentControlCommands",
   "incrementalSessionOutput",
+  "concurrentSyncOperations",
 ] as const;
 
 export type SandboxCapabilityKey = (typeof SANDBOX_CAPABILITY_KEYS)[number];
@@ -104,6 +105,7 @@ export type SandboxCapabilityKey = (typeof SANDBOX_CAPABILITY_KEYS)[number];
  */
 const SANDBOX_CAPABILITY_OPT_IN_KEYS: ReadonlySet<SandboxCapabilityKey> = new Set([
   "incrementalSessionOutput",
+  "concurrentSyncOperations",
 ]);
 
 /**
@@ -134,6 +136,12 @@ const SANDBOX_CAPABILITY_OPT_IN_KEYS: ReadonlySet<SandboxCapabilityKey> = new Se
  *   provider tails the session log through it. The verified verb is necessary
  *   but not sufficient: this key is opt-in, so the declaration is the real gate
  *   (see {@link SANDBOX_CAPABILITY_OPT_IN_KEYS}).
+ * - `concurrentSyncOperations` requires BOTH sync verbs, because parallel
+ *   bidirectional transfer runs an inbound and an outbound transfer at the same
+ *   time. The two verbs are separate required groups, so a provider that
+ *   verifies only one direction cannot get the capability. The verbs are
+ *   necessary but not sufficient: this key is opt-in, so the declaration is the
+ *   real gate (see {@link SANDBOX_CAPABILITY_OPT_IN_KEYS}).
  */
 const SANDBOX_CAPABILITY_PREREQUISITE_METHODS: Record<SandboxCapabilityKey, readonly (readonly string[])[]> = {
   // Reusable leases require ALL reuse verbs. Each verb is its own required
@@ -147,6 +155,7 @@ const SANDBOX_CAPABILITY_PREREQUISITE_METHODS: Record<SandboxCapabilityKey, read
   persistentProcessSessions: [["environmentExecute"]],
   independentControlCommands: [["environmentExecute"]],
   incrementalSessionOutput: [["environmentExecute"]],
+  concurrentSyncOperations: [["environmentSyncIn"], ["environmentSyncOut"]],
 };
 
 function capabilityIsVerified(
@@ -230,6 +239,7 @@ export function resolveEffectiveSandboxCapabilities(input: {
     persistentProcessSessions: resolve("persistentProcessSessions"),
     independentControlCommands: resolve("independentControlCommands"),
     incrementalSessionOutput: resolve("incrementalSessionOutput"),
+    concurrentSyncOperations: resolve("concurrentSyncOperations"),
   };
 }
 

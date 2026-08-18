@@ -290,6 +290,40 @@ describe("sandbox capability contract normalizer", () => {
     expect(effective.incrementalSessionOutput).toBe(false);
   });
 
+  it("test_concurrent_sync_operations_is_opt_in_and_needs_both_sync_verbs", () => {
+    // Parallel bidirectional file sync is opt-in and direction-neutral. It needs
+    // both sync verbs, so a provider that verifies only one direction cannot get
+    // the capability. An absent declaration denies it even with both verbs.
+    const undeclared = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["environmentSyncIn", "environmentSyncOut"],
+      declared: null,
+    });
+    expect(undeclared.concurrentSyncOperations).toBe(false);
+
+    // A positive declaration with both verified verbs resolves true.
+    const bothVerbs = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["environmentSyncIn", "environmentSyncOut"],
+      declared: { concurrentSyncOperations: true },
+    });
+    expect(bothVerbs.concurrentSyncOperations).toBe(true);
+
+    // Only the inbound verb: the outbound prerequisite is missing, so it resolves
+    // false.
+    const inOnly = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["environmentSyncIn"],
+      declared: { concurrentSyncOperations: true },
+    });
+    expect(inOnly.concurrentSyncOperations).toBe(false);
+
+    // Only the outbound verb: the inbound prerequisite is missing, so it resolves
+    // false.
+    const outOnly = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["environmentSyncOut"],
+      declared: { concurrentSyncOperations: true },
+    });
+    expect(outOnly.concurrentSyncOperations).toBe(false);
+  });
+
   it("test_unknown_or_unavailable_verification_resolves_false", () => {
     const declaredAll = {
       reusableLeases: true,
@@ -298,6 +332,7 @@ describe("sandbox capability contract normalizer", () => {
       persistentProcessSessions: true,
       independentControlCommands: true,
       incrementalSessionOutput: true,
+      concurrentSyncOperations: true,
     };
 
     for (const verifiedMethods of [null, undefined, [] as string[]]) {
