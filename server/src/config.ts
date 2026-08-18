@@ -60,6 +60,13 @@ export interface Config {
   authBaseUrlMode: AuthBaseUrlMode;
   authPublicBaseUrl: string | undefined;
   authDisableSignUp: boolean;
+  /**
+   * True when `auth.disableSignUp` was set explicitly by the operator (via env
+   * var or config file). When false, the value is a default and the server may
+   * derive a safer effective value at startup (e.g. auto-disable public sign-up
+   * once a real instance admin exists). See server bootstrap in index.ts.
+   */
+  authDisableSignUpExplicit: boolean;
   databaseMode: DatabaseMode;
   databaseUrl: string | undefined;
   databaseMigrationUrl: string | undefined;
@@ -209,6 +216,11 @@ export function loadConfig(): Config {
     fileConfig?.auth?.baseUrlMode ??
     (authPublicBaseUrl ? "explicit" : "auto");
   const disableSignUpFromEnv = process.env.PAPERCLIP_AUTH_DISABLE_SIGN_UP;
+  // Whether the operator pinned this value (env var or config file). When not
+  // pinned, the server applies a secure default at startup (close public
+  // sign-up once a real instance admin exists) — see index.ts auth bootstrap.
+  const authDisableSignUpExplicit: boolean =
+    disableSignUpFromEnv !== undefined || fileConfig?.auth?.disableSignUp !== undefined;
   const authDisableSignUp: boolean =
     disableSignUpFromEnv !== undefined
       ? disableSignUpFromEnv === "true"
@@ -296,6 +308,7 @@ export function loadConfig(): Config {
     authBaseUrlMode,
     authPublicBaseUrl,
     authDisableSignUp,
+    authDisableSignUpExplicit,
     databaseMode: fileDatabaseMode,
     databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
     databaseMigrationUrl: process.env.DATABASE_MIGRATION_URL,

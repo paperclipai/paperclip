@@ -41,6 +41,20 @@ function getChallengeStatus(token: string, code: string | undefined): ChallengeS
   return "available";
 }
 
+/**
+ * True when at least one real (non-placeholder) instance admin exists, i.e. the
+ * board has already been claimed. Used to decide whether the bootstrap window is
+ * still open — while only the `local-board` placeholder admin exists, public
+ * sign-up must stay available so the first operator can register and claim it.
+ */
+export async function hasRealInstanceAdmin(db: Db): Promise<boolean> {
+  const admins = await db
+    .select({ userId: instanceUserRoles.userId })
+    .from(instanceUserRoles)
+    .where(eq(instanceUserRoles.role, "instance_admin"));
+  return admins.some((admin) => admin.userId !== LOCAL_BOARD_USER_ID);
+}
+
 export async function initializeBoardClaimChallenge(
   db: Db,
   opts: { deploymentMode: DeploymentMode },
