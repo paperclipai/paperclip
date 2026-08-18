@@ -19,6 +19,7 @@ import {
   prepareCommandManagedRuntime,
   type CommandManagedRuntimeRunner,
 } from "./command-managed-runtime.js";
+import { SYNC_OPERATION_CONCURRENCY_LIMIT } from "./sync-operation-schedule.js";
 import {
   createRuntimeSpanRunner,
   getActiveStepContext,
@@ -2130,5 +2131,388 @@ describe("sandbox managed runtime", () => {
       expect(span!.ended).toBe(true);
       expect(span!.parentName).toBe("stage.sync");
     }
+  });
+});
+
+// A deferred promise a test resolves or rejects by hand.
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
+}
+
+function defer<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function settleTick(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// A controlled `syncIn` client. It labels each inbound operation, records the
+// start and settle order, and lets a test hold one upload open, release it, or
+// make it fail. One operation rides each `syncIn` call, so one call maps to one
+// label. This exercises the inbound coordinator's schedule, bound, failure
+// semantics, and startup barrier with deferred-promise fakes.
+interface SyncControl {
+  started: string[];
+  settled: string[];
+  waitForStart(label: string): Promise<void>;
+  hold(label: string): void;
+  release(label: string): void;
+  failWith(label: string, error: Error): void;
+}
+
+function labelOfOperation(operation: SandboxSyncOperation): string {
+  const bases = operation.files.map((mapping) => path.posix.basename(mapping.targetPath));
+  if (bases.some((base) => base === "workspace-upload.tar" || base === "git-workspace-upload.tar")) {
+    return "workspace";
+  }
+  const assetBase = bases.find((base) => base.endsWith("-upload.tar"));
+  if (assetBase) {
+    return assetBase.slice(0, -"-upload.tar".length);
+  }
+  const projectBase = bases.find((base) => base.startsWith("project-"));
+  if (projectBase) {
+    return projectBase;
+  }
+  return bases[0] ?? operation.operationId;
+}
+
+function makeControlledSyncClient(options: { concurrent: boolean }): {
+  client: SandboxManagedRuntimeClient;
+  control: SyncControl;
+} {
+  const started: string[] = [];
+  const settled: string[] = [];
+  const gates = new Map<string, Deferred<void>>();
+  const failures = new Map<string, Error>();
+  const startWaiters = new Map<string, Array<() => void>>();
+
+  const control: SyncControl = {
+    started,
+    settled,
+    waitForStart(label) {
+      if (started.includes(label)) {
+        return Promise.resolve();
+      }
+      return new Promise<void>((resolve) => {
+        const waiters = startWaiters.get(label) ?? [];
+        waiters.push(resolve);
+        startWaiters.set(label, waiters);
+      });
+    },
+    hold(label) {
+      if (!gates.has(label)) {
+        gates.set(label, defer<void>());
+      }
+    },
+    release(label) {
+      gates.get(label)?.resolve();
+    },
+    failWith(label, error) {
+      failures.set(label, error);
+      gates.get(label)?.resolve();
+    },
+  };
+
+  const noop = async (): Promise<void> => {};
+  const client: SandboxManagedRuntimeClient = {
+    makeDir: noop,
+    writeFile: noop,
+    readFile: async () => Buffer.alloc(0),
+    listFiles: async () => [],
+    remove: noop,
+    run: noop,
+    allowConcurrentSyncOperations: options.concurrent,
+    syncIn: async (operations) => {
+      const operation = operations[0]!;
+      const label = labelOfOperation(operation);
+      started.push(label);
+      const waiters = startWaiters.get(label) ?? [];
+      startWaiters.delete(label);
+      for (const waiter of waiters) {
+        waiter();
+      }
+      try {
+        const gate = gates.get(label);
+        if (gate) {
+          await gate.promise;
+        }
+        const failure = failures.get(label);
+        if (failure) {
+          throw failure;
+        }
+        return {
+          operations: [{
+            operationId: operation.operationId,
+            filesTransferred: operation.files.length,
+            bytesTransferred: 0,
+          }],
+        };
+      } finally {
+        settled.push(label);
+      }
+    },
+  };
+
+  return { client, control };
+}
+
+describe("sandbox managed runtime inbound coordinator", () => {
+  const cleanupDirs: string[] = [];
+
+  afterEach(async () => {
+    while (cleanupDirs.length > 0) {
+      const dir = cleanupDirs.pop();
+      if (!dir) continue;
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  function makeSpec(remoteCwd: string) {
+    return {
+      transport: "sandbox" as const,
+      provider: "test",
+      sandboxId: "sandbox-1",
+      remoteCwd,
+      timeoutMs: 30_000,
+      apiKey: null,
+    };
+  }
+
+  // Create a temp root with one workspace directory and any named asset/project
+  // directories. Each directory carries one file, so the host tar step has bytes.
+  async function makeInboundDirs(names: string[]): Promise<{
+    rootDir: string;
+    workspaceDir: string;
+    dirOf: (name: string) => string;
+  }> {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-inbound-coordinator-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    await writeFile(path.join(workspaceDir, "file.txt"), "workspace\n", "utf8");
+    const dirs = new Map<string, string>();
+    for (const name of names) {
+      const dir = path.join(rootDir, name);
+      await mkdir(dir, { recursive: true });
+      await writeFile(path.join(dir, "file.txt"), `${name}\n`, "utf8");
+      dirs.set(name, dir);
+    }
+    return { rootDir, workspaceDir, dirOf: (name) => dirs.get(name)! };
+  }
+
+  // Resolve true when the label started within the window, false on timeout.
+  async function startedWithin(control: SyncControl, label: string, ms: number): Promise<boolean> {
+    return Promise.race([
+      control.waitForStart(label).then(() => true),
+      settleTick(ms).then(() => false),
+    ]);
+  }
+
+  it("with concurrency permitted, the home asset upload starts while the workspace upload is held open", async () => {
+    const { workspaceDir, dirOf } = await makeInboundDirs(["home"]);
+    const { client, control } = makeControlledSyncClient({ concurrent: true });
+    control.hold("workspace");
+
+    const prepared = prepareSandboxManagedRuntime({
+      spec: makeSpec("/remote/cwd"),
+      adapterKey: "codex",
+      client,
+      workspaceLocalDir: workspaceDir,
+      assets: [{ key: "home", localDir: dirOf("home") }],
+    });
+    prepared.catch(() => undefined);
+
+    // The workspace upload is open and held. The home asset upload still starts,
+    // so the coordinator runs the two operations concurrently.
+    await control.waitForStart("workspace");
+    expect(await startedWithin(control, "home", 4000)).toBe(true);
+    expect(control.settled).not.toContain("workspace");
+
+    control.release("workspace");
+    await prepared;
+    expect(control.settled).toContain("home");
+  });
+
+  it("with five operations and the bound of 4, the fifth operation does not start while four stay open", async () => {
+    expect(SYNC_OPERATION_CONCURRENCY_LIMIT).toBe(4);
+    const assetKeys = Array.from(
+      { length: SYNC_OPERATION_CONCURRENCY_LIMIT + 1 },
+      (_unused, index) => `asset-${index}`,
+    );
+    const { workspaceDir, dirOf } = await makeInboundDirs(assetKeys);
+    const { client, control } = makeControlledSyncClient({ concurrent: true });
+    for (const key of assetKeys) {
+      control.hold(key);
+    }
+
+    const prepared = prepareSandboxManagedRuntime({
+      spec: makeSpec("/remote/cwd"),
+      adapterKey: "codex",
+      client,
+      syncWorkspace: false,
+      workspaceLocalDir: workspaceDir,
+      assets: assetKeys.map((key) => ({ key, localDir: dirOf(key) })),
+    });
+    prepared.catch(() => undefined);
+
+    const firstFour = assetKeys.slice(0, SYNC_OPERATION_CONCURRENCY_LIMIT);
+    const fifth = assetKeys[SYNC_OPERATION_CONCURRENCY_LIMIT]!;
+    for (const key of firstFour) {
+      await control.waitForStart(key);
+    }
+    // The bound holds the fifth operation while four stay open.
+    expect(await startedWithin(control, fifth, 300)).toBe(false);
+    expect(control.started.slice().sort()).toEqual(firstFour.slice().sort());
+
+    // One release frees one slot, so the fifth operation starts.
+    control.release(firstFour[0]!);
+    expect(await startedWithin(control, fifth, 4000)).toBe(true);
+
+    for (const key of assetKeys) {
+      control.release(key);
+    }
+    await prepared;
+    expect(control.settled.slice().sort()).toEqual(assetKeys.slice().sort());
+  });
+
+  it("holds one upload open after another upload fails, and returns only after both settle", async () => {
+    const { workspaceDir, dirOf } = await makeInboundDirs(["asset-a", "asset-b"]);
+    const { client, control } = makeControlledSyncClient({ concurrent: true });
+    control.hold("asset-b");
+
+    let coordinatorSettled = false;
+    const prepared = prepareSandboxManagedRuntime({
+      spec: makeSpec("/remote/cwd"),
+      adapterKey: "codex",
+      client,
+      syncWorkspace: false,
+      workspaceLocalDir: workspaceDir,
+      assets: [
+        { key: "asset-a", localDir: dirOf("asset-a") },
+        { key: "asset-b", localDir: dirOf("asset-b") },
+      ],
+    });
+    const done = prepared.then(
+      () => { coordinatorSettled = true; },
+      () => { coordinatorSettled = true; },
+    );
+
+    control.failWith("asset-a", new Error("asset-a-fail"));
+    await control.waitForStart("asset-b");
+    await settleTick(100);
+
+    // The first upload already failed. The second upload is still open, so the
+    // coordinator must not return yet.
+    expect(coordinatorSettled).toBe(false);
+    expect(control.settled).toContain("asset-a");
+    expect(control.settled).not.toContain("asset-b");
+
+    control.release("asset-b");
+    await done;
+    expect(coordinatorSettled).toBe(true);
+    expect(control.settled).toEqual(expect.arrayContaining(["asset-a", "asset-b"]));
+  });
+
+  it("records a referenced-project failure as nonfatal and finishes the other referenced-project uploads", async () => {
+    const { workspaceDir, dirOf } = await makeInboundDirs(["good", "bad"]);
+    const { client, control } = makeControlledSyncClient({ concurrent: true });
+    control.failWith("project-bad", new Error("bad-upload"));
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: makeSpec("/remote/cwd"),
+      adapterKey: "codex",
+      client,
+      syncWorkspace: false,
+      workspaceLocalDir: workspaceDir,
+      additionalSources: [
+        { localPath: dirOf("good"), projectId: "good" },
+        { localPath: dirOf("bad"), projectId: "bad" },
+      ],
+    });
+
+    // The healthy project synced; the failed project is a recorded, nonfatal
+    // outcome, so the coordinator resolved.
+    expect(Object.keys(prepared.additionalSourceDirs)).toEqual(["good"]);
+    expect(prepared.additionalSourceFailures.map((failure) => failure.projectId)).toEqual(["bad"]);
+    expect(prepared.additionalSourceFailures[0]!.error).toContain("bad-upload");
+    expect(control.settled).toContain("project-good");
+  });
+
+  it("raises an asset failure as fatal after the barrier", async () => {
+    const { workspaceDir, dirOf } = await makeInboundDirs(["asset-good", "asset-bad"]);
+    const { client, control } = makeControlledSyncClient({ concurrent: true });
+    control.failWith("asset-bad", new Error("asset-bad-fail"));
+
+    await expect(
+      prepareSandboxManagedRuntime({
+        spec: makeSpec("/remote/cwd"),
+        adapterKey: "codex",
+        client,
+        syncWorkspace: false,
+        workspaceLocalDir: workspaceDir,
+        assets: [
+          { key: "asset-good", localDir: dirOf("asset-good") },
+          { key: "asset-bad", localDir: dirOf("asset-bad") },
+        ],
+      }),
+    ).rejects.toThrow("asset-bad-fail");
+
+    // The barrier still settles the healthy asset before the coordinator raises.
+    expect(control.settled).toContain("asset-good");
+  });
+
+  it("raises the earlier required failure when the workspace and an asset both fail", async () => {
+    const { workspaceDir, dirOf } = await makeInboundDirs(["asset-a"]);
+    const { client, control } = makeControlledSyncClient({ concurrent: true });
+    control.failWith("workspace", new Error("workspace-fail"));
+    control.failWith("asset-a", new Error("asset-a-fail"));
+
+    // The workspace comes before the asset in stable operation order, so the
+    // coordinator raises the workspace failure.
+    await expect(
+      prepareSandboxManagedRuntime({
+        spec: makeSpec("/remote/cwd"),
+        adapterKey: "codex",
+        client,
+        workspaceLocalDir: workspaceDir,
+        assets: [{ key: "asset-a", localDir: dirOf("asset-a") }],
+      }),
+    ).rejects.toThrow("workspace-fail");
+  });
+
+  it("with concurrency forbidden, keeps the serial schedule in the current order", async () => {
+    const { workspaceDir, dirOf } = await makeInboundDirs(["asset-a"]);
+    const { client, control } = makeControlledSyncClient({ concurrent: false });
+    control.hold("workspace");
+
+    const prepared = prepareSandboxManagedRuntime({
+      spec: makeSpec("/remote/cwd"),
+      adapterKey: "codex",
+      client,
+      workspaceLocalDir: workspaceDir,
+      assets: [{ key: "asset-a", localDir: dirOf("asset-a") }],
+    });
+    prepared.catch(() => undefined);
+
+    // The workspace runs first and is held open. Serial mode runs one operation
+    // at a time, so the asset upload does not start until the workspace settles.
+    await control.waitForStart("workspace");
+    expect(await startedWithin(control, "asset-a", 300)).toBe(false);
+    expect(control.started).toEqual(["workspace"]);
+
+    control.release("workspace");
+    await control.waitForStart("asset-a");
+    await prepared;
+    // The serial order stays workspace first, then the asset.
+    expect(control.started).toEqual(["workspace", "asset-a"]);
   });
 });

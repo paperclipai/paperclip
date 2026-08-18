@@ -181,6 +181,46 @@ describe("sandbox run site", () => {
     expect(transport.launchEnv).toEqual(processLaunchEnv);
   });
 
+  it("test_sandbox_site_session_new_starts_only_after_the_sync_barrier_settles", async () => {
+    // The staging step wraps the inbound sync coordinator. Hold it open with a
+    // gate, so the sync barrier stays unsettled. `placeWorkspace` awaits staging,
+    // so it stays pending while the gate is held.
+    let releaseStaging!: () => void;
+    const stagingGate = new Promise<void>((resolve) => {
+      releaseStaging = resolve;
+    });
+    const freshStaged = makeStagedRuntime("fresh");
+    const { site, bridgeCalls } = makeSite({
+      stage: async () => {
+        await stagingGate;
+        return freshStaged;
+      },
+    });
+
+    // Drive the real run order: the engine awaits `placeWorkspace`, then starts the
+    // transport. `startProcessSessionBridge` models the ACP `session/new` startup.
+    let placed = false;
+    const run = (async () => {
+      await site.placeWorkspace(makeContext("s"));
+      placed = true;
+      await site.startTransport(makeContext("s"));
+    })();
+    run.catch(() => undefined);
+
+    // The sync barrier is still open, so `placeWorkspace` has not resolved and the
+    // process-session bridge that starts `session/new` has not started.
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    expect(placed).toBe(false);
+    expect(bridgeCalls).not.toContain("process-session:start");
+
+    // Settle the sync barrier. `placeWorkspace` resolves, then the transport starts
+    // `session/new`.
+    releaseStaging();
+    await run;
+    expect(placed).toBe(true);
+    expect(bridgeCalls).toContain("process-session:start");
+  });
+
   it("test_sandbox_site_borrow_yields_files_and_runtime_is_still_created", async () => {
     const cachedRuntime = makeStagedRuntime("cached");
     const stagedRuntimes = new Map<string, StagedRuntimeStoreEntry>([
