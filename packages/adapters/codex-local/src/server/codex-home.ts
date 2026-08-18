@@ -617,11 +617,22 @@ export async function seedManagedCodexHome(
       const targetBytes = await fs.readFile(authPath).catch(() => null);
       const targetIdentity = targetBytes ? readSubscriptionAccountId(targetBytes) : null;
       if (targetIdentity) {
+        // Only a definitively-absent source counts as "the shared source holds
+        // no identity". Any other read error leaves the source identity
+        // unknown, and an unknown source must not preserve a possibly-stale
+        // same-identity copy (#5028), so those errors fall through to the
+        // heal path below, exactly as before this rule existed.
+        let sourceReadFailed = false;
         const sourceBytes = await fs
           .readFile(path.join(sourceHome, "auth.json"))
-          .catch(() => null);
+          .catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== "ENOENT" && error.code !== "ENOTDIR") {
+              sourceReadFailed = true;
+            }
+            return null;
+          });
         const sourceIdentity = sourceBytes ? readSubscriptionAccountId(sourceBytes) : null;
-        keepPromotedAuth = sourceIdentity !== targetIdentity;
+        keepPromotedAuth = !sourceReadFailed && sourceIdentity !== targetIdentity;
       }
       if (keepPromotedAuth) {
         await onLog(
