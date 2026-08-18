@@ -10,6 +10,7 @@ import {
   resolveGitInstallRequest,
   resolveGitInstallWorkspacePackages,
   resolveNpmInstallRequest,
+  resolvePublishedVersion,
   runCommandWithDiagnostics,
 } from "../commands/install.js";
 import { uninstallCommand } from "../commands/uninstall.js";
@@ -60,6 +61,28 @@ describe("managed install commands", () => {
     });
     expect(() => resolveNpmInstallRequest({ canary: true, version: "1.2.3" })).toThrow();
     expect(() => resolveNpmInstallRequest({ version: "latest" })).toThrow();
+  });
+
+  it("parses published versions from both bare-string and array-wrapped npm view --json output", async () => {
+    const bareString = vi.fn(async (_file: string, _args: string[]) => ({
+      stdout: JSON.stringify("2026.720.0"),
+      stderr: "",
+    }));
+    await expect(resolvePublishedVersion("latest", bareString)).resolves.toBe("2026.720.0");
+
+    const arrayWrapped = vi.fn(async (_file: string, _args: string[]) => ({
+      stdout: JSON.stringify(["2026.817.0"]),
+      stderr: "",
+    }));
+    await expect(resolvePublishedVersion("latest", arrayWrapped)).resolves.toBe("2026.817.0");
+
+    const unexpected = vi.fn(async (_file: string, _args: string[]) => ({
+      stdout: JSON.stringify(["2026.817.0", "2026.816.0"]),
+      stderr: "",
+    }));
+    await expect(resolvePublishedVersion("latest", unexpected)).rejects.toThrow(
+      "npm returned an unexpected version response",
+    );
   });
 
   it("resolves branch, tag, full SHA, and short SHA refs through GitHub", async () => {
