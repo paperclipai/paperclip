@@ -561,7 +561,11 @@ export function environmentRunOrchestrator(
 
     let releasedLeases: EnvironmentRuntimeLeaseRecord[];
     try {
-      releasedLeases = await environmentRuntime.releaseRunLeases(input.heartbeatRunId, status);
+      releasedLeases = await environmentRuntime.releaseRunLeases(
+        input.heartbeatRunId,
+        status,
+        (leaseId, error) => result.errors.push({ leaseId, error }),
+      );
     } catch (err) {
       result.errors.push({ leaseId: "*", error: err });
       return result;

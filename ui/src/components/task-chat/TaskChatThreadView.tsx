@@ -46,7 +46,7 @@ interface TaskChatThreadViewProps {
   /** Content appended inside the transcript scroller after the settled thread. */
   tail?: ReactNode;
   /** Optional streaming-aware key when `tail` changes without changing `items`. */
-  contentKey?: number;
+  contentKey?: unknown;
   className?: string;
   /** When false, render the list without the scroll container (e.g. previews). */
   scroll?: boolean;

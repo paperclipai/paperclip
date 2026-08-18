@@ -1,6 +1,8 @@
 import type {
+  IssueThreadInteractionCanonicalResolverPolicy,
+  IssueThreadInteractionEffectiveResolverPolicySource,
   IssueThreadInteractionPayload,
-  IssueThreadInteractionResolverPolicy,
+  IssueThreadInteractionResolverPolicyProvenance,
   IssueThreadInteractionResult,
 } from "@paperclipai/shared";
 import { sql } from "drizzle-orm";
@@ -21,13 +23,21 @@ export const issueThreadInteractions = pgTable(
     status: text("status").notNull().default("pending"),
     continuationPolicy: text("continuation_policy").notNull().default("wake_assignee"),
     requestedResolverPolicy: text("requested_resolver_policy")
-      .$type<IssueThreadInteractionResolverPolicy>()
+      .$type<IssueThreadInteractionCanonicalResolverPolicy>()
       .notNull()
-      .default("board_only"),
+      .default("anyone"),
     effectiveResolverPolicy: text("effective_resolver_policy")
-      .$type<IssueThreadInteractionResolverPolicy>()
+      .$type<IssueThreadInteractionCanonicalResolverPolicy>()
       .notNull()
-      .default("board_only"),
+      .default("anyone"),
+    resolverPolicyProvenance: text("resolver_policy_provenance")
+      .$type<IssueThreadInteractionResolverPolicyProvenance>()
+      .notNull()
+      .default("inherited"),
+    effectiveResolverPolicySource: text("effective_resolver_policy_source")
+      .$type<IssueThreadInteractionEffectiveResolverPolicySource>()
+      .notNull()
+      .default("requested"),
     idempotencyKey: text("idempotency_key"),
     sourceCommentId: uuid("source_comment_id").references(() => issueComments.id, { onDelete: "set null" }),
     sourceRunId: uuid("source_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),

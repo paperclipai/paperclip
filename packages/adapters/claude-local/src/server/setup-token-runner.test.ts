@@ -11,7 +11,7 @@ import {
 // A well-formed authorization URL. The query keys match the contract exactly.
 // The values are synthetic; no real value is present.
 const VALID_URL =
-  "https://claude.com/cai/oauth/authorize?client_id=cid&code=abc&code_challenge=chal&code_challenge_method=S256&redirect_uri=https%3A%2F%2Fexample.test%2Fcb&response_type=code&scope=user&state=st";
+  "https://claude.com/cai/oauth/authorize?client_id=cid&code=abcdefgh&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&response_type=code&scope=user&state=0123456789abcdef";
 
 // The rendered login output. The preamble line, the URL line, and the dedicated
 // prompt line match the Phase 2 parser contract.
@@ -97,11 +97,14 @@ async function flush(): Promise<void> {
 
 describe("runSetupTokenLogin", () => {
   it("sends one login URL through onPrompt", async () => {
-    const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT], exitCode: 0 });
+    // A success stream and a resolving sink, so the run reports success after the
+    // runner delivers the credential.
+    const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT, SUCCESS_OUTPUT], exitCode: 0 });
     const onPrompt = vi.fn();
     const result = await runSetupTokenLogin(fake.driver, {
       onPrompt,
       provideCode: async () => BROWSER_CODE,
+      onCredential: async () => {},
       timeoutMs: 1000,
     });
     expect(result.outcome).toBe("success");
@@ -111,12 +114,15 @@ describe("runSetupTokenLogin", () => {
   });
 
   it("accepts one browser code and sends it to the prompt", async () => {
-    const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT] });
+    // The stream carries the prompt and the success record. The runner submits the
+    // code, then it delivers the credential and reports success after the sink.
+    const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT, SUCCESS_OUTPUT] });
     const onPrompt = vi.fn();
     const provideCode = vi.fn(async () => BROWSER_CODE);
     const promise = runSetupTokenLogin(fake.driver, {
       onPrompt,
       provideCode,
+      onCredential: async () => {},
       timeoutMs: 1000,
       codeSubmitSettleMs: 0,
     });
@@ -247,27 +253,34 @@ describe("runSetupTokenLogin", () => {
     expect(onPrompt).toHaveBeenCalledWith({ url: VALID_URL, prompt: SETUP_TOKEN_PROMPT });
   });
 
-  it("delivers no token when the success stream has no token block", async () => {
+  it("fails when a clean exit has no token block, even with a sink present", async () => {
     // The stream holds only the prompt, so the token parser binds nothing. The
-    // runner delivers no credential and reports credentialDelivered false.
+    // runner treats a clean exit with no bound token as a failure. It never calls
+    // the sink and never reports success.
     const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT], exitCode: 0 });
-    const onCredential = vi.fn();
+    const onCredential = vi.fn(async () => {});
     const result = await runSetupTokenLogin(fake.driver, {
       onPrompt: () => {},
       provideCode: async () => BROWSER_CODE,
       onCredential,
       timeoutMs: 1000,
     });
-    expect(result.outcome).toBe("success");
+    expect(result.outcome).toBe("failure");
     expect(onCredential).not.toHaveBeenCalled();
     expect(result.credentialDelivered).toBe(false);
     expect(result).not.toHaveProperty("token");
     expect(result).not.toHaveProperty("credential");
   });
 
-  it("delivers the de-wrapped token once through onCredential on a success stream", async () => {
+  it("delivers the de-wrapped token once through onCredential and zeros it after", async () => {
     const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT, SUCCESS_OUTPUT], exitCode: 0 });
-    const onCredential = vi.fn();
+    // The sink copies the token value, because the runner zeros the buffer after
+    // the delivery. The test reads the copy for the value and the original for the
+    // zeroing proof.
+    let received: string | null = null;
+    const onCredential = vi.fn(async (bytes: Buffer) => {
+      received = bytes.toString("utf8");
+    });
     const result = await runSetupTokenLogin(fake.driver, {
       onPrompt: () => {},
       provideCode: async () => BROWSER_CODE,
@@ -277,9 +290,11 @@ describe("runSetupTokenLogin", () => {
     expect(result.outcome).toBe("success");
     expect(result.credentialDelivered).toBe(true);
     expect(onCredential).toHaveBeenCalledTimes(1);
+    expect(received).toBe(FULL_TOKEN);
+    // The runner zeros the token bytes after a successful delivery.
     const bytes = onCredential.mock.calls[0][0] as Buffer;
     expect(Buffer.isBuffer(bytes)).toBe(true);
-    expect(bytes.toString("utf8")).toBe(FULL_TOKEN);
+    expect(bytes.every((byte) => byte === 0)).toBe(true);
   });
 
   it("keeps the token out of every log, result, and error field", async () => {
@@ -288,7 +303,7 @@ describe("runSetupTokenLogin", () => {
     const result = await runSetupTokenLogin(fake.driver, {
       onPrompt: () => {},
       provideCode: async () => BROWSER_CODE,
-      onCredential: () => {},
+      onCredential: async () => {},
       timeoutMs: 1000,
       log: (line) => {
         logs.push(line);
@@ -300,17 +315,58 @@ describe("runSetupTokenLogin", () => {
     expect(result.credentialDelivered).toBe(true);
   });
 
-  it("never scans for the token when no onCredential sink is present", async () => {
-    // With no sink the runner never holds the post-prompt stream and delivers
-    // nothing, even when the success block is present.
+  it("fails closed when no onCredential sink is present, even on a success stream", async () => {
+    // The sink is mandatory for a successful run. With no sink the runner never
+    // scans for the token and treats the clean exit as a failure, even when the
+    // success block is present.
     const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT, SUCCESS_OUTPUT], exitCode: 0 });
     const result = await runSetupTokenLogin(fake.driver, {
       onPrompt: () => {},
       provideCode: async () => BROWSER_CODE,
       timeoutMs: 1000,
     });
-    expect(result.outcome).toBe("success");
+    expect(result.outcome).toBe("failure");
     expect(result.credentialDelivered).toBe(false);
+  });
+
+  it("fails and zeros the token when the sink throws synchronously", async () => {
+    const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT, SUCCESS_OUTPUT], exitCode: 0 });
+    let seen: Buffer | null = null;
+    const result = await runSetupTokenLogin(fake.driver, {
+      onPrompt: () => {},
+      provideCode: async () => BROWSER_CODE,
+      // A synchronous throw. The runner catches it, fails closed, and never
+      // reports success.
+      onCredential: (bytes) => {
+        seen = bytes;
+        throw new Error("synchronous sink failure");
+      },
+      timeoutMs: 1000,
+    });
+    expect(result.outcome).toBe("failure");
+    expect(result.credentialDelivered).toBe(false);
+    expect(seen).not.toBeNull();
+    expect((seen as unknown as Buffer).every((byte) => byte === 0)).toBe(true);
+  });
+
+  it("fails and zeros the token when the sink rejects asynchronously", async () => {
+    const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT, SUCCESS_OUTPUT], exitCode: 0 });
+    let seen: Buffer | null = null;
+    const result = await runSetupTokenLogin(fake.driver, {
+      onPrompt: () => {},
+      provideCode: async () => BROWSER_CODE,
+      // An asynchronous rejection. The runner does not swallow it: it maps the
+      // rejection to a failure and never reports success.
+      onCredential: async (bytes) => {
+        seen = bytes;
+        throw new Error("asynchronous sink failure");
+      },
+      timeoutMs: 1000,
+    });
+    expect(result.outcome).toBe("failure");
+    expect(result.credentialDelivered).toBe(false);
+    expect(seen).not.toBeNull();
+    expect((seen as unknown as Buffer).every((byte) => byte === 0)).toBe(true);
   });
 
   it("exposes the fixed setup-token command", () => {

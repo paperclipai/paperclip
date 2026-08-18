@@ -129,6 +129,19 @@ export function trackErrorHandlerCrash(
   client.track("error.handler_crash", { error_code: dims.errorCode });
 }
 
+export function trackInteractionCreated(
+  client: TelemetryClient,
+  dims: {
+    interactionKind: RawDimension<EventDimensionsMap["interaction.created"]["interaction_kind"]>;
+    usedDeprecatedResolverPolicyAlias: boolean;
+  },
+): void {
+  client.track("interaction.created", {
+    interaction_kind: asEventDimension(dims.interactionKind),
+    used_deprecated_resolver_policy_alias: dims.usedDeprecatedResolverPolicyAlias,
+  });
+}
+
 export function trackInteractionResolved(
   client: TelemetryClient,
   dims: {
@@ -146,6 +159,7 @@ export function trackInteractionResolved(
     answeredQuestionCount?: number;
     createdTaskCount?: number;
     skippedTaskCount?: number;
+    legacyInheritedRestriction: boolean;
   },
 ): void {
   client.track("interaction.resolved", {
@@ -163,5 +177,6 @@ export function trackInteractionResolved(
     ...(dims.answeredQuestionCount === undefined ? {} : { answered_question_count: dims.answeredQuestionCount }),
     ...(dims.createdTaskCount === undefined ? {} : { created_task_count: dims.createdTaskCount }),
     ...(dims.skippedTaskCount === undefined ? {} : { skipped_task_count: dims.skippedTaskCount }),
+    legacy_inherited_restriction: dims.legacyInheritedRestriction,
   });
 }

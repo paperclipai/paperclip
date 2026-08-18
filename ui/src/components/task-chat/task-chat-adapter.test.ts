@@ -3,6 +3,21 @@ import type { IssueChatComment } from "@/lib/issue-chat-messages";
 import { commentsToTaskChatItems } from "./task-chat-adapter";
 
 describe("commentsToTaskChatItems", () => {
+  it("classifies a recovered local-board comment as an agent bubble", () => {
+    const items = commentsToTaskChatItems([{
+      id: "c-recovered",
+      body: "Recovered agent reply.",
+      authorType: "user",
+      authorUserId: "local-board",
+      authorAgentId: null,
+      derivedAuthorAgentId: "agent-1",
+      createdAt: "2026-08-07T09:00:00.000Z",
+    } as unknown as IssueChatComment]);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ kind: "message", author: "agent" });
+  });
+
   it("never tags posted comments interstitial — the run's final reply keeps its bubble", () => {
     const comments = [
       {

@@ -43,3 +43,26 @@ describe("isSandboxProviderSupportedForAdapter", () => {
     ]);
   });
 });
+
+describe("getEnvironmentCapabilities reusable leases default", () => {
+  it("test_absent_reusable_leases_presents_as_false", () => {
+    const capabilities = getEnvironmentCapabilities(["codex_local"], {
+      sandboxProviders: {
+        // The manifest does not declare supportsReusableLeases.
+        "fake-plugin": { displayName: "Fake Plugin" },
+      },
+    });
+    expect(capabilities.sandboxProviders["fake-plugin"].supportsReusableLeases).toBe(false);
+
+    // A manifest that declares true still presents as true.
+    const declared = getEnvironmentCapabilities(["codex_local"], {
+      sandboxProviders: {
+        "reuse-plugin": { displayName: "Reuse Plugin", supportsReusableLeases: true },
+      },
+    });
+    expect(declared.sandboxProviders["reuse-plugin"].supportsReusableLeases).toBe(true);
+
+    // The built-in fake provider presents as false.
+    expect(capabilities.sandboxProviders.fake.supportsReusableLeases).toBe(false);
+  });
+});

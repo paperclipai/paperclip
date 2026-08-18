@@ -100,12 +100,19 @@ async function renderAppAt(container: HTMLElement, path: string) {
   return root;
 }
 
+/**
+ * Waits on the condition, not on a fixed number of turns. The previous version
+ * yielded at most three macrotasks before asserting, which is ample on an idle
+ * machine and not when the suite is running many workers in parallel — the
+ * container was still empty and the assertion failed on a route that resolves
+ * perfectly well. `vi.waitFor` retries against a time budget instead, so a
+ * loaded worker gets more turns rather than a failure.
+ *
+ * The same fix #11499 applied to the sibling `App.activity-routing.test.tsx`,
+ * which had the identical loop with five turns instead of three.
+ */
 async function waitForRoute(container: HTMLElement, text: string) {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    if (container.textContent?.includes(text)) return;
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-  }
-  expect(container.textContent).toContain(text);
+  await vi.waitFor(() => expect(container.textContent).toContain(text));
 }
 
 describe("App Cases routing (PAP-13002)", () => {

@@ -1,7 +1,10 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 const PLUGIN_ID = "paperclip.daytona-sandbox-provider";
-const PLUGIN_VERSION = "0.1.1";
+// 0.1.2 adds `supportsSetupTokenLogin` to the driver. The version bump makes
+// the bundled-plugin boot reconcile refresh the persisted manifest for an
+// existing install, so the Claude setup-token login capability propagates.
+const PLUGIN_VERSION = "0.1.2";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -24,6 +27,13 @@ const manifest: PaperclipPluginManifestV1 = {
       description:
         "Provisions Daytona sandboxes with configurable image or snapshot selection, startup timeouts, and lease reuse.",
       supportsReusableLeases: true,
+      // Daytona keeps a persistent session and tails its callback log form, so it
+      // emits incremental session output while the command runs. Declare the
+      // opt-in capability so the host selects the session-output streaming path.
+      // A generic one-shot provider that omits this key keeps the poll path.
+      sandboxCapabilities: {
+        incrementalSessionOutput: true,
+      },
       supportsInteractiveSetup: true,
       interactiveSetupConnectionTypes: ["ssh"],
       supportsTemplateCapture: true,
@@ -34,6 +44,10 @@ const manifest: PaperclipPluginManifestV1 = {
       },
       templateIdentityPaths: ["apiUrl"],
       supportsTemplateDelete: true,
+      // Daytona hosts the Claude setup-token login on a real pseudo-terminal.
+      // It is the only bundled provider that implements the setup-token
+      // pseudo-terminal methods, so it advertises the capability.
+      supportsSetupTokenLogin: true,
       configSchema: {
         type: "object",
         properties: {
@@ -124,12 +138,6 @@ const manifest: PaperclipPluginManifestV1 = {
             type: "boolean",
             description:
               "Whether to stop and later resume the sandbox across runs instead of deleting it on release.",
-            default: false,
-          },
-          useLogStream: {
-            type: "boolean",
-            description:
-              "When true, a session command streams stdout and stderr from the Daytona callback log form and reads the exit code one time after the stream ends. When false, the command polls the exit code and reads the logs one time. Defaults to false.",
             default: false,
           },
         },

@@ -12,11 +12,17 @@ import {
 } from "@paperclipai/shared";
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { accessService, executionWorkspaceService, heartbeatService, logActivity, workspaceOperationService } from "../services/index.js";
 import {
-  mergeExecutionWorkspaceConfig,
-  readExecutionWorkspaceConfig,
-} from "../services/execution-workspaces.js";
+  accessService,
+  executionWorkspaceService,
+  heartbeatService,
+  logActivity,
+  workspaceOperationService,
+  workspaceRuntimeLeaseService,
+  LEASED_WORKSPACE_RUNTIME_ACTIONS,
+  type WorkspaceRuntimeLeaseClaim,
+} from "../services/index.js";
+import { mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
 import {
@@ -38,6 +44,7 @@ import { assertCanManageExecutionWorkspaceRuntimeServices } from "./workspace-ru
 import { appendWithCap } from "../adapters/utils.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { runExclusiveWorkspaceRuntimeControl } from "../services/workspace-operations.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 
@@ -46,6 +53,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
   const svc = executionWorkspaceService(db);
   const access = accessService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
+  const runtimeLeases = workspaceRuntimeLeaseService(db);
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
@@ -152,10 +160,18 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     if (!existing) return;
     if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
 
-    await assertCanManageExecutionWorkspaceRuntimeServices(db, req, {
+    const authorization = await assertCanManageExecutionWorkspaceRuntimeServices(db, req, {
       companyId: existing.companyId,
       executionWorkspaceId: existing.id,
       sourceIssueId: existing.sourceIssueId,
+    });
+
+    // Recover any managed runtime-control operation this workspace was stranded with, then
+    // refuse only if one is genuinely still live. Authorization above still gates the caller,
+    // so recovery never widens who may control the workspace.
+    await workspaceOperationsSvc.assertRuntimeControlAvailable({
+      executionWorkspaceId: existing.id,
+      action,
     });
 
     const workspaceCwd = existing.cwd;
@@ -260,7 +276,57 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     let stdout = "";
     let stderr = "";
 
-    const operation = await recorder.recordOperation({
+    /**
+     * Bring runtime rows, local listeners and the recorded desired state back to a consistent
+     * stopped shape after a start failed part-way. Best-effort by design: the operation is
+     * still failed (terminal) even if teardown itself cannot complete, and every step is
+     * something a normal managed `stop` would do, so authorization is unchanged.
+     */
+    let failedStartReconciled = false;
+    async function reconcileFailedRuntimeStart(cause: unknown) {
+      if (failedStartReconciled) return;
+      failedStartReconciled = true;
+      try {
+        await stopRuntimeServicesForExecutionWorkspace({
+          db,
+          executionWorkspaceId: existing!.id,
+          workspaceCwd: workspaceCwd!,
+          runtimeServiceId: selectedRuntimeServiceId,
+        });
+      } catch (teardownError) {
+        logger.warn(
+          {
+            executionWorkspaceId: existing!.id,
+            err: teardownError,
+            cause: cause instanceof Error ? cause.message : String(cause),
+          },
+          "failed to tear down runtime services after a failed managed start",
+        );
+      }
+
+      try {
+        const failedDesiredState = buildWorkspaceRuntimeDesiredStatePatch({
+          config: { workspaceRuntime: effectiveRuntimeConfig },
+          currentDesiredState: existing!.config?.desiredState ?? null,
+          currentServiceStates: existing!.config?.serviceStates ?? null,
+          action: "stop",
+          serviceIndex: selectedServiceIndex,
+        });
+        await svc.update(existing!.id, {
+          metadata: mergeExecutionWorkspaceConfig(existing!.metadata as Record<string, unknown> | null, {
+            desiredState: failedDesiredState.desiredState,
+            serviceStates: failedDesiredState.serviceStates,
+          }),
+        });
+      } catch (patchError) {
+        logger.warn(
+          { executionWorkspaceId: existing!.id, err: patchError },
+          "failed to record the stopped desired state after a failed managed start",
+        );
+      }
+    }
+
+    const recordRuntimeControlOperation = () => recorder.recordOperation({
       phase: action === "stop" ? "workspace_teardown" : "workspace_provision",
       command: workspaceCommand?.command ?? `workspace command ${action}`,
       cwd: existing.cwd,
@@ -377,34 +443,43 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
           if (!availableWorkspace) {
             throw new Error("Execution workspace needs a local path before Paperclip can manage local runtime services");
           }
-          const startedServices = await startRuntimeServicesForWorkspaceControl({
-            db,
-            actor: {
-              id: actor.agentId ?? null,
-              name: actor.actorType === "user" ? "Board" : "Agent",
-              companyId: existing.companyId,
-            },
-            issue: existing.sourceIssueId
-              ? {
-                  id: existing.sourceIssueId,
-                  identifier: null,
-                  title: existing.name,
-                }
-              : null,
-            workspace: availableWorkspace,
-            executionWorkspaceId: existing.id,
-            config: {
-              workspaceRuntime: effectiveRuntimeConfig,
-              runtimeProvisionCommand:
-                existing.config?.runtimeProvisionCommand
-                ?? projectPolicy?.workspaceStrategy?.runtimeProvisionCommand
-                ?? null,
-            },
-            adapterEnv: {},
-            onLog,
-            recorder,
-            serviceIndex: selectedServiceIndex,
-          });
+          let startedServices;
+          try {
+            startedServices = await startRuntimeServicesForWorkspaceControl({
+              db,
+              actor: {
+                id: actor.agentId ?? null,
+                name: actor.actorType === "user" ? "Board" : "Agent",
+                companyId: existing.companyId,
+              },
+              issue: existing.sourceIssueId
+                ? {
+                    id: existing.sourceIssueId,
+                    identifier: null,
+                    title: existing.name,
+                  }
+                : null,
+              workspace: availableWorkspace,
+              executionWorkspaceId: existing.id,
+              config: {
+                workspaceRuntime: effectiveRuntimeConfig,
+                runtimeProvisionCommand:
+                  existing.config?.runtimeProvisionCommand
+                  ?? projectPolicy?.workspaceStrategy?.runtimeProvisionCommand
+                  ?? null,
+              },
+              adapterEnv: {},
+              onLog,
+              recorder,
+              serviceIndex: selectedServiceIndex,
+            });
+          } catch (error) {
+            // A failed start must leave the workspace stopped and retryable rather than
+            // "desired running" with a half-started listener: tear down residue and record
+            // the stopped desired state before the operation is marked failed.
+            await reconcileFailedRuntimeStart(error);
+            throw error;
+          }
           runtimeServiceCount = startedServices.length;
         } else {
           runtimeServiceCount = selectedRuntimeServiceId ? Math.max(0, (existing.runtimeServices?.length ?? 1) - 1) : 0;
@@ -458,6 +533,44 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       },
     });
 
+    const { operation, leaseClaim } = await runExclusiveWorkspaceRuntimeControl({
+      executionWorkspaceId: existing.id,
+      action,
+      run: async () => {
+        // Claim the durable exclusivity lease before anything mutates the workspace or
+        // its runtime services. A competing issue/run throws 409 here, leaving no
+        // workspace operation row and no runtime-service change behind.
+        let leaseClaimResult: WorkspaceRuntimeLeaseClaim | null = null;
+        if (LEASED_WORKSPACE_RUNTIME_ACTIONS.includes(action)) {
+          leaseClaimResult = await runtimeLeases.claim({
+            companyId: existing.companyId,
+            executionWorkspaceId: existing.id,
+            action,
+            owner: authorization,
+          });
+        }
+        // Re-check inside the claim: recovery of stranded operations plus a refusal if one
+        // is genuinely still live. The same assertion ran before the lease was taken, but a
+        // row can be stranded in that window, and only the recovering path may proceed.
+        await workspaceOperationsSvc.assertRuntimeControlAvailable({
+          executionWorkspaceId: existing.id,
+          action,
+        });
+        try {
+          return {
+            operation: await recordRuntimeControlOperation(),
+            leaseClaim: leaseClaimResult,
+          };
+        } catch (error) {
+          // The operation is already terminal here. This also catches the recorder's own time
+          // budget expiring on a start that never settles, which is the one failure the inner
+          // handler cannot see — reconcile there too so no listener or desired state is left over.
+          if (action === "start" || action === "restart") await reconcileFailedRuntimeStart(error);
+          throw error;
+        }
+      },
+    });
+
     const workspace = await svc.getById(id);
     if (!workspace) {
       res.status(404).json({ error: "Execution workspace not found" });
@@ -481,6 +594,13 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         workspaceCommandName: workspaceCommand?.name ?? null,
         runtimeServiceId: selectedRuntimeServiceId,
         serviceIndex: selectedServiceIndex,
+        runtimeLease: leaseClaim
+          ? {
+              outcome: leaseClaim.outcome,
+              ownerKey: leaseClaim.ownerKey,
+              reclaimedFrom: leaseClaim.reclaimedFrom,
+            }
+          : null,
       },
     });
 
@@ -664,6 +784,10 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       }
       workspace = archiveResult.workspace;
       const capturedGeneration = archiveResult.capturedGeneration;
+
+      // Closing the workspace ends the lane, so the runtime-control lease is released
+      // outright rather than waiting for owner-eligibility or TTL recovery.
+      await runtimeLeases.release({ executionWorkspaceId: existing.id, force: true });
 
       if (existing.mode === "shared_workspace") {
         await db

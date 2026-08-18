@@ -62,12 +62,16 @@ export function useSignOut({ onSignedOut }: UseSignOutOptions = {}) {
 
       // Drop every account-scoped cache entry, rather than invalidating a
       // couple of them. `invalidateQueries` only marks an entry stale and goes
-      // on serving the old value until a refetch succeeds — and the companies
-      // query sets `retry: false`, so a single failed request is enough to
-      // leave the previous account's company list readable for the whole of
-      // the *next* account's session. Consumers that read a non-empty list as
-      // authoritative (company auto-selection, the invite-landing "already a
-      // member" check, the board-access gate) would then act on it.
+      // on serving the old value until a refetch succeeds, and several of these
+      // queries set `retry: false`, so a single failed request is enough to
+      // leave the previous account's data readable for the whole of the *next*
+      // account's session.
+      //
+      // The company list is no longer the example: it is keyed by account, so
+      // the next account reads a different entry regardless of what happens
+      // here. Everything else still is — the board-access gate, per-company
+      // details and stats, and every account-scoped key added since — which is
+      // why this sweeps by predicate rather than naming the keys it knows.
       //
       // `resetQueries` rather than `removeQueries`: removal empties the cache
       // but does not notify the observers already subscribed to those entries,
@@ -76,6 +80,23 @@ export function useSignOut({ onSignedOut }: UseSignOutOptions = {}) {
       // case here — CompanyProvider sits above the router and stays mounted
       // across the whole sign-out/sign-in cycle. Reset notifies them, so the
       // old data is gone from the cache *and* from everything reading it.
+      //
+      // Measured against query-core 5.101.4 rather than reasoned about:
+      // removal produced 0 notifications and left the observer holding the
+      // signed-out account's session; reset produced 3 and null. The
+      // consequence of the former is not just stale reads — the redirect in
+      // CloudAccessGate fires on the session going empty, and it never runs.
+      //
+      // The opposite advice holds for a *local* reset of a key an observer is
+      // still mounted against. Reset rewinds the update counters
+      // `isFetchedAfterMount` derives from while that observer keeps its
+      // bind-time baseline, so the flag can never read true again and anything
+      // gated on it withholds forever. `AppsConnect` is the consumer to check
+      // against: it gates its render on that flag for two queries.
+      //
+      // Sign-out is not that case. It resets the session too, so `AppsConnect`
+      // — which sits behind a route — unmounts on the redirect and remounts
+      // with a fresh baseline.
       //
       // Not awaited: the refetches this kicks off are expected to 401 now that
       // the session is gone, and the sign-out button should not sit pending

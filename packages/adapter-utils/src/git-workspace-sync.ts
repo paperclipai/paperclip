@@ -17,6 +17,29 @@ export interface GitWorkspaceSnapshot {
   ignoredPaths: string[];
 }
 
+export interface ExpensiveWorkspaceGitInput {
+  localDir: string;
+  args: readonly string[];
+  operation: string;
+  timeout: number;
+  maxBuffer: number;
+}
+
+export type ExpensiveWorkspaceGitExecutor = (
+  input: ExpensiveWorkspaceGitInput,
+) => Promise<GitCommandResult>;
+
+let expensiveWorkspaceGitExecutor: ExpensiveWorkspaceGitExecutor | null = null;
+
+/**
+ * Lets a host process apply its process-wide admission policy to the adapter
+ * package's full-tree Git walks. Standalone adapter-utils consumers retain the
+ * existing timeout/buffer-bounded fallback.
+ */
+export function setExpensiveWorkspaceGitExecutor(executor: ExpensiveWorkspaceGitExecutor | null): void {
+  expensiveWorkspaceGitExecutor = executor;
+}
+
 export const GIT_ARCHIVE_EXCLUDES = [".git", ".git/*"] as const;
 
 function shellQuote(value: string) {
@@ -53,6 +76,24 @@ export async function runLocalGit(
   });
 }
 
+async function runExpensiveWorkspaceGit(
+  localDir: string,
+  args: string[],
+  operation: string,
+  options: { timeout: number; maxBuffer: number },
+): Promise<GitCommandResult> {
+  if (expensiveWorkspaceGitExecutor) {
+    return await expensiveWorkspaceGitExecutor({
+      localDir,
+      args,
+      operation,
+      timeout: options.timeout,
+      maxBuffer: options.maxBuffer,
+    });
+  }
+  return await runLocalGit(localDir, args, options);
+}
+
 export async function readGitWorkspaceSnapshot(localDir: string): Promise<GitWorkspaceSnapshot | null> {
   try {
     const insideWorkTree = await runLocalGit(localDir, ["rev-parse", "--is-inside-work-tree"], {
@@ -72,19 +113,19 @@ export async function readGitWorkspaceSnapshot(localDir: string): Promise<GitWor
         timeout: 10_000,
         maxBuffer: 16 * 1024,
       }),
-      runLocalGit(localDir, ["diff", "--name-only", "-z", "--diff-filter=ACMRTUXB", "HEAD", "--"], {
+      runExpensiveWorkspaceGit(localDir, ["diff", "--name-only", "-z", "--diff-filter=ACMRTUXB", "HEAD", "--"], "adapter_sync.overlay_diff", {
         timeout: 10_000,
         maxBuffer: 1024 * 1024,
       }),
-      runLocalGit(localDir, ["ls-files", "--others", "--exclude-standard", "-z"], {
+      runExpensiveWorkspaceGit(localDir, ["ls-files", "--others", "--exclude-standard", "-z"], "adapter_sync.untracked_files", {
         timeout: 10_000,
         maxBuffer: 1024 * 1024,
       }),
-      runLocalGit(localDir, ["diff", "--name-only", "-z", "--diff-filter=D", "HEAD", "--"], {
+      runExpensiveWorkspaceGit(localDir, ["diff", "--name-only", "-z", "--diff-filter=D", "HEAD", "--"], "adapter_sync.deleted_files", {
         timeout: 10_000,
         maxBuffer: 256 * 1024,
       }),
-      runLocalGit(localDir, ["status", "--ignored", "--porcelain=v1", "-z", "--untracked-files=normal"], {
+      runExpensiveWorkspaceGit(localDir, ["status", "--ignored", "--porcelain=v1", "-z", "--untracked-files=normal"], "adapter_sync.ignored_files", {
         timeout: 10_000,
         maxBuffer: 1024 * 1024,
       }),

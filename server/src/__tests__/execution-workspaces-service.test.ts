@@ -43,6 +43,7 @@ import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
+import { workspaceGitOperationScheduler } from "../services/workspace-git-operation-scheduler.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -547,6 +548,54 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
 
     expect(sweep).toMatchObject({ archived: 1, cleanupFailed: 0 });
     expect(workspace).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
+  }, 20_000);
+
+  it("fails closed before archive when git status inspection is unavailable", async () => {
+    const seeded = await seedAncestryTerminalWorkspace();
+    const statusSpy = vi.spyOn(workspaceGitOperationScheduler, "run")
+      .mockRejectedValue(new Error("scan queue unavailable"));
+
+    try {
+      const readiness = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+      expect(readiness).toMatchObject({
+        state: "blocked",
+        isDestructiveCloseAllowed: false,
+        blockingReasons: [
+          "Paperclip could not verify the workspace git status. Retry before destructive cleanup.",
+        ],
+      });
+
+      const sweep = await svc.sweepTerminalWorkspaces();
+      expect(sweep).toMatchObject({ archived: 0, skippedUndelivered: 1 });
+      const [workspace] = await db
+        .select({ status: executionWorkspaces.status })
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+      expect(workspace?.status).toBe("active");
+      await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+    } finally {
+      statusSpy.mockRestore();
+    }
+  }, 20_000);
+
+  it("fails the final cleanup fence when a later git status scan is unavailable", async () => {
+    const seeded = await seedAncestryTerminalWorkspace();
+    const originalRun = workspaceGitOperationScheduler.run.bind(workspaceGitOperationScheduler);
+    let statusScanCount = 0;
+    const statusSpy = vi.spyOn(workspaceGitOperationScheduler, "run")
+      .mockImplementation(async (input) => {
+        statusScanCount += 1;
+        if (statusScanCount > 1) throw new Error("scan timed out");
+        return originalRun(input);
+      });
+
+    try {
+      const sweep = await svc.sweepTerminalWorkspaces();
+      expect(sweep).toMatchObject({ archived: 0, cleanupFailed: 1 });
+      await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+    } finally {
+      statusSpy.mockRestore();
+    }
   }, 20_000);
 
   it("skips a sweep that starts while another sweep runs", async () => {
@@ -3947,6 +3996,186 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       },
     });
   });
+
+  it("serializes the verified HTTPS URL as canonical and never falls back to the HTTP backend", async () => {
+    // PAP-17158: the UI's workspace/project/issue launch links read `url` off the
+    // serialized runtime service. Two things have to hold for a managed HTTPS
+    // runtime: once exposure is `ready` the canonical `url` is the HTTPS public
+    // URL, and while exposure is *not* ready the canonical `url` stays null even
+    // though the row still knows its loopback `backendUrl`. Serializing that
+    // backend URL would put `http://…` back into a launch link, which is exactly
+    // the fail-closed contract this feature exists to enforce.
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const readyWorkspaceId = randomUUID();
+    const provisioningWorkspaceId = randomUUID();
+    const readyServiceId = randomUUID();
+    const provisioningServiceId = randomUUID();
+    const hostname = "paperclip-dev.tail29c1aa.ts.net";
+    const httpsUrl = `https://${hostname}:42010`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "HTTPS URL serialization",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      isPrimary: true,
+      cwd: "/tmp/https-url-serialization",
+      metadata: {
+        runtimeConfig: {
+          workspaceRuntime: { services: [{ name: "paperclip-dev", command: "pnpm dev" }] },
+          desiredState: "running",
+        },
+      },
+    });
+    await db.insert(executionWorkspaces).values([
+      {
+        id: readyWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        mode: "dedicated_worktree",
+        strategyType: "git_worktree",
+        name: "Exposed workspace",
+        status: "idle",
+        providerType: "local_fs",
+        cwd: "/tmp/https-url-serialization/ready",
+      },
+      {
+        id: provisioningWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        mode: "dedicated_worktree",
+        strategyType: "git_worktree",
+        name: "Provisioning workspace",
+        status: "idle",
+        providerType: "local_fs",
+        cwd: "/tmp/https-url-serialization/provisioning",
+      },
+    ]);
+    await db.insert(workspaceRuntimeServices).values([
+      {
+        id: readyServiceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        executionWorkspaceId: readyWorkspaceId,
+        scopeType: "execution_workspace",
+        scopeId: readyWorkspaceId,
+        serviceName: "paperclip-dev",
+        status: "running",
+        lifecycle: "shared",
+        reuseKey: "ready-dev",
+        command: "pnpm dev",
+        cwd: "/tmp/https-url-serialization/ready",
+        port: 42_010,
+        url: httpsUrl,
+        // The loopback backend is still recorded; it must never be serialized.
+        backendUrl: "http://127.0.0.1:42010",
+        provider: "local_process",
+        healthStatus: "healthy",
+        exposure: {
+          provider: "tailscale_https",
+          state: "ready",
+          publicUrl: httpsUrl,
+          hostname,
+          listeners: [
+            { purpose: "app", publicPort: 42_010, targetPort: 42_010 },
+            { purpose: "vite_hmr", publicPort: 52_010, targetPort: 52_010 },
+          ],
+          brokerRef: "broker-ref-1",
+          lastError: null,
+          updatedAt: "2026-08-12T10:00:00.000Z",
+        },
+        updatedAt: new Date("2026-08-12T10:00:00.000Z"),
+      },
+      {
+        id: provisioningServiceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        executionWorkspaceId: provisioningWorkspaceId,
+        scopeType: "execution_workspace",
+        scopeId: provisioningWorkspaceId,
+        serviceName: "paperclip-dev",
+        status: "running",
+        lifecycle: "shared",
+        reuseKey: "provisioning-dev",
+        command: "pnpm dev",
+        cwd: "/tmp/https-url-serialization/provisioning",
+        port: 42_020,
+        url: null,
+        backendUrl: "http://127.0.0.1:42020",
+        provider: "local_process",
+        healthStatus: "healthy",
+        exposure: {
+          provider: "tailscale_https",
+          state: "pending",
+          publicUrl: null,
+          hostname,
+          listeners: [],
+          brokerRef: null,
+          lastError: null,
+          updatedAt: "2026-08-12T10:00:00.000Z",
+        },
+        updatedAt: new Date("2026-08-12T10:00:00.000Z"),
+      },
+    ]);
+
+    const workspaces = await svc.list(companyId);
+    const readyService = workspaces
+      .find((workspace) => workspace.id === readyWorkspaceId)
+      ?.runtimeServices.find((service) => service.id === readyServiceId);
+    expect(readyService).toMatchObject({
+      url: httpsUrl,
+      port: 42_010,
+      exposure: { provider: "tailscale_https", state: "ready", publicUrl: httpsUrl, hostname },
+    });
+    // Lease handles are server-private and must never reach a serialized DTO.
+    expect(readyService).not.toHaveProperty("exposureHandle");
+
+    const provisioningService = workspaces
+      .find((workspace) => workspace.id === provisioningWorkspaceId)
+      ?.runtimeServices.find((service) => service.id === provisioningServiceId);
+    expect(provisioningService?.url).toBeNull();
+    expect(provisioningService?.exposure).toMatchObject({ state: "pending", publicUrl: null });
+    expect(JSON.stringify(provisioningService)).not.toContain("http://127.0.0.1:42020");
+
+    // The overview feeds the workspace list launch links.
+    const overview = await svc.listOverview(companyId, { limit: 10, offset: 0 });
+    const readyItem = overview.items.find((item) => item.workspaceId === readyWorkspaceId);
+    expect(readyItem?.primaryService).toMatchObject({
+      id: readyServiceId,
+      status: "running",
+      url: httpsUrl,
+      exposure: { state: "ready", publicUrl: httpsUrl },
+    });
+    expect(new URL(readyItem!.primaryService!.url!).protocol).toBe("https:");
+
+    const provisioningItem = overview.items.find((item) => item.workspaceId === provisioningWorkspaceId);
+    expect(provisioningItem?.primaryService).toMatchObject({
+      id: provisioningServiceId,
+      status: "running",
+      url: null,
+      exposure: { state: "pending" },
+    });
+    expect(JSON.stringify(provisioningItem)).not.toContain("http://127.0.0.1:42020");
+  }, 30_000);
 
   it("returns a bounded company-scoped workspace overview with service and linked issue summaries", async () => {
     const companyId = randomUUID();

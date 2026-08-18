@@ -10,7 +10,10 @@ The release model is now commit-driven:
 3. Betas are manual, human-approved promotions of a chosen nightly.
 4. Stable releases promote a beta that has soaked for at least 3 days
    (bypass requires a written justification).
-5. Stable release notes live in `releases/vYYYY.MDD.P.md`.
+5. Stable release notes live in `releases/vYYYY.MDD.P.md`. They are
+   drafted automatically when a beta is published (as
+   `releases/beta/v<beta-version>.md` on `master`), edited during the
+   soak, and moved to the versioned name after the stable ships.
 6. Only stable releases get GitHub Releases.
 
 The user-facing guide to the channels is [`CHANNELS.md`](CHANNELS.md).
@@ -71,7 +74,12 @@ internal traceability tag.
   shipped as a beta at least 3 days earlier unless a written justification
   is provided
 - tags point at the original source commit, not a generated release commit
-- stable notes are always `releases/vYYYY.MDD.P.md`
+- stable notes are always `releases/vYYYY.MDD.P.md` in the end state: a
+  promoted beta's notes are drafted and edited at
+  `releases/beta/v<beta-version>.md` on `master` during the soak (the
+  promoted commit cannot carry a file named for a promotion date that was
+  unknown when it was created), and a post-stable canonicalization PR
+  moves them to the versioned name
 - canaries, nightlies, and betas never create GitHub Releases
 - canaries, nightlies, and betas never require changelog generation
 - Docker `:latest` moves only on stable releases; master builds publish
@@ -157,6 +165,13 @@ Betas are manual promotions. Dispatch
   dispatched at that tag to publish the `:beta` images
 - after publishing, the release smoke suite runs against the exact published
   beta version as verification
+- a `draft_stable_notes` job also generates the eventual stable's notes
+  skeleton — `releases/beta/v<beta-version>.md`, grouped from
+  `git log <last-stable-tag>..<source-commit>` — and force-pushes it to the
+  machine-owned `release-notes/v<beta-version>` branch. Open the PR from
+  the job-summary link (a human opens it so CI runs) and edit the notes
+  during the soak; the stable promotion reads the merged file from
+  `master`
 - `dry_run: true` previews the publish and skips the tag push, Docker
   dispatch, and post-publish smoke
 
@@ -228,7 +243,11 @@ Before running stable:
 1. pick the beta you are promoting (its source commit is the `source_ref`)
 2. confirm the beta has soaked for 3 days with no open blockers
 3. resolve the target stable version with `./scripts/release.sh stable --date "$(date +%F)" --print-version`
-4. create or update `releases/vYYYY.MDD.P.md` on that source ref
+4. make sure the notes PR from the beta's draft branch
+   (`release-notes/v<beta-version>`, adding
+   `releases/beta/v<beta-version>.md`) is merged on `master` — or, for
+   candidate builds, that the candidate branch itself carries
+   `releases/vYYYY.MDD.P.md`
 5. run the stable workflow from that source ref
 
 Example:
@@ -241,11 +260,19 @@ The workflow:
 
 - re-verifies the exact source ref
 - computes the next stable patch slot for the chosen UTC date
+- resolves the release notes in preflight: `releases/vYYYY.MDD.P.md` at
+  the source commit (the candidate fix path) takes precedence, otherwise
+  `releases/beta/v<beta-version>.md` on `master` (a promoted beta). When
+  neither exists the run fails before the `npm-stable` approval gate with
+  the missing path named
 - publishes `YYYY.MDD.P` under npm dist-tag `latest`
 - creates git tag `vYYYY.MDD.P`
 - dispatches [`docker.yml`](../.github/workflows/docker.yml) at that tag to
   publish `:latest` and the versioned stable images
-- creates or updates the GitHub Release from `releases/vYYYY.MDD.P.md`
+- creates or updates the GitHub Release from the resolved notes file
+- for master-side beta notes, pushes a `release-notes/v<version>-canonicalize`
+  branch that `git mv`s them to `releases/vYYYY.MDD.P.md` — open and merge
+  its PR to restore the canonical layout
 
 ## Docker Image Tags
 
@@ -313,6 +340,12 @@ Stable changelog files live at:
 - `releases/vYYYY.MDD.P.md`
 
 Canaries do not get changelog files.
+
+The `draft_stable_notes` job seeds a deterministic skeleton (grouped
+commit subjects) on the `release-notes/v<beta-version>` branch at beta
+publish; the flows below turn that skeleton into narrative release notes
+during the soak. Run them against the draft branch's
+`releases/beta/v<beta-version>.md` and push to the notes PR.
 
 Recommended local generation flow:
 

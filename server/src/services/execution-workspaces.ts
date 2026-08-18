@@ -54,6 +54,7 @@ import {
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { createGitRemoteAuthProvider } from "./git-credentials.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
+import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
 import {
   listCurrentRuntimeServicesForExecutionWorkspaces,
   listCurrentRuntimeServicesForProjectWorkspaces,
@@ -374,6 +375,21 @@ async function runGit(args: string[], cwd: string) {
   return await execFileAsync("git", ["-C", cwd, ...args], { cwd });
 }
 
+async function runExpensiveGitStatus(input: {
+  args: readonly string[];
+  cwd: string;
+  operation: string;
+  fairnessKeys?: readonly string[];
+}) {
+  return workspaceGitOperationScheduler.run({
+    workspacePath: input.cwd,
+    args: input.args,
+    operation: input.operation,
+    fairnessKeys: input.fairnessKeys,
+    cacheTtlMs: 0,
+  });
+}
+
 async function readGitStdout(args: string[], cwd: string): Promise<string | null> {
   const output = await runGit(args, cwd);
   return output.stdout.trim() || null;
@@ -502,7 +518,15 @@ async function inspectExecutionWorkspaceBranchForReconcile(
     throw unprocessable("Execution workspace is detached; Paperclip cannot reconcile it to a branch name");
   }
 
-  const status = await runGit(["status", "--porcelain", "--untracked-files=all"], worktreePath)
+  const status = await runExpensiveGitStatus({
+    args: ["status", "--porcelain", "--untracked-files=all"],
+    cwd: worktreePath,
+    operation: "execution_workspaces.branch_reconcile_status",
+    fairnessKeys: [
+      `workspace:${workspace.id}`,
+      ...(workspace.sourceIssueId ? [`issue:${workspace.sourceIssueId}`] : []),
+    ],
+  })
     .then((output) => output.stdout)
     .catch(() => null);
   const statusLines = status === null
@@ -739,6 +763,7 @@ async function quarantineRestoreDirtyWorkspaceBranch(input: {
 async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<{
   git: ExecutionWorkspaceCloseGitReadiness | null;
   warnings: string[];
+  statusInspectionSucceeded: boolean;
 }> {
   const warnings: string[] = [];
   const workspacePath = readNullableString(workspace.providerRef) ?? readNullableString(workspace.cwd);
@@ -748,12 +773,12 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
     Boolean(workspace.repoUrl || workspace.baseRef || workspace.branchName || workspacePath);
 
   if (!expectsGitInspection) {
-    return { git: null, warnings };
+    return { git: null, warnings, statusInspectionSucceeded: true };
   }
 
   if (!workspacePath) {
     warnings.push("Workspace has no local path, so Paperclip cannot inspect git status before close.");
-    return { git: null, warnings };
+    return { git: null, warnings, statusInspectionSucceeded: false };
   }
 
   if (!(await pathExists(workspacePath))) {
@@ -774,6 +799,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
         createdByRuntime,
       },
       warnings,
+      statusInspectionSucceeded: true,
     };
   }
 
@@ -797,9 +823,19 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
 
   let dirtyEntryCount = 0;
   let untrackedEntryCount = 0;
+  let statusInspectionSucceeded = false;
   if (repoRoot) {
     try {
-      const statusOutput = (await runGit(["status", "--porcelain=v1", "--untracked-files=all"], workspacePath)).stdout;
+      const statusOutput = (await runExpensiveGitStatus({
+        args: ["status", "--porcelain=v1", "--untracked-files=all"],
+        cwd: workspacePath,
+        operation: "execution_workspaces.close_readiness_status",
+        fairnessKeys: [
+          `company:${workspace.companyId}`,
+          `workspace:${workspace.id}`,
+          ...(workspace.sourceIssueId ? [`issue:${workspace.sourceIssueId}`] : []),
+        ],
+      })).stdout;
       for (const line of statusOutput.split(/\r?\n/)) {
         if (!line) continue;
         if (line.startsWith("??")) {
@@ -808,6 +844,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
         }
         dirtyEntryCount += 1;
       }
+      statusInspectionSucceeded = true;
     } catch (error) {
       warnings.push(
         `Could not read git working tree status for "${workspacePath}": ${error instanceof Error ? error.message : String(error)}`,
@@ -862,6 +899,7 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
       createdByRuntime,
     },
     warnings,
+    statusInspectionSucceeded,
   };
 }
 
@@ -981,6 +1019,7 @@ function toRuntimeService(
     stoppedAt: row.stoppedAt ?? null,
     stopPolicy: (row.stopPolicy as Record<string, unknown> | null) ?? null,
     healthStatus: row.healthStatus as WorkspaceRuntimeService["healthStatus"],
+    exposure: (row.exposure as WorkspaceRuntimeService["exposure"]) ?? null,
     configIndex: row.configIndex ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -1059,6 +1098,7 @@ function toWorkspaceOverviewPrimaryService(
     url: service.url,
     port: service.port,
     healthStatus: service.healthStatus,
+    exposure: service.exposure ?? null,
     updatedAt: service.updatedAt,
   };
 }
@@ -1366,6 +1406,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       readGitStdout(["rev-parse", "HEAD"], workspacePath).catch(() => null),
       readGitStdout(["symbolic-ref", "--quiet", "--short", "HEAD"], workspacePath).catch(() => null),
     ]);
+    if (!current.statusInspectionSucceeded) {
+      throw new Error("Refusing terminal workspace cleanup because the git status could not be verified");
+    }
     if (
       !current.git?.repoRoot
       || current.git.hasDirtyTrackedFiles
@@ -2204,10 +2247,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
       const executionWorkspace = toExecutionWorkspace(workspace, runtimeServices);
       const config = readExecutionWorkspaceConfig((workspace.metadata as Record<string, unknown> | null) ?? null);
-      const { git, warnings: gitWarnings } = await inspectGitCloseReadiness(executionWorkspace);
+      const {
+        git,
+        warnings: gitWarnings,
+        statusInspectionSucceeded,
+      } = await inspectGitCloseReadiness(executionWorkspace);
       const { deliveryState } = await assessDelivery(workspace, git);
       const warnings = [...gitWarnings];
       const blockingReasons: string[] = [];
+      if (!statusInspectionSucceeded) {
+        blockingReasons.push("Paperclip could not verify the workspace git status. Retry before destructive cleanup.");
+      }
       const isSharedWorkspace = executionWorkspace.mode === "shared_workspace";
       const workspacePath = readNullableString(executionWorkspace.providerRef) ?? readNullableString(executionWorkspace.cwd);
       const resolvedWorkspacePath = workspacePath ? path.resolve(workspacePath) : null;
@@ -2478,7 +2528,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
       for (const workspace of candidates) {
         const executionWorkspace = toExecutionWorkspace(workspace);
-        const { git } = await inspectGitCloseReadiness(executionWorkspace);
+        const { git, statusInspectionSucceeded } = await inspectGitCloseReadiness(executionWorkspace);
+        if (!statusInspectionSucceeded) {
+          result.skippedUndelivered += 1;
+          continue;
+        }
         const assessment = await assessDelivery(workspace, git);
         const reopenPending = metadataHasReopenPendingConsumption(
           workspace.metadata as Record<string, unknown> | null,

@@ -15,6 +15,7 @@ import {
   readGitWorkspaceSnapshot,
   runLocalGit,
   sanitizeGitRemoteUrl,
+  setExpensiveWorkspaceGitExecutor,
   withShallowGitWorkspaceClone,
 } from "./git-workspace-sync.js";
 
@@ -28,11 +29,37 @@ describe("git workspace sync", () => {
   const cleanupDirs: string[] = [];
 
   afterEach(async () => {
+    setExpensiveWorkspaceGitExecutor(null);
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
+  });
+
+  it("delegates every host-side full-tree enumeration to the registered scheduler", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-scheduler-hook-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    await writeFile(path.join(repo, "untracked.txt"), "untracked\n", "utf8");
+    const operations: string[] = [];
+    setExpensiveWorkspaceGitExecutor(async (input) => {
+      operations.push(input.operation);
+      return await runLocalGit(input.localDir, [...input.args], {
+        timeout: input.timeout,
+        maxBuffer: input.maxBuffer,
+      });
+    });
+
+    const snapshot = await readGitWorkspaceSnapshot(repo);
+
+    expect(snapshot?.overlayPaths).toContain("untracked.txt");
+    expect(operations.sort()).toEqual([
+      "adapter_sync.deleted_files",
+      "adapter_sync.ignored_files",
+      "adapter_sync.overlay_diff",
+      "adapter_sync.untracked_files",
+    ]);
   });
 
   async function createRepo(rootDir: string): Promise<string> {

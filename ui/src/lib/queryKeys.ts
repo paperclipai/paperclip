@@ -1,6 +1,20 @@
 export const queryKeys = {
   companies: {
+    /**
+     * Prefix for everything company-shaped. Matches the list, details and stats
+     * below, so an `invalidateQueries` against it still reaches all of them.
+     * Not a cache entry of its own — the list lives under `list()`.
+     */
     all: ["companies"] as const,
+    /**
+     * The company list, scoped to the account it was fetched for. Which
+     * companies you belong to is an answer about *you*, and a single shared
+     * entry made it look like an answer about the app: for 30 seconds after an
+     * account change the previous account's list was served to anyone who
+     * asked. A different account is a different entry, so there is nothing to
+     * mistake. `null` is the signed-out/local_trusted key.
+     */
+    list: (userId: string | null) => ["companies", "list", userId ?? "anonymous"] as const,
     detail: (id: string) => ["companies", id] as const,
     stats: ["companies", "stats"] as const,
     exportFidelity: (companyId: string) => ["companies", companyId, "export-fidelity"] as const,

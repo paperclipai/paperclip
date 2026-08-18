@@ -39,6 +39,7 @@ const mockEnvironmentService = vi.hoisted(() => ({
   update: vi.fn(),
   removeIfDeletable: vi.fn(),
   getDeleteBlastRadius: vi.fn(),
+  hasUnresolvedPendingCleanupLeases: vi.fn(),
   listLeases: vi.fn(),
   getLeaseById: vi.fn(),
 }));
@@ -109,6 +110,9 @@ vi.mock("../services/execution-workspaces.js", () => ({
 }));
 
 vi.mock("../services/plugin-environment-driver.js", () => ({
+  // The runtime reads this published constant at import time. Mirror the real
+  // value so the mocked module keeps the same reusable-lease method contract.
+  REUSABLE_LEASE_WORKER_METHODS: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"],
   listReadyPluginEnvironmentDrivers: mockListReadyPluginEnvironmentDrivers,
   resolvePluginSandboxProviderDriverByKey: mockResolvePluginSandboxProviderDriverByKey,
   startPluginEnvironmentInteractiveSetup: mockStartPluginEnvironmentInteractiveSetup,
@@ -147,6 +151,8 @@ function createDeleteBlastRadius(overrides: Partial<{
   secretBindingCount: number;
   activeLeaseCount: number;
   activeCustomImageSetupSessionCount: number;
+  pendingCleanupLeaseCount: number;
+  reusableSandboxLeaseCount: number;
 }> = {}) {
   const staticReferences = {
     isManagedLocal: overrides.isManagedLocal ?? false,
@@ -164,14 +170,20 @@ function createDeleteBlastRadius(overrides: Partial<{
       (overrides.activeLeaseCount ?? 0) > 0
       || (overrides.activeCustomImageSetupSessionCount ?? 0) > 0,
   };
+  const pendingCleanupLeaseCount = overrides.pendingCleanupLeaseCount ?? 0;
+  const reusableSandboxLeaseCount = overrides.reusableSandboxLeaseCount ?? 0;
   const deleteBlockedReasons = [
     ...(staticReferences.isManagedLocal ? ["managed_local" as const] : []),
     ...(staticReferences.isInstanceDefault ? ["instance_default" as const] : []),
+    ...(pendingCleanupLeaseCount > 0 ? ["pending_sandbox_cleanup" as const] : []),
+    ...(reusableSandboxLeaseCount > 0 ? ["reusable_sandbox_lease" as const] : []),
   ];
   return {
     environmentId: "env-1",
     canDelete: deleteBlockedReasons.length === 0,
     deleteBlockedReasons,
+    pendingCleanupLeaseCount,
+    reusableSandboxLeaseCount,
     staticReferences,
     activeRuntimeUse,
   };
@@ -252,6 +264,8 @@ describe("environment routes", () => {
     mockEnvironmentService.update.mockReset();
     mockEnvironmentService.removeIfDeletable.mockReset();
     mockEnvironmentService.getDeleteBlastRadius.mockReset();
+    mockEnvironmentService.hasUnresolvedPendingCleanupLeases.mockReset();
+    mockEnvironmentService.hasUnresolvedPendingCleanupLeases.mockResolvedValue(false);
     mockEnvironmentService.listLeases.mockReset();
     mockEnvironmentService.getLeaseById.mockReset();
     mockExecutionWorkspaceService.clearEnvironmentSelection.mockReset();
@@ -1075,6 +1089,8 @@ describe("environment routes", () => {
       environmentId: "env-1",
       canDelete: true,
       deleteBlockedReasons: [],
+      pendingCleanupLeaseCount: 0,
+      reusableSandboxLeaseCount: 0,
       staticReferences: {
         isManagedLocal: false,
         isInstanceDefault: false,
@@ -1164,7 +1180,9 @@ describe("environment routes", () => {
     expect(res.body.sandboxProviders["secure-plugin"]).toMatchObject({
       status: "supported",
       supportsRunExecution: true,
-      supportsReusableLeases: true,
+      // The mock manifest omits reusable leases, so the capability defaults to
+      // false and agrees with the execution guard.
+      supportsReusableLeases: false,
       supportsInteractiveSetup: true,
       interactiveSetupConnectionTypes: ["ssh"],
       supportsTemplateCapture: true,
@@ -1188,6 +1206,87 @@ describe("environment routes", () => {
     });
     expect(res.body.adapters.find((row: any) => row.adapterType === "codex_local").sandboxProviders["secure-plugin"])
       .toBe("supported");
+  });
+
+  it("publishes reusable leases from the nested capability, not the legacy flag, so the API agrees with acquisition", async () => {
+    // The manifest sets the legacy flag `true` but the nested override `false`.
+    // Acquisition lets the nested value win and refuses reuse. The published
+    // API value must derive from the same declaration resolver and present the
+    // provider as not reusable, even when the worker verified both lifecycle
+    // methods.
+    mockListReadyPluginEnvironmentDrivers.mockResolvedValue([
+      {
+        pluginId: "plugin-1",
+        pluginKey: "acme.legacy-override-provider",
+        driverKey: "override-plugin",
+        displayName: "Override Sandbox",
+        supportsReusableLeases: true,
+        sandboxCapabilities: { reusableLeases: false },
+        reusableLeaseMethodsVerified: true,
+        configSchema: { type: "object", properties: {} },
+      },
+    ]);
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app).get("/api/companies/company-1/environments/capabilities");
+
+    expect(res.status).toBe(200);
+    expect(res.body.sandboxProviders["override-plugin"].supportsReusableLeases).toBe(false);
+  });
+
+  it("publishes reusable leases from the legacy flag when the manifest omits the nested override and the worker verified both methods", async () => {
+    mockListReadyPluginEnvironmentDrivers.mockResolvedValue([
+      {
+        pluginId: "plugin-1",
+        pluginKey: "acme.legacy-only-provider",
+        driverKey: "legacy-plugin",
+        displayName: "Legacy Sandbox",
+        supportsReusableLeases: true,
+        reusableLeaseMethodsVerified: true,
+        configSchema: { type: "object", properties: {} },
+      },
+    ]);
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app).get("/api/companies/company-1/environments/capabilities");
+
+    expect(res.status).toBe(200);
+    expect(res.body.sandboxProviders["legacy-plugin"].supportsReusableLeases).toBe(true);
+  });
+
+  it("does not publish reusable leases when the declaration allows them but the worker omits a lifecycle method", async () => {
+    // A positive declaration alone is not enough. Acquisition verifies both
+    // reuse lifecycle methods live and falls back to an ephemeral lease when one
+    // is missing. The published value must agree and present as not reusable.
+    mockListReadyPluginEnvironmentDrivers.mockResolvedValue([
+      {
+        pluginId: "plugin-1",
+        pluginKey: "acme.unverified-reuse-provider",
+        driverKey: "unverified-plugin",
+        displayName: "Unverified Reuse Sandbox",
+        sandboxCapabilities: { reusableLeases: true },
+        reusableLeaseMethodsVerified: false,
+        configSchema: { type: "object", properties: {} },
+      },
+    ]);
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app).get("/api/companies/company-1/environments/capabilities");
+
+    expect(res.status).toBe(200);
+    expect(res.body.sandboxProviders["unverified-plugin"].supportsReusableLeases).toBe(false);
   });
 
   it("rejects agent list reads for instance-scoped environments", async () => {
@@ -1434,6 +1533,153 @@ describe("environment routes", () => {
     );
     expect(res.body.details).toEqual({ deleteBlockedReasons: ["instance_default"] });
     expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
+  });
+
+  it("rejects deleting an environment with a pending sandbox cleanup", async () => {
+    const environment = {
+      ...createEnvironment(),
+      driver: "ssh" as const,
+      name: "SSH Fixture",
+      config: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        privateKey: null,
+        privateKeySecretRef: null,
+        knownHosts: null,
+        strictHostKeyChecking: true,
+      },
+    };
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(createDeleteBlastRadius({
+      pendingCleanupLeaseCount: 1,
+    }));
+    const app = createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app).delete("/api/environments/env-1");
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe(
+      "Cannot delete this environment while a sandbox cleanup is pending. Wait for the cleanup sweep to destroy the orphan sandbox, then retry.",
+    );
+    expect(res.body.details).toEqual({ deleteBlockedReasons: ["pending_sandbox_cleanup"] });
+    expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
+  });
+
+  it("rejects deleting an environment with a live reusable sandbox lease", async () => {
+    const environment = {
+      ...createEnvironment(),
+      driver: "sandbox" as const,
+      name: "Reusable Sandbox Fixture",
+      config: {
+        provider: "fake-plugin",
+        image: "fixture:test",
+        reuseLease: true,
+      },
+    };
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(createDeleteBlastRadius({
+      activeLeaseCount: 1,
+      reusableSandboxLeaseCount: 1,
+    }));
+    const app = createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app).delete("/api/environments/env-1");
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe(
+      "Cannot delete this environment while it has a reusable sandbox lease. Remove the associated execution workspace or issue so Paperclip can destroy the sandbox, then retry.",
+    );
+    expect(res.body.details).toEqual({ deleteBlockedReasons: ["reusable_sandbox_lease"] });
+    expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
+  });
+
+  it("rejects a driver or provider config change while a sandbox cleanup is pending", async () => {
+    const environment = {
+      ...createEnvironment(),
+      id: "env-ssh",
+      driver: "ssh" as const,
+      name: "SSH Fixture",
+      config: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        privateKey: null,
+        privateKeySecretRef: null,
+        knownHosts: null,
+        strictHostKeyChecking: true,
+      },
+    };
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.hasUnresolvedPendingCleanupLeases.mockResolvedValue(true);
+    const app = createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .patch("/api/environments/env-ssh")
+      .send({
+        config: {
+          host: "changed.example.test",
+          port: 22,
+          username: "ssh-user",
+          remoteWorkspacePath: "/srv/paperclip/workspace",
+        },
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe(
+      "Cannot change the driver or provider config while a sandbox cleanup is pending. Wait for the cleanup sweep to destroy the orphan sandbox, then retry.",
+    );
+    expect(res.body.details).toEqual({ code: "environment_pending_sandbox_cleanup" });
+    expect(mockEnvironmentService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows a non-provider update while a sandbox cleanup is pending", async () => {
+    const environment = {
+      ...createEnvironment(),
+      id: "env-ssh",
+      driver: "ssh" as const,
+      name: "SSH Fixture",
+      config: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        privateKey: null,
+        privateKeySecretRef: null,
+        knownHosts: null,
+        strictHostKeyChecking: true,
+      },
+    };
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.hasUnresolvedPendingCleanupLeases.mockResolvedValue(true);
+    mockEnvironmentService.update.mockResolvedValue({ ...environment, description: "Updated" });
+    const app = createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .patch("/api/environments/env-ssh")
+      .send({ description: "Updated" });
+
+    expect(res.status).toBe(200);
+    expect(mockEnvironmentService.hasUnresolvedPendingCleanupLeases).not.toHaveBeenCalled();
+    expect(mockEnvironmentService.update).toHaveBeenCalled();
   });
 
   it("describes an environment's secret refs with owner metadata", async () => {
@@ -1796,12 +2042,16 @@ describe("environment routes", () => {
     expect(mockSecretService.create).not.toHaveBeenCalled();
   });
 
-  it("keeps host-owned stream flags when the provider plugin drops them from its normalized config", async () => {
-    // The host owns `streamRunLogs` and `streamAgentSessionOutput`. It reads
-    // them to select the run-log stream and the ACP session output stream. A
-    // provider plugin normalizes only its own driver fields, so it drops these
-    // host flags from its normalized config. The host must re-apply them, or the
-    // saved environment loses the operator opt-in and the streams never start.
+  it("keeps the host-owned stream flag and drops a removed flag a saved config still carries", async () => {
+    // The host owns `streamRunLogs`. It reads it to select the run-log stream. A
+    // provider plugin normalizes only its own driver fields, so it drops the host
+    // flag from its normalized config. The host must re-apply it, or the saved
+    // environment loses the operator opt-out and the stream never starts.
+    //
+    // `streamAgentSessionOutput` is a removed operator flag. A saved config can
+    // still carry it, but session-output streaming now follows the capability
+    // snapshot alone. The removed key must load and then drop, so it never
+    // reaches the persisted config.
     const environment = {
       ...createEnvironment(),
       id: "env-sandbox-fake-plugin",
@@ -1811,11 +2061,9 @@ describe("environment routes", () => {
     };
     mockEnvironmentService.create.mockResolvedValue(environment);
     mockValidatePluginSandboxProviderConfig.mockImplementation(async ({ provider, config }) => {
-      // Drop the host flags to reproduce a plugin that allowlists driver fields.
-      const { streamRunLogs, streamAgentSessionOutput, ...driverConfig } =
-        config as Record<string, unknown>;
+      // Drop the host flag to reproduce a plugin that allowlists driver fields.
+      const { streamRunLogs, ...driverConfig } = config as Record<string, unknown>;
       void streamRunLogs;
-      void streamAgentSessionOutput;
       return {
         normalizedConfig: driverConfig,
         pluginId: `plugin-${provider}`,
@@ -1850,7 +2098,8 @@ describe("environment routes", () => {
 
     expect(res.status).toBe(201);
     const persisted = mockEnvironmentService.create.mock.calls[0][0].config as Record<string, unknown>;
-    expect(persisted.streamAgentSessionOutput).toBe(true);
+    // The removed key never reaches the persisted config.
+    expect(persisted.streamAgentSessionOutput).toBeUndefined();
     expect(persisted.streamRunLogs).toBe(false);
   });
 
