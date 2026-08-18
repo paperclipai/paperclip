@@ -13521,15 +13521,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   // floor.
   //
   // The transcript is NDJSON: each line is `{ts, stream, chunk, seq}`, not raw
-  // adapter stdout, so this reads it page by page (oldest-to-newest, since the
-  // store's `read` only supports forward pagination from a byte offset) and
-  // reconstructs the stdout/stderr streams by concatenating each line's
-  // `chunk` in order, keeping only the last `MAX_CAPTURE_BYTES` of each stream
-  // so a terminal-result parser sees the same tail-shaped input it would from
-  // the direct-file path above. A `RUN_LOG_STREAM_SCAN_MAX_BYTES` safety valve
-  // bounds the total scan for a pathologically large log; this only runs for
-  // a rare adopted-and-now-dead reap tick, so the extra I/O is an acceptable
-  // trade for correctness over the direct-file path's single read.
+  // adapter stdout, so this reconstructs the stdout/stderr streams by
+  // concatenating each line's `chunk` in order (by stream tag), keeping only
+  // the last `MAX_CAPTURE_BYTES` of each stream so a terminal-result parser
+  // sees the same tail-shaped input it would from the direct-file path above.
+  //
+  // Prefers `runLogStore.readTail`, a true O(1)-request tail read regardless
+  // of total log size, so a terminal result near the end of a large
+  // transcript is always reachable. Falls back to forward pagination via
+  // `read` (bounded by `RUN_LOG_STREAM_SCAN_MAX_BYTES`) only for a store
+  // implementation that hasn't implemented `readTail` (e.g. a test fake) --
+  // that fallback CAN miss a terminal result past the scan cap on a
+  // pathologically large transcript, which is why `readTail` is preferred.
   async function reconstructRunLogStreamsTail(
     run: typeof heartbeatRuns.$inferSelect,
   ): Promise<{ stdout: string; stderr: string } | null> {
@@ -13542,6 +13545,50 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
     let stdoutParts: string[] = [];
     let stderrParts: string[] = [];
+
+    const consumeLine = (rawLine: string) => {
+      const line = rawLine.trim();
+      if (!line) return;
+      let event: { stream?: unknown; chunk?: unknown } | null = null;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        return;
+      }
+      const chunk = typeof event?.chunk === "string" ? event.chunk : "";
+      if (!chunk) return;
+      if (event?.stream === "stdout") {
+        stdoutParts.push(chunk);
+        stdoutParts = trimToCap(stdoutParts);
+      } else if (event?.stream === "stderr") {
+        stderrParts.push(chunk);
+        stderrParts = trimToCap(stderrParts);
+      }
+    };
+
+    if (runLogStore.readTail) {
+      let tail: Awaited<ReturnType<NonNullable<typeof runLogStore.readTail>>> | null = null;
+      try {
+        tail = await runLogStore.readTail(handle, { maxBytes: RUN_LOG_STREAM_SCAN_MAX_BYTES });
+      } catch {
+        return null;
+      }
+      if (!tail || !tail.content) return { stdout: "", stderr: "" };
+      const lines = tail.content.split("\n");
+      // The read window was clamped to the tail, so its first line may be a
+      // record truncated mid-JSON by the clamp -- drop it rather than risk a
+      // parse of a corrupted fragment. Only skip it when the window did NOT
+      // start at the true beginning of the file (see `truncatedAtStart`).
+      if (tail.truncatedAtStart) lines.shift();
+      for (const rawLine of lines) consumeLine(rawLine);
+      return { stdout: stdoutParts.join(""), stderr: stderrParts.join("") };
+    }
+
+    // Fallback: forward pagination from the start. Bounded by
+    // `RUN_LOG_STREAM_SCAN_MAX_BYTES`, so a transcript larger than that cap
+    // can still miss a terminal result near the true end -- acceptable only
+    // because this path is exercised solely by a store implementation that
+    // hasn't implemented `readTail` (a test fake), never in production.
     let offset = 0;
     let scanned = 0;
     let leftover = "";
@@ -13557,40 +13604,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const combined = leftover + page.content;
       const lines = combined.split("\n");
       leftover = page.nextOffset ? (lines.pop() ?? "") : "";
-      for (const rawLine of lines) {
-        const line = rawLine.trim();
-        if (!line) continue;
-        let event: { stream?: unknown; chunk?: unknown } | null = null;
-        try {
-          event = JSON.parse(line);
-        } catch {
-          continue;
-        }
-        const chunk = typeof event?.chunk === "string" ? event.chunk : "";
-        if (!chunk) continue;
-        if (event?.stream === "stdout") {
-          stdoutParts.push(chunk);
-          stdoutParts = trimToCap(stdoutParts);
-        } else if (event?.stream === "stderr") {
-          stderrParts.push(chunk);
-          stderrParts = trimToCap(stderrParts);
-        }
-      }
+      for (const rawLine of lines) consumeLine(rawLine);
       if (!page.nextOffset || scanned >= RUN_LOG_STREAM_SCAN_MAX_BYTES) break;
       offset = page.nextOffset;
     }
-    if (leftover.trim()) {
-      try {
-        const event = JSON.parse(leftover.trim()) as { stream?: unknown; chunk?: unknown };
-        const chunk = typeof event.chunk === "string" ? event.chunk : "";
-        if (chunk) {
-          if (event.stream === "stdout") stdoutParts = trimToCap([...stdoutParts, chunk]);
-          else if (event.stream === "stderr") stderrParts = trimToCap([...stderrParts, chunk]);
-        }
-      } catch {
-        // Trailing partial line with no closing newline yet -- drop it.
-      }
-    }
+    if (leftover.trim()) consumeLine(leftover);
     return { stdout: stdoutParts.join(""), stderr: stderrParts.join("") };
   }
 
