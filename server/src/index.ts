@@ -89,6 +89,7 @@ import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
 import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
 import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
+import { createSchedulerSingleFlight } from "./lib/scheduler-single-flight.js";
 import {
   coordinateHeartbeatSchedulerShutdown,
   finalizeServerShutdown,
@@ -1288,6 +1289,85 @@ export async function startServer(): Promise<StartedServer> {
     };
     await runRetentionSweep();
 
+    const periodicHeartbeatRecovery = createSchedulerSingleFlight(async ({ invocationId }) => {
+      const startedAtMs = Date.now();
+      try {
+        const reaped = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 });
+        const promotion = await heartbeat.promoteDueScheduledRetries();
+        await heartbeat.resumeQueuedRuns();
+        const stranded = await heartbeat.reconcileStrandedAssignedIssues();
+        if (
+          promotion.promoted > 0 ||
+          stranded.assignmentDispatched > 0 ||
+          stranded.dispatchRequeued > 0 ||
+          stranded.continuationRequeued > 0 ||
+          stranded.successfulRunHandoffEscalated > 0 ||
+          stranded.escalated > 0
+        ) {
+          logger.warn(
+            {
+              invocationId,
+              promotedScheduledRetries: promotion.promoted,
+              promotedScheduledRetryRunIds: promotion.runIds,
+              ...stranded,
+            },
+            "periodic heartbeat recovery changed assigned issue state",
+          );
+        }
+
+        const issueGraph = await heartbeat.reconcileIssueGraphLiveness();
+        if (issueGraph.escalationsCreated > 0 || issueGraph.dependencyWakesHealed > 0) {
+          logger.warn(
+            { invocationId, ...issueGraph },
+            "periodic issue-graph liveness reconciliation changed issue graph state",
+          );
+        }
+
+        const taskWatchdogs = await heartbeat.reconcileTaskWatchdogs();
+        if (taskWatchdogs.triggered > 0) {
+          logger.warn(
+            { invocationId, ...taskWatchdogs },
+            "periodic task-watchdog reconciliation triggered watchdog work",
+          );
+        }
+
+        const activeRunOutput = await heartbeat.scanSilentActiveRuns();
+        if (activeRunOutput.created > 0 || activeRunOutput.escalated > 0) {
+          logger.warn({ invocationId, ...activeRunOutput }, "periodic active-run output watchdog created review work");
+        }
+
+        const staleLocks = await heartbeat.sweepStaleIssueLocks();
+        if (staleLocks.cleared > 0) {
+          logger.warn({ invocationId, ...staleLocks }, "periodic stale-lock sweeper cleared issue locks");
+        }
+
+        const productivity = await heartbeat.reconcileProductivityReviews();
+        if (productivity.created > 0 || productivity.updated > 0 || productivity.failed > 0) {
+          logger.warn(
+            { invocationId, ...productivity },
+            "periodic productivity reconciliation created or updated review work",
+          );
+        }
+
+        logger.info(
+          {
+            invocationId,
+            durationMs: Date.now() - startedAtMs,
+            reaped: reaped.reaped,
+            promotedScheduledRetries: promotion.promoted,
+            issueGraphFindings: issueGraph.findings,
+            issueGraphCandidates: issueGraph.dependencyWakeBackstopChecked,
+            issueGraphWakes: issueGraph.dependencyWakesHealed,
+            issueGraphSingleFlightSkipped: issueGraph.dependencyWakeBackstopSingleFlightSkipped,
+          },
+          "periodic heartbeat recovery pass completed",
+        );
+      } catch (err) {
+        logger.error({ err, invocationId, durationMs: Date.now() - startedAtMs }, "periodic heartbeat recovery failed");
+        throw err;
+      }
+    });
+
     startHeartbeatSchedulerInterval(() => {
       // Track the outer async callback as well as the work it starts. Shutdown
       // can then wait through an already-running suppression check before it
@@ -1405,61 +1485,18 @@ export async function startServer(): Promise<StartedServer> {
 
         if (heartbeatSchedulerStopped) return;
         if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
-          // Periodically reap orphaned runs (5-min staleness threshold) and make sure
-          // persisted queued work is still being driven forward.
-          trackHeartbeatSchedulerWork(heartbeat
-            .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
-            .then(() => heartbeat.promoteDueScheduledRetries())
-            .then(async (promotion) => {
-              await heartbeat.resumeQueuedRuns();
-              const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
-              if (
-                promotion.promoted > 0 ||
-                reconciled.assignmentDispatched > 0 ||
-                reconciled.dispatchRequeued > 0 ||
-                reconciled.continuationRequeued > 0 ||
-                reconciled.successfulRunHandoffEscalated > 0 ||
-                reconciled.escalated > 0
-              ) {
-                logger.warn(
-                  { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
-                  "periodic heartbeat recovery changed assigned issue state",
-                );
-              }
-            })
-            .then(async () => {
-              const reconciled = await heartbeat.reconcileIssueGraphLiveness();
-              if (reconciled.escalationsCreated > 0 || reconciled.dependencyWakesHealed > 0) {
-                logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation changed issue graph state");
-              }
-            })
-            .then(async () => {
-              const reconciled = await heartbeat.reconcileTaskWatchdogs();
-              if (reconciled.triggered > 0) {
-                logger.warn({ ...reconciled }, "periodic task-watchdog reconciliation triggered watchdog work");
-              }
-            })
-            .then(async () => {
-              const scanned = await heartbeat.scanSilentActiveRuns();
-              if (scanned.created > 0 || scanned.escalated > 0) {
-                logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
-              }
-            })
-            .then(async () => {
-              const swept = await heartbeat.sweepStaleIssueLocks();
-              if (swept.cleared > 0) {
-                logger.warn({ ...swept }, "periodic stale-lock sweeper cleared issue locks");
-              }
-            })
-            .then(async () => {
-              const reviewed = await heartbeat.reconcileProductivityReviews();
-              if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
-                logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
-              }
-            })
-            .catch((err) => {
-              logger.error({ err }, "periodic heartbeat recovery failed");
-            }));
+          const recoveryPass = periodicHeartbeatRecovery.start();
+          if (recoveryPass.started) {
+            trackHeartbeatSchedulerWork(recoveryPass.promise);
+          } else {
+            logger.info(
+              {
+                activeInvocationId: recoveryPass.activeInvocationId,
+                activeDurationMs: recoveryPass.activeDurationMs,
+              },
+              "periodic heartbeat recovery skipped overlapping interval",
+            );
+          }
         }
       })().catch((err) => {
         logger.error({ err }, "heartbeat scheduler tick failed");

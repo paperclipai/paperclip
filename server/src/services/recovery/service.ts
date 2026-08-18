@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -145,20 +146,53 @@ type ResolvedDependencyWakeBackstopOptions = {
   source?: ResolvedDependencyWakeBackstopSource;
 };
 
-type LatestIssueRun = Pick<
-  typeof heartbeatRuns.$inferSelect,
-  | "id"
-  | "agentId"
-  | "status"
-  | "error"
-  | "errorCode"
-  | "contextSnapshot"
-  | "livenessState"
-  | "startedAt"
-  | "createdAt"
-> & {
-  resultJson?: unknown;
-} | null;
+function createResolvedDependencyWakeBackstopResult(input: {
+  invocationId: string;
+  censusId: string | null;
+  pageIndex: number | null;
+  cursorIn: string | null;
+}) {
+  return {
+    invocationId: input.invocationId,
+    censusId: input.censusId,
+    pageIndex: input.pageIndex,
+    cursorIn: input.cursorIn,
+    cursorOut: input.cursorIn,
+    censusCompleted: false,
+    singleFlightSkipped: 0,
+    checked: 0,
+    healed: 0,
+    existingWakeSkipped: 0,
+    livePathSkipped: 0,
+    interactionSkipped: 0,
+    pauseHoldSkipped: 0,
+    notReadySkipped: 0,
+    candidateLimitSkipped: 0,
+    deferredOrFailed: 0,
+    enqueueFailed: 0,
+    companyCount: 0,
+    issueIds: [] as string[],
+  };
+}
+
+type ResolvedDependencyWakeBackstopResult = ReturnType<typeof createResolvedDependencyWakeBackstopResult>;
+
+type LatestIssueRun =
+  | (Pick<
+      typeof heartbeatRuns.$inferSelect,
+      | "id"
+      | "agentId"
+      | "status"
+      | "error"
+      | "errorCode"
+      | "contextSnapshot"
+      | "livenessState"
+      | "startedAt"
+      | "createdAt"
+    > & {
+      resultJson?: unknown;
+    })
+  | null;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeeded" };
 
 type StrandedRecoveryCause =
@@ -770,7 +804,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   const budgets = budgetService(db);
   const instanceSettings = instanceSettingsService(db);
   const runLogStore = getRunLogStore();
-  let resolvedDependencyWakeBackstopCandidateCursor: string | null = null;
+  let resolvedDependencyWakeBackstopPagination = {
+    cursor: null as string | null,
+    censusId: null as string | null,
+    nextPageIndex: 0,
+  };
+  let resolvedDependencyWakeBackstopInFlight: {
+    invocationId: string;
+    startedAtMs: number;
+    promise: Promise<ResolvedDependencyWakeBackstopResult>;
+  } | null = null;
 
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -5122,21 +5165,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return { kind: "created" as const, escalationIssueId: escalation.id };
   }
 
-  async function reconcileResolvedDependencyWakeBackstop(opts?: ResolvedDependencyWakeBackstopOptions) {
-    const result = {
-      checked: 0,
-      healed: 0,
-      existingWakeSkipped: 0,
-      livePathSkipped: 0,
-      interactionSkipped: 0,
-      pauseHoldSkipped: 0,
-      notReadySkipped: 0,
-      candidateLimitSkipped: 0,
-      deferredOrFailed: 0,
-      enqueueFailed: 0,
-      issueIds: [] as string[],
-    };
-
+  async function runResolvedDependencyWakeBackstop(
+    opts: ResolvedDependencyWakeBackstopOptions | undefined,
+    invocation: {
+      invocationId: string;
+      censusId: string | null;
+      pageIndex: number | null;
+      cursorIn: string | null;
+    },
+  ) {
+    const startedAtMs = Date.now();
+    const result = createResolvedDependencyWakeBackstopResult(invocation);
     const source = opts?.source ?? "issue_graph_liveness.backstop";
     const requestedByActorId = source === "workspace.finalize"
       ? "heartbeat_finalize"
@@ -5145,6 +5184,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       ? "workspace_finalize_reconciliation"
       : "issue_graph_liveness_reconciliation";
     const useCursor = !opts?.blockerIssueId;
+    let cursorResetReason: "census_complete" | "empty_page" | null = null;
+
+    logger.info(
+      {
+        invocationId: invocation.invocationId,
+        censusId: invocation.censusId,
+        pageIndex: invocation.pageIndex,
+        cursorIn: invocation.cursorIn,
+        source,
+        companyId: opts?.companyId ?? null,
+        blockerIssueId: opts?.blockerIssueId ?? null,
+        candidateLimit: RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT,
+      },
+      "issue graph liveness backstop pass started",
+    );
 
     const queryCandidates = (afterIssueId: string | null) => {
       const filters = [
@@ -5191,170 +5245,298 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .limit(RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT);
     };
 
-    let candidateRows = await queryCandidates(useCursor ? resolvedDependencyWakeBackstopCandidateCursor : null);
-    if (useCursor && candidateRows.length === 0 && resolvedDependencyWakeBackstopCandidateCursor) {
-      resolvedDependencyWakeBackstopCandidateCursor = null;
-      candidateRows = await queryCandidates(null);
-    }
-    const totalCandidateCount = candidateRows[0]?.totalCount ?? 0;
-    const candidates = candidateRows.map(({ totalCount: _totalCount, ...candidate }) => candidate);
-    result.checked = candidates.length;
-    result.candidateLimitSkipped = Math.max(0, totalCandidateCount - candidates.length);
-    const lastCandidate = candidates[candidates.length - 1] ?? null;
-    if (useCursor) {
-      resolvedDependencyWakeBackstopCandidateCursor =
-        result.candidateLimitSkipped > 0 && lastCandidate ? lastCandidate.id : null;
-    }
-    if (result.candidateLimitSkipped > 0) {
-      logger.warn(
-        {
-          processed: candidates.length,
-          skipped: result.candidateLimitSkipped,
-          limit: RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT,
-          nextCursor: useCursor ? resolvedDependencyWakeBackstopCandidateCursor : null,
-          source,
-          blockerIssueId: opts?.blockerIssueId ?? null,
-        },
-        "issue graph liveness backstop deferred resolved dependency wake candidates past page limit",
-      );
-    }
-
-    const candidatesByCompany = new Map<string, typeof candidates>();
-    for (const candidate of candidates) {
-      const companyCandidates = candidatesByCompany.get(candidate.companyId) ?? [];
-      companyCandidates.push(candidate);
-      candidatesByCompany.set(candidate.companyId, companyCandidates);
-    }
-
-    for (const [companyId, companyCandidates] of candidatesByCompany.entries()) {
-      const readinessMap = await issuesSvc.listDependencyReadiness(
-        companyId,
-        companyCandidates.map((candidate) => candidate.id),
-      );
-
-      for (const candidate of companyCandidates) {
-        const agentId = candidate.assigneeAgentId;
-        if (!agentId) continue;
-
-        const readiness = readinessMap.get(candidate.id);
-        const resolvedBlockerIssueId = readiness?.blockerIssueIds[0] ?? null;
-        if (
-          !readiness ||
-          !readiness.isDependencyReady ||
-          readiness.blockerIssueIds.length === 0 ||
-          !resolvedBlockerIssueId
-        ) {
-          result.notReadySkipped += 1;
-          continue;
-        }
-
-        const idempotencyKeys = readiness.blockerIssueIds.map((blockerIssueId) =>
-          buildIssueBlockersResolvedWakeIdempotencyKey({
-            dependentIssueId: candidate.id,
-            resolvedBlockerIssueId: blockerIssueId,
-          })
+    try {
+      const candidateRows = await queryCandidates(useCursor ? invocation.cursorIn : null);
+      if (useCursor && candidateRows.length === 0 && invocation.cursorIn) {
+        resolvedDependencyWakeBackstopPagination = {
+          cursor: null,
+          censusId: null,
+          nextPageIndex: 0,
+        };
+        result.cursorOut = null;
+        result.censusCompleted = true;
+        cursorResetReason = "empty_page";
+        return result;
+      }
+      const totalCandidateCount = candidateRows[0]?.totalCount ?? 0;
+      const candidates = candidateRows.map(({ totalCount: _totalCount, ...candidate }) => candidate);
+      result.checked = candidates.length;
+      result.candidateLimitSkipped = Math.max(0, totalCandidateCount - candidates.length);
+      const lastCandidate = candidates[candidates.length - 1] ?? null;
+      const cursorOut = useCursor && result.candidateLimitSkipped > 0 && lastCandidate ? lastCandidate.id : null;
+      result.cursorOut = cursorOut;
+      if (result.candidateLimitSkipped > 0) {
+        logger.warn(
+          {
+            invocationId: invocation.invocationId,
+            censusId: invocation.censusId,
+            pageIndex: invocation.pageIndex,
+            processed: candidates.length,
+            skipped: result.candidateLimitSkipped,
+            limit: RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT,
+            cursorIn: invocation.cursorIn,
+            cursorOut,
+            source,
+            blockerIssueId: opts?.blockerIssueId ?? null,
+          },
+          "issue graph liveness backstop deferred resolved dependency wake candidates past page limit",
         );
-        const idempotencyKey = buildIssueBlockersResolvedWakeIdempotencyKey({
-          dependentIssueId: candidate.id,
-          resolvedBlockerIssueId,
-        });
-        const existingWake = await findExistingIssueBlockersResolvedWakeForAnyKey(db, {
+      }
+
+      const candidatesByCompany = new Map<string, typeof candidates>();
+      for (const candidate of candidates) {
+        const companyCandidates = candidatesByCompany.get(candidate.companyId) ?? [];
+        companyCandidates.push(candidate);
+        candidatesByCompany.set(candidate.companyId, companyCandidates);
+      }
+      result.companyCount = candidatesByCompany.size;
+
+      for (const [companyId, companyCandidates] of candidatesByCompany.entries()) {
+        const readinessMap = await issuesSvc.listDependencyReadiness(
           companyId,
-          idempotencyKeys,
-        });
-        if (existingWake) {
-          result.existingWakeSkipped += 1;
-          continue;
-        }
+          companyCandidates.map((candidate) => candidate.id),
+        );
 
-        if (
-          await hasActiveExecutionPath(companyId, candidate.id, agentId) ||
-          await hasQueuedIssueWake(companyId, candidate.id, agentId)
-        ) {
-          result.livePathSkipped += 1;
-          continue;
-        }
+        for (const candidate of companyCandidates) {
+          const agentId = candidate.assigneeAgentId;
+          if (!agentId) continue;
 
-        if (await hasPendingWakeInteraction(companyId, candidate.id)) {
-          result.interactionSkipped += 1;
-          continue;
-        }
-
-        if (await isAutomaticRecoverySuppressedByPauseHold(db, companyId, candidate.id, treeControlSvc)) {
-          result.pauseHoldSkipped += 1;
-          continue;
-        }
-
-        try {
-          const wake = await deps.enqueueWakeup(agentId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
-            payload: {
-              issueId: candidate.id,
-              resolvedBlockerIssueId,
-              blockerIssueIds: readiness.blockerIssueIds,
-              backstop: payloadBackstop,
-            },
-            idempotencyKey,
-            requestedByActorType: "system",
-            requestedByActorId,
-            contextSnapshot: {
-              issueId: candidate.id,
-              taskId: candidate.id,
-              wakeReason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
-              source,
-              resolvedBlockerIssueId,
-              blockerIssueIds: readiness.blockerIssueIds,
-            },
-          });
-          if (!wake) {
-            // enqueueWakeup returns null for normal deferred/skipped paths
-            // such as disabled wake-on-demand or concurrency gating. That is
-            // not an enqueue error, but the backstop still did not heal now.
-            result.deferredOrFailed += 1;
+          const readiness = readinessMap.get(candidate.id);
+          const resolvedBlockerIssueId = readiness?.blockerIssueIds[0] ?? null;
+          if (
+            !readiness ||
+            !readiness.isDependencyReady ||
+            readiness.blockerIssueIds.length === 0 ||
+            !resolvedBlockerIssueId
+          ) {
+            result.notReadySkipped += 1;
             continue;
           }
 
-          result.healed += 1;
-          result.issueIds.push(candidate.id);
-
-          await logActivity(db, {
-            companyId,
-            actorType: "system",
-            actorId: "issue_graph_liveness_backstop",
-            agentId,
-            runId: opts?.runId ?? null,
-            action: "issue.blockers_resolved_wake_emitted",
-            entityType: "issue",
-            entityId: candidate.id,
-            details: {
-              source,
-              wakeupRunId: wake.id,
-              idempotencyKey,
-              resolvedBlockerIssueId,
-              blockerIssueIds: readiness.blockerIssueIds,
-            },
-          });
-        } catch (err) {
-          result.deferredOrFailed += 1;
-          result.enqueueFailed += 1;
-          logger.warn(
-            { err, issueId: candidate.id, agentId, idempotencyKey, source },
-            "failed to enqueue dependency wake from issue graph liveness backstop",
+          const idempotencyKeys = readiness.blockerIssueIds.map((blockerIssueId) =>
+            buildIssueBlockersResolvedWakeIdempotencyKey({
+              dependentIssueId: candidate.id,
+              resolvedBlockerIssueId: blockerIssueId,
+            }),
           );
+          const idempotencyKey = buildIssueBlockersResolvedWakeIdempotencyKey({
+            dependentIssueId: candidate.id,
+            resolvedBlockerIssueId,
+          });
+          const existingWake = await findExistingIssueBlockersResolvedWakeForAnyKey(db, {
+            companyId,
+            idempotencyKeys,
+          });
+          if (existingWake) {
+            result.existingWakeSkipped += 1;
+            continue;
+          }
+
+          if (
+            (await hasActiveExecutionPath(companyId, candidate.id, agentId)) ||
+            (await hasQueuedIssueWake(companyId, candidate.id, agentId))
+          ) {
+            result.livePathSkipped += 1;
+            continue;
+          }
+
+          if (await hasPendingWakeInteraction(companyId, candidate.id)) {
+            result.interactionSkipped += 1;
+            continue;
+          }
+
+          if (await isAutomaticRecoverySuppressedByPauseHold(db, companyId, candidate.id, treeControlSvc)) {
+            result.pauseHoldSkipped += 1;
+            continue;
+          }
+
+          try {
+            const wake = await deps.enqueueWakeup(agentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+              payload: {
+                issueId: candidate.id,
+                resolvedBlockerIssueId,
+                blockerIssueIds: readiness.blockerIssueIds,
+                backstop: payloadBackstop,
+              },
+              idempotencyKey,
+              requestedByActorType: "system",
+              requestedByActorId,
+              contextSnapshot: {
+                issueId: candidate.id,
+                taskId: candidate.id,
+                wakeReason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+                source,
+                resolvedBlockerIssueId,
+                blockerIssueIds: readiness.blockerIssueIds,
+              },
+            });
+            if (!wake) {
+              // enqueueWakeup returns null for normal deferred/skipped paths
+              // such as disabled wake-on-demand or concurrency gating. That is
+              // not an enqueue error, but the backstop still did not heal now.
+              result.deferredOrFailed += 1;
+              continue;
+            }
+
+            result.healed += 1;
+            result.issueIds.push(candidate.id);
+
+            await logActivity(db, {
+              companyId,
+              actorType: "system",
+              actorId: "issue_graph_liveness_backstop",
+              agentId,
+              runId: opts?.runId ?? null,
+              action: "issue.blockers_resolved_wake_emitted",
+              entityType: "issue",
+              entityId: candidate.id,
+              details: {
+                source,
+                wakeupRunId: wake.id,
+                idempotencyKey,
+                resolvedBlockerIssueId,
+                blockerIssueIds: readiness.blockerIssueIds,
+              },
+            });
+          } catch (err) {
+            result.deferredOrFailed += 1;
+            result.enqueueFailed += 1;
+            logger.warn(
+              { err, issueId: candidate.id, agentId, idempotencyKey, source },
+              "failed to enqueue dependency wake from issue graph liveness backstop",
+            );
+          }
         }
       }
-    }
 
-    if (result.healed > 0) {
-      logger.warn(
-        { healed: result.healed, issueIds: result.issueIds, source, blockerIssueId: opts?.blockerIssueId ?? null },
-        "issue graph liveness backstop healed resolved blocked dependency wakes",
+      if (useCursor) {
+        if (cursorOut) {
+          resolvedDependencyWakeBackstopPagination = {
+            cursor: cursorOut,
+            censusId: invocation.censusId,
+            nextPageIndex: (invocation.pageIndex ?? 0) + 1,
+          };
+        } else {
+          resolvedDependencyWakeBackstopPagination = {
+            cursor: null,
+            censusId: null,
+            nextPageIndex: 0,
+          };
+          result.censusCompleted = true;
+          cursorResetReason = "census_complete";
+        }
+      }
+
+      if (result.healed > 0) {
+        logger.warn(
+          { healed: result.healed, issueIds: result.issueIds, source, blockerIssueId: opts?.blockerIssueId ?? null },
+          "issue graph liveness backstop healed resolved blocked dependency wakes",
+        );
+      }
+
+      return result;
+    } catch (err) {
+      logger.error(
+        {
+          err,
+          invocationId: invocation.invocationId,
+          censusId: invocation.censusId,
+          pageIndex: invocation.pageIndex,
+          cursorIn: invocation.cursorIn,
+          cursorOut: invocation.cursorIn,
+          durationMs: Date.now() - startedAtMs,
+          source,
+          companyId: opts?.companyId ?? null,
+          blockerIssueId: opts?.blockerIssueId ?? null,
+        },
+        "issue graph liveness backstop pass failed before cursor commit",
+      );
+      throw err;
+    } finally {
+      logger.info(
+        {
+          invocationId: invocation.invocationId,
+          censusId: invocation.censusId,
+          pageIndex: invocation.pageIndex,
+          cursorIn: invocation.cursorIn,
+          cursorOut: result.cursorOut,
+          censusCompleted: result.censusCompleted,
+          cursorResetReason,
+          candidateCount: result.checked,
+          candidateLimitSkipped: result.candidateLimitSkipped,
+          companyCount: result.companyCount,
+          wakeCount: result.healed,
+          durationMs: Date.now() - startedAtMs,
+          source,
+          companyId: opts?.companyId ?? null,
+          blockerIssueId: opts?.blockerIssueId ?? null,
+        },
+        "issue graph liveness backstop pass finished",
       );
     }
+  }
 
-    return result;
+  async function reconcileResolvedDependencyWakeBackstop(opts?: ResolvedDependencyWakeBackstopOptions) {
+    const invocationId = randomUUID();
+    const useCursor = !opts?.blockerIssueId;
+    if (!useCursor) {
+      return runResolvedDependencyWakeBackstop(opts, {
+        invocationId,
+        censusId: null,
+        pageIndex: null,
+        cursorIn: null,
+      });
+    }
+
+    if (resolvedDependencyWakeBackstopInFlight) {
+      const result = createResolvedDependencyWakeBackstopResult({
+        invocationId,
+        censusId: resolvedDependencyWakeBackstopPagination.censusId,
+        pageIndex: resolvedDependencyWakeBackstopPagination.nextPageIndex,
+        cursorIn: resolvedDependencyWakeBackstopPagination.cursor,
+      });
+      result.singleFlightSkipped = 1;
+      logger.info(
+        {
+          invocationId,
+          activeInvocationId: resolvedDependencyWakeBackstopInFlight.invocationId,
+          activeDurationMs: Date.now() - resolvedDependencyWakeBackstopInFlight.startedAtMs,
+          censusId: result.censusId,
+          pageIndex: result.pageIndex,
+          cursorIn: result.cursorIn,
+          cursorOut: result.cursorOut,
+          candidateCount: 0,
+          companyCount: 0,
+          wakeCount: 0,
+          source: opts?.source ?? "issue_graph_liveness.backstop",
+        },
+        "issue graph liveness backstop skipped overlapping pass",
+      );
+      return result;
+    }
+
+    const invocation = {
+      invocationId,
+      censusId: resolvedDependencyWakeBackstopPagination.censusId ?? randomUUID(),
+      pageIndex: resolvedDependencyWakeBackstopPagination.nextPageIndex,
+      cursorIn: resolvedDependencyWakeBackstopPagination.cursor,
+    };
+    const promise = runResolvedDependencyWakeBackstop(opts, invocation);
+    resolvedDependencyWakeBackstopInFlight = {
+      invocationId,
+      startedAtMs: Date.now(),
+      promise,
+    };
+    try {
+      return await promise;
+    } finally {
+      if (resolvedDependencyWakeBackstopInFlight?.promise === promise) {
+        resolvedDependencyWakeBackstopInFlight = null;
+      }
+    }
   }
 
   async function reconcileIssueGraphLiveness(opts?: {
@@ -5424,6 +5606,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       dependencyWakeCandidateLimitSkipped: 0,
       dependencyWakeDeferredOrFailed: 0,
       dependencyWakeEnqueueFailed: 0,
+      dependencyWakeBackstopSingleFlightSkipped: 0,
       dependencyWakeIssueIds: [] as string[],
       issueIds: [] as string[],
       escalationIssueIds: [] as string[],
@@ -5443,6 +5626,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     result.dependencyWakeCandidateLimitSkipped = dependencyWakeBackstop.candidateLimitSkipped;
     result.dependencyWakeDeferredOrFailed = dependencyWakeBackstop.deferredOrFailed;
     result.dependencyWakeEnqueueFailed = dependencyWakeBackstop.enqueueFailed;
+    result.dependencyWakeBackstopSingleFlightSkipped = dependencyWakeBackstop.singleFlightSkipped;
     result.dependencyWakeIssueIds = dependencyWakeBackstop.issueIds;
 
     if (!autoRecoveryEnabled) {
