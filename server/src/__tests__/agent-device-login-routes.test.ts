@@ -387,6 +387,20 @@ describe("adapter device-login routes", () => {
     expect(harness.acquisitions).toHaveLength(0);
   });
 
+  it("rejects a malformed start body with the strict schema before any side effect", async () => {
+    const app = await createApp();
+
+    // The strict start schema rejects an unknown field. The old lax parse
+    // accepted an extra field and started a session; the shared spine now fails
+    // the request with a fixed 400 before it acquires a lease.
+    const res = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1, unexpectedField: "x" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(harness.acquisitions).toHaveLength(0);
+  });
+
   it("rejects a local environment", async () => {
     mockEnvironmentService.getById.mockResolvedValueOnce({
       id: SANDBOX_ENV_1,

@@ -29,6 +29,7 @@ import {
   updateAgentSchema,
   supportedEnvironmentDriversForAdapter,
   LOW_TRUST_REVIEW_PRESET,
+  startAdapterAuthSessionRequestSchema,
   startClaudeSetupTokenSessionRequestSchema,
   submitBrowserCodeRequestSchema,
 } from "@paperclipai/shared";
@@ -61,6 +62,7 @@ import {
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { runAdapterLoginStartSpine } from "./adapter-login-route-spine.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectAgentAdapterWorkspaceCommandPaths,
@@ -2494,33 +2496,35 @@ export function agentRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const type = req.params.type as string;
-      const startedByUserId = await assertCanManageAdapterLogin(req, companyId);
-      assertCodexLoginAdapter(type);
 
-      const environmentId =
-        typeof req.body?.environmentId === "string" && req.body.environmentId.trim().length > 0
-          ? (req.body.environmentId as string)
-          : null;
-      if (!environmentId) {
-        throw badRequest("A sandbox environment is required to start a device login.");
-      }
-      const ttlSeconds =
-        typeof req.body?.ttlSeconds === "number" && Number.isFinite(req.body.ttlSeconds)
-          ? (req.body.ttlSeconds as number)
-          : undefined;
-
-      // Reject a non-sandbox or inactive environment before the service starts.
-      await assertSandboxLoginEnvironment(companyId, environmentId);
+      // The shared start-route spine derives the owner, checks the path adapter
+      // type, validates the strict request schema, and checks the sandbox
+      // environment before any session or lease side effect. The client body
+      // carries no adapter type, so the spine injects the path type into the
+      // parse. The strict schema rejects an unknown field, a non-uuid
+      // environment id, and an out-of-range time-to-live with a fixed 400.
+      const resolved = await runAdapterLoginStartSpine({
+        req,
+        res,
+        deriveOwner: () => assertCanManageAdapterLogin(req, companyId),
+        guardBeforeValidate: () => assertCodexLoginAdapter(type),
+        requestSchema: startAdapterAuthSessionRequestSchema,
+        invalidRequestError: "The device login start request is invalid.",
+        requestOverrides: { adapterType: type },
+        assertSandbox: (data) => assertSandboxLoginEnvironment(companyId, data.environmentId),
+      });
+      if (!resolved) return;
+      const { ownerUserId: startedByUserId, data } = resolved;
 
       const controller = new AbortController();
       let result: Awaited<ReturnType<typeof adapterLoginService.start>>;
       try {
         result = await adapterLoginService.start({
           companyId,
-          environmentId,
+          environmentId: data.environmentId,
           adapterType: type,
           startedByUserId,
-          ttlSeconds,
+          ttlSeconds: data.ttlSeconds,
           signal: controller.signal,
         });
       } catch (error) {
@@ -4631,47 +4635,52 @@ export function agentRoutes(
 
   router.post("/companies/:companyId/setup-token-login-sessions", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const ownerUserId = deriveSetupTokenOwnerUserId(req);
-    res.setHeader("Cache-Control", "no-store");
 
-    // Parse the request with the shared strict validator before any session,
-    // lease, or pseudo-terminal side effect. `.strict()` rejects an unknown field,
-    // including a legacy `ttlSeconds`, with a fixed 400. The route echoes no input.
-    const parsed = startClaudeSetupTokenSessionRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: "The Claude login start request is invalid." });
-      return;
-    }
-    const { environmentId, adapterType } = parsed.data;
-    const confirmedOverwrite: ClaudeSetupTokenOverwrite | null = parsed.data.overwrite ?? null;
-
-    // The company-and-environment login serves only the Claude adapter. A
-    // different adapter type gets a fixed 400.
-    if (adapterType !== CLAUDE_SETUP_TOKEN_ADAPTER_TYPE) {
-      res.status(400).json({ error: "Only the claude_local adapter supports a setup-token login." });
-      return;
-    }
-
-    if (!SETUP_TOKEN_LOGIN_TRANSPORT_READY) {
-      // The live login transport binds at a later call site. Fail closed with the
-      // fixed no-secret error until then.
-      res.status(503).json({ error: SETUP_TOKEN_START_FAILED });
-      return;
-    }
-
-    // Resolve the environment server-side to a live instance sandbox. It fails
-    // closed on a missing, archived, non-sandbox, or fake-provider environment, so
-    // the route never persists an empty or invalid environment scope. It runs
-    // before the session starts, so no store holds a rejected environment. It
-    // also rejects an environment that another company owns (see
-    // `assertSandboxLoginEnvironment`), so a login never runs in a foreign
-    // company sandbox. It also fails closed when the provider does not advertise
-    // the setup-token login capability, so an unsupported provider never reaches
-    // a session row, a lease, or a pseudo-terminal.
-    await assertSandboxLoginEnvironment(companyId, environmentId, {
-      requireSetupTokenLoginProvider: true,
+    // The shared start-route spine derives the owner, validates the strict
+    // request schema, runs the Claude-only guards, and checks the sandbox
+    // environment before any session, lease, or pseudo-terminal side effect.
+    //
+    // The owner step runs the company access check, derives the owner, and then
+    // sets `Cache-Control: no-store`, so a rejected member sees no cache header
+    // and every other response carries it. The strict schema rejects an unknown
+    // field, including a legacy `ttlSeconds`, with a fixed 400. The post-validate
+    // guard rejects a non-Claude adapter with a fixed 400 and fails closed with
+    // the fixed no-secret 503 until the live login transport binds. The sandbox
+    // check fails closed on a missing, archived, non-sandbox, fake-provider, or
+    // foreign environment, and on a provider without the setup-token login
+    // capability, so no rejected environment reaches a session row, a lease, or a
+    // pseudo-terminal.
+    const resolved = await runAdapterLoginStartSpine({
+      req,
+      res,
+      deriveOwner: () => {
+        assertCompanyAccess(req, companyId);
+        const ownerUserId = deriveSetupTokenOwnerUserId(req);
+        res.setHeader("Cache-Control", "no-store");
+        return ownerUserId;
+      },
+      requestSchema: startClaudeSetupTokenSessionRequestSchema,
+      invalidRequestError: "The Claude login start request is invalid.",
+      guardAfterValidate: (data) => {
+        if (data.adapterType !== CLAUDE_SETUP_TOKEN_ADAPTER_TYPE) {
+          res.status(400).json({ error: "Only the claude_local adapter supports a setup-token login." });
+          return true;
+        }
+        if (!SETUP_TOKEN_LOGIN_TRANSPORT_READY) {
+          res.status(503).json({ error: SETUP_TOKEN_START_FAILED });
+          return true;
+        }
+        return false;
+      },
+      assertSandbox: (data) =>
+        assertSandboxLoginEnvironment(companyId, data.environmentId, {
+          requireSetupTokenLoginProvider: true,
+        }),
     });
+    if (!resolved) return;
+    const { ownerUserId, data } = resolved;
+    const { environmentId, adapterType } = data;
+    const confirmedOverwrite: ClaudeSetupTokenOverwrite | null = data.overwrite ?? null;
 
     const scope: SetupTokenSessionScope = {
       companyId,
