@@ -387,6 +387,30 @@ describe("GET /api/assets/:assetId/content", () => {
     expect(Buffer.compare(Buffer.from(res.body as Buffer), utf8Body)).toBe(0);
   });
 
+  it("does not label structurally-valid-but-ambiguous Windows-1252 bytes as charset=utf-8", async () => {
+    // 0xC2 0xA9 is well-formed UTF-8 for a single "(c)" character, but the
+    // same two bytes are also well-formed Windows-1252 for two separate
+    // characters. Structural UTF-8 validity alone can't tell those apart, so
+    // this asset must be served without a charset, not mislabeled utf-8.
+    const windows1252Body = Buffer.from([0xc2, 0xa9]);
+    const storage = createStorageService();
+    (storage.getObject as ReturnType<typeof vi.fn>).mockResolvedValue({
+      stream: Readable.from(windows1252Body),
+      contentType: "text/plain",
+      contentLength: windows1252Body.length,
+    });
+    getAssetByIdMock.mockResolvedValue({ ...createAsset(), contentType: "text/plain" });
+
+    const app = await createApp(storage);
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get("/api/assets/asset-1/content").buffer(true).responseType("blob"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("text/plain");
+    expect(Buffer.compare(Buffer.from(res.body as Buffer), windows1252Body)).toBe(0);
+  });
+
   it("streams a text asset larger than the attachment max-bytes cap unlabeled instead of buffering it", async () => {
     // Valid ASCII/UTF-8 content, so the only reason this should stay unlabeled
     // is that the known size exceeds the buffering cap and full-body UTF-8

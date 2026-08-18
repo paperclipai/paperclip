@@ -296,6 +296,29 @@ describe("isValidUtf8Buffer", () => {
   it("treats an empty buffer as valid", () => {
     expect(isValidUtf8Buffer(Buffer.alloc(0))).toBe(true);
   });
+
+  it("does not treat structurally-valid-but-ambiguous Windows-1252 bytes as confident UTF-8", () => {
+    // 0xC2 0xA9 is well-formed UTF-8 for the single character "(c)" (U+00A9),
+    // but the very same two bytes are also well-formed Windows-1252/Latin-1
+    // for two separate characters ("A" + "(c)"). Structural validity alone
+    // can't tell those apart, so this must not be treated as confirmed UTF-8.
+    const windows1252Bytes = Buffer.from([0xc2, 0xa9]);
+    expect(isValidUtf8Buffer(windows1252Bytes)).toBe(false);
+  });
+
+  it("does not treat lone Latin-1 Supplement characters as confident UTF-8 without stronger evidence", () => {
+    // "cafe" + U+00E9 alone only produces ambiguous Latin-1 Supplement bytes
+    // (0xC3 0xA9), which collide with valid Windows-1252 text the same way
+    // as the case above, so it is not confirmed UTF-8 on its own.
+    expect(isValidUtf8Buffer(Buffer.from("cafeé", "utf8"))).toBe(false);
+  });
+
+  it("treats Latin-1 Supplement characters as confident UTF-8 once a code point beyond that range is also present", () => {
+    // Adding a CJK character (a 3-byte UTF-8 sequence) can't arise by chance
+    // from single-byte legacy text, so it's strong evidence the whole buffer
+    // really is UTF-8, including the earlier ambiguous character.
+    expect(isValidUtf8Buffer(Buffer.from("cafeé 日本語", "utf8"))).toBe(true);
+  });
 });
 
 describe("canBufferForUtf8Validation", () => {

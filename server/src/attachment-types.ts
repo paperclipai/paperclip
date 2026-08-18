@@ -146,19 +146,39 @@ export function isTextualAttachmentContentType(contentType: string | null | unde
 }
 
 /**
- * Whether `buffer` decodes as well-formed UTF-8. Upload/storage paths accept
- * arbitrary bytes for textual MIME types (no encoding is enforced at write
- * time), so callers must confirm the actual bytes are UTF-8 before asserting
- * `charset=utf-8` on a response - otherwise a legacy-encoded upload (e.g.
- * Latin-1, Shift-JIS) would be mislabeled and mis-rendered by browsers.
+ * Whether `buffer` can be confidently identified as UTF-8. Upload/storage
+ * paths accept arbitrary bytes for textual MIME types (no encoding is
+ * enforced at write time), so callers must confirm the actual bytes are
+ * UTF-8 before asserting `charset=utf-8` on a response - otherwise a
+ * legacy-encoded upload (e.g. Latin-1, Shift-JIS) would be mislabeled and
+ * mis-rendered by browsers.
+ *
+ * Structural well-formedness alone isn't proof: every byte pair a
+ * single-byte legacy encoding (Windows-1252, Latin-1) can produce in the
+ * 0x80-0xFF range is *also* a structurally valid 2-byte UTF-8 sequence
+ * decoding to a Latin-1 Supplement code point (U+0080-U+00FF). For example
+ * the bytes `C2 A9` are simultaneously well-formed UTF-8 for "©" (c)
+ * and well-formed Windows-1252 for "Â©" (Ac) - `TextDecoder`
+ * can't tell those apart. A 3-byte or 4-byte UTF-8 sequence can't arise by
+ * chance from single-byte legacy text, so we only trust the decode once it
+ * contains a code point outside that ambiguous collision range; buffers
+ * whose only non-ASCII evidence sits in the Latin-1 Supplement range are
+ * treated as unverified and left unlabeled, matching this module's
+ * documented fallback of letting the browser sniff the encoding itself.
  */
 export function isValidUtf8Buffer(buffer: Buffer): boolean {
+  let text: string;
   try {
-    new TextDecoder("utf-8", { fatal: true }).decode(buffer);
-    return true;
+    text = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
   } catch {
     return false;
   }
+  const hasAmbiguousCodePoint = /[\u0080-\u00ff]/.test(text);
+  if (!hasAmbiguousCodePoint) return true;
+  // Some code point sits in the ambiguous Latin-1 Supplement range - only
+  // trust the decode if the text also contains a code point beyond that
+  // range, which can't be produced by chance from single-byte legacy text.
+  return /[\u0100-\uffff]/.test(text) || /[\u{10000}-\u{10ffff}]/u.test(text);
 }
 
 /**
