@@ -3313,14 +3313,17 @@ export async function buildPaperclipRuntimeMcpServers(input: {
       ))
     : [];
   const permittedNotInstalledConnections = permittedConnections
-    .filter((connection) => connection.transport === "mcp_remote" && !installedConnectionIds.has(connection.id))
+    .filter((connection) =>
+      (connection.transport === "mcp_remote" || connection.transport === "local_stdio")
+      && !installedConnectionIds.has(connection.id)
+    )
     .map(({ id, name }) => ({ id, name }))
     .sort((a, b) => a.name.localeCompare(b.name));
   const uniqueConnections = effective.installedConnections.filter((connection) =>
     permittedConnectionIds.has(connection.id)
     && connection.status === "active"
     && connection.enabled
-    && connection.transport === "mcp_remote"
+    && (connection.transport === "mcp_remote" || connection.transport === "local_stdio")
   );
   const service = createToolGatewayService(input.db);
   if (uniqueConnections.length === 0) {
