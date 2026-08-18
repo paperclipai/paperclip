@@ -326,7 +326,7 @@ export function pluginManagedAgentService(
     companyId: string,
     agent: Agent,
     declaration: PluginManagedAgentDeclaration,
-    materializeOptions: { replaceExisting: boolean },
+    materializeOptions: { replaceExisting: boolean; allowPendingApprovalConfigUpdate?: boolean },
   ): Promise<Agent> {
     const variables = await optionsForInstructionVariables(companyId);
     const declared = declaredInstructionFiles(declaration, variables);
@@ -347,6 +347,7 @@ export function pluginManagedAgentService(
       recordRevision: {
         source: `plugin:${optionsForRevisionSource()}:managed-agent-instructions`,
       },
+      allowPendingApprovalConfigUpdate: materializeOptions.allowPendingApprovalConfigUpdate,
     });
     return (updated as Agent | null) ?? { ...agent, adapterConfig: materialized.adapterConfig };
   }
@@ -406,6 +407,71 @@ export function pluginManagedAgentService(
     };
   }
 
+  async function createHireApproval(
+    companyId: string,
+    declaration: PluginManagedAgentDeclaration,
+    agent: Agent,
+  ) {
+    const approval = await approvalSvc.create(companyId, {
+      type: "hire_agent",
+      requestedByAgentId: null,
+      requestedByUserId: null,
+      status: "pending",
+      payload: {
+        name: agent.name,
+        role: agent.role,
+        title: agent.title,
+        icon: agent.icon,
+        reportsTo: agent.reportsTo,
+        capabilities: agent.capabilities,
+        adapterType: agent.adapterType,
+        adapterConfig: agent.adapterConfig,
+        runtimeConfig: agent.runtimeConfig,
+        budgetMonthlyCents: agent.budgetMonthlyCents,
+        metadata: agent.metadata,
+        agentId: agent.id,
+        sourcePluginId: options.pluginId,
+        sourcePluginKey: options.pluginKey,
+        managedResourceKey: declaration.agentKey,
+      },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      updatedAt: new Date(),
+    });
+    await logActivity(db, {
+      companyId,
+      actorType: "plugin",
+      actorId: options.pluginId,
+      action: "approval.created",
+      entityType: "approval",
+      entityId: approval.id,
+      details: {
+        type: "hire_agent",
+        linkedAgentId: agent.id,
+        sourcePluginKey: options.pluginKey,
+        managedResourceKey: declaration.agentKey,
+      },
+    });
+    return approval.id;
+  }
+
+  /**
+   * A pending-approval managed agent must always have an open hire approval in
+   * the board inbox; earlier builds could crash between agent creation and
+   * approval creation, leaving the agent orphaned with nothing to approve.
+   */
+  async function ensureHireApprovalForPendingAgent(
+    companyId: string,
+    declaration: PluginManagedAgentDeclaration,
+    agent: Agent,
+  ): Promise<string | null> {
+    if (agent.status !== "pending_approval") return null;
+    const existing = await approvalSvc.findOpenHireApprovalForAgent(companyId, agent.id);
+    if (existing) return existing.id;
+    return createHireApproval(companyId, declaration, agent);
+  }
+
   async function createManagedAgent(companyId: string, declaration: PluginManagedAgentDeclaration) {
     const company = await db
       .select()
@@ -423,52 +489,14 @@ export function pluginManagedAgentService(
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
     }) as Agent;
-    created = await materializeDeclaredInstructions(companyId, created, declaration, { replaceExisting: true });
+    created = await materializeDeclaredInstructions(companyId, created, declaration, {
+      replaceExisting: true,
+      allowPendingApprovalConfigUpdate: requiresApproval,
+    });
 
     let approvalId: string | null = null;
     if (requiresApproval) {
-      const approval = await approvalSvc.create(companyId, {
-        type: "hire_agent",
-        requestedByAgentId: null,
-        requestedByUserId: null,
-        status: "pending",
-        payload: {
-          name: created.name,
-          role: created.role,
-          title: created.title,
-          icon: created.icon,
-          reportsTo: created.reportsTo,
-          capabilities: created.capabilities,
-          adapterType: created.adapterType,
-          adapterConfig: created.adapterConfig,
-          runtimeConfig: created.runtimeConfig,
-          budgetMonthlyCents: created.budgetMonthlyCents,
-          metadata: created.metadata,
-          agentId: created.id,
-          sourcePluginId: options.pluginId,
-          sourcePluginKey: options.pluginKey,
-          managedResourceKey: declaration.agentKey,
-        },
-        decisionNote: null,
-        decidedByUserId: null,
-        decidedAt: null,
-        updatedAt: new Date(),
-      });
-      approvalId = approval.id;
-      await logActivity(db, {
-        companyId,
-        actorType: "plugin",
-        actorId: options.pluginId,
-        action: "approval.created",
-        entityType: "approval",
-        entityId: approval.id,
-        details: {
-          type: "hire_agent",
-          linkedAgentId: created.id,
-          sourcePluginKey: options.pluginKey,
-          managedResourceKey: declaration.agentKey,
-        },
-      });
+      approvalId = await createHireApproval(companyId, declaration, created);
     }
 
     await upsertBinding(companyId, declaration, created.id, { approvalId }, adapterType);
@@ -507,14 +535,16 @@ export function pluginManagedAgentService(
       const current = await get(agentKey, companyId);
       if (current.agent) {
         await upsertBinding(companyId, declaration, current.agent.id);
-        return current;
+        const approvalId = await ensureHireApprovalForPendingAgent(companyId, declaration, current.agent);
+        return approvalId ? { ...current, approvalId } : current;
       }
 
       const relinkCandidate = await findRelinkCandidate(companyId, declaration);
       if (relinkCandidate) {
         await upsertBinding(companyId, declaration, relinkCandidate.id);
         const agent = await agentSvc.getById(relinkCandidate.id);
-        return resolution(companyId, declaration, agent as Agent, "relinked");
+        const approvalId = await ensureHireApprovalForPendingAgent(companyId, declaration, agent as Agent);
+        return resolution(companyId, declaration, agent as Agent, "relinked", approvalId);
       }
 
       return createManagedAgent(companyId, declaration);
