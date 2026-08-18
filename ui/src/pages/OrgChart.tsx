@@ -220,37 +220,56 @@ function OrgListView({
   // pannable canvas, so the whole org is printable in one window.
   const containerRef = useRef<HTMLDivElement>(null);
   const [connectors, setConnectors] = useState<Array<{ id: string; d: string }>>([]);
-  const INDENT = 28;
+  // One indent step per depth level (px): 7 × the 4px spacing grid. Single
+  // source of truth shared by the row gutter and the connector geometry,
+  // following the named-constant convention of CompanySkills' skill tree.
+  const LIST_INDENT = 28;
 
   const measure = useCallback(() => {
     const list = containerRef.current;
     if (!list) return;
-    const byId = new Map<string, { el: HTMLElement; depth: number; parentId: string | null }>();
+    const listRect = list.getBoundingClientRect();
+    // The connector SVG is `absolute inset-0`, so its origin is the
+    // container's PADDING box; the rows live in the padded content box.
+    // Anchor every coordinate to the SVG's origin (padding box) instead of
+    // mixing offsetParent-relative offsets — otherwise the padding shifts
+    // the cards without shifting the connector paths.
+    const originX = listRect.left + list.clientLeft;
+    const originY = listRect.top + list.clientTop;
+    const byId = new Map<string, { card: HTMLElement; depth: number; parentId: string | null }>();
     for (const el of Array.from(list.querySelectorAll<HTMLElement>("[data-org-list-node]"))) {
       byId.set(el.getAttribute("data-org-id") ?? "", {
-        el,
+        card: el.querySelector<HTMLElement>("[data-org-card]") ?? el,
         depth: Number(el.getAttribute("data-depth") ?? 0),
         parentId: el.getAttribute("data-org-parent"),
       });
     }
-    const childrenByParent = new Map<string, Array<{ el: HTMLElement }>>();
+    const childrenByParent = new Map<string, Array<{ card: HTMLElement }>>();
     for (const [id, info] of byId) {
       if (info.parentId) {
-        const list = childrenByParent.get(info.parentId) ?? [];
-        list.push({ el: info.el });
-        childrenByParent.set(info.parentId, list);
+        const bucket = childrenByParent.get(info.parentId) ?? [];
+        bucket.push({ card: info.card });
+        childrenByParent.set(info.parentId, bucket);
       }
     }
     const paths: Array<{ id: string; d: string }> = [];
     for (const [parentId, children] of childrenByParent) {
       const parent = byId.get(parentId);
       if (!parent) continue;
-      const parentBottom = parent.el.offsetTop + parent.el.offsetHeight;
-      const deepest = children.reduce((a, b) => (a.el.offsetTop > b.el.offsetTop ? a : b));
-      const guideX = parent.depth * INDENT + INDENT / 2;
-      let d = `M ${guideX} ${parentBottom} L ${guideX} ${deepest.el.offsetTop}`;
+      const parentRect = parent.card.getBoundingClientRect();
+      const parentCardLeft = parentRect.left - originX;
+      // Trunk runs down the gutter, half an indent step to the right of the
+      // parent card's left edge, so elbows land exactly on child card edges.
+      const guideX = parentCardLeft + LIST_INDENT / 2;
+      const parentBottom = parentRect.top - originY + parentRect.height;
+      const deepestTop = Math.max(
+        ...children.map((c) => c.card.getBoundingClientRect().top - originY),
+      );
+      let d = `M ${guideX} ${parentBottom} L ${guideX} ${deepestTop}`;
       for (const child of children) {
-        d += ` M ${guideX} ${child.el.offsetTop} L ${child.el.offsetLeft} ${child.el.offsetTop}`;
+        const childRect = child.card.getBoundingClientRect();
+        const childTop = childRect.top - originY;
+        d += ` M ${guideX} ${childTop} L ${childRect.left - originX} ${childTop}`;
       }
       paths.push({ id: parentId, d });
     }
@@ -307,7 +326,7 @@ function OrgListView({
             data-org-name={node.name}
             data-depth={depth}
             className="flex w-full"
-            style={{ marginLeft: depth * 28 }}
+            style={{ paddingLeft: depth * LIST_INDENT }}
           >
             <Card
               data-org-card
@@ -920,7 +939,7 @@ export function OrgChart() {
                       e.preventDefault();
                       e.stopPropagation();
                       setCollapsed((prev) => {
-                        if (!prev) return prev;
+                        if (!prev) return new Set([node.id]);
                         const next = new Set(prev);
                         if (next.has(node.id)) next.delete(node.id);
                         else next.add(node.id);

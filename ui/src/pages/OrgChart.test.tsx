@@ -272,6 +272,21 @@ describe("OrgChart mobile gestures", () => {
 
     expect(layer.style.transform).toBe("translate(-45px, 40px) scale(1.5)");
   });
+
+  it("collapses a chart card even when no list collapse happened first", async () => {
+    await renderOrgChart("chart");
+    const collapse = container.querySelector(
+      "[data-org-card] [data-org-collapse]",
+    ) as HTMLButtonElement;
+    await act(async () => {
+      collapse.click();
+    });
+    const names = Array.from(container.querySelectorAll("[data-org-card]")).map(
+      (el) => el.textContent ?? "",
+    );
+    expect(names.some((t) => t.includes("CEO"))).toBe(true);
+    expect(names.some((t) => t.includes("Engineer"))).toBe(false);
+  });
 });
 
 describe("OrgChart exploded list view", () => {
