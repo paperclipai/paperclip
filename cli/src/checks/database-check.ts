@@ -13,7 +13,9 @@ function isInsideOsTmpDir(targetPath: string): boolean {
 
 export async function databaseCheck(config: PaperclipConfig, configPath?: string): Promise<CheckResult> {
   if (config.database.mode === "postgres") {
-    if (!config.database.connectionString) {
+    const connectionString =
+      process.env.DATABASE_URL?.trim() || config.database.connectionString?.trim();
+    if (!connectionString) {
       return {
         name: "Database",
         status: "fail",
@@ -25,7 +27,7 @@ export async function databaseCheck(config: PaperclipConfig, configPath?: string
 
     try {
       const { createDb } = await import("@paperclipai/db");
-      const db = createDb(config.database.connectionString);
+      const db = createDb(connectionString);
       await db.execute("SELECT 1");
       return {
         name: "Database",
