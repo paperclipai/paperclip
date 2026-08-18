@@ -4,13 +4,15 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  agentWakeupRequests,
   authUsers,
   companies,
   createDb,
+  heartbeatRuns,
   issueComments,
   issues,
   projects,
@@ -429,6 +431,8 @@ describe("worktree helpers", () => {
         backupSummary: "snapshot.sql",
         pausedScheduledRoutines: 2,
         executionQuarantine: {
+          cancelledHeartbeatRuns: 1,
+          cancelledWakeupRequests: 1,
           disabledTimerHeartbeats: 1,
           resetRunningAgents: 1,
           quarantinedInProgressIssues: 1,
@@ -535,6 +539,8 @@ describe("worktree helpers", () => {
           backupSummary: "snapshot.sql",
           pausedScheduledRoutines: 0,
           executionQuarantine: {
+            cancelledHeartbeatRuns: 0,
+            cancelledWakeupRequests: 0,
             disabledTimerHeartbeats: 0,
             resetRunningAgents: 0,
             quarantinedInProgressIssues: 0,
@@ -599,6 +605,14 @@ describe("worktree helpers", () => {
     const todoIssueId = randomUUID();
     const reviewIssueId = randomUUID();
     const userIssueId = randomUUID();
+    const queuedRunId = randomUUID();
+    const runningRunId = randomUUID();
+    const scheduledRetryRunId = randomUUID();
+    const succeededRunId = randomUUID();
+    const queuedWakeupId = randomUUID();
+    const deferredWakeupId = randomUUID();
+    const claimedWakeupId = randomUUID();
+    const completedWakeupId = randomUUID();
 
     try {
       await db.insert(companies).values({
@@ -634,6 +648,75 @@ describe("worktree helpers", () => {
           permissions: {},
         },
       ]);
+      await db.insert(agentWakeupRequests).values([
+        {
+          id: queuedWakeupId,
+          companyId,
+          agentId,
+          source: "copied-queued-wakeup",
+          status: "queued",
+        },
+        {
+          id: deferredWakeupId,
+          companyId,
+          agentId,
+          source: "copied-deferred-wakeup",
+          status: "deferred_issue_execution",
+        },
+        {
+          id: claimedWakeupId,
+          companyId,
+          agentId,
+          source: "copied-claimed-wakeup",
+          status: "claimed",
+        },
+        {
+          id: completedWakeupId,
+          companyId,
+          agentId,
+          source: "completed-wakeup-history",
+          status: "completed",
+          finishedAt: new Date("2026-04-17T23:00:00.000Z"),
+        },
+      ]);
+      await db.insert(heartbeatRuns).values([
+        {
+          id: queuedRunId,
+          companyId,
+          agentId,
+          status: "queued",
+          wakeupRequestId: queuedWakeupId,
+        },
+        {
+          id: runningRunId,
+          companyId,
+          agentId,
+          status: "running",
+          wakeupRequestId: claimedWakeupId,
+          startedAt: new Date("2026-04-18T00:00:00.000Z"),
+          processPid: 12345,
+          processGroupId: 12345,
+          processStartedAt: new Date("2026-04-18T00:00:00.000Z"),
+          livenessState: "advanced",
+          livenessReason: "Copied source-instance state",
+          nextAction: "Continue source work",
+        },
+        {
+          id: scheduledRetryRunId,
+          companyId,
+          agentId,
+          status: "scheduled_retry",
+          wakeupRequestId: deferredWakeupId,
+          scheduledRetryAt: new Date("2026-04-18T01:00:00.000Z"),
+        },
+        {
+          id: succeededRunId,
+          companyId,
+          agentId,
+          status: "succeeded",
+          finishedAt: new Date("2026-04-17T23:00:00.000Z"),
+        },
+      ]);
       await db.insert(issues).values([
         {
           id: inProgressIssueId,
@@ -644,6 +727,8 @@ describe("worktree helpers", () => {
           assigneeAgentId: agentId,
           issueNumber: 1,
           identifier: "WTQ-1",
+          checkoutRunId: queuedRunId,
+          executionRunId: runningRunId,
           executionAgentNameKey: "codexcoder",
           executionLockedAt: new Date("2026-04-18T00:00:00.000Z"),
         },
@@ -680,6 +765,8 @@ describe("worktree helpers", () => {
       ]);
 
       await expect(quarantineSeededWorktreeExecutionState(tempDb.connectionString)).resolves.toEqual({
+        cancelledHeartbeatRuns: 3,
+        cancelledWakeupRequests: 3,
         disabledTimerHeartbeats: 1,
         resetRunningAgents: 1,
         quarantinedInProgressIssues: 1,
@@ -697,8 +784,54 @@ describe("worktree helpers", () => {
       const [inProgressIssue] = await db.select().from(issues).where(eq(issues.id, inProgressIssueId));
       expect(inProgressIssue?.status).toBe("blocked");
       expect(inProgressIssue?.assigneeAgentId).toBeNull();
+      expect(inProgressIssue?.checkoutRunId).toBeNull();
+      expect(inProgressIssue?.executionRunId).toBeNull();
       expect(inProgressIssue?.executionAgentNameKey).toBeNull();
       expect(inProgressIssue?.executionLockedAt).toBeNull();
+
+      const cancelledRuns = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(inArray(heartbeatRuns.id, [queuedRunId, runningRunId, scheduledRetryRunId]));
+      expect(cancelledRuns).toHaveLength(3);
+      for (const run of cancelledRuns) {
+        expect(run.status).toBe("cancelled");
+        expect(run.errorCode).toBe("worktree_seed_quarantine");
+        expect(run.error).toContain("Cancelled during worktree seed");
+        expect(run.finishedAt).toBeInstanceOf(Date);
+        expect(run.processPid).toBeNull();
+        expect(run.processGroupId).toBeNull();
+        expect(run.processStartedAt).toBeNull();
+        expect(run.scheduledRetryAt).toBeNull();
+        expect(run.livenessState).toBeNull();
+        expect(run.livenessReason).toBeNull();
+        expect(run.nextAction).toBeNull();
+      }
+
+      const [succeededRun] = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, succeededRunId));
+      expect(succeededRun?.status).toBe("succeeded");
+      expect(succeededRun?.errorCode).toBeNull();
+
+      const cancelledWakeups = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(inArray(agentWakeupRequests.id, [queuedWakeupId, deferredWakeupId, claimedWakeupId]));
+      expect(cancelledWakeups).toHaveLength(3);
+      for (const wakeup of cancelledWakeups) {
+        expect(wakeup.status).toBe("cancelled");
+        expect(wakeup.error).toContain("Cancelled during worktree seed");
+        expect(wakeup.finishedAt).toBeInstanceOf(Date);
+      }
+
+      const [completedWakeup] = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, completedWakeupId));
+      expect(completedWakeup?.status).toBe("completed");
+      expect(completedWakeup?.error).toBeNull();
 
       const [todoIssue] = await db.select().from(issues).where(eq(issues.id, todoIssueId));
       expect(todoIssue?.status).toBe("todo");

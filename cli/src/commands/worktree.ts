@@ -23,6 +23,7 @@ import pc from "picocolors";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   applyPendingMigrations,
+  agentWakeupRequests,
   agents,
   assets,
   companies,
@@ -228,6 +229,8 @@ export type EnsureWorktreeSeededResult = {
 };
 
 export type SeededWorktreeExecutionQuarantineSummary = {
+  cancelledHeartbeatRuns: number;
+  cancelledWakeupRequests: number;
   disabledTimerHeartbeats: number;
   resetRunningAgents: number;
   quarantinedInProgressIssues: number;
@@ -251,6 +254,8 @@ function formatSeededWorktreeExecutionQuarantineSummary(
   summary: SeededWorktreeExecutionQuarantineSummary,
 ): string {
   return [
+    `cancelled heartbeat runs: ${summary.cancelledHeartbeatRuns}`,
+    `cancelled wake requests: ${summary.cancelledWakeupRequests}`,
     `disabled timer heartbeats: ${summary.disabledTimerHeartbeats}`,
     `reset running agents: ${summary.resetRunningAgents}`,
     `quarantined in-progress issues: ${summary.quarantinedInProgressIssues}`,
@@ -1182,6 +1187,8 @@ export async function pauseSeededScheduledRoutines(connectionString: string): Pr
 }
 
 const EMPTY_SEEDED_WORKTREE_EXECUTION_QUARANTINE_SUMMARY: SeededWorktreeExecutionQuarantineSummary = {
+  cancelledHeartbeatRuns: 0,
+  cancelledWakeupRequests: 0,
   disabledTimerHeartbeats: 0,
   resetRunningAgents: 0,
   quarantinedInProgressIssues: 0,
@@ -1225,6 +1232,43 @@ export async function quarantineSeededWorktreeExecutionState(
   const summary = { ...EMPTY_SEEDED_WORKTREE_EXECUTION_QUARANTINE_SUMMARY };
   try {
     await db.transaction(async (tx) => {
+      const now = new Date();
+      const quarantineReason =
+        "Cancelled during worktree seed because copied execution state cannot be resumed in an isolated instance.";
+      const cancelledRuns = await tx
+        .update(heartbeatRuns)
+        .set({
+          status: "cancelled",
+          finishedAt: now,
+          error: quarantineReason,
+          errorCode: "worktree_seed_quarantine",
+          processPid: null,
+          processGroupId: null,
+          processStartedAt: null,
+          scheduledRetryAt: null,
+          livenessState: null,
+          livenessReason: null,
+          nextAction: null,
+          updatedAt: now,
+        })
+        .where(inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]))
+        .returning({ id: heartbeatRuns.id });
+      summary.cancelledHeartbeatRuns = cancelledRuns.length;
+
+      const cancelledWakeups = await tx
+        .update(agentWakeupRequests)
+        .set({
+          status: "cancelled",
+          finishedAt: now,
+          error: quarantineReason,
+          updatedAt: now,
+        })
+        .where(
+          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution", "claimed"]),
+        )
+        .returning({ id: agentWakeupRequests.id });
+      summary.cancelledWakeupRequests = cancelledWakeups.length;
+
       const seededAgents = await tx
         .select({
           id: agents.id,
@@ -1248,7 +1292,7 @@ export async function quarantineSeededWorktreeExecutionState(
             .set({
               runtimeConfig: normalized.runtimeConfig,
               status: nextStatus,
-              updatedAt: new Date(),
+              updatedAt: now,
             })
             .where(eq(agents.id, agent.id));
         }
@@ -1281,7 +1325,7 @@ export async function quarantineSeededWorktreeExecutionState(
             executionAgentNameKey: null,
             executionLockedAt: null,
             executionWorkspaceId: null,
-            updatedAt: new Date(),
+            updatedAt: now,
           })
           .where(eq(issues.id, issue.id));
 
