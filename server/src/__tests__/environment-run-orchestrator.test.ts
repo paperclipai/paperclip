@@ -10,6 +10,7 @@ const mockBuildWorkspaceRealizationRequest = vi.hoisted(() => vi.fn());
 const mockUpdateLeaseMetadata = vi.hoisted(() => vi.fn());
 const mockUpdateExecutionWorkspace = vi.hoisted(() => vi.fn());
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockLoggerInfo = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/environment-execution-target.js", () => ({
   resolveEnvironmentExecutionTarget: mockResolveEnvironmentExecutionTarget,
@@ -42,6 +43,15 @@ vi.mock("../services/execution-workspaces.js", () => ({
 
 vi.mock("../services/activity-log.js", () => ({
   logActivity: mockLogActivity,
+}));
+
+vi.mock("../middleware/logger.js", () => ({
+  logger: {
+    info: mockLoggerInfo,
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  },
 }));
 
 // ---------------------------------------------------------------------------
@@ -406,7 +416,7 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     expect(result.persistedExecutionWorkspace).toEqual(updatedEw);
   });
 
-  it("runs a remote provision command after workspace realization when configured", async () => {
+  it("skips the host provision command for a sandbox environment and logs the skip", async () => {
     mockBuildWorkspaceRealizationRequest.mockReturnValue({
       version: 1,
       adapterType: "claude_local",
@@ -458,17 +468,60 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
       environment: makeEnvironment("sandbox"),
     }));
 
-    expect(runtime.execute).toHaveBeenCalledOnce();
-    expect(runtime.execute).toHaveBeenCalledWith(expect.objectContaining({
-      environment: expect.objectContaining({ driver: "sandbox" }),
-      lease: expect.objectContaining({ id: "lease-1" }),
-      command: "bash",
-      args: ["-lc", "npm install -g @anthropic-ai/claude-code"],
-      cwd: "/remote/workspace",
-      env: {
-        SHELL: "/bin/bash",
+    // The sandbox receives the provisioned tree through the adapter stage.sync
+    // step, so the orchestrator must not run the host command in the sandbox.
+    expect(runtime.execute).not.toHaveBeenCalled();
+    // The skip is observable: exactly one log line records it with the driver.
+    expect(mockLoggerInfo).toHaveBeenCalledOnce();
+    expect(mockLoggerInfo).toHaveBeenCalledWith(
+      expect.objectContaining({ driver: "sandbox", environmentId: "env-1" }),
+      expect.stringContaining("Skip host provisionCommand"),
+    );
+  });
+
+  it("skips the host provision command for a local environment without a log line", async () => {
+    mockBuildWorkspaceRealizationRequest.mockReturnValue({
+      version: 1,
+      adapterType: "claude_local",
+      companyId: "company-1",
+      environmentId: "env-1",
+      executionWorkspaceId: null,
+      issueId: null,
+      heartbeatRunId: "run-1",
+      requestedMode: null,
+      source: {
+        kind: "project_primary",
+        localPath: "/workspace/project",
+        projectId: null,
+        projectWorkspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+        strategy: "project_primary",
+        branchName: null,
+        worktreePath: null,
       },
+      runtimeOverlay: {
+        provisionCommand: "npm install -g @anthropic-ai/claude-code",
+      },
+    });
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue({
+      kind: "local",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+    });
+
+    const runtime = makeMockRuntime();
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+
+    await orchestrator.realizeForRun(makeRealizeInput({
+      environment: makeEnvironment("local"),
     }));
+
+    // The host command already ran on the host worktree during workspace
+    // provision, so the orchestrator does not run it again for a local driver.
+    expect(runtime.execute).not.toHaveBeenCalled();
+    // The sandbox skip log is specific to the sandbox driver; local stays quiet.
+    expect(mockLoggerInfo).not.toHaveBeenCalled();
   });
 
   it("runs project-level provision commands for ssh environments", async () => {
@@ -588,7 +641,7 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
 
     await expect(orchestrator.realizeForRun(makeRealizeInput({
-      environment: makeEnvironment("sandbox"),
+      environment: makeEnvironment("ssh"),
     }))).rejects.toSatisfy(
       (err: unknown) =>
         err instanceof EnvironmentRunError &&
