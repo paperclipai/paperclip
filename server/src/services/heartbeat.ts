@@ -3288,10 +3288,13 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   db: Db;
   agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name">;
   runId: string;
+  issueId?: string | null;
+  projectId?: string | null;
 }): Promise<AdapterRuntimeMcpServer[]> {
   const effective = await toolAccessService(input.db).getEffectiveProfilesForAgent(
     input.agent.companyId,
     input.agent.id,
+    { issueId: input.issueId, projectId: input.projectId },
   );
   const permittedConnectionIds = new Set([
     ...effective.entries
@@ -15983,6 +15986,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           db,
           agent,
           runId: run.id,
+          issueId: issueRef?.id ?? null,
+          projectId: issueRef?.projectId ?? readNonEmptyString(context.projectId),
         });
         const runtimeMcp = createAdapterRuntimeMcpAccess(runtimeMcpServers);
         const managedMcpConfig = await createManagedMcpRunConfig({

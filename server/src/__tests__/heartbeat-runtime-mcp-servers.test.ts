@@ -7,8 +7,11 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  issues,
+  projects,
   toolAccessAuditEvents,
   toolApplications,
+  toolCatalogEntries,
   toolConnectionInstalls,
   toolConnections,
   toolMcpGateways,
@@ -26,6 +29,148 @@ import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+async function createScopedRuntimeFixture(input: {
+  db: ReturnType<typeof createDb>;
+  broadTargetType: "agent" | "company";
+  exactTargetType: "issue" | "project";
+}) {
+  const { db } = input;
+  const [company] = await db.insert(companies).values({
+    name: `Scoped runtime MCP ${randomUUID()}`,
+    issuePrefix: `SR${randomUUID().slice(0, 5).toUpperCase()}`,
+  }).returning();
+  const [agent] = await db.insert(agents).values({
+    companyId: company!.id,
+    name: "Scoped Runtime MCP Agent",
+    role: "engineer",
+    adapterType: "codex_local",
+    adapterConfig: {},
+  }).returning();
+  const [project] = await db.insert(projects).values({
+    companyId: company!.id,
+    name: `Scoped runtime project ${randomUUID()}`,
+  }).returning();
+  const [issue] = await db.insert(issues).values({
+    companyId: company!.id,
+    projectId: project!.id,
+    title: "GOB-70 exact runtime allowlist",
+    status: "todo",
+  }).returning();
+
+  const toolNames = [
+    "workflow_status_remote",
+    "workflow_status_local",
+    "get_profiles",
+    "get_brand_colors",
+    "get_me",
+    "broad_extra_tool",
+  ] as const;
+  const connections: Array<typeof toolConnections.$inferSelect> = [];
+  const catalogEntries: Array<typeof toolCatalogEntries.$inferSelect> = [];
+
+  for (const [index, toolName] of toolNames.entries()) {
+    const localStdio = index === 1;
+    const templateKey = `test.scoped-runtime.${randomUUID()}`;
+    if (localStdio) {
+      await db.insert(toolStdioCommandTemplates).values({
+        companyId: company!.id,
+        templateKey,
+        name: "Scoped runtime local stdio",
+        command: "node",
+        args: ["server.js"],
+      });
+    }
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company!.id,
+      applicationKey: `scoped-runtime-${index}-${randomUUID().slice(0, 8)}`,
+      name: `Scoped runtime app ${index + 1}`,
+      type: localStdio ? "mcp_stdio" : "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company!.id,
+      applicationId: application!.id,
+      name: `Scoped runtime connection ${index + 1}`,
+      uid: `test/${randomUUID()}`,
+      transport: localStdio ? "local_stdio" : "mcp_remote",
+      status: "active",
+      enabled: true,
+      config: localStdio
+        ? { templateId: templateKey }
+        : { url: `https://scoped-${index + 1}.example.test/mcp` },
+    }).returning();
+    const [catalogEntry] = await db.insert(toolCatalogEntries).values({
+      companyId: company!.id,
+      applicationId: application!.id,
+      connectionId: connection!.id,
+      name: toolName,
+      toolName,
+      riskLevel: "read",
+      versionHash: randomUUID(),
+      schemaHash: randomUUID(),
+    }).returning();
+    const [broadProfile] = await db.insert(toolProfiles).values({
+      companyId: company!.id,
+      profileKey: `app:${connection!.id}`,
+      name: `Broad app profile ${index + 1}`,
+      defaultAction: "deny",
+    }).returning();
+    await db.insert(toolProfileEntries).values({
+      companyId: company!.id,
+      profileId: broadProfile!.id,
+      selectorType: "catalog_entry",
+      effect: "include",
+      applicationId: application!.id,
+      connectionId: connection!.id,
+      catalogEntryId: catalogEntry!.id,
+    });
+    await db.insert(toolProfileBindings).values({
+      companyId: company!.id,
+      profileId: broadProfile!.id,
+      targetType: input.broadTargetType,
+      targetId: input.broadTargetType === "agent" ? agent!.id : company!.id,
+    });
+    await db.insert(toolConnectionInstalls).values({
+      companyId: company!.id,
+      connectionId: connection!.id,
+      targetType: "agent",
+      targetId: agent!.id,
+    });
+    connections.push(connection!);
+    catalogEntries.push(catalogEntry!);
+  }
+
+  const [exactProfile] = await db.insert(toolProfiles).values({
+    companyId: company!.id,
+    profileKey: `exact-five-${randomUUID()}`,
+    name: "GOB-70 exact five read-only tools",
+    defaultAction: "deny",
+  }).returning();
+  await db.insert(toolProfileEntries).values(catalogEntries.slice(0, 5).map((catalogEntry) => ({
+    companyId: company!.id,
+    profileId: exactProfile!.id,
+    selectorType: "catalog_entry" as const,
+    effect: "include" as const,
+    applicationId: catalogEntry.applicationId,
+    connectionId: catalogEntry.connectionId,
+    catalogEntryId: catalogEntry.id,
+  })));
+  await db.insert(toolProfileBindings).values({
+    companyId: company!.id,
+    profileId: exactProfile!.id,
+    targetType: input.exactTargetType,
+    targetId: input.exactTargetType === "issue" ? issue!.id : project!.id,
+  });
+
+  return {
+    agent: agent!,
+    project: project!,
+    issue: issue!,
+    allowedConnectionIds: connections.slice(0, 5).map((connection) => connection.id).sort(),
+    extraConnectionId: connections[5]!.id,
+  };
+}
 
 describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
   let db!: ReturnType<typeof createDb>;
@@ -49,9 +194,12 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     await db.delete(toolProfileBindings);
     await db.delete(toolProfileEntries);
     await db.delete(toolProfiles);
+    await db.delete(toolCatalogEntries);
     await db.delete(toolStdioCommandTemplates);
     await db.delete(toolConnections);
     await db.delete(toolApplications);
+    await db.delete(issues);
+    await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -446,6 +594,45 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     const afterDisable = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: randomUUID() });
     expect(afterDisable).toHaveLength(1);
     expect(afterDisable[0]).toMatchObject({ connectionId: installedConnection!.id });
+  });
+
+  it("delivers exactly the five issue-bound tools instead of broad agent access", async () => {
+    process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
+    const fixture = await createScopedRuntimeFixture({
+      db,
+      broadTargetType: "agent",
+      exactTargetType: "issue",
+    });
+
+    const servers = await buildPaperclipRuntimeMcpServers({
+      db,
+      agent: fixture.agent,
+      runId: randomUUID(),
+      issueId: fixture.issue.id,
+      projectId: fixture.project.id,
+    });
+
+    expect(servers.map((server) => server.connectionId).sort()).toEqual(fixture.allowedConnectionIds);
+    expect(servers.some((server) => server.connectionId === fixture.extraConnectionId)).toBe(false);
+  });
+
+  it("delivers project-bound tools instead of broader company access", async () => {
+    process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
+    const fixture = await createScopedRuntimeFixture({
+      db,
+      broadTargetType: "company",
+      exactTargetType: "project",
+    });
+
+    const servers = await buildPaperclipRuntimeMcpServers({
+      db,
+      agent: fixture.agent,
+      runId: randomUUID(),
+      projectId: fixture.project.id,
+    });
+
+    expect(servers.map((server) => server.connectionId).sort()).toEqual(fixture.allowedConnectionIds);
+    expect(servers.some((server) => server.connectionId === fixture.extraConnectionId)).toBe(false);
   });
 
 });

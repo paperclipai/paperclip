@@ -7170,7 +7170,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       return { unbound: rows.length };
     },
 
-    getEffectiveProfilesForAgent: async (companyId: string, agentId: string): Promise<ToolProfileEffectiveSummary> => {
+    getEffectiveProfilesForAgent: async (
+      companyId: string,
+      agentId: string,
+      context?: { issueId?: string | null; projectId?: string | null },
+    ): Promise<ToolProfileEffectiveSummary> => {
       await assertOptionalAgent(companyId, agentId, "Tool profile effective agent");
       const allBindings = await db
         .select()
@@ -7180,6 +7184,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       const bindings = narrowestScopeBindings(allBindings.filter((binding) =>
         (binding.targetType === "company" && binding.targetId === companyId)
         || (binding.targetType === "agent" && binding.targetId === agentId)
+        || (binding.targetType === "issue" && binding.targetId === context?.issueId)
+        || (binding.targetType === "project" && binding.targetId === context?.projectId)
       ));
       if (bindings.length === 0) {
         return {
