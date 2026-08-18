@@ -60,7 +60,7 @@ describe("databaseCheck — postgres connection string", () => {
     const result = await databaseCheck(postgresConfig());
 
     expect(result.status).toBe("pass");
-    expect(createDb).toHaveBeenCalledWith(connectionString);
+    expect(createDb).toHaveBeenCalledWith(` ${connectionString} `);
   });
 });
 

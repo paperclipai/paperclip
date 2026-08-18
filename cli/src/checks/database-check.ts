@@ -13,8 +13,7 @@ function isInsideOsTmpDir(targetPath: string): boolean {
 
 export async function databaseCheck(config: PaperclipConfig, configPath?: string): Promise<CheckResult> {
   if (config.database.mode === "postgres") {
-    const connectionString =
-      process.env.DATABASE_URL?.trim() || config.database.connectionString?.trim();
+    const connectionString = process.env.DATABASE_URL || config.database.connectionString;
     if (!connectionString) {
       return {
         name: "Database",
