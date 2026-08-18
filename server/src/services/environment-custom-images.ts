@@ -39,7 +39,11 @@ import {
 import { environmentService } from "./environments.js";
 import {
   ENVIRONMENT_CUSTOM_IMAGE_CONFIG_FINGERPRINT_EXCLUDED_PATHS,
+  ENVIRONMENT_CUSTOM_IMAGE_BOOT_RELEVANT_CONFIG_METADATA_KEY,
   classifyEnvironmentCustomImageConfigChange,
+  classifyEnvironmentCustomImageBootRelevantDrift,
+  buildEnvironmentCustomImageBootRelevantConfig,
+  readEnvironmentCustomImageBootRelevantConfig,
   fingerprintEnvironmentSandboxProviderConfig,
   ENVIRONMENT_CUSTOM_IMAGE_RUNTIME_CONFIG_BINDING_METADATA_KEY,
   defaultEnvironmentCustomImageRuntimeConfigBinding,
@@ -47,7 +51,9 @@ import {
   normalizeEnvironmentCustomImageRuntimeConfigBinding,
   environmentCustomImageTemplateFromRow,
   readEnvironmentCustomImageTemplateKind as readTemplateKind,
+  type EnvironmentCustomImageRelinkClassification,
 } from "./environment-custom-image-runtime.js";
+import { logActivity } from "./activity-log.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 const ACTIVE_SETUP_STATUSES = ["starting", "waiting_for_user", "capturing"] as const;
@@ -230,10 +236,10 @@ function sourceTemplateFromConfig(
   return { sourceTemplateRef: null, sourceTemplateKind: null };
 }
 
-async function resolveActiveTemplate(
+async function resolveActiveTemplateRow(
   db: Db,
   input: { environmentId: string; provider?: string | null },
-): Promise<EnvironmentCustomImageTemplate | null> {
+): Promise<typeof environmentCustomImageTemplates.$inferSelect | null> {
   const conditions = [
     eq(environmentCustomImageTemplates.environmentId, input.environmentId),
     eq(environmentCustomImageTemplates.status, "active"),
@@ -241,12 +247,19 @@ async function resolveActiveTemplate(
   if (input.provider) {
     conditions.push(eq(environmentCustomImageTemplates.provider, input.provider));
   }
-  const row = await db
+  return db
     .select()
     .from(environmentCustomImageTemplates)
     .where(and(...conditions))
     .orderBy(desc(environmentCustomImageTemplates.capturedAt), desc(environmentCustomImageTemplates.createdAt))
     .then((rows) => rows[0] ?? null);
+}
+
+async function resolveActiveTemplate(
+  db: Db,
+  input: { environmentId: string; provider?: string | null },
+): Promise<EnvironmentCustomImageTemplate | null> {
+  const row = await resolveActiveTemplateRow(db, input);
   return row ? environmentCustomImageTemplateFromRow(row) : null;
 }
 
@@ -803,11 +816,14 @@ export function environmentCustomImageService(
         const captured = await callProviderCapture({ session, previousTemplate: currentActive });
         const environment = await requireEnvironment(session.environmentId);
         const parsed = parseEnvironmentDriverConfig(environment);
+        const captureSecretRefExcludePaths = parsed.driver === "sandbox"
+          ? [...await resolveSandboxProviderSecretRefPaths(db, parsed.config.provider)]
+          : [];
         const baseFingerprint = parsed.driver === "sandbox"
           ? fingerprintEnvironmentSandboxProviderConfig(parsed.config, {
               excludePaths: [
                 ...ENVIRONMENT_CUSTOM_IMAGE_CONFIG_FINGERPRINT_EXCLUDED_PATHS,
-                ...await resolveSandboxProviderSecretRefPaths(db, parsed.config.provider),
+                ...captureSecretRefExcludePaths,
               ],
             })
           : null;
@@ -821,6 +837,32 @@ export function environmentCustomImageService(
           templateRefKind: captured.templateKind,
           templateConfigBinding: provider.driver.templateConfigBinding,
         });
+        // Server-owned boot-relevant snapshot from the parsed config only. It
+        // lets a later relink decide, without the capture-time config, whether
+        // the boot source changed. Secret-ref paths carry no value.
+        const bootRelevantConfig = parsed.driver === "sandbox"
+          ? buildEnvironmentCustomImageBootRelevantConfig({
+              config: parsed.config,
+              binding: runtimeConfigBinding,
+              templateIdentityPaths: provider.driver.templateIdentityPaths ?? [],
+              secretRefExcludePaths: captureSecretRefExcludePaths,
+            })
+          : null;
+        const baseTemplateMetadata = normalizeProviderMetadata({
+          ...(captured.metadata ?? {}),
+          ...(input.metadata ? { userMetadata: input.metadata } : {}),
+          ...persistedSetupMetadata(session.metadata),
+          [ENVIRONMENT_CUSTOM_IMAGE_RUNTIME_CONFIG_BINDING_METADATA_KEY]: runtimeConfigBinding,
+        }) ?? {};
+        // The boot-relevant snapshot bypasses the provider-metadata redactor:
+        // its config field names (for example `apiUrl`) would otherwise be
+        // redacted by key and the relink comparison could never match.
+        const templateMetadata = bootRelevantConfig
+          ? {
+              ...baseTemplateMetadata,
+              [ENVIRONMENT_CUSTOM_IMAGE_BOOT_RELEVANT_CONFIG_METADATA_KEY]: bootRelevantConfig,
+            }
+          : baseTemplateMetadata;
         const now = input.now ?? new Date();
         const templateRow = await db.transaction(async (tx) => {
           const templateId = randomUUID();
@@ -851,12 +893,7 @@ export function environmentCustomImageService(
               createdByUserId: session.startedByUserId,
               createdByAgentId: session.startedByAgentId,
               capturedAt: now,
-              metadata: normalizeProviderMetadata({
-                ...(captured.metadata ?? {}),
-                ...(input.metadata ? { userMetadata: input.metadata } : {}),
-                ...persistedSetupMetadata(session.metadata),
-                [ENVIRONMENT_CUSTOM_IMAGE_RUNTIME_CONFIG_BINDING_METADATA_KEY]: runtimeConfigBinding,
-              }),
+              metadata: templateMetadata,
               createdAt: now,
               updatedAt: now,
             })
@@ -996,6 +1033,138 @@ export function environmentCustomImageService(
       return {
         action: "relinked",
         template: row ? environmentCustomImageTemplateFromRow(row) : template,
+      };
+    },
+
+    /**
+     * Re-stamps the active template's source fingerprint so a detached-but-valid
+     * template applies again, without a sandbox boot or a new provider snapshot.
+     * The server classifies the drift between the capture-time boot-relevant
+     * snapshot and the current config. A `boot_source_drift` or `unclassified`
+     * result needs the `confirmBootSourceDrift` flag; the client never
+     * classifies. The re-stamp UPDATE and the activity row run in one
+     * transaction. Zero updated rows abort with a conflict and write no activity
+     * row.
+     */
+    relinkActiveTemplate: async (input: {
+      environmentId: string;
+      confirmBootSourceDrift?: boolean;
+      actor: {
+        actorType: "agent" | "user" | "system" | "plugin";
+        actorId: string;
+        agentId?: string | null;
+        runId?: string | null;
+        agentApiKeyId?: string | null;
+      };
+      companyId: string;
+      now?: Date;
+    }): Promise<{
+      template: EnvironmentCustomImageTemplate;
+      classification: EnvironmentCustomImageRelinkClassification;
+    }> => {
+      const environment = await requireEnvironment(input.environmentId);
+      const parsed = parseEnvironmentDriverConfig(environment);
+      if (parsed.driver !== "sandbox") {
+        throw unprocessable("Environment customImage relink is only supported for sandbox environments.");
+      }
+      const activeRow = await resolveActiveTemplateRow(db, {
+        environmentId: input.environmentId,
+        provider: parsed.config.provider,
+      });
+      if (!activeRow) throw notFound("Active environment customImage template not found");
+      const active = environmentCustomImageTemplateFromRow(activeRow);
+
+      const secretRefExcludePaths = parsed.config.provider === "fake"
+        ? []
+        : [...await resolveSandboxProviderSecretRefPaths(db, parsed.config.provider)];
+      // Resolve the current provider contract so the classifier can reject a
+      // snapshot captured against a different binding or identity-path set. A
+      // driver that no longer resolves fails closed (null contract).
+      const resolvedDriver = await resolvePluginSandboxProviderDriverByKey({
+        db,
+        driverKey: active.provider,
+      });
+      const currentContract = resolvedDriver
+        ? {
+            binding: templateConfigBindingFromDriver({
+              templateRefKind: active.templateKind,
+              templateConfigBinding: resolvedDriver.driver.templateConfigBinding,
+            }),
+            templateIdentityPaths: resolvedDriver.driver.templateIdentityPaths ?? [],
+          }
+        : null;
+      // The persisted snapshot is server-internal; read it from the row, not the
+      // sanitized template response.
+      const drift = classifyEnvironmentCustomImageBootRelevantDrift({
+        bootRelevantConfig: readEnvironmentCustomImageBootRelevantConfig(activeRow.metadata),
+        currentConfig: parsed.config,
+        currentContract,
+      });
+
+      const confirmBootSourceDrift = input.confirmBootSourceDrift === true;
+      if (drift.classification !== "knob_only" && !confirmBootSourceDrift) {
+        throw conflict(
+          drift.classification === "boot_source_drift"
+            ? "The base image changed since this template was captured. Confirm the relink to keep the captured snapshot."
+            : "The server cannot verify the boot source for this template. Confirm the relink to keep the captured snapshot.",
+          {
+            classification: drift.classification,
+            driftedPaths: drift.driftedPaths,
+          },
+        );
+      }
+
+      const nextFingerprint = fingerprintEnvironmentSandboxProviderConfig(parsed.config, {
+        excludePaths: [
+          ...ENVIRONMENT_CUSTOM_IMAGE_CONFIG_FINGERPRINT_EXCLUDED_PATHS,
+          ...secretRefExcludePaths,
+        ],
+      });
+      const now = input.now ?? new Date();
+      // Activity details carry the sanitized classification and canonical path
+      // names only. They never carry a fingerprint or a config value.
+      const activityDetails = {
+        environmentId: input.environmentId,
+        templateId: active.id,
+        provider: active.provider,
+        classification: drift.classification,
+        driftedPaths: drift.driftedPaths.map((entry) => entry.path),
+        confirmBootSourceDrift,
+      };
+
+      const row = await db.transaction(async (tx) => {
+        const updated = await tx
+          .update(environmentCustomImageTemplates)
+          .set({ sourceEnvironmentConfigFingerprint: nextFingerprint, updatedAt: now })
+          .where(and(
+            eq(environmentCustomImageTemplates.id, active.id),
+            eq(environmentCustomImageTemplates.status, "active"),
+            eq(environmentCustomImageTemplates.environmentId, input.environmentId),
+            eq(environmentCustomImageTemplates.provider, active.provider),
+          ))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!updated) {
+          throw conflict("Active environment customImage template changed before relink; retry.");
+        }
+        await logActivity(tx as unknown as Db, {
+          companyId: input.companyId,
+          actorType: input.actor.actorType,
+          actorId: input.actor.actorId,
+          agentId: input.actor.agentId ?? null,
+          runId: input.actor.runId ?? null,
+          agentApiKeyId: input.actor.agentApiKeyId ?? null,
+          action: "environment.custom_image_template.relinked",
+          entityType: "environment",
+          entityId: input.environmentId,
+          details: activityDetails,
+        });
+        return updated;
+      });
+
+      return {
+        template: environmentCustomImageTemplateFromRow(row),
+        classification: drift.classification,
       };
     },
 

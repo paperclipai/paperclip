@@ -2,6 +2,7 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { environmentRoutes } from "../routes/environments.js";
+import { HttpError } from "../errors.js";
 import {
   environmentCustomImageTerminalConnectionRegistry,
   environmentCustomImageTerminalSessionStore,
@@ -40,6 +41,7 @@ const mockEnvironmentCustomImageService = vi.hoisted(() => ({
   finishSetupSession: vi.fn(),
   cancelSetupSession: vi.fn(),
   rollbackTemplate: vi.fn(),
+  relinkActiveTemplate: vi.fn(),
   disableTemplate: vi.fn(),
   cleanupExpiredSetupSessions: vi.fn(),
 }));
@@ -292,6 +294,10 @@ describe("environment customImage setup routes", () => {
       templateRef: "disabled-template-secret",
       status: "revoked",
     }));
+    mockEnvironmentCustomImageService.relinkActiveTemplate.mockResolvedValue({
+      template: createTemplate({ id: "template-1", templateRef: "relinked-template-secret" }),
+      classification: "knob_only",
+    });
   });
 
   it("starts a setup session, returns the live payload, and logs redacted details", async () => {
@@ -640,5 +646,79 @@ describe("environment customImage setup routes", () => {
     expect(activity).not.toContain("new-template-secret");
     expect(activity).not.toContain("old-template-secret");
     expect(activity).not.toContain("disabled-template-secret");
+  });
+
+  it("relinks the active template through the company-scoped route", async () => {
+    const res = await request(createApp(boardActor()))
+      .post("/api/environments/env-1/custom-image-template/relink?companyId=company-1")
+      .send({ confirmBootSourceDrift: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body.classification).toBe("knob_only");
+    expect(mockEnvironmentCustomImageService.relinkActiveTemplate).toHaveBeenCalledWith({
+      environmentId: "env-1",
+      confirmBootSourceDrift: true,
+      actor: {
+        actorType: "user",
+        actorId: "user-1",
+        agentId: null,
+        runId: null,
+        agentApiKeyId: null,
+      },
+      companyId: "company-1",
+    });
+  });
+
+  it("defaults the confirmation flag to false and rejects unknown body keys", async () => {
+    const app = createApp(boardActor());
+    const withoutFlag = await request(app)
+      .post("/api/environments/env-1/custom-image-template/relink?companyId=company-1")
+      .send({});
+    expect(withoutFlag.status).toBe(200);
+    expect(mockEnvironmentCustomImageService.relinkActiveTemplate).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ confirmBootSourceDrift: false }),
+    );
+
+    // The strict schema rejects unknown keys before the handler runs, so the
+    // relink service is never reached for the malformed body.
+    const unknownKey = await request(app)
+      .post("/api/environments/env-1/custom-image-template/relink?companyId=company-1")
+      .send({ confirmBootSourceDrift: false, unexpected: true });
+    expect(unknownKey.status).not.toBe(200);
+    expect(mockEnvironmentCustomImageService.relinkActiveTemplate).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates the drift conflict from the relink service", async () => {
+    mockEnvironmentCustomImageService.relinkActiveTemplate.mockImplementationOnce(async () => {
+      throw new HttpError(409, "Confirm the relink to keep the captured snapshot.", {
+        classification: "boot_source_drift",
+        driftedPaths: [{ path: "image", from: "fake:base", to: "fake:other" }],
+      });
+    });
+
+    const res = await request(createApp(boardActor()))
+      .post("/api/environments/env-1/custom-image-template/relink?companyId=company-1")
+      .send({});
+
+    expect(res.status).toBe(409);
+  });
+
+  it("denies agent API key actors before the relink service is called", async () => {
+    const res = await request(createApp(agentActor()))
+      .post("/api/environments/env-1/custom-image-template/relink?companyId=company-1")
+      .send({});
+    expect(res.status).toBe(403);
+    expect(mockEnvironmentCustomImageService.relinkActiveTemplate).not.toHaveBeenCalled();
+  });
+
+  it("denies non-admin board users before the relink service is called", async () => {
+    const res = await request(createApp(boardActor({
+      companyIds: ["company-2"],
+      isInstanceAdmin: false,
+    })))
+      .post("/api/environments/env-1/custom-image-template/relink?companyId=company-1")
+      .send({});
+    expect(res.status).toBe(403);
+    expect(mockEnvironmentCustomImageService.relinkActiveTemplate).not.toHaveBeenCalled();
   });
 });
