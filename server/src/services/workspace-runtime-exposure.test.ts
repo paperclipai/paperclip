@@ -5,6 +5,12 @@ import path from "node:path";
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import {
+  deriveViteHmrPort,
+  RUNTIME_EXPOSURE_APP_PORT_MAX,
+  RUNTIME_EXPOSURE_APP_PORT_MIN,
+} from "@paperclipai/shared";
+
 import type { BrokerClient, BrokerListenerRequest } from "./runtime-exposure/broker-client.js";
 import {
   diagnoseRuntimeListenerBinds,
@@ -182,6 +188,25 @@ async function isLoopbackPortFree(port: number): Promise<boolean> {
   });
 }
 
+/**
+ * The first app port at or above `startAt` whose HMR companion is also free on
+ * the real host, mirroring the allocator's own scan. The pinned-port test needs
+ * a port that is *verifiably* free right now rather than a hard-coded one: the
+ * whole dedicated range sits inside the Linux ephemeral port range, so any
+ * transient loopback socket on the host (the client side of a readiness probe,
+ * a TIME_WAIT remnant from another suite) can occupy a fixed constant at probe
+ * time and make the allocator relocate for a reason unrelated to the behaviour
+ * under test.
+ */
+async function findFreeExposureAppPort(startAt: number): Promise<number> {
+  for (let appPort = startAt; appPort <= RUNTIME_EXPOSURE_APP_PORT_MAX; appPort += 1) {
+    if (await isLoopbackPortFree(appPort) && await isLoopbackPortFree(deriveViteHmrPort(appPort))) {
+      return appPort;
+    }
+  }
+  throw new Error("no free app/HMR port pair available in the dedicated runtime exposure range");
+}
+
 function installDeps(overrides: {
   broker: BrokerClient;
   probeHealth?: () => Promise<boolean>;
@@ -316,14 +341,22 @@ describe("automatic tailscale_https default for managed worktree runtimes", () =
     const { broker } = createBroker();
     installDeps({ broker });
 
+    // Pin a pair that is free right now, strictly above the lowest free pair.
+    // If the keep-the-preferred-port path were broken, the ascending fallback
+    // scan would return that lower pair, so coming back with the pinned port
+    // still proves the behaviour — without betting the test on one hard-coded
+    // host port (formerly 42500) staying unoccupied for the whole run.
+    const lowestFreeAppPort = await findFreeExposureAppPort(RUNTIME_EXPOSURE_APP_PORT_MIN);
+    const pinnedPort = await findFreeExposureAppPort(lowestFreeAppPort + 1);
+
     const [runtime] = await startRuntimeServicesForWorkspaceControl(startInput({
       serviceName: "paperclip-dev",
       expose: LEGACY_HTTP_EXPOSE,
-      port: 42_500,
+      port: pinnedPort,
     }));
 
-    expect(runtime.port).toBe(42_500);
-    expect(runtime.url).toBe("https://runner.tail123.ts.net:42500");
+    expect(runtime.port).toBe(pinnedPort);
+    expect(runtime.url).toBe(`https://runner.tail123.ts.net:${pinnedPort}`);
   }, 15_000);
 
   it("preserves a deliberate opt-out and leaves the service on plain HTTP", async () => {
