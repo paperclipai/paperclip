@@ -557,7 +557,7 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     );
   });
 
-  it("skips the host provision command for a local environment without a log line", async () => {
+  it("does not rerun the provision command during local environment realization", async () => {
     mockBuildWorkspaceRealizationRequest.mockReturnValue({
       version: 1,
       adapterType: "claude_local",
@@ -595,8 +595,7 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
       environment: makeEnvironment("local"),
     }));
 
-    // The host command already ran on the host worktree during workspace
-    // provision, so the orchestrator does not run it again for a local driver.
+    // Local workspace provisioning already ran the command before realizeForRun.
     expect(runtime.execute).not.toHaveBeenCalled();
     // The sandbox skip log is specific to the sandbox driver; local stays quiet.
     expect(mockLoggerInfo).not.toHaveBeenCalled();
