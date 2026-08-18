@@ -33,7 +33,7 @@
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
-    "@lexical/link": "0.48.0",
+    "@lexical/link": "0.49.0",
     "@mdxeditor/editor": "^3.55.0",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
@@ -56,9 +56,9 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "i18next": "^26.3.6",
-    "lexical": "0.48.0",
+    "lexical": "0.49.0",
     "lucide-react": "^0.577.0",
-    "mermaid": "^11.16.0",
+    "mermaid": "^11.16.1",
     "radix-ui": "^1.6.4",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
@@ -81,7 +81,7 @@
     "storybook": "10.5.5",
     "tailwindcss": "^4.3.2",
     "typescript": "^5.7.3",
-    "vite": "^6.1.0",
+    "vite": "^6.4.3",
     "vitest": "^4.1.10"
   }
 }

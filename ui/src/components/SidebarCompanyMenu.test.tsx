@@ -54,9 +54,19 @@ vi.mock("@/lib/router", () => ({
   useNavigate: () => mockNavigate,
 }));
 
+// Overridable so the list-unavailable branch can be exercised; null means "use
+// the default three companies below".
+const mockCompanyState = vi.hoisted(() => ({
+  companies: null as unknown[] | null,
+  companyListUnavailable: false,
+  retryCompanies: vi.fn(),
+}));
+
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
-    companies: [
+    companyListUnavailable: mockCompanyState.companyListUnavailable,
+    retryCompanies: mockCompanyState.retryCompanies,
+    companies: mockCompanyState.companies ?? [
       {
         id: "company-1",
         issuePrefix: "PAP",
@@ -180,6 +190,8 @@ describe("SidebarCompanyMenu", () => {
       updatedAt: null,
     });
     mockLocation.pathname = "/PAP/dashboard";
+    mockCompanyState.companies = null;
+    mockCompanyState.companyListUnavailable = false;
   });
 
   afterEach(() => {
@@ -217,6 +229,55 @@ describe("SidebarCompanyMenu", () => {
     });
     await flushReact();
   }
+
+  // This menu is the one the app renders, so it is the only place a customer can
+  // act on a failed company list. Saying "No companies" there states something
+  // about the account that a failed request cannot support, and leaves the tab
+  // with no way back short of a browser reload.
+  it("offers a way back when the company list could not be loaded", async () => {
+    mockCompanyState.companies = [];
+    mockCompanyState.companyListUnavailable = true;
+
+    const { root } = renderMenu();
+    await flushReact();
+    await openMenu("Open Acme Labs company switcher");
+
+    expect(document.body.textContent).toContain("Couldn't load companies");
+    expect(document.body.textContent).not.toContain("No companies");
+
+    const retryItem = Array.from(document.body.querySelectorAll('[role="menuitem"]')).find(
+      (item) => item.textContent?.includes("Try again"),
+    );
+    expect(retryItem).not.toBeUndefined();
+
+    act(() => {
+      retryItem?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      retryItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockCompanyState.retryCompanies).toHaveBeenCalled();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("still reports an account that owns no companies as empty, not broken", async () => {
+    mockCompanyState.companies = [];
+    mockCompanyState.companyListUnavailable = false;
+
+    const { root } = renderMenu();
+    await flushReact();
+    await openMenu("Open Acme Labs company switcher");
+
+    expect(document.body.textContent).toContain("No companies");
+    expect(document.body.textContent).not.toContain("Couldn't load companies");
+
+    act(() => {
+      root.unmount();
+    });
+  });
 
   it("uses company-centric create copy without the chat flag", async () => {
     const root = createRoot(container);

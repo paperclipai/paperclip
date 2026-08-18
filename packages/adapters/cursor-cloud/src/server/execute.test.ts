@@ -179,6 +179,9 @@ describe("cursor_cloud execute", () => {
       PAPERCLIP_WAKE_REASON: "issue_commented",
       PAPERCLIP_API_KEY: "paperclip-run-jwt",
     });
+    // When a run JWT is present the callback URL is retained so the worker can
+    // authenticate its Paperclip API calls.
+    expect(createMock.mock.calls[0]?.[0]?.cloud?.envVars).toHaveProperty("PAPERCLIP_API_URL");
     expect(createMock.mock.calls[0]?.[0]?.cloud?.envVars).not.toHaveProperty("CURSOR_API_KEY");
 
     expect(result).toMatchObject({
@@ -202,6 +205,29 @@ describe("cursor_cloud execute", () => {
         expect.stringContaining('"type":"cursor_cloud.result"'),
       ]),
     );
+  });
+
+  it("omits the Paperclip API callback when no run JWT is issued (remote worker cannot call home)", async () => {
+    const run = createMockRun({ agentId: "agent-no-jwt" });
+    const sdkAgent = createMockSdkAgent({ agentId: "agent-no-jwt", sendRun: run });
+    createMock.mockResolvedValue(sdkAgent);
+    // cursor_cloud is registered with supportsLocalAgentJwt=false, so heartbeat
+    // passes no authToken. A remote cloud worker must not receive a callback URL
+    // it can neither reach nor authenticate against (the source of 401 noise).
+    const ctx = createContext({ authToken: undefined });
+
+    await execute(ctx);
+
+    const envVars = (createMock.mock.calls[0]?.[0]?.cloud?.envVars ?? {}) as Record<string, string>;
+    expect(envVars).not.toHaveProperty("PAPERCLIP_API_KEY");
+    expect(envVars).not.toHaveProperty("PAPERCLIP_API_URL");
+    expect(envVars).not.toHaveProperty("PAPERCLIP_API_BRIDGE_MODE");
+    // Informational Paperclip env (non-credential) still flows through.
+    expect(envVars).toMatchObject({
+      PAPERCLIP_RUN_ID: "run-heartbeat-1",
+      PAPERCLIP_AGENT_ID: "agent-1",
+      PAPERCLIP_COMPANY_ID: "company-1",
+    });
   });
 
   it("resumes a matching saved session when no active run can be reattached", async () => {

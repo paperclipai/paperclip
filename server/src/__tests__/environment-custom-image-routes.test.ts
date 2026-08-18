@@ -85,6 +85,9 @@ vi.mock("../services/environment-probe.js", () => ({
 }));
 
 vi.mock("../services/plugin-environment-driver.js", () => ({
+  // The runtime reads this published constant at import time. Mirror the real
+  // value so the mocked module keeps the same reusable-lease method contract.
+  REUSABLE_LEASE_WORKER_METHODS: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"],
   listReadyPluginEnvironmentDrivers: vi.fn(async () => []),
   resolvePluginSandboxProviderDriverByKey: vi.fn(async () => null),
   validatePluginEnvironmentDriverConfig: vi.fn(async ({ config }) => config),

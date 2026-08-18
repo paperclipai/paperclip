@@ -1258,7 +1258,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
   const managedEnvironmentEnvVarsMutation = useMutation({
     mutationFn: async (envVars: EnvironmentFormState["envVars"]) => {
       if (!editingEnvironmentId) throw new Error("No environment selected");
-      return await environmentsApi.update(editingEnvironmentId, { envVars });
+      return await environmentsApi.update(editingEnvironmentId, { envVars }, selectedCompanyId);
     },
     onSuccess: async (environment) => {
       if (selectedCompanyId) {
@@ -1291,7 +1291,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
       const body = buildEnvironmentPayload(form);
 
       if (editingEnvironmentId) {
-        return await environmentsApi.update(editingEnvironmentId, body);
+        return await environmentsApi.update(editingEnvironmentId, body, selectedCompanyId);
       }
 
       if (!selectedCompanyId) throw new Error("Select a company to create environments");

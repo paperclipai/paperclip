@@ -66,6 +66,7 @@ import {
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
+import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import {
@@ -129,6 +130,7 @@ import {
   type ActivityPublication,
 } from "./activity-log.js";
 import { buildIssueChanges } from "./issue-change-receipt.js";
+import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -572,6 +574,8 @@ export interface IssueFilters {
   offset?: number;
   sortField?: "updated";
   sortDir?: "asc" | "desc";
+  /** ISO 8601 timestamp — only return issues with updatedAt strictly after this value. */
+  updatedSince?: string;
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -2091,7 +2095,9 @@ function createIssueBlockerAttention(input: Partial<IssueBlockerAttention> = {})
     sampleBlockerIdentifier: input.sampleBlockerIdentifier ?? null,
     sampleStalledBlockerIdentifier: input.sampleStalledBlockerIdentifier ?? null,
     blockingTreeLive: input.blockingTreeLive ?? false,
+    directBlockerIssueId: input.directBlockerIssueId ?? null,
     terminalBlockerIssueId: input.terminalBlockerIssueId ?? null,
+    terminalBlocker: input.terminalBlocker ?? null,
   };
 }
 
@@ -2755,6 +2761,11 @@ async function listIssueBlockerAttentionMap(
     const sampledTerminalIdentifier = sampleEntry?.result.stalled
       ? sampleEntry.result.sampleStalledBlockerIdentifier ?? sampleEntry.result.sampleBlockerIdentifier
       : sampleEntry?.result.sampleBlockerIdentifier ?? blockerSampleIdentifier(sampleNode);
+    const terminalBlockerIssueId =
+      sampleEntry?.result.terminalBlockerIssueId ?? issueIdForSample(sampledTerminalIdentifier);
+    const terminalBlockerNode = terminalBlockerIssueId
+      ? nodesById.get(terminalBlockerIssueId) ?? null
+      : null;
 
     let state: IssueBlockerAttention["state"];
     let reason: IssueBlockerAttention["reason"];
@@ -2785,8 +2796,15 @@ async function listIssueBlockerAttentionMap(
       sampleStalledBlockerIdentifier:
         stalledEntry?.result.sampleStalledBlockerIdentifier ?? sampleStalledFromChain ?? null,
       blockingTreeLive: topLevelEdges.some((edge) => pathHasLiveWork(edge.blockerIssueId, new Set([root.id]))),
-      terminalBlockerIssueId:
-        sampleEntry?.result.terminalBlockerIssueId ?? issueIdForSample(sampledTerminalIdentifier),
+      directBlockerIssueId: sampleEntry?.edge.blockerIssueId ?? null,
+      terminalBlockerIssueId,
+      terminalBlocker: terminalBlockerNode
+        ? {
+            id: terminalBlockerNode.id,
+            identifier: terminalBlockerNode.identifier,
+            title: terminalBlockerNode.title,
+          }
+        : null,
     }));
   }
 
@@ -2906,6 +2924,11 @@ async function listIssueReviewAttentionMap(
         issueId: issueThreadInteractions.issueId,
         status: issueThreadInteractions.status,
         kind: issueThreadInteractions.kind,
+        createdByAgentId: issueThreadInteractions.createdByAgentId,
+        sourceRunId: issueThreadInteractions.sourceRunId,
+        addresseeAgentId: issueThreadInteractions.addresseeAgentId,
+        effectiveResolverPolicy: issueThreadInteractions.effectiveResolverPolicy,
+        resolverPolicyProvenance: issueThreadInteractions.resolverPolicyProvenance,
         createdAt: issueThreadInteractions.createdAt,
       })
       .from(issueThreadInteractions)
@@ -3029,32 +3052,56 @@ async function listIssueReviewAttentionMap(
     : [];
   const userNameById = new Map((userRows as Array<{ id: string; name: string }>).map((user) => [user.id, user.name]));
   const interactionKindById = new Map((interactionRows as Array<{ id: string; kind: string }>).map((row) => [row.id, row.kind]));
+  const interactionAudienceById = new Map((interactionRows as Array<{
+    id: string;
+    createdByAgentId: string | null;
+    sourceRunId: string | null;
+    addresseeAgentId: string | null;
+    effectiveResolverPolicy: string;
+    resolverPolicyProvenance: string | null;
+  }>).map((row) => [row.id, row]));
   const wakeReasonById = new Map((wakeRows as Array<{ id: string; reason: string | null }>).map((row) => [row.id, row.reason]));
 
   for (const issue of reviewIssues) {
     const pathFacts = classifyIssueReviewPaths(livenessInput, livenessInput.issues.find((entry) => entry.id === issue.id)!);
-    const paths: IssueReviewAttentionPath[] = pathFacts.map((path) => ({
-      kind: path.kind,
-      label: reviewPathLabel(
-        path.kind,
-        path.kind === "interaction" && path.ref
-          ? interactionKindById.get(path.ref) ?? null
-          : path.kind === "queued_wake" && path.ref
-            ? wakeReasonById.get(path.ref) ?? null
-            : null,
-      ),
-      responder: path.agentId
-        ? agentNameById.get(path.agentId) ?? path.agentId
-        : path.userId
-          ? userNameById.get(path.userId) ?? path.userId
-          : path.kind === "interaction" || path.kind === "approval"
-            ? "Board"
-            : null,
-      since: path.since
-        ? (path.since instanceof Date ? path.since : new Date(path.since)).toISOString()
-        : issue.updatedAt.toISOString(),
-      ref: path.ref,
-    }));
+    const paths: IssueReviewAttentionPath[] = pathFacts.map((path) => {
+      const interactionAudience = path.kind === "interaction" && path.ref
+        ? interactionAudienceById.get(path.ref) ?? null
+        : null;
+      const candidateAgentId = interactionAudience?.addresseeAgentId ?? issue.assigneeAgentId;
+      const interactionResponderAgentId = interactionAudience
+        && candidateAgentId
+        && issueThreadInteractionAttentionAgentAllowed({
+          agentId: candidateAgentId,
+          interaction: interactionAudience,
+        })
+          ? candidateAgentId
+          : null;
+      return {
+        kind: path.kind,
+        label: reviewPathLabel(
+          path.kind,
+          path.kind === "interaction" && path.ref
+            ? interactionKindById.get(path.ref) ?? null
+            : path.kind === "queued_wake" && path.ref
+              ? wakeReasonById.get(path.ref) ?? null
+              : null,
+        ),
+        responder: path.agentId
+          ? agentNameById.get(path.agentId) ?? path.agentId
+          : path.userId
+            ? userNameById.get(path.userId) ?? path.userId
+            : path.kind === "interaction" && interactionResponderAgentId
+              ? agentNameById.get(interactionResponderAgentId) ?? interactionResponderAgentId
+              : path.kind === "interaction" || path.kind === "approval"
+                ? "Board"
+                : null,
+        since: path.since
+          ? (path.since instanceof Date ? path.since : new Date(path.since)).toISOString()
+          : issue.updatedAt.toISOString(),
+        ref: path.ref,
+      };
+    });
 
     if (paths.length > 0) {
       result.set(issue.id, {
@@ -3096,6 +3143,12 @@ const issueListSelect = {
         ),
         'base64'
       )
+    END
+  `,
+  descriptionTruncated: sql<boolean>`
+    CASE
+      WHEN ${issues.description} IS NULL THEN false
+      ELSE length(${issues.description}) > ${ISSUE_LIST_DESCRIPTION_MAX_CHARS}
     END
   `,
   status: issues.status,
@@ -5531,6 +5584,12 @@ export function issueService(db: Db) {
           )!,
         );
       }
+      if (filters?.updatedSince) {
+        const since = new Date(filters.updatedSince);
+        if (Number.isFinite(since.getTime())) {
+          conditions.push(gt(issues.updatedAt, since));
+        }
+      }
       if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
         conditions.push(ne(issues.originKind, "routine_execution"));
       }
@@ -5882,6 +5941,15 @@ export function issueService(db: Db) {
         return null;
       }
       return getIssueByUuid(id);
+    },
+
+    getByIdForUpdate: async (id: string, dbOrTx: any) => {
+      return dbOrTx
+        .select()
+        .from(issues)
+        .where(eq(issues.id, id))
+        .for("update")
+        .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
     },
 
     getByIdentifier: async (identifier: string) => {
@@ -7933,11 +8001,23 @@ export function issueService(db: Db) {
           .from(issueDocuments)
           .where(eq(issueDocuments.issueId, id));
 
-        const removedIssue = await tx
-          .delete(issues)
-          .where(eq(issues.id, id))
-          .returning()
-          .then((rows) => rows[0] ?? null);
+        let removedIssue;
+        try {
+          removedIssue = await tx
+            .delete(issues)
+            .where(eq(issues.id, id))
+            .returning()
+            .then((rows) => rows[0] ?? null);
+        } catch (err) {
+          // A foreign key to issues.id without a delete policy blocks the delete
+          // and raises SQLSTATE 23503. Map it to a clear 409 instead of a bare
+          // 500. This also covers the decisions table, whose NOT NULL references
+          // to issues.id stay restricted on purpose.
+          if (isForeignKeyViolation(err)) {
+            throw conflict("Issue cannot be deleted because another record still references it.");
+          }
+          throw err;
+        }
 
         if (removedIssue && attachmentAssetIds.length > 0) {
           await tx

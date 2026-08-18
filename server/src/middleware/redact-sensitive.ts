@@ -39,6 +39,12 @@ const SENSITIVE_KEYS = new Set<string>([
   "sessiontoken",
   "private_key",
   "privatekey",
+  // The Claude setup-token login fields. `browserCode` carries the one-time
+  // sign-in code and `authorization_code` carries the OAuth code; neither may
+  // reach a log line.
+  "browsercode",
+  "authorization_code",
+  "authorizationcode",
 ]);
 
 const MAX_DEPTH = 6;
@@ -53,6 +59,11 @@ const URLISH_KEYS = new Set<string>([
   "sourceurl",
   "uri",
   "url",
+  // The Claude setup-token login URL. A structured `loginUrl` that reaches a log
+  // sink keeps its origin and path only; the OAuth query, fragment, and any
+  // credentials are stripped (SR-5 backstop).
+  "loginurl",
+  "login_url",
 ]);
 
 function isSensitiveKey(key: string): boolean {

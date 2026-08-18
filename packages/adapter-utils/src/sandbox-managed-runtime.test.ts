@@ -2029,8 +2029,9 @@ describe("sandbox managed runtime", () => {
     await writeFile(path.join(localWorkspaceDir, "README.md"), "workspace body\n", "utf8");
 
     // Record every span name the runner opens and run the wrapped work, so the
-    // test proves the host opens exactly one `pack` span around the tarball
-    // build for the usual (plain) workspace sync.
+    // test proves the host opens a span around each host-side staging sub-step
+    // for the usual (plain) workspace sync: the git enumeration, the baseline
+    // content-hash walk, and the tarball build, in that order.
     const openedSpans: string[] = [];
     const runtimeSpan: RuntimeSpanRunner = async (name, work) => {
       openedSpans.push(name);
@@ -2052,7 +2053,7 @@ describe("sandbox managed runtime", () => {
       runtimeSpan,
     });
 
-    expect(openedSpans).toEqual(["pack"]);
+    expect(openedSpans).toEqual(["snapshot.git", "snapshot.baseline", "pack"]);
     // The tarball build still lands the workspace inside the span, so the wrap
     // changes no staging behavior.
     await expect(readFile(path.join(remoteWorkspaceDir, "README.md"), "utf8")).resolves.toBe("workspace body\n");
@@ -2120,5 +2121,14 @@ describe("sandbox managed runtime", () => {
     // The `pack` span parents to `stage.sync`, not to the root span, so it nests
     // under the step in a real trace.
     expect(packSpan!.parentName).toBe("stage.sync");
+
+    // The two pre-`pack` staging sub-steps nest under `stage.sync` the same way,
+    // so the previously hidden gap at the head of the step is now attributed.
+    for (const name of ["snapshot.git", "snapshot.baseline"]) {
+      const span = spans.find((candidate) => candidate.name === name);
+      expect(span, name).toBeDefined();
+      expect(span!.ended).toBe(true);
+      expect(span!.parentName).toBe("stage.sync");
+    }
   });
 });

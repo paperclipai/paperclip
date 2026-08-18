@@ -426,6 +426,10 @@ export {
   addIssueCommentSchema,
   issueThreadInteractionStatusSchema,
   issueThreadInteractionKindSchema,
+  issueThreadInteractionCanonicalResolverPolicySchema,
+  issueThreadInteractionResolverPolicySchema,
+  issueThreadInteractionResolverPolicyProvenanceSchema,
+  issueThreadInteractionEffectiveResolverPolicySourceSchema,
   issueThreadInteractionContinuationPolicySchema,
   suggestedTaskDraftSchema,
   suggestTasksPayloadSchema,
@@ -442,6 +446,8 @@ export {
   requestConfirmationPayloadSchema,
   requestConfirmationResumeFailureSchema,
   requestConfirmationResultSchema,
+  requestConfirmationSecretProposalPayloadSchema,
+  requestConfirmationSecretProposalResultSchema,
   requestCheckboxConfirmationOptionSchema,
   requestCheckboxConfirmationPayloadSchema,
   requestCheckboxConfirmationResultSchema,
@@ -589,6 +595,11 @@ export {
   type CreateGoal,
   type UpdateGoal,
 } from "./goal.js";
+
+export {
+  applyOnboardingSeedSchema,
+  type ApplyOnboardingSeed,
+} from "./onboarding-seed.js";
 
 export {
   createApprovalSchema,
@@ -753,6 +764,7 @@ export {
   pluginWebhookDeclarationSchema,
   pluginToolDeclarationSchema,
   pluginEnvironmentDriverDeclarationSchema,
+  sandboxProviderCapabilitiesSchema,
   pluginUiSlotDeclarationSchema,
   pluginLauncherActionDeclarationSchema,
   pluginLauncherRenderDeclarationSchema,
@@ -774,6 +786,7 @@ export {
   type PluginWebhookDeclarationInput,
   type PluginToolDeclarationInput,
   type PluginEnvironmentDriverDeclarationInput,
+  type SandboxProviderCapabilitiesInput,
   type PluginUiSlotDeclarationInput,
   type PluginLauncherActionDeclarationInput,
   type PluginLauncherRenderDeclarationInput,

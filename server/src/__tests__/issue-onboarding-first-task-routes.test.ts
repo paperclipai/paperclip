@@ -2,13 +2,17 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { and, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agentRuntimeState,
   agents,
   agentWakeupRequests,
   companies,
+  companySkills,
   createDb,
+  heartbeatRunEvents,
+  heartbeatRuns,
   issueComments,
   issues,
 } from "@paperclipai/db";
@@ -19,7 +23,38 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { actorMiddleware } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/index.js";
+import { runningProcesses } from "../adapters/index.ts";
 import { issueRoutes } from "../routes/issues.js";
+import { heartbeatService } from "../services/heartbeat.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
+
+// The issue-create route dispatches an assignment wake fire-and-forget for an
+// assigned agent. The wake dispatches a heartbeat run that calls the server
+// adapter. Stub the adapter so the run finishes at once and does not start a
+// real agent session. The stub keeps the wake path realistic and fast, so the
+// afterEach drain reaches quiescence without a long real run.
+const mockAdapterExecute = vi.hoisted(() =>
+  vi.fn(async () => ({
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    errorMessage: null,
+    summary: "Onboarding first-task route test run.",
+    provider: "test",
+    model: "test-model",
+  })),
+);
+
+vi.mock("../adapters/index.ts", async () => {
+  const actual = await vi.importActual<typeof import("../adapters/index.ts")>("../adapters/index.ts");
+  return {
+    ...actual,
+    getServerAdapter: vi.fn(() => ({
+      supportsLocalAgentJwt: false,
+      execute: mockAdapterExecute,
+    })),
+  };
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -42,11 +77,26 @@ describeEmbeddedPostgres("issue create onboarding first-task routes", () => {
   }, 20_000);
 
   afterEach(async () => {
+    // Wait for the background assignment wake to reach quiescence before the
+    // deletes. The wake inserts agent_wakeup_requests and heartbeat_runs rows
+    // asynchronously, and a late row races the teardown deletes. The module
+    // global promise sets in heartbeat.ts are shared, so a fresh heartbeatService
+    // drains the route wake that this suite started.
+    mockAdapterExecute.mockClear();
+    runningProcesses.clear();
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
+    // Delete heartbeat_runs and its child rows before agents and
+    // agent_wakeup_requests. heartbeat_runs references both, so a completed run
+    // row blocks a parent delete with a foreign-key violation.
     await db.delete(activityLog);
-    await db.delete(agentWakeupRequests);
     await db.delete(issueComments);
+    await db.delete(heartbeatRunEvents);
+    await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
+    await db.delete(agentRuntimeState);
     await db.delete(issues);
     await db.delete(agents);
+    await db.delete(companySkills);
     await db.delete(companies);
   });
 

@@ -41,11 +41,16 @@ import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
 import { useWindowAutoFollow } from "@/components/task-chat/useWindowAutoFollow";
 import { useSidebar } from "@/context/SidebarContext";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
-import { latestSameRunHandoffTimestamp, type IssueChatComment } from "@/lib/issue-chat-messages";
+import { latestSameRunHandoffTimestamp } from "@/lib/issue-chat-messages";
 import { isLiveIssueRun, isTerminalIssueStatus } from "@/lib/liveIssueIds";
-import { workModeInEffectAt } from "@/lib/issue-timeline-events";
-import { workModeMetaFor } from "@/lib/work-mode-meta";
+import {
+  resolveTaskChatBlockers,
+  resolveTaskChatLiveWork,
+  TaskChatBlockerLinks,
+  TaskChatLiveWorkLinks,
+} from "@/components/task-chat/TaskChatBlockerLinks";
 
 function toMs(value: Date | string | null | undefined): number {
   if (!value) return 0;
@@ -58,6 +63,7 @@ function toMs(value: Date | string | null | undefined): number {
 // off to (e.g. a stopped run with no tool activity). Normal completions hand off
 // well within this as soon as the settled turn/comment lands.
 const SETTLING_TAIL_MAX_MS = 15_000;
+const EMPTY_LIVE_ISSUE_IDS: ReadonlySet<string> = new Set<string>();
 
 export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread>;
 
@@ -119,14 +125,69 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     onSubmitInteractionVerdicts,
     externalReferences,
     threadHeader,
-    workModeChanges,
     issueBrief,
     feedbackVotes,
     feedbackDataSharingPreference = "prompt",
     feedbackTermsUrl = null,
     onVote,
     draftKey,
+    onInterruptQueued,
+    interruptingQueuedRunId,
+    blockedBy = [],
+    blockerAttention,
+    liveIssueIds,
   } = props;
+
+  const liveWorkLinks = useMemo(
+    () => issueStatus === "blocked" && blockerAttention?.state === "covered"
+      ? resolveTaskChatLiveWork(blockedBy, liveIssueIds ?? EMPTY_LIVE_ISSUE_IDS, blockerAttention.terminalBlocker)
+      : null,
+    [blockedBy, blockerAttention?.state, blockerAttention?.terminalBlocker, issueStatus, liveIssueIds],
+  );
+
+  const blockerLinks = useMemo(
+    () => issueStatus === "blocked" && !liveWorkLinks
+      ? resolveTaskChatBlockers(
+          blockedBy,
+          blockerAttention?.terminalBlockerIssueId,
+          blockerAttention?.directBlockerIssueId,
+          blockerAttention?.terminalBlocker,
+        )
+      : null,
+    [
+      blockedBy,
+      blockerAttention?.directBlockerIssueId,
+      blockerAttention?.terminalBlocker,
+      blockerAttention?.terminalBlockerIssueId,
+      issueStatus,
+      liveWorkLinks,
+    ],
+  );
+
+  const threadHeaderWithBlockers = threadHeader || blockerLinks || liveWorkLinks ? (
+    <>
+      {threadHeader}
+      {liveWorkLinks ? (
+        <TaskChatLiveWorkLinks liveWork={liveWorkLinks} placement="top" />
+      ) : blockerLinks ? (
+        <TaskChatBlockerLinks
+          directBlocker={blockerLinks.directBlocker}
+          ultimateBlocker={blockerLinks.ultimateBlocker}
+          placement="top"
+        />
+      ) : null}
+    </>
+  ) : undefined;
+
+  const bottomBlockerLinks = liveWorkLinks ? (
+    <TaskChatLiveWorkLinks liveWork={liveWorkLinks} placement="bottom" />
+  ) : blockerLinks ? (
+    <TaskChatBlockerLinks
+      directBlocker={blockerLinks.directBlocker}
+      ultimateBlocker={blockerLinks.ultimateBlocker}
+      placement="bottom"
+    />
+  ) : null;
 
   const linkedRunMetaById = useMemo(() => {
     const map = new Map<string, NonNullable<TaskChatThreadProps["linkedRuns"]>[number]>();
@@ -134,27 +195,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     return map;
   }, [linkedRuns]);
 
-  // Each agent reply is tagged with the mode its request ran under: the
-  // issue's work mode at the reply's run start (comment.runId linkage),
-  // reconstructed from the activity feed's work-mode switch history — not the
-  // issue's current mode, which the user may have changed since.
-  const agentModeLabelFor = useCallback(
-    (comment: IssueChatComment) => {
-      const runMeta = comment.runId ? linkedRunMetaById.get(comment.runId) : undefined;
-      const atMs = toMs(runMeta?.startedAt ?? runMeta?.createdAt ?? comment.createdAt);
-      return workModeMetaFor(workModeInEffectAt(workModeChanges ?? [], atMs, issueWorkMode)).label;
-    },
-    [linkedRunMetaById, workModeChanges, issueWorkMode],
-  );
   const commentItems = useMemo(
     () => commentsToTaskChatItems(comments, {
       agentMap,
       userLabelMap,
       currentUserId,
       issueAssigneeAgentId,
-      agentModeLabelFor,
     }),
-    [comments, agentMap, userLabelMap, currentUserId, issueAssigneeAgentId, agentModeLabelFor],
+    [comments, agentMap, userLabelMap, currentUserId, issueAssigneeAgentId],
   );
 
   // Every run we might need a transcript for (history + live), deduped by id.
@@ -449,7 +497,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     if ("content" in entry) return total + entry.content.length;
     return total + entry.kind.length;
   }, tailEntries.length);
-  const threadContentKey = taskChatContentKey(items) + tailContentKey;
+  const blockerContentKey = blockerLinks
+    ? `${blockerLinks.directBlocker.id}:${blockerLinks.ultimateBlocker?.id ?? ""}`
+    : liveWorkLinks
+      ? `live:${liveWorkLinks.steps.map((step) => `${step.blocker.id}:${step.status}`).join(",")}:${liveWorkLinks.nowRunning.map((blocker) => blocker.id).join(",")}`
+      : "";
+  const threadContentKey = `${taskChatContentKey(items)}:${tailContentKey}:${blockerContentKey}`;
 
   // Status-pill inputs for the tail (PAP-461, A1): the run's start, its finish
   // (once terminal), and the "called N tools" summary. Memoized on the
@@ -538,6 +591,27 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     [onVote, feedbackVoteByTargetId, feedbackDataSharingPreference, feedbackTermsUrl],
   );
 
+  const renderQueuedAction = useCallback(
+    (item: TaskChatMessageItem) => {
+      const runId = item.queueTargetRunId;
+      if (item.optimistic !== "queued" || !runId || !onInterruptQueued) return null;
+
+      const isInterrupting = interruptingQueuedRunId === runId;
+      return (
+        <Button
+          type="button"
+          variant="link"
+          className="h-auto p-0 text-(length:--text-micro)"
+          disabled={isInterrupting}
+          onClick={() => void onInterruptQueued(runId)}
+        >
+          {isInterrupting ? "Interrupting…" : "Interrupt"}
+        </Button>
+      );
+    },
+    [interruptingQueuedRunId, onInterruptQueued],
+  );
+
   const renderInteraction = useCallback(
     (item: TaskChatInteractionItem) => (
       <TaskChatInteractionCard
@@ -584,40 +658,51 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       <div className={cn("flex flex-col", !isMobile && "min-h-0 flex-1")}>
         {items.length === 0 && !tailRunId ? (
           <div className={isMobile ? undefined : "min-h-0 flex-1 overflow-y-auto"}>
-            {threadHeader ? (
+            {threadHeaderWithBlockers ? (
               <div
                 className="mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-6 px-4 pt-4"
                 data-testid="task-chat-thread-header"
               >
-                {threadHeader}
+                {threadHeaderWithBlockers}
               </div>
             ) : null}
             <div className="px-3 py-10 text-center text-sm text-muted-foreground">{emptyMessage}</div>
+            {bottomBlockerLinks ? (
+              <div className="mx-auto w-full max-w-(--tc-shell-max-w) px-4 pb-4">
+                {bottomBlockerLinks}
+              </div>
+            ) : null}
           </div>
         ) : (
           <TaskChatThreadView
             items={items}
-            header={threadHeader}
+            header={threadHeaderWithBlockers}
             renderInteraction={renderInteraction}
             renderBrief={issueBrief ? () => <TaskChatDescriptionBubble brief={issueBrief} /> : undefined}
             renderMessageActions={renderMessageActions}
-            tail={tailRunId ? (
-              <div data-testid="task-chat-live-transcript">
-                <TaskChatLiveRunPill
-                  status={tailStatus}
-                  startedAtMs={tailStartedAtMs}
-                  finishedAtMs={tailFinishedAtMs}
-                  toolSummary={tailToolSummary}
-                />
-                <TaskChatLiveTail
-                  items={tailItems}
-                  emptyMessage={
-                    tailStatus === "queued"
-                      ? "Waiting to start..."
-                      : "Waiting for transcript..."
-                  }
-                />
-              </div>
+            renderQueuedAction={renderQueuedAction}
+            tail={tailRunId || bottomBlockerLinks ? (
+              <>
+                {tailRunId ? (
+                  <div data-testid="task-chat-live-transcript">
+                    <TaskChatLiveRunPill
+                      status={tailStatus}
+                      startedAtMs={tailStartedAtMs}
+                      finishedAtMs={tailFinishedAtMs}
+                      toolSummary={tailToolSummary}
+                    />
+                    <TaskChatLiveTail
+                      items={tailItems}
+                      emptyMessage={
+                        tailStatus === "queued"
+                          ? "Waiting to start..."
+                          : "Waiting for transcript..."
+                      }
+                    />
+                  </div>
+                ) : null}
+                {bottomBlockerLinks}
+              </>
             ) : null}
             contentKey={threadContentKey}
             scroll={!isMobile}
@@ -626,13 +711,24 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       </div>
       {showComposer ? (
         <div
+          data-testid="task-chat-composer-dock"
           className={cn(
             "sticky",
             // Mobile mirrors the flag-off thread's dock: lifted above the
-            // safe-area inset (and clear of the auto-hiding bottom nav), above
-            // page content in the document-flow stacking context.
-            isMobile ? "bottom-(--sz-calc-8) z-20" : "bottom-0 z-10",
-            "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 bg-background/80 px-1 pb-2 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60",
+            // safe-area inset and clear of the auto-hiding bottom nav, above
+            // page content in the document-flow stacking context. The bottom
+            // offset (--tc-composer-bottom) tracks the nav: Layout raises it to
+            // the nav height while the nav is visible so the composer's action
+            // row is never occluded, and drops it back to the safe-area dock
+            // when the nav auto-hides (PAP-495). transition-[bottom] rides the
+            // nav's own 200ms slide; the offset only changes on nav toggles, so
+            // it never animates mid-scroll.
+            isMobile
+              ? "bottom-(--tc-composer-bottom) z-20 transition-[bottom] duration-200 ease-out"
+              : "bottom-0 z-10",
+            // Match the thread width on mobile. Keep the intentionally
+            // narrower composer on larger screens.
+            "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 bg-background/80 px-4 pb-2 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60 md:w-(--pct-80)",
           )}
         >
           {composerAccessory}

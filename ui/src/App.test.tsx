@@ -43,17 +43,18 @@ vi.mock("@/lib/router", () => ({
   useParams: () => ({}),
 }));
 
-async function flushReact() {
-  await Promise.resolve();
-  await new Promise((resolve) => window.setTimeout(resolve, 0));
-}
-
+/**
+ * Waits on the condition, not on a fixed number of turns. A hand-rolled retry
+ * loop is ample on an idle machine and not when the suite runs many workers in
+ * parallel: it gives up after N turns and reports a failure on behaviour that
+ * works. `vi.waitFor` retries against a time budget, so a loaded worker gets
+ * more turns instead.
+ *
+ * Same replacement as #11499 and #11521, which fixed the shorter-budget
+ * instances of this in the routing tests.
+ */
 async function waitForText(container: HTMLElement, text: string) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (container.textContent?.includes(text)) return;
-    await flushReact();
-  }
-  expect(container.textContent).toContain(text);
+  await vi.waitFor(() => expect(container.textContent).toContain(text));
 }
 
 function renderGate(container: HTMLElement) {
@@ -160,7 +161,7 @@ describe("CloudAccessGate", () => {
 
     expect(container.textContent).toContain("Finish setting up this Paperclip");
     expect(container.textContent).toContain("Sign in / Create account");
-    expect(container.textContent).toContain("pnpm paperclipai auth bootstrap-ceo");
+    expect(container.textContent).toContain("npx paperclipai auth bootstrap-ceo");
     expect(mockAccessApi.getCurrentBoardAccess).not.toHaveBeenCalled();
 
     unmountRoot(root);

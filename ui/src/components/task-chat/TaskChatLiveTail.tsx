@@ -3,6 +3,8 @@ import { MarkdownBody } from "@/components/MarkdownBody";
 import type { TaskChatItem } from "./task-chat-model";
 import { TaskChatToolCard } from "./TaskChatToolCard";
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
+import { TaskChatActivityPhase } from "./TaskChatActivityPhase";
+import { buildActivityPhases } from "./transcript-adapter";
 
 /**
  * Live-tail body for the experimental chat-style view (PAP-463, Workstream C1
@@ -18,10 +20,9 @@ import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
  * no "Streaming" chip, no uppercase "USED TERMINAL" cards. The status pill above
  * this body (`TaskChatLiveRunPill`) owns the run-status affordance.
  *
- * Live and settle-gap render identically — both feed their parsed items here
- * (`running: true` while in flight, `false` through the settle gap) — so the
- * tail never restyles when a run finishes; the hand-off to the folded settled
- * turn is the only visible transition.
+ * Stable assistant boundaries compact the rows into activity phases. The
+ * trailing streaming assistant chunk stays in the status pill's self-talk
+ * slot, while historical interstitials remain readable above their summaries.
  */
 export function TaskChatLiveTail({
   items,
@@ -31,7 +32,7 @@ export function TaskChatLiveTail({
   /** Shown when nothing renderable has streamed yet (queued / pre-first-token). */
   emptyMessage?: string;
 }) {
-  const rows = items
+  const rows = buildActivityPhases(items, true)
     .map((item) => renderTailRow(item))
     .filter((row): row is ReactElement => row != null);
 
@@ -75,6 +76,14 @@ function renderTailRow(item: TaskChatItem): ReactElement | null {
         <div key={item.id}>
           <TaskChatUsageReadout item={item} />
         </div>
+      );
+    case "activity_phase":
+      return (
+        <TaskChatActivityPhase
+          key={item.id}
+          item={item}
+          renderChild={(child) => child.kind === "tool" ? <TaskChatToolCard item={child} /> : <TaskChatUsageReadout item={child} />}
+        />
       );
     // Thinking never renders as a row (PAP-361): its live signal is the status
     // pill, and the text stays in the run log / classic transcript. Every other

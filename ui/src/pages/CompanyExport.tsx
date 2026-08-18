@@ -484,7 +484,7 @@ function generateReadmeFromSelection(
   lines.push("## Getting Started");
   lines.push("");
   lines.push("```bash");
-  lines.push("pnpm paperclipai company import this-github-url-or-folder");
+  lines.push("npx paperclipai company import this-github-url-or-folder");
   lines.push("```");
   lines.push("");
   lines.push("See [Paperclip](https://paperclip.ing) for more information.");

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { Issue, IssueDocument, IssueWorkProduct } from "@paperclipai/shared";
@@ -25,10 +25,16 @@ import {
 } from "@/lib/issue-artifacts";
 import { attachmentOpenPath } from "@/lib/issue-attachments";
 import { MarkdownBody } from "@/components/MarkdownBody";
+import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "@/components/IssueDocumentAnnotations";
 import { cn } from "@/lib/utils";
+import { useLocation } from "@/lib/router";
 
 interface IssuePropertiesArtifactsTabProps {
   issue: Issue;
+  documentDeepLink?: {
+    requestId: number;
+    documentKey: string;
+  } | null;
 }
 
 function formatBytes(n: number): string {
@@ -116,28 +122,68 @@ function WorkProductRow({ workProduct }: { workProduct: IssueWorkProduct }) {
   return <div className={ROW_CLASS}>{body}</div>;
 }
 
-function DocumentRow({ doc }: { doc: IssueDocument }) {
+function DocumentRow({
+  issueId,
+  doc,
+  openRequestId,
+}: {
+  issueId: string;
+  doc: IssueDocument;
+  openRequestId?: number;
+}) {
   const [expanded, setExpanded] = useState(false);
+  const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
+  const headerRef = useRef<HTMLDivElement | null>(null);
+  const location = useLocation();
   const Chevron = expanded ? ChevronDown : ChevronRight;
+  useEffect(() => {
+    if (openRequestId === undefined) return;
+    setExpanded(true);
+  }, [openRequestId]);
+  useEffect(() => {
+    if (openRequestId === undefined || !expanded) return;
+    headerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [expanded, openRequestId]);
   return (
     <div className="rounded-md border border-border bg-card/50">
-      <button
-        type="button"
-        onClick={() => setExpanded((open) => !open)}
-        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-sm hover:bg-accent/50"
-        aria-expanded={expanded}
-      >
-        <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate">{documentDisplayTitle(doc)}</span>
-        <span className="shrink-0 text-(length:--text-micro) text-muted-foreground">
-          {`Rev ${doc.latestRevisionNumber ?? 1}`}
-        </span>
-        <Chevron className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-      </button>
+      <div ref={headerRef} className="flex items-center hover:bg-accent/50">
+        <button
+          type="button"
+          onClick={() => setExpanded((open) => !open)}
+          className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-1.5 text-left text-sm"
+          aria-expanded={expanded}
+        >
+          <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1 truncate">{documentDisplayTitle(doc)}</span>
+          <span className="shrink-0 text-(length:--text-micro) text-muted-foreground">
+            {`Rev ${doc.latestRevisionNumber ?? 1}`}
+          </span>
+          <Chevron className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        </button>
+        <DocumentAnnotationsCountChip
+          issueId={issueId}
+          docKey={doc.key}
+          panelOpen={annotationPanelOpen}
+          onToggle={() => setAnnotationPanelOpen((open) => !open)}
+        />
+      </div>
       {expanded ? (
         <div className="border-t border-border px-2.5 py-2">
           {doc.body.trim().length > 0 ? (
-            <MarkdownBody>{doc.body}</MarkdownBody>
+            <IssueDocumentAnnotations
+              issueId={issueId}
+              doc={doc}
+              bodyMarkdown={doc.body}
+              draftDirty={false}
+              draftConflicted={false}
+              historicalPreview={false}
+              locationHash={location.hash}
+              panelOpen={annotationPanelOpen}
+              onPanelOpenChange={setAnnotationPanelOpen}
+              panelPlacement="popover"
+            >
+              <MarkdownBody>{doc.body}</MarkdownBody>
+            </IssueDocumentAnnotations>
           ) : (
             <p className="text-sm text-muted-foreground">Document is empty.</p>
           )}
@@ -157,7 +203,7 @@ function DocumentRow({ doc }: { doc: IssueDocument }) {
  * user uploads are excluded — those stay first-class in the conversation
  * thread.
  */
-export function IssuePropertiesArtifactsTab({ issue }: IssuePropertiesArtifactsTabProps) {
+export function IssuePropertiesArtifactsTab({ issue, documentDeepLink }: IssuePropertiesArtifactsTabProps) {
   const { data: attachments } = useQuery({
     queryKey: queryKeys.issues.attachments(issue.id),
     queryFn: () => issuesApi.listAttachments(issue.id),
@@ -200,7 +246,13 @@ export function IssuePropertiesArtifactsTab({ issue }: IssuePropertiesArtifactsT
           <ul className="flex flex-col gap-1">
             {documentRows.map((doc) => (
               <li key={doc.key}>
-                <DocumentRow doc={doc} />
+                <DocumentRow
+                  issueId={issue.id}
+                  doc={doc}
+                  openRequestId={documentDeepLink?.documentKey === doc.key
+                    ? documentDeepLink.requestId
+                    : undefined}
+                />
               </li>
             ))}
           </ul>

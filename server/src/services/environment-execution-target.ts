@@ -243,12 +243,61 @@ export async function resolveEnvironmentExecutionTarget(input: {
     // a recording tracer.
     const tracer = input.tracer ?? getStartupTracer();
 
+    // Resolve the read-only effective capability snapshot for this lease. The
+    // runtime resolves it as the provider declaration ∩ the verified worker
+    // methods ∩ narrowing. Freeze it so a consumer reads it but never changes
+    // it. Track a resolution error apart from a genuinely absent snapshot: a
+    // rejected resolution must not read as an open grant.
+    let effectiveCapabilities: Awaited<
+      ReturnType<NonNullable<EnvironmentRuntimeService["effectiveSandboxCapabilities"]>>
+    > | null = null;
+    let capabilityResolutionFailed = false;
+    if (input.environmentRuntime?.effectiveSandboxCapabilities && input.lease) {
+      try {
+        effectiveCapabilities = await input.environmentRuntime.effectiveSandboxCapabilities({
+          environment: input.environment as Environment,
+          lease: input.lease,
+        });
+      } catch {
+        // The runtime could not resolve the snapshot. Fail closed for the
+        // persistent-session gates below; never grant persistent-session
+        // behavior from an unknown capability set.
+        capabilityResolutionFailed = true;
+        effectiveCapabilities = null;
+      }
+    }
+
+    // Gate the sync, session, and execution decisions below on the effective
+    // snapshot. A genuinely absent snapshot (no runtime, no lease) keeps the
+    // prior behavior, so it never removes a working path. A present snapshot
+    // can only remove a capability, never add one back.
+    //
+    // Native file sync needs BOTH sync verbs: the runner exposes syncIn and
+    // syncOut both-or-neither, so a consumer either uses the native path for
+    // both directions or keeps the base64 fallback for both. When the snapshot
+    // removes either verb, keep the byte-identical base64 fallback. When the
+    // resolution failed, fail closed and keep the base64 fallback too: an
+    // unverified provider never gets the native sync path. This preserves the
+    // existing reusable-lease sync enforcement unchanged.
+    const nativeSyncAllowed =
+      !capabilityResolutionFailed &&
+      (!effectiveCapabilities ||
+        (effectiveCapabilities.nativeSyncIn && effectiveCapabilities.nativeSyncOut));
+    // A command that opts onto the persistent session needs the provider to keep
+    // persistent process sessions. When the snapshot removes that capability,
+    // never force the session; the command runs one-shot instead. When the
+    // resolution failed, fail closed and never force the session.
+    const persistentSessionsAllowed =
+      !capabilityResolutionFailed &&
+      (!effectiveCapabilities || effectiveCapabilities.persistentProcessSessions);
+
     return {
       kind: "remote",
       transport: "sandbox",
       providerKey: parsed.config.provider,
       shellCommand,
       remoteCwd,
+      ...(effectiveCapabilities ? { effectiveCapabilities: Object.freeze({ ...effectiveCapabilities }) } : {}),
       environmentId: input.environment.id ?? null,
       leaseId: input.leaseId ?? null,
       timeoutMs,
@@ -256,10 +305,11 @@ export async function resolveEnvironmentExecutionTarget(input: {
       // output reaches the UI mid-run; `streamRunLogs: false` is an explicit
       // opt-out back to batch-at-end delivery.
       streamRunLogs: parsed.config.streamRunLogs !== false,
-      // Interactive ACP output streaming through the persistent session log
-      // stream. Default OFF: the process session bridge keeps the output-file
-      // poll unless an operator opts a sandbox environment in.
-      streamAgentSessionOutput: parsed.config.streamAgentSessionOutput === true,
+      // Interactive ACP output streaming is decided downstream from the effective
+      // capability snapshot alone: the process session bridge streams only when
+      // the provider keeps persistent process sessions and runs independent
+      // control commands. The snapshot is absent when resolution failed, so the
+      // bridge fails closed to the output-file poll.
       runner: input.environmentRuntime && input.lease
         ? {
             // Provider-backed sandbox RPCs do not surface bounded mid-stream
@@ -328,7 +378,10 @@ export async function resolveEnvironmentExecutionTarget(input: {
                     // The ACP process session bridge sets `useSession` so its
                     // long-lived agent command opens the persistent session and
                     // streams output, even though it runs with no active step.
-                    forceSession: commandInput.useSession,
+                    // The effective snapshot gates it: a provider that cannot
+                    // keep persistent process sessions never forces the session,
+                    // so the command runs one-shot instead.
+                    forceSession: persistentSessionsAllowed ? commandInput.useSession : false,
                     // The bridge control-plane execs set `bypassSession` so they
                     // run one-shot and never queue behind the long-lived agent
                     // command on the persistent session. An explicit bypass wins
@@ -423,9 +476,11 @@ export async function resolveEnvironmentExecutionTarget(input: {
               }
             },
             // Expose the native file-sync capability only when the provider's
-            // worker advertises BOTH sync verbs; otherwise leave syncIn/syncOut
-            // undefined so the orchestrator keeps the byte-identical base64 path.
-            ...(input.environmentRuntime.supportsSync({
+            // worker advertises BOTH sync verbs AND the effective snapshot still
+            // grants native sync; otherwise leave syncIn/syncOut undefined so
+            // the orchestrator keeps the byte-identical base64 path.
+            ...(nativeSyncAllowed &&
+            input.environmentRuntime.supportsSync({
               environment: input.environment as Environment,
               lease: input.lease,
             })

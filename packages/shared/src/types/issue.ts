@@ -25,8 +25,12 @@ import type {
   IssueWorkMode,
   ModelProfileKey,
   IssueThreadInteractionContinuationPolicy,
+  IssueThreadInteractionCanonicalResolverPolicy,
+  IssueThreadInteractionEffectiveResolverPolicySource,
   IssueThreadInteractionKind,
+  IssueThreadInteractionLegacyResolverPolicyAlias,
   IssueThreadInteractionResolverPolicy,
+  IssueThreadInteractionResolverPolicyProvenance,
   IssueThreadInteractionStatus,
   IssueStatus,
 } from "../constants.js";
@@ -396,6 +400,12 @@ export type IssueBlockerAttentionReason =
   | "attention_required"
   | null;
 
+export interface IssueBlockerAttentionIssueSummary {
+  id: string;
+  identifier: string | null;
+  title: string;
+}
+
 export interface IssueBlockerAttention {
   state: IssueBlockerAttentionState;
   reason: IssueBlockerAttentionReason;
@@ -408,8 +418,12 @@ export interface IssueBlockerAttention {
   sampleStalledBlockerIdentifier: string | null;
   /** True when a blocker or one of its open descendants is actively progressing. */
   blockingTreeLive?: boolean;
-  /** The sampled leaf blocker that requires action, rather than the blocked root. */
+  /** The direct blocker whose chain contains the sampled terminal blocker. */
+  directBlockerIssueId?: string | null;
+  /** The sampled blocker that requires action, rather than the blocked root. */
   terminalBlockerIssueId?: string | null;
+  /** Link-ready details for the sampled blocker, including non-terminal intermediate nodes. */
+  terminalBlocker?: IssueBlockerAttentionIssueSummary | null;
 }
 
 export type IssueReviewAttentionState = "none" | "covered" | "stalled";
@@ -779,6 +793,7 @@ export interface Issue {
   ancestors?: IssueAncestor[];
   title: string;
   description: string | null;
+  descriptionTruncated?: boolean;
   status: IssueStatus;
   workMode: IssueWorkMode;
   priority: IssuePriority;
@@ -1171,6 +1186,17 @@ export interface RequestConfirmationToolActionPayload {
   expiresAt: string;
 }
 
+export interface RequestConfirmationSecretProposalPayload {
+  version: 1;
+  proposalId: string;
+  sourceSecretLabel: string;
+  configPath: string;
+  targetAgentId: string;
+  targetAgentName: string;
+  justification: string;
+  expiresAt: string;
+}
+
 /**
  * Lifecycle status written back onto the resolved interaction once the operator
  * approves. `approve = run`, so the terminal states are executed/failed/expired —
@@ -1183,6 +1209,13 @@ export interface RequestConfirmationToolActionResult {
   errorMessage?: string | null;
   resultSummary?: string | null;
   resultHref?: string | null;
+  updatedAt: string;
+}
+
+export interface RequestConfirmationSecretProposalResult {
+  version: 1;
+  status: "executed" | "failed" | "rejected" | "withdrawn" | "expired";
+  errorCode?: string | null;
   updatedAt: string;
 }
 
@@ -1199,6 +1232,7 @@ export interface RequestConfirmationPayload {
   supersedeOnUserComment?: boolean;
   target?: RequestConfirmationTarget | null;
   toolAction?: RequestConfirmationToolActionPayload;
+  secretProposal?: RequestConfirmationSecretProposalPayload;
 }
 
 export interface RequestCheckboxConfirmationOption {
@@ -1275,6 +1309,7 @@ export interface RequestConfirmationResult {
     updatedAt?: string | null;
   } | null;
   toolAction?: RequestConfirmationToolActionResult;
+  secretProposal?: RequestConfirmationSecretProposalResult;
 }
 
 export interface RequestCheckboxConfirmationResult extends RequestConfirmationResult {
@@ -1285,7 +1320,9 @@ export interface RequestItemVerdictsResultItem {
   id: string;
   verdict: RequestItemVerdictValue;
   reason?: string | null;
-  resolvedByUserId: string;
+  resolvedByUserId?: string | null;
+  resolvedByAgentId?: string | null;
+  resolvedByRunId?: string | null;
   resolvedAt: Date | string;
   commentId?: string | null;
 }
@@ -1313,9 +1350,16 @@ export interface IssueThreadInteractionBase extends IssueThreadInteractionActorF
   summary?: string | null;
   status: IssueThreadInteractionStatus;
   continuationPolicy: IssueThreadInteractionContinuationPolicy;
-  resolverPolicy: IssueThreadInteractionResolverPolicy;
-  requestedResolverPolicy: IssueThreadInteractionResolverPolicy;
-  effectiveResolverPolicy: IssueThreadInteractionResolverPolicy;
+  /** @deprecated Read requestedResolverPolicy. Kept for API compatibility. */
+  resolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
+  requestedResolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
+  effectiveResolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
+  resolverPolicyProvenance: IssueThreadInteractionResolverPolicyProvenance;
+  effectiveResolverPolicySource: IssueThreadInteractionEffectiveResolverPolicySource;
+  legacyResolverPolicyAliases: {
+    requested: IssueThreadInteractionLegacyResolverPolicyAlias | null;
+    effective: IssueThreadInteractionLegacyResolverPolicyAlias | null;
+  };
   createdAt: Date | string;
   updatedAt: Date | string;
   resolvedAt?: Date | string | null;

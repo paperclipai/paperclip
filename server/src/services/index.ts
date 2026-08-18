@@ -158,7 +158,23 @@ export {
 } from "./environment-custom-image-terminal-sessions.js";
 export { executionWorkspaceService } from "./execution-workspaces.js";
 export { workspaceOperationService } from "./workspace-operations.js";
+export {
+  workspaceRuntimeLeaseService,
+  buildWorkspaceRuntimeLeaseOwnerKey,
+  LEASED_WORKSPACE_RUNTIME_ACTIONS,
+  WORKSPACE_RUNTIME_ELIGIBLE_ISSUE_STATUSES,
+  WORKSPACE_RUNTIME_LEASE_TTL_MS,
+  type WorkspaceRuntimeLeaseClaim,
+  type WorkspaceRuntimeLeaseOwner,
+  type WorkspaceRuntimeLeaseService,
+} from "./workspace-runtime-leases.js";
 export { workspaceFileResourceService } from "./workspace-file-resources.js";
+export {
+  createWorkspaceGitOperationScheduler,
+  getWorkspaceGitOperationSchedulerSnapshot,
+  workspaceGitOperationScheduler,
+  type WorkspaceGitSchedulerSnapshot,
+} from "./workspace-git-operation-scheduler.js";
 export { workProductService } from "./work-products.js";
 export {
   logActivity,

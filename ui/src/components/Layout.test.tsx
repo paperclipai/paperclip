@@ -217,6 +217,10 @@ vi.mock("../api/instanceSettings", () => ({
 
 vi.mock("../lib/company-selection", () => ({
   shouldSyncCompanySelectionFromRoute: () => false,
+  // No bounce in the shared harness: these tests exercise layout chrome, not
+  // archived-company routing (covered by company-selection unit tests and the
+  // archived-company-url e2e).
+  resolveArchivedCompanyBounce: () => null,
 }));
 
 vi.mock("../lib/main-content-focus", () => ({

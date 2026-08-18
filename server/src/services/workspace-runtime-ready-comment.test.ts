@@ -56,6 +56,7 @@ function runtimeService(
     stoppedAt: null,
     stopPolicy: null,
     healthStatus: "healthy",
+    exposure: null,
     reused: false,
     ...overrides,
   };

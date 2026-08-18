@@ -101,17 +101,27 @@ describe("InstanceGeneralSettings sign-out", () => {
     expect(mockAuthApi.signOut).not.toHaveBeenCalled();
   });
 
-  it("keeps authenticated self-hosted sign-out local and invalidates auth caches", async () => {
+  it("keeps authenticated self-hosted sign-out local and drops the account caches", async () => {
     const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
     await renderPage(SELF_HOSTED_HEALTH);
+    queryClient.setQueryData(queryKeys.auth.session, { session: { id: "session-1" } });
+    queryClient.setQueryData(queryKeys.companies.all, {
+      companies: [{ id: "company-a", name: "Account A Co" }],
+      unauthorized: false,
+    });
 
     flushSync(() => signOutButton()?.click());
 
     await vi.waitFor(() => expect(mockAuthApi.signOut).toHaveBeenCalledOnce());
-    await vi.waitFor(() => expect(invalidateQueries).toHaveBeenCalledWith({
-      queryKey: queryKeys.auth.session,
-    }));
+    // Account-scoped entries are cleared outright, not marked stale — a stale
+    // entry keeps serving the previous account's data until a refetch succeeds.
+    await vi.waitFor(() =>
+      expect(queryClient.getQueryData(queryKeys.auth.session)).toBeUndefined(),
+    );
+    expect(queryClient.getQueryData(queryKeys.companies.all)).toBeUndefined();
+    // Health describes the instance, so it is refreshed rather than dropped.
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.health });
+    expect(queryClient.getQueryData(queryKeys.health)).toEqual(SELF_HOSTED_HEALTH);
     expect(mockNavigateTopLevel).not.toHaveBeenCalled();
   });
 

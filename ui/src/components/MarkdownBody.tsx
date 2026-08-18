@@ -231,7 +231,7 @@ const codeBlockActionsStyle: React.CSSProperties = {
   gap: "0.25rem",
 };
 
-const codeBlockActionStyle: React.CSSProperties = {
+export const codeBlockActionStyle: React.CSSProperties = {
   position: "static",
   opacity: 1,
   display: "inline-flex",
@@ -242,7 +242,7 @@ const codeBlockActionStyle: React.CSSProperties = {
   padding: "0.2rem 0.4rem",
   borderRadius: "calc(var(--radius) - 4px)",
   border: "1px solid color-mix(in oklab, var(--foreground) 14%, transparent)",
-  backgroundColor: "color-mix(in oklab, var(--muted) 92%, var(--background) 8%)",
+  backgroundColor: "var(--background)",
   color: "var(--muted-foreground)",
   fontSize: "var(--text-micro)",
   lineHeight: 1,

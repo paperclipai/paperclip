@@ -77,7 +77,6 @@ const fakeSandboxEnvironmentConfigSchema = z.object({
     .default("ubuntu:24.04"),
   reuseLease: z.boolean().optional().default(false),
   streamRunLogs: z.boolean().optional(),
-  streamAgentSessionOutput: z.boolean().optional(),
   archiveOnRelease: z.boolean().optional(),
 }).strict();
 
@@ -94,7 +93,6 @@ const pluginSandboxEnvironmentConfigSchema = z.object({
   timeoutMs: z.coerce.number().int().min(1).max(86_400_000).optional(),
   reuseLease: z.boolean().optional().default(false),
   streamRunLogs: z.boolean().optional(),
-  streamAgentSessionOutput: z.boolean().optional(),
   archiveOnRelease: z.boolean().optional(),
 }).catchall(z.unknown());
 
@@ -123,10 +121,29 @@ function getSandboxProvider(raw: Record<string, unknown>) {
   return typeof raw.provider === "string" && raw.provider.trim().length > 0 ? raw.provider.trim() : "fake";
 }
 
+// Operator flags removed when session-output streaming moved to the verified
+// capability snapshot. A saved environment config can still carry a removed key.
+// The server now decides session-output streaming from the effective capability
+// snapshot alone, so no consumer reads these flags. Strip a removed key before
+// validation so a strict schema (the fake sandbox) still loads an old config,
+// and so the removed flag never reaches the parsed config.
+const REMOVED_SANDBOX_CONFIG_KEYS = ["streamAgentSessionOutput"] as const;
+
+function stripRemovedSandboxConfigKeys(raw: Record<string, unknown>): Record<string, unknown> {
+  if (!REMOVED_SANDBOX_CONFIG_KEYS.some((key) => key in raw)) {
+    return raw;
+  }
+  const next = { ...raw };
+  for (const key of REMOVED_SANDBOX_CONFIG_KEYS) {
+    delete next[key];
+  }
+  return next;
+}
+
 function parseSandboxEnvironmentConfig(
   input: Record<string, unknown> | null | undefined,
 ) {
-  const raw = parseObject(input);
+  const raw = stripRemovedSandboxConfigKeys(parseObject(input));
   const provider = getSandboxProvider(raw);
 
   if (provider === "fake") {
@@ -373,15 +390,14 @@ export function stripSandboxProviderEnvelope(config: SandboxEnvironmentConfig): 
   return driverConfig;
 }
 
-// The host owns these sandbox run-behavior flags, not the provider plugin. The
-// host reads them to select the run-log stream and the ACP session output
-// stream. The host passes the whole config to the plugin, so a plugin that
-// allowlists its own driver fields drops these flags from its normalized
-// config. Re-apply them from the parsed envelope after the plugin normalizes,
-// or a saved environment loses the operator opt-in and the stream never starts.
+// The host owns this sandbox run-behavior flag, not the provider plugin. The
+// host reads it to select the run-log stream. The host passes the whole config
+// to the plugin, so a plugin that allowlists its own driver fields drops the
+// flag from its normalized config. Re-apply it from the parsed envelope after
+// the plugin normalizes, or a saved environment loses the operator opt-in and
+// the stream never starts.
 const HOST_OWNED_SANDBOX_STREAM_FLAGS = [
   "streamRunLogs",
-  "streamAgentSessionOutput",
 ] as const;
 
 function applyHostOwnedSandboxStreamFlags(
@@ -696,6 +712,45 @@ export async function resolveEnvironmentDriverConfigForRuntime(
   }
 
   return parsed;
+}
+
+/**
+ * Resolve the connection secrets of a recorded sandbox config for a durable
+ * orphan-sandbox teardown. The retry reads the recorded config from the durable
+ * `pending_cleanup` lease row, not from the current environment. So this
+ * resolver must not require the environment binding: a delete removed the
+ * environment, or a provider change replaced the binding. It resolves each
+ * schema-declared secret ref by id at the latest version through
+ * `resolveSecretValueForSandboxCleanup`, which authorizes the read from the
+ * durable orphan record and skips the binding check. The resolved values are
+ * used once for the teardown RPC and never persisted.
+ */
+export async function resolveSandboxCleanupConfigSecrets(
+  db: Db,
+  companyId: string,
+  config: SandboxEnvironmentConfig,
+  context?: { issueId?: string | null; heartbeatRunId?: string | null },
+): Promise<SandboxEnvironmentConfig> {
+  if (config.provider === "fake") return config;
+  const schema = await getSandboxProviderConfigSchema(db, config.provider);
+  const secrets = secretService(db);
+  let nextConfig = { ...config } as Record<string, unknown>;
+  for (const path of collectSecretRefPaths(schema)) {
+    const current = canonicalizeSecretRefValue(readConfigValueAtPath(nextConfig, path), path);
+    if (typeof current !== "string") continue;
+    const trimmed = current.trim();
+    if (!isUuidSecretRef(trimmed)) continue;
+    nextConfig = writeConfigValueAtPath(
+      nextConfig,
+      path,
+      await secrets.resolveSecretValueForSandboxCleanup(companyId, trimmed, "latest", {
+        configPath: path,
+        issueId: context?.issueId ?? null,
+        heartbeatRunId: context?.heartbeatRunId ?? null,
+      }),
+    );
+  }
+  return nextConfig as SandboxEnvironmentConfig;
 }
 
 export function readSshEnvironmentPrivateKeySecretId(

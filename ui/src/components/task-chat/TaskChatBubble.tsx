@@ -20,6 +20,8 @@ import type { TaskChatMessageItem } from "./task-chat-model";
 
 interface TaskChatBubbleProps {
   item: TaskChatMessageItem;
+  /** Action shown beside the queued state for an interruptible message. */
+  queuedAction?: ReactNode;
   /**
    * The settled run turn rendered on this bubble's footer line (round 9):
    * replaces the plain timestamp with "2:34 PM · ✓ Worked · 38s · 3 tools"
@@ -46,9 +48,9 @@ function initialsForName(name: string) {
 
 /**
  * Author-typed message row — the primary legibility signal. Human messages sit
- * right in a solid accent bubble; agent messages sit left in a neutral card
- * bubble with an avatar author header (the agent's assigned icon + name · mode
- * chip); system notices are centered and recede.
+ * right in a solid accent bubble; agent messages sit directly on the page
+ * surface with an avatar author header (the agent's assigned icon + name);
+ * system notices are centered and recede.
  */
 function galleryItemForImage(src: string, name?: string): GalleryMediaItem {
   return {
@@ -61,7 +63,7 @@ function galleryItemForImage(src: string, name?: string): GalleryMediaItem {
   };
 }
 
-export function TaskChatBubble({ item, attachedTurn, actions }: TaskChatBubbleProps) {
+export function TaskChatBubble({ item, queuedAction, attachedTurn, actions }: TaskChatBubbleProps) {
   // Clicking an embedded image opens the full-screen lightbox (with download);
   // arrow keys walk across the other images in the same bubble.
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
@@ -112,20 +114,19 @@ export function TaskChatBubble({ item, attachedTurn, actions }: TaskChatBubblePr
               userName={item.onBehalfOfUserName}
             />
           ) : null}
-          {item.modeLabel ? (
-            <span className="rounded-full border border-border px-2 py-px text-(length:--text-micro) font-medium text-muted-foreground">
-              {item.modeLabel}
-            </span>
-          ) : null}
         </span>
       ) : null}
       {bodyText.length > 0 ? (
         <div
+          // Stable hook so the TaskChatLab bubble-treatment explorations
+          // (PAP-501) can scope background/border overrides to the agent
+          // bubble body without touching the live thread.
+          data-testid={isHuman ? "task-chat-human-bubble" : "task-chat-agent-bubble"}
           className={cn(
-            "max-w-(--pct-85) break-words px-3.5 py-2 text-sm",
+            "break-words py-2 text-sm",
             isHuman
-              ? "rounded-2xl rounded-br-sm bg-(--liveness-blue) text-white"
-              : "rounded-2xl rounded-bl-sm bg-(--bubble-agent) text-foreground",
+              ? "max-w-(--pct-85) rounded-2xl rounded-br-sm bg-(--liveness-blue) px-3.5 text-white"
+              : "w-full bg-transparent px-1 text-foreground",
             item.optimistic ? "opacity-80" : null,
           )}
         >
@@ -172,8 +173,9 @@ export function TaskChatBubble({ item, attachedTurn, actions }: TaskChatBubblePr
         </AttachmentGroup>
       ) : null}
       {item.optimistic ? (
-        <span className="px-1 text-(length:--text-micro) text-muted-foreground">
-          {item.optimistic === "queued" ? "Queued" : "Sending…"}
+        <span className="flex items-center gap-1 px-1 text-(length:--text-micro) text-muted-foreground">
+          <span>{item.optimistic === "queued" ? "Queued" : "Sending…"}</span>
+          {item.optimistic === "queued" ? queuedAction : null}
         </span>
       ) : attachedTurn ? (
         // The settled turn takes over the footer line: timestamp + "✓ Worked"

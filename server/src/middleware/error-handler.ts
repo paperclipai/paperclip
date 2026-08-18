@@ -23,6 +23,13 @@ function isRedactedSkillPolicyDenial(details: Record<string, unknown> | null) {
   return details?.code === "skill_policy_denied";
 }
 
+function readZodIssues(err: unknown): unknown[] | null {
+  if (err instanceof ZodError) return err.issues;
+  if (!err || typeof err !== "object" || (err as { name?: unknown }).name !== "ZodError") return null;
+  const issues = (err as { issues?: unknown }).issues;
+  return Array.isArray(issues) ? issues : null;
+}
+
 function attachErrorContext(
   req: Request,
   res: Response,
@@ -117,8 +124,9 @@ export function errorHandler(
     return;
   }
 
-  if (err instanceof ZodError) {
-    res.status(400).json({ error: "Validation error", details: err.errors });
+  const zodIssues = readZodIssues(err);
+  if (zodIssues) {
+    res.status(400).json({ error: "Validation error", details: zodIssues });
     return;
   }
 

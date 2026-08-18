@@ -97,7 +97,18 @@ export function TaskChatTurn({ item, renderChild, timestampPrefix, leading }: Ta
       <SummaryIcon className="h-3.5 w-3.5 shrink-0" />
       <span>{item.summary.failed ? "Stopped" : "Worked"}</span>
       {turnSummaryMetrics(item.summary) ? (
-        <span className="font-mono text-(length:--text-micro)">{turnSummaryMetrics(item.summary)}</span>
+        // Time/tools/tokens is demoted, not deleted (PAP-502): it stays in the
+        // DOM (and the accessible tree) but fades in only on hover/focus so the
+        // settled line reads as "2:34 PM · ✓ Worked" at rest. Revealed too when
+        // the fold is open, so the metrics don't vanish while you read below.
+        <span
+          className={cn(
+            "font-mono text-(length:--text-micro) transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100",
+            open ? "opacity-100" : "opacity-0",
+          )}
+        >
+          {turnSummaryMetrics(item.summary)}
+        </span>
       ) : null}
       <ChevronRight className={cn("h-3 w-3 shrink-0 transition-transform", open ? "rotate-90" : null)} />
     </button>

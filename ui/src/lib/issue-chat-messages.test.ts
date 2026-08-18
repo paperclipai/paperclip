@@ -94,9 +94,13 @@ function createInteraction(
     },
     result: null,
     ...overrides,
-    resolverPolicy: overrides.resolverPolicy ?? "board_only",
-    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "board_only",
-    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "board_only",
+    resolverPolicy: overrides.resolverPolicy ?? "anyone",
+    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "anyone",
+    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "anyone",
+    resolverPolicyProvenance: overrides.resolverPolicyProvenance ?? "inherited",
+    effectiveResolverPolicySource: overrides.effectiveResolverPolicySource ?? "requested",
+    legacyResolverPolicyAliases: overrides.legacyResolverPolicyAliases
+      ?? { requested: "board_or_agents", effective: "board_or_agents" },
   };
 }
 
@@ -125,9 +129,13 @@ function createRequestConfirmation(
     },
     result: null,
     ...overrides,
-    resolverPolicy: overrides.resolverPolicy ?? "board_only",
-    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "board_only",
-    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "board_only",
+    resolverPolicy: overrides.resolverPolicy ?? "anyone",
+    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "anyone",
+    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "anyone",
+    resolverPolicyProvenance: overrides.resolverPolicyProvenance ?? "inherited",
+    effectiveResolverPolicySource: overrides.effectiveResolverPolicySource ?? "requested",
+    legacyResolverPolicyAliases: overrides.legacyResolverPolicyAliases
+      ?? { requested: "board_or_agents", effective: "board_or_agents" },
   };
 }
 
@@ -742,9 +750,12 @@ describe("buildIssueChatMessages", () => {
         createdAt: new Date("2026-04-06T12:02:00.000Z"),
         updatedAt: new Date("2026-04-06T12:02:00.000Z"),
         resolvedAt: null,
-        resolverPolicy: "board_only",
-        requestedResolverPolicy: "board_only",
-        effectiveResolverPolicy: "board_only",
+        resolverPolicy: "anyone",
+        requestedResolverPolicy: "anyone",
+        effectiveResolverPolicy: "anyone",
+        resolverPolicyProvenance: "inherited",
+        effectiveResolverPolicySource: "requested",
+        legacyResolverPolicyAliases: { requested: "board_or_agents", effective: "board_or_agents" },
         payload: { version: 1, questions },
         result: null,
       } as AskUserQuestionsInteraction;

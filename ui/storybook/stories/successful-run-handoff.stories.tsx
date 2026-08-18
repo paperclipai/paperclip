@@ -33,13 +33,14 @@ function ActivityExample({ action }: { action: string }) {
 function SuccessfulRunHandoffStates() {
   return (
     <StoryFrame>
+      <HandoffLivenessComparisonPanel />
+
       <section className="grid gap-4 lg:grid-cols-[1.15fr_0.85fr]">
-        <PinnedNoticePanel />
         <ActivityEventsPanel />
+        <IssueCardPanel />
       </section>
 
-      <section className="grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
-        <IssueCardPanel />
+      <section className="grid gap-4">
         <EscalationCommentPanel />
       </section>
     </StoryFrame>
@@ -64,6 +65,25 @@ function handoffIssue() {
       assigneeAgentId: "agent-codex",
       detectedProgressSummary: "Updated the plan and created the first implementation notes.",
       createdAt: new Date(),
+    },
+  });
+}
+
+/**
+ * Same outstanding handoff as {@link handoffIssue}, but a correction run is
+ * live on the issue — the state that must NOT raise the amber alarm.
+ */
+function handoffIssueInFlight() {
+  const issue = handoffIssue();
+  return createIssue({
+    ...issue,
+    id: "issue-handoff-live",
+    identifier: "PAP-3055",
+    issueNumber: 3055,
+    successfulRunHandoff: {
+      ...issue.successfulRunHandoff!,
+      hasLiveContinuation: true,
+      liveRunId: "61fdb79b-8012-4676-ac71-2971830e126a",
     },
   });
 }
@@ -94,6 +114,33 @@ function PinnedNoticePanel() {
         agentName="CodexCoder"
       />
     </div>
+  );
+}
+
+function InFlightNoticePanel() {
+  const issue = handoffIssueInFlight();
+  return (
+    <div className="rounded-lg border border-border bg-card p-4">
+      <div className="mb-3 text-sm font-medium text-muted-foreground">
+        A2. Calm in-flight notice (live continuation)
+      </div>
+      <IssueBlockedNotice
+        issueStatus="in_progress"
+        blockers={[]}
+        successfulRunHandoff={issue.successfulRunHandoff}
+        agentName="CodexCoder"
+      />
+    </div>
+  );
+}
+
+/** The two states side by side — the contrast is the point. */
+function HandoffLivenessComparisonPanel() {
+  return (
+    <section className="grid gap-4 lg:grid-cols-2">
+      <PinnedNoticePanel />
+      <InFlightNoticePanel />
+    </section>
   );
 }
 
@@ -166,6 +213,18 @@ function SuccessfulRunHandoffPinnedNotice() {
   return <StoryFrame title="Pinned needs-next-step notice"><PinnedNoticePanel /></StoryFrame>;
 }
 
+function SuccessfulRunHandoffInFlightNoticeStory() {
+  return <StoryFrame title="Calm in-flight notice"><InFlightNoticePanel /></StoryFrame>;
+}
+
+function SuccessfulRunHandoffLivenessComparison() {
+  return (
+    <StoryFrame title="Alarm vs calm in-flight">
+      <HandoffLivenessComparisonPanel />
+    </StoryFrame>
+  );
+}
+
 function SuccessfulRunHandoffActivityEvents() {
   return <StoryFrame title="Activity stream events"><ActivityEventsPanel /></StoryFrame>;
 }
@@ -192,6 +251,9 @@ type Story = StoryObj<typeof meta>;
 
 export const AllStates: Story = {};
 export const PinnedNotice: Story = { render: () => <SuccessfulRunHandoffPinnedNotice /> };
+/** Handoff required, but a correction run is live — no alarm. */
+export const InFlightNotice: Story = { render: () => <SuccessfulRunHandoffInFlightNoticeStory /> };
+export const LivenessComparison: Story = { render: () => <SuccessfulRunHandoffLivenessComparison /> };
 export const ActivityEvents: Story = { render: () => <SuccessfulRunHandoffActivityEvents /> };
 export const IssueCardIndicator: Story = { render: () => <SuccessfulRunHandoffIssueCard /> };
 export const EscalationComment: Story = { render: () => <SuccessfulRunHandoffEscalationComment /> };

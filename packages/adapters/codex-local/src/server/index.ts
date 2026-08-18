@@ -23,6 +23,24 @@ export {
 } from "./codex-home.js";
 export { listCodexSkills, syncCodexSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
+export {
+  runDeviceLogin,
+  CODEX_DEVICE_LOGIN_COMMAND,
+  type SandboxLoginDriver,
+  type DeviceLoginPromptSink,
+  type DeviceLoginOutcome,
+  type DeviceLoginResult,
+  type RunDeviceLoginOptions,
+} from "./device-login-runner.js";
+export { DEVICE_LOGIN_URL, type DeviceLoginPrompt } from "./device-login-parse.js";
+export {
+  promoteDeviceLoginCredential,
+  checkStagedCredentialReadiness,
+  DeviceLoginReadinessError,
+  type CredentialReadinessResult,
+  type PromoteDeviceLoginCredentialInput,
+  type PromoteDeviceLoginCredentialOutcome,
+} from "./adapter-auth-promotion.js";
 export { parseCodexJsonl, isCodexHarnessCrash, isCodexProviderQuotaError, isCodexTransientUpstreamError, isCodexUnknownSessionError } from "./parse.js";
 export {
   getQuotaWindows,

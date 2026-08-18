@@ -860,6 +860,18 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                           service.command ?? "No URL"
                         )}
                       </div>
+                      {service.exposure && service.exposure.state !== "removed" ? (
+                        <div
+                          className={cn(
+                            "text-(length:--text-nano)",
+                            service.exposure.state === "failed" || service.exposure.state === "cleanup_pending"
+                              ? "text-destructive"
+                              : "text-muted-foreground",
+                          )}
+                        >
+                          HTTPS {service.exposure.state.replace("_", " ")}
+                        </div>
+                      ) : null}
                     </div>
                     <div className="text-(length:--text-nano) text-muted-foreground whitespace-nowrap">
                       {service.lifecycle}
