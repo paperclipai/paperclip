@@ -232,7 +232,7 @@ const runtimeServicesById = new Map<string, RuntimeServiceRecord>();
 const runtimeServicesByReuseKey = new Map<string, string>();
 const runtimeServiceLeasesByRun = new Map<string, string[]>();
 const runtimeProvisionByWorkspace = new Map<string, Promise<void>>();
-const runtimeControlStartByWorkspace = new Map<string, Promise<void>>();
+const runtimeControlStartByOwner = new Map<string, Promise<void>>();
 const quarantinedRuntimeExposurePorts = new Set<number>();
 /**
  * Pair-atomic in-process claims for exposure allocations that have not bound a
@@ -478,7 +478,7 @@ export async function resetRuntimeServicesForTests(
   runtimeServicesByReuseKey.clear();
   runtimeServiceLeasesByRun.clear();
   runtimeProvisionByWorkspace.clear();
-  runtimeControlStartByWorkspace.clear();
+  runtimeControlStartByOwner.clear();
   quarantinedRuntimeExposurePorts.clear();
   exposurePortPairClaims.clear();
   workspaceRuntimeExposureDeps = defaultWorkspaceRuntimeExposureDeps();
@@ -6402,36 +6402,29 @@ async function ensureRuntimeServicesForRunInvocation(
   return refs;
 }
 
-async function withRuntimeWorkspaceStartMutex<T>(
-  companyId: string,
-  workspaceCwd: string,
-  start: () => Promise<T>,
-): Promise<T> {
-  const workspaceKey = `${companyId}:${path.resolve(workspaceCwd)}`;
-  const previous = runtimeControlStartByWorkspace.get(workspaceKey) ?? Promise.resolve();
+async function withRuntimeStartMutex<T>(ownerKey: string, start: () => Promise<T>): Promise<T> {
+  const previous = runtimeControlStartByOwner.get(ownerKey) ?? Promise.resolve();
   let release!: () => void;
   const current = new Promise<void>((resolve) => {
     release = resolve;
   });
   const queued = previous.then(() => current);
-  runtimeControlStartByWorkspace.set(workspaceKey, queued);
+  runtimeControlStartByOwner.set(ownerKey, queued);
   await previous;
   try {
     return await start();
   } finally {
     release();
-    if (runtimeControlStartByWorkspace.get(workspaceKey) === queued) {
-      runtimeControlStartByWorkspace.delete(workspaceKey);
-    }
+    if (runtimeControlStartByOwner.get(ownerKey) === queued) runtimeControlStartByOwner.delete(ownerKey);
   }
 }
 
 export async function ensureRuntimeServicesForRun(
   input: EnsureRuntimeServicesForRunInput,
 ): Promise<RuntimeServiceRef[]> {
-  return await withRuntimeWorkspaceStartMutex(
-    input.agent.companyId,
-    input.workspace.cwd,
+  const ownerId = input.executionWorkspaceId ?? input.workspace.workspaceId ?? path.resolve(input.workspace.cwd);
+  return await withRuntimeStartMutex(
+    `${input.agent.companyId}:${ownerId}`,
     () => ensureRuntimeServicesForRunInvocation(input),
   );
 }
@@ -6845,9 +6838,9 @@ async function startRuntimeServicesForWorkspaceControlInvocation(
 export async function startRuntimeServicesForWorkspaceControl(
   input: StartRuntimeServicesForWorkspaceControlInput,
 ): Promise<RuntimeServiceRef[]> {
-  return await withRuntimeWorkspaceStartMutex(
-    input.actor.companyId,
-    input.workspace.cwd,
+  const ownerId = input.executionWorkspaceId ?? input.workspace.workspaceId ?? path.resolve(input.workspace.cwd);
+  return await withRuntimeStartMutex(
+    `${input.actor.companyId}:${ownerId}`,
     () => startRuntimeServicesForWorkspaceControlInvocation(input),
   );
 }
