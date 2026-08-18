@@ -488,28 +488,25 @@ describe("seedManagedCodexHome", () => {
     }
   });
 
-  it("does not preserve the target when the shared source read fails for a reason other than absence", async () => {
+  it("keeps the usable target when the shared source exists but cannot be read", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-src-err-"));
     try {
       const companyHome = path.join(root, "company-home");
       const sharedCodexHome = path.join(root, "shared-codex-home");
       // A directory at the source auth.json path makes the read fail with
-      // EISDIR — a deterministic non-ENOENT error. The source identity is
-      // unknown, so the target could be a same-identity stale copy (#5028)
-      // and must take the pre-existing heal path, not the keep path.
+      // EISDIR — a deterministic present-but-unreadable source. Removal plus
+      // the existence-only symlink pass would link the home to a source no
+      // downstream reader can use, so the usable target must survive.
       await fs.mkdir(path.join(sharedCodexHome, "auth.json"), { recursive: true });
       await fs.mkdir(companyHome, { recursive: true });
-      await fs.writeFile(
-        path.join(companyHome, "auth.json"),
-        subscriptionAuth("acct-unknown-source", "target"),
-        "utf8",
-      );
+      const target = subscriptionAuth("acct-unknown-source", "target");
+      await fs.writeFile(path.join(companyHome, "auth.json"), target, "utf8");
 
       await seedManagedCodexHome(companyHome, { CODEX_HOME: sharedCodexHome }, async () => {});
 
-      // The regular file is gone: the unknown-identity source fell through to
-      // the removal-and-symlink path that predates the keep rule.
-      expect((await fs.lstat(path.join(companyHome, "auth.json"))).isSymbolicLink()).toBe(true);
+      const kept = path.join(companyHome, "auth.json");
+      expect((await fs.lstat(kept)).isSymbolicLink()).toBe(false);
+      expect(await fs.readFile(kept, "utf8")).toBe(target);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

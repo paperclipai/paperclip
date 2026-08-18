@@ -617,22 +617,24 @@ export async function seedManagedCodexHome(
       const targetBytes = await fs.readFile(authPath).catch(() => null);
       const targetIdentity = targetBytes ? readSubscriptionAccountId(targetBytes) : null;
       if (targetIdentity) {
-        // Only a definitively-absent source counts as "the shared source holds
-        // no identity". Any other read error leaves the source identity
-        // unknown, and an unknown source must not preserve a possibly-stale
-        // same-identity copy (#5028), so those errors fall through to the
-        // heal path below, exactly as before this rule existed.
-        let sourceReadFailed = false;
+        // Any source read failure — absent or unreadable — keeps the usable
+        // target file. The alternative, removal plus the existence-only
+        // symlink pass below, links the home to a source this process just
+        // failed to read, and every downstream reader (the probe seeding, the
+        // sandbox stage sync, the CLI itself) runs with the same access, so
+        // that home is unusable in every scenario. Keeping the target is
+        // better or equal in each case: a promoted credential keeps working,
+        // and even a stale same-identity copy (#5028) can still work, while
+        // the unreadable symlink cannot. A transient read failure also
+        // self-corrects — the next seed with a readable source heals a
+        // same-identity copy into the symlink — whereas removing the promoted
+        // credential is irreversible. The #5028 heal therefore applies
+        // exactly when the source is readable and the identities match.
         const sourceBytes = await fs
           .readFile(path.join(sourceHome, "auth.json"))
-          .catch((error: NodeJS.ErrnoException) => {
-            if (error.code !== "ENOENT" && error.code !== "ENOTDIR") {
-              sourceReadFailed = true;
-            }
-            return null;
-          });
+          .catch(() => null);
         const sourceIdentity = sourceBytes ? readSubscriptionAccountId(sourceBytes) : null;
-        keepPromotedAuth = !sourceReadFailed && sourceIdentity !== targetIdentity;
+        keepPromotedAuth = sourceIdentity !== targetIdentity;
       }
       if (keepPromotedAuth) {
         await onLog(
