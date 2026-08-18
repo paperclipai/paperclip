@@ -9,7 +9,10 @@ const companyId = "22222222-2222-4222-8222-222222222222";
 const ownerAgentId = "33333333-3333-4333-8333-333333333333";
 const peerAgentId = "44444444-4444-4444-8444-444444444444";
 const ownerRunId = "55555555-5555-4555-8555-555555555555";
+const peerRunId = "66666666-6666-4666-8666-666666666666";
 const recoveryActionId = "77777777-7777-4777-8777-777777777777";
+const humanAssigneeUserId = "board-user";
+const jonHumanGateUserId = "2oOBvLZFtR89lYt0VPuyXz5bWBybx2wU";
 
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
@@ -369,7 +372,7 @@ function peerActor(overrides: Record<string, unknown> = {}) {
     agentId: peerAgentId,
     companyId,
     source: "agent_key",
-    runId: "66666666-6666-4666-8666-666666666666",
+    runId: peerRunId,
     ...overrides,
   };
 }
@@ -396,6 +399,7 @@ function boardActor() {
 
 describe("agent issue mutation checkout ownership", () => {
   beforeEach(() => {
+    process.env.PAPERCLIP_HUMAN_GATE_ASSIGNEE_USER_ID = jonHumanGateUserId;
     vi.resetModules();
     vi.doUnmock("@paperclipai/shared/telemetry");
     vi.doUnmock("../telemetry.js");
@@ -1430,6 +1434,155 @@ describe("agent issue mutation checkout ownership", () => {
         createdByUserId: "board-user",
         trustExplicitResponsibleUserId: true,
       }),
+    );
+  });
+
+  it("rejects agent-created human-gate root issues assigned to an agent instead of Jon", async () => {
+    const app = await createApp(ownerActor());
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "HUMAN GATE - approve production deploy",
+        assigneeAgentId: ownerAgentId,
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("Human-gate issues must be assigned to Jon");
+    expect(res.body.details).toMatchObject({
+      requestedAssigneeUserId: null,
+      requestedAssigneeAgentId: ownerAgentId,
+      supportedPayload: {
+        assigneeUserId: jonHumanGateUserId,
+        assigneeAgentId: null,
+      },
+    });
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("allows agent-created human-gate root issues only when assigned to Jon and no agent", async () => {
+    const app = await createApp(ownerActor());
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "HUMAN-GATE - approve schema rollout",
+        assigneeUserId: jonHumanGateUserId,
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        title: "HUMAN-GATE - approve schema rollout",
+        assigneeUserId: jonHumanGateUserId,
+      }),
+    );
+  });
+
+  it("rejects agent-created human-gate child issues unless assigned to Jon", async () => {
+    const app = await createApp(ownerActor());
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/children`)
+      .send({
+        title: "Human gate: approve downstream rollout",
+        assigneeUserId: "some-other-user",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.details.supportedPayload).toEqual({
+      assigneeUserId: jonHumanGateUserId,
+      assigneeAgentId: null,
+    });
+    expect(mockIssueService.createChild).not.toHaveBeenCalled();
+  });
+
+  it("rejects accepted-plan decomposition children that create malformed human gates", async () => {
+    const app = await createApp(ownerActor());
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/accepted-plan-decompositions`)
+      .send({
+        acceptedPlanRevisionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        children: [
+          {
+            title: "Human gate - approve customer-visible action",
+            assigneeAgentId: ownerAgentId,
+          },
+        ],
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.details).toMatchObject({
+      requestedAssigneeUserId: null,
+      requestedAssigneeAgentId: ownerAgentId,
+      supportedPayload: {
+        assigneeUserId: jonHumanGateUserId,
+        assigneeAgentId: null,
+      },
+    });
+    expect(mockIssueService.decomposeAcceptedPlan).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent mutations on gate-titled null-assignee issues", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "todo",
+      title: "HUMAN GATE - approve launch",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("requires an accepted request_confirmation");
+    expect(res.body.details).toMatchObject({
+      issueId,
+      assigneeUserId: null,
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("keeps plain comments available on gate-titled null-assignee issues", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "todo",
+      title: "HUMAN GATE - approve launch",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Recording verification evidence." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Recording verification evidence.",
+      expect.objectContaining({ agentId: peerAgentId, runId: peerRunId }),
+      expect.objectContaining({ authorType: "agent" }),
+    );
+  });
+
+  it("keeps ordinary unassigned non-gate issues mutable by authorized agents", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "todo",
+      title: "Regular unassigned follow-up",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "done" }),
     );
   });
 

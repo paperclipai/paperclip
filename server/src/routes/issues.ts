@@ -649,6 +649,63 @@ function issueWriteAuthorizationReason(
   return req.actor.type === "agent" ? "allow_scoped_agent_write" : "allow_board_actor";
 }
 
+const HUMAN_GATE_TITLE_PATTERN = /\bhuman[-\s]?gate\b/i;
+const DEFAULT_HUMAN_GATE_ASSIGNEE_USER_ID = "2oOBvLZFtR89lYt0VPuyXz5bWBybx2wU";
+
+function isHumanGateIssueTitle(title: string | null | undefined) {
+  return HUMAN_GATE_TITLE_PATTERN.test(title ?? "");
+}
+
+function humanGateAssigneeUserId() {
+  return process.env.PAPERCLIP_HUMAN_GATE_ASSIGNEE_USER_ID?.trim() || DEFAULT_HUMAN_GATE_ASSIGNEE_USER_ID;
+}
+
+function humanGateAssignmentDetails(input: {
+  issueId?: string | null;
+  assigneeUserId?: string | null;
+  assigneeAgentId?: string | null;
+}) {
+  const supportedAssigneeUserId = humanGateAssigneeUserId();
+  return {
+    issueId: input.issueId ?? null,
+    requestedAssigneeUserId: input.assigneeUserId ?? null,
+    requestedAssigneeAgentId: input.assigneeAgentId ?? null,
+    supportedPayload: {
+      assigneeUserId: supportedAssigneeUserId,
+      assigneeAgentId: null,
+    },
+    securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+  };
+}
+
+function humanGateAssignmentError(input: {
+  issueId?: string | null;
+  assigneeUserId?: string | null;
+  assigneeAgentId?: string | null;
+}) {
+  return {
+    error: "Human-gate issues must be assigned to Jon as a human assignee and must not be assigned to an agent",
+    details: humanGateAssignmentDetails(input),
+  };
+}
+
+function assertAgentHumanGateCreateAssignmentAllowed(
+  req: Request,
+  res: Response,
+  input: {
+    title?: string | null;
+    assigneeUserId?: string | null;
+    assigneeAgentId?: string | null;
+  },
+) {
+  if (req.actor.type !== "agent") return true;
+  if (!isHumanGateIssueTitle(input.title)) return true;
+  const expectedAssigneeUserId = humanGateAssigneeUserId();
+  if (input.assigneeUserId === expectedAssigneeUserId && input.assigneeAgentId == null) return true;
+  res.status(422).json(humanGateAssignmentError(input));
+  return false;
+}
+
 function readPlanConfirmationTargetForIssue(payload: unknown, issueId: string) {
   const target = readObject(readObject(payload).target);
   if (target.type !== "issue_document" || target.key !== "plan") return null;
@@ -4023,6 +4080,13 @@ export function issueRoutes(
     };
   }
 
+  async function isHumanGateIssueForMutationGuard(issue: { id: string; title?: string | null }) {
+    if (isHumanGateIssueTitle(issue.title)) return true;
+    if (issue.title !== undefined) return false;
+    const loaded = await svc.getById(issue.id);
+    return isHumanGateIssueTitle(loaded?.title);
+  }
+
   function requestedHumanMutationClass(req: Request) {
     const body = req.body as Record<string, unknown> | null | undefined;
     if (req.method === "POST" && /^\/issues\/[^/]+\/comments$/.test(req.path)) {
@@ -4164,12 +4228,17 @@ export function issueRoutes(
       id: string;
       companyId: string;
       assigneeUserId: string | null;
+      title?: string | null;
     },
   ) {
     if (req.actor.type !== "agent") return true;
-    if (issue.assigneeUserId === null) return true;
     if (isCommentOnlyMutation(req)) return true;
     if (isHumanAssignedIssueInteractionBootstrap(req)) return true;
+    if (issue.assigneeUserId === null) {
+      if (!(await isHumanGateIssueForMutationGuard(issue))) return true;
+      res.status(403).json(humanOwnedIssueMutationError(issue));
+      return false;
+    }
     const grant = await findHumanMutationGrant(req, issue);
     if (grant) {
       await logAuthorizedMutation(grant, req, issue);
@@ -4375,6 +4444,7 @@ export function issueRoutes(
       companyId: string;
       parentId?: string | null;
       assigneeUserId?: string | null;
+      title?: string | null;
     },
     opts: { allowWatchdogIssue?: boolean } = {},
   ) {
@@ -4390,6 +4460,7 @@ export function issueRoutes(
         id: issue.id,
         companyId: issue.companyId,
         assigneeUserId,
+        title: issue.title as string | null | undefined,
       }))) {
         return false;
       }
@@ -8736,6 +8807,11 @@ export function issueRoutes(
     if (watchdogProductBugFollowUp === false) return;
     const effectiveParentId = watchdogProductBugFollowUp ? null : rawCreateBody.parentId;
     let createParent: Awaited<ReturnType<typeof svc.getById>> | null = null;
+    if (!assertAgentHumanGateCreateAssignmentAllowed(req, res, {
+      title: rawCreateBody.title,
+      assigneeAgentId: rawCreateBody.assigneeAgentId ?? null,
+      assigneeUserId: rawCreateBody.assigneeUserId ?? null,
+    })) return;
     if (req.actor.type === "agent" && !effectiveParentId && !watchdogProductBugFollowUp && !isTaskBridgeKeyActor(req)) {
       const companyScopeDecision = await access.decide({
         actor: req.actor,
@@ -9030,6 +9106,11 @@ export function issueRoutes(
       entityId: parent.id,
     });
     if (!sanitizedBody) return;
+    if (!assertAgentHumanGateCreateAssignmentAllowed(req, res, {
+      title: sanitizedBody.title as string | null | undefined,
+      assigneeAgentId: sanitizedBody.assigneeAgentId as string | null | undefined,
+      assigneeUserId: sanitizedBody.assigneeUserId as string | null | undefined,
+    })) return;
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
       parent.companyId,
       sanitizedBody.assigneeAgentId as string | null | undefined,
@@ -9212,6 +9293,11 @@ export function issueRoutes(
         entityId: sourceIssue.id,
       });
       if (!sanitizedChild) return;
+      if (!assertAgentHumanGateCreateAssignmentAllowed(req, res, {
+        title: sanitizedChild.title as string | null | undefined,
+        assigneeAgentId: sanitizedChild.assigneeAgentId as string | null | undefined,
+        assigneeUserId: sanitizedChild.assigneeUserId as string | null | undefined,
+      })) return;
       const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
         sourceIssue.companyId,
         sanitizedChild.assigneeAgentId as string | null | undefined,
