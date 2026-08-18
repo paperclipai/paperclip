@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promis
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
@@ -75,6 +75,24 @@ function createRecordingTraceContext(): {
 
 describe("sandbox adapter execution targets", () => {
   const cleanupDirs: string[] = [];
+  // AGE-656: every local spawn `runChildProcess` performs now writes a raw
+  // stdout/stderr log file under the Paperclip instance root. Without
+  // isolating `PAPERCLIP_HOME`, every one of this file's many spawns (bridge
+  // launches, proxy execs, poll ticks) writes into the REAL, shared
+  // `~/.paperclip/instances/*/runs/` tree — on a host running other live
+  // agent workloads that directory is heavily populated and genuinely busy,
+  // so this file's own filesystem writes contend with unrelated I/O and pick
+  // up load-dependent latency that has nothing to do with the behavior under
+  // test. Scratch-isolate it the same way `server-utils.test.ts` already
+  // does for the same reason.
+  let tempPaperclipHome: string;
+  let previousPaperclipHome: string | undefined;
+
+  beforeEach(async () => {
+    tempPaperclipHome = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-sandbox-home-"));
+    previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_HOME = tempPaperclipHome;
+  });
 
   it("records successful issue comment ids for attribution recovery", () => {
     expect(postedIssueCommentLogMarker("POST", "/api/issues/issue-1/comments", 201, '{"id":"comment-1"}'))
@@ -85,6 +103,9 @@ describe("sandbox adapter execution targets", () => {
 
   afterEach(async () => {
     vi.unstubAllEnvs();
+    if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+    else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+    await rm(tempPaperclipHome, { recursive: true, force: true }).catch(() => undefined);
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;

@@ -3578,14 +3578,29 @@ export async function runChildProcess(
 
         // A piped child's `close` event doesn't fire until every process
         // holding the piped fd (including a descendant that inherited it)
-        // releases it, which is how this function used to wait out a
-        // lingering "unmanaged background task" before resolving. Fd-backed
-        // stdio (AGE-656) has no equivalent signal — a file descriptor does
-        // not block on other holders the way a pipe does, so `close` now
-        // fires as soon as this run's own process exits, regardless of any
-        // descendant still running. `waitForProcessGroupToSettle` rebuilds
-        // the same wait explicitly: poll the process group instead of
-        // relying on stdio plumbing.
+        // releases it. For a plain run that never opted into
+        // `terminalResultCleanup`, that pipe-holding behavior was never load-
+        // bearing on purpose — it was a side effect of the stdio plumbing,
+        // and callers that deliberately detach a background helper (e.g. the
+        // sandbox process-session bridge's `nohup ... >/dev/null 2>&1 &`)
+        // relied on exactly that side effect NOT applying to them, since the
+        // helper's output never shared the pipe in the first place. Fd-backed
+        // stdio (AGE-656) has no equivalent "who holds this fd" signal at
+        // all — a file descriptor does not block on other holders the way a
+        // pipe does — so `exit` now fires as soon as this run's own process
+        // exits, regardless of any descendant still running, matching the
+        // nohup-and-detach pattern's expectation exactly and resolving
+        // *faster* than before for it.
+        //
+        // The one caller that DOES need the old "wait out a lingering
+        // descendant" behavior is `terminalResultCleanup`: it force-kills a
+        // descendant that inherited this run's stdio (`cleans up a lingering
+        // process group after terminal output and child exit` in
+        // server-utils.test.ts spawns exactly that — a child with
+        // `stdio: ["ignore", "inherit", "ignore"]`) and the resolved result
+        // must reflect whether that kill actually completed. So the group-
+        // settle wait is scoped to opt-in callers only, not applied
+        // unconditionally to every run.
         const waitForProcessGroupToSettle = async (): Promise<void> => {
           if (process.platform === "win32" || processGroupId === null) return;
           const pollMs = 20;
@@ -3604,7 +3619,10 @@ export async function runChildProcess(
           maybeArmTerminalResultCleanup();
           if (finalizeStarted) return;
           finalizeStarted = true;
-          void waitForProcessGroupToSettle().then(() => {
+          const settleWait = opts.terminalResultCleanup
+            ? waitForProcessGroupToSettle()
+            : Promise.resolve();
+          void settleWait.then(() => {
             if (timeout) clearTimeout(timeout);
             clearTerminalCleanupTimers();
             runningProcesses.delete(runId);
