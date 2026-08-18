@@ -58,6 +58,8 @@ type IssueRow = Pick<
   | "title"
   | "description"
   | "status"
+  | "originKind"
+  | "unblockDescriptor"
   | "assigneeAgentId"
   | "assigneeUserId"
   | "executionState"
@@ -331,6 +333,7 @@ export function buildSuccessfulRunHandoffInstruction(input: {
   issueIdentifier: string | null;
   issueTitle: string;
   issueDescription: string | null;
+  issueStatus?: string;
   sourceRunId: string;
   finalReport: string | null;
   nextAction: string | null;
@@ -357,7 +360,7 @@ export function buildSuccessfulRunHandoffInstruction(input: {
       : []),
     "",
     "## What happened",
-    "Your last run on this issue ended successfully, but the issue is still `in_progress` and has no valid disposition — Paperclip cannot tell whether the work is finished, blocked, or unfinished.",
+    `Your last run on this issue ended successfully, but the issue is still \`${input.issueStatus ?? "in_progress"}\` and has no valid disposition — Paperclip cannot tell whether the work is finished, blocked, or unfinished.`,
     ...(report
       ? [
           "",
@@ -437,7 +440,21 @@ export function decideSuccessfulRunHandoff(input: {
     return { kind: "skip", reason: "issue is no longer assigned to the source run agent" };
   }
   if (issue.assigneeUserId) return { kind: "skip", reason: "issue is human-owned" };
-  if (issue.status !== "in_progress") return { kind: "skip", reason: `issue status ${issue.status} is a valid disposition` };
+  // A routine-execution record is CREATED in `todo` and only advances if the
+  // agent records a disposition. When the executing run finished successfully
+  // and posted results but left the record in `todo`/`blocked`, that is NOT a
+  // valid resting state — the automation ran and needs to be finalized. Route
+  // it through the same corrective-handoff net as a dispositionless
+  // `in_progress` run. `blocked` with a real blocker path — an open `blocks`
+  // relation or an `unblockDescriptor` (owner + action, no relation) — is
+  // still caught by the explicit-blocker skip below, so only phantom blocks
+  // fall through here.
+  const routineExecutionAwaitingDisposition =
+    issue.originKind === "routine_execution" &&
+    (issue.status === "todo" || issue.status === "blocked");
+  if (issue.status !== "in_progress" && !routineExecutionAwaitingDisposition) {
+    return { kind: "skip", reason: `issue status ${issue.status} is a valid disposition` };
+  }
   if (issue.executionState) return { kind: "skip", reason: "issue has execution policy state" };
   if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
     return { kind: "skip", reason: `agent status ${agent.status} is not invokable` };
@@ -454,7 +471,10 @@ export function decideSuccessfulRunHandoff(input: {
     return { kind: "skip", reason: "pending interaction or approval owns the next action" };
   }
   if (input.hasPersistedMonitor) return { kind: "skip", reason: "persisted issue monitor owns the next action" };
-  if (input.hasExplicitBlockerPath) return { kind: "skip", reason: "explicit blocker path owns the next action" };
+  const hasDescriptorBlockerPath = issue.status === "blocked" && Boolean(issue.unblockDescriptor);
+  if (input.hasExplicitBlockerPath || hasDescriptorBlockerPath) {
+    return { kind: "skip", reason: "explicit blocker path owns the next action" };
+  }
   if (input.hasOpenRecoveryIssue) return { kind: "skip", reason: "open recovery issue owns the ambiguity" };
   if (input.hasPauseHold) return { kind: "skip", reason: "issue is under an active pause hold" };
   if (input.budgetBlocked) return { kind: "skip", reason: "budget hard stop blocks corrective wake" };
@@ -466,6 +486,7 @@ export function decideSuccessfulRunHandoff(input: {
     issueIdentifier: issue.identifier,
     issueTitle: issue.title,
     issueDescription: issue.description,
+    issueStatus: issue.status,
     sourceRunId: run.id,
     finalReport: input.finalReport,
     nextAction: input.nextAction,

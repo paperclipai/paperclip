@@ -214,6 +214,74 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("queues a corrective wake for a routine-execution record left in todo after a productive run", () => {
+    const decision = decide({
+      issue: { ...issue, originKind: "routine_execution", status: "todo" } as any,
+    });
+
+    expect(decision.kind).toBe("enqueue");
+    if (decision.kind !== "enqueue") return;
+    expect(decision.targetAgentId).toBe(run.agentId);
+    // The instruction reflects the actual status, not a hardcoded in_progress.
+    expect(decision.instruction).toContain("the issue is still `todo`");
+  });
+
+  it("queues a corrective wake for a routine-execution record left in a phantom blocked state", () => {
+    const decision = decide({
+      issue: { ...issue, originKind: "routine_execution", status: "blocked" } as any,
+    });
+
+    expect(decision.kind).toBe("enqueue");
+    if (decision.kind !== "enqueue") return;
+    expect(decision.instruction).toContain("the issue is still `blocked`");
+  });
+
+  it("still defers to a real blocker path for a blocked routine-execution record", () => {
+    expect(decide({
+      issue: { ...issue, originKind: "routine_execution", status: "blocked" } as any,
+      hasExplicitBlockerPath: true,
+    })).toEqual({
+      kind: "skip",
+      reason: "explicit blocker path owns the next action",
+    });
+  });
+
+  it("still defers to a descriptor-blocked routine-execution record (owner + action, no relation)", () => {
+    expect(decide({
+      issue: {
+        ...issue,
+        originKind: "routine_execution",
+        status: "blocked",
+        unblockDescriptor: { owner: { agentId: "agent-2" }, action: "Provision the missing API key" },
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "explicit blocker path owns the next action",
+    });
+  });
+
+  it("does not touch a non-routine issue resting in todo or blocked", () => {
+    expect(decide({ issue: { ...issue, originKind: "manual", status: "todo" } as any })).toEqual({
+      kind: "skip",
+      reason: "issue status todo is a valid disposition",
+    });
+    expect(decide({ issue: { ...issue, originKind: "manual", status: "blocked" } as any })).toEqual({
+      kind: "skip",
+      reason: "issue status blocked is a valid disposition",
+    });
+  });
+
+  it("only finalizes todo/blocked routine-execution records, not other statuses", () => {
+    expect(decide({ issue: { ...issue, originKind: "routine_execution", status: "backlog" } as any })).toEqual({
+      kind: "skip",
+      reason: "issue status backlog is a valid disposition",
+    });
+    expect(decide({ issue: { ...issue, originKind: "routine_execution", status: "in_review" } as any })).toEqual({
+      kind: "skip",
+      reason: "issue status in_review is a valid disposition",
+    });
+  });
+
   it("does not queue when a successful run records an accepted next-action path", () => {
     expect(decide({ issue: { ...issue, status: "in_review" } as any })).toEqual({
       kind: "skip",
