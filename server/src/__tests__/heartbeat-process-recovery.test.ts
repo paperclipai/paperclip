@@ -2053,6 +2053,127 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(settled?.status).toBe("succeeded");
   });
 
+  it("persists processTopology/executionEngine from the real spawn producer and drains a pi_local run instead of adopting it", async () => {
+    // pi_local is not in the classifier's legacy adapterType allowlist
+    // (`["claude_local", "codex_local", "gemini_local"]`), so before this
+    // fixture's `onSpawn` call persists `contextSnapshot.processTopology`,
+    // the classifier would fall through the allowlist check and misclassify
+    // this piped-stdio run as safe to adopt (AGE-676). The onSpawn meta below
+    // is exactly what the real producer (`runChildProcess` in
+    // `server-utils.ts`) emits for every local spawn today: piped
+    // stdout/stderr, so `processTopology: "server_stdio"`, and a plain CLI
+    // process, so `executionEngine: "cli"`.
+    let releaseAdapter: (() => void) | null = null;
+    let spawnedPid: number | null = null;
+    const adapterStarted = new Promise<void>((resolve) => {
+      mockAdapterExecute.mockImplementationOnce(async (rawInput?: unknown) => {
+        const input = rawInput as {
+          onSpawn?: (meta: {
+            pid: number;
+            processGroupId: number | null;
+            startedAt: string;
+            processTopology?: "server_stdio" | "detached";
+            executionEngine?: "acp" | "cli";
+          }) => Promise<void>;
+        };
+        const child = spawnAliveProcess();
+        childProcesses.add(child);
+        if (!child.pid) throw new Error("Test pi_local child did not expose a pid");
+        spawnedPid = child.pid;
+        await input.onSpawn?.({
+          pid: child.pid,
+          processGroupId: null,
+          startedAt: new Date("2026-08-18T07:00:00.000Z").toISOString(),
+          processTopology: "server_stdio",
+          executionEngine: "cli",
+        });
+        resolve();
+        await new Promise<void>((release) => {
+          releaseAdapter = release;
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "pi_local run completed after hot restart adoption check.",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+    });
+    const { runId } = await seedRunFixture({
+      adapterType: "pi_local",
+      agentStatus: "idle",
+      runStatus: "queued",
+      processPid: null,
+      processGroupId: null,
+      // A pre-existing context key (as run creation would already have written,
+      // e.g. `issueId`) must survive the jsonb merge in `persistRunProcessMetadata`
+      // untouched — the merge adds the two new keys, it does not replace the object.
+      contextSnapshot: { preExistingContextKey: "keep-me" },
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await Promise.race([
+      adapterStarted,
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("Timed out waiting for pi_local spawn identity")), 3_000);
+      }),
+    ]);
+
+    const running = await waitForValue(async () =>
+      db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => {
+          const row = rows[0] ?? null;
+          return row?.status === "running" && row.processPid ? row : null;
+        }),
+    );
+    expect(running).toMatchObject({
+      id: runId,
+      status: "running",
+      processPid: spawnedPid,
+      processGroupId: null,
+      processStartedAt: new Date("2026-08-18T07:00:00.000Z"),
+    });
+    expect(running?.contextSnapshot).toMatchObject({
+      preExistingContextKey: "keep-me",
+      processTopology: "server_stdio",
+      executionEngine: "cli",
+    });
+
+    await withTempPaperclipHome(async () => {
+      await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "old-version",
+        requestedAt: new Date("2026-08-18T07:01:00.000Z"),
+      });
+
+      const preparation = await heartbeat.prepareHotRestartShutdown(
+        "SIGTERM",
+        new Date("2026-08-18T07:02:00.000Z"),
+      );
+      // Drained (never adopted), because the persisted field alone decided
+      // this — not the adapterType allowlist, which pi_local is not in.
+      expect(preparation).toMatchObject({
+        mode: "acp_drain_required",
+        skipDrain: false,
+        activeAcpRunIds: [runId],
+        drainRunIds: [runId],
+        drainReason: "active_acp_run",
+      });
+    });
+
+    if (!releaseAdapter) throw new Error("Adapter release handle was not captured");
+    releaseAdapter();
+    const settled = await waitForRunToSettle(heartbeat, runId, 5_000);
+    expect(settled?.status).toBe("succeeded");
+  });
+
   it("reports adopted hot-restart runs before startup reap can mark them process_lost", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
