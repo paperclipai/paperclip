@@ -194,6 +194,16 @@ export interface AdapterExecutionTargetProcessOptions {
    */
   runLogTail?: SandboxRunLogTailFactory | null;
   localProcessSandbox?: LocalProcessSandboxOptions | null;
+  /**
+   * AGE-656: opt in to file-backed stdout/stderr for this spawn (so its
+   * output survives a control-plane restart). Set `true` ONLY from the
+   * adapter's own primary CLI invocation — never from a helper/probe call
+   * routed through this same shared function (model-list probes,
+   * capability probes, `runAdapterExecutionTargetShellCommand`'s staging/git
+   * helpers). Still has no effect for a remote (ssh/sandbox) target; see the
+   * `fileBackedStdio` doc comment on `runChildProcess` in `server-utils.ts`.
+   */
+  fileBackedStdio?: boolean;
 }
 
 export interface AdapterExecutionTargetShellOptions {
@@ -693,6 +703,16 @@ export async function runAdapterExecutionTargetProcess(
     terminalResultCleanup: options.terminalResultCleanup,
     localProcessSandbox: target?.kind === "local" || !target ? options.localProcessSandbox : null,
     remoteExecution: adapterExecutionTargetToRemoteSpec(target),
+    // AGE-656: file-back stdout/stderr only when the caller explicitly opts
+    // in (its own primary CLI invocation, not a probe or shell helper routed
+    // through this shared function) AND the target is a genuinely local
+    // spawn (no `target`, or `target.kind === "local"`) so its output can
+    // survive a control-plane restart. Never for an ssh/sandbox remote
+    // target (its process doesn't live on this host, so file-backing here
+    // buys nothing and the sandbox branch above returns before reaching this
+    // call anyway) — matches the existing `localProcessSandbox` discriminator
+    // on this same call.
+    fileBackedStdio: options.fileBackedStdio === true && (target?.kind === "local" || !target),
   });
 }
 

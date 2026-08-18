@@ -75,16 +75,16 @@ function createRecordingTraceContext(): {
 
 describe("sandbox adapter execution targets", () => {
   const cleanupDirs: string[] = [];
-  // AGE-656: every local spawn `runChildProcess` performs now writes a raw
-  // stdout/stderr log file under the Paperclip instance root. Without
-  // isolating `PAPERCLIP_HOME`, every one of this file's many spawns (bridge
-  // launches, proxy execs, poll ticks) writes into the REAL, shared
-  // `~/.paperclip/instances/*/runs/` tree — on a host running other live
-  // agent workloads that directory is heavily populated and genuinely busy,
-  // so this file's own filesystem writes contend with unrelated I/O and pick
-  // up load-dependent latency that has nothing to do with the behavior under
-  // test. Scratch-isolate it the same way `server-utils.test.ts` already
-  // does for the same reason.
+  // Scratch-isolate `PAPERCLIP_HOME` defensively, matching the pattern in
+  // `server-utils.test.ts`. Not required for correctness today: this file's
+  // spawns go through `createLocalSandboxRunner()`, which calls
+  // `runChildProcess()` without `fileBackedStdio: true`, so none of them
+  // write a run-log file under the Paperclip instance root (AGE-656 scoped
+  // that behavior to an explicit opt-in, set only from the local CLI-engine
+  // run's primary process in `execution-target.ts`, not from this sandbox
+  // transport). Kept anyway so a future spawn added to this file can never
+  // accidentally write into the real, shared `~/.paperclip/instances/*/runs/`
+  // tree.
   let tempPaperclipHome: string;
   let previousPaperclipHome: string | undefined;
 

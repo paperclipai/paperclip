@@ -464,15 +464,17 @@ describe("runChildProcess", () => {
     expect(finishedAt - startedAt).toBeGreaterThanOrEqual(spawnDelayMs);
   });
 
-  it("reports detached topology and the cli execution engine on every local spawn", async () => {
+  it("reports server_stdio topology and the cli execution engine by default (no fileBackedStdio opt-in)", async () => {
     // The hot-restart classifier trusts these two fields to decide whether a
     // run's process is safe to adopt after a server restart. They must come
     // from what was actually wired into `spawn()` here, never from an
-    // adapter-name allowlist: every local child this function spawns has its
-    // stdout/stderr backed by its own log file (AGE-656), not a server-owned
-    // pipe, so its output channel is independent of this process, and it is
-    // always a plain CLI process (the ACP engine never routes a spawn
-    // through here).
+    // adapter-name allowlist. AGE-656's file-backed stdio is opt-in
+    // (`fileBackedStdio: true`) and used only by the one caller that needs a
+    // run's output to survive a control-plane restart
+    // (`execution-target.ts`'s local CLI-engine run path); every other
+    // caller of this shared spawn helper (model-list probes, sandbox/ssh
+    // targets, lifecycle shell helpers) keeps the original pipe-bound
+    // behavior, byte-for-byte.
     let spawnMeta: {
       pid: number;
       processGroupId: number | null;
@@ -499,19 +501,91 @@ describe("runChildProcess", () => {
 
     expect(result.exitCode).toBe(0);
     expect(spawnMeta).toMatchObject({
+      processTopology: "server_stdio",
+      executionEngine: "cli",
+    });
+  });
+
+  it("reports detached topology and the cli execution engine when fileBackedStdio is opted in", async () => {
+    // Every local child this function spawns with `fileBackedStdio: true` has
+    // its stdout/stderr backed by its own log file (AGE-656), not a
+    // server-owned pipe, so its output channel is independent of this
+    // process, and it is always a plain CLI process (the ACP engine never
+    // routes a spawn through here).
+    let spawnMeta: {
+      pid: number;
+      processGroupId: number | null;
+      startedAt: string;
+      processTopology?: "server_stdio" | "detached";
+      executionEngine?: "acp" | "cli";
+    } | null = null;
+
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", "process.stdout.write('ok');"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 5,
+        graceSec: 1,
+        fileBackedStdio: true,
+        onLog: async () => {},
+        onSpawn: async (meta) => {
+          spawnMeta = meta;
+        },
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(spawnMeta).toMatchObject({
       processTopology: "detached",
       executionEngine: "cli",
     });
   });
 
-  it("passes a file descriptor, not a pipe, for the child's stdout and stderr", async () => {
+  it("keeps stdout/stderr as pipes by default (no fileBackedStdio opt-in)", async () => {
+    // Regression guard for the AGE-656 CI incident: file-backing stdio
+    // unconditionally for every `runChildProcess` caller (model-list probes,
+    // sandbox/ssh targets, lifecycle shell helpers) added a real per-spawn
+    // cost that was never budgeted for those callers and measurably slowed
+    // unrelated suites. Proven black-box (no internal mocking of `spawn`):
+    // the spawned child inspects its own fd 1/2 via `fs.fstatSync`, which is
+    // a pipe (not a regular file) when `fileBackedStdio` is not set.
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        [
+          "const fs = require('fs');",
+          "const stdoutIsFile = fs.fstatSync(1).isFile();",
+          "const stderrIsFile = fs.fstatSync(2).isFile();",
+          "process.stdout.write(String(stdoutIsFile));",
+          "fs.writeSync(2, String(stderrIsFile));",
+        ].join(" "),
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("false");
+    expect(result.stderr).toBe("false");
+  });
+
+  it("passes a file descriptor, not a pipe, for the child's stdout and stderr when fileBackedStdio is opted in", async () => {
     // Regression guard for AGE-656: a pipe-bound child's only output channel
     // is a socketpair whose peer lives in this server process, so it dies
     // the instant the control plane exits. Proven black-box (no internal
     // mocking of `spawn`): the spawned child inspects its own fd 1/2 via
     // `fs.fstatSync`, which is only a regular file when `spawn()` was given a
-    // real fd instead of "pipe". This fails against current `master`, where
-    // both fds are pipes and `isFile()` is false.
+    // real fd instead of "pipe".
     const runId = randomUUID();
     const result = await runChildProcess(
       runId,
@@ -531,6 +605,7 @@ describe("runChildProcess", () => {
         env: {},
         timeoutSec: 5,
         graceSec: 1,
+        fileBackedStdio: true,
         onLog: async () => {},
       },
     );
