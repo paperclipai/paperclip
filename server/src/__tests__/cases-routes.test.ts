@@ -87,7 +87,7 @@ describeEmbeddedPostgres("cases routes", () => {
     process.env.PAPERCLIP_AGENT_JWT_SECRET = "cases-routes-test-secret";
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-cases-routes-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(activityLog);

@@ -18,7 +18,7 @@ describeEmbeddedPostgres("company skill local import boundary", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-skill-import-boundary-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(companySkills);

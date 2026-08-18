@@ -29,7 +29,7 @@ describeEmbeddedPostgres("inbox agent policy routes", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-inbox-agent-policy-routes-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(activityLog);

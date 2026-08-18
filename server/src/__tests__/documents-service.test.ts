@@ -33,7 +33,7 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-documents-service-");
     db = createDb(tempDb.connectionString);
     svc = documentService(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(documentRevisions);

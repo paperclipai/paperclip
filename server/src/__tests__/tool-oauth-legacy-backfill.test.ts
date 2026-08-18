@@ -41,7 +41,7 @@ describeEmbeddedPostgres("tool OAuth legacy backfill", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-tool-oauth-backfill-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     vi.restoreAllMocks();

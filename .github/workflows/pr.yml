@@ -58,6 +58,15 @@ jobs:
       - name: Test general-server shard partition
         run: node --test ./scripts/__tests__/run-vitest-stable-shard.test.mjs
 
+      # RBR-918: an inline `beforeAll` timeout wins over --hookTimeout, so an
+      # under-budgeted embedded-Postgres hook cannot be corrected from CI config.
+      # Fail the PR if one is reintroduced.
+      - name: Audit embedded-Postgres hook budgets
+        run: node ./scripts/audit-embedded-postgres-hook-budgets.mjs
+
+      - name: Test zero-executed-suite guard
+        run: node --test ./scripts/__tests__/check-executed-test-suites.test.mjs
+
       - name: Test e2e shard partition
         run: node --test ./scripts/__tests__/e2e-shard.test.mjs
 

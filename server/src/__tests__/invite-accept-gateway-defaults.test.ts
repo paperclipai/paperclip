@@ -264,7 +264,7 @@ describeEmbeddedPostgres("prepareAgentDefaultsPayloadForJoinPersistence (hermes_
     const started = await startEmbeddedPostgresTestDatabase("hermes-join-defaults");
     stopDb = started.cleanup;
     db = createDb(started.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(joinRequests);

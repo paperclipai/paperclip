@@ -34,7 +34,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-runtime-mcp-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     if (originalApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;

@@ -63,7 +63,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-artifacts-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(documentMemberships);

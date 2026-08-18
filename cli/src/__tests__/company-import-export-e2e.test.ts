@@ -323,7 +323,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     });
 
     await waitForServer(apiBase, child, output);
-  }, 60_000);
+  });
 
   afterAll(async () => {
     await stopServerProcess(serverProcess);

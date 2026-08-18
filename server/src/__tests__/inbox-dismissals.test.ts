@@ -42,7 +42,7 @@ describeEmbeddedPostgres("inbox dismissals", () => {
     db = createDb(tempDb.connectionString);
     dismissalsSvc = inboxDismissalService(db);
     badgesSvc = sidebarBadgeService(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(inboxDismissals);

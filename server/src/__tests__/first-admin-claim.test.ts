@@ -17,7 +17,7 @@ describeEmbeddedPostgres("claimFirstInstanceAdmin", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-first-admin-claim-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(instanceUserRoles);

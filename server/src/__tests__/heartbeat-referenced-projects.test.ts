@@ -68,7 +68,7 @@ describeEmbeddedPostgres("resolveRunReferencedProjects", () => {
     db = createDb(tempDb.connectionString);
     issuesSvc = issueService(db);
     projectsSvc = projectService(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueComments);

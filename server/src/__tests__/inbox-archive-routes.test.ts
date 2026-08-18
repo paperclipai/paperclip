@@ -36,7 +36,7 @@ describeEmbeddedPostgres("inbox archive routes", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-inbox-archive-routes-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueComments);

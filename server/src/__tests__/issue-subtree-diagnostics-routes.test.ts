@@ -191,7 +191,7 @@ describeEmbeddedPostgres("issue subtree diagnostics route", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-subtree-diagnostics-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(activityLog);

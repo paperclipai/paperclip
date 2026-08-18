@@ -110,7 +110,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-accepted-plan-workspace-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     adapterExecute.mockClear();

@@ -260,7 +260,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         ?? { state: "unknown", headRef: null, headSha: null }
       ),
     });
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(workspaceRuntimeServices);

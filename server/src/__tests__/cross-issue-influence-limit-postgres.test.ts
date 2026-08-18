@@ -27,7 +27,7 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-cross-issue-cap-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(activityLog);

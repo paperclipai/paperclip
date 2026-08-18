@@ -202,7 +202,7 @@ describeEmbeddedPostgres("workspace file resources", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-file-resources-");
     db = createDb(tempDb.connectionString);
-  }, 60_000);
+  });
 
   afterAll(async () => {
     await tempDb?.cleanup();
@@ -1643,7 +1643,7 @@ describeEmbeddedPostgres("file resource route guards", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-file-resource-guards-");
     db = createDb(tempDb.connectionString);
-  }, 60_000);
+  });
 
   afterAll(async () => {
     await tempDb?.cleanup();

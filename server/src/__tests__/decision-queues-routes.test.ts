@@ -42,7 +42,7 @@ describeEmbeddedPostgres("decision queue routes", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-decision-queues-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  });
 
   afterEach(async () => {
     await db.delete(decisionTriageEvents);

@@ -60,7 +60,7 @@ describeEmbeddedPostgres("issueReferenceService", () => {
     db = createDb(tempDb.connectionString);
     refs = issueReferenceService(db);
     await ensureIssueReferenceMentionsTable(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueReferenceMentions);

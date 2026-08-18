@@ -264,7 +264,7 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-finalize-branch-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     // Await every in-flight background heartbeat run to quiescence before the

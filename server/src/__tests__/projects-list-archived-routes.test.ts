@@ -51,7 +51,7 @@ describeEmbeddedPostgres("project list archived route defaults", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-projects-list-archived-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(projects);

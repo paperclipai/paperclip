@@ -105,7 +105,7 @@ describeEmbeddedPostgres("companySkillService.installFromCatalog", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-skills-catalog-");
     db = createDb(tempDb.connectionString);
     svc = await createService();
-  }, 20_000);
+  });
 
   beforeEach(async () => {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-catalog-home-"));

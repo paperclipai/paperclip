@@ -24,7 +24,7 @@ describeEmbeddedPostgres("export fidelity counts", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-export-fidelity-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueLabels);

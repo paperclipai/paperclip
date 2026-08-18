@@ -39,7 +39,7 @@ export function useEmbeddedPostgres(
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase(prefix);
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   if (opts.resetEach) {
     const resetEach = opts.resetEach;

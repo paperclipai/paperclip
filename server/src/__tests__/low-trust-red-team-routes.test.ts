@@ -701,7 +701,7 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-low-trust-red-team-routes-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     // Await every in-flight background heartbeat run to quiescence before the

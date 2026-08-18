@@ -45,7 +45,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     db = createDb(tempDb.connectionString);
     issuesSvc = issueService(db);
     interactionsSvc = issueThreadInteractionService(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueThreadInteractions);

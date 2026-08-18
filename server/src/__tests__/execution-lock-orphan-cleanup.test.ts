@@ -33,7 +33,7 @@ describeEmbeddedPostgres("execution lock orphan cleanup", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-exec-lock-orphan-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  });
 
   afterEach(async () => {
     await db.delete(agentWakeupRequests);

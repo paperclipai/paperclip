@@ -53,7 +53,7 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
     db = createDb(tempDb.connectionString);
     annotations = documentAnnotationService(db);
     docs = documentService(db);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(documentAnnotationAnchorSnapshots);

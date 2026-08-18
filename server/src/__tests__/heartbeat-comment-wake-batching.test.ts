@@ -168,7 +168,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const started = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-comment-wake-");
     db = createDb(started.connectionString);
     tempDb = started;
-  }, 120_000);
+  });
 
   afterAll(async () => {
     await closeDbClient(db);

@@ -43,7 +43,7 @@ describeEmbeddedPostgres("stalled review decision routes", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-stalled-review-decision-");
     db = createDb(tempDb.connectionString);
-  }, 30_000);
+  });
 
   afterEach(async () => {
     enqueueWakeup.mockClear();

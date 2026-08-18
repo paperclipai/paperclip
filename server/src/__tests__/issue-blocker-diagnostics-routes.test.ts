@@ -190,7 +190,7 @@ describeEmbeddedPostgres("issue blocker diagnostics route", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-blocker-diagnostics-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(issueRelations);

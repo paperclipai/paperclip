@@ -31,7 +31,7 @@ describeEmbeddedPostgres("agent service clearError", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-agent-clear-error-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  });
 
   afterEach(async () => {
     await db.delete(heartbeatRunEvents);
