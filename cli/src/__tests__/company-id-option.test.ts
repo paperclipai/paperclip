@@ -7,6 +7,11 @@ import { registerApprovalCommands } from "../commands/client/approval.js";
 import { registerActivityCommands } from "../commands/client/activity.js";
 import { registerDashboardCommands } from "../commands/client/dashboard.js";
 import { registerFeedbackCommands } from "../commands/client/feedback.js";
+import { registerGoalCommands } from "../commands/client/goal.js";
+import { registerPluginCommands } from "../commands/client/plugin.js";
+import { registerProjectCommands } from "../commands/client/project.js";
+import { registerSecretCommands } from "../commands/client/secrets.js";
+import { registerTokenCommands } from "../commands/client/token.js";
 
 interface CommandNode {
   path: string;
@@ -37,6 +42,11 @@ describe("--company-id option registration", () => {
     registerActivityCommands(program);
     registerDashboardCommands(program);
     registerFeedbackCommands(program);
+    registerGoalCommands(program);
+    registerPluginCommands(program);
+    registerProjectCommands(program);
+    registerSecretCommands(program);
+    registerTokenCommands(program);
 
     const nodes = walkCommands(program);
 
@@ -61,6 +71,11 @@ describe("--company-id option registration", () => {
     registerActivityCommands(program);
     registerDashboardCommands(program);
     registerFeedbackCommands(program);
+    registerGoalCommands(program);
+    registerPluginCommands(program);
+    registerProjectCommands(program);
+    registerSecretCommands(program);
+    registerTokenCommands(program);
 
     const nodes = walkCommands(program);
 
