@@ -781,42 +781,65 @@ export async function startServer(): Promise<StartedServer> {
     bindHost: runtimeListenHost,
     port: listenPort,
   };
-  // DNS ranking only at this point: the listener is not open yet, so probing here
-  // would reject every candidate. `promoteReachableRuntimeApiUrl` below re-runs
-  // this with probing once the server is listening.
-  const initialRuntimeApi = await resolveRuntimeApiUrl({ ...runtimeApiResolverInput, probe: false });
-  let configuredApiUrl = runtimeApiOverride || initialRuntimeApi.url;
+  // An explicit PAPERCLIP_API_URL is operator intent and wins outright, so the
+  // candidate resolver is not run at all in that case: its result would only be
+  // discarded, and a slow or wedged DNS server would delay startup for nothing.
+  //
+  // Without an override: DNS ranking only at this point, because the listener is
+  // not open yet and probing here would reject every candidate.
+  // `promoteReachableRuntimeApiUrl` below re-runs this with probing once the
+  // server is listening.
+  const initialRuntimeApi = runtimeApiOverride
+    ? null
+    : await resolveRuntimeApiUrl({ ...runtimeApiResolverInput, probe: false });
+  let configuredApiUrl = runtimeApiOverride || initialRuntimeApi!.url;
   process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
-  process.env.PAPERCLIP_RUNTIME_API_URL = initialRuntimeApi.url;
+  process.env.PAPERCLIP_RUNTIME_API_URL = initialRuntimeApi?.url ?? configuredApiUrl;
   process.env.PAPERCLIP_API_URL = configuredApiUrl;
+
+  // Agents inherit PAPERCLIP_API_URL as a snapshot at spawn time, so anything
+  // that can spawn a run has to wait until this settles or it hands the child an
+  // unprobed URL that later promotion cannot repair.
+  let runtimeApiUrlIsSettled = false;
 
   // `allowedHostnames` is a Host-header accept list, so a name in it can resolve
   // to an address nothing listens on — which is exactly what agents inherit as
   // PAPERCLIP_API_URL. Once the listener is up, probe the ranked candidates and
   // promote the first origin that actually answers.
   const promoteReachableRuntimeApiUrl = async (): Promise<void> => {
-    if (runtimeApiOverride) return;
-    if (initialRuntimeApi.reason !== "resolve-rank") return;
+    try {
+      if (!initialRuntimeApi) return;
+      if (initialRuntimeApi.reason !== "resolve-rank") return;
 
-    const probedRuntimeApi = await resolveRuntimeApiUrl(runtimeApiResolverInput);
-    if (probedRuntimeApi.reason === "unreachable-fallback") {
+      const probedRuntimeApi = await resolveRuntimeApiUrl(runtimeApiResolverInput);
+      if (probedRuntimeApi.reason === "unreachable-fallback") {
+        logger.warn(
+          { candidates: probedRuntimeApi.candidates, probed: probedRuntimeApi.probed, skipped: probedRuntimeApi.skipped },
+          `No runtime API candidate answered a probe; agents will use ${probedRuntimeApi.url}, which may be unreachable`,
+        );
+        return;
+      }
+      if (probedRuntimeApi.url === initialRuntimeApi.url) return;
+
       logger.warn(
-        { candidates: probedRuntimeApi.candidates, probed: probedRuntimeApi.probed, skipped: probedRuntimeApi.skipped },
-        `No runtime API candidate answered a probe; agents will use ${probedRuntimeApi.url}, which may be unreachable`,
+        { previousApiUrl: initialRuntimeApi.url, probed: probedRuntimeApi.probed },
+        `Promoted runtime API URL to ${probedRuntimeApi.url} after probing; the derived URL did not answer`,
       );
-      return;
+      configuredApiUrl = probedRuntimeApi.url;
+      process.env.PAPERCLIP_RUNTIME_API_URL = probedRuntimeApi.url;
+      process.env.PAPERCLIP_API_URL = probedRuntimeApi.url;
+    } catch (err) {
+      logger.warn({ err }, "runtime API reachability probe failed; keeping the derived API URL");
+    } finally {
+      runtimeApiUrlIsSettled = true;
     }
-    if (probedRuntimeApi.url === initialRuntimeApi.url) return;
-
-    logger.warn(
-      { previousApiUrl: initialRuntimeApi.url, probed: probedRuntimeApi.probed },
-      `Promoted runtime API URL to ${probedRuntimeApi.url} after probing; the derived URL did not answer`,
-    );
-    configuredApiUrl = probedRuntimeApi.url;
-    process.env.PAPERCLIP_RUNTIME_API_URL = probedRuntimeApi.url;
-    process.env.PAPERCLIP_API_URL = probedRuntimeApi.url;
   };
+
+  // Startup recovery can resume queued runs, which spawn agents that snapshot
+  // PAPERCLIP_API_URL. It is therefore defined here but invoked only after the
+  // listener is open and `promoteReachableRuntimeApiUrl` has settled the URL.
+  let runStartupHeartbeatRecovery: (() => Promise<void>) | null = null;
 
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
     pluginWorkerManager,
@@ -1109,7 +1132,7 @@ export async function startServer(): Promise<StartedServer> {
         "heartbeat scheduling suppressed for this runtime instance",
       );
     } else {
-      const startupHeartbeatRecovery = (async () => {
+      const startupHeartbeatRecovery = async (): Promise<void> => {
         try {
           const hotRestart = await heartbeat.reconcileHotRestartAdoption();
           if (hotRestart.mode === "reported") {
@@ -1192,11 +1215,14 @@ export async function startServer(): Promise<StartedServer> {
         if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
           logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
         }
-      })().catch((err) => {
-        logger.error({ err }, "startup heartbeat recovery failed");
-      });
-      trackHeartbeatSchedulerWork(startupHeartbeatRecovery);
-      await startupHeartbeatRecovery;
+      };
+      runStartupHeartbeatRecovery = () => {
+        const work = startupHeartbeatRecovery().catch((err) => {
+          logger.error({ err }, "startup heartbeat recovery failed");
+        });
+        trackHeartbeatSchedulerWork(work);
+        return work;
+      };
     }
 
     const setupCleanup = await environmentCustomImages.cleanupExpiredSetupSessions();
@@ -1353,6 +1379,9 @@ export async function startServer(): Promise<StartedServer> {
           }));
 
         if (heartbeatSchedulerStopped) return;
+        // Same spawn-time snapshot hazard as startup recovery; skip this tick
+        // rather than block the scheduler, the next tick picks the work up.
+        if (!runtimeApiUrlIsSettled) return;
         if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
           // Periodically reap orphaned runs (5-min staleness threshold) and make sure
           // persisted queued work is still being driven forward.
@@ -1521,6 +1550,10 @@ export async function startServer(): Promise<StartedServer> {
   });
 
   await promoteReachableRuntimeApiUrl();
+
+  // Only now is PAPERCLIP_API_URL proven, so resuming queued runs cannot hand a
+  // child an origin nothing answers on.
+  if (runStartupHeartbeatRecovery) await runStartupHeartbeatRecovery();
 
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {

@@ -347,6 +347,7 @@ vi.mock("../auth/better-auth.js", () => ({
 }));
 
 import { startServer } from "../index.ts";
+import { printStartupBanner } from "../startup-banner.js";
 
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
@@ -708,6 +709,37 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     expect(started.apiUrl).toBe("http://127.0.0.1:3210");
     expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://127.0.0.1:3210");
     expect(process.env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3210");
+  });
+
+  it("resumes queued runs only after the probed runtime API URL is settled", async () => {
+    // A resumed run spawns an agent, and the child snapshots PAPERCLIP_API_URL at
+    // spawn time. If recovery runs before the post-listen probe, the child
+    // inherits the unprobed origin and no later promotion can repair it.
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      bind: "custom",
+      customBindHost: "192.0.2.10",
+      host: "192.0.2.10",
+      allowedHostnames: ["unreachable-name.invalid", "192.0.2.10"],
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    let apiUrlSeenByResume: string | undefined;
+    heartbeatServiceMock.resumeQueuedRuns.mockImplementationOnce(async () => {
+      apiUrlSeenByResume = process.env.PAPERCLIP_API_URL;
+      return undefined;
+    });
+
+    await startServer();
+
+    expect(heartbeatServiceMock.resumeQueuedRuns).toHaveBeenCalled();
+    expect(apiUrlSeenByResume).toBe("http://192.0.2.10:3210");
+    // The probe can only run once the listener is open, so recovery must be
+    // sequenced after the listen callback, not before it.
+    const bannerMock = vi.mocked(printStartupBanner);
+    expect(bannerMock).toHaveBeenCalled();
+    expect(bannerMock.mock.invocationCallOrder[0]).toBeLessThan(
+      heartbeatServiceMock.resumeQueuedRuns.mock.invocationCallOrder[0]!,
+    );
   });
 
   it("preserves explicit-port external auth public URLs when detect-port selects a new port", async () => {
