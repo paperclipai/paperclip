@@ -11,6 +11,7 @@ import {
   createRemoteGitExportRef,
   deleteLocalGitRef,
   fetchGitBundleIntoLocalRef,
+  integrateImportedGitHead,
   isMissingGitPrerequisiteError,
   readGitWorkspaceSnapshot,
   runLocalGit,
@@ -421,6 +422,60 @@ describe("git workspace sync", () => {
     } finally {
       await deleteLocalGitRef({ localDir: host, ref: importedRef });
     }
+  });
+
+  it("creates the concurrent-history merge commit with a deterministic identity", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-merge-identity-"));
+    cleanupDirs.push(rootDir);
+    // No repo-local user.name/user.email on purpose: execution hosts are
+    // containers without git config, where commit-tree cannot auto-detect an
+    // identity. Setup commits pass their identity inline so only the merge
+    // commit under test depends on the sync-supplied identity.
+    const setupIdentity = ["-c", "user.name=Setup", "-c", "user.email=setup@paperclip.dev"];
+    const repo = path.join(rootDir, "repo");
+    await mkdir(repo, { recursive: true });
+    await git(repo, ["init"]);
+    await git(repo, ["checkout", "-b", "main"]);
+    await writeFile(path.join(repo, "tracked.txt"), "base\n", "utf8");
+    await git(repo, ["add", "tracked.txt"]);
+    await git(repo, [...setupIdentity, "commit", "-m", "base"]);
+    const baseHead = await git(repo, ["rev-parse", "HEAD"]);
+
+    await writeFile(path.join(repo, "local.txt"), "local\n", "utf8");
+    await git(repo, ["add", "local.txt"]);
+    await git(repo, [...setupIdentity, "commit", "-m", "local advance"]);
+    const currentHead = await git(repo, ["rev-parse", "HEAD"]);
+
+    await git(repo, ["checkout", "-b", "imported", baseHead]);
+    await writeFile(path.join(repo, "imported.txt"), "imported\n", "utf8");
+    await git(repo, ["add", "imported.txt"]);
+    await git(repo, [...setupIdentity, "commit", "-m", "sandbox change"]);
+    const importedHead = await git(repo, ["rev-parse", "HEAD"]);
+    await git(repo, ["checkout", "main"]);
+
+    // Ambient identity env vars would override the `-c` flags and make the
+    // assertion machine-dependent, so clear them for the call under test.
+    const identityEnvKeys = ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL"];
+    const savedEnv = new Map(identityEnvKeys.map((key) => [key, process.env[key]]));
+    for (const key of identityEnvKeys) delete process.env[key];
+    try {
+      await integrateImportedGitHead({ localDir: repo, importedHead });
+    } finally {
+      for (const [key, value] of savedEnv) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+
+    const parents = (await git(repo, ["rev-list", "--parents", "-1", "HEAD"])).split(" ");
+    expect(parents.slice(1)).toEqual([currentHead, importedHead]);
+    expect(await git(repo, ["log", "-1", "--format=%an|%ae|%cn|%ce"]))
+      .toBe("Paperclip|noreply@paperclip.ing|Paperclip|noreply@paperclip.ing");
+    expect(await git(repo, ["log", "-1", "--format=%s"]))
+      .toBe(`Paperclip remote git sync merge ${importedHead.slice(0, 12)}`);
+    const mergedTree = await git(repo, ["ls-tree", "--name-only", "HEAD"]);
+    expect(mergedTree).toContain("local.txt");
+    expect(mergedTree).toContain("imported.txt");
   });
 });
 

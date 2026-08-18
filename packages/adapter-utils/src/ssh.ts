@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { Transform } from "node:stream";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
-import { readSanitizedOriginRemoteUrl } from "./git-workspace-sync.js";
+import { GIT_SYNC_COMMIT_IDENTITY_ARGS, readSanitizedOriginRemoteUrl } from "./git-workspace-sync.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { DirectorySnapshot } from "./workspace-restore-merge.js";
 import { mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
@@ -974,6 +974,7 @@ async function integrateImportedGitHead(input: {
     const mergeCommit = await runLocalGit(
       input.localDir,
       [
+        ...GIT_SYNC_COMMIT_IDENTITY_ARGS,
         "commit-tree",
         mergedTreeId,
         "-p",
