@@ -1,4 +1,11 @@
 import {
+  raceLoginRunnerExit,
+  type LoginRunnerDisposable,
+  type LoginRunnerLifecycleOptions,
+  type LoginRunnerOutcome,
+  type LoginRunnerResult,
+} from "@paperclipai/adapter-utils";
+import {
   parseSetupTokenCredential,
   parseSetupTokenPrompt,
   type SetupTokenPrompt,
@@ -69,7 +76,7 @@ export const CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS = 64 * 1024;
  * directly; a caller injects a concrete driver. A production driver binds these
  * methods to a PTY child that runs {@link CLAUDE_SETUP_TOKEN_COMMAND}.
  */
-export interface SetupTokenPtyDriver {
+export interface SetupTokenPtyDriver extends LoginRunnerDisposable {
   /**
    * Starts `command` in a PTY and streams the terminal output to `onData` in
    * memory. Resolves with the child exit code when the child ends. A driver must
@@ -87,8 +94,6 @@ export interface SetupTokenPtyDriver {
    * and safe to call more than one time.
    */
   stop(): void;
-  /** Releases the driver resources. */
-  dispose(): Promise<void>;
 }
 
 /** Receives the parsed prompt one time in memory. The caller displays it. */
@@ -110,19 +115,20 @@ export type SetupTokenCodeProvider = (signal: AbortSignal) => Promise<string>;
  */
 export type SetupTokenCredentialSink = (authBytes: Buffer) => Promise<void>;
 
-export type SetupTokenOutcome = "success" | "failure" | "timeout" | "cancelled";
+/** The setup-token runner outcome. It is a fixed, non-secret status. */
+export type SetupTokenOutcome = LoginRunnerOutcome;
 
-/** The runner result. It never carries a URL, a code, or a token byte. */
-export interface SetupTokenLoginResult {
-  outcome: SetupTokenOutcome;
-  exitCode: number | null;
-  promptSurfaced: boolean;
+/**
+ * The runner result. It never carries a URL, a code, or a token byte. It extends
+ * the base result with the two setup-token status fields.
+ */
+export interface SetupTokenLoginResult extends LoginRunnerResult {
   codeSubmitted: boolean;
   /** True when the runner bound the token and invoked `onCredential` one time. */
   credentialDelivered: boolean;
 }
 
-export interface RunSetupTokenLoginOptions {
+export interface RunSetupTokenLoginOptions extends LoginRunnerLifecycleOptions {
   /** The login command. Defaults to {@link CLAUDE_SETUP_TOKEN_COMMAND}. */
   command?: string;
   /** Receives the parsed prompt one time in memory. The caller displays it. */
@@ -141,12 +147,6 @@ export interface RunSetupTokenLoginOptions {
    * write. Defaults to {@link CODE_SUBMIT_SETTLE_MS}. A test sets it to 0.
    */
   codeSubmitSettleMs?: number;
-  /** The host-side timeout in milliseconds. */
-  timeoutMs: number;
-  /** An optional cancellation signal. */
-  signal?: AbortSignal;
-  /** A non-leaking progress sink. It receives only fixed status lines. */
-  log?: (line: string) => void;
 }
 
 /**
@@ -165,45 +165,6 @@ function settleDelay(ms: number, signal: AbortSignal): Promise<void> {
     };
     const timer = setTimeout(done, ms);
     signal.addEventListener("abort", done, { once: true });
-  });
-}
-
-type RaceResult =
-  | { kind: "exit"; exitCode: number | null }
-  | { kind: "timeout" }
-  | { kind: "cancelled" };
-
-/**
- * Races the streaming start against the timeout and the cancellation signal. The
- * start result resolves the race; the timeout and the signal resolve the race
- * with a terminal status. A driver error rejects the race, so the caller can
- * convert it to a fixed, non-secret error. A late start rejection after the race
- * already settled is consumed here, so it never becomes an unhandled rejection.
- */
-function raceStart(
-  start: Promise<{ exitCode: number | null }>,
-  timeoutMs: number,
-  signal: AbortSignal,
-): Promise<RaceResult> {
-  return new Promise<RaceResult>((resolve, reject) => {
-    let settled = false;
-    const cleanup = () => {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", onAbort);
-    };
-    const finish = (run: () => void) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      run();
-    };
-    const timer = setTimeout(() => finish(() => resolve({ kind: "timeout" })), timeoutMs);
-    const onAbort = () => finish(() => resolve({ kind: "cancelled" }));
-    signal.addEventListener("abort", onAbort, { once: true });
-    start.then(
-      (value) => finish(() => resolve({ kind: "exit", exitCode: value.exitCode })),
-      (error) => finish(() => reject(error)),
-    );
   });
 }
 
@@ -394,7 +355,7 @@ export async function runSetupTokenLogin(
     }
 
     const start = driver.start(command, onData);
-    const raced = await raceStart(start, timeoutMs, controller.signal);
+    const raced = await raceLoginRunnerExit(start, timeoutMs, controller.signal);
     // Release a pending code-input routine, then let it settle. The routine is
     // self-guarding, so this await never rejects.
     controller.abort();

@@ -1,3 +1,10 @@
+import {
+  raceLoginRunnerExit,
+  type LoginRunnerDisposable,
+  type LoginRunnerLifecycleOptions,
+  type LoginRunnerOutcome,
+  type LoginRunnerResult,
+} from "@paperclipai/adapter-utils";
 import { parseDeviceLoginPrompt, type DeviceLoginPrompt } from "./device-login-parse.js";
 
 // The device-login runner. It runs the Codex device-login command through an
@@ -35,7 +42,7 @@ const MAX_PARSE_BUFFER_CHARS = 64 * 1024;
  * three methods to a non-persisting Daytona exec path, a file read, and a
  * sandbox delete.
  */
-export interface SandboxLoginDriver {
+export interface SandboxLoginDriver extends LoginRunnerDisposable {
   /**
    * Runs `command` in the sandbox and streams standard output to `onStdout` in
    * memory. Resolves with the command exit code when the command ends. A driver
@@ -44,23 +51,18 @@ export interface SandboxLoginDriver {
   execStreaming(command: string, onStdout: (chunk: string) => void): Promise<{ exitCode: number | null }>;
   /** Reads the bytes of one file from the sandbox. */
   readFile(path: string): Promise<Buffer>;
-  /** Deletes the sandbox and releases its resources. */
-  dispose(): Promise<void>;
 }
 
 /** Receives the parsed prompt one time in memory. The caller displays it. */
 export type DeviceLoginPromptSink = (prompt: DeviceLoginPrompt) => void;
 
-export type DeviceLoginOutcome = "success" | "failure" | "timeout" | "cancelled";
+/** The device-login runner outcome. It is a fixed, non-secret status. */
+export type DeviceLoginOutcome = LoginRunnerOutcome;
 
 /** The runner result. It never carries a URL, a code, or a token byte. */
-export interface DeviceLoginResult {
-  outcome: DeviceLoginOutcome;
-  exitCode: number | null;
-  promptSurfaced: boolean;
-}
+export type DeviceLoginResult = LoginRunnerResult;
 
-export interface RunDeviceLoginOptions {
+export interface RunDeviceLoginOptions extends LoginRunnerLifecycleOptions {
   /** The login command. Defaults to {@link CODEX_DEVICE_LOGIN_COMMAND}. */
   command?: string;
   /** Receives the parsed prompt one time in memory. The caller displays it. */
@@ -73,51 +75,6 @@ export interface RunDeviceLoginOptions {
   onCredential?: (authBytes: Buffer) => void | Promise<void>;
   /** The sandbox path of the credential file to read on success. */
   authPath?: string;
-  /** The host-side timeout in milliseconds. */
-  timeoutMs: number;
-  /** An optional cancellation signal. */
-  signal?: AbortSignal;
-  /** A non-leaking progress sink. It receives only fixed status lines. */
-  log?: (line: string) => void;
-}
-
-type RaceResult =
-  | { kind: "exit"; exitCode: number | null }
-  | { kind: "timeout" }
-  | { kind: "cancelled" };
-
-/**
- * Races the streaming exec against the timeout and the cancellation signal. The
- * exec result resolves the race; the timeout and the signal resolve the race
- * with a terminal status. A driver error rejects the race, so the caller can
- * convert it to a fixed, non-secret error. A late exec rejection after the race
- * already settled is consumed here, so it never becomes an unhandled rejection.
- */
-function raceExec(
-  exec: Promise<{ exitCode: number | null }>,
-  timeoutMs: number,
-  signal: AbortSignal | undefined,
-): Promise<RaceResult> {
-  return new Promise<RaceResult>((resolve, reject) => {
-    let settled = false;
-    const cleanup = () => {
-      clearTimeout(timer);
-      if (signal) signal.removeEventListener("abort", onAbort);
-    };
-    const finish = (run: () => void) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      run();
-    };
-    const timer = setTimeout(() => finish(() => resolve({ kind: "timeout" })), timeoutMs);
-    const onAbort = () => finish(() => resolve({ kind: "cancelled" }));
-    if (signal) signal.addEventListener("abort", onAbort, { once: true });
-    exec.then(
-      (value) => finish(() => resolve({ kind: "exit", exitCode: value.exitCode })),
-      (error) => finish(() => reject(error)),
-    );
-  });
 }
 
 /**
@@ -167,7 +124,7 @@ export async function runDeviceLogin(
     }
 
     const exec = driver.execStreaming(command, onStdout);
-    const raced = await raceExec(exec, timeoutMs, signal);
+    const raced = await raceLoginRunnerExit(exec, timeoutMs, signal);
 
     if (raced.kind === "timeout") {
       log("[paperclip] Device login timed out; disposing the sandbox.");
