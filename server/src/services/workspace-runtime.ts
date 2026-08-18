@@ -5964,6 +5964,14 @@ async function findHealthyRunningRuntimeService(reuseKey: string | null) {
     healthy = await isRuntimeServiceUrlHealthy(existing.url, healthInput);
   }
   if (healthy) return existing;
+  if (existing.leaseRunIds.size > 0) {
+    existing.healthStatus = "unhealthy";
+    if (reuseKey && runtimeServicesByReuseKey.get(reuseKey) === existing.id) {
+      runtimeServicesByReuseKey.delete(reuseKey);
+    }
+    await persistRuntimeServiceRecord(existing.db, existing);
+    return null;
+  }
   await stopRuntimeService(existing.id);
   return null;
 }
@@ -6291,7 +6299,7 @@ async function isPersistedIsolatedExecutionWorkspace(input: {
   return row?.mode === "isolated_workspace";
 }
 
-export async function ensureRuntimeServicesForRun(input: {
+type EnsureRuntimeServicesForRunInput = {
   db?: Db;
   runId: string;
   agent: ExecutionWorkspaceAgentRef;
@@ -6302,7 +6310,11 @@ export async function ensureRuntimeServicesForRun(input: {
   adapterEnv: Record<string, string>;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   recorder?: WorkspaceOperationRecorder | null;
-}): Promise<RuntimeServiceRef[]> {
+};
+
+async function ensureRuntimeServicesForRunInvocation(
+  input: EnsureRuntimeServicesForRunInput,
+): Promise<RuntimeServiceRef[]> {
   const rawServices = selectRuntimeServiceEntries({
     config: input.config,
     respectDesiredStates: true,
@@ -6388,6 +6400,40 @@ export async function ensureRuntimeServicesForRun(input: {
   }
 
   return refs;
+}
+
+async function withRuntimeWorkspaceStartMutex<T>(
+  companyId: string,
+  workspaceCwd: string,
+  start: () => Promise<T>,
+): Promise<T> {
+  const workspaceKey = `${companyId}:${path.resolve(workspaceCwd)}`;
+  const previous = runtimeControlStartByWorkspace.get(workspaceKey) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queued = previous.then(() => current);
+  runtimeControlStartByWorkspace.set(workspaceKey, queued);
+  await previous;
+  try {
+    return await start();
+  } finally {
+    release();
+    if (runtimeControlStartByWorkspace.get(workspaceKey) === queued) {
+      runtimeControlStartByWorkspace.delete(workspaceKey);
+    }
+  }
+}
+
+export async function ensureRuntimeServicesForRun(
+  input: EnsureRuntimeServicesForRunInput,
+): Promise<RuntimeServiceRef[]> {
+  return await withRuntimeWorkspaceStartMutex(
+    input.agent.companyId,
+    input.workspace.cwd,
+    () => ensureRuntimeServicesForRunInvocation(input),
+  );
 }
 
 type StartRuntimeServicesForWorkspaceControlInput = {
@@ -6799,23 +6845,11 @@ async function startRuntimeServicesForWorkspaceControlInvocation(
 export async function startRuntimeServicesForWorkspaceControl(
   input: StartRuntimeServicesForWorkspaceControlInput,
 ): Promise<RuntimeServiceRef[]> {
-  const workspaceKey = `${input.actor.companyId}:${path.resolve(input.workspace.cwd)}`;
-  const previous = runtimeControlStartByWorkspace.get(workspaceKey) ?? Promise.resolve();
-  let release!: () => void;
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const queued = previous.then(() => current);
-  runtimeControlStartByWorkspace.set(workspaceKey, queued);
-  await previous;
-  try {
-    return await startRuntimeServicesForWorkspaceControlInvocation(input);
-  } finally {
-    release();
-    if (runtimeControlStartByWorkspace.get(workspaceKey) === queued) {
-      runtimeControlStartByWorkspace.delete(workspaceKey);
-    }
-  }
+  return await withRuntimeWorkspaceStartMutex(
+    input.actor.companyId,
+    input.workspace.cwd,
+    () => startRuntimeServicesForWorkspaceControlInvocation(input),
+  );
 }
 
 export async function releaseRuntimeServicesForRun(runId: string) {
