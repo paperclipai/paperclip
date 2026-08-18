@@ -163,7 +163,8 @@ Mimic this register; do not invent a "professional" tone.
   (follow the twitter, intros, beta sign-ups). No real ask → drop it.
 - **Community** is the same contributors list that's in the changelog file,
   fenced in a triple-backtick block, comma-separated `@username, @username`.
-  Exclude bots and Paperclip founders, same rules as the changelog skill.
+  Exclude bots, founders, and core contributors — same rules and the same
+  canonical exclusion list as the changelog skill.
 - **The "In Summary" mission line** evolves slowly. Use the most recent
   variant unless dotta tells you otherwise. Recent variants:
   - "PAPERCLIP IS THE AI ORCHESTRATOR FOR HUMANS TO ACCOMPLISH 100x MORE WORK"
@@ -444,7 +445,8 @@ https://github.com/paperclipai/paperclip/blob/master/releases/v2026.427.0.md
 Before handing off:
 
 1. Version + date match the matching `releases/vYYYY.MDD.P.md` exactly.
-2. Contributor list matches the changelog (same exclusions: bots, founders).
+2. Contributor list matches the changelog (same exclusions: bots, founders,
+   core contributors).
 3. Highlights are a subset of the changelog Highlights — same shipped features,
    not invented or pre-alpha work.
 4. `WHATS NEXT` and `What's on my mind` are pulled from real recent issues /

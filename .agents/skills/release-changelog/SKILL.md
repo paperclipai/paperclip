@@ -184,7 +184,11 @@ real name or email). To find GitHub usernames:
 **Never expose contributor email addresses.** Use `@username` only.
 
 Exclude bot accounts (e.g. `lockfile-bot`, `dependabot`) from the list.
-Exclude Paperclip founders from the list (e.g. `cryppadotta`, `forgottendev`, `devinfoley`, `sockmonster`, `scotttong`)
+Exclude Paperclip founders and core contributors from the list — the
+Contributors section credits community contributors only. The canonical
+exclusion list (keep it here; the Discord skill defers to it):
+`cryppadotta`, `forgottendev`, `devinfoley`, `sockmonster`, `scotttong`,
+`nguyenm7`, `nickyleach`
 
 List contributors in alphabetical order by GitHub username (case-insensitive).
 
