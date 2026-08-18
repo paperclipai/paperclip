@@ -6969,7 +6969,14 @@ export async function releaseRuntimeServicesForRun(runId: string) {
     const stopType = asString(record.stopPolicy?.type, record.lifecycle === "ephemeral" ? "on_run_finish" : "manual");
     await persistRuntimeServiceRecord(record.db, record);
     if (record.leaseRunIds.size === 0) {
-      if (record.lifecycle === "ephemeral" || stopType === "on_run_finish") {
+      const detachedUnhealthySharedRuntime = record.healthStatus === "unhealthy"
+        && Boolean(record.reuseKey)
+        && runtimeServicesByReuseKey.get(record.reuseKey!) !== record.id;
+      if (
+        record.lifecycle === "ephemeral"
+        || stopType === "on_run_finish"
+        || detachedUnhealthySharedRuntime
+      ) {
         await stopRuntimeService(serviceId);
         continue;
       }
