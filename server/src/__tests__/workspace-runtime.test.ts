@@ -4964,6 +4964,60 @@ describe("readLocalServicePortOwner", () => {
       await fs.rm(workspace, { recursive: true, force: true });
     }
   });
+
+  it("refuses to adopt a listener whose cwd differs only by trailing whitespace", async () => {
+    if (process.platform !== "linux" && process.platform !== "darwin") return;
+    try {
+      await execFileAsync("lsof", ["-v"]);
+    } catch {
+      return;
+    }
+
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-ws-"));
+    // A sibling directory whose name is the workspace name plus one space.
+    // These are different directories, so a listener in one must not be
+    // adopted into the other.
+    const lookalike = `${workspace} `;
+    await fs.mkdir(lookalike, { recursive: true });
+    const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-home-"));
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = `adopt-whitespace-${randomUUID()}`;
+    const serviceKey = `adopt-whitespace-${randomUUID()}`;
+    const child = spawn(
+      process.execPath,
+      [
+        "-e",
+        "const server=require('node:http').createServer((req,res)=>res.end('ok')); server.listen(0, '127.0.0.1', () => console.log(server.address().port));",
+      ],
+      { cwd: lookalike, stdio: ["ignore", "pipe", "inherit"], detached: true },
+    );
+    const port = await new Promise<number>((resolve, reject) => {
+      let output = "";
+      child.stdout?.on("data", (chunk) => {
+        output += String(chunk);
+        const value = Number.parseInt(output.trim(), 10);
+        if (Number.isInteger(value) && value > 0) resolve(value);
+      });
+      child.once("error", reject);
+      child.once("exit", (code) => reject(new Error(`Port owner exited before listening: ${code ?? "unknown"}`)));
+    });
+
+    try {
+      await expect(findAdoptableLocalService({
+        serviceKey,
+        serviceName: "node",
+        command: "node",
+        cwd: workspace,
+        port,
+      })).resolves.toBeNull();
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+      await fs.rm(paperclipHome, { recursive: true, force: true });
+      await fs.rm(lookalike, { recursive: true, force: true });
+      await fs.rm(workspace, { recursive: true, force: true });
+    }
+  });
 });
 
 describeEmbeddedPostgres("workspace dirty quarantine branch repair", () => {
