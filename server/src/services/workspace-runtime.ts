@@ -233,6 +233,7 @@ const runtimeServicesByReuseKey = new Map<string, string>();
 const runtimeServiceLeasesByRun = new Map<string, string[]>();
 const runtimeProvisionByWorkspace = new Map<string, Promise<void>>();
 const runtimeControlStartByOwner = new Map<string, Promise<void>>();
+const runtimeReplacementClaimsByReuseKey = new Map<string, number>();
 const quarantinedRuntimeExposurePorts = new Set<number>();
 /**
  * Pair-atomic in-process claims for exposure allocations that have not bound a
@@ -479,6 +480,7 @@ export async function resetRuntimeServicesForTests(
   runtimeServiceLeasesByRun.clear();
   runtimeProvisionByWorkspace.clear();
   runtimeControlStartByOwner.clear();
+  runtimeReplacementClaimsByReuseKey.clear();
   quarantinedRuntimeExposurePorts.clear();
   exposurePortPairClaims.clear();
   workspaceRuntimeExposureDeps = defaultWorkspaceRuntimeExposureDeps();
@@ -6419,7 +6421,7 @@ async function withRuntimeStartMutex<T>(ownerKey: string, start: () => Promise<T
   }
 }
 
-function resolveRuntimeStartMutexKeys(input: {
+function resolveRuntimeStartMutexPlan(input: {
   services: Array<Record<string, unknown>>;
   workspace: RealizedExecutionWorkspace;
   executionWorkspaceId?: string | null;
@@ -6431,6 +6433,7 @@ function resolveRuntimeStartMutexKeys(input: {
   const fallbackOwnerId = input.executionWorkspaceId
     ?? input.workspace.workspaceId
     ?? path.resolve(input.workspace.cwd);
+  const replacementReuseKeys: string[] = [];
   const keys = input.services.map((service) => {
     const { scopeType, scopeId } = resolveServiceScopeId({
       service,
@@ -6452,11 +6455,31 @@ function resolveRuntimeStartMutexKeys(input: {
     // Converge all callers that can replace an existing shared runtime on its
     // reuse identity. For an initial start, retain owner-level concurrency so
     // the exposure allocator's in-flight pair claims remain authoritative.
-    return reuseKey && runtimeServicesByReuseKey.has(reuseKey)
-      ? `reuse:${reuseKey}`
-      : `${input.agent.companyId}:owner:${fallbackOwnerId}`;
+    if (
+      reuseKey
+      && (runtimeServicesByReuseKey.has(reuseKey) || runtimeReplacementClaimsByReuseKey.has(reuseKey))
+    ) {
+      runtimeReplacementClaimsByReuseKey.set(
+        reuseKey,
+        (runtimeReplacementClaimsByReuseKey.get(reuseKey) ?? 0) + 1,
+      );
+      replacementReuseKeys.push(reuseKey);
+      return `reuse:${reuseKey}`;
+    }
+    return `${input.agent.companyId}:owner:${fallbackOwnerId}`;
   });
-  return [...new Set(keys)].sort();
+  return {
+    ownerKeys: [...new Set(keys)].sort(),
+    replacementReuseKeys,
+  };
+}
+
+function releaseRuntimeReplacementClaims(reuseKeys: string[]) {
+  for (const reuseKey of reuseKeys) {
+    const next = (runtimeReplacementClaimsByReuseKey.get(reuseKey) ?? 1) - 1;
+    if (next <= 0) runtimeReplacementClaimsByReuseKey.delete(reuseKey);
+    else runtimeReplacementClaimsByReuseKey.set(reuseKey, next);
+  }
 }
 
 async function withRuntimeStartMutexes<T>(
@@ -6480,7 +6503,7 @@ export async function ensureRuntimeServicesForRun(
     defaultDesiredState: readDesiredRuntimeState(input.config.desiredState) ?? "running",
     serviceStates: readConfiguredServiceStates(input.config),
   });
-  const ownerKeys = resolveRuntimeStartMutexKeys({
+  const mutexPlan = resolveRuntimeStartMutexPlan({
     services,
     workspace: input.workspace,
     executionWorkspaceId: input.executionWorkspaceId,
@@ -6489,10 +6512,14 @@ export async function ensureRuntimeServicesForRun(
     agent: input.agent,
     adapterEnv: input.adapterEnv,
   });
-  return await withRuntimeStartMutexes(
-    ownerKeys,
-    () => ensureRuntimeServicesForRunInvocation(input),
-  );
+  try {
+    return await withRuntimeStartMutexes(
+      mutexPlan.ownerKeys,
+      () => ensureRuntimeServicesForRunInvocation(input),
+    );
+  } finally {
+    releaseRuntimeReplacementClaims(mutexPlan.replacementReuseKeys);
+  }
 }
 
 type StartRuntimeServicesForWorkspaceControlInput = {
@@ -6912,7 +6939,7 @@ export async function startRuntimeServicesForWorkspaceControl(
     serviceStates: readConfiguredServiceStates(input.config),
   });
   const invocationId = input.invocationId ?? "workspace_control";
-  const ownerKeys = resolveRuntimeStartMutexKeys({
+  const mutexPlan = resolveRuntimeStartMutexPlan({
     services,
     workspace: input.workspace,
     executionWorkspaceId: input.executionWorkspaceId,
@@ -6921,10 +6948,14 @@ export async function startRuntimeServicesForWorkspaceControl(
     agent: input.actor,
     adapterEnv: input.adapterEnv,
   });
-  return await withRuntimeStartMutexes(
-    ownerKeys,
-    () => startRuntimeServicesForWorkspaceControlInvocation(input),
-  );
+  try {
+    return await withRuntimeStartMutexes(
+      mutexPlan.ownerKeys,
+      () => startRuntimeServicesForWorkspaceControlInvocation(input),
+    );
+  } finally {
+    releaseRuntimeReplacementClaims(mutexPlan.replacementReuseKeys);
+  }
 }
 
 export async function releaseRuntimeServicesForRun(runId: string) {
