@@ -20,6 +20,15 @@ import type { RuntimeSpanRunner } from "./acpx-engine/startup-timing.js";
 
 export interface CommandManagedRuntimeRunner {
   /**
+   * True when the provider verified the concurrent-sync opt-in. A native runner
+   * carries the value from the effective capability snapshot
+   * (`concurrentSyncOperations`). The client copies it onto the prepared sync
+   * client only on the native path; the base64 fallback ignores it and always
+   * permits concurrency. The default is false, so an undeclared native provider
+   * never permits concurrent sync operations.
+   */
+  allowConcurrentSyncOperations?: boolean;
+  /**
    * True only when `execute({ stdin })` can surface useful in-flight progress
    * for a single stdin-backed command. Provider-backed sandbox runners usually
    * complete the entire RPC before returning, so they should leave this false
@@ -446,6 +455,13 @@ export function createCommandManagedRuntimeClient(input: {
   const nativeSyncIn = input.runner.syncIn;
   const nativeSyncOut = input.runner.syncOut;
   const hasNativeBoth = Boolean(nativeSyncIn && nativeSyncOut);
+  // The base64 fallback always permits concurrent sync operations. A native
+  // runner permits them only when the provider verified the opt-in; an
+  // undeclared native provider keeps concurrency off. One flag serves both sync
+  // directions.
+  client.allowConcurrentSyncOperations = hasNativeBoth
+    ? input.runner.allowConcurrentSyncOperations === true
+    : true;
   client.syncIn = async (operations) => {
     assertPostUploadCommandsConfined(operations);
     if (hasNativeBoth) {

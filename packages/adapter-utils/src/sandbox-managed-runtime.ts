@@ -245,6 +245,15 @@ export interface SandboxManagedRuntimeClient {
   remove(remotePath: string): Promise<void>;
   run(command: string, options: { timeoutMs: number }): Promise<void>;
   /**
+   * True when the orchestrator may run this client's sync operations
+   * concurrently. The base64 fallback always sets it true. A native provider
+   * takes the value from the verified `concurrentSyncOperations` opt-in; an
+   * undeclared native provider keeps it false. One flag serves both `syncIn` and
+   * `syncOut`. `createCommandManagedRuntimeClient` always sets it on a prepared
+   * client; it is optional here so a test mock can omit it.
+   */
+  allowConcurrentSyncOperations?: boolean;
+  /**
    * Optional native inbound transfer. Present only when the sandbox provider
    * advertises both `environmentSyncIn` and `environmentSyncOut`; otherwise the
    * orchestrator falls back to the tar + base64 `writeFile`/`run` path so

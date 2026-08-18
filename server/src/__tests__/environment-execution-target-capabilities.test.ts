@@ -19,6 +19,9 @@ const SNAPSHOT: EffectiveSandboxCapabilities = {
   persistentProcessSessions: true,
   independentControlCommands: false,
   incrementalSessionOutput: false,
+  // Concurrent sync operations need BOTH sync verbs; this snapshot verified only
+  // inbound sync, so the opt-in stays off.
+  concurrentSyncOperations: false,
 };
 
 // A snapshot that grants every capability. A test overrides one flag to prove
@@ -30,6 +33,7 @@ const FULL_GRANT: EffectiveSandboxCapabilities = {
   persistentProcessSessions: true,
   independentControlCommands: true,
   incrementalSessionOutput: true,
+  concurrentSyncOperations: true,
 };
 
 // Build a sandbox execution target with a fixed snapshot and a fixed
@@ -182,6 +186,42 @@ describe("effective snapshot gates the sync decision", () => {
     const { target } = await buildSandboxTarget({ snapshot: FULL_GRANT, supportsSync: false });
     expect(target.runner?.syncIn).toBeUndefined();
     expect(target.runner?.syncOut).toBeUndefined();
+  });
+});
+
+// The execution target carries the concurrent-sync opt-in on both the effective
+// snapshot and the runner. The runner Boolean feeds the sync client, which then
+// tells the orchestrator whether it may run sync operations concurrently.
+describe("effective snapshot carries the concurrent-sync capability", () => {
+  beforeEach(() => {
+    mockResolveEnvironmentDriverConfigForRuntime.mockReset();
+  });
+
+  it("carries the concurrent-sync opt-in on the snapshot and the runner", async () => {
+    const { target } = await buildSandboxTarget({ snapshot: FULL_GRANT, supportsSync: true });
+    expect(target.effectiveCapabilities?.concurrentSyncOperations).toBe(true);
+    expect(target.runner?.allowConcurrentSyncOperations).toBe(true);
+  });
+
+  it("keeps the concurrent-sync opt-in off when the snapshot removes it", async () => {
+    const { target } = await buildSandboxTarget({
+      snapshot: { ...FULL_GRANT, concurrentSyncOperations: false },
+      supportsSync: true,
+    });
+    expect(target.effectiveCapabilities?.concurrentSyncOperations).toBe(false);
+    expect(target.runner?.allowConcurrentSyncOperations).toBe(false);
+  });
+
+  it("keeps the concurrent-sync opt-in off when the resolution rejects", async () => {
+    // A rejected resolution carries no snapshot; it must not read as an open
+    // grant. The runner keeps the opt-in off.
+    const { target } = await buildSandboxTarget({
+      snapshot: null,
+      supportsSync: true,
+      rejectResolution: true,
+    });
+    expect(target.effectiveCapabilities).toBeUndefined();
+    expect(target.runner?.allowConcurrentSyncOperations).toBe(false);
   });
 });
 
