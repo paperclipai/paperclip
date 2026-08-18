@@ -343,6 +343,18 @@ export function toSanitizedLoginUrl(rawUrl: string): string {
 export interface ConfidentialTransportConfig {
   deploymentMode: "local_trusted" | "authenticated";
   trustedProxies: string[];
+  /**
+   * The explicit operator declaration that every client request reaches this
+   * server through a platform edge that terminates TLS (a managed PaaS such as
+   * Railway, Render, or Fly, where the app socket is always plain HTTP and the
+   * edge-proxy peer addresses are not operator-visible, so `trustedProxies`
+   * cannot express them). Unlike the global `TRUST_PROXY` setting, which the
+   * guard deliberately never reads (SR-7), this is a dedicated, single-purpose
+   * statement about the confidential login routes only. When declared, a
+   * request is confidential unless the edge itself labels the client hop as
+   * plain `http` in `X-Forwarded-Proto`. Defaults to false.
+   */
+  edgeTlsTerminated?: boolean;
 }
 
 /** The per-request transport signals the guard reads from the raw socket. */
@@ -438,7 +450,12 @@ function forwardedProtoFirstHop(forwardedProto: string | undefined): string | nu
  *   1. The immediate socket is TLS. A direct TLS request is always valid (SR-6).
  *   2. The deployment is `local_trusted` and the peer is loopback. This is the
  *      only local exception (SR-6).
- *   3. The peer is on the dedicated proxy allowlist and the forwarded protocol's
+ *   3. The operator declared platform edge TLS termination
+ *      (`edgeTlsTerminated`) and the edge does not label the client hop as
+ *      plain `http`. The declaration is a deliberate, single-purpose operator
+ *      statement about these routes; it is never derived from `TRUST_PROXY`
+ *      (SR-7).
+ *   4. The peer is on the dedicated proxy allowlist and the forwarded protocol's
  *      first hop is `https`. A `TRUST_PROXY=true` or hop-count value does not
  *      reach this branch, because the guard never reads it (SR-7).
  *
@@ -455,6 +472,16 @@ export function evaluateConfidentialTransport(
   if (config.deploymentMode === "local_trusted" && isLoopbackAddress(request.remoteAddress)) {
     return { allowed: true, reason: "local_trusted_loopback" };
   }
+  if (config.edgeTlsTerminated === true) {
+    // The declaration asserts the client hop is TLS for every request the
+    // platform admits. Believe the edge when it explicitly says otherwise: a
+    // first-hop `http` label means the platform accepted a plain-HTTP client
+    // connection, so that request still fails closed.
+    if (forwardedProtoFirstHop(request.forwardedProto) !== "http") {
+      return { allowed: true, reason: "operator_edge_tls_termination" };
+    }
+    return { allowed: false, reason: "edge_labeled_plain_http" };
+  }
   if (
     config.trustedProxies.length > 0 &&
     peerMatchesAllowlist(request.remoteAddress, config.trustedProxies) &&
@@ -467,7 +494,8 @@ export function evaluateConfidentialTransport(
 
 /**
  * Assesses the confidential transport at startup (SR-7). The server disables
- * proxy-forwarded confidential responses when the dedicated allowlist is empty.
+ * proxy-forwarded confidential responses when the dedicated allowlist is empty
+ * and the operator has not declared platform edge TLS termination.
  * A direct TLS request and a `local_trusted` loopback request still pass at
  * runtime, because the runtime guard checks them first. The server logs the
  * returned reason so an operator can see why forwarded requests fail closed.
@@ -476,6 +504,9 @@ export function assessConfidentialStartup(config: ConfidentialTransportConfig): 
   proxyForwardingEnabled: boolean;
   reason: string;
 } {
+  if (config.edgeTlsTerminated === true) {
+    return { proxyForwardingEnabled: true, reason: "edge_tls_termination_declared" };
+  }
   if (config.trustedProxies.length > 0) {
     return { proxyForwardingEnabled: true, reason: "proxy_allowlist_configured" };
   }

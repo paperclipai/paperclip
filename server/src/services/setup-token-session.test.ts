@@ -1030,6 +1030,59 @@ describe("confidential transport guard (SR-6, SR-7)", () => {
     expect(assessConfidentialStartup(authenticatedWithProxy).proxyForwardingEnabled).toBe(true);
   });
 
+  it("allows a forwarded request under the operator edge-TLS declaration (SR-7)", () => {
+    const declared = { ...authenticatedNoProxy, edgeTlsTerminated: true };
+    // The platform edge labels the client hop https.
+    expect(
+      evaluateConfidentialTransport(declared, {
+        socketEncrypted: false,
+        remoteAddress: "203.0.113.7",
+        forwardedProto: "https",
+      }).allowed,
+    ).toBe(true);
+    // A platform edge that strips or never sets the header still counts: the
+    // declaration asserts TLS for every request the platform admits.
+    expect(
+      evaluateConfidentialTransport(declared, {
+        socketEncrypted: false,
+        remoteAddress: "203.0.113.7",
+        forwardedProto: undefined,
+      }).allowed,
+    ).toBe(true);
+  });
+
+  it("still denies a request the edge itself labels plain http under the declaration", () => {
+    const declared = { ...authenticatedNoProxy, edgeTlsTerminated: true };
+    const decision = evaluateConfidentialTransport(declared, {
+      socketEncrypted: false,
+      remoteAddress: "203.0.113.7",
+      forwardedProto: "http",
+    });
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).toBe("edge_labeled_plain_http");
+  });
+
+  it("keeps failing closed when the declaration is absent, so the default is unchanged", () => {
+    // The same request that the declaration admits fails closed without it —
+    // this pins that adding the option does not loosen the default posture.
+    expect(
+      evaluateConfidentialTransport(authenticatedNoProxy, {
+        socketEncrypted: false,
+        remoteAddress: "203.0.113.7",
+        forwardedProto: "https",
+      }).allowed,
+    ).toBe(false);
+  });
+
+  it("reports the edge-TLS declaration in the startup assessment", () => {
+    const assessment = assessConfidentialStartup({
+      ...authenticatedNoProxy,
+      edgeTlsTerminated: true,
+    });
+    expect(assessment.proxyForwardingEnabled).toBe(true);
+    expect(assessment.reason).toBe("edge_tls_termination_declared");
+  });
+
   it("denies a direct non-loopback HTTP receive-token request, so it delivers no token (SR-6)", () => {
     // The route calls this guard before receive-token. A denied decision makes
     // the route return the fixed no-secret error and never read the token.

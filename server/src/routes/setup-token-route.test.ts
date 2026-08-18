@@ -329,6 +329,7 @@ interface AppHandle {
 async function createApp(opts: {
   deploymentMode?: "local_trusted" | "authenticated";
   confidentialProxyAllowlist?: string[];
+  confidentialEdgeTlsTerminated?: boolean;
   transport?: TransportHandle;
 } = {}): Promise<AppHandle> {
   const [{ agentRoutes }, { errorHandler }, pinoModule, pinoHttpModule, redactModule] =
@@ -401,6 +402,7 @@ async function createApp(opts: {
     agentRoutes({} as never, {
       deploymentMode: opts.deploymentMode,
       confidentialProxyAllowlist: opts.confidentialProxyAllowlist,
+      confidentialEdgeTlsTerminated: opts.confidentialEdgeTlsTerminated,
       setupTokenLogin: opts.transport
         ? {
             factory: opts.transport.factory,
@@ -902,6 +904,37 @@ describe("company-and-environment setup-token route — advisory transport", () 
       .send({ browserCode: BROWSER_CODE });
     expect(codeRes.status).toBe(200);
     expect(codeRes.body.transportAdvisory).toEqual({ code: SETUP_TOKEN_TRANSPORT_ADVISORY_CODE });
+    expect(transport.submittedCodes).toEqual([BROWSER_CODE]);
+    expectNoSecret(JSON.stringify(codeRes.body));
+  });
+
+  it("attaches no advisory when the operator declares platform edge TLS termination", async () => {
+    // A managed-platform deployment: TLS terminates at the platform edge, the
+    // app socket is plain HTTP, and the operator set
+    // CLAUDE_LOGIN_EDGE_TLS_TERMINATED. The prompt and code responses carry no
+    // advisory, so the client shows no clear-text warning for a connection that
+    // is HTTPS to the user.
+    const transport = buildTransport({ onSubmit: "complete" });
+    const { app } = await createApp({
+      transport,
+      deploymentMode: "authenticated",
+      confidentialProxyAllowlist: [],
+      confidentialEdgeTlsTerminated: true,
+    });
+
+    const startRes = await startCompanySession(app);
+    const sessionId = startRes.body.sessionId as string;
+
+    const promptRes = await request(app).get(`${COMPANY_BASE}/${sessionId}/prompt`).send();
+    expect(promptRes.status).toBe(200);
+    expect(promptRes.body.authorizationUrl).toBe(FULL_LOGIN_URL);
+    expect(promptRes.body.transportAdvisory).toBeNull();
+
+    const codeRes = await request(app)
+      .post(`${COMPANY_BASE}/${sessionId}/code`)
+      .send({ browserCode: BROWSER_CODE });
+    expect(codeRes.status).toBe(200);
+    expect(codeRes.body.transportAdvisory).toBeNull();
     expect(transport.submittedCodes).toEqual([BROWSER_CODE]);
     expectNoSecret(JSON.stringify(codeRes.body));
   });

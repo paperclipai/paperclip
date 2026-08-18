@@ -435,6 +435,16 @@ export async function createApp(
     .split(",")
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
+  // The explicit operator declaration that a platform edge terminates TLS for
+  // every client request (SR-7). This complements the allowlist for managed
+  // platforms (Railway, Render, Fly, and the like) where the app socket is
+  // always plain HTTP and the edge-proxy peer addresses are not stable or
+  // documented, so `CLAUDE_LOGIN_TRUSTED_PROXIES` cannot express them. It is a
+  // dedicated, single-purpose setting; the guard still never reads the global
+  // `TRUST_PROXY` value.
+  const setupTokenLoginEdgeTlsTerminated = /^(1|true|yes|on)$/i.test(
+    (process.env.CLAUDE_LOGIN_EDGE_TLS_TERMINATED ?? "").trim(),
+  );
   // Bind the production setup-token login transport. It carries the live lease
   // manager, the login-process factory over the sandbox pseudo-terminal, and the
   // durable cleanup store. The factory passes only the fixed command
@@ -480,6 +490,7 @@ export async function createApp(
       pluginWorkerManager: workerManager,
       deploymentMode: opts.deploymentMode,
       confidentialProxyAllowlist: setupTokenLoginProxyAllowlist,
+      confidentialEdgeTlsTerminated: setupTokenLoginEdgeTlsTerminated,
       setupTokenLogin: setupTokenLoginTransport,
       onSetupTokenLoginService: (service) => {
         setupTokenLoginService = service;

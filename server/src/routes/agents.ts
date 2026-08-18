@@ -235,6 +235,13 @@ export function agentRoutes(
      */
     confidentialProxyAllowlist?: string[];
     /**
+     * The explicit operator declaration that a platform edge terminates TLS for
+     * every client request (SR-7). Set from `CLAUDE_LOGIN_EDGE_TLS_TERMINATED`.
+     * Use it on a managed PaaS where the app socket is always plain HTTP and
+     * the edge-proxy peer addresses cannot be allowlisted.
+     */
+    confidentialEdgeTlsTerminated?: boolean;
+    /**
      * Receives the setup-token login session service once the router builds it.
      * The caller registers the startup reaper and the graceful-shutdown cleanup.
      */
@@ -325,6 +332,7 @@ export function agentRoutes(
   const setupTokenConfidentialConfig: ConfidentialTransportConfig = {
     deploymentMode: options.deploymentMode ?? "local_trusted",
     trustedProxies: options.confidentialProxyAllowlist ?? [],
+    edgeTlsTerminated: options.confidentialEdgeTlsTerminated ?? false,
   };
 
   // Rate-limit the start route: a small window per company and owner (SR-4).
@@ -4429,10 +4437,12 @@ export function agentRoutes(
   //
   // Operator requirement (SR-7): to serve the confidential responses behind a
   // TLS-terminating reverse proxy, set `CLAUDE_LOGIN_TRUSTED_PROXIES` to the
-  // explicit proxy IP or CIDR allowlist. The global `TRUST_PROXY` setting,
-  // including `TRUST_PROXY=true` and a hop-count value, does not satisfy the
-  // guard. A direct TLS request is always valid; a non-TLS request is valid only
-  // on a loopback peer in the `local_trusted` deployment mode.
+  // explicit proxy IP or CIDR allowlist — or, on a managed platform whose edge
+  // always terminates TLS and whose proxy peer addresses cannot be allowlisted,
+  // declare `CLAUDE_LOGIN_EDGE_TLS_TERMINATED=true`. The global `TRUST_PROXY`
+  // setting, including `TRUST_PROXY=true` and a hop-count value, does not
+  // satisfy the guard. A direct TLS request is always valid; a non-TLS request
+  // is valid only on a loopback peer in the `local_trusted` deployment mode.
   //
   // Each route below writes its full path as a plain string literal. The static
   // OpenAPI coverage test reads the route paths from the source text; it does
