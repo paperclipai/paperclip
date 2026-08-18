@@ -53,6 +53,7 @@ import {
   isLocalServiceRegistryCwdCompatible,
   isLocalServiceProcessOwnedBy,
   isLocalServiceProcessInWorkspace,
+  readLocalServiceProcessCwd,
   readLocalServicePortOwner,
   writeLocalServiceRegistryRecord,
 } from "../services/local-service-supervisor.ts";
@@ -5068,6 +5069,45 @@ describe("readLocalServicePortOwner", () => {
     await fs.mkdir(serviceCwd);
 
     await expect(isLocalServiceProcessInWorkspace(serviceCwd, workspace)).resolves.toBe(true);
+  });
+
+  it("preserves newlines and trailing whitespace from Darwin lsof cwd output", async () => {
+    const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-lsof-tools-"));
+    const previousPath = process.env.PATH;
+    const reportedCwd = path.join(os.tmpdir(), "paperclip-runtime-line\nbreak ");
+    const output = `p${process.pid}\0fcwd\0n${reportedCwd}\0\n`;
+    await fs.writeFile(
+      path.join(fakeBin, "lsof"),
+      `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(output)});\n`,
+      { mode: 0o755 },
+    );
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    process.env.PATH = fakeBin;
+
+    try {
+      await expect(readLocalServiceProcessCwd(process.pid)).resolves.toBe(reportedCwd);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await fs.rm(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it("returns null for invalid PIDs and a missing Darwin lsof binary", async () => {
+    await expect(readLocalServiceProcessCwd(-1)).resolves.toBeNull();
+
+    const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-missing-lsof-"));
+    const previousPath = process.env.PATH;
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    process.env.PATH = fakeBin;
+
+    try {
+      await expect(readLocalServiceProcessCwd(process.pid)).resolves.toBeNull();
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await fs.rm(fakeBin, { recursive: true, force: true });
+    }
   });
 
   it("keeps a live registry record adoptable when Darwin cwd inspection confirms it", async () => {
