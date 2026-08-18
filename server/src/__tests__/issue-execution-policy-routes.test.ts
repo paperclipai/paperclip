@@ -698,6 +698,44 @@ describe("issue execution policy routes", () => {
     );
   });
 
+  it("rejects an invalid executionPolicy.monitor.kind atomically and persists no comment (AGE-594)", async () => {
+    // The only accepted `kind` is `external_service` (ISSUE_EXECUTION_MONITOR_KINDS).
+    // A PATCH carrying an invalid `kind` alongside a `comment` must reject the
+    // whole write with a 400 that names the accepted options, and it must not
+    // fall through to `issueService.update` (the sole path that persists both
+    // the field changes and the comment) — the comment must not be silently
+    // dropped while the rest of the body is rejected.
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        status: "in_progress",
+        comment: "Root cause evidence that must not be lost on a 400.",
+        executionPolicy: {
+          monitor: {
+            kind: "verification",
+            serviceName: "systemd-journal",
+            externalRef: "paperclipai.service",
+            nextCheckAt: "2026-08-18T06:00:00.000Z",
+            timeoutAt: "2026-08-18T12:00:00.000Z",
+            maxAttempts: 6,
+          },
+        },
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Validation error");
+    const kindIssue = (res.body.details as Array<{ path: string[]; options?: unknown }>).find(
+      (detail) => detail.path.join(".") === "executionPolicy.monitor.kind",
+    );
+    expect(kindIssue).toBeDefined();
+    expect(kindIssue?.options).toEqual(["external_service"]);
+
+    // Atomic rejection: the handler body (the only place a comment is persisted
+    // via `issueService.update`) must never run.
+    expect(mockIssueService.getById).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("allows board-authored in_review repair updates without a review path", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
