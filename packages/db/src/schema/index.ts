@@ -41,6 +41,8 @@ export {
   workflowRuns,
   workflowRunPhases,
   workflowRunTelemetryEvents,
+  workflowRunEvents,
+  workflowExtensionRequests,
   workflowHandoffs,
   workflowDeliverables,
   workflowSchedules,

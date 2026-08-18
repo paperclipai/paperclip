@@ -43,6 +43,40 @@ This starts:
 
 `pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching Bizbox dev runner is already alive, Bizbox reports the existing process instead of starting a duplicate.
 
+## Workflow Observability Safety
+
+Workflow telemetry and runtime phase observations are best-effort. They use a
+bounded background queue and a short delivery timeout, so an unavailable Bizbox
+API cannot block or fail workflow execution. When the queue is full or delivery
+fails, observations may be dropped; run results and handoff behavior remain
+authoritative.
+
+Runtime telemetry is metadata-only by default. Prompt, model response, tool
+input, and tool output content are captured only when
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` is explicitly set to
+`true`, `span_only`, `event_only`, or `span_and_event`. Static workflow system
+prompts and skill document bodies are included only when
+`BIZBOX_WORKFLOW_CAPTURE_DEFINITION_CONTENT=true`; skill names remain visible
+without that opt-in.
+
+Generic runtime instrumentation must not contain workflow-specific provider,
+brand, module-path, or artifact conventions. Domain observers should emit the
+generic `bizbox.telemetry/v1` span contract explicitly or live behind a declared
+workflow extension.
+
+### Social CMS and Citrobox workflow setup
+
+Enable the Social CMS extension only on workflows that use its review contract
+by adding `"citro-social-cms/v1"` to the workflow `capabilities` array through
+the board or workflow API. Generic workflows should leave it unset.
+
+Citrobox workflow code may keep calling `publish_review(deliverables)` and
+`publish_assets(assets)`: the runtime helper adds the reliable request context.
+Callers that manage retries themselves can pass `idempotency_key`,
+`generation_id`, and `revision` explicitly. Feedback clients must send the same
+generation/revision context and post to the exact handoff resource:
+`/api/workflow-runs/:runId/extensions/citro-social-cms/v1/handoffs/:handoffId/feedback`.
+
 ## Storybook
 
 The board UI Storybook keeps stories and Storybook config under `ui/storybook/` so component review files stay out of the app source routes.

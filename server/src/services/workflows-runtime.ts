@@ -414,6 +414,9 @@ async function resolveAnalysisRoot(resolvedPath: string, stat: Awaited<ReturnTyp
 }
 
 async function readConfiguredSkills(rootDir: string, skillNames: string[]) {
+  if (process.env.BIZBOX_WORKFLOW_CAPTURE_DEFINITION_CONTENT?.trim().toLowerCase() !== "true") {
+    return skillNames.map((name) => ({ name, content: "" }));
+  }
   const skills: Array<{ name: string; content: string }> = [];
   for (const name of skillNames) {
     const skillDir = path.join(rootDir, "skills", name);
@@ -727,7 +730,9 @@ export async function analyzeWorkflowProject(agentPath: string): Promise<Analyze
         depth,
         agentName: definition.name,
         description: definition.description,
-        systemPrompt: definition.systemPrompt,
+        systemPrompt: process.env.BIZBOX_WORKFLOW_CAPTURE_DEFINITION_CONTENT?.trim().toLowerCase() === "true"
+          ? definition.systemPrompt
+          : null,
         configuredSkills: configuredSkillsByVariable.get(variableName) ?? [],
       };
       pipelineNodeByVariableName.set(variableName, node);
@@ -852,18 +857,17 @@ function escapeRegExp(value: string) {
 }
 
 function buildRuntimeHelperModule() {
-  return `import atexit
-import asyncio
+  return `import asyncio
 import builtins
 import contextlib
 import contextvars
 import datetime
 import functools
+import hashlib
 import inspect
 import json
 import os
 import re
-import sys
 import threading
 import time
 import urllib.request
@@ -874,20 +878,29 @@ _API_BASE = os.environ.get("BIZBOX_API_URL", "").rstrip("/")
 _RUN_ID = os.environ.get("BIZBOX_WORKFLOW_RUN_ID", "")
 _TOKEN = os.environ.get("BIZBOX_WORKFLOW_RUN_TOKEN", "")
 _AGENT_PHASES = json.loads(os.environ.get("BIZBOX_WORKFLOW_AGENT_PHASES", "{}") or "{}")
-_IMAGE_CALL_SEQUENCE = 0
 _TOOL_CALL_SEQUENCE = 0
 _TELEMETRY_SEQUENCE = 0
 _OPERATION_SEQUENCE = 0
+_CURRENT_REVISION = 0
+_CAPTURE_MESSAGE_CONTENT = os.environ.get("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "").strip().lower() in {
+    "true", "span_only", "event_only", "span_and_event",
+}
+_OBSERVATION_MAX_PENDING = 500
+_OBSERVATION_BATCH_SIZE = 50
 _TELEMETRY_PENDING = []
+_PHASE_PENDING = []
 _TELEMETRY_LOCK = threading.RLock()
+_TELEMETRY_WAKE = threading.Event()
+_TELEMETRY_DROPPED = 0
+_TELEMETRY_THREAD = None
 
-def _request(method, path, payload=None):
+def _request(method, path, payload=None, timeout=30):
     data = None
     headers = {"Content-Type": "application/json"}
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(f"{_API_BASE}{path}", data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=30) as res:
+    with urllib.request.urlopen(req, timeout=timeout) as res:
         raw = res.read().decode("utf-8")
         return json.loads(raw) if raw else {}
 
@@ -899,14 +912,46 @@ def _phase_payload(key, label, status, metadata=None):
         payload["metadata"] = metadata
     return payload
 
-def _emit_phase(key, label, status, metadata=None):
-    _request("POST", f"/api/workflow-runs/{_RUN_ID}/runtime/phase-events", _phase_payload(key, label, status, metadata))
-
 def _safe_emit_phase(key, label, status, metadata=None):
     try:
-        _emit_phase(key, label, status, metadata)
+        _enqueue_phase(_phase_payload(key, label, status, metadata))
     except Exception:
         pass
+
+def _reliable_request_context(operation, payload, idempotency_key=None, generation_id=None, revision=None):
+    resolved_revision = _CURRENT_REVISION if revision is None else int(revision)
+    resolved_generation = str(generation_id or _RUN_ID)
+    if idempotency_key is None:
+        canonical = json.dumps(
+            {"operation": operation, "generationId": resolved_generation, "revision": resolved_revision, "payload": payload},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        idempotency_key = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return {
+        "idempotencyKey": str(idempotency_key),
+        "generationId": resolved_generation,
+        "revision": resolved_revision,
+    }
+
+def publish_review(deliverables, idempotency_key=None, generation_id=None, revision=None):
+    """Publish to the opt-in Citro Social CMS review extension."""
+    context = _reliable_request_context("publish_review", deliverables, idempotency_key, generation_id, revision)
+    return _request(
+        "POST",
+        f"/api/workflow-runs/{_RUN_ID}/runtime/extensions/citro-social-cms/v1/review",
+        {"token": _TOKEN, **context, "deliverables": deliverables},
+    )
+
+def publish_assets(assets, idempotency_key=None, generation_id=None, revision=None):
+    """Publish assets to the opt-in Citro Social CMS review extension."""
+    context = _reliable_request_context("publish_assets", assets, idempotency_key, generation_id, revision)
+    return _request(
+        "POST",
+        f"/api/workflow-runs/{_RUN_ID}/runtime/extensions/citro-social-cms/v1/assets",
+        {"token": _TOKEN, **context, "assets": assets},
+    )
 
 def _redact_telemetry(value, depth=0):
     if depth > 8:
@@ -956,44 +1001,108 @@ def _emit_telemetry(event_type, span_id, operation_kind, operation_name, actor_k
         "status": status,
         "attributes": _redact_telemetry(attributes or {}),
     }
-    if input_value is not None:
+    if _CAPTURE_MESSAGE_CONTENT and input_value is not None:
         event["input"] = _redact_telemetry(input_value)
-    if output_value is not None:
+    if _CAPTURE_MESSAGE_CONTENT and output_value is not None:
         event["output"] = _redact_telemetry(output_value)
     if error is not None:
         event["error"] = _redact_telemetry(str(error))
-    with _TELEMETRY_LOCK:
-        _TELEMETRY_PENDING.append(event)
-    _flush_telemetry()
+    _enqueue_telemetry(event)
     return event
 
-def _flush_telemetry():
-    while True:
-        with _TELEMETRY_LOCK:
-            batch = list(_TELEMETRY_PENDING[:100])
-        if not batch:
-            return
+def _pending_observation_count():
+    return len(_TELEMETRY_PENDING) + len(_PHASE_PENDING)
+
+def _record_dropped_observations(count=1):
+    global _TELEMETRY_DROPPED
+    with _TELEMETRY_LOCK:
+        _TELEMETRY_DROPPED += count
+
+def _enqueue_phase(payload):
+    with _TELEMETRY_LOCK:
+        if _pending_observation_count() >= _OBSERVATION_MAX_PENDING:
+            _record_dropped_observations()
+            return False
+        _PHASE_PENDING.append(payload)
+    _ensure_observation_worker()
+    _TELEMETRY_WAKE.set()
+    return True
+
+def _enqueue_telemetry(event):
+    global _TELEMETRY_DROPPED
+    with _TELEMETRY_LOCK:
+        if _pending_observation_count() >= _OBSERVATION_MAX_PENDING:
+            _record_dropped_observations()
+            return False
+        if _TELEMETRY_DROPPED:
+            attributes = dict(event.get("attributes") or {})
+            attributes["observability.droppedEvents"] = _TELEMETRY_DROPPED
+            event["attributes"] = attributes
+            _TELEMETRY_DROPPED = 0
+        _TELEMETRY_PENDING.append(event)
+    _ensure_observation_worker()
+    _TELEMETRY_WAKE.set()
+    return True
+
+def _take_observation_batch():
+    with _TELEMETRY_LOCK:
+        if _PHASE_PENDING:
+            return "phase", [_PHASE_PENDING.pop(0)]
+        if _TELEMETRY_PENDING:
+            batch = list(_TELEMETRY_PENDING[:_OBSERVATION_BATCH_SIZE])
+            del _TELEMETRY_PENDING[:len(batch)]
+            return "telemetry", batch
+    return None, []
+
+def _send_observation_batch(kind, batch):
+    if kind == "phase":
         _request(
             "POST",
-            f"/api/workflow-runs/{_RUN_ID}/runtime/telemetry-events",
-            {"token": _TOKEN, "events": batch},
+            f"/api/workflow-runs/{_RUN_ID}/runtime/phase-events",
+            batch[0],
+            timeout=1,
         )
-        with _TELEMETRY_LOCK:
-            acknowledged = {event.get("eventId") for event in batch}
-            _TELEMETRY_PENDING[:] = [
-                event for event in _TELEMETRY_PENDING
-                if event.get("eventId") not in acknowledged
-            ]
+        return
+    _request(
+        "POST",
+        f"/api/workflow-runs/{_RUN_ID}/runtime/telemetry-events",
+        {"token": _TOKEN, "events": batch},
+        timeout=1,
+    )
 
-def _flush_telemetry_at_exit():
-    for _attempt in range(3):
-        try:
-            _flush_telemetry()
-            return
-        except Exception:
+def _observation_worker():
+    while True:
+        _TELEMETRY_WAKE.wait(timeout=0.25)
+        _TELEMETRY_WAKE.clear()
+        kind, batch = _take_observation_batch()
+        if not batch:
             continue
+        try:
+            _send_observation_batch(kind, batch)
+        except Exception:
+            _record_dropped_observations(len(batch))
+        with _TELEMETRY_LOCK:
+            has_more = _pending_observation_count() > 0
+        if has_more:
+            _TELEMETRY_WAKE.set()
 
-atexit.register(_flush_telemetry_at_exit)
+def _ensure_observation_worker():
+    global _TELEMETRY_THREAD
+    with _TELEMETRY_LOCK:
+        if _TELEMETRY_THREAD is not None and _TELEMETRY_THREAD.is_alive():
+            return True
+        try:
+            thread = threading.Thread(
+                target=_observation_worker,
+                name="bizbox-observability",
+                daemon=True,
+            )
+            thread.start()
+            _TELEMETRY_THREAD = thread
+            return True
+        except Exception:
+            _TELEMETRY_THREAD = None
+            return False
 
 def _safe_emit_telemetry(*args, **kwargs):
     try:
@@ -1155,15 +1264,16 @@ def _runtime_info_for_agent(agent, args, kwargs):
     name = name.strip()
     mapped = _phase_info_for_agent(agent)
     safe_name = re.sub(r"[^A-Za-z0-9_.:-]+", "-", name).strip("-")[:180] or "agent"
-    instruction = getattr(agent, "instruction", None)
     metadata = {
         "runtimeAgent": True,
         "agentName": name,
         "model": _model_name(agent),
-        "systemPrompt": instruction if isinstance(instruction, str) and instruction.strip() else None,
-        "prompt": _prompt_from_call(args, kwargs),
         "configuredTools": _tool_names(agent),
     }
+    if _CAPTURE_MESSAGE_CONTENT:
+        instruction = getattr(agent, "instruction", None)
+        metadata["systemPrompt"] = instruction if isinstance(instruction, str) and instruction.strip() else None
+        metadata["prompt"] = _prompt_from_call(args, kwargs)
     return {
         "key": mapped["key"] if mapped is not None else f"agent-runtime:{safe_name}",
         "label": mapped["label"] if mapped is not None else name,
@@ -1173,15 +1283,17 @@ def _runtime_info_for_agent(agent, args, kwargs):
 def _start_agent_telemetry(info):
     parent_span_id = _CURRENT_SPAN.get()
     metadata = info["metadata"]
+    attributes = {
+        "phaseKey": info["key"],
+        "model": metadata.get("model"),
+        "configuredTools": metadata.get("configuredTools") or [],
+    }
+    if _CAPTURE_MESSAGE_CONTENT:
+        attributes["systemPrompt"] = metadata.get("systemPrompt")
     span_id = emit_operation_started(
-        info["label"], "agent", {"prompt": metadata.get("prompt")}, "agent",
+        info["label"], "agent", {"prompt": metadata.get("prompt")} if _CAPTURE_MESSAGE_CONTENT else None, "agent",
         metadata.get("agentName") or info["label"], parent_span_id=parent_span_id,
-        attributes={
-            "phaseKey": info["key"],
-            "model": metadata.get("model"),
-            "systemPrompt": metadata.get("systemPrompt"),
-            "configuredTools": metadata.get("configuredTools") or [],
-        },
+        attributes=attributes,
     )
     return span_id, parent_span_id
 
@@ -1209,8 +1321,9 @@ def _wrap_tool_class(cls):
             "parentKey": parent_key,
             "runtimeToolName": str(name),
             "runtimeToolId": call_id,
-            "runtimeToolInput": _json_safe_output(call_args if call_args is not None else {}),
         }
+        if _CAPTURE_MESSAGE_CONTENT:
+            metadata["runtimeToolInput"] = _json_safe_output(call_args if call_args is not None else {})
         parent_span_id = _CURRENT_SPAN.get()
         telemetry_span_id = emit_operation_started(
             str(name), "tool", call_args if call_args is not None else {}, "tool", str(name),
@@ -1222,7 +1335,12 @@ def _wrap_tool_class(cls):
         try:
             result = await original(self, *args, **kwargs)
             output = _json_safe_output(result)
-            _safe_emit_phase(phase_key, str(name), "succeeded", {"runtimeToolOutput": output})
+            _safe_emit_phase(
+                phase_key,
+                str(name),
+                "succeeded",
+                {"runtimeToolOutput": output} if _CAPTURE_MESSAGE_CONTENT else None,
+            )
             emit_operation_completed(telemetry_span_id, str(name), "tool", output, "tool", str(name), parent_span_id)
             return result
         except Exception as exc:
@@ -1230,7 +1348,7 @@ def _wrap_tool_class(cls):
                 phase_key,
                 str(name),
                 "failed",
-                {"error": str(exc), "runtimeToolOutput": {"error": str(exc)}},
+                {"error": str(exc)},
             )
             emit_operation_failed(telemetry_span_id, str(name), exc, "tool", "tool", str(name), parent_span_id)
             raise
@@ -1238,111 +1356,6 @@ def _wrap_tool_class(cls):
             _CURRENT_SPAN.reset(span_token)
     setattr(tool_wrapper, "__bizbox_tool_wrapped__", True)
     setattr(cls, "run_async", tool_wrapper)
-
-def _simple_value(value):
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    enum_value = getattr(value, "value", None)
-    if isinstance(enum_value, (str, int, float, bool)):
-        return enum_value
-    return str(value)
-
-def _image_call_input(args, kwargs):
-    prompt = kwargs.get("prompt")
-    if prompt is None and args:
-        prompt = args[0]
-    references = kwargs.get("reference_images") or []
-    if not isinstance(references, (list, tuple)):
-        references = [references]
-    return {
-        "prompt": str(prompt or ""),
-        "referenceImages": [os.path.basename(str(item)) for item in references if item],
-        "visualStyle": _simple_value(kwargs.get("visual_style")),
-        "aspectRatio": _simple_value(kwargs.get("aspect_ratio")),
-        "mode": _simple_value(kwargs.get("mode")),
-        "filename": _simple_value(kwargs.get("filename")),
-    }
-
-def _image_call_output(result):
-    return {
-        "savedPath": _simple_value(getattr(result, "saved_path", None)),
-        "contentType": _simple_value(getattr(result, "content_type", None)),
-        "byteLength": _simple_value(getattr(result, "byte_length", None)),
-        "jobId": _simple_value(getattr(result, "job_id", None)),
-    }
-
-def _wrap_image_generator(module):
-    global _IMAGE_CALL_SEQUENCE
-    original = getattr(module, "generate_image", None)
-    if original is None or getattr(original, "__bizbox_wrapped__", False):
-        return original is not None
-
-    def image_wrapper(*args, **kwargs):
-        global _IMAGE_CALL_SEQUENCE
-        _IMAGE_CALL_SEQUENCE += 1
-        call_id = f"image-{_IMAGE_CALL_SEQUENCE}"
-        phase_key = f"service-runtime:citro-studio-image:{_IMAGE_CALL_SEQUENCE}"
-        call_input = _image_call_input(args, kwargs)
-        metadata = {
-            "runtimeAgent": True,
-            "agentName": "Citro Studio image generation",
-            "service": "Citro Studio / Databricks",
-            "description": "Direct image-generation service call",
-            "prompt": call_input["prompt"],
-            "configuredTools": ["generate_image"],
-            "runtimeToolName": "generate_image",
-            "runtimeToolId": call_id,
-            "runtimeToolInput": call_input,
-        }
-        parent_span_id = _CURRENT_SPAN.get()
-        telemetry_span_id = emit_operation_started(
-            "Citro Studio image generation", "service", call_input, "service",
-            "Citro Studio image generation", parent_span_id=parent_span_id,
-            attributes={"phaseKey": phase_key, "service": "Citro Studio / Databricks", "toolCallId": call_id},
-        )
-        span_token = _CURRENT_SPAN.set(telemetry_span_id)
-        _safe_emit_phase(phase_key, "Citro Studio image generation", "running", metadata)
-        try:
-            result = original(*args, **kwargs)
-            _safe_emit_phase(
-                phase_key,
-                "Citro Studio image generation",
-                "succeeded",
-                {"runtimeToolOutput": _image_call_output(result), "output": _image_call_output(result)},
-            )
-            emit_operation_completed(
-                telemetry_span_id, "Citro Studio image generation", "service", _image_call_output(result),
-                "service", "Citro Studio image generation", parent_span_id,
-            )
-            return result
-        except Exception as exc:
-            _safe_emit_phase(
-                phase_key,
-                "Citro Studio image generation",
-                "failed",
-                {"error": str(exc), "runtimeToolOutput": {"error": str(exc)}},
-            )
-            emit_operation_failed(
-                telemetry_span_id, "Citro Studio image generation", exc, "service", "service",
-                "Citro Studio image generation", parent_span_id,
-            )
-            raise
-        finally:
-            _CURRENT_SPAN.reset(span_token)
-    setattr(image_wrapper, "__bizbox_wrapped__", True)
-    setattr(module, "generate_image", image_wrapper)
-    return True
-
-_ORIGINAL_IMPORT = builtins.__import__
-
-def _runtime_import(name, globals=None, locals=None, fromlist=(), level=0):
-    module = _ORIGINAL_IMPORT(name, globals, locals, fromlist, level)
-    target = sys.modules.get("shared.service.image_generator")
-    if target is not None and _wrap_image_generator(target):
-        builtins.__import__ = _ORIGINAL_IMPORT
-    return module
-
-builtins.__import__ = _runtime_import
 
 def _wrap_agent_method(cls, method_name):
     original = getattr(cls, method_name, None)
@@ -1369,7 +1382,7 @@ def _wrap_agent_method(cls, method_name):
                         observed_output = candidate_output
                     yield item
                 if info is not None:
-                    metadata = {"output": observed_output} if observed_output is not None else None
+                    metadata = {"output": observed_output} if _CAPTURE_MESSAGE_CONTENT and observed_output is not None else None
                     _safe_emit_phase(info["key"], info["label"], "succeeded", metadata)
                     emit_operation_completed(
                         telemetry_span_id, info["label"], "agent", observed_output, "agent",
@@ -1408,7 +1421,7 @@ def _wrap_agent_method(cls, method_name):
                 result = await original(self, *args, **kwargs)
                 if info is not None:
                     output = _output_from_value(result)
-                    metadata = {"output": output} if output is not None else None
+                    metadata = {"output": output} if _CAPTURE_MESSAGE_CONTENT and output is not None else None
                     _safe_emit_phase(info["key"], info["label"], "succeeded", metadata)
                     emit_operation_completed(
                         telemetry_span_id, info["label"], "agent", output, "agent",
@@ -1447,7 +1460,7 @@ def _wrap_agent_method(cls, method_name):
             result = original(self, *args, **kwargs)
             if info is not None:
                 output = _output_from_value(result)
-                metadata = {"output": output} if output is not None else None
+                metadata = {"output": output} if _CAPTURE_MESSAGE_CONTENT and output is not None else None
                 _safe_emit_phase(info["key"], info["label"], "succeeded", metadata)
                 emit_operation_completed(
                     telemetry_span_id, info["label"], "agent", output, "agent",
@@ -1527,18 +1540,45 @@ def workflow_phase(key, label):
     return decorator
 
 def workflow_input(prompt=""):
+    global _CURRENT_REVISION
     phase_key = _CURRENT_PHASE.get() or "entrypoint"
     prompt_text = str(prompt or "")
+    stage_match = re.match(r"^\\s*\\[bizbox:review-stage=(content|final)\\]\\s*", prompt_text, re.IGNORECASE)
+    review_stage = stage_match.group(1).lower() if stage_match else None
+    if stage_match:
+        prompt_text = prompt_text[stage_match.end():]
+    event_phase_match = re.match(r"^\\s*\\[bizbox:cms-review-phase=(grounding|planning|assets)\\]\\s*", prompt_text, re.IGNORECASE)
+    event_phase = event_phase_match.group(1).lower() if event_phase_match else None
+    if event_phase_match:
+        prompt_text = prompt_text[event_phase_match.end():]
+    review_summary_match = re.match(r"^\\s*\\[bizbox:cms-review-summary=([^\\]]+)\\]\\s*", prompt_text, re.IGNORECASE)
+    review_summary = review_summary_match.group(1).strip() if review_summary_match else None
+    if review_summary_match:
+        prompt_text = prompt_text[review_summary_match.end():]
     lowered = prompt_text.lower()
     kind = "approval" if re.search(r"(approve|approval|confirm|yes/no|y/n)", lowered) else "response"
+    handoff_payload = {
+        "phaseKey": phase_key,
+        "kind": kind,
+        **({"stage": review_stage} if review_stage else {}),
+        **({"eventPhase": event_phase} if event_phase else {}),
+        **({"reviewSummary": review_summary} if review_summary else {}),
+        "promptMarkdown": prompt_text or "Human input required.",
+    }
+    if review_stage or event_phase or review_summary:
+        canonical_handoff = json.dumps(
+            {"revision": _CURRENT_REVISION, "payload": handoff_payload},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        handoff_payload["idempotencyKey"] = hashlib.sha256(canonical_handoff.encode("utf-8")).hexdigest()
     created = _request(
         "POST",
         f"/api/workflow-runs/{_RUN_ID}/handoffs/runtime",
         {
             "token": _TOKEN,
-            "phaseKey": phase_key,
-            "kind": kind,
-            "promptMarkdown": prompt_text or "Human input required.",
+            **handoff_payload,
         },
     )
     handoff_id = created["id"]
@@ -1559,12 +1599,22 @@ def workflow_input(prompt=""):
             poll_delay = min(poll_delay * 1.5, 30.0)
             continue
         status = state.get("status")
+        response_markdown = state.get("responseMarkdown") or ""
+        if response_markdown:
+            try:
+                response_payload = json.loads(response_markdown)
+                if isinstance(response_payload, dict) and isinstance(response_payload.get("revision"), int):
+                    _CURRENT_REVISION = response_payload["revision"]
+            except (TypeError, ValueError):
+                pass
         if status == "approved":
             return "approved"
         if status == "rejected":
+            # Rejection is an input to the workflow. The workflow owns the choice
+            # to stop, revise, or follow another branch.
             return "rejected"
         if status == "responded":
-            return state.get("responseMarkdown") or ""
+            return response_markdown
         if status == "cancelled":
             raise RuntimeError("Workflow handoff was cancelled")
         time.sleep(poll_delay)

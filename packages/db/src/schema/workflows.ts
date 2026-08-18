@@ -36,6 +36,8 @@ export const workflowRuns = pgTable(
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     workflowId: uuid("workflow_id").notNull().references(() => workflows.id, { onDelete: "cascade" }),
     status: text("status").notNull().default("queued"),
+    reviewStage: text("review_stage"),
+    revision: integer("revision").notNull().default(0),
     inputMarkdown: text("input_markdown").notNull(),
     error: text("error"),
     summary: text("summary"),
@@ -55,6 +57,53 @@ export const workflowRuns = pgTable(
       table.createdAt,
     ),
     workflowStatusIdx: index("workflow_runs_workflow_status_idx").on(table.workflowId, table.status),
+  }),
+);
+
+export const workflowRunEvents = pgTable(
+  "workflow_run_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    workflowRunId: uuid("workflow_run_id").notNull().references(() => workflowRuns.id, { onDelete: "cascade" }),
+    idempotencyKey: text("idempotency_key").notNull(),
+    actor: text("actor").notNull(),
+    phase: text("phase").notNull(),
+    kind: text("kind").notNull(),
+    summary: text("summary").notNull(),
+    details: jsonb("details").notNull().default({}),
+    revision: integer("revision").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    runCreatedIdx: index("workflow_run_events_run_created_idx").on(table.workflowRunId, table.createdAt, table.id),
+    runIdempotencyUq: unique("workflow_run_events_run_idempotency_unique").on(table.workflowRunId, table.idempotencyKey),
+  }),
+);
+
+export const workflowExtensionRequests = pgTable(
+  "workflow_extension_requests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    workflowRunId: uuid("workflow_run_id").notNull().references(() => workflowRuns.id, { onDelete: "cascade" }),
+    extensionKey: text("extension_key").notNull(),
+    operation: text("operation").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    requestHash: text("request_hash").notNull(),
+    generationId: text("generation_id").notNull(),
+    revision: integer("revision").notNull(),
+    response: jsonb("response"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    runCreatedIdx: index("workflow_extension_requests_run_created_idx").on(table.workflowRunId, table.createdAt),
+    runIdempotencyUq: unique("workflow_extension_requests_run_extension_idempotency_unique").on(
+      table.workflowRunId,
+      table.extensionKey,
+      table.idempotencyKey,
+    ),
   }),
 );
 
@@ -123,6 +172,9 @@ export const workflowHandoffs = pgTable(
     phaseKey: text("phase_key").notNull(),
     kind: text("kind").notNull(),
     status: text("status").notNull().default("pending"),
+    reviewStage: text("review_stage"),
+    revision: integer("revision").notNull().default(0),
+    idempotencyKey: text("idempotency_key"),
     promptMarkdown: text("prompt_markdown").notNull(),
     responseMarkdown: text("response_markdown"),
     decidedByUserId: text("decided_by_user_id"),
@@ -133,6 +185,7 @@ export const workflowHandoffs = pgTable(
   (table) => ({
     runStatusIdx: index("workflow_handoffs_run_status_idx").on(table.workflowRunId, table.status),
     runPhaseIdx: index("workflow_handoffs_run_phase_idx").on(table.workflowRunId, table.phaseKey),
+    runIdempotencyUq: unique("workflow_handoffs_run_idempotency_unique").on(table.workflowRunId, table.idempotencyKey),
   }),
 );
 

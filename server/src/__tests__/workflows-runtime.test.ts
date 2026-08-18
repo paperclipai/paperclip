@@ -50,7 +50,7 @@ root_agent = root
     expect(analysis.pipelineDefinition.phases.map((phase) => phase.label)).toContain("build_outline");
     expect(
       analysis.pipelineDefinition.phases.find((phase) => phase.label === "Reviewer")?.systemPrompt,
-    ).toBe("Check the outline for unsupported claims.");
+    ).toBeNull();
   });
 
   it("renders workflow DAG roots and joins for ADK workflows", async () => {
@@ -272,10 +272,7 @@ root_agent = Agent(name="unrelated_resource_tester")
       "instagram_post_writer_agent",
     ]);
     expect(agents.find((phase) => phase.label === "instagram_post_writer_agent")?.configuredSkills)
-      .toEqual([expect.objectContaining({
-        name: "instagram-writer",
-        content: expect.stringContaining("Use only supplied facts."),
-      })]);
+      .toEqual([{ name: "instagram-writer", content: "" }]);
   });
 
   it("keeps future imports ahead of the injected workflow runtime import", async () => {
@@ -315,7 +312,7 @@ root_agent = Agent(name="writer", tools=[build_outline])
       .resolves.toBeDefined();
   });
 
-  it("installs live runtime telemetry for model, prompt, instruction, and tools", async () => {
+  it("installs best-effort metadata-only runtime telemetry", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workflow-runtime-"));
     tempRoots.push(root);
     await fs.writeFile(path.join(root, "agent.py"), `
@@ -344,16 +341,16 @@ root_agent = Agent(name="writer", instruction="Write clearly")
     expect(helper).toContain("def telemetry_operation(");
     expect(helper).toContain('"[redacted]"');
     expect(helper).toContain('"model": _model_name(agent)');
-    expect(helper).toContain('"systemPrompt": instruction');
-    expect(helper).toContain('"prompt": _prompt_from_call(args, kwargs)');
+    expect(helper).toContain("if _CAPTURE_MESSAGE_CONTENT:");
+    expect(helper).toContain('metadata["systemPrompt"] = instruction');
+    expect(helper).toContain('metadata["prompt"] = _prompt_from_call(args, kwargs)');
     expect(helper).toContain('"configuredTools": _tool_names(agent)');
     expect(helper).toContain('"runtimeKind": "tool"');
-    expect(helper).toContain('"runtimeToolInput": _json_safe_output');
-    expect(helper).toContain('target = sys.modules.get("shared.service.image_generator")');
-    expect(helper).toContain('"prompt": call_input["prompt"]');
-    expect(helper).toContain('"runtimeToolName": "generate_image"');
-    expect(helper).toContain('"runtimeToolOutput": _image_call_output(result)');
-    expect(helper).toContain('"output": _image_call_output(result)');
+    expect(helper).toContain('metadata["runtimeToolInput"] = _json_safe_output');
+    expect(helper).toContain("_OBSERVATION_MAX_PENDING = 500");
+    expect(helper).toContain('daemon=True');
+    expect(helper).not.toContain("shared.service.image_generator");
+    expect(helper).not.toContain("Citro Studio");
     expect(helper).toContain("@functools.wraps(fn)");
     expect(helper).toContain("def _output_from_value(value):");
     expect(helper).toContain('{"output": observed_output}');
@@ -412,11 +409,12 @@ class FunctionTool(BaseTool):
     ], {
       env: {
         ...process.env,
+        OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: "no_content",
         PYTHONPATH: [prepared.tempRoot, fakePackageRoot].join(path.delimiter),
         PYTHONPYCACHEPREFIX: path.join(prepared.tempRoot, "pycache"),
       },
     });
-    expect(executed.stdout.trim().split(/\r?\n/)).toEqual(["True", "job-1"]);
+    expect(executed.stdout.trim().split(/\r?\n/)).toEqual(["False", "job-1"]);
 
     const toolExecution = await execFileAsync("python3", [
       "-c",
@@ -432,6 +430,7 @@ print(json.dumps(result, separators=(",", ":")))`,
     ], {
       env: {
         ...process.env,
+        OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: "no_content",
         PYTHONPATH: [prepared.tempRoot, fakePackageRoot].join(path.delimiter),
         PYTHONPYCACHEPREFIX: path.join(prepared.tempRoot, "pycache"),
       },
@@ -444,45 +443,81 @@ print(json.dumps(result, separators=(",", ":")))`,
         status: "running",
         metadata: expect.objectContaining({
           runtimeKind: "tool",
-          runtimeToolInput: { month: "July" },
         }),
       }),
       expect.objectContaining({
         status: "succeeded",
-        metadata: { runtimeToolOutput: { rows: 25, query: { month: "July" } } },
+        metadata: null,
       }),
     ]);
     expect(JSON.parse(resultJson ?? "null")).toEqual({ rows: 25, query: { month: "July" } });
+
+    const reliableExecution = await execFileAsync("python3", [
+      "-c",
+      `import json
+import bizbox_workflow_runtime as runtime
+requests = []
+runtime._request = lambda method, path, payload=None, timeout=30: requests.append(payload) or payload
+runtime.publish_review([{"id": "post-1"}])
+runtime.publish_review([{"id": "post-1"}])
+runtime.publish_assets([{"id": "asset-1"}], idempotency_key="asset-key", generation_id="generation-2", revision=3)
+print(json.dumps(requests, separators=(",", ":")))`,
+    ], {
+      env: {
+        ...process.env,
+        BIZBOX_WORKFLOW_RUN_ID: "run-telemetry",
+        PYTHONPATH: prepared.tempRoot,
+        PYTHONPYCACHEPREFIX: path.join(prepared.tempRoot, "pycache"),
+      },
+    });
+    const reliableRequests = JSON.parse(reliableExecution.stdout.trim());
+    expect(reliableRequests[0]).toMatchObject({ generationId: "run-telemetry", revision: 0 });
+    expect(reliableRequests[1].idempotencyKey).toBe(reliableRequests[0].idempotencyKey);
+    expect(reliableRequests[2]).toMatchObject({ idempotencyKey: "asset-key", generationId: "generation-2", revision: 3 });
 
     const telemetryExecution = await execFileAsync("python3", [
       "-c",
       `import json
 import bizbox_workflow_runtime as runtime
-payloads = []
-runtime._request = lambda method, path, payload=None: payloads.append({"method": method, "path": path, "payload": payload}) or {}
+events = []
+runtime._enqueue_telemetry = lambda event: events.append(event) or True
 span_id = runtime.emit_operation_started("partnerpal", "tool", {"query": "campaign ideas", "api_key": "secret"}, "tool")
 runtime.emit_operation_completed(span_id, "partnerpal", "tool", {"matches": 1}, "tool")
-print(json.dumps(payloads, separators=(",", ":")))`,
+print(json.dumps(events, separators=(",", ":")))`,
     ], {
       env: {
         ...process.env,
+        OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: "no_content",
         PYTHONPATH: prepared.tempRoot,
         PYTHONPYCACHEPREFIX: path.join(prepared.tempRoot, "pycache"),
       },
     });
-    const telemetryPayloads = JSON.parse(telemetryExecution.stdout.trim());
-    expect(telemetryPayloads).toHaveLength(2);
-    expect(telemetryPayloads[0]).toMatchObject({
-      method: "POST",
-      path: "/api/workflow-runs//runtime/telemetry-events",
-      payload: {
-        events: [expect.objectContaining({
-          schema: "bizbox.telemetry/v1",
-          event: "operation.started",
-          operation: { kind: "tool", name: "partnerpal" },
-          input: { query: "campaign ideas", api_key: "[redacted]" },
-        })],
+    const telemetryEvents = JSON.parse(telemetryExecution.stdout.trim());
+    expect(telemetryEvents).toHaveLength(2);
+    expect(telemetryEvents[0]).toMatchObject({
+      schema: "bizbox.telemetry/v1",
+      event: "operation.started",
+      operation: { kind: "tool", name: "partnerpal" },
+    });
+    expect(telemetryEvents[0]).not.toHaveProperty("input");
+    expect(telemetryEvents[1]).not.toHaveProperty("output");
+
+    const nonBlockingExecution = await execFileAsync("python3", [
+      "-c",
+      `import json, time
+import bizbox_workflow_runtime as runtime
+runtime._request = lambda *args, **kwargs: time.sleep(2)
+started = time.monotonic()
+runtime.emit_operation_started("slow-observer", "service")
+print(json.dumps({"elapsed": time.monotonic() - started}))`,
+    ], {
+      env: {
+        ...process.env,
+        OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: "no_content",
+        PYTHONPATH: prepared.tempRoot,
+        PYTHONPYCACHEPREFIX: path.join(prepared.tempRoot, "pycache"),
       },
     });
+    expect(JSON.parse(nonBlockingExecution.stdout.trim()).elapsed).toBeLessThan(0.2);
   });
 });

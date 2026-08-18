@@ -11,15 +11,15 @@ function readTextParts(parts: unknown): string[] {
   return texts;
 }
 
-function asErrorText(value: unknown): string {
+function asErrorText(value: unknown, depth = 0): string {
   if (typeof value === "string") return value.trim();
+  if (depth >= 3) return "";
   const record = parseObject(value);
-  return (
-    asString(record.message, "").trim() ||
-    asString(record.error, "").trim() ||
-    asString(record.detail, "").trim() ||
-    asString(record.code, "").trim()
-  );
+  for (const key of ["message", "detail", "reason", "description", "code", "error", "exception", "cause"]) {
+    const text = asErrorText(record[key], depth + 1);
+    if (text) return text;
+  }
+  return "";
 }
 
 export function parseGoogleAdkJsonl(stdout: string) {
@@ -28,6 +28,7 @@ export function parseGoogleAdkJsonl(stdout: string) {
   const toolResults: Array<{ name: string; output: unknown }> = [];
   const compactToolCalls = new Map<string, { name: string; input: unknown }>();
   const compactToolResults = new Map<string, { name: string; output: unknown }>();
+  let finalResult: Record<string, unknown> = {};
   let errorMessage: string | null = null;
   let usage = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
 
@@ -39,6 +40,10 @@ export function parseGoogleAdkJsonl(stdout: string) {
 
     const compactEvent = asString(parsed.event, "");
     const compactDetails = parseObject(parsed.details);
+    if (compactEvent === "run.completed") {
+      const result = parseObject(parsed.result);
+      if (Object.keys(result).length > 0) finalResult = result;
+    }
     const compactSources = Array.isArray(compactDetails.sources)
       ? compactDetails.sources.flatMap((source) => {
           const name = asString(source, "").trim();
@@ -113,7 +118,10 @@ export function parseGoogleAdkJsonl(stdout: string) {
     const explicitError = asErrorText(parsed.error);
     if (explicitError) errorMessage = explicitError;
     if (asString(parsed.event, "") === "run.failed") {
-      errorMessage = asErrorText(parsed.message ?? parsed.detail ?? parsed.error) || "Workflow reported run.failed";
+      const eventError = asErrorText(
+        parsed.message ?? parsed.detail ?? parsed.error ?? parsed.details ?? parsed.reason ?? parsed.exception,
+      );
+      errorMessage = eventError || errorMessage || "Workflow reported run.failed";
     }
 
     const usageRaw = parseObject(parsed.usageMetadata ?? parsed.usage);
@@ -137,6 +145,7 @@ export function parseGoogleAdkJsonl(stdout: string) {
     summary: lastAssistantText,
     toolCalls: [...toolCalls, ...compactToolCalls.values()],
     toolResults: [...toolResults, ...compactToolResults.values()],
+    finalResult,
     usage,
     errorMessage,
   };

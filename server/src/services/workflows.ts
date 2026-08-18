@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
-import { and, asc, desc, eq, inArray, isNotNull, ne, notInArray, or, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { and, asc, desc, eq, gt, inArray, isNotNull, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   workflowDeliverables,
@@ -8,6 +9,8 @@ import {
   workflowInvocations,
   workflowRunPhases,
   workflowRunTelemetryEvents,
+  workflowRunEvents,
+  workflowExtensionRequests,
   workflowRuns,
   workflows,
   routines,
@@ -34,11 +37,15 @@ import type {
   WorkflowRunConsoleChunk,
   WorkflowRunDetail,
   WorkflowRunUsage,
+  WorkflowRunEvent,
+  WorkflowRunAsset,
+  WorkflowRunFeedback,
+  WorkflowExtensionWriteContext,
   ResourceRunOverride,
   WorkflowResourceManifest,
 } from "@paperclipai/shared";
-import { resourceRunOverridesSchema, workflowResourceManifestSchema } from "@paperclipai/shared";
-import { conflict, unprocessable } from "../errors.js";
+import { CITRO_SOCIAL_CMS_EXTENSION, resourceRunOverridesSchema, workflowResourceManifestSchema } from "@paperclipai/shared";
+import { badRequest, conflict, forbidden, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { getStorageService } from "../storage/index.js";
 import { type StorageService } from "../storage/types.js";
@@ -59,6 +66,58 @@ type WorkflowRunLaunchContext = {
   resourceOverrides?: ResourceRunOverride[];
   resourceManifest?: WorkflowResourceManifest;
 };
+
+type SocialCmsFeedbackResult = {
+  status: WorkflowRun["status"];
+  reviewStage: "content" | "final" | null;
+  revision: number;
+  duplicate: boolean;
+};
+
+async function getSocialCmsRun(db: Db, runId: string) {
+  const row = await db.select({
+    run: workflowRuns,
+    capabilities: workflows.capabilities,
+  }).from(workflowRuns)
+    .innerJoin(workflows, eq(workflows.id, workflowRuns.workflowId))
+    .where(eq(workflowRuns.id, runId))
+    .then((rows) => rows[0] ?? null);
+  if (!row) return null;
+  const capabilities = Array.isArray(row.capabilities) ? row.capabilities as string[] : [];
+  if (!capabilities.includes(CITRO_SOCIAL_CMS_EXTENSION)) {
+    throw forbidden(`Workflow has not enabled ${CITRO_SOCIAL_CMS_EXTENSION}`);
+  }
+  return row.run;
+}
+
+function assertExtensionRevision(run: typeof workflowRuns.$inferSelect, input: WorkflowExtensionWriteContext) {
+  if (run.revision !== input.revision) {
+    throw conflict(`Workflow revision mismatch: expected ${run.revision}, received ${input.revision}`);
+  }
+}
+
+function assertExtensionGeneration(run: typeof workflowRuns.$inferSelect, input: WorkflowExtensionWriteContext) {
+  const context = (run.contextSnapshot as Record<string, unknown> | null) ?? {};
+  const recordedGeneration = typeof context.socialCmsGenerationId === "string" ? context.socialCmsGenerationId : null;
+  const recordedRevision = typeof context.socialCmsGenerationRevision === "number" ? context.socialCmsGenerationRevision : null;
+  if (recordedGeneration && recordedRevision === input.revision && recordedGeneration !== input.generationId) {
+    throw conflict(`Workflow generation mismatch for revision ${input.revision}`);
+  }
+}
+
+function canonicalizeExtensionRequest(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeExtensionRequest);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => [key, canonicalizeExtensionRequest(item)]),
+  );
+}
+
+function fingerprintExtensionRequest(value: unknown) {
+  return createHash("sha256").update(JSON.stringify(canonicalizeExtensionRequest(value))).digest("hex");
+}
 
 function toWorkflow(row: typeof workflows.$inferSelect): Workflow {
   const pipelineDefinition = (row.pipelineDefinition as Record<string, unknown> | null) ?? {};
@@ -192,7 +251,13 @@ function toWorkflowRun(row: typeof workflowRuns.$inferSelect, invocation: Workfl
     id: row.id,
     companyId: row.companyId,
     workflowId: row.workflowId,
-    status: row.status,
+    // Existing consumers use `awaiting_human`; the durable checkpoint is exposed
+    // separately through reviewStage so they remain compatible with staged review.
+    status: ["awaiting_content_review", "awaiting_final_review"].includes(row.status)
+      ? "awaiting_human"
+      : row.status,
+    reviewStage: row.reviewStage === "content" || row.reviewStage === "final" ? row.reviewStage : null,
+    revision: row.revision,
     inputMarkdown: row.inputMarkdown,
     error: row.error ?? null,
     summary: row.summary ?? null,
@@ -273,6 +338,9 @@ function toWorkflowHandoff(
     kind: row.kind as WorkflowHandoff["kind"],
     status: row.status,
     promptMarkdown: row.promptMarkdown,
+    reviewStage: row.reviewStage === "content" || row.reviewStage === "final" ? row.reviewStage : null,
+    revision: row.revision,
+    idempotencyKey: row.idempotencyKey ?? null,
     responseMarkdown: row.responseMarkdown ?? null,
     decidedByUserId: row.decidedByUserId ?? null,
     decidedAt: row.decidedAt ?? null,
@@ -293,6 +361,59 @@ function toWorkflowDeliverableSummary(row: typeof workflowDeliverables.$inferSel
     originalFilename: row.originalFilename ?? null,
     createdAt: row.createdAt.toISOString(),
   };
+}
+
+function toWorkflowRunEvent(row: typeof workflowRunEvents.$inferSelect): WorkflowRunEvent {
+  return {
+    id: row.id,
+    idempotencyKey: row.idempotencyKey,
+    createdAt: row.createdAt.toISOString(),
+    actor: row.actor === "human" ? "human" : "bizbox",
+    phase: ["grounding", "planning", "assets", "review", "revision"].includes(row.phase)
+      ? row.phase as WorkflowRunEvent["phase"]
+      : "review",
+    kind: ["source_summary", "screen_plan", "asset_generated", "review_requested", "review_response", "revision_applied"].includes(row.kind)
+      ? row.kind as WorkflowRunEvent["kind"]
+      : "review_requested",
+    summary: row.summary,
+    details: (row.details as Record<string, unknown> | null) ?? {},
+    revision: row.revision,
+  };
+}
+
+function reviewEventPhase(input: CreateWorkflowHandoff): "grounding" | "planning" | "assets" | "review" {
+  if (input.eventPhase) return input.eventPhase;
+  const phaseKey = input.phaseKey.toLowerCase();
+  if (/(ground|synthesis|source)/.test(phaseKey)) return "grounding";
+  if (/(plan|screen)/.test(phaseKey)) return "planning";
+  if (/(asset|render|image)/.test(phaseKey)) return "assets";
+  return "review";
+}
+
+function reviewEventKind(phase: ReturnType<typeof reviewEventPhase>): WorkflowRunEvent["kind"] {
+  if (phase === "grounding") return "source_summary";
+  if (phase === "planning") return "screen_plan";
+  if (phase === "assets") return "asset_generated";
+  return "review_requested";
+}
+
+const SOCIAL_CMS_ASSET_MAX_BYTES = 5 * 1024 * 1024;
+
+function decodeSocialCmsAsset(contentBase64: string, contentType: string) {
+  const normalized = contentBase64.replace(/\s/g, "");
+  if (normalized.length === 0 || normalized.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(normalized)) {
+    throw unprocessable("Social CMS asset content must be valid base64");
+  }
+  const body = Buffer.from(normalized, "base64");
+  if (body.length === 0 || body.length > SOCIAL_CMS_ASSET_MAX_BYTES) {
+    throw unprocessable(`Social CMS assets must be between 1 byte and ${SOCIAL_CMS_ASSET_MAX_BYTES} bytes`);
+  }
+  const isPng = body.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  const isJpeg = body[0] === 0xff && body[1] === 0xd8 && body[2] === 0xff;
+  const isWebp = body.subarray(0, 4).toString("ascii") === "RIFF" && body.subarray(8, 12).toString("ascii") === "WEBP";
+  const matchesType = contentType === "image/png" ? isPng : contentType === "image/jpeg" ? isJpeg : contentType === "image/webp" ? isWebp : false;
+  if (!matchesType) throw unprocessable(`Social CMS asset bytes do not match ${contentType}`);
+  return body;
 }
 
 async function selectLatestRunMap(db: Db, workflowIds: string[]) {
@@ -631,7 +752,7 @@ export function workflowService(db: Db) {
   ) {
     const runRow = await db.select().from(workflowRuns).where(eq(workflowRuns.id, runId)).then((rows) => rows[0] ?? null);
     if (!runRow) return;
-    if (["succeeded", "failed", "cancelled"].includes(runRow.status)) return;
+    if (["succeeded", "failed", "cancelled", "rejected"].includes(runRow.status)) return;
     const workflowRow = preparedRun
       ? null
       : await db.select().from(workflows).where(eq(workflows.id, runRow.workflowId)).then((rows) => rows[0] ?? null);
@@ -852,7 +973,7 @@ export function workflowService(db: Db) {
         updatedAt: new Date(),
       }).where(and(
         eq(workflowRuns.id, runId),
-        notInArray(workflowRuns.status, ["succeeded", "failed", "cancelled"]),
+        notInArray(workflowRuns.status, ["succeeded", "failed", "cancelled", "rejected"]),
       ));
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
@@ -876,7 +997,7 @@ export function workflowService(db: Db) {
         updatedAt: new Date(),
       }).where(and(
         eq(workflowRuns.id, runId),
-        notInArray(workflowRuns.status, ["succeeded", "failed", "cancelled"]),
+        notInArray(workflowRuns.status, ["succeeded", "failed", "cancelled", "rejected"]),
       ));
       throw err;
     } finally {
@@ -942,7 +1063,7 @@ export function workflowService(db: Db) {
         error: err instanceof Error ? err.message : String(err),
         finishedAt: new Date(),
         updatedAt: new Date(),
-      }).where(and(eq(workflowRuns.id, runRow.id), notInArray(workflowRuns.status, ["succeeded", "failed", "cancelled"])));
+      }).where(and(eq(workflowRuns.id, runRow.id), notInArray(workflowRuns.status, ["succeeded", "failed", "cancelled", "rejected"])));
       logger.error({ err, runId: runRow.id, workflowId: workflow.id }, "workflow execution failed");
     });
     return toWorkflowRun(runRow, launchContext?.invocation ?? null);
@@ -1160,9 +1281,11 @@ export function workflowService(db: Db) {
       if (!workflowRow) return null;
       const invocation = (await selectRunInvocationMap(db, [runId])).get(runId) ?? null;
       const phases = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, runId)).orderBy(asc(workflowRunPhases.ordinal));
-      const telemetryEvents = await db.select().from(workflowRunTelemetryEvents)
+      const telemetryEventsDescending = await db.select().from(workflowRunTelemetryEvents)
         .where(eq(workflowRunTelemetryEvents.workflowRunId, runId))
-        .orderBy(asc(workflowRunTelemetryEvents.sequence), asc(workflowRunTelemetryEvents.createdAt));
+        .orderBy(desc(workflowRunTelemetryEvents.sequence), desc(workflowRunTelemetryEvents.createdAt))
+        .limit(1_000);
+      const telemetryEvents = telemetryEventsDescending.reverse();
       const handoffs = await db.select().from(workflowHandoffs).where(eq(workflowHandoffs.workflowRunId, runId)).orderBy(asc(workflowHandoffs.createdAt));
       const handoffIds = handoffs.map((h) => h.id);
       const bridges = handoffIds.length > 0
@@ -1202,6 +1325,257 @@ export function workflowService(db: Db) {
     listRunDeliverables: async (runId: string) => {
       const rows = await db.select().from(workflowDeliverables).where(eq(workflowDeliverables.workflowRunId, runId)).orderBy(desc(workflowDeliverables.createdAt));
       return rows.map(toWorkflowDeliverableSummary);
+    },
+
+    listRunAssets: async (runId: string): Promise<WorkflowRunAsset[]> => {
+      const run = await getSocialCmsRun(db, runId);
+      if (!run) return [];
+      const published = (run.contextSnapshot as { reviewAssets?: Array<WorkflowRunAsset & { objectKey?: string }> } | null)?.reviewAssets;
+      if (published?.length) return published.map(({ objectKey: _objectKey, ...asset }) => asset);
+      const rows = await db.select().from(workflowDeliverables)
+        .where(eq(workflowDeliverables.workflowRunId, runId))
+        .orderBy(asc(workflowDeliverables.createdAt));
+      return rows.map((row, index) => ({
+        id: row.id,
+        deliverableId: row.id,
+        screenNumber: null,
+        templateId: null,
+        viewableUrl: `/api/deliverables/${row.id}/content`,
+        thumbnailUrl: row.contentType.startsWith("image/") ? `/api/deliverables/${row.id}/content` : null,
+        revision: run.revision,
+        superseded: false,
+      }));
+    },
+
+    getRunReview: async (runId: string) => {
+      const run = await getSocialCmsRun(db, runId);
+      if (!run) return null;
+      const review = (run.contextSnapshot as { reviewDeliverables?: unknown } | null)?.reviewDeliverables;
+      return { deliverables: Array.isArray(review) ? review : [] };
+    },
+
+    publishRunReview: async (runId: string, input: WorkflowExtensionWriteContext & { deliverables: Array<{ id: string; title: string; contentMarkdown: string; screens: Array<{ screenNumber: number; copy: string }> }> }) => {
+      const run = await getSocialCmsRun(db, runId);
+      if (!run) return null;
+      assertExtensionRevision(run, input);
+      assertExtensionGeneration(run, input);
+      const requestHash = fingerprintExtensionRequest(input);
+      return db.transaction(async (tx) => {
+        const claimed = await tx.insert(workflowExtensionRequests).values({
+          companyId: run.companyId,
+          workflowRunId: runId,
+          extensionKey: CITRO_SOCIAL_CMS_EXTENSION,
+          operation: "publish_review",
+          idempotencyKey: input.idempotencyKey,
+          requestHash,
+          generationId: input.generationId,
+          revision: input.revision,
+        }).onConflictDoNothing({
+          target: [workflowExtensionRequests.workflowRunId, workflowExtensionRequests.extensionKey, workflowExtensionRequests.idempotencyKey],
+        }).returning().then((rows) => rows[0] ?? null);
+        if (!claimed) {
+          const existing = await tx.select().from(workflowExtensionRequests).where(and(
+            eq(workflowExtensionRequests.workflowRunId, runId),
+            eq(workflowExtensionRequests.extensionKey, CITRO_SOCIAL_CMS_EXTENSION),
+            eq(workflowExtensionRequests.idempotencyKey, input.idempotencyKey),
+          )).then((rows) => rows[0] ?? null);
+          if (!existing || existing.operation !== "publish_review" || existing.requestHash !== requestHash || existing.generationId !== input.generationId || existing.revision !== input.revision) {
+            throw conflict("Idempotency key was already used for a different Social CMS request");
+          }
+          if (existing.response) return existing.response as { deliverables: typeof input.deliverables; generationId: string; revision: number };
+          throw conflict("Social CMS review publication is already in progress");
+        }
+        for (const deliverable of input.deliverables) {
+          await tx.insert(workflowDeliverables).values({ companyId: run.companyId, workflowId: run.workflowId, workflowRunId: runId, title: deliverable.title, audience: "human", contentType: "text/markdown; charset=utf-8", contentBody: deliverable.contentMarkdown, byteSize: Buffer.byteLength(deliverable.contentMarkdown), originalFilename: `${deliverable.id}.md` });
+        }
+        await tx.update(workflowRuns).set({ contextSnapshot: { ...((run.contextSnapshot as Record<string, unknown>) ?? {}), reviewDeliverables: input.deliverables, socialCmsGenerationId: input.generationId, socialCmsGenerationRevision: input.revision }, updatedAt: new Date() }).where(eq(workflowRuns.id, runId));
+        const screenCount = input.deliverables.reduce((count, item) => count + item.screens.length, 0);
+        await tx.insert(workflowRunEvents).values({ companyId: run.companyId, workflowRunId: runId, idempotencyKey: `${input.idempotencyKey}:screen-plan`, actor: "bizbox", phase: "planning", kind: "screen_plan", summary: `Screen plan ready: ${screenCount} screen${screenCount === 1 ? "" : "s"} across ${input.deliverables.length} reviewable deliverable${input.deliverables.length === 1 ? "" : "s"}.`, details: { generationId: input.generationId }, revision: input.revision });
+        const response = { deliverables: input.deliverables, generationId: input.generationId, revision: input.revision };
+        await tx.update(workflowExtensionRequests).set({ response, updatedAt: new Date() }).where(eq(workflowExtensionRequests.id, claimed.id));
+        return response;
+      });
+    },
+
+    publishRunAssets: async (runId: string, input: WorkflowExtensionWriteContext & { assets: Array<{ id: string; deliverableId: string; screenNumber: number; postType: string; templateId: string; contentBase64: string; contentType?: string }> }) => {
+      const run = await getSocialCmsRun(db, runId);
+      if (!run) return null;
+      assertExtensionRevision(run, input);
+      assertExtensionGeneration(run, input);
+      const requestHash = fingerprintExtensionRequest(input);
+      const storedObjectKeys: string[] = [];
+      try {
+        return await db.transaction(async (tx) => {
+          const claimed = await tx.insert(workflowExtensionRequests).values({
+            companyId: run.companyId,
+            workflowRunId: runId,
+            extensionKey: CITRO_SOCIAL_CMS_EXTENSION,
+            operation: "publish_assets",
+            idempotencyKey: input.idempotencyKey,
+            requestHash,
+            generationId: input.generationId,
+            revision: input.revision,
+          }).onConflictDoNothing({
+            target: [workflowExtensionRequests.workflowRunId, workflowExtensionRequests.extensionKey, workflowExtensionRequests.idempotencyKey],
+          }).returning().then((rows) => rows[0] ?? null);
+          if (!claimed) {
+            const existing = await tx.select().from(workflowExtensionRequests).where(and(
+              eq(workflowExtensionRequests.workflowRunId, runId),
+              eq(workflowExtensionRequests.extensionKey, CITRO_SOCIAL_CMS_EXTENSION),
+              eq(workflowExtensionRequests.idempotencyKey, input.idempotencyKey),
+            )).then((rows) => rows[0] ?? null);
+            if (!existing || existing.operation !== "publish_assets" || existing.requestHash !== requestHash || existing.generationId !== input.generationId || existing.revision !== input.revision) {
+              throw conflict("Idempotency key was already used for a different Social CMS request");
+            }
+            if (existing.response) return (existing.response as { assets: WorkflowRunAsset[] }).assets;
+            throw conflict("Social CMS asset publication is already in progress");
+          }
+          const assets: WorkflowRunAsset[] = [];
+          for (const asset of input.assets) {
+            const contentType = asset.contentType ?? "image/png";
+            const extension = contentType === "image/jpeg" ? "jpg" : contentType === "image/webp" ? "webp" : "png";
+            const body = decodeSocialCmsAsset(asset.contentBase64, contentType);
+            const stored = await storage.putFile({ companyId: run.companyId, namespace: "workflow-deliverables", originalFilename: `${asset.deliverableId}-${asset.screenNumber}.${extension}`, contentType, body });
+            storedObjectKeys.push(stored.objectKey);
+            const row = await tx.insert(workflowDeliverables).values({ companyId: run.companyId, workflowId: run.workflowId, workflowRunId: runId, title: asset.id, audience: "human", contentType: stored.contentType, contentPath: stored.objectKey, byteSize: stored.byteSize, originalFilename: stored.originalFilename }).returning().then((rows) => rows[0]!);
+            assets.push({ id: row.id, deliverableId: asset.deliverableId, screenNumber: asset.screenNumber, postType: asset.postType, templateId: asset.templateId, viewableUrl: `/api/deliverables/${row.id}/content`, thumbnailUrl: `/api/deliverables/${row.id}/content`, revision: input.revision, superseded: false });
+          }
+          await tx.update(workflowRuns).set({ contextSnapshot: { ...((run.contextSnapshot as Record<string, unknown>) ?? {}), reviewAssets: assets, socialCmsGenerationId: input.generationId, socialCmsGenerationRevision: input.revision }, updatedAt: new Date() }).where(eq(workflowRuns.id, runId));
+          await tx.insert(workflowRunEvents).values({ companyId: run.companyId, workflowRunId: runId, idempotencyKey: `${input.idempotencyKey}:assets`, actor: "bizbox", phase: "assets", kind: "asset_generated", summary: `Assets ready: ${assets.length} rendered screen${assets.length === 1 ? "" : "s"} ready for review.`, details: { generationId: input.generationId }, revision: input.revision });
+          await tx.update(workflowExtensionRequests).set({ response: { assets }, updatedAt: new Date() }).where(eq(workflowExtensionRequests.id, claimed.id));
+          return assets;
+        });
+      } catch (error) {
+        await Promise.all(storedObjectKeys.map((objectKey) => storage.deleteObject(run.companyId, objectKey).catch(() => undefined)));
+        throw error;
+      }
+    },
+
+    listRunEvents: async (runId: string, after?: string) => {
+      const run = await getSocialCmsRun(db, runId);
+      if (!run) return { events: [] };
+      const cursor = after
+        ? await db.select().from(workflowRunEvents).where(and(eq(workflowRunEvents.workflowRunId, runId), eq(workflowRunEvents.id, after))).then((rows) => rows[0] ?? null)
+        : null;
+      if (after && !cursor) throw badRequest("Invalid workflow event cursor");
+      const where = cursor
+        ? and(
+            eq(workflowRunEvents.workflowRunId, runId),
+            or(
+              gt(workflowRunEvents.createdAt, cursor.createdAt),
+              and(eq(workflowRunEvents.createdAt, cursor.createdAt), gt(workflowRunEvents.id, cursor.id)),
+            ),
+          )
+        : eq(workflowRunEvents.workflowRunId, runId);
+      const rows = await db.select().from(workflowRunEvents).where(where)
+        .orderBy(asc(workflowRunEvents.createdAt), asc(workflowRunEvents.id)).limit(101);
+      const page = rows.slice(0, 100);
+      const events = page.map(toWorkflowRunEvent);
+      return { events, ...(rows.length > 100 && events.length > 0 ? { nextCursor: events[events.length - 1]!.id } : {}) };
+    },
+
+    submitRunFeedback: async (runId: string, handoffId: string, feedback: WorkflowRunFeedback, actor: { userId: string | null }): Promise<SocialCmsFeedbackResult | null> => {
+      const socialRun = await getSocialCmsRun(db, runId);
+      if (!socialRun) return null;
+      const now = new Date();
+      const requestHash = fingerprintExtensionRequest({ handoffId, feedback });
+      return db.transaction(async (tx) => {
+        const claimed = await tx.insert(workflowExtensionRequests).values({
+          companyId: socialRun.companyId,
+          workflowRunId: runId,
+          extensionKey: CITRO_SOCIAL_CMS_EXTENSION,
+          operation: "submit_feedback",
+          idempotencyKey: feedback.idempotencyKey,
+          requestHash,
+          generationId: feedback.generationId,
+          revision: feedback.revision,
+        }).onConflictDoNothing({
+          target: [workflowExtensionRequests.workflowRunId, workflowExtensionRequests.extensionKey, workflowExtensionRequests.idempotencyKey],
+        }).returning().then((rows) => rows[0] ?? null);
+        if (!claimed) {
+          const existing = await tx.select().from(workflowExtensionRequests).where(and(
+            eq(workflowExtensionRequests.workflowRunId, runId),
+            eq(workflowExtensionRequests.extensionKey, CITRO_SOCIAL_CMS_EXTENSION),
+            eq(workflowExtensionRequests.idempotencyKey, feedback.idempotencyKey),
+          )).then((rows) => rows[0] ?? null);
+          if (!existing || existing.operation !== "submit_feedback" || existing.requestHash !== requestHash || existing.generationId !== feedback.generationId || existing.revision !== feedback.revision) {
+            throw conflict("Idempotency key was already used for a different Social CMS request");
+          }
+          if (existing.response) return { ...(existing.response as Omit<SocialCmsFeedbackResult, "duplicate">), duplicate: true };
+          throw conflict("Social CMS feedback is already in progress");
+        }
+        const run = await tx.select().from(workflowRuns).where(eq(workflowRuns.id, runId)).then((rows) => rows[0] ?? null);
+        if (!run) return null;
+        assertExtensionRevision(run, feedback);
+        assertExtensionGeneration(run, feedback);
+        if (run.status !== "awaiting_human" || run.reviewStage !== feedback.stage) {
+          throw conflict(`Workflow run is not awaiting ${feedback.stage} review`);
+        }
+        const handoff = await tx.select().from(workflowHandoffs)
+          .where(and(eq(workflowHandoffs.id, handoffId), eq(workflowHandoffs.workflowRunId, runId)))
+          .then((rows) => rows[0] ?? null);
+        if (!handoff) throw badRequest("Workflow review handoff not found for this run");
+        if (handoff.status !== "pending" || handoff.reviewStage !== feedback.stage || handoff.revision !== feedback.revision) {
+          throw conflict("Workflow review handoff is no longer pending at the requested stage and revision");
+        }
+
+        const revision = feedback.action === "request_changes" ? run.revision + 1 : run.revision;
+        const message = JSON.stringify({ action: feedback.action, stage: feedback.stage, instruction: feedback.instruction ?? "", target: feedback.target, revision });
+        const resolution = feedback.action === "approve" ? "approved" : feedback.action === "reject" ? "rejected" : "responded";
+        const resolvedHandoff = await tx.update(workflowHandoffs).set({
+          status: resolution,
+          responseMarkdown: message,
+          decidedByUserId: actor.userId ?? "board",
+          decidedAt: now,
+          updatedAt: now,
+        }).where(and(eq(workflowHandoffs.id, handoff.id), eq(workflowHandoffs.status, "pending"))).returning().then((rows) => rows[0] ?? null);
+        if (!resolvedHandoff) throw conflict("Workflow review handoff was already resolved");
+
+        const nextStatus = feedback.action === "reject" ? "rejected" : "running";
+        const nextRun = await tx.update(workflowRuns).set({
+          status: nextStatus,
+          reviewStage: feedback.stage,
+          revision,
+          finishedAt: feedback.action === "reject" ? now : null,
+          updatedAt: now,
+          contextSnapshot: {
+            ...((run.contextSnapshot as Record<string, unknown> | null) ?? {}),
+            reviewFeedback: { ...feedback, reviewerId: actor.userId ?? "board", receivedAt: now.toISOString(), revision },
+          },
+        }).where(eq(workflowRuns.id, runId)).returning().then((rows) => rows[0] ?? null);
+        if (!nextRun) throw unprocessable("Failed to persist workflow feedback");
+        await tx.insert(workflowRunEvents).values({
+          companyId: run.companyId,
+          workflowRunId: runId,
+          idempotencyKey: `${feedback.idempotencyKey}:response`,
+          actor: "human",
+          phase: feedback.action === "request_changes" ? "revision" : "review",
+          kind: "review_response",
+          summary: feedback.action === "request_changes" ? "Changes requested" : feedback.action === "approve" ? "Review approved" : "Review rejected",
+          details: { ...feedback, reviewerId: actor.userId ?? "board", timestamp: now.toISOString() },
+          revision,
+        });
+        if (feedback.action === "request_changes") {
+          await tx.insert(workflowRunEvents).values({
+            companyId: run.companyId,
+            workflowRunId: runId,
+            idempotencyKey: `${feedback.idempotencyKey}:revision`,
+            actor: "bizbox",
+            phase: "revision",
+            kind: "revision_applied",
+            summary: `Revision ${revision} resumed for ${feedback.target.scope}`,
+            details: { target: feedback.target, stage: feedback.stage },
+            revision,
+          });
+        }
+        const response: Omit<SocialCmsFeedbackResult, "duplicate"> = {
+          status: toWorkflowRun(nextRun).status,
+          reviewStage: nextRun.reviewStage === "content" || nextRun.reviewStage === "final" ? nextRun.reviewStage : null,
+          revision: nextRun.revision,
+        };
+        await tx.update(workflowExtensionRequests).set({ response, updatedAt: now }).where(eq(workflowExtensionRequests.id, claimed.id));
+        return { ...response, duplicate: false };
+      });
     },
 
     getDeliverableById: async (id: string) => {
@@ -1252,7 +1626,7 @@ export function workflowService(db: Db) {
     cancelRun: async (runId: string, actor: { userId: string | null }) => {
       const existing = await db.select().from(workflowRuns).where(eq(workflowRuns.id, runId)).then((rows) => rows[0] ?? null);
       if (!existing) return null;
-      if (["succeeded", "failed", "cancelled"].includes(existing.status)) {
+      if (["succeeded", "failed", "cancelled", "rejected"].includes(existing.status)) {
         return toWorkflowRun(existing);
       }
 
@@ -1262,7 +1636,7 @@ export function workflowService(db: Db) {
       const updated = await db.transaction(async (tx) => {
         const run = await tx.select().from(workflowRuns).where(eq(workflowRuns.id, runId)).then((rows) => rows[0] ?? null);
         if (!run) return null;
-        if (["succeeded", "failed", "cancelled"].includes(run.status)) {
+        if (["succeeded", "failed", "cancelled", "rejected"].includes(run.status)) {
           return run;
         }
 
@@ -1288,7 +1662,7 @@ export function workflowService(db: Db) {
           contextSnapshot: nextContextSnapshot,
         }).where(and(
           eq(workflowRuns.id, runId),
-          notInArray(workflowRuns.status, ["succeeded", "failed", "cancelled"]),
+          notInArray(workflowRuns.status, ["succeeded", "failed", "cancelled", "rejected"]),
         )).returning().then((rows) => rows[0] ?? run);
 
         await tx.update(workflowRunPhases).set({
@@ -1330,7 +1704,7 @@ export function workflowService(db: Db) {
         runtimeCalled: true,
       };
       const run = await db.select().from(workflowRuns).where(eq(workflowRuns.id, runId)).then((rows) => rows[0] ?? null);
-      if (!run || ["succeeded", "failed", "cancelled"].includes(run.status)) return null;
+      if (!run || ["succeeded", "failed", "cancelled", "rejected"].includes(run.status)) return null;
       let existing = await db.select().from(workflowRunPhases).where(
         and(eq(workflowRunPhases.workflowRunId, runId), eq(workflowRunPhases.phaseKey, event.phaseKey)),
       ).then((rows) => rows[0] ?? null);
@@ -1381,44 +1755,88 @@ export function workflowService(db: Db) {
       if (event.status === "running") {
         await db.update(workflowRuns).set({ status: "running", startedAt: now, updatedAt: now }).where(and(
           eq(workflowRuns.id, runId),
-          notInArray(workflowRuns.status, ["succeeded", "failed", "cancelled"]),
+          notInArray(workflowRuns.status, ["succeeded", "failed", "cancelled", "rejected"]),
         ));
       }
       if (event.status === "awaiting_human") {
         await db.update(workflowRuns).set({ status: "awaiting_human", updatedAt: now }).where(and(
           eq(workflowRuns.id, runId),
-          notInArray(workflowRuns.status, ["succeeded", "failed", "cancelled"]),
+          notInArray(workflowRuns.status, ["succeeded", "failed", "cancelled", "rejected"]),
         ));
       }
       return updated ? toWorkflowPhase(updated) : null;
     },
 
     createRuntimeHandoff: async (runId: string, input: CreateWorkflowHandoff) => {
-      const runRow = await db.select().from(workflowRuns).where(eq(workflowRuns.id, runId)).then((rows) => rows[0] ?? null);
+      // The generic run lifecycle remains `awaiting_human`. Review stage is
+      // additive metadata for opt-in review surfaces and must not change the
+      // status contract used by other workflows, the UI, or handoff bridges.
+      const reviewStage = input.stage ?? "content";
+      const isSocialCmsReview = input.stage !== undefined
+        || input.eventPhase !== undefined
+        || input.reviewSummary !== undefined;
+      if (isSocialCmsReview && !input.idempotencyKey) {
+        throw badRequest("Social CMS review handoffs require an idempotency key");
+      }
+      const runRow = isSocialCmsReview
+        ? await getSocialCmsRun(db, runId)
+        : await db.select().from(workflowRuns).where(eq(workflowRuns.id, runId)).then((rows) => rows[0] ?? null);
       if (!runRow) throw unprocessable("Workflow run not found");
-      const now = new Date();
-      await db.update(workflowRunPhases).set({
-        status: "awaiting_human",
-        updatedAt: now,
-      }).where(and(
-        eq(workflowRunPhases.workflowRunId, runId),
-        eq(workflowRunPhases.phaseKey, input.phaseKey),
-        notInArray(workflowRunPhases.status, ["succeeded", "failed", "cancelled"]),
-      ));
-      await db.update(workflowRuns).set({ status: "awaiting_human", updatedAt: now }).where(and(
-        eq(workflowRuns.id, runId),
-        notInArray(workflowRuns.status, ["succeeded", "failed", "cancelled"]),
-      ));
-      const inserted = await db.insert(workflowHandoffs).values({
-        companyId: runRow.companyId,
-        workflowRunId: runId,
-        phaseKey: input.phaseKey,
-        kind: input.kind,
-        status: "pending",
-        promptMarkdown: input.promptMarkdown,
-      }).returning().then((rows) => rows[0] ?? null);
-      if (!inserted) throw unprocessable("Failed to create workflow handoff");
-      return toWorkflowHandoff(inserted);
+      return db.transaction(async (tx) => {
+        if (input.idempotencyKey) {
+          const existing = await tx.select().from(workflowHandoffs).where(and(
+            eq(workflowHandoffs.workflowRunId, runId),
+            eq(workflowHandoffs.idempotencyKey, input.idempotencyKey),
+          )).then((rows) => rows[0] ?? null);
+          if (existing) return toWorkflowHandoff(existing);
+        }
+        const now = new Date();
+        await tx.update(workflowRunPhases).set({
+          status: "awaiting_human",
+          updatedAt: now,
+        }).where(and(
+          eq(workflowRunPhases.workflowRunId, runId),
+          eq(workflowRunPhases.phaseKey, input.phaseKey),
+          notInArray(workflowRunPhases.status, ["succeeded", "failed", "cancelled"]),
+        ));
+        await tx.update(workflowRuns).set({ status: "awaiting_human", reviewStage: input.stage ?? null, updatedAt: now }).where(and(
+          eq(workflowRuns.id, runId),
+          notInArray(workflowRuns.status, ["succeeded", "failed", "cancelled", "rejected"]),
+        ));
+        const inserted = await tx.insert(workflowHandoffs).values({
+          companyId: runRow.companyId,
+          workflowRunId: runId,
+          phaseKey: input.phaseKey,
+          kind: input.kind,
+          status: "pending",
+          promptMarkdown: input.promptMarkdown,
+          reviewStage: isSocialCmsReview ? reviewStage : null,
+          revision: runRow.revision,
+          idempotencyKey: input.idempotencyKey ?? null,
+        }).onConflictDoNothing().returning().then((rows) => rows[0] ?? null);
+        if (!inserted && input.idempotencyKey) {
+          const existing = await tx.select().from(workflowHandoffs).where(and(
+            eq(workflowHandoffs.workflowRunId, runId),
+            eq(workflowHandoffs.idempotencyKey, input.idempotencyKey),
+          )).then((rows) => rows[0] ?? null);
+          if (existing) return toWorkflowHandoff(existing);
+        }
+        if (!inserted) throw unprocessable("Failed to create workflow handoff");
+        if (isSocialCmsReview) {
+          await tx.insert(workflowRunEvents).values({
+            companyId: runRow.companyId,
+            workflowRunId: runId,
+            idempotencyKey: `${input.idempotencyKey}:review-requested`,
+            actor: "bizbox",
+            phase: reviewEventPhase(input),
+            kind: reviewEventKind(reviewEventPhase(input)),
+            summary: input.reviewSummary ?? `Awaiting ${reviewStage} review`,
+            details: { handoffId: inserted.id, phaseKey: input.phaseKey, stage: reviewStage },
+            revision: runRow.revision,
+          });
+        }
+        return toWorkflowHandoff(inserted);
+      });
     },
 
     getHandoff: async (handoffId: string) => {
@@ -1460,6 +1878,9 @@ export function workflowService(db: Db) {
         const current = await db.select().from(workflowHandoffs).where(eq(workflowHandoffs.id, handoffId)).then((rows) => rows[0] ?? null);
         return current ? toWorkflowHandoff(current) : null;
       }
+      // A handoff decision is input to the workflow, not a run-level terminal
+      // action. The runtime decides whether rejection means stop, revise, or
+      // continue along another branch.
       await db.update(workflowRunPhases).set({
         status: "running",
         updatedAt: now,
@@ -1473,7 +1894,7 @@ export function workflowService(db: Db) {
         updatedAt: now,
       }).where(and(
         eq(workflowRuns.id, existing.workflowRunId),
-        notInArray(workflowRuns.status, ["succeeded", "failed", "cancelled"]),
+        notInArray(workflowRuns.status, ["succeeded", "failed", "cancelled", "rejected"]),
       ));
       try {
         await workflowHandoffBridgeService(db).closeResolvedHandoff(updated.id, resolution);

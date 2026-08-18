@@ -1,10 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { CITRO_SOCIAL_CMS_EXTENSION } from "@paperclipai/shared";
 import {
   companies,
   createDb,
+  workflowDeliverables,
+  workflowExtensionRequests,
   workflowHandoffs,
+  workflowRunEvents,
   workflowRunPhases,
   workflowRunTelemetryEvents,
   workflowRuns,
@@ -23,12 +27,13 @@ const mockPutFile = vi.hoisted(() => vi.fn(async () => ({
   sha256: "hash",
   originalFilename: "object.md",
 })));
+const mockDeleteObject = vi.hoisted(() => vi.fn(async () => undefined));
 const mockGetStorageService = vi.hoisted(() => vi.fn(() => ({
   provider: "local_disk",
   putFile: mockPutFile,
   getObject: vi.fn(),
   headObject: vi.fn(),
-  deleteObject: vi.fn(),
+  deleteObject: mockDeleteObject,
 })));
 const mockInvokeGoogleAdk = vi.hoisted(() => vi.fn(async () => ({
   summary: "done",
@@ -521,6 +526,203 @@ describeEmbeddedPostgres("workflowService.runManual", () => {
     expect(doneRun?.status).toBe("succeeded");
     const [donePhase] = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, doneRunId));
     expect(donePhase?.status).toBe("succeeded");
+  });
+
+  it("keeps generic and Social CMS handoffs on the compatible awaiting_human lifecycle", async () => {
+    const companyId = randomUUID();
+    const workflowId = randomUUID();
+    const genericRunId = randomUUID();
+    const socialRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(workflows).values({
+      id: workflowId,
+      companyId,
+      title: "Mixed workflow fixtures",
+      status: "active",
+      capabilities: [CITRO_SOCIAL_CMS_EXTENSION],
+      runnerType: "google_adk",
+      runnerConfig: { agentPath: "/tmp/agent.py" },
+      pipelineDefinition: { entrypoint: "agent.py", generatedAt: new Date(0).toISOString(), phases: [] },
+      pipelineSourceHash: null,
+    });
+    await db.insert(workflowRuns).values([
+      { id: genericRunId, companyId, workflowId, status: "running", inputMarkdown: "generic" },
+      { id: socialRunId, companyId, workflowId, status: "running", inputMarkdown: "social" },
+    ]);
+    await db.insert(workflowRunPhases).values([
+      { companyId, workflowRunId: genericRunId, phaseKey: "approval", label: "Approval", kind: "phase", ordinal: 0, status: "running" },
+      { companyId, workflowRunId: socialRunId, phaseKey: "assets", label: "Assets", kind: "phase", ordinal: 0, status: "running" },
+    ]);
+
+    const svc = workflowService(db);
+    const genericHandoff = await svc.createRuntimeHandoff(genericRunId, {
+      phaseKey: "approval",
+      kind: "approval",
+      promptMarkdown: "Continue?",
+    });
+    await svc.createRuntimeHandoff(socialRunId, {
+      phaseKey: "assets",
+      kind: "approval",
+      stage: "content",
+      eventPhase: "assets",
+      reviewSummary: "Rendered assets are ready.",
+      idempotencyKey: "social-assets-review-0",
+      promptMarkdown: "Review assets?",
+    });
+
+    const [genericParked] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, genericRunId));
+    const [socialParked] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, socialRunId));
+    const genericEvents = await db.select().from(workflowRunEvents).where(eq(workflowRunEvents.workflowRunId, genericRunId));
+    const socialEvents = await db.select().from(workflowRunEvents).where(eq(workflowRunEvents.workflowRunId, socialRunId));
+
+    expect(genericParked).toMatchObject({ status: "awaiting_human", reviewStage: null });
+    expect(socialParked).toMatchObject({ status: "awaiting_human", reviewStage: "content" });
+    expect(genericEvents).toHaveLength(0);
+    expect(socialEvents).toHaveLength(1);
+    expect(socialEvents[0]).toMatchObject({ phase: "assets", summary: "Rendered assets are ready." });
+
+    await svc.resolveHandoff(genericHandoff.id, "rejected", { userId: "board" }, { responseMarkdown: "No" });
+    const [genericResumed] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, genericRunId));
+    const [genericPhase] = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, genericRunId));
+
+    expect(genericResumed?.status).toBe("running");
+    expect(genericResumed?.finishedAt).toBeNull();
+    expect(genericPhase?.status).toBe("running");
+  });
+
+  it("makes Social CMS publications and exact-handoff feedback retry-safe", async () => {
+    const companyId = randomUUID();
+    const workflowId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Social CMS",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(workflows).values({
+      id: workflowId,
+      companyId,
+      title: "Social workflow",
+      status: "active",
+      capabilities: [CITRO_SOCIAL_CMS_EXTENSION],
+      runnerType: "google_adk",
+      runnerConfig: { agentPath: "/tmp/agent.py" },
+      pipelineDefinition: { entrypoint: "agent.py", generatedAt: new Date(0).toISOString(), phases: [] },
+      pipelineSourceHash: null,
+    });
+    await db.insert(workflowRuns).values({ id: runId, companyId, workflowId, status: "running", inputMarkdown: "social" });
+    await db.insert(workflowRunPhases).values({
+      companyId,
+      workflowRunId: runId,
+      phaseKey: "review",
+      label: "Review",
+      kind: "phase",
+      ordinal: 0,
+      status: "running",
+    });
+
+    const svc = workflowService(db);
+    const handoff = await svc.createRuntimeHandoff(runId, {
+      phaseKey: "review",
+      kind: "approval",
+      stage: "content",
+      reviewSummary: "Draft ready",
+      idempotencyKey: "handoff-content-0",
+      promptMarkdown: "Review the draft",
+    });
+    const reviewRequest = {
+      idempotencyKey: "review-publication-0",
+      generationId: "generation-1",
+      revision: 0,
+      deliverables: [{ id: "post-1", title: "Post", contentMarkdown: "Hello", screens: [{ screenNumber: 1, copy: "Hello" }] }],
+    };
+    await expect(svc.publishRunReview(runId, reviewRequest)).resolves.toMatchObject({ generationId: "generation-1", revision: 0 });
+    await expect(svc.publishRunReview(runId, reviewRequest)).resolves.toMatchObject({ generationId: "generation-1", revision: 0 });
+    await expect(svc.publishRunReview(runId, {
+      ...reviewRequest,
+      deliverables: [{ ...reviewRequest.deliverables[0]!, contentMarkdown: "Changed under the same retry key" }],
+    })).rejects.toThrow(/idempotency key/i);
+    const deliverables = await db.select().from(workflowDeliverables).where(eq(workflowDeliverables.workflowRunId, runId));
+    expect(deliverables).toHaveLength(1);
+
+    const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString("base64");
+    mockPutFile
+      .mockResolvedValueOnce({
+        provider: "local_disk",
+        objectKey: "workflow-deliverables/first.png",
+        contentType: "image/png",
+        byteSize: 8,
+        sha256: "hash",
+        originalFilename: "first.png",
+      })
+      .mockRejectedValueOnce(new Error("storage unavailable"));
+    await expect(svc.publishRunAssets(runId, {
+      idempotencyKey: "asset-publication-0",
+      generationId: "generation-1",
+      revision: 0,
+      assets: [1, 2].map((screenNumber) => ({
+        id: `asset-${screenNumber}`,
+        deliverableId: "post-1",
+        screenNumber,
+        postType: "carousel",
+        templateId: "template-1",
+        contentBase64: pngHeader,
+        contentType: "image/png",
+      })),
+    })).rejects.toThrow("storage unavailable");
+    expect(mockDeleteObject).toHaveBeenCalledWith(companyId, "workflow-deliverables/first.png");
+    const deliverablesAfterFailure = await db.select().from(workflowDeliverables).where(eq(workflowDeliverables.workflowRunId, runId));
+    expect(deliverablesAfterFailure).toHaveLength(1);
+
+    const feedback = {
+      idempotencyKey: "feedback-content-0",
+      generationId: "generation-1",
+      revision: 0,
+      action: "request_changes" as const,
+      stage: "content" as const,
+      instruction: "Warmer tone",
+      target: { scope: "copy" as const },
+    };
+    await expect(svc.submitRunFeedback(runId, randomUUID(), feedback, { userId: "board" }))
+      .rejects.toThrow(/handoff not found/i);
+    await expect(svc.submitRunFeedback(runId, handoff.id, feedback, { userId: "board" }))
+      .resolves.toMatchObject({ status: "running", revision: 1, duplicate: false });
+    await expect(svc.submitRunFeedback(runId, handoff.id, feedback, { userId: "board" }))
+      .resolves.toMatchObject({ status: "running", revision: 1, duplicate: true });
+    const requests = await db.select().from(workflowExtensionRequests).where(eq(workflowExtensionRequests.workflowRunId, runId));
+    expect(requests).toHaveLength(2);
+  });
+
+  it("rejects Social CMS APIs when the workflow did not opt in", async () => {
+    const companyId = randomUUID();
+    const workflowId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Generic",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(workflows).values({
+      id: workflowId,
+      companyId,
+      title: "Generic workflow",
+      status: "active",
+      capabilities: [],
+      runnerType: "google_adk",
+      runnerConfig: { agentPath: "/tmp/agent.py" },
+      pipelineDefinition: { entrypoint: "agent.py", generatedAt: new Date(0).toISOString(), phases: [] },
+      pipelineSourceHash: null,
+    });
+    await db.insert(workflowRuns).values({ id: runId, companyId, workflowId, status: "running", inputMarkdown: "generic" });
+    await expect(workflowService(db).getRunReview(runId)).rejects.toThrow(/has not enabled/i);
   });
 
   it("closes an active ClickUp bridge when a handoff is resolved directly", async () => {

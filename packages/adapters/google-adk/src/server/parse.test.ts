@@ -63,6 +63,24 @@ describe("parseGoogleAdkJsonl", () => {
     expect(parsed.errorMessage).toBe("intake failed");
   });
 
+  it("preserves nested failure details when a terminal event has no message", () => {
+    const parsed = parseGoogleAdkJsonl([
+      JSON.stringify({ error: { detail: "The image provider rejected the request" } }),
+      JSON.stringify({ event: "run.failed", details: { error: { code: "image_provider_error" } } }),
+    ].join("\n"));
+
+    expect(parsed.errorMessage).toBe("image_provider_error");
+  });
+
+  it("does not replace a prior error with the generic run.failed fallback", () => {
+    const parsed = parseGoogleAdkJsonl([
+      JSON.stringify({ error: { message: "Missing campaign brief" } }),
+      JSON.stringify({ event: "run.failed" }),
+    ].join("\n"));
+
+    expect(parsed.errorMessage).toBe("Missing campaign brief");
+  });
+
   it("does not treat advisory messages on successful compact events as errors", () => {
     const parsed = parseGoogleAdkJsonl([
       JSON.stringify({
@@ -76,6 +94,23 @@ describe("parseGoogleAdkJsonl", () => {
     ].join("\n"));
 
     expect(parsed.errorMessage).toBeNull();
+  });
+
+  it("preserves the terminal structured workflow result", () => {
+    const parsed = parseGoogleAdkJsonl(JSON.stringify({
+      event: "run.completed",
+      node: "instagram_complete",
+      status: "success",
+      result: {
+        status: "success",
+        cms_draft: { post_id: 127 },
+      },
+    }));
+
+    expect(parsed.finalResult).toEqual({
+      status: "success",
+      cms_draft: { post_id: 127 },
+    });
   });
 
   it("captures compact grounding sources and their source-specific outcomes as tools", () => {

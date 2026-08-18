@@ -212,6 +212,7 @@ export async function invokeGoogleAdk(input: InvokeGoogleAdkInput): Promise<Adap
       summary: parsed.summary || null,
       usage: parsed.usage,
       resultJson: {
+        ...parsed.finalResult,
         stdout: proc.stdout,
         stderr: proc.stderr,
         toolCalls: parsed.toolCalls,
@@ -231,6 +232,7 @@ export async function invokeGoogleAdk(input: InvokeGoogleAdkInput): Promise<Adap
       model: model || null,
       provider: "google_adk",
       resultJson: {
+        ...parsed.finalResult,
         stdout: proc.stdout,
         stderr: proc.stderr,
         toolCalls: parsed.toolCalls,
@@ -248,6 +250,7 @@ export async function invokeGoogleAdk(input: InvokeGoogleAdkInput): Promise<Adap
     model: model || null,
     provider: "google_adk",
     resultJson: {
+      ...parsed.finalResult,
       stdout: proc.stdout,
       stderr: proc.stderr,
       toolCalls: parsed.toolCalls,

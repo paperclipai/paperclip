@@ -610,6 +610,87 @@ describe("WorkflowDetail page", () => {
     expect(container.textContent).toContain("Use supplied facts only.");
   });
 
+  it("collapses telemetry handoff prompts until expanded", async () => {
+    getRunMock.mockResolvedValueOnce({
+      ...latestRunDetail,
+      phases: [
+        ...latestRunDetail.phases,
+        {
+          ...latestRunDetail.phases[0],
+          id: "telemetry-handoff-run-latest",
+          phaseKey: "telemetry:handoff-writer",
+          label: "handoff:Writer",
+          kind: "phase",
+          ordinal: 1,
+          metadata: {
+            runtimePhase: true,
+            handoffTarget: "Writer",
+            prompt: "Use the supplied research to draft the briefing.",
+          },
+        },
+      ],
+    });
+
+    await renderAt(container, "/workflows/workflow-1");
+    await flushReact();
+    await flushReact();
+
+    const behaviorTab = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent === "Agent behavior");
+    await act(async () => {
+      behaviorTab!.focus();
+      behaviorTab!.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    });
+    await flushReact();
+
+    const telemetryPrompt = container.querySelector('[data-testid="behavior-agent-prompt"]');
+    expect(telemetryPrompt?.textContent).toContain("Prompt from telemetry handoff");
+    expect(telemetryPrompt?.hasAttribute("open")).toBe(false);
+    expect(telemetryPrompt?.textContent).toContain("Click to expand");
+
+    await act(async () => {
+      (telemetryPrompt?.querySelector("summary") as HTMLElement).click();
+    });
+    expect(telemetryPrompt?.hasAttribute("open")).toBe(true);
+    expect(telemetryPrompt?.textContent).toContain("Use the supplied research to draft the briefing.");
+  });
+
+  it("collapses workflow handoff prompts until expanded", async () => {
+    getRunMock.mockResolvedValueOnce({
+      ...latestRunDetail,
+      phases: latestRunDetail.phases.map((phase) => ({
+        ...phase,
+        metadata: {
+          ...phase.metadata,
+          prompt: "Workflow: Brief generator\n\nInput:\nDraft the board briefing from the supplied research.",
+        },
+      })),
+    });
+
+    await renderAt(container, "/workflows/workflow-1");
+    await flushReact();
+    await flushReact();
+
+    const behaviorTab = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent === "Agent behavior");
+    await act(async () => {
+      behaviorTab!.focus();
+      behaviorTab!.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    });
+    await flushReact();
+
+    const workflowPrompt = container.querySelector('[data-testid="behavior-agent-prompt"]');
+    expect(workflowPrompt?.textContent).toContain("Workflow handoff");
+    expect(workflowPrompt?.hasAttribute("open")).toBe(false);
+    expect(workflowPrompt?.textContent).toContain("Click to expand");
+
+    await act(async () => {
+      (workflowPrompt?.querySelector("summary") as HTMLElement).click();
+    });
+    expect(workflowPrompt?.hasAttribute("open")).toBe(true);
+    expect(workflowPrompt?.textContent).toContain("Draft the board briefing from the supplied research.");
+  });
+
   it("hides inferred agents that were not called during the selected run", async () => {
     getWorkflowMock.mockResolvedValueOnce({
       ...workflowDetail,
@@ -1055,6 +1136,9 @@ describe("buildWorkflowGraph", () => {
               phaseKey: "root",
               kind: "response",
               status: "closed",
+              reviewStage: null,
+              revision: 0,
+              idempotencyKey: null,
               promptMarkdown: "",
               responseMarkdown: null,
               decidedByUserId: null,
@@ -1075,6 +1159,9 @@ describe("buildWorkflowGraph", () => {
               phaseKey: "child",
               kind: "response",
               status: "closed",
+              reviewStage: null,
+              revision: 0,
+              idempotencyKey: null,
               promptMarkdown: "",
               responseMarkdown: null,
               decidedByUserId: null,
@@ -1090,6 +1177,9 @@ describe("buildWorkflowGraph", () => {
               phaseKey: "child",
               kind: "response",
               status: "closed",
+              reviewStage: null,
+              revision: 0,
+              idempotencyKey: null,
               promptMarkdown: "",
               responseMarkdown: null,
               decidedByUserId: null,
@@ -1105,6 +1195,9 @@ describe("buildWorkflowGraph", () => {
               phaseKey: "child",
               kind: "response",
               status: "closed",
+              reviewStage: null,
+              revision: 0,
+              idempotencyKey: null,
               promptMarkdown: "",
               responseMarkdown: null,
               decidedByUserId: null,
@@ -1180,6 +1273,9 @@ describe("buildWorkflowGraph", () => {
       phaseKey: "entrypoint",
       kind: "approval",
       status: "pending",
+      reviewStage: null,
+      revision: 0,
+      idempotencyKey: null,
       promptMarkdown: "Please review the package.",
       responseMarkdown: null,
       decidedByUserId: null,

@@ -303,7 +303,18 @@ export type RoutineRunSource = (typeof ROUTINE_RUN_SOURCES)[number];
 
 export const WORKFLOW_STATUSES = ["active", "paused", "archived"] as const;
 export type WorkflowStatus = (typeof WORKFLOW_STATUSES)[number];
-export const WORKFLOW_RUN_STATUSES = ["queued", "running", "awaiting_human", "succeeded", "failed", "cancelled"] as const;
+export const CITRO_SOCIAL_CMS_EXTENSION = "citro-social-cms/v1" as const;
+export const WORKFLOW_RUN_STATUSES = [
+  "queued",
+  "running",
+  "awaiting_human",
+  "awaiting_content_review",
+  "awaiting_final_review",
+  "succeeded",
+  "failed",
+  "cancelled",
+  "rejected",
+] as const;
 export type WorkflowRunStatus = (typeof WORKFLOW_RUN_STATUSES)[number];
 export const WORKFLOW_PHASE_STATUSES = ["idle", "running", "awaiting_human", "succeeded", "failed", "cancelled"] as const;
 export type WorkflowPhaseStatus = (typeof WORKFLOW_PHASE_STATUSES)[number];

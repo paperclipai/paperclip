@@ -1,0 +1,1 @@
+ALTER TABLE "workflow_extension_requests" ADD COLUMN "request_hash" text NOT NULL;

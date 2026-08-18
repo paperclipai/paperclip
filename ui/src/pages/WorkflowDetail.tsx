@@ -2123,7 +2123,11 @@ function WorkflowBehaviorAgentNode({ agent, index }: { agent: WorkflowBehaviorAg
             }
             value={agent.prompt}
             tone="operator"
-            collapsible={agent.promptSource === "adk_event"}
+            collapsible={
+              agent.promptSource === "adk_event"
+              || agent.promptSource === "telemetry_handoff"
+              || agent.promptSource === "workflow_handoff"
+            }
             testId="behavior-agent-prompt"
             empty={
               agent.promptSource === "unavailable"

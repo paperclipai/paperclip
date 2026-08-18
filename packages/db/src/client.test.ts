@@ -109,6 +109,57 @@ describe("resolvePostgresClientOptions", () => {
 
 describeEmbeddedPostgres("applyPendingMigrations", () => {
   it(
+    "backfills idempotency keys for workflow run events created before migration 0085",
+    async () => {
+      const connectionString = await createTempDatabase();
+      await applyPendingMigrations(connectionString);
+
+      const eventId = "00000000-0000-4000-8000-000000000085";
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const migration0085Hash = await migrationHash("0085_omniscient_salo.sql");
+        const migration0086Hash = await migrationHash("0086_freezing_medusa.sql");
+        await sql.unsafe(`DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash IN ('${migration0085Hash}', '${migration0086Hash}')`);
+        await sql.unsafe(`DROP TABLE "workflow_extension_requests"`);
+        await sql.unsafe(`ALTER TABLE "workflow_handoffs" DROP COLUMN "review_stage", DROP COLUMN "revision", DROP COLUMN "idempotency_key"`);
+        await sql.unsafe(`ALTER TABLE "workflow_run_events" DROP COLUMN "idempotency_key"`);
+        await sql.unsafe(`
+          INSERT INTO "companies" ("id", "name", "issue_prefix", "require_board_approval_for_new_agents")
+          VALUES ('00000000-0000-4000-8000-000000000001', 'Migration test', 'MIG', false)
+        `);
+        await sql.unsafe(`
+          INSERT INTO "workflows" ("id", "company_id", "title", "status", "runner_type", "runner_config", "pipeline_definition")
+          VALUES ('00000000-0000-4000-8000-000000000002', '00000000-0000-4000-8000-000000000001', 'Legacy workflow', 'active', 'google_adk', '{}', '{}')
+        `);
+        await sql.unsafe(`
+          INSERT INTO "workflow_runs" ("id", "company_id", "workflow_id", "status", "input_markdown")
+          VALUES ('00000000-0000-4000-8000-000000000003', '00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002', 'running', 'legacy')
+        `);
+        await sql.unsafe(`
+          INSERT INTO "workflow_run_events" ("id", "company_id", "workflow_run_id", "actor", "phase", "kind", "summary")
+          VALUES ('${eventId}', '00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000003', 'bizbox', 'review', 'review_requested', 'Legacy event')
+        `);
+      } finally {
+        await sql.end();
+      }
+
+      await applyPendingMigrations(connectionString);
+      expect((await inspectMigrations(connectionString)).status).toBe("upToDate");
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const [event] = await verifySql.unsafe<{ idempotency_key: string }[]>(`
+          SELECT "idempotency_key" FROM "workflow_run_events" WHERE "id" = '${eventId}'
+        `);
+        expect(event?.idempotency_key).toBe(`legacy:${eventId}`);
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
     "applies an inserted earlier migration without replaying later legacy migrations",
     async () => {
       const connectionString = await createTempDatabase();

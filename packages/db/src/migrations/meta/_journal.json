@@ -589,6 +589,27 @@
       "when": 1786498243503,
       "tag": "0083_marvelous_scrambler",
       "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1786867310467,
+      "tag": "0084_clammy_strong_guy",
+      "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1787015962169,
+      "tag": "0085_omniscient_salo",
+      "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1787016560214,
+      "tag": "0086_freezing_medusa",
+      "breakpoints": true
     }
   ]
 }

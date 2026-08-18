@@ -240,6 +240,7 @@ export async function execute(
       summary: parsed.summary || null,
       usage: parsed.usage,
       resultJson: {
+        ...parsed.finalResult,
         stdout: proc.stdout,
         stderr: proc.stderr,
         toolCalls: parsed.toolCalls,
@@ -261,6 +262,7 @@ export async function execute(
       model: model || null,
       provider: "google_adk",
       resultJson: {
+        ...parsed.finalResult,
         stdout: proc.stdout,
         stderr: proc.stderr,
         toolCalls: parsed.toolCalls,
@@ -278,6 +280,7 @@ export async function execute(
     model: model || null,
     provider: "google_adk",
     resultJson: {
+      ...parsed.finalResult,
       stdout: proc.stdout,
       stderr: proc.stderr,
       toolCalls: parsed.toolCalls,

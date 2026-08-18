@@ -13,6 +13,7 @@ import {
   updateWorkflowSchema,
   updateWorkflowScheduleSchema,
   workflowPhaseEventSchema,
+  workflowRunFeedbackSchema,
   workflowTelemetryBatchSchema,
 } from "@paperclipai/shared";
 import { z } from "zod";
@@ -40,8 +41,35 @@ export function workflowRoutes(db: Db) {
   const runtimeCreateHandoffRequestSchema = createWorkflowHandoffSchema.extend({
     token: z.string().trim().min(1),
   });
-  const runtimeTelemetryRequestSchema = workflowTelemetryBatchSchema.extend({
+  const runtimeTelemetryRequestSchema = workflowTelemetryBatchSchema.and(z.object({
     token: z.string().trim().min(1),
+  }));
+  const runtimeReviewRequestSchema = z.object({
+    token: z.string().trim().min(1),
+    idempotencyKey: z.string().trim().min(1).max(255),
+    generationId: z.string().trim().min(1).max(255),
+    revision: z.number().int().min(0),
+    deliverables: z.array(z.object({
+      id: z.string().trim().min(1).max(255),
+      title: z.string().trim().min(1).max(200),
+      contentMarkdown: z.string().max(200_000),
+      screens: z.array(z.object({ screenNumber: z.number().int().positive(), copy: z.string().max(20_000) })).max(100),
+    })).min(1).max(50),
+  });
+  const runtimeAssetsRequestSchema = z.object({
+    token: z.string().trim().min(1),
+    idempotencyKey: z.string().trim().min(1).max(255),
+    generationId: z.string().trim().min(1).max(255),
+    revision: z.number().int().min(0),
+    assets: z.array(z.object({
+      id: z.string().trim().min(1).max(255),
+      deliverableId: z.string().trim().min(1).max(255),
+      screenNumber: z.number().int().positive(),
+      postType: z.string().trim().min(1).max(100),
+      templateId: z.string().trim().min(1).max(255),
+      contentBase64: z.string().min(1).max(7_000_000),
+      contentType: z.enum(["image/png", "image/jpeg", "image/webp"]).optional().default("image/png"),
+    })).min(1).max(20),
   });
 
   router.get("/companies/:companyId/workflows", async (req, res) => {
@@ -268,7 +296,7 @@ export function workflowRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, detail.companyId);
-    if (["succeeded", "failed", "cancelled"].includes(detail.status)) {
+    if (["succeeded", "failed", "cancelled", "rejected"].includes(detail.status)) {
       res.status(409).json({ error: "Workflow run is already in a terminal state" });
       return;
     }
@@ -286,6 +314,88 @@ export function workflowRoutes(db: Db) {
       });
     }
     res.json(cancelled);
+  });
+
+  router.post("/workflow-runs/:id/extensions/citro-social-cms/v1/handoffs/:handoffId/feedback", validate(workflowRunFeedbackSchema), async (req, res) => {
+    assertBoard(req);
+    const detail = await svc.getRunDetail(req.params.id as string);
+    if (!detail) {
+      res.status(404).json({ error: "Workflow run not found" });
+      return;
+    }
+    assertCompanyAccess(req, detail.companyId);
+    const result = await svc.submitRunFeedback(detail.id, req.params.handoffId as string, req.body, { userId: req.actor.userId ?? "board" });
+    if (!result) {
+      res.status(404).json({ error: "Workflow run not found" });
+      return;
+    }
+    if (!result.duplicate) {
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: detail.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        action: "workflow.run_feedback_submitted",
+        entityType: "workflow_run",
+        entityId: detail.id,
+        details: { action: req.body.action, stage: req.body.stage, target: req.body.target, revision: result.revision },
+      });
+    }
+    res.json({
+      status: result.status,
+      reviewState: req.body.action === "reject"
+        ? "rejected"
+        : req.body.action === "request_changes"
+          ? "revision_requested"
+          : "approved",
+      reviewStage: result.reviewStage,
+      revision: result.revision,
+      duplicate: result.duplicate,
+    });
+  });
+
+  router.get("/workflow-runs/:id/extensions/citro-social-cms/v1/events", async (req, res) => {
+    assertBoard(req);
+    const detail = await svc.getRunDetail(req.params.id as string);
+    if (!detail) {
+      res.status(404).json({ error: "Workflow run not found" });
+      return;
+    }
+    assertCompanyAccess(req, detail.companyId);
+    const after = typeof req.query.after === "string" ? req.query.after : undefined;
+    res.json(await svc.listRunEvents(detail.id, after));
+  });
+
+  router.get("/workflow-runs/:id/extensions/citro-social-cms/v1/assets", async (req, res) => {
+    assertBoard(req);
+    const detail = await svc.getRunDetail(req.params.id as string);
+    if (!detail) {
+      res.status(404).json({ error: "Workflow run not found" });
+      return;
+    }
+    assertCompanyAccess(req, detail.companyId);
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+    const assets = await svc.listRunAssets(detail.id);
+    res.json({
+      assets: assets.map((asset, index) => ({
+        id: asset.id,
+        deliverableId: asset.deliverableId,
+        screenNumber: asset.screenNumber ?? index + 1,
+        templateId: asset.templateId ?? "workflow-deliverable",
+        postType: asset.postType ?? "single_image",
+        status: asset.superseded ? "superseded" : "generated",
+        url: new URL(asset.viewableUrl, baseUrl).toString(),
+        thumbnailUrl: new URL(asset.thumbnailUrl ?? asset.viewableUrl, baseUrl).toString(),
+      })),
+    });
+  });
+
+  router.get("/workflow-runs/:id/extensions/citro-social-cms/v1/review", async (req, res) => {
+    assertBoard(req);
+    const detail = await svc.getRunDetail(req.params.id as string);
+    if (!detail) return res.status(404).json({ error: "Workflow run not found" });
+    assertCompanyAccess(req, detail.companyId);
+    res.json(await svc.getRunReview(detail.id));
   });
 
   router.post("/workflow-handoffs/:id/approve", validate(resolveWorkflowHandoffSchema), async (req, res) => {
@@ -363,6 +473,24 @@ export function workflowRoutes(db: Db) {
     },
   );
 
+  router.post("/workflow-runs/:id/runtime/extensions/citro-social-cms/v1/review", validate(runtimeReviewRequestSchema), async (req, res) => {
+    const runId = req.params.id as string;
+    if (!await svc.verifyRuntimeToken(runId, readRuntimeToken(req))) return res.status(401).json({ error: "Invalid workflow runtime token" });
+    const { token: _token, ...input } = req.body;
+    const result = await svc.publishRunReview(runId, input);
+    if (!result) return res.status(404).json({ error: "Workflow run not found" });
+    res.status(201).json(result);
+  });
+
+  router.post("/workflow-runs/:id/runtime/extensions/citro-social-cms/v1/assets", validate(runtimeAssetsRequestSchema), async (req, res) => {
+    const runId = req.params.id as string;
+    if (!await svc.verifyRuntimeToken(runId, readRuntimeToken(req))) return res.status(401).json({ error: "Invalid workflow runtime token" });
+    const { token: _token, ...input } = req.body;
+    const result = await svc.publishRunAssets(runId, input);
+    if (!result) return res.status(404).json({ error: "Workflow run not found" });
+    res.status(201).json({ assets: result });
+  });
+
   router.post("/workflow-runs/:id/handoffs/runtime", validate(runtimeCreateHandoffRequestSchema), async (req, res) => {
     const runId = req.params.id as string;
     const token = readRuntimeToken(req);
@@ -374,8 +502,8 @@ export function workflowRoutes(db: Db) {
     const { token: _token, ...input } = req.body as CreateWorkflowHandoff & { token: string };
     const handoff = await svc.createRuntimeHandoff(runId, input);
 
-    // Attempt to open a ClickUp bridge for the handoff.
-    // If ClickUp is not configured, return 503 immediately so the caller knows.
+    // A ClickUp bridge is an optional delivery channel. The handoff itself remains
+    // actionable from Bizbox when that delivery cannot be opened.
     try {
       const bridgeSvc = workflowHandoffBridgeService(db);
       await bridgeSvc.openForHandoff({
@@ -385,12 +513,9 @@ export function workflowRoutes(db: Db) {
         kind: handoff.kind,
         promptMarkdown: handoff.promptMarkdown,
       });
-    } catch (error) {
-      const code = (error as { code?: string }).code;
-      const status = (error as { status?: number }).status ?? 500;
-      const message = error instanceof Error ? error.message : String(error);
-      res.status(status).json({ error: message, code });
-      return;
+    } catch {
+      // The runtime polls this handoff directly, and a board operator can resolve
+      // it in Bizbox, so a failed external notification must not fail the run.
     }
 
     res.status(201).json(handoff);
