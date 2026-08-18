@@ -1494,6 +1494,22 @@ export async function runChildProcess(
       delete rawMerged[key];
     }
 
+    // Strip systemd service-manager vars so the spawned agent process can't
+    // reach the Paperclip server's own readiness/socket-activation channel.
+    // NOTIFY_SOCKET in particular lets any process with it in its env call
+    // sd_notify on the server's readiness socket; systemd only accepts
+    // notifications from the service's registered main PID, so an agent
+    // subprocess inheriting it just spams "reception only permitted for
+    // main PID" warnings, but it's still an unintended channel and must not
+    // be handed to child processes. These vars can arrive either via
+    // process.env (systemd sets them on the server process) or via
+    // opts.env (adapters that build their env as `{ ...process.env, ... }`),
+    // so strip them after the merge, not just from the process.env side.
+    const SERVICE_MANAGER_VARS = ["NOTIFY_SOCKET", "LISTEN_FDS", "LISTEN_PID", "LISTEN_FDNAMES"] as const;
+    for (const key of SERVICE_MANAGER_VARS) {
+      delete rawMerged[key];
+    }
+
     const mergedEnv = ensurePathInEnv(rawMerged);
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv, {
       remoteExecution: opts.remoteExecution ?? null,

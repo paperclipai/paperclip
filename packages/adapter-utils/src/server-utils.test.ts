@@ -92,6 +92,49 @@ describe("runChildProcess", () => {
     expect(finishedAt - startedAt).toBeGreaterThanOrEqual(spawnDelayMs);
   });
 
+  it("strips systemd service-manager vars (NOTIFY_SOCKET/LISTEN_FDS/LISTEN_PID/LISTEN_FDNAMES) from both inherited and caller-supplied env", async () => {
+    const SERVICE_MANAGER_VARS = ["NOTIFY_SOCKET", "LISTEN_FDS", "LISTEN_PID", "LISTEN_FDNAMES"] as const;
+    const originalValues: Record<string, string | undefined> = {};
+    for (const key of SERVICE_MANAGER_VARS) {
+      originalValues[key] = process.env[key];
+      process.env[key] = `inherited-${key}`;
+    }
+
+    try {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        ["-e", "process.stdout.write(JSON.stringify(process.env))"],
+        {
+          cwd: process.cwd(),
+          env: {
+            NOTIFY_SOCKET: "/run/caller-supplied.sock",
+            LISTEN_FDS: "1",
+            LISTEN_PID: "12345",
+            LISTEN_FDNAMES: "caller",
+          },
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      const childEnv = JSON.parse(result.stdout) as Record<string, string | undefined>;
+      for (const key of SERVICE_MANAGER_VARS) {
+        expect(childEnv[key]).toBeUndefined();
+      }
+    } finally {
+      for (const key of SERVICE_MANAGER_VARS) {
+        if (originalValues[key] === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = originalValues[key];
+        }
+      }
+    }
+  });
+
   it.skipIf(process.platform === "win32")("kills descendant processes on timeout via the process group", async () => {
     let descendantPid: number | null = null;
 
