@@ -630,11 +630,26 @@ export async function seedManagedCodexHome(
         // same-identity copy into the symlink — whereas removing the promoted
         // credential is irreversible. The #5028 heal therefore applies
         // exactly when the source is readable and the identities match.
+        let sourceReadErrorCode: string | null = null;
         const sourceBytes = await fs
           .readFile(path.join(sourceHome, "auth.json"))
-          .catch(() => null);
+          .catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== "ENOENT" && error.code !== "ENOTDIR") {
+              sourceReadErrorCode = error.code ?? "unknown";
+            }
+            return null;
+          });
         const sourceIdentity = sourceBytes ? readSubscriptionAccountId(sourceBytes) : null;
         keepPromotedAuth = sourceIdentity !== targetIdentity;
+        if (keepPromotedAuth && sourceReadErrorCode) {
+          // Deferred heal, made visible: seeding runs before every probe and
+          // every execute, so the next call with a readable source applies
+          // the same-identity symlink heal this call could not decide.
+          await onLog(
+            "stdout",
+            `[paperclip] Keeping the existing subscription auth.json in Codex home "${targetHome}" (shared source read failed: ${sourceReadErrorCode}); the next seed with a readable source reconciles it.\n`,
+          );
+        }
       }
       if (keepPromotedAuth) {
         await onLog(
