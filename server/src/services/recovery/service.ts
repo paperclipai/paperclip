@@ -3801,12 +3801,32 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
-      // Enqueue the wake before recording the retry attempt: `enqueueWakeup`
-      // can return `null` (idempotency dedupe, budget block) without
-      // throwing. Bumping `attemptCount`/`lastAttemptAt` first would consume
-      // this issue's bounded retry budget and backoff window even when no
-      // wake was actually created, silently losing a retry instead of
-      // re-checking on the next tick.
+      // Claim the retry slot before enqueueing with a compare-and-set UPDATE:
+      // two overlapping sweeps can both read this same action row (no
+      // in-flight guard on the periodic reconciliation tick), so bumping
+      // `attemptCount`/`lastAttemptAt` unconditionally would let both sweeps
+      // enqueue a wake against one recorded retry. Guarding the UPDATE on the
+      // action's pre-read `attemptCount`/`lastAttemptAt` makes only the first
+      // writer win the claim; the loser sees zero affected rows and skips.
+      const claimed = await db
+        .update(issueRecoveryActions)
+        .set({ attemptCount: action.attemptCount + 1, lastAttemptAt: now, updatedAt: now })
+        .where(
+          and(
+            eq(issueRecoveryActions.id, action.id),
+            eq(issueRecoveryActions.attemptCount, action.attemptCount),
+            action.lastAttemptAt
+              ? eq(issueRecoveryActions.lastAttemptAt, action.lastAttemptAt)
+              : isNull(issueRecoveryActions.lastAttemptAt),
+          ),
+        )
+        .returning({ id: issueRecoveryActions.id });
+      if (claimed.length === 0) {
+        // Another sweep already won the claim on this action this tick.
+        result.skipped += 1;
+        continue;
+      }
+
       const wakeRun = await deps.enqueueWakeup(ownerAgentId!, {
         source: "assignment",
         triggerDetail: "system",
@@ -3830,18 +3850,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         },
       });
       if (!wakeRun) {
+        // `enqueueWakeup` can return `null` (idempotency dedupe, budget block)
+        // without throwing. Release the claim so a failed enqueue does not
+        // consume this issue's bounded retry budget and backoff window.
+        await db
+          .update(issueRecoveryActions)
+          .set({ attemptCount: action.attemptCount, lastAttemptAt: action.lastAttemptAt, updatedAt: new Date() })
+          .where(eq(issueRecoveryActions.id, action.id));
         result.skipped += 1;
         continue;
       }
-
-      await db
-        .update(issueRecoveryActions)
-        .set({
-          attemptCount: action.attemptCount + 1,
-          lastAttemptAt: now,
-          updatedAt: now,
-        })
-        .where(eq(issueRecoveryActions.id, action.id));
 
       result.rewoken += 1;
       result.issueIds.push(issue.id);

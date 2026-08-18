@@ -2283,6 +2283,37 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       expect(action?.lastAttemptAt?.getTime()).toBeGreaterThan(Date.now() - 60_000);
     });
 
+    it("claims the retry slot atomically so two overlapping sweeps enqueue exactly one wake (AGE-709)", async () => {
+      // The periodic reconciliation tick is fire-and-forget with no in-flight
+      // guard, so two `reconcileOrphanedBlockedRecoveryActions` passes can
+      // overlap and both read the same pre-claim action row. Without a
+      // compare-and-set claim on the retry-slot UPDATE, both would enqueue a
+      // wake and both would write the same absolute `attemptCount + 1`,
+      // consuming two owner runs for one recorded retry.
+      const { companyId, managerId, sourceIssueId } = await seedCompany();
+      await db.update(issues).set({ status: "blocked", assigneeAgentId: managerId }).where(eq(issues.id, sourceIssueId));
+      const actionId = await seedOrphanedBlockedAction({
+        companyId,
+        sourceIssueId,
+        ownerAgentId: managerId,
+        lastAttemptAt: new Date(Date.now() - 60 * 60 * 1000),
+        attemptCount: 0,
+      });
+      const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() } as never));
+      const recovery = recoveryService(db, { enqueueWakeup });
+
+      const [first, second] = await Promise.all([
+        recovery.reconcileOrphanedBlockedRecoveryActions(),
+        recovery.reconcileOrphanedBlockedRecoveryActions(),
+      ]);
+
+      expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+      expect(first.rewoken + second.rewoken).toBe(1);
+      expect(first.skipped + second.skipped).toBeGreaterThanOrEqual(1);
+      const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, actionId));
+      expect(action?.attemptCount).toBe(1);
+    });
+
     it("stops re-waking once maxAttempts is exhausted", async () => {
       const { companyId, managerId, sourceIssueId } = await seedCompany();
       await db.update(issues).set({ status: "blocked", assigneeAgentId: managerId }).where(eq(issues.id, sourceIssueId));
