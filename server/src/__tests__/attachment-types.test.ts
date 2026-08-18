@@ -313,11 +313,27 @@ describe("isValidUtf8Buffer", () => {
     expect(isValidUtf8Buffer(Buffer.from("cafeé", "utf8"))).toBe(false);
   });
 
-  it("treats Latin-1 Supplement characters as confident UTF-8 once a code point beyond that range is also present", () => {
-    // Adding a CJK character (a 3-byte UTF-8 sequence) can't arise by chance
-    // from single-byte legacy text, so it's strong evidence the whole buffer
-    // really is UTF-8, including the earlier ambiguous character.
+  it("treats a lone ambiguous character as confident UTF-8 once at least one more non-ASCII code point is also present", () => {
+    // A single ambiguous character plus CJK characters (3-byte UTF-8
+    // sequences) reaches the two-code-point threshold, so the whole buffer
+    // is trusted, including the earlier ambiguous character.
     expect(isValidUtf8Buffer(Buffer.from("cafeé 日本語", "utf8"))).toBe(true);
+  });
+
+  it("does not treat a single 3-byte sequence beyond U+00FF as confident UTF-8 on its own", () => {
+    // 0xE2 0x82 0xAC is the UTF-8 encoding of "€" (U+20AC), but the same
+    // three bytes are also well-formed Windows-1252 for "â‚¬" - three
+    // unrelated legacy characters. A lone multi-byte coincidence, however
+    // many bytes it spans, isn't reliable evidence of the source encoding.
+    const euroSignBytes = Buffer.from([0xe2, 0x82, 0xac]);
+    expect(isValidUtf8Buffer(euroSignBytes)).toBe(false);
+  });
+
+  it("treats two independent code points beyond U+00FF as confident UTF-8", () => {
+    // Two separate multi-byte sequences coincidentally forming well-formed
+    // UTF-8 out of legacy single-byte text is negligibly unlikely, so this
+    // is trusted even though each "€" individually would not be.
+    expect(isValidUtf8Buffer(Buffer.from("€€", "utf8"))).toBe(true);
   });
 });
 

@@ -153,18 +153,23 @@ export function isTextualAttachmentContentType(contentType: string | null | unde
  * legacy-encoded upload (e.g. Latin-1, Shift-JIS) would be mislabeled and
  * mis-rendered by browsers.
  *
- * Structural well-formedness alone isn't proof: every byte pair a
+ * Structural well-formedness alone isn't proof: every byte sequence a
  * single-byte legacy encoding (Windows-1252, Latin-1) can produce in the
- * 0x80-0xFF range is *also* a structurally valid 2-byte UTF-8 sequence
- * decoding to a Latin-1 Supplement code point (U+0080-U+00FF). For example
- * the bytes `C2 A9` are simultaneously well-formed UTF-8 for "©" (c)
- * and well-formed Windows-1252 for "Â©" (Ac) - `TextDecoder`
- * can't tell those apart. A 3-byte or 4-byte UTF-8 sequence can't arise by
- * chance from single-byte legacy text, so we only trust the decode once it
- * contains a code point outside that ambiguous collision range; buffers
- * whose only non-ASCII evidence sits in the Latin-1 Supplement range are
- * treated as unverified and left unlabeled, matching this module's
- * documented fallback of letting the browser sniff the encoding itself.
+ * 0x80-0xFF range can *also* form a structurally valid multi-byte UTF-8
+ * sequence, and that holds for any sequence length - not just the 2-byte
+ * Latin-1 Supplement case (`C2 A9` is valid UTF-8 for "©" and valid
+ * Windows-1252 for "Â©"), but 3-byte sequences too (`E2 82 AC`, the UTF-8
+ * encoding of "€", is also valid Windows-1252 for "â‚¬" - three unrelated
+ * legacy characters). A single non-ASCII code point, however many bytes it
+ * spans, is therefore never reliable evidence on its own. What makes a
+ * coincidence implausible is *repetition*: each additional, independent
+ * non-ASCII code point multiplies the odds against chance alignment, so we
+ * require at least two of them (real UTF-8 text using accents, CJK, emoji,
+ * etc. naturally has many; a legacy-encoded document coincidentally
+ * producing two or more well-formed multi-byte sequences is negligible).
+ * Buffers with fewer than two non-ASCII code points are treated as
+ * unverified and left unlabeled, matching this module's documented
+ * fallback of letting the browser sniff the encoding itself.
  */
 export function isValidUtf8Buffer(buffer: Buffer): boolean {
   let text: string;
@@ -173,12 +178,13 @@ export function isValidUtf8Buffer(buffer: Buffer): boolean {
   } catch {
     return false;
   }
-  const hasAmbiguousCodePoint = /[\u0080-\u00ff]/.test(text);
-  if (!hasAmbiguousCodePoint) return true;
-  // Some code point sits in the ambiguous Latin-1 Supplement range - only
-  // trust the decode if the text also contains a code point beyond that
-  // range, which can't be produced by chance from single-byte legacy text.
-  return /[\u0100-\uffff]/.test(text) || /[\u{10000}-\u{10ffff}]/u.test(text);
+  const nonAsciiCodePoints = text.match(/[^\u0000-\u007f]/gu) ?? [];
+  if (nonAsciiCodePoints.length === 0) return true;
+  // At least one non-ASCII code point present - only trust the decode if
+  // there are two or more; a lone one can arise by chance from legacy
+  // single-byte text (see the "€" example above), but two independent
+  // coincidences in the same buffer are negligibly unlikely.
+  return nonAsciiCodePoints.length >= 2;
 }
 
 /**
