@@ -490,6 +490,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
     const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
+    // Sandbox `onSpawn` meta carries a PID from the provider's RPC response
+    // (the command's PID inside the sandbox's own namespace), not a PID in
+    // this host's process table — `execution-target.ts` already nulls its
+    // processGroupId for exactly this reason. Signalling it via local
+    // `process.kill` cannot reach the sandboxed process and can instead hit
+    // an unrelated host process that happens to reuse the same PID number.
+    // SSH targets are unaffected: their `runAdapterExecutionTargetProcess`
+    // path spawns a genuine local ssh child, so its pid/processGroupId are
+    // real and safe to signal.
+    const executionTargetIsSandbox =
+      runtimeExecutionTarget?.kind === "remote" && runtimeExecutionTarget.transport === "sandbox";
     if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
       paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
         runId,
@@ -678,18 +689,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 const message = formatOpenCodeOutputInactivityMonitorErrorMessage(monitorElapsedMs);
                 const elapsedSec = Math.round(monitorElapsedMs / 1000);
                 const timeoutSecLabel = Math.round(monitorResolution.timeoutMs / 1000);
+                // Sandbox `onSpawn` meta carries a PID from the provider's RPC
+                // response (the command's PID inside the sandbox's own
+                // namespace), not a PID in this host's process table --
+                // execution-target.ts already nulls its processGroupId for
+                // exactly this reason. Signalling it via local process.kill
+                // cannot reach the sandboxed process and can instead hit an
+                // unrelated host process that happens to reuse the same PID
+                // number, so skip the local signal attempt entirely for
+                // sandbox targets. SSH targets are unaffected: their
+                // runAdapterExecutionTargetProcess path spawns a genuine
+                // local ssh child, so its pid/processGroupId are real and
+                // safe to signal.
+                const terminationClause = executionTargetIsSandbox
+                  ? "the sandbox has no locally-signalable process; only the sandbox's own runtime timeout can end this run.\n"
+                  : "terminating opencode child via SIGTERM (5s grace, then SIGKILL).\n";
                 const logLine =
                   `[paperclip] adapter.invoke ${message}; ` +
                   `timeoutMs=${monitorResolution.timeoutMs} elapsedSinceLastEventMs=${monitorElapsedMs} ` +
                   `outputChunkCount=${state.outputChunkCount} outputBytes=${state.outputBytes} ` +
                   `parsedEvents=${state.parsedEventCount} processActivityCount=${state.processActivityCount} ` +
-                  `(timeout=${timeoutSecLabel}s elapsed=${elapsedSec}s); ` +
-                  `terminating opencode child via SIGTERM (5s grace, then SIGKILL).\n`;
+                  `(timeout=${timeoutSecLabel}s elapsed=${elapsedSec}s); ${terminationClause}`;
                 // Issue the log without awaiting on the kill hot path, but capture
                 // the promise so the surrounding try/finally can await flush before
                 // the run resolves. Without this the diagnostic that explains the
                 // kill could be dropped if the child exits faster than onLog flushes.
                 monitorLogPromise = Promise.resolve(onLog("stderr", logLine)).catch(() => {});
+                if (executionTargetIsSandbox) {
+                  return;
+                }
                 const target = killTarget;
                 if (!target || (target.pid == null && target.processGroupId == null)) {
                   return;
