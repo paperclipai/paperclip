@@ -1792,17 +1792,19 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   // AGE-655: isServerStdioBoundHotRestartRun previously only recognized
   // claude_local/codex_local/gemini_local as potentially server-stdio bound.
-  // Every other local adapter (pi_local, opencode_local, grok_local, cursor)
-  // reaches the same piped `runChildProcess` spawn with no "cli" engine
-  // escape hatch, so an empty/absent contextSnapshot.processTopology must
-  // still classify them as server-stdio bound -- not silently adoptable and
-  // then lost as process_lost when adoption fails in reality.
+  // Every other local adapter (pi_local, opencode_local, grok_local, cursor,
+  // the generic "process" builtin adapter) reaches the same piped
+  // `runChildProcess` spawn with no "cli" engine escape hatch, so an
+  // empty/absent contextSnapshot.processTopology must still classify them as
+  // server-stdio bound -- not silently adoptable and then lost as
+  // process_lost when adoption fails in reality.
   it.each([
     ["pi_local"],
     ["opencode_local"],
     ["grok_local"],
     ["cursor"],
     ["cursor_local"],
+    ["process"],
   ])(
     "treats a %s run with no explicit processTopology as server-stdio bound and drains it instead of adopting",
     async (adapterType) => {

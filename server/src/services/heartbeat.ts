@@ -773,8 +773,8 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
-// Local adapter types whose execution always goes through the piped local
-// spawn path (`runAdapterExecutionTargetProcess` -> `runChildProcess`, always
+// Adapter types whose execution always goes through the piped local spawn
+// path (`runAdapterExecutionTargetProcess` -> `runChildProcess`, always
 // `stdio: [..., "pipe", "pipe"]`) with no "cli" (detached, one-shot) engine
 // alternative. Used by `isServerStdioBoundHotRestartRun` below to decide
 // whether a `running` run can safely be adopted across a hot restart or must
@@ -782,7 +782,9 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
 // `gemini_local` are deliberately excluded here — they have their own
 // engine-based branch above this set's use. `cursor_local` is kept as a
 // defensive alias in case a future refactor renames the shipped `cursor`
-// adapter type.
+// adapter type. `process` is the generic builtin adapter
+// (`server/src/adapters/process/execute.ts`) and spawns through the same
+// `runChildProcess` path as the named local adapters.
 const ALWAYS_SERVER_STDIO_BOUND_LOCAL_ADAPTER_TYPES = new Set([
   "cursor",
   "cursor_local",
@@ -790,6 +792,7 @@ const ALWAYS_SERVER_STDIO_BOUND_LOCAL_ADAPTER_TYPES = new Set([
   "hermes_local",
   "opencode_local",
   "pi_local",
+  "process",
 ]);
 // Routes and the scheduler construct separate heartbeatService instances, but
 // they must agree on in-process adapter executions when reaping stale runs.
@@ -10328,7 +10331,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return readNonEmptyString(parseObject(input.adapterConfig).engine) !== "cli";
     }
     // Every other local adapter (pi_local, opencode_local, grok_local,
-    // cursor, hermes_local, ...) reaches the piped local spawn path
+    // cursor, hermes_local, process, ...) reaches the piped local spawn path
     // (`runAdapterExecutionTargetProcess` -> `runChildProcess`, which always
     // spawns with `stdio: [..., "pipe", "pipe"]`) and has no "cli" engine
     // escape hatch. Their stdout/stderr pipes are owned by this server
