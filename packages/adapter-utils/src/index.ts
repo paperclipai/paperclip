@@ -33,6 +33,7 @@ export type {
   AdapterRuntimeCommandSpec,
   AcpTargetDescriptor,
   ServerAdapterModule,
+  AdoptedRunOutcomeRecovery,
   QuotaWindow,
   ProviderQuotaResult,
   TranscriptEntry,

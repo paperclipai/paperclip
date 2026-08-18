@@ -47,7 +47,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { runningProcesses } from "../adapters/index.ts";
+import { runningProcesses, getServerAdapter } from "../adapters/index.ts";
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
 const mockTerminateLocalService = vi.hoisted(() => vi.fn());
@@ -2180,6 +2180,122 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         },
       });
     });
+  });
+
+  it("recovers the real outcome from a hot-restart-adopted run's persisted log once its process has fully exited", async () => {
+    const { agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: 999_999_997,
+      processGroupId: null,
+      contextSnapshot: {
+        stdoutLogFilePath: "/nonexistent/does-not-matter-for-this-test.log",
+      },
+    });
+    // Adoption metadata is normally written by `reconcileHotRestartAdoption`;
+    // seeded directly here since this test only exercises `reapOrphanedRuns`.
+    await db
+      .update(heartbeatRuns)
+      .set({
+        resultJson: {
+          hotRestart: {
+            adopted: true,
+            adoptedAt: "2026-03-19T00:00:30.000Z",
+            previousServerPid: 1,
+            newServerPid: process.pid,
+            previousServerVersion: "old-version",
+            processPid: 999_999_997,
+            processGroupId: null,
+          },
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    vi.mocked(getServerAdapter).mockReturnValueOnce({
+      type: "codex_local",
+      execute: mockAdapterExecute,
+      testEnvironment: async () => ({
+        adapterType: "codex_local",
+        status: "ok",
+        testedAt: new Date().toISOString(),
+        checks: [],
+      }),
+      recoverAdoptedRunOutcome: () => ({ outcome: "succeeded" }),
+    } as unknown as ReturnType<typeof getServerAdapter>);
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    // Recovering a real outcome must not enqueue a retry: exactly one row.
+    expect(runs).toHaveLength(1);
+
+    const finalized = runs.find((row) => row.id === runId);
+    expect(finalized?.status).toBe("succeeded");
+    expect(finalized?.errorCode).not.toBe("process_lost");
+    expect(finalized?.errorCode).toBeNull();
+    expect(finalized?.resultJson).toMatchObject({
+      adoptedRunLogEvidence: {
+        stdoutLogFilePath: "/nonexistent/does-not-matter-for-this-test.log",
+      },
+    });
+
+    const issue = await db
+      .select({ executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBeNull();
+  });
+
+  it("finalizes a hot-restart-adopted run as unknown-outcome (never process_lost, never retried) once its process has fully exited with no recoverable terminal result", async () => {
+    const { agentId, runId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: 999_999_996,
+      processGroupId: null,
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        resultJson: {
+          hotRestart: {
+            adopted: true,
+            adoptedAt: "2026-03-19T00:00:30.000Z",
+            previousServerPid: 1,
+            newServerPid: process.pid,
+            previousServerVersion: "old-version",
+            processPid: 999_999_996,
+            processGroupId: null,
+          },
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    // No log file path was ever persisted for this run (or the adapter has no
+    // `recoverAdoptedRunOutcome`), so the default mocked adapter (no such hook)
+    // applies -- nothing to override here.
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    // The unknown-outcome floor must never enqueue a retry: exactly one row.
+    expect(runs).toHaveLength(1);
+
+    const finalized = runs.find((row) => row.id === runId);
+    expect(finalized?.status).toBe("failed");
+    expect(finalized?.errorCode).not.toBe("process_lost");
+    expect(finalized?.errorCode).toBe("adopted_run_outcome_unknown");
   });
 
   it("interrupts running runs on graceful shutdown and queues restart recovery without recording a failure", async () => {

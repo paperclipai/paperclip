@@ -95,7 +95,7 @@ import type {
   UsageSummary,
 } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
-import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
+import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES, MAX_CAPTURE_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
@@ -357,6 +357,21 @@ const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_AGENT_MESSAGE_KEY = "paperclipAgentMessage";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+// AGE-697: a hot-restart-adopted run whose process later exited without this
+// server observing the exit live, and whose persisted log content contained
+// no adapter terminal result. Distinct from "process_lost" on purpose: this
+// run is NOT eligible for the automatic process-loss retry, because the
+// adopted process may already have completed its real side effects (posted
+// comments, patched issues, opened PRs) before it exited, and retrying would
+// duplicate them. See the AGE-656/AGE-697 decision: recover the real outcome
+// from the persisted run log when possible, and finalize with this distinct,
+// non-retrying "unknown outcome" state as the floor when it isn't.
+const ADOPTED_RUN_OUTCOME_UNKNOWN_ERROR_CODE = "adopted_run_outcome_unknown";
+// AGE-697: a hot-restart-adopted run whose process exited and whose
+// persisted log DID contain an adapter terminal result, but that result was
+// itself a failure. Also never auto-retried (see above) -- the run already
+// ran to completion, so this is a real failure outcome, not a lost process.
+const ADOPTED_RUN_RECOVERED_FAILURE_ERROR_CODE = "adopted_run_recovered_failure";
 // The reaper sweeps at most this many pending_cleanup leases per tick.
 const PENDING_CLEANUP_SWEEP_PAGE_SIZE = 20;
 // The reaper stops retrying a pending_cleanup lease after this many attempts.
@@ -13461,6 +13476,155 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { swept: rows.length, destroyed, capped };
   }
 
+  // AGE-697: read the tail of a run's persisted stdout/stderr log file so an
+  // adopted-and-now-exited run's real outcome can be recovered from it. Reads
+  // at most `MAX_CAPTURE_BYTES` from the end of the file, matching the cap a
+  // live `runChildProcess` capture already enforces (packages/adapter-utils/src/server-utils.ts),
+  // so an adapter's terminal-result parser sees comparable input either way.
+  // Any read failure (missing file, permission error, path never persisted)
+  // is treated as "no evidence found" rather than a hard failure -- the
+  // caller falls back to the unknown-outcome floor, which is always safe.
+  async function readAdoptedRunOutputLogTail(logFilePath: string): Promise<string> {
+    let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
+    try {
+      handle = await fs.open(logFilePath, "r");
+      const stat = await handle.stat();
+      const start = Math.max(0, stat.size - MAX_CAPTURE_BYTES);
+      const length = stat.size - start;
+      if (length <= 0) return "";
+      const buffer = Buffer.alloc(length);
+      await handle.read(buffer, 0, length, start);
+      return buffer.toString("utf8");
+    } catch {
+      return "";
+    } finally {
+      await handle?.close().catch(() => undefined);
+    }
+  }
+
+  // AGE-697: finalize a hot-restart-adopted run once its process (pid AND
+  // process group) is confirmed dead. This path is deliberately separate from
+  // the generic `process_lost` finalization below it: an adopted run may
+  // already have completed all of its real side effects (posted comments,
+  // patched issues, opened PRs) before this server ever observed it, so it
+  // must never be labeled `process_lost` and must never auto-enqueue a
+  // process-loss retry -- doing either risks duplicating that work. See the
+  // AGE-656/AGE-697 decision: recover the real outcome from the persisted run
+  // log when possible, and finalize with a distinct, non-retrying "unknown
+  // outcome" state as the floor when it isn't.
+  async function finalizeAdoptedRunAfterProcessExit(
+    run: typeof heartbeatRuns.$inferSelect,
+    agentInfo: Pick<typeof agents.$inferSelect, "adapterType" | "adapterConfig">,
+    now: Date,
+  ): Promise<string | null> {
+    const runContext = parseObject(run.contextSnapshot);
+    const stdoutLogFilePath = readNonEmptyString(runContext.stdoutLogFilePath);
+    const stderrLogFilePath = readNonEmptyString(runContext.stderrLogFilePath);
+    const recoverOutcome = getServerAdapter(agentInfo.adapterType).recoverAdoptedRunOutcome;
+
+    let recovered: ReturnType<NonNullable<typeof recoverOutcome>> = null;
+    if (recoverOutcome && stdoutLogFilePath) {
+      const [stdout, stderr] = await Promise.all([
+        readAdoptedRunOutputLogTail(stdoutLogFilePath),
+        stderrLogFilePath ? readAdoptedRunOutputLogTail(stderrLogFilePath) : Promise.resolve(""),
+      ]);
+      recovered = recoverOutcome({ stdout, stderr });
+    }
+
+    const logEvidence = {
+      stdoutLogFilePath: stdoutLogFilePath ?? null,
+      stderrLogFilePath: stderrLogFilePath ?? null,
+    };
+
+    let finalizedRun: typeof heartbeatRuns.$inferSelect | null;
+    let message: string;
+    if (recovered) {
+      const succeeded = recovered.outcome === "succeeded";
+      message = succeeded
+        ? "Adopted run's process exited after a hot restart; recovered a successful terminal result from its persisted output"
+        : (recovered.errorMessage ??
+          "Adopted run's process exited after a hot restart; recovered a failed terminal result from its persisted output");
+      finalizedRun = await setRunStatus(run.id, succeeded ? "succeeded" : "failed", {
+        error: succeeded ? null : message,
+        errorCode: succeeded ? null : ADOPTED_RUN_RECOVERED_FAILURE_ERROR_CODE,
+        finishedAt: now,
+        resultJson: {
+          ...mergeRunStopMetadataForAgent(agentInfo, succeeded ? "succeeded" : "failed", {
+            resultJson: parseObject(run.resultJson),
+            errorCode: succeeded ? null : ADOPTED_RUN_RECOVERED_FAILURE_ERROR_CODE,
+            errorMessage: succeeded ? null : message,
+          }),
+          adoptedRunLogEvidence: logEvidence,
+        },
+      });
+    } else {
+      message =
+        "Adopted run's process exited after a hot restart, but no terminal result could be recovered from its persisted output";
+      finalizedRun = await setRunStatus(run.id, "failed", {
+        error: message,
+        errorCode: ADOPTED_RUN_OUTCOME_UNKNOWN_ERROR_CODE,
+        finishedAt: now,
+        resultJson: {
+          ...mergeRunStopMetadataForAgent(agentInfo, "failed", {
+            resultJson: parseObject(run.resultJson),
+            errorCode: ADOPTED_RUN_OUTCOME_UNKNOWN_ERROR_CODE,
+            errorMessage: message,
+          }),
+          adoptedRunLogEvidence: logEvidence,
+        },
+      });
+    }
+    await setWakeupStatus(run.wakeupRequestId, recovered?.outcome === "succeeded" ? "completed" : "failed", {
+      finishedAt: now,
+      error: recovered?.outcome === "succeeded" ? null : message,
+    });
+    if (!finalizedRun) finalizedRun = await getRun(run.id);
+    if (!finalizedRun) return null;
+    finalizedRun =
+      (await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson))) ?? finalizedRun;
+    await releaseEnvironmentLeasesForRun({
+      runId: finalizedRun.id,
+      companyId: finalizedRun.companyId,
+      agentId: finalizedRun.agentId,
+      status: finalizedRun.status,
+      failureReason: finalizedRun.error ?? undefined,
+    });
+
+    // Never auto-retry from this path (AGE-697): an adopted run may already
+    // have produced real side effects before it exited, whether or not this
+    // reap tick could recover its outcome, so retrying here risks duplicating
+    // them. `suppressImmediateRecovery` also blocks `releaseIssueExecutionAndPromote`'s
+    // own "queue a continuation run" path for a failed/unknown-outcome issue --
+    // that path is a second, independent auto-retry mechanism (see the
+    // `issueNeedsImmediateRecovery` / `issueNeedsReviewParticipantRecovery`
+    // branches below) and is just as capable of duplicating an adopted run's
+    // side effects as the process-loss retry this function replaces.
+    await releaseIssueExecutionAndPromote(finalizedRun, { suppressImmediateRecovery: true });
+
+    await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: recovered?.outcome === "succeeded" ? "info" : "error",
+      message,
+      payload: {
+        ...(run.processPid ? { processPid: run.processPid } : {}),
+        ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
+        adoptedRunOutcomeRecovered: Boolean(recovered),
+        ...logEvidence,
+      },
+    });
+
+    await finalizeAgentStatus(
+      finalizedRun.agentId,
+      finalizedRun.status === "succeeded" ? "succeeded" : "failed",
+      message,
+      { wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run) },
+    );
+    await startNextQueuedRunForAgent(finalizedRun.agentId);
+    runningProcesses.delete(run.id);
+    return finalizedRun.id;
+  }
+
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -13538,6 +13702,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             });
           }
         }
+        continue;
+      }
+
+      // AGE-697: the run carries hot-restart adoption metadata but its
+      // process is now confirmed dead (both the guard above and the
+      // `processPidAlive` branch above already ruled out "still alive").
+      // Never fall through to the unconditional `process_lost` finalization
+      // below for this run -- see `finalizeAdoptedRunAfterProcessExit`.
+      if (readHotRestartAdoptionMetadata(parseObject(run.resultJson))) {
+        const finalizedRunId = await finalizeAdoptedRunAfterProcessExit(
+          run,
+          { adapterType, adapterConfig },
+          now,
+        );
+        if (finalizedRunId) reaped.push(finalizedRunId);
         continue;
       }
 

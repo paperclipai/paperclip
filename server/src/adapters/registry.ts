@@ -9,6 +9,7 @@ import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
 } from "@paperclipai/adapter-utils";
+import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
 import {
   execute as claudeExecute,
   listClaudeSkills,
@@ -19,6 +20,8 @@ import {
   sessionCodec as claudeSessionCodec,
   getQuotaWindows as claudeGetQuotaWindows,
   getConfigSchema as getClaudeConfigSchema,
+  parseClaudeStreamJson,
+  describeClaudeFailure,
 } from "@paperclipai/adapter-claude-local/server";
 import {
   agentConfigurationDoc as claudeAgentConfigurationDoc,
@@ -210,6 +213,25 @@ const claudeLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: claudeAgentConfigurationDoc,
   getConfigSchema: getClaudeConfigSchema,
   getQuotaWindows: claudeGetQuotaWindows,
+  // AGE-697: recover the real outcome of a hot-restart-adopted run whose
+  // process later exited without this server observing the exit live. Reuses
+  // the exact same terminal-result presence check (`resultJson !== null`)
+  // that `runChildProcess`'s `terminalResultCleanup.hasTerminalResult` already
+  // performs live for this adapter (packages/adapters/claude-local/src/server/execute.ts).
+  // `exitCode` is unavailable here (the process is already gone), so success is
+  // judged purely from the parsed result event: the CLI reports `subtype:
+  // "success"` with `is_error: false` on success, and anything else --
+  // including a missing terminal result -- is failure/unknown at the caller.
+  recoverAdoptedRunOutcome: ({ stdout }) => {
+    const parsed = parseClaudeStreamJson(stdout).resultJson;
+    if (!parsed) return null;
+    const isError = asBoolean(parsed.is_error, false);
+    const subtype = typeof parsed.subtype === "string" ? parsed.subtype.trim().toLowerCase() : "";
+    const succeeded = subtype === "success" && !isError;
+    return succeeded
+      ? { outcome: "succeeded" }
+      : { outcome: "failed", errorMessage: describeClaudeFailure(parsed) ?? "Claude reported a non-success result" };
+  },
 };
 
 const acpxLocalAdapter: ServerAdapterModule = {
