@@ -459,43 +459,15 @@ describe("issue execution policy routes", () => {
       missing: "review_path",
     });
     expect(mockIssueService.update).not.toHaveBeenCalled();
-  });
 
-  // This 422 is the only text an agent is guaranteed to be reading at the moment
-  // it is stuck. Naming a mechanism is demonstrably not enough: the message already
-  // listed "set a typed executionState.currentParticipant through an execution
-  // policy" and agents still fell back to `blocked`, which wakes nobody. The
-  // example must stay copy-pasteable, so assert it parses and keeps its shape
-  // rather than just asserting a substring that could drift into nonsense.
-  it("carries a copy-pasteable agent-to-agent handoff payload in the 422 body", async () => {
-    const issue = {
-      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      companyId: "company-1",
-      status: "todo",
-      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
-      assigneeUserId: null,
-      createdByUserId: "local-board",
-      identifier: "PAP-1003",
-      title: "Missing review path",
-      executionPolicy: null,
-      executionState: null,
-    };
-    mockIssueService.getById.mockResolvedValue(issue);
-
-    const res = await request(await createApp({
-      type: "agent",
-      agentId: "33333333-3333-4333-8333-333333333333",
-      companyId: "company-1",
-      runId: "run-1",
-    }))
-      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-      .send({ status: "in_review" });
-
-    expect(res.status).toBe(422);
-
-    // Delimited rather than brace-counted: a regex that counts closing braces
-    // breaks the moment the example gains a field, which is exactly when the
-    // assertion is most needed.
+    // This 422 is the only text an agent is guaranteed to be reading at the
+    // moment it is stuck, so it must carry a payload it can copy rather than
+    // the name of a mechanism. Naming alone demonstrably was not enough: the
+    // message already listed "set a typed executionState.currentParticipant
+    // through an execution policy" and agents still fell back to `blocked`,
+    // which wakes nobody. Extract by delimiter and parse, rather than assert a
+    // substring, so the example cannot drift into something malformed while
+    // still matching. (A brace-counting regex was tried first and was wrong.)
     const example = res.body.error.match(/needed: (\{.*?\}) - Paperclip/)?.[1];
     expect(example, "the 422 must embed a JSON handoff example").toBeTruthy();
 
@@ -505,9 +477,6 @@ describe("issue execution policy routes", () => {
     expect(stage.type).toBe("review");
     expect(stage.participants[0].type).toBe("agent");
     expect(stage.participants[0]).toHaveProperty("agentId");
-
-    // `blocked` is the wrong answer here and the message must say so, since that
-    // is the fallback agents actually reached for.
     expect(res.body.error).toContain("blocked");
   });
 
