@@ -12688,6 +12688,52 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return cancelled;
   }
 
+  // AGE-671: the continuation summary's "Next Action" text is an LLM-authored
+  // hint, not ground truth about review posture. It is written once (often
+  // while the issue is briefly `in_review`) and can outlive the state that
+  // produced it, so it must never be the sole reason a queued continuation is
+  // cancelled. Only cancel when a *real* review posture still exists:
+  // executionState.reviewRequest, a pending issue-thread interaction, or an
+  // open approval linked to the issue.
+  async function hasLiveIssueReviewPosture(issue: {
+    id: string;
+    companyId: string;
+    executionState: unknown;
+  }): Promise<boolean> {
+    const executionState = parseIssueExecutionState(issue.executionState);
+    if (executionState?.reviewRequest) return true;
+
+    const [pendingInteraction, pendingApproval] = await Promise.all([
+      db
+        .select({ id: issueThreadInteractions.id })
+        .from(issueThreadInteractions)
+        .where(
+          and(
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+            eq(issueThreadInteractions.status, "pending"),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ id: issueApprovals.approvalId })
+        .from(issueApprovals)
+        .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+        .where(
+          and(
+            eq(issueApprovals.companyId, issue.companyId),
+            eq(issueApprovals.issueId, issue.id),
+            inArray(approvals.status, ["pending", "revision_requested"]),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    return Boolean(pendingInteraction || pendingApproval);
+  }
+
   type QueuedRunStaleness =
     | { stale: false }
     | {
@@ -12752,7 +12798,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? null
         : await getIssueContinuationSummaryDocument(db, issueId);
       const continuationSummaryBody = queuedContinuationSummary ?? currentContinuationSummary?.body ?? null;
-      if (continuationSummaryParksExecutor(continuationSummaryBody)) {
+      if (
+        continuationSummaryParksExecutor(continuationSummaryBody) &&
+        (await hasLiveIssueReviewPosture({ id: issue.id, companyId: run.companyId, executionState: issue.executionState }))
+      ) {
         return {
           stale: true,
           errorCode: "issue_continuation_waiting_on_review",

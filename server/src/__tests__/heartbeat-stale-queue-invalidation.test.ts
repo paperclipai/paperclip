@@ -1515,7 +1515,10 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(1);
   });
 
-  it("cancels queued continuation recovery when the continuation summary parks executor work for review", async () => {
+  it("cancels queued continuation recovery when the continuation summary parks executor work AND a real review posture (executionState.reviewRequest) still exists", async () => {
+    // AGE-671 regression guard: the stale-summary text alone must never be
+    // sufficient. This case additionally carries a live executionState.reviewRequest,
+    // so cancellation with issue_continuation_waiting_on_review remains correct.
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
     await db.insert(issues).values({
@@ -1525,6 +1528,18 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       status: "in_progress",
       priority: "medium",
       assigneeAgentId: agentId,
+      executionState: {
+        status: "pending",
+        currentStageId: randomUUID(),
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: null,
+        returnAssignee: { type: "agent", agentId, userId: null },
+        reviewRequest: { instructions: "Please review the diff before I continue." },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
     });
     await seedContinuationSummary({
       companyId,
@@ -1584,6 +1599,70 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(wakeup?.status).toBe("skipped");
     expect(wakeup?.error).toContain("continuation summary says the executor should wait");
     expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it("AGE-671: does not cancel queued continuation recovery on stale summary text when no real review posture exists", async () => {
+    // Reproduces the strand from AGE-671: the continuation summary's "Next
+    // Action" says to wait for reviewer feedback (written while the issue was
+    // briefly in_review), but the issue has no live executionState.reviewRequest,
+    // no pending issue-thread interaction, and no open approval. The queued
+    // continuation must be allowed to run instead of being cancelled with
+    // issue_continuation_waiting_on_review. This must fail against unfixed
+    // master, which cancels here purely on the stale summary text.
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Stale review text with no live reviewer",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await seedContinuationSummary({
+      companyId,
+      issueId,
+      agentId,
+      body: [
+        "# Continuation Summary",
+        "",
+        "## Next Action",
+        "",
+        "- Wait for reviewer feedback or approval before continuing executor work.",
+      ].join("\n"),
+    });
+
+    const { runId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_continuation_needed",
+      invocationSource: "automation",
+      contextExtras: {
+        retryReason: "issue_continuation_needed",
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded" || run?.status === "cancelled";
+    });
+
+    const run = await db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(run?.status).toBe("succeeded");
+    expect(run?.errorCode).toBeNull();
+    expect(countExecuteCallsForRun(runId)).toBe(1);
   });
 
   it("runs accepted-interaction continuation recovery despite a pre-acceptance review park", async () => {
