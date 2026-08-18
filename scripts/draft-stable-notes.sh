@@ -70,6 +70,7 @@ if ! git -C "$repo_dir" rev-parse --verify "refs/tags/${beta_tag}" >/dev/null 2>
   release_fail "beta tag ${beta_tag} does not exist. Draft notes are generated from a published beta."
 fi
 source_sha="$(git -C "$repo_dir" rev-parse "${beta_tag}^{commit}")"
+source_short="$(git -C "$repo_dir" rev-parse --short "$source_sha")"
 
 if [ -z "$out_file" ]; then
   out_file="${repo_dir}/releases/beta/v${beta_version}.md"
@@ -97,8 +98,11 @@ while IFS= read -r stable_tag; do
       range_label="$stable_tag"
       range_cmd_start="$stable_tag"
     else
-      range_label="${stable_tag} (merge-base ${mb:0:9})"
-      range_cmd_start="${mb:0:9}"
+      # rev-parse --short picks an abbreviation that is unambiguous in
+      # this repository, unlike a fixed nine-character truncation.
+      mb_short="$(git -C "$repo_dir" rev-parse --short "$mb")"
+      range_label="${stable_tag} (merge-base ${mb_short})"
+      range_cmd_start="$mb_short"
     fi
     break
   fi
@@ -136,7 +140,7 @@ conventional='^(feat|fix)(\([^)]*\))?!?: '
 mkdir -p "$(dirname "$out_file")"
 {
   printf '# Paperclip stable draft — from beta %s\n\n' "$beta_version"
-  printf '> Auto-generated at beta publish from `git log %s..%s` (baseline: %s).\n' "${range_cmd_start}" "${source_sha:0:9}" "${range_label}"
+  printf '> Auto-generated at beta publish from `git log %s..%s` (baseline: %s).\n' "${range_cmd_start}" "${source_short}" "${range_label}"
   printf '> Edit freely during the soak: rewrite for release-notes voice,\n'
   printf '> fold noise, and call out anything a self-hoster must act on.\n'
   printf '> The stable promotion reads this file from master and publishes\n'
