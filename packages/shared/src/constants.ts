@@ -870,7 +870,10 @@ export type FinanceUnit = (typeof FINANCE_UNITS)[number];
 export const BUDGET_SCOPE_TYPES = ["company", "agent", "project"] as const;
 export type BudgetScopeType = (typeof BUDGET_SCOPE_TYPES)[number];
 
-export const BUDGET_METRICS = ["billed_cents"] as const;
+// billed_cents = real invoiced cost only (0 for subscription runs).
+// effective_cents = billed cost, or imputed token cost when nothing was billed,
+// so subscription (e.g. Claude Max) usage is governed instead of reading zero.
+export const BUDGET_METRICS = ["billed_cents", "effective_cents"] as const;
 export type BudgetMetric = (typeof BUDGET_METRICS)[number];
 
 export const BUDGET_WINDOW_KINDS = ["calendar_month_utc", "lifetime"] as const;

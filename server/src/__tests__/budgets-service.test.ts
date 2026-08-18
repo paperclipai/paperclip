@@ -412,6 +412,58 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
     return event!;
   }
 
+  it("enforces an effective_cents budget on a $0 subscription run via imputed token cost", async () => {
+    const { companyId, agentId } = await createBudgetFixture();
+    const service = budgetService(db);
+
+    // Agent hard-stop of 500 cents on the effective_cents metric.
+    await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "agent",
+      scopeId: agentId,
+      metric: "effective_cents",
+      windowKind: "calendar_month_utc",
+      amount: 500,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+    });
+
+    // Subscription run: $0 billed, but 1M output opus tokens => 7500 imputed cents.
+    const [event] = await db
+      .insert(costEvents)
+      .values({
+        companyId,
+        agentId,
+        provider: "anthropic",
+        biller: "claude-max",
+        billingType: "subscription_included",
+        costStatus: "unpriced",
+        model: "claude-opus-4-8",
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 1_000_000,
+        costCents: 0,
+        occurredAt: new Date(),
+      })
+      .returning();
+
+    await service.evaluateCostEvent(event!);
+
+    const [agentAfter] = await db
+      .select({ status: agents.status, pauseReason: agents.pauseReason })
+      .from(agents);
+    expect(agentAfter).toEqual({ status: "paused", pauseReason: "budget" });
+
+    const incidents = await db.select().from(budgetIncidents);
+    expect(incidents.some((incident) => incident.thresholdType === "hard")).toBe(true);
+
+    // New work is refused while the effective-cost hard-stop is exceeded.
+    const block = await service.getInvocationBlock(companyId, agentId);
+    expect(block?.scopeType).toBe("agent");
+  });
+
   it("raises one soft incident per window before hard-stopping and safely logging agent telemetry", async () => {
     const { companyId, agentId } = await createBudgetFixture();
     const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
