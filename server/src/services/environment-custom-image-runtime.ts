@@ -305,6 +305,48 @@ function environmentCustomImageConfigPathOverlapsSecret(
 }
 
 /**
+ * The current boot-relevant path contract a provider driver declares. It names
+ * the config binding and the driver identity paths that decide the boot source
+ * now. A relink compares a persisted snapshot against this contract to detect a
+ * provider change since capture.
+ */
+export interface EnvironmentCustomImageBootRelevantContract {
+  binding: EnvironmentCustomImageRuntimeConfigBinding;
+  templateIdentityPaths?: Iterable<string>;
+}
+
+/**
+ * Computes the canonical candidate boot-relevant paths for a binding and its
+ * driver identity paths. Both the capture snapshot and the relink staleness
+ * check use this function, so they share one path set. `hasUnresolved` is true
+ * when any raw path fails canonicalization.
+ */
+export function environmentCustomImageBootRelevantCandidatePaths(
+  contract: EnvironmentCustomImageBootRelevantContract,
+): { canonicalPaths: string[]; hasUnresolved: boolean } {
+  const canonicalPaths: string[] = [];
+  const seen = new Set<string>();
+  let hasUnresolved = false;
+  const rawCandidatePaths = [
+    contract.binding.field,
+    ...contract.binding.unsetFields,
+    ...ENVIRONMENT_CUSTOM_IMAGE_TEMPLATE_SOURCE_FIELDS,
+    ...(contract.templateIdentityPaths ?? []),
+  ];
+  for (const rawPath of rawCandidatePaths) {
+    const canonical = canonicalizeEnvironmentCustomImageConfigPath(rawPath);
+    if (!canonical) {
+      hasUnresolved = true;
+      continue;
+    }
+    if (seen.has(canonical)) continue;
+    seen.add(canonical);
+    canonicalPaths.push(canonical);
+  }
+  return { canonicalPaths, hasUnresolved };
+}
+
+/**
  * Builds the capture-time boot-relevant snapshot from the parsed config only.
  * Candidate paths are the runtime binding field, the binding unset fields, the
  * standard boot-source fields, and every driver identity path. A secret-ref
@@ -322,22 +364,15 @@ export function buildEnvironmentCustomImageBootRelevantConfig(input: {
   // never mutate the prototype, so a hostile path cannot vanish from `values`.
   const values: Record<string, unknown> = Object.create(null);
   const excludedPaths = new Set<string>();
-  const seen = new Set<string>();
 
-  const rawCandidatePaths = [
-    input.binding.field,
-    ...input.binding.unsetFields,
-    ...ENVIRONMENT_CUSTOM_IMAGE_TEMPLATE_SOURCE_FIELDS,
-    ...(input.templateIdentityPaths ?? []),
-  ];
-  for (const rawPath of rawCandidatePaths) {
-    const canonical = canonicalizeEnvironmentCustomImageConfigPath(rawPath);
-    if (!canonical) {
-      excludedPaths.add(ENVIRONMENT_CUSTOM_IMAGE_BOOT_RELEVANT_UNRESOLVED_PATH);
-      continue;
-    }
-    if (seen.has(canonical)) continue;
-    seen.add(canonical);
+  const { canonicalPaths, hasUnresolved } = environmentCustomImageBootRelevantCandidatePaths({
+    binding: input.binding,
+    templateIdentityPaths: input.templateIdentityPaths,
+  });
+  if (hasUnresolved) {
+    excludedPaths.add(ENVIRONMENT_CUSTOM_IMAGE_BOOT_RELEVANT_UNRESOLVED_PATH);
+  }
+  for (const canonical of canonicalPaths) {
     if (environmentCustomImageConfigPathOverlapsSecret(canonical, secretPaths)) {
       excludedPaths.add(canonical);
       continue;
@@ -354,6 +389,35 @@ export function buildEnvironmentCustomImageBootRelevantConfig(input: {
     values,
     excludedPaths: [...excludedPaths],
   };
+}
+
+/**
+ * Reports whether a persisted snapshot no longer matches the current provider
+ * boot-relevant contract. A provider plugin can change its config binding or
+ * its identity paths after capture. When it does, a field that is boot-relevant
+ * now but absent from the snapshot would compare equal by absence and hide real
+ * drift. The check fails closed on:
+ *
+ * - a binding field that differs from the captured `bindingField`;
+ * - a current identity path the snapshot never covered (neither a value nor an
+ *   excluded path);
+ * - a current contract that itself carries an unresolvable identity path.
+ */
+export function environmentCustomImageBootRelevantSnapshotIsStale(input: {
+  bootRelevantConfig: EnvironmentCustomImageBootRelevantConfig;
+  currentContract: EnvironmentCustomImageBootRelevantContract;
+}): boolean {
+  const boot = input.bootRelevantConfig;
+  if (input.currentContract.binding.field !== boot.bindingField) return true;
+  const { canonicalPaths, hasUnresolved } = environmentCustomImageBootRelevantCandidatePaths(
+    input.currentContract,
+  );
+  if (hasUnresolved) return true;
+  const covered = new Set<string>([
+    ...Object.keys(boot.values),
+    ...boot.excludedPaths,
+  ]);
+  return canonicalPaths.some((path) => !covered.has(path));
 }
 
 /**
@@ -390,22 +454,38 @@ export function readEnvironmentCustomImageBootRelevantConfig(
  *   still matches. The fingerprint can be re-stamped without confirmation.
  * - `boot_source_drift`: a value-bearing path differs. The operator must
  *   confirm before the re-stamp.
- * - `unclassified`: no snapshot, an excluded path, or a provider mismatch. The
- *   server cannot verify the boot source; the operator must confirm (fail
- *   closed).
+ * - `unclassified`: no snapshot, an excluded path, a provider mismatch, or a
+ *   snapshot that no longer matches the current provider contract. The server
+ *   cannot verify the boot source; the operator must confirm (fail closed).
  *
  * `driftedPaths` carries raw `from`/`to` values only for value-bearing paths
  * that passed containment at capture. Excluded paths carry the path name only.
+ *
+ * `currentContract` is the current provider boot-relevant contract. When the
+ * caller cannot resolve the driver, it passes `null`; the server then cannot
+ * verify the boot source and the result is `unclassified` (fail closed).
  */
 export function classifyEnvironmentCustomImageBootRelevantDrift(input: {
   bootRelevantConfig: EnvironmentCustomImageBootRelevantConfig | null;
   currentConfig: SandboxEnvironmentConfig;
+  currentContract: EnvironmentCustomImageBootRelevantContract | null;
 }): {
   classification: EnvironmentCustomImageRelinkClassification;
   driftedPaths: EnvironmentCustomImageDriftedPath[];
 } {
   const boot = input.bootRelevantConfig;
   if (!boot) return { classification: "unclassified", driftedPaths: [] };
+  // Without the current provider contract the boot source cannot be verified
+  // against a possible identity-path change; fail closed.
+  if (!input.currentContract) return { classification: "unclassified", driftedPaths: [] };
+  // A provider change since capture (new binding or new identity path) makes
+  // the persisted snapshot untrustworthy; fail closed.
+  if (environmentCustomImageBootRelevantSnapshotIsStale({
+    bootRelevantConfig: boot,
+    currentContract: input.currentContract,
+  })) {
+    return { classification: "unclassified", driftedPaths: [] };
+  }
   const current = input.currentConfig as Record<string, unknown>;
 
   const driftedPaths: EnvironmentCustomImageDriftedPath[] = [];
@@ -430,6 +510,22 @@ export function classifyEnvironmentCustomImageBootRelevantDrift(input: {
   return { classification: "knob_only", driftedPaths: [] };
 }
 
+/**
+ * Removes the server-only boot-relevant snapshot from a template's metadata.
+ * The snapshot exists to classify a later relink and holds raw boot-source
+ * config values. It must never reach an API response. The runtime keeps it in
+ * the persisted row and reads it straight from the row at relink time.
+ */
+export function stripInternalEnvironmentCustomImageTemplateMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  if (!metadata) return null;
+  if (!(ENVIRONMENT_CUSTOM_IMAGE_BOOT_RELEVANT_CONFIG_METADATA_KEY in metadata)) return metadata;
+  const rest = { ...metadata };
+  delete rest[ENVIRONMENT_CUSTOM_IMAGE_BOOT_RELEVANT_CONFIG_METADATA_KEY];
+  return rest;
+}
+
 export function environmentCustomImageTemplateFromRow(row: TemplateRow): EnvironmentCustomImageTemplate {
   return {
     id: row.id,
@@ -445,7 +541,9 @@ export function environmentCustomImageTemplateFromRow(row: TemplateRow): Environ
     capturedAt: row.capturedAt ?? null,
     lastUsedAt: row.lastUsedAt ?? null,
     supersededByTemplateId: row.supersededByTemplateId ?? null,
-    metadata: row.metadata ?? null,
+    // The boot-relevant snapshot is server-internal; keep it out of every
+    // template response. The relink path reads it from the persisted row.
+    metadata: stripInternalEnvironmentCustomImageTemplateMetadata(row.metadata),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };

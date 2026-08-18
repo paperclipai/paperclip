@@ -236,10 +236,10 @@ function sourceTemplateFromConfig(
   return { sourceTemplateRef: null, sourceTemplateKind: null };
 }
 
-async function resolveActiveTemplate(
+async function resolveActiveTemplateRow(
   db: Db,
   input: { environmentId: string; provider?: string | null },
-): Promise<EnvironmentCustomImageTemplate | null> {
+): Promise<typeof environmentCustomImageTemplates.$inferSelect | null> {
   const conditions = [
     eq(environmentCustomImageTemplates.environmentId, input.environmentId),
     eq(environmentCustomImageTemplates.status, "active"),
@@ -247,12 +247,19 @@ async function resolveActiveTemplate(
   if (input.provider) {
     conditions.push(eq(environmentCustomImageTemplates.provider, input.provider));
   }
-  const row = await db
+  return db
     .select()
     .from(environmentCustomImageTemplates)
     .where(and(...conditions))
     .orderBy(desc(environmentCustomImageTemplates.capturedAt), desc(environmentCustomImageTemplates.createdAt))
     .then((rows) => rows[0] ?? null);
+}
+
+async function resolveActiveTemplate(
+  db: Db,
+  input: { environmentId: string; provider?: string | null },
+): Promise<EnvironmentCustomImageTemplate | null> {
+  const row = await resolveActiveTemplateRow(db, input);
   return row ? environmentCustomImageTemplateFromRow(row) : null;
 }
 
@@ -1060,18 +1067,38 @@ export function environmentCustomImageService(
       if (parsed.driver !== "sandbox") {
         throw unprocessable("Environment customImage relink is only supported for sandbox environments.");
       }
-      const active = await resolveActiveTemplate(db, {
+      const activeRow = await resolveActiveTemplateRow(db, {
         environmentId: input.environmentId,
         provider: parsed.config.provider,
       });
-      if (!active) throw notFound("Active environment customImage template not found");
+      if (!activeRow) throw notFound("Active environment customImage template not found");
+      const active = environmentCustomImageTemplateFromRow(activeRow);
 
       const secretRefExcludePaths = parsed.config.provider === "fake"
         ? []
         : [...await resolveSandboxProviderSecretRefPaths(db, parsed.config.provider)];
+      // Resolve the current provider contract so the classifier can reject a
+      // snapshot captured against a different binding or identity-path set. A
+      // driver that no longer resolves fails closed (null contract).
+      const resolvedDriver = await resolvePluginSandboxProviderDriverByKey({
+        db,
+        driverKey: active.provider,
+      });
+      const currentContract = resolvedDriver
+        ? {
+            binding: templateConfigBindingFromDriver({
+              templateRefKind: active.templateKind,
+              templateConfigBinding: resolvedDriver.driver.templateConfigBinding,
+            }),
+            templateIdentityPaths: resolvedDriver.driver.templateIdentityPaths ?? [],
+          }
+        : null;
+      // The persisted snapshot is server-internal; read it from the row, not the
+      // sanitized template response.
       const drift = classifyEnvironmentCustomImageBootRelevantDrift({
-        bootRelevantConfig: readEnvironmentCustomImageBootRelevantConfig(active.metadata),
+        bootRelevantConfig: readEnvironmentCustomImageBootRelevantConfig(activeRow.metadata),
         currentConfig: parsed.config,
+        currentContract,
       });
 
       const confirmBootSourceDrift = input.confirmBootSourceDrift === true;

@@ -1057,19 +1057,29 @@ describeEmbeddedPostgres("environmentCustomImageService relink", () => {
     const started = await service.startSetupSession({ environmentId, actor: { userId: "user-1" } });
     const promoted = await service.finishSetupSession({ sessionId: started.session.id });
 
-    const boot = (promoted.template.metadata as Record<string, unknown>).bootRelevantConfig as {
+    // The public template response never carries the server-internal snapshot.
+    expect((promoted.template.metadata as Record<string, unknown>).bootRelevantConfig).toBeUndefined();
+
+    // The persisted snapshot lives in the row. Every secret-ref overlap is
+    // excluded with no value (exact, child, parent).
+    const persistedRow = await activeTemplateRow(environmentId);
+    const boot = (persistedRow.metadata as Record<string, unknown>).bootRelevantConfig as {
       values: Record<string, unknown>;
       excludedPaths: string[];
     };
-    // Every secret-ref overlap is excluded with no value (exact, child, parent).
     expect(boot.excludedPaths).toEqual(expect.arrayContaining(["apiUrl", "auth.token", "credentials"]));
     expect(Object.keys(boot.values)).not.toContain("apiUrl");
     expect(Object.keys(boot.values)).not.toContain("auth.token");
     expect(Object.keys(boot.values)).not.toContain("credentials");
-    const metadataJson = JSON.stringify(promoted.template.metadata);
-    expect(metadataJson).not.toContain("secret-endpoint.example");
-    expect(metadataJson).not.toContain("auth-secret-value");
-    expect(metadataJson).not.toContain("cred-secret-value");
+    // Neither the persisted snapshot nor the response leaks a secret value.
+    for (const metadataJson of [
+      JSON.stringify(persistedRow.metadata),
+      JSON.stringify(promoted.template.metadata),
+    ]) {
+      expect(metadataJson).not.toContain("secret-endpoint.example");
+      expect(metadataJson).not.toContain("auth-secret-value");
+      expect(metadataJson).not.toContain("cred-secret-value");
+    }
 
     // An excluded path forces the fail-closed unclassified result: the flag is required.
     await expect(service.relinkActiveTemplate({ environmentId, actor: relinkActor, companyId }))
@@ -1241,13 +1251,15 @@ describeEmbeddedPostgres("environmentCustomImageService relink", () => {
     const started = await service.startSetupSession({ environmentId, actor: { userId: "user-1" } });
     const promoted = await service.finishSetupSession({ sessionId: started.session.id });
 
-    const boot = (promoted.template.metadata as Record<string, unknown>).bootRelevantConfig as {
+    expect((promoted.template.metadata as Record<string, unknown>).bootRelevantConfig).toBeUndefined();
+    const persistedRow = await activeTemplateRow(environmentId);
+    const boot = (persistedRow.metadata as Record<string, unknown>).bootRelevantConfig as {
       values: Record<string, unknown>;
       excludedPaths: string[];
     };
     expect(boot.excludedPaths).toContain("[unresolved-identity-path]");
     // The raw invalid paths are never persisted and never value-bearing.
-    const metadataJson = JSON.stringify(promoted.template.metadata);
+    const metadataJson = JSON.stringify(persistedRow.metadata);
     expect(metadataJson).not.toContain("bad path!");
     expect(metadataJson).not.toContain("a..b");
     expect(Object.keys(boot.values)).not.toContain("bad path!");
@@ -1274,7 +1286,9 @@ describeEmbeddedPostgres("environmentCustomImageService relink", () => {
     const started = await service.startSetupSession({ environmentId, actor: { userId: "user-1" } });
     const promoted = await service.finishSetupSession({ sessionId: started.session.id });
 
-    const boot = (promoted.template.metadata as Record<string, unknown>).bootRelevantConfig as {
+    expect((promoted.template.metadata as Record<string, unknown>).bootRelevantConfig).toBeUndefined();
+    const persistedRow = await activeTemplateRow(environmentId);
+    const boot = (persistedRow.metadata as Record<string, unknown>).bootRelevantConfig as {
       values: Record<string, unknown>;
       excludedPaths: string[];
     };
@@ -1289,7 +1303,7 @@ describeEmbeddedPostgres("environmentCustomImageService relink", () => {
     expect(Object.keys(boot.values)).not.toContain("prototype");
     // The prototype of the values map stays clean; no key leaked onto it.
     expect(Object.getPrototypeOf(boot.values)).toBe(Object.prototype);
-    const metadataJson = JSON.stringify(promoted.template.metadata);
+    const metadataJson = JSON.stringify(persistedRow.metadata);
     expect(metadataJson).not.toContain("__proto__");
     expect(metadataJson).not.toContain("nested.__proto__");
 
@@ -1307,5 +1321,47 @@ describeEmbeddedPostgres("environmentCustomImageService relink", () => {
     const activities = await relinkActivityRows(environmentId);
     const relinkActivity = activities.find((row) => row.action === "environment.custom_image_template.relinked");
     expect(relinkActivity).toBeDefined();
+  });
+
+  it("fails closed when the provider adds a boot-relevant identity path after capture", async () => {
+    const { companyId, environmentId } = await seed({ config: {
+      provider: "fake-plugin",
+      image: "fake:base",
+      region: "us",
+      reuseLease: false,
+    } });
+    const service = environmentCustomImageService(db, { pluginWorkerManager: createWorkerManager() });
+    const started = await service.startSetupSession({ environmentId, actor: { userId: "user-1" } });
+    await service.finishSetupSession({ sessionId: started.session.id });
+
+    // A knob-only region change detaches the template. On its own it would
+    // relink without confirmation.
+    await db.update(environments)
+      .set({ config: { provider: "fake-plugin", image: "fake:base", region: "eu", reuseLease: false } })
+      .where(eq(environments.id, environmentId));
+
+    // The provider now declares `region` a boot-relevant identity path. The
+    // capture snapshot never covered it, so the server cannot verify the boot
+    // source and must not classify the drift as knob-only.
+    const manifest = pluginManifest();
+    const nextManifest = {
+      ...manifest,
+      environmentDrivers: [
+        { ...manifest.environmentDrivers[0], templateIdentityPaths: ["apiUrl", "region"] },
+      ],
+    };
+    await db.update(plugins)
+      .set({ manifestJson: nextManifest })
+      .where(eq(plugins.pluginKey, manifest.id));
+
+    await expect(service.relinkActiveTemplate({ environmentId, actor: relinkActor, companyId }))
+      .rejects.toMatchObject({ status: 409, details: { classification: "unclassified" } });
+    const relinked = await service.relinkActiveTemplate({
+      environmentId,
+      confirmBootSourceDrift: true,
+      actor: relinkActor,
+      companyId,
+    });
+    expect(relinked.classification).toBe("unclassified");
   });
 });
