@@ -17,6 +17,19 @@ function runProcessCommand(command: string, args: string[]) {
 
 async function runPowerShell(script: string, runCommand: ProcessCommandRunner) {
   const args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script];
+  // On 64-bit Windows running 32-bit Node, powershell.exe resolves to the
+  // 32-bit PowerShell (WOW64), which cannot inspect a native 64-bit target.
+  // Launch the 64-bit PowerShell via the Sysnative redirect instead.
+  const sysnative = process.platform === "win32" && process.arch === "ia32"
+    ? `${process.env.WINDIR ?? "C:\\Windows"}\\Sysnative\\WindowsPowerShell\\v1.0\\powershell.exe`
+    : null;
+  if (sysnative) {
+    try {
+      return await runCommand(sysnative, args);
+    } catch {
+      // Fall through to the 32-bit PowerShell (e.g. 32-bit Windows).
+    }
+  }
   try {
     return await runCommand("powershell.exe", args);
   } catch {
