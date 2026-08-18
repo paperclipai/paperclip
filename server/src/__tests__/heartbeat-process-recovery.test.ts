@@ -1790,6 +1790,176 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  // AGE-655: isServerStdioBoundHotRestartRun previously only recognized
+  // claude_local/codex_local/gemini_local as potentially server-stdio bound.
+  // Every other local adapter (pi_local, opencode_local, grok_local, cursor)
+  // reaches the same piped `runChildProcess` spawn with no "cli" engine
+  // escape hatch, so an empty/absent contextSnapshot.processTopology must
+  // still classify them as server-stdio bound -- not silently adoptable and
+  // then lost as process_lost when adoption fails in reality.
+  it.each([
+    ["pi_local"],
+    ["opencode_local"],
+    ["grok_local"],
+    ["cursor"],
+    ["cursor_local"],
+  ])(
+    "treats a %s run with no explicit processTopology as server-stdio bound and drains it instead of adopting",
+    async (adapterType) => {
+      const child = spawnAliveProcess();
+      childProcesses.add(child);
+      expect(child.pid).toBeGreaterThan(0);
+      const { runId } = await seedRunFixture({
+        adapterType,
+        agentStatus: "running",
+        processPid: child.pid ?? null,
+        processGroupId: null,
+        contextSnapshot: {},
+      });
+
+      await withTempPaperclipHome(async () => {
+        await writeHotRestartIntent({
+          previousServerPid: process.pid,
+          previousServerVersion: "old-version",
+          requestedAt: new Date("2026-08-18T00:05:00.000Z"),
+          preflightActiveRunIds: [runId],
+        });
+        const heartbeat = heartbeatService(db);
+
+        const preparation = await heartbeat.prepareHotRestartShutdown(
+          "SIGTERM",
+          new Date("2026-08-18T00:06:00.000Z"),
+        );
+        expect(preparation).toMatchObject({
+          mode: "acp_drain_required",
+          skipDrain: false,
+          activeAcpRunIds: [runId],
+          drainRunIds: [runId],
+          drainReason: "active_acp_run",
+        });
+
+        // Clean up so the still-alive spawned child doesn't leak into later
+        // assertions in this shared afterAll; the drain path is exercised by
+        // the dedicated single-adapter test below.
+        child.kill("SIGKILL");
+        await waitForPidExit(child.pid!);
+      });
+    },
+  );
+
+  it("drains a pi_local run with no explicit processTopology and queues a retry instead of losing it as process_lost", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeGreaterThan(0);
+    const { agentId, runId } = await seedRunFixture({
+      adapterType: "pi_local",
+      agentStatus: "running",
+      processPid: child.pid ?? null,
+      processGroupId: null,
+      contextSnapshot: {},
+    });
+
+    await withTempPaperclipHome(async (home) => {
+      await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "old-pi-local-version",
+        requestedAt: new Date("2026-08-18T00:15:00.000Z"),
+        preflightActiveRunIds: [runId],
+      });
+      const heartbeat = heartbeatService(db);
+
+      const preparation = await heartbeat.prepareHotRestartShutdown(
+        "SIGTERM",
+        new Date("2026-08-18T00:16:00.000Z"),
+      );
+      expect(preparation).toMatchObject({
+        mode: "acp_drain_required",
+        drainRunIds: [runId],
+        drainReason: "active_acp_run",
+      });
+      if (preparation.mode !== "acp_drain_required") {
+        throw new Error(`Expected pi_local drain, received ${preparation.mode}`);
+      }
+
+      const drain = await heartbeat.drainRunningRunsForShutdown(
+        "SIGTERM",
+        new Date("2026-08-18T00:16:01.000Z"),
+        preparation.drainRunIds,
+      );
+      expect(drain.interruptedRunIds).toEqual([runId]);
+      await waitForPidExit(child.pid!);
+
+      const reconciliation = await heartbeat.reconcileHotRestartAdoption(
+        new Date("2026-08-18T00:17:00.000Z"),
+      );
+      expect(reconciliation).toMatchObject({
+        mode: "reported",
+        adoptedRunIds: [],
+        finalizedWhileDownRunIds: [runId],
+        lostRunIds: [],
+        skippedRunIds: [],
+      });
+
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      expect(runs.find((run) => run.id === runId)).toMatchObject({
+        status: "interrupted",
+        errorCode: "server_shutdown_interrupted",
+      });
+      expect(runs.find((run) => run.retryOfRunId === runId)).toMatchObject({
+        status: "queued",
+      });
+
+      const report = JSON.parse(
+        await fs.readFile(resolveHotRestartReportPath(home), "utf8"),
+      ) as Record<string, unknown>;
+      expect(report).toMatchObject({
+        drainRequired: true,
+        drainReason: "active_acp_run",
+        adoptedRunIds: [],
+        finalizedWhileDownRunIds: [runId],
+        lostRunIds: [],
+      });
+    });
+  });
+
+  it("still adopts a pi_local run whose contextSnapshot explicitly marks processTopology as detached", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeGreaterThan(0);
+    const { runId } = await seedRunFixture({
+      adapterType: "pi_local",
+      agentStatus: "running",
+      processPid: child.pid ?? null,
+      processGroupId: null,
+      contextSnapshot: {
+        processTopology: "detached",
+      },
+    });
+
+    await withTempPaperclipHome(async () => {
+      await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "old-pi-local-detached-version",
+        requestedAt: new Date("2026-08-18T00:25:00.000Z"),
+      });
+      const heartbeat = heartbeatService(db);
+
+      const preparation = await heartbeat.prepareHotRestartShutdown(
+        "SIGTERM",
+        new Date("2026-08-18T00:26:00.000Z"),
+      );
+      expect(preparation).toEqual({
+        mode: "hot_restart",
+        skipDrain: true,
+        activeRunIds: [runId],
+      });
+      expect(isPidAlive(child.pid)).toBe(true);
+    });
+  });
+
   it("adopts an old-server legacy snapshot written for a new instance-scoped marker", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
