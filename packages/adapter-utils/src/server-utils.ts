@@ -1501,6 +1501,7 @@ export function renderPaperclipWakePrompt(
       case "provider_quota":
         return "Verify or create the wait-recovery monitor for the provider quota reset, then stop. Do not take over the task.";
       case "codex_output_inactivity_monitor":
+      case "opencode_output_inactivity_monitor":
         return "Your run was killed by the output-inactivity monitor, likely during a long quiet build/test phase. Go again from durable progress.";
       case "workspace_validation_failed":
         return `Recover/fix the workspace (worktree, branch, workspace link), then hand the issue back to ${originalAssigneeLabel} for the actual work. Do not do the deliverable work.`;
