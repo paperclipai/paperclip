@@ -67,6 +67,24 @@ type RuntimeServiceReadDb = Pick<Db, "select">;
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 const execFileAsync = promisify(execFile);
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+
+// Return the timestamp when an issue became terminal. A `done` issue uses
+// `completedAt`. A `cancelled` issue uses `cancelledAt`. The reaper cooldown
+// measures the age of the terminal transition from this timestamp. Fall back to
+// `updatedAt` when the terminal timestamp is null, so an old issue that lacks a
+// recorded transition time still gates the cooldown. Return null for a
+// non-terminal issue.
+function issueTerminalTimestamp(issue: {
+  status: string;
+  completedAt: Date | null;
+  cancelledAt: Date | null;
+  updatedAt: Date;
+}): Date | null {
+  if (issue.status === "done") return issue.completedAt ?? issue.updatedAt;
+  if (issue.status === "cancelled") return issue.cancelledAt ?? issue.updatedAt;
+  return null;
+}
+
 const WORKSPACE_BRANCH_INCOHERENCE_REASON = "git_worktree_branch_incoherence";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 export const ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON = "issue_terminal";
@@ -208,6 +226,10 @@ export type ExecutionWorkspaceServiceOptions = {
   resolvePullRequestDetails?: PullRequestMergeDetailsResolver;
   now?: () => Date;
   beforeTerminalWorkspaceCleanup?: (workspace: ExecutionWorkspaceRow) => Promise<void>;
+  // The terminal-workspace reaper waits this many days after an issue tree
+  // becomes terminal before it archives the workspace. A value of 0 disables
+  // the cooldown. The default is 7 days.
+  workspaceReaperCooldownDays?: number;
 };
 
 function parseGitHubRepository(repoUrl: string | null) {
@@ -1230,6 +1252,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const resolvePullRequestDetails = opts.resolvePullRequestDetails ?? createPullRequestMergeDetailsResolver(db);
   const now = opts.now ?? (() => new Date());
+  // The reaper waits this long after an issue tree becomes terminal before it
+  // archives the workspace. A value of 0 disables the cooldown, so the reaper
+  // archives a terminal workspace on the same sweep. A negative value also
+  // disables the cooldown.
+  const workspaceReaperCooldownMs = Math.max(
+    0,
+    (opts.workspaceReaperCooldownDays ?? 7) * 24 * 60 * 60 * 1000,
+  );
   const pullRequestStateCache = new Map<
     string,
     {
@@ -1268,6 +1298,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       .select({
         id: issues.id,
         status: issues.status,
+        completedAt: issues.completedAt,
+        cancelledAt: issues.cancelledAt,
+        updatedAt: issues.updatedAt,
       })
       .from(issues)
       .where(and(
@@ -1323,6 +1356,17 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     const sourceIssue = issueTree.find((issue) => issue.id === workspace.sourceIssueId) ?? null;
     const sourceIssueTerminal = Boolean(sourceIssue && TERMINAL_ISSUE_STATUSES.has(sourceIssue.status));
     const subtreeTerminal = Boolean(sourceIssue && issueTree.every((issue) => TERMINAL_ISSUE_STATUSES.has(issue.status)));
+    // The cooldown anchor is the most recent terminal timestamp across the whole
+    // issue tree. The reaper compares it against the cooldown window. A null
+    // anchor means no issue in the tree is terminal yet, so the cooldown never
+    // applies (the terminal-tree gates above already block the archive).
+    let cooldownAnchor: Date | null = null;
+    for (const issue of issueTree) {
+      const terminalAt = issueTerminalTimestamp(issue);
+      if (terminalAt && (!cooldownAnchor || terminalAt.getTime() > cooldownAnchor.getTime())) {
+        cooldownAnchor = terminalAt;
+      }
+    }
     let mergedPullRequest = false;
     let pullRequestStateUnknown = false;
     const workspaceHeadSha = git?.repoRoot && git.workspacePath
@@ -1386,6 +1430,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       }),
       sourceIssueTerminal,
       subtreeTerminal,
+      cooldownAnchor,
       workspaceDirty: Boolean(git?.hasDirtyTrackedFiles || git?.hasUntrackedFiles),
       workspaceHeadSha,
     };
@@ -2460,6 +2505,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           skippedUndelivered: 0,
           skippedRace: 0,
           skippedReopened: 0,
+          skippedCooldown: 0,
           clearedStaleReopenPending: 0,
         };
       }
@@ -2523,6 +2569,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         skippedUndelivered: 0,
         skippedRace: 0,
         skippedReopened: 0,
+        skippedCooldown: 0,
         clearedStaleReopenPending: 0,
       };
 
@@ -2562,6 +2609,23 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           && assessment.deliveryState !== "merged_by_ancestry"
         ) {
           result.skippedUndelivered += 1;
+          continue;
+        }
+        // Hold the archive during the cooldown window. The anchor is the most
+        // recent terminal timestamp across the issue tree. A person can reopen
+        // the work inside this window. A cooldown of 0 disables the check, so the
+        // reaper archives the workspace on the same sweep. The archive statement
+        // below re-checks the same cutoff under the lifecycle lock, so the loop
+        // check and the guarded statement agree.
+        const cooldownCutoff = workspaceReaperCooldownMs > 0
+          ? new Date(now().getTime() - workspaceReaperCooldownMs)
+          : null;
+        if (
+          cooldownCutoff
+          && assessment.cooldownAnchor
+          && assessment.cooldownAnchor.getTime() > cooldownCutoff.getTime()
+        ) {
+          result.skippedCooldown += 1;
           continue;
         }
         if (reopenPending) {
@@ -2689,6 +2753,34 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
                 )
                 SELECT 1 FROM issue_tree WHERE status NOT IN ('done', 'cancelled')
               )`,
+              // Re-check the cooldown under the lifecycle lock. This predicate
+              // matches the loop check above: block the archive when any issue in
+              // the tree became terminal after the cutoff. The tree walk mirrors
+              // the terminal-tree walk above. A null cutoff means the cooldown is
+              // disabled, so this predicate drops out of the guard.
+              cooldownCutoff
+                ? sql<boolean>`NOT EXISTS (
+                WITH RECURSIVE cooldown_tree(id, status, completed_at, cancelled_at, updated_at) AS (
+                  SELECT root.id, root.status, root.completed_at, root.cancelled_at, root.updated_at
+                  FROM ${issues} root
+                  WHERE root.company_id = ${workspace.companyId}
+                    AND root.id = ${workspace.sourceIssueId}
+                  UNION ALL
+                  SELECT child.id, child.status, child.completed_at, child.cancelled_at, child.updated_at
+                  FROM ${issues} child
+                  JOIN cooldown_tree parent ON child.parent_id = parent.id
+                  WHERE child.company_id = ${workspace.companyId}
+                )
+                SELECT 1 FROM cooldown_tree
+                WHERE COALESCE(
+                  CASE
+                    WHEN status = 'done' THEN completed_at
+                    WHEN status = 'cancelled' THEN cancelled_at
+                  END,
+                  updated_at
+                ) > ${cooldownCutoff.toISOString()}::timestamptz
+              )`
+                : undefined,
             ))
             .returning()
             .then((rows) => rows[0] ?? null);

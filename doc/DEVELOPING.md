@@ -834,6 +834,12 @@ Environment overrides:
   stale-backup warning threshold
 - `PAPERCLIP_DB_BACKUP_ALERT_FILE=/path/to/failure-marker` lets external cron
   wrappers surface the last failed backup in `/api/health`
+- `PAPERCLIP_WORKSPACE_REAPER_COOLDOWN_DAYS=<days>` sets how long the
+  terminal-workspace reaper waits after an issue tree becomes terminal before it
+  archives the execution workspace and deletes the worktree. A person can reopen
+  the work inside this window. The default is `7`. A value of `0` disables the
+  cooldown and restores immediate reaping. A negative or non-numeric value falls
+  back to the default.
 
 Without `PAPERCLIP_DB_BACKUP_ALERT_FILE`, health checks look for
 `db-backup-to-s3.failure` in the backup directory, beside the backup directory,

@@ -1049,7 +1049,9 @@ export async function startServer(): Promise<StartedServer> {
     const mergedPullRequestConfirmations = issueThreadInteractionService(db as any, {
       wakeup: heartbeat.wakeup,
     });
-    const terminalWorkspaces = executionWorkspaceService(db as any);
+    const terminalWorkspaces = executionWorkspaceService(db as any, {
+      workspaceReaperCooldownDays: config.workspaceReaperCooldownDays,
+    });
     const scheduleMergedPullRequestConfirmationSweep = () => {
       if (heartbeatSchedulerStopped) return;
       trackHeartbeatSchedulerWork(mergedPullRequestConfirmations
@@ -1081,7 +1083,8 @@ export async function startServer(): Promise<StartedServer> {
             result.skippedActiveRun
             + result.skippedNonTerminalTree
             + result.skippedUndelivered
-            + result.skippedRace;
+            + result.skippedRace
+            + result.skippedCooldown;
           const nowMs = Date.now();
           if (skipped > 0 && nowMs - lastTerminalWorkspaceSkipLogAt >= terminalWorkspaceSkipLogIntervalMs) {
             lastTerminalWorkspaceSkipLogAt = nowMs;
