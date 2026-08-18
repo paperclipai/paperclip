@@ -864,7 +864,7 @@ export function builtInAgentService(db: Db) {
     companyId: string,
     definition: BuiltInAgentDefinition,
     input: BuiltInAgentProvisionInput,
-    existingAdapterConfig?: unknown,
+    existing?: { adapterType: string; adapterConfig: unknown } | null,
   ) {
     if (input.adapterType || input.adapterConfig) return input;
     if (definition.defaultAdapterType || definition.defaultAdapterConfig) {
@@ -899,10 +899,22 @@ export function builtInAgentService(db: Db) {
     // tracking, skill sync prefs, etc.) the existing agent already had every
     // time this branch re-ran on an agent whose adapterConfig still lacked a
     // model. See AGE-607 / AGE-583.
+    //
+    // That fallback is only safe when the borrowed adapterType matches what
+    // this agent already had: the existing adapterConfig's fields are shaped
+    // for its *previous* adapter. If the candidate's adapterType differs
+    // (e.g. the previous candidate was terminated/reassigned and a
+    // differently-typed agent now qualifies), carrying old fields forward
+    // under a new adapter discriminator would pair stale, adapter-specific
+    // config with the wrong schema. In that case start fresh, same as a
+    // brand-new agent would.
+    const adapterTypeUnchanged = existing?.adapterType === candidate.adapterType;
     return {
       ...input,
       adapterType: candidate.adapterType,
-      adapterConfig: isPlainRecord(existingAdapterConfig) ? { ...existingAdapterConfig } : {},
+      adapterConfig: adapterTypeUnchanged && isPlainRecord(existing?.adapterConfig)
+        ? { ...existing!.adapterConfig }
+        : {},
     };
   }
 
@@ -1628,7 +1640,7 @@ export function builtInAgentService(db: Db) {
     );
     const resolvedInput = existingPendingApproval || preserveExistingAdapter
       ? input
-      : await defaultProvisionInput(companyId, definition, input, existing?.adapterConfig);
+      : await defaultProvisionInput(companyId, definition, input, existing);
     if (!existingPendingApproval && !preserveExistingAdapter) {
       await assertKnownBuiltInAgentModel(definition, resolvedInput);
     }

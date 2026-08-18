@@ -1228,6 +1228,60 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(reconciled.agent?.adapterConfig).not.toMatchObject({ model: "gpt-5.4", apiKey: "do-not-copy" });
   });
 
+  // AGE-607 follow-up (Greptile review on PR #11619): the adapterConfig
+  // fallback above is only safe when the borrowed adapterType is unchanged.
+  // If the bundle-candidate search picks a *differently*-typed agent on a
+  // later ensure() (e.g. the original candidate was terminated and a
+  // different adapter family now qualifies), carrying forward adapterConfig
+  // fields shaped for the old adapter type would pair stale, incompatible
+  // config with the new adapter's schema. That case must reset to {}, same
+  // as a brand-new agent would -- not silently combine mismatched type +
+  // config.
+  it("resets adapterConfig instead of carrying stale fields forward when the borrowed adapterType changes (AGE-607)", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    const codexCandidate = await agentService(db).create(companyId, {
+      name: "Codex Candidate",
+      role: "general",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const builtIns = builtInAgentService(db);
+
+    const created = await builtIns.ensure(companyId, "reflection-coach");
+    expect(created.agent?.adapterType).toBe("codex_local");
+
+    // Simulate a codex_local-specific field landing on adapterConfig while
+    // the built-in was still on the codex_local adapter (out-of-band patch
+    // or reconciler-managed field tied to that adapter shape).
+    await db.update(agents)
+      .set({ adapterConfig: { codexReasoningEffort: "high" } })
+      .where(eq(agents.id, created.agentId!));
+
+    // The original codex candidate goes away (terminated) and a
+    // differently-typed candidate (claude_local) is now the only one that
+    // qualifies, so the next ensure() borrows a new adapterType.
+    await agentService(db).update(codexCandidate.id, { status: "terminated" });
+    await agentService(db).create(companyId, {
+      name: "Claude Candidate",
+      role: "general",
+      status: "idle",
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-haiku-4-5" },
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const reconciled = await builtIns.ensure(companyId, "reflection-coach");
+    expect(reconciled.agent?.adapterType).toBe("claude_local");
+    // The stale codex_local field must not survive under the new adapterType,
+    // and the claude candidate's own model must not be copied over either.
+    expect(reconciled.agent?.adapterConfig).not.toMatchObject({ codexReasoningEffort: "high" });
+    expect(reconciled.agent?.adapterConfig).not.toMatchObject({ model: "claude-haiku-4-5" });
+  });
+
   it("materializes the Summarizer bundle paused on Claude Haiku with a disabled routine", async () => {
     const companyId = await seedCompany();
     const root = await agentService(db).create(companyId, {
