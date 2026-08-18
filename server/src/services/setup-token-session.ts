@@ -249,6 +249,53 @@ export interface SetupTokenCleanupStore {
   consumeStoredClaim(identity: SetupTokenCleanupIdentity): Promise<SetupTokenCleanupRecord | null>;
 }
 
+/** The counts one reaper sweep produced over the durable cleanup store. */
+export interface SetupTokenReapResult {
+  /** The reapable records whose lease released and whose row cleared. */
+  released: number;
+  /** The reapable records whose lease release failed. The row stays for a retry. */
+  failed: number;
+}
+
+/**
+ * The shared setup-token reap logic. It reads the durable store and releases any
+ * lease whose session is terminal, past its deadline, or already consumed. It
+ * runs after a restart and on the scheduler interval, so it frees a lease that a
+ * crash left behind (SR-4). A release failure stays retryable: the sweep leaves
+ * the record for a later run. The standalone reaper and the in-flight session
+ * service both call this function, so both flows use one reap convention.
+ */
+export async function reapSetupTokenLeases(
+  deps: {
+    store: Pick<SetupTokenCleanupStore, "listReapable" | "remove">;
+    leases: Pick<SetupTokenLeaseManager, "releaseById">;
+    log?: (line: string) => void;
+  },
+  now: number,
+): Promise<SetupTokenReapResult> {
+  const log = deps.log ?? (() => {});
+  const records = await deps.store.listReapable(now);
+  let released = 0;
+  let failed = 0;
+  for (const record of records) {
+    try {
+      await deps.leases.releaseById(record.leaseId);
+      await deps.store.remove({
+        sessionId: record.sessionId,
+        companyId: record.companyId,
+        ownerUserId: record.ownerUserId,
+        adapterType: record.adapterType,
+        environmentId: record.environmentId,
+      });
+      released += 1;
+    } catch {
+      failed += 1;
+      log("[paperclip] Setup-token reaper: a lease release failed; it stays retryable.");
+    }
+  }
+  return { released, failed };
+}
+
 /** A per-key start rate limiter. It matches the invite-rate-limit shape. */
 export interface SetupTokenRateLimiter {
   consume(key: string): { allowed: boolean; retryAfterSeconds: number };
@@ -1251,29 +1298,11 @@ export class SetupTokenSessionService {
    * The startup reaper. It reads the durable store and releases any lease whose
    * session is terminal or past its deadline. It runs after a restart, so it
    * frees a lease that a crash left behind (SR-4). A release failure stays
-   * retryable: the reaper leaves the record for a later run.
+   * retryable: the reaper leaves the record for a later run. The standalone
+   * scheduled reaper calls the same {@link reapSetupTokenLeases} logic.
    */
-  async reap(now: number = this.now()): Promise<{ released: number; failed: number }> {
-    const records = await this.store.listReapable(now);
-    let released = 0;
-    let failed = 0;
-    for (const record of records) {
-      try {
-        await this.leases.releaseById(record.leaseId);
-        await this.store.remove({
-          sessionId: record.sessionId,
-          companyId: record.companyId,
-          ownerUserId: record.ownerUserId,
-          adapterType: record.adapterType,
-          environmentId: record.environmentId,
-        });
-        released += 1;
-      } catch {
-        failed += 1;
-        this.log("[paperclip] Setup-token reaper: a lease release failed; it stays retryable.");
-      }
-    }
-    return { released, failed };
+  async reap(now: number = this.now()): Promise<SetupTokenReapResult> {
+    return reapSetupTokenLeases({ store: this.store, leases: this.leases, log: this.log }, now);
   }
 
   /**
