@@ -2,10 +2,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { type RuntimeCacheEntry } from "./run-site-host.js";
 import {
   closeAcpxEngineRuntimesForShutdown,
   createAcpxEngineExecutor,
-  type RuntimeCacheEntry,
 } from "./execute.js";
 
 describe("ACP engine shutdown", () => {
@@ -117,7 +117,7 @@ describe("ACP engine shutdown", () => {
     expect(slowClose).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps an idle-close failure visible to shutdown", async () => {
+  it("closes (does not warm-save) a completed runtime, so shutdown finds no retained handle", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-idle-close-"));
     const closeError = new Error("idle close failed");
     const close = vi.fn().mockRejectedValue(closeError);
@@ -158,10 +158,13 @@ describe("ACP engine shutdown", () => {
       } as never);
       await vi.waitFor(() => expect(close).toHaveBeenCalled(), { timeout: 1_000 });
 
+      // Amendment B: the host lane never warm-saves, so the completed run's
+      // runtime is closed-and-relaunched rather than retained in the warm store.
       expect(warmHandles.size).toBe(0);
-      await expect(closeAcpxEngineRuntimesForShutdown({ warmHandles })).rejects.toBe(closeError);
+      await expect(closeAcpxEngineRuntimesForShutdown({ warmHandles })).resolves.toEqual({
+        closedWarmHandles: 0,
+      });
       expect(warmHandles.size).toBe(0);
-      expect(close).toHaveBeenCalledTimes(2);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

@@ -1528,7 +1528,9 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(first.exitCode).toBe(0);
     expect(runtimeCount).toBe(2);
     expect(firstRuntimeCloseAttempts).toBe(1);
-    expect(warmHandles.size).toBe(1);
+    // Amendment B: the host lane never warm-saves, so the completed run's runtime
+    // is closed-and-relaunched rather than retained in the warm store.
+    expect(warmHandles.size).toBe(0);
 
     await expect(execute({
       runId: "run-stale-close-3",
@@ -1543,9 +1545,9 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(runtimeCount).toBe(3);
     expect(firstRuntimeCloseAttempts).toBe(1);
     await expect(closeAcpxEngineRuntimesForShutdown({ warmHandles })).resolves.toMatchObject({
-      closedWarmHandles: 3,
+      closedWarmHandles: 0,
     });
-    expect(firstRuntimeCloseAttempts).toBe(2);
+    expect(firstRuntimeCloseAttempts).toBe(1);
     expect(warmHandles.size).toBe(0);
   });
 
