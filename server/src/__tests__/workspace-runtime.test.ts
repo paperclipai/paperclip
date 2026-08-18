@@ -5131,7 +5131,7 @@ describe("readLocalServicePortOwner", () => {
   });
 
   it("refuses to adopt a listener whose real cwd belongs to another workspace", async () => {
-    if (process.platform !== "linux") return;
+    if (process.platform !== "linux" && process.platform !== "darwin") return;
     try {
       await execFileAsync("lsof", ["-v"]);
     } catch {
@@ -5220,6 +5220,60 @@ describe("readLocalServicePortOwner", () => {
       child.kill("SIGTERM");
       await new Promise<void>((resolve) => child.once("exit", () => resolve()));
       await fs.rm(paperclipHome, { recursive: true, force: true });
+    }
+  });
+
+  it("adopts a port owner running inside the workspace when the registry record is gone", async () => {
+    if (process.platform !== "linux" && process.platform !== "darwin") return;
+    try {
+      await execFileAsync("lsof", ["-v"]);
+    } catch {
+      return;
+    }
+
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-adopt-"));
+    const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-home-"));
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = `adopt-port-owner-${randomUUID()}`;
+    const serviceKey = `adopt-port-owner-${randomUUID()}`;
+    // Detach, because managed runtime services also start detached
+    // (`detached: process.platform !== "win32"`). An attached child shares the
+    // runner's process group, so adoption would record the group leader — pnpm
+    // or a shell — and the command check would read that leader instead.
+    const child = spawn(
+      process.execPath,
+      [
+        "-e",
+        "const server=require('node:http').createServer((req,res)=>res.end('ok')); server.listen(0, '127.0.0.1', () => console.log(server.address().port));",
+      ],
+      { cwd: workspace, stdio: ["ignore", "pipe", "inherit"], detached: true },
+    );
+    const port = await new Promise<number>((resolve, reject) => {
+      let output = "";
+      child.stdout?.on("data", (chunk) => {
+        output += String(chunk);
+        const value = Number.parseInt(output.trim(), 10);
+        if (Number.isInteger(value) && value > 0) resolve(value);
+      });
+      child.once("error", reject);
+      child.once("exit", (code) => reject(new Error(`Port owner exited before listening: ${code ?? "unknown"}`)));
+    });
+
+    try {
+      // No registry record is written: this is the "registry lost, service still
+      // running" path that falls through to adoptLocalServiceFromPortOwner.
+      await expect(findAdoptableLocalService({
+        serviceKey,
+        serviceName: "node",
+        command: "node",
+        cwd: workspace,
+        port,
+      })).resolves.toMatchObject({ pid: expect.any(Number), port });
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+      await fs.rm(paperclipHome, { recursive: true, force: true });
+      await fs.rm(workspace, { recursive: true, force: true });
     }
   });
 });
