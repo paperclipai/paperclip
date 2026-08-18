@@ -433,6 +433,51 @@ export function buildRemoteGitDeltaBundleScript(input: {
   ].filter(Boolean).join("\n");
 }
 
+/**
+ * Preserve imported work whose history does not connect to the local one.
+ *
+ * The dominant real-world cause is a history rewrite inside a transported
+ * workspace: transported clones are depth-1 shallow, so the boundary commit
+ * reads as parentless there and `git commit --amend` rewrites it into a root
+ * commit that shares no ancestor with the host history. A tree merge is
+ * impossible without a common ancestor, and failing the integration would
+ * discard the run's work. Instead, squash-graft the imported tree onto the
+ * current head as a single commit that reuses the imported head's message,
+ * with a trailer recording the graft. Concurrent local-only commits keep
+ * their place in history as the graft's ancestry; the imported tree is taken
+ * wholesale because no base exists to merge against. The caller advances the
+ * branch ref to the returned commit.
+ */
+export async function createUnrelatedHistoryGraftCommit(input: {
+  localDir: string;
+  currentHead: string;
+  importedHead: string;
+  syncLabel: string;
+}): Promise<string> {
+  const importedTree = (await runLocalGit(input.localDir, ["rev-parse", `${input.importedHead}^{tree}`], {
+    timeout: 10_000,
+    maxBuffer: 16 * 1024,
+  })).stdout.trim();
+  const importedMessage = (await runLocalGit(input.localDir, ["log", "-1", "--format=%B", input.importedHead], {
+    timeout: 10_000,
+    maxBuffer: 256 * 1024,
+  })).stdout;
+  const message = [
+    importedMessage.trim(),
+    "",
+    `(${input.syncLabel} graft ${input.importedHead.slice(0, 12)}: imported history shares no ancestor with ${input.currentHead.slice(0, 12)})`,
+  ].join("\n");
+  const graftCommit = await runLocalGit(
+    input.localDir,
+    [...GIT_SYNC_COMMIT_IDENTITY_ARGS, "commit-tree", importedTree, "-p", input.currentHead, "-m", message],
+    {
+      timeout: 60_000,
+      maxBuffer: 64 * 1024,
+    },
+  );
+  return graftCommit.stdout.trim();
+}
+
 export async function integrateImportedGitHead(input: {
   localDir: string;
   importedHead: string;
@@ -463,6 +508,28 @@ export async function integrateImportedGitHead(input: {
     if (mergeBaseHead === currentHead) {
       try {
         await runLocalGit(input.localDir, ["update-ref", headRef, input.importedHead, currentHead], {
+          timeout: 10_000,
+          maxBuffer: 16 * 1024,
+        });
+        return;
+      } catch (error) {
+        if (isConcurrentRefUpdateError(error) && attempt < 4) continue;
+        throw error;
+      }
+    }
+
+    if (!mergeBaseHead) {
+      // No common ancestor — merging is impossible and failing here would
+      // discard the imported work. Graft it onto the current head instead;
+      // see createUnrelatedHistoryGraftCommit.
+      const graftCommit = await createUnrelatedHistoryGraftCommit({
+        localDir: input.localDir,
+        currentHead,
+        importedHead: input.importedHead,
+        syncLabel: "Paperclip remote git sync",
+      });
+      try {
+        await runLocalGit(input.localDir, ["update-ref", headRef, graftCommit, currentHead], {
           timeout: 10_000,
           maxBuffer: 16 * 1024,
         });
