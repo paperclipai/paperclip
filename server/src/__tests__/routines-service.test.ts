@@ -2593,4 +2593,92 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(run).toMatchObject({ source: "webhook", status: "issue_created" });
   });
+
+  async function seedDelegatingExecution(opts?: { withCoveredChild?: boolean }) {
+    const fixture = await seedFixture();
+    const { agentId, companyId, routine, svc } = fixture;
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+    const executionIssueId = run.linkedIssueId!;
+
+    let childIssueId: string | null = null;
+    if (opts?.withCoveredChild) {
+      childIssueId = randomUUID();
+      const childRunId = randomUUID();
+      await db.insert(issues).values({
+        id: childIssueId,
+        companyId,
+        identifier: `${routine.title.slice(0, 3).toUpperCase()}-CHILD`,
+        title: "delegated child",
+        status: "in_progress",
+        priority: "medium",
+        parentId: executionIssueId,
+        assigneeAgentId: agentId,
+        originKind: "manual",
+      });
+      await db.insert(heartbeatRuns).values({
+        id: childRunId,
+        companyId,
+        agentId,
+        status: "running",
+        contextSnapshot: { issueId: childIssueId },
+      });
+      await db.update(issues).set({ executionRunId: childRunId }).where(eq(issues.id, childIssueId));
+    }
+
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, executionIssueId));
+    return { ...fixture, childIssueId, executionIssueId, run };
+  }
+
+  const readRun = (runId: string) =>
+    db.select().from(routineRuns).where(eq(routineRuns.id, runId)).then((rows) => rows[0] ?? null);
+
+  it("keeps a delegating routine run in flight while the execution issue waits on a covered blocker", async () => {
+    const { childIssueId, executionIssueId, run, svc } = await seedDelegatingExecution({ withCoveredChild: true });
+
+    expect(await svc.syncRunStatusForIssue(executionIssueId)).toBeNull();
+    expect(await readRun(run.id)).toMatchObject({
+      status: "issue_created",
+      failureReason: null,
+      completedAt: null,
+    });
+
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, childIssueId!));
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, executionIssueId));
+    await svc.syncRunStatusForIssue(executionIssueId);
+
+    expect(await readRun(run.id)).toMatchObject({ status: "completed", failureReason: null });
+  });
+
+  it("fails a routine run when the execution issue is blocked with nothing driving the block", async () => {
+    const { executionIssueId, run, svc } = await seedDelegatingExecution();
+
+    await svc.syncRunStatusForIssue(executionIssueId);
+
+    const settled = await readRun(run.id);
+    expect(settled?.status).toBe("failed");
+    expect(settled?.failureReason).toContain("needs attention");
+  });
+
+  it("clears a stale failure reason when the execution issue later completes", async () => {
+    const { executionIssueId, run, svc } = await seedDelegatingExecution();
+    await svc.syncRunStatusForIssue(executionIssueId);
+    expect((await readRun(run.id))?.status).toBe("failed");
+
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, executionIssueId));
+    await svc.syncRunStatusForIssue(executionIssueId);
+
+    expect(await readRun(run.id)).toMatchObject({ status: "completed", failureReason: null });
+  });
+
+  it("still fails a routine run when the execution issue is cancelled", async () => {
+    const { executionIssueId, run, svc } = await seedDelegatingExecution({ withCoveredChild: true });
+    await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, executionIssueId));
+
+    await svc.syncRunStatusForIssue(executionIssueId);
+
+    expect(await readRun(run.id)).toMatchObject({
+      status: "failed",
+      failureReason: "Execution issue moved to cancelled",
+    });
+  });
 });
