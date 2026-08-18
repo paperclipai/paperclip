@@ -873,10 +873,22 @@ async function syncOutFileMappings(input: {
     throw error;
   }
 
+  // Count the serial sandbox round trips before the transfer, so the transfer
+  // span records how much of the wall time is guard cost. The validate-and-
+  // snapshot step is one sandbox round trip. This is symmetric with the inbound
+  // transfer span.
+  const guardRoundTrips = 1;
+
   let responses: FileDownloadResponse[];
   try {
     // One batched bulk download for all file mappings, reading the snapshots.
-    responses = await sandbox.fs.downloadFiles(requests, timeoutSeconds);
+    // `transfer` span: the real byte download — `sandbox.fs.downloadFiles`.
+    responses = await withProviderSpan({
+      name: "transfer",
+      wallMsAttr: SPAN_ATTR.transferWallMs,
+      attributes: { [SPAN_ATTR.transferGuardCount]: guardRoundTrips },
+      run: () => sandbox.fs.downloadFiles(requests, timeoutSeconds),
+    });
   } catch (error) {
     await cleanup();
     throw error;
@@ -926,6 +938,9 @@ async function syncOutDirectoryMapping(input: {
 }): Promise<{ filesTransferred: number; bytesTransferred: number }> {
   const { sandbox, mapping, remoteDir, timeoutSeconds } = input;
   assertConfinedSandboxPath(remoteDir, mapping.sourcePath, "source");
+  // Count the serial sandbox round trips before the transfer, so the transfer
+  // span records how much of the wall time is guard cost.
+  let guardRoundTrips = 0;
   await assertSandboxPathsConfined({
     sandbox,
     remoteDir,
@@ -933,6 +948,7 @@ async function syncOutDirectoryMapping(input: {
     timeoutSeconds,
     label: "outbound symlink-escape guard",
   });
+  guardRoundTrips += 1;
 
   return withHostTempDir(async (tmp) => {
     const remoteTar = path.posix.join(remoteDir, scratchName(".tar"));
@@ -951,14 +967,19 @@ async function syncOutDirectoryMapping(input: {
         `else tar -c --no-xattrs ${mapping.followSymlinks ? "-h " : ""}${excludeFlags} -f ${shellQuote(remoteTar)} -- "$@"; fi`,
     ].join(" && ");
     await assertSandboxCommandOk(sandbox, `sh -c ${shellQuote(tarScript)}`, timeoutSeconds, "syncOut tar");
+    guardRoundTrips += 1;
 
     const localTar = path.join(tmp, "sync-out.tar");
     let bytesTransferred = 0;
     try {
-      const responses = await sandbox.fs.downloadFiles(
-        [{ source: remoteTar, destination: localTar }],
-        timeoutSeconds,
-      );
+      // `transfer` span: the real byte download — `sandbox.fs.downloadFiles`.
+      const responses = await withProviderSpan({
+        name: "transfer",
+        wallMsAttr: SPAN_ATTR.transferWallMs,
+        attributes: { [SPAN_ATTR.transferGuardCount]: guardRoundTrips },
+        run: () =>
+          sandbox.fs.downloadFiles([{ source: remoteTar, destination: localTar }], timeoutSeconds),
+      });
       const response = responses.find((entry) => entry.source === remoteTar) ?? responses[0];
       if (!response || response.error) {
         throw new Error(
