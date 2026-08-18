@@ -21,6 +21,7 @@ import {
   type SandboxLoginDriver,
 } from "@paperclipai/adapter-codex-local/server";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
+import { buildLoginLeaseAcquireArgs } from "./adapter-login-lease.js";
 import { environmentService } from "./environments.js";
 
 // The login-session service. It creates a login session, acquires a fresh
@@ -1157,20 +1158,15 @@ export function createProductionLoginSessionRuntime(
       if (!environment) {
         throw new Error(`Environment "${input.environmentId}" is not found.`);
       }
-      const record = await deps.environmentRuntime.acquireRunLease({
-        companyId: input.companyId,
-        environment,
-        issueId: null,
-        agentId: null,
-        // A null heartbeat run and a null execution workspace disable lease
-        // reuse, so the login session always runs in a fresh sandbox.
-        heartbeatRunId: null,
-        persistedExecutionWorkspace: null,
-        adapterType: input.adapterType,
-        // Apply the active custom-image template, so the sandbox binds to the
-        // trusted image and runtime identity.
-        applyCustomImageTemplate: true,
-      });
+      const record = await deps.environmentRuntime.acquireRunLease(
+        buildLoginLeaseAcquireArgs({
+          metadata: {
+            companyId: input.companyId,
+            environment,
+            adapterType: input.adapterType,
+          },
+        }),
+      );
       // Tag the lease with the session identifier, so the reaper resolves an
       // orphan lease that no live session references. The tag carries no secret.
       await environmentsSvc.updateLeaseMetadata(record.lease.id, {

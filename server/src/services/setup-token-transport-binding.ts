@@ -36,6 +36,7 @@ import {
 import { secretService } from "./secrets.js";
 import type { environmentService } from "./environments.js";
 import type { environmentRuntimeService } from "./environment-runtime.js";
+import { buildLoginLeaseAcquireArgs } from "./adapter-login-lease.js";
 import type { Db } from "@paperclipai/db";
 import {
   createSetupTokenPtyTransport,
@@ -407,29 +408,27 @@ export function createProductionSetupTokenSandboxProvider(
         return failClosed();
       }
 
-      const leaseRecord = await deps.environmentRuntime.acquireRunLease({
-        companyId: scope.companyId,
-        environment,
-        issueId: null,
-        agentId: scope.targetAgentId ?? null,
-        // A null heartbeat run and a null execution workspace disable lease
-        // reuse, so the login session always runs in a fresh sandbox.
-        heartbeatRunId: null,
-        persistedExecutionWorkspace: null,
-        adapterType: scope.adapterType,
-        // Apply the active custom-image template, so the sandbox binds to the
-        // trusted image and runtime identity.
-        applyCustomImageTemplate: true,
-        // Re-check the environment company binding inside the lease insert
-        // transaction. The route guard ran earlier, so a managed reconciliation
-        // can bind this sandbox to another company between the guard and this
-        // acquire. The lease insert then rejects a foreign-company environment
-        // with the 403 `environment_company_mismatch` and holds no lease.
-        assertCompanyBinding: true,
-        // Bound the lease expiry to the session deadline. The runtime records
-        // the earlier of this deadline and the provider expiry on the lease row.
-        requestedExpiresAt: new Date(deadline),
-      });
+      const leaseRecord = await deps.environmentRuntime.acquireRunLease(
+        buildLoginLeaseAcquireArgs({
+          metadata: {
+            companyId: scope.companyId,
+            environment,
+            adapterType: scope.adapterType,
+          },
+          targetAgentId: scope.targetAgentId ?? null,
+          // Re-check the environment company binding inside the lease insert
+          // transaction. The route guard ran earlier, so a managed
+          // reconciliation can bind this sandbox to another company between the
+          // guard and this acquire. The lease insert then rejects a
+          // foreign-company environment with the 403
+          // `environment_company_mismatch` and holds no lease.
+          assertCompanyBinding: true,
+          // Bound the lease expiry to the session deadline. The runtime records
+          // the earlier of this deadline and the provider expiry on the lease
+          // row.
+          requestedExpiresAt: new Date(deadline),
+        }),
+      );
       const leaseId = leaseRecord.lease.id;
       leaseRecords.set(leaseId, leaseRecord);
 
