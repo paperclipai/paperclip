@@ -1270,6 +1270,14 @@ export async function startServer(): Promise<StartedServer> {
       // captures the authoritative set of running heartbeat rows.
       trackHeartbeatSchedulerWork((async () => {
         if (heartbeatSchedulerStopped) return;
+        // The interval is registered before `server.listen`, so a tick can fire
+        // while PAPERCLIP_API_URL is still the unprobed derivation. Nearly every
+        // branch below can enqueue a run (timers, routine triggers, watchdogs,
+        // queued-run recovery), and a spawned child snapshots the URL, so skip
+        // the whole tick rather than gate each branch; the next tick picks the
+        // work up. Settlement happens immediately after listen, so at most the
+        // first tick is skipped.
+        if (!runtimeApiUrlIsSettled) return;
         trackHeartbeatSchedulerWork(decisionExecutor.sweepExpired().catch((err: unknown) => {
           logger.error({ err }, "decision expiry sweep failed");
         }));
@@ -1379,9 +1387,6 @@ export async function startServer(): Promise<StartedServer> {
           }));
 
         if (heartbeatSchedulerStopped) return;
-        // Same spawn-time snapshot hazard as startup recovery; skip this tick
-        // rather than block the scheduler, the next tick picks the work up.
-        if (!runtimeApiUrlIsSettled) return;
         if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
           // Periodically reap orphaned runs (5-min staleness threshold) and make sure
           // persisted queued work is still being driven forward.

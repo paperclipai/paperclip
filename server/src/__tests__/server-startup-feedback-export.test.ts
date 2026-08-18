@@ -742,6 +742,49 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     );
   });
 
+  it("skips scheduler ticks that fire before the probed runtime API URL is settled", async () => {
+    // The scheduler interval is registered before `server.listen`. A tick that
+    // fires in that window can enqueue a run through tickTimers /
+    // tickScheduledTriggers, and the spawned child snapshots the still-unprobed
+    // PAPERCLIP_API_URL, which later promotion cannot repair.
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      bind: "custom",
+      customBindHost: "192.0.2.10",
+      host: "192.0.2.10",
+      allowedHostnames: ["unreachable-name.invalid", "192.0.2.10"],
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    let intervalCallback: (() => void) | null = null;
+    const setIntervalSpy = vi
+      .spyOn(globalThis, "setInterval")
+      .mockImplementation(((callback: () => void) => {
+        intervalCallback = callback;
+        // Fire the tick at registration time, i.e. during startup and before the
+        // listener is open.
+        callback();
+        return 1 as unknown as ReturnType<typeof setInterval>;
+      }) as typeof setInterval);
+
+    try {
+      await startServer();
+
+      expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
+      expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
+
+      // Once the URL has settled the same tick does its normal work.
+      intervalCallback?.();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(heartbeatServiceMock.tickTimers).toHaveBeenCalledTimes(1);
+      expect(routineServiceMock.tickScheduledTriggers).toHaveBeenCalledTimes(1);
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
+  });
+
   it("preserves explicit-port external auth public URLs when detect-port selects a new port", async () => {
     loadConfigMock.mockReturnValueOnce(buildTestConfig({
       port: 3100,
