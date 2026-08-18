@@ -623,9 +623,16 @@ jobs:
 
   # Post-publish verification: run the release smoke suite against the exact
   # beta version that was just published.
+  #
+  # The condition must carry an explicit status-check function: without one,
+  # GitHub attaches an implicit success(), which evaluates the needs chain
+  # transitively — and publish_beta's chain contains verify_beta_candidate,
+  # which is skipped on every promote-mode beta. The implicit form silently
+  # skipped this job on the first promote-mode beta after the candidate
+  # lane landed.
   smoke_beta:
     needs: publish_beta
-    if: ${{ !inputs.dry_run }}
+    if: ${{ !cancelled() && needs.publish_beta.result == 'success' && !inputs.dry_run }}
     uses: ./.github/workflows/release-smoke.yml
     with:
       paperclip_version: ${{ needs.publish_beta.outputs.beta_version }}
