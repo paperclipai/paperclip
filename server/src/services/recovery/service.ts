@@ -369,6 +369,17 @@ const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
+// AGE-691 — terminal-run recovery escalates a stranded assigned issue to
+// `blocked` and hands ownership to a recovery action's owner agent, but that
+// escalation is a one-shot wake. If the owner's own run also terminates badly,
+// the source issue is stuck in `blocked` with no first-class blockedByIssueIds
+// relation (recovery actions are not issues) and no monitor is eligible on a
+// `blocked` status, so it is invisible to every other reconciliation pass and
+// permanently unwakeable. `reconcileOrphanedBlockedRecoveryActions` re-checks
+// exactly that state on the same interval `reconcileStrandedAssignedIssues`
+// already runs on, bounded by this backoff and the action's own `maxAttempts`.
+export const ORPHANED_BLOCKED_RECOVERY_ACTION_RETRY_INTERVAL_MS = 15 * 60 * 1000;
+
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
@@ -3639,6 +3650,158 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       readNonEmptyString(monitor.externalRef) === latestRun.id;
   }
 
+  // AGE-691 backstop: re-drive (or, absent an owner, keep visibly and
+  // repeatedly reminding about) a `blocked` issue whose only recovery path is
+  // an active `issueRecoveryActions` row, when that issue has zero first-class
+  // blockedByIssueIds relations. Without this, such an issue is invisible to
+  // every other reconciliation pass (they all scope to todo/in_progress/
+  // in_review, or to blockers that actually resolve) and to issue monitors
+  // (never eligible on `blocked`), so a single failed recovery wake parks it
+  // forever. Scoped narrowly to recovery-caused blocks (identified by the
+  // active recovery action) so it never touches a human-authored `blocked`
+  // issue that was deliberately left without a blocker relation.
+  async function reconcileOrphanedBlockedRecoveryActions(opts?: {
+    issueCreatedAtGte?: Date | null;
+    excludeIssueIds?: string[];
+  }) {
+    const result = {
+      rewoken: 0,
+      boardEscalationReminded: 0,
+      skipped: 0,
+      issueIds: [] as string[],
+    };
+
+    const excludeIssueIds = [...new Set(opts?.excludeIssueIds ?? [])];
+
+    const candidates = await db
+      .select({ issue: issues, action: issueRecoveryActions })
+      .from(issueRecoveryActions)
+      .innerJoin(
+        issues,
+        and(
+          eq(issues.id, issueRecoveryActions.sourceIssueId),
+          eq(issues.companyId, issueRecoveryActions.companyId),
+        ),
+      )
+      .where(
+        and(
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          eq(issues.status, "blocked"),
+          isNull(issues.assigneeUserId),
+          opts?.issueCreatedAtGte ? gte(issues.createdAt, opts.issueCreatedAtGte) : undefined,
+          // Exclude issues this same reconciliation pass already escalated to
+          // `blocked` moments ago — they were just given a fresh recovery
+          // action and are inside the retry backoff by construction, so there
+          // is nothing new for this backstop to do on this tick.
+          excludeIssueIds.length > 0 ? notInArray(issues.id, excludeIssueIds) : undefined,
+        ),
+      );
+
+    const now = new Date();
+
+    for (const { issue, action } of candidates) {
+      const blockerIds = await existingUnresolvedBlockerIssueIds(issue.companyId, issue.id);
+      if (blockerIds.length > 0) {
+        // A real blockedByIssueIds relation already gives this issue a wake
+        // path (issue_blockers_resolved, or the resolved-dependency backstop).
+        result.skipped += 1;
+        continue;
+      }
+
+      if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (await hasQueuedIssueWake(issue.companyId, issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const lastAttemptMs = action.lastAttemptAt ? action.lastAttemptAt.getTime() : 0;
+      if (now.getTime() - lastAttemptMs < ORPHANED_BLOCKED_RECOVERY_ACTION_RETRY_INTERVAL_MS) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const attemptsExhausted = action.maxAttempts !== null && action.attemptCount >= action.maxAttempts;
+      const ownerAgentId = !attemptsExhausted ? action.ownerAgentId ?? issue.assigneeAgentId : null;
+      const ownerAgent = ownerAgentId ? await getAgent(ownerAgentId) : null;
+      const ownerInvokable = Boolean(
+        ownerAgent && ownerAgent.companyId === issue.companyId && (await isAgentInvokable(ownerAgent)),
+      );
+
+      if (!ownerInvokable || (ownerAgentId && await isInvocationBudgetBlocked(issue, ownerAgentId))) {
+        // No invokable, budget-available owner to re-wake. Still visible on the
+        // board (status stays `blocked`, comment names the gap), but leave a
+        // fresh, bounded-frequency marker so a periodic sweep of
+        // `unresolvedBlockerCount === 0` blocked issues can page a human
+        // instead of this ticket sitting silently with a stale one-shot note.
+        await db
+          .update(issueRecoveryActions)
+          .set({ lastAttemptAt: now, updatedAt: now })
+          .where(eq(issueRecoveryActions.id, action.id));
+        await issuesSvc.addComment(
+          issue.id,
+          [
+            "Paperclip re-checked this recovery-blocked issue and it still has no live execution path " +
+              "(no invokable/budget-available recovery owner). It remains `blocked` with no automatic wake; " +
+              "a board operator should assign an invokable recovery owner or record an intentional manual resolution.",
+            "",
+            `- Recovery action: \`${action.id}\``,
+            `- Attempt: ${action.attemptCount}${action.maxAttempts !== null ? ` / ${action.maxAttempts}` : ""}`,
+          ].join("\n"),
+          {},
+        );
+        result.boardEscalationReminded += 1;
+        result.issueIds.push(issue.id);
+        continue;
+      }
+
+      await db
+        .update(issueRecoveryActions)
+        .set({
+          attemptCount: action.attemptCount + 1,
+          lastAttemptAt: now,
+          updatedAt: now,
+        })
+        .where(eq(issueRecoveryActions.id, action.id));
+
+      await deps.enqueueWakeup(ownerAgentId!, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "source_scoped_recovery_action",
+        idempotencyKey: `source_scoped_recovery_action:${action.id}:${action.attemptCount + 1}`,
+        payload: {
+          issueId: issue.id,
+          sourceIssueId: issue.id,
+          recoveryActionId: action.id,
+        },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        contextSnapshot: {
+          issueId: issue.id,
+          taskId: issue.id,
+          wakeReason: "source_scoped_recovery_action",
+          skipIssueComment: true,
+          source: "issue_recovery_action_orphaned_blocked_backstop",
+          recoveryActionId: action.id,
+          sourceIssueId: issue.id,
+        },
+      });
+
+      result.rewoken += 1;
+      result.issueIds.push(issue.id);
+    }
+
+    return result;
+  }
+
   async function reconcileStrandedAssignedIssues(opts?: { issueCreatedAtGte?: Date | null }) {
     const candidates = await db
       .select()
@@ -3669,6 +3832,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       providerQuotaMonitored: 0,
       recentProgressExempted: 0,
       operatorCancelExempted: 0,
+      orphanedBlockedRecoveryRewoken: 0,
+      orphanedBlockedRecoveryReminded: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
@@ -4305,6 +4470,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     result.orphanBlockersAssigned = orphanBlockerRecovery.assigned;
     result.skipped += orphanBlockerRecovery.skipped;
     result.issueIds.push(...orphanBlockerRecovery.issueIds);
+
+    const orphanedBlockedRecovery = await reconcileOrphanedBlockedRecoveryActions({
+      ...opts,
+      excludeIssueIds: result.issueIds,
+    });
+    result.orphanedBlockedRecoveryRewoken = orphanedBlockedRecovery.rewoken;
+    result.orphanedBlockedRecoveryReminded = orphanedBlockedRecovery.boardEscalationReminded;
+    result.skipped += orphanedBlockedRecovery.skipped;
+    result.issueIds.push(...orphanedBlockedRecovery.issueIds);
 
     return result;
   }
@@ -5809,6 +5983,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
+    reconcileOrphanedBlockedRecoveryActions,
     sweepStaleIssueLocks,
     buildIssueGraphLivenessAutoRecoveryPreview,
     reconcileResolvedDependencyWakeBackstop,
