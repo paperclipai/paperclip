@@ -272,11 +272,13 @@ export function loadConfig(): Config {
   // immediate reaping. A negative or non-numeric value falls back to the
   // default. The day granularity and the default of 7 obey the
   // PAPERCLIP_DB_BACKUP_RETENTION_DAYS precedent above.
-  const workspaceReaperCooldownDaysRaw = Number(
-    process.env.PAPERCLIP_WORKSPACE_REAPER_COOLDOWN_DAYS,
-  );
+  const workspaceReaperCooldownDaysEnv =
+    process.env.PAPERCLIP_WORKSPACE_REAPER_COOLDOWN_DAYS?.trim();
+  const workspaceReaperCooldownDaysRaw = Number(workspaceReaperCooldownDaysEnv);
   const workspaceReaperCooldownDays =
-    Number.isFinite(workspaceReaperCooldownDaysRaw) && workspaceReaperCooldownDaysRaw >= 0
+    workspaceReaperCooldownDaysEnv
+      && Number.isFinite(workspaceReaperCooldownDaysRaw)
+      && workspaceReaperCooldownDaysRaw >= 0
       ? workspaceReaperCooldownDaysRaw
       : 7;
   const bindValidationErrors = validateConfiguredBindMode({
