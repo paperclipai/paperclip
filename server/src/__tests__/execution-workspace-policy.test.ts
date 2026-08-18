@@ -298,6 +298,7 @@ describe("execution workspace policy helpers", () => {
     expect(
       parseProjectExecutionWorkspacePolicy({
         enabled: true,
+        environmentId: "22222222-2222-4222-8222-222222222222",
         sharedWorkspaceConcurrency: "serialize",
         defaultMode: "isolated",
         workspaceStrategy: {
@@ -310,6 +311,7 @@ describe("execution workspace policy helpers", () => {
       }),
     ).toEqual({
       enabled: true,
+      environmentId: "22222222-2222-4222-8222-222222222222",
       sharedWorkspaceConcurrency: "serialize",
       defaultMode: "isolated_workspace",
       workspaceStrategy: {
@@ -379,6 +381,38 @@ describe("execution workspace policy helpers", () => {
   it("prefers the agent default environment", () => {
     expect(
       resolveExecutionWorkspaceEnvironmentId({
+        agentDefaultEnvironmentId: "agent-env",
+        instanceDefaultEnvironmentId: "instance-env",
+        localDefaultEnvironmentId: "local-env",
+      }),
+    ).toEqual({
+      environmentId: "agent-env",
+      source: "agent",
+    });
+  });
+
+  it("prefers an enabled project environment before the agent default", () => {
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        projectPolicy: {
+          enabled: true,
+          environmentId: "project-env",
+        },
+        agentDefaultEnvironmentId: "agent-env",
+        instanceDefaultEnvironmentId: "instance-env",
+        localDefaultEnvironmentId: "local-env",
+      }),
+    ).toEqual({
+      environmentId: "project-env",
+      source: "project",
+    });
+
+    expect(
+      resolveExecutionWorkspaceEnvironmentId({
+        projectPolicy: {
+          enabled: false,
+          environmentId: "project-env",
+        },
         agentDefaultEnvironmentId: "agent-env",
         instanceDefaultEnvironmentId: "instance-env",
         localDefaultEnvironmentId: "local-env",

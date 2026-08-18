@@ -14365,6 +14365,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ? await environmentsSvc.findManagedSandboxEnvironment(agent.companyId)
       : null;
     const environmentResolution = resolveExecutionWorkspaceEnvironmentId({
+      projectPolicy: projectExecutionWorkspacePolicy,
       agentDefaultEnvironmentId: agent.defaultEnvironmentId,
       instanceDefaultEnvironmentId: resolvedInstanceSettings.defaultEnvironmentId ?? null,
       localDefaultEnvironmentId: localEnvironment.id,

@@ -109,6 +109,10 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
   const defaultMode = asString(parsed.defaultMode, "");
   const defaultProjectWorkspaceId =
     typeof parsed.defaultProjectWorkspaceId === "string" ? parsed.defaultProjectWorkspaceId : undefined;
+  const environmentId =
+    typeof parsed.environmentId === "string" || parsed.environmentId === null
+      ? parsed.environmentId
+      : undefined;
   const allowIssueOverride =
     typeof parsed.allowIssueOverride === "boolean" ? parsed.allowIssueOverride : undefined;
   const sharedWorkspaceConcurrency = parseSharedWorkspaceConcurrency(parsed.sharedWorkspaceConcurrency);
@@ -131,6 +135,7 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
     ...(normalizedDefaultMode ? { defaultMode: normalizedDefaultMode } : {}),
     ...(allowIssueOverride !== undefined ? { allowIssueOverride } : {}),
     ...(defaultProjectWorkspaceId ? { defaultProjectWorkspaceId } : {}),
+    ...(environmentId !== undefined ? { environmentId } : {}),
     ...(workspaceStrategy ? { workspaceStrategy } : {}),
     ...(parsed.workspaceRuntime && typeof parsed.workspaceRuntime === "object" && !Array.isArray(parsed.workspaceRuntime)
       ? { workspaceRuntime: { ...(parsed.workspaceRuntime as Record<string, unknown>) } }
@@ -230,6 +235,7 @@ export function selectEnvironmentExecutionWorkspaceSettings(
 }
 
 export type ExecutionWorkspaceEnvironmentSource =
+  | "project"
   | "agent"
   | "instance"
   | "default"
@@ -252,6 +258,7 @@ export class ManagedSandboxUnavailableError extends Error {
 }
 
 export function resolveExecutionWorkspaceEnvironmentId(input: {
+  projectPolicy?: Pick<ProjectExecutionWorkspacePolicy, "enabled" | "environmentId"> | null;
   agentDefaultEnvironmentId: string | null;
   instanceDefaultEnvironmentId: string | null;
   localDefaultEnvironmentId: string;
@@ -267,6 +274,12 @@ export function resolveExecutionWorkspaceEnvironmentId(input: {
   managedSandboxEnvironmentId?: string | null;
 }): ExecutionWorkspaceEnvironmentResolution {
   const resolved = ((): ExecutionWorkspaceEnvironmentResolution => {
+    if (input.projectPolicy?.enabled && input.projectPolicy.environmentId) {
+      return {
+        environmentId: input.projectPolicy.environmentId,
+        source: "project",
+      };
+    }
     if (input.agentDefaultEnvironmentId) {
       return {
         environmentId: input.agentDefaultEnvironmentId,

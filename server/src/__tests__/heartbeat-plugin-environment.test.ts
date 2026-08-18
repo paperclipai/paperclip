@@ -80,7 +80,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     await stopDb?.();
   });
 
-  it("acquires plugin environment leases through the heartbeat execution path", async () => {
+  it("acquires the project policy environment through the heartbeat execution path", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const workspaceId = randomUUID();
@@ -108,6 +108,10 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       }),
     } as unknown as PluginWorkerManager;
 
+    await instanceSettingsService(db).updateExperimental({
+      enableEnvironments: true,
+      enableIsolatedWorkspaces: true,
+    });
     await db.insert(companies).values({
       id: companyId,
       name: "Acme",
@@ -122,6 +126,10 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       companyId,
       name: "Plugin Environment Heartbeat",
       status: "active",
+      executionWorkspacePolicy: {
+        enabled: true,
+        environmentId,
+      },
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -189,7 +197,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       adapterType: "codex_local",
       adapterConfig: {},
       runtimeConfig: {},
-      defaultEnvironmentId: environmentId,
+      defaultEnvironmentId: null,
       permissions: {},
       createdAt: new Date(),
       updatedAt: new Date(),
