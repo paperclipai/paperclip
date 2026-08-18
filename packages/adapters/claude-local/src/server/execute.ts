@@ -58,6 +58,7 @@ import {
 import {
   claudeModelUsageTotals,
   parseClaudeStreamJson,
+  createClaudeSessionObservedStdoutTracker,
   describeClaudeFailure,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
@@ -410,6 +411,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  // Wrap the raw process stdout log handler (not the general onLog used for
+  // command notes/text throughout this function) so the server can persist
+  // the task session as soon as the underlying `claude` process reports its
+  // session id, before the process finishes or is killed. Built once at this
+  // outer scope (not inside runAttempt) so a poisoned-session retry attempt
+  // shares the same tracker and `onSessionObserved` still fires at most once
+  // per run, even across attempts.
+  const sessionObservedTracker = ctx.onSessionObserved
+    ? createClaudeSessionObservedStdoutTracker(ctx.onSessionObserved)
+    : null;
+  const onProcessLog = sessionObservedTracker
+    ? async (stream: "stdout" | "stderr", chunk: string) => {
+        if (stream === "stdout") await sessionObservedTracker.feed(chunk);
+        await onLog(stream, chunk);
+      }
+    : onLog;
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
@@ -925,7 +942,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       graceSec,
       onSpawn,
       onRuntimeProgress: ctx.onRuntimeProgress,
-      onLog,
+      onLog: onProcessLog,
       runLogTail: paperclipBridge?.runLogTail,
       terminalResultCleanup: {
         graceMs: terminalResultCleanupGraceMs,
