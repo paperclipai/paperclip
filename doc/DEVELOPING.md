@@ -506,6 +506,12 @@ That repo-local env also sets:
 - `PAPERCLIP_WORKTREE_NAME=<worktree-name>`
 - `PAPERCLIP_WORKTREE_COLOR=<hex-color>`
 
+For server-managed isolated workspaces of the Paperclip repository itself,
+`scripts/provision-worktree.sh` also persists
+`PAPERCLIP_PUBLIC_URL=http://paperclip-dev:45439`, matching the Paperclip App
+project's exposed dev runtime. Set `PAPERCLIP_WORKSPACE_PUBLIC_URL` on the
+provision command to override that URL when the managed runtime changes.
+
 The server/UI use those values for worktree-specific branding such as the top banner and dynamically colored favicon.
 Authenticated worktree servers also use the `PAPERCLIP_INSTANCE_ID` value to scope Better Auth cookie names.
 Browser cookies are shared by host rather than port, so this prevents logging into one `127.0.0.1:<port>` worktree from replacing another worktree server's session cookie.
