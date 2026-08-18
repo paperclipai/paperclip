@@ -371,7 +371,7 @@ export function registerSecretCommands(program: Command): void {
     secrets
       .command("list")
       .description("List secret metadata for a company")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID (overrides context default)")
       .action(async (opts: SecretListOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
@@ -387,7 +387,7 @@ export function registerSecretCommands(program: Command): void {
     secrets
       .command("declarations")
       .description("List portable env declarations emitted by company export")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID (overrides context default)")
       .option("--include <values>", "Comma-separated include set: company,agents,projects,issues,tasks,skills", "company,agents,projects")
       .option("--kind <kind>", "Filter declarations: all | secret | plain", "all")
       .action(async (opts: SecretDeclarationsOptions) => {
@@ -414,7 +414,7 @@ export function registerSecretCommands(program: Command): void {
     secrets
       .command("create")
       .description("Create a Paperclip-managed secret")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID (overrides context default)")
       .requiredOption("--name <name>", "Secret display name")
       .option("--key <key>", "Portable secret key")
       .option("--provider <provider>", "Secret provider id")
@@ -442,7 +442,7 @@ export function registerSecretCommands(program: Command): void {
     secrets
       .command("link")
       .description("Link an external provider-owned secret without storing its value in Paperclip")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID (overrides context default)")
       .requiredOption("--name <name>", "Secret display name")
       .requiredOption("--provider <provider>", "Secret provider id")
       .requiredOption("--external-ref <ref>", "Provider secret ARN/name/path/reference")
@@ -556,7 +556,7 @@ export function registerSecretCommands(program: Command): void {
     secrets
       .command("doctor")
       .description("Run secret provider health checks through the Paperclip API")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID (overrides context default)")
       .action(async (opts: SecretDoctorOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
@@ -574,7 +574,7 @@ export function registerSecretCommands(program: Command): void {
     secrets
       .command("providers")
       .description("List configured secret provider descriptors")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID (overrides context default)")
       .action(async (opts: SecretDoctorOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
@@ -592,7 +592,7 @@ export function registerSecretCommands(program: Command): void {
     secrets
       .command("provider-configs")
       .description("List company secret provider vault configs")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID (overrides context default)")
       .action(async (opts: SecretDoctorOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
@@ -622,7 +622,7 @@ export function registerSecretCommands(program: Command): void {
     secrets
       .command("migrate-inline-env")
       .description("Migrate inline sensitive agent env values into secret references")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID (overrides context default)")
       .option("--apply", "Persist changes; default is a dry run", false)
       .action(async (opts: SecretMigrateInlineEnvOptions) => {
         try {
@@ -639,7 +639,7 @@ function addCompanySecretJsonPost(parent: Command, name: string, description: st
     parent
       .command(name)
       .description(description)
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID (overrides context default)")
       .requiredOption("--payload-json <json>", "JSON payload")
       .action(async (opts: SecretJsonOptions) => {
         try {
