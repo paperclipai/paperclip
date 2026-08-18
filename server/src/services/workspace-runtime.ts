@@ -4726,14 +4726,26 @@ function resolveRuntimeServiceHealthUrl(
 
 async function isRuntimeServiceUrlHealthy(
   url: string | null,
-  input?: { serviceName?: string | null; command?: string | null },
+  input?: {
+    serviceName?: string | null;
+    command?: string | null;
+    provider?: string | null;
+    port?: number | null;
+  },
 ) {
-  if (!url) return true;
-  const healthUrl = resolveRuntimeServiceHealthUrl(url, input);
+  const localProbeUrl = input?.provider === "local_process" && input.port && isPaperclipDevRuntimeService(input)
+    ? `http://127.0.0.1:${input.port}`
+    : null;
+  const probeUrl = localProbeUrl ?? url;
+  if (!probeUrl) return true;
+  const healthUrl = resolveRuntimeServiceHealthUrl(probeUrl, input);
   if (!healthUrl) return false;
   try {
     const response = await fetch(healthUrl, { signal: AbortSignal.timeout(2_000) });
-    return response.ok;
+    if (!response.ok) return false;
+    if (!isPaperclipDevRuntimeService(input ?? {})) return true;
+    const payload = await response.json().catch(() => null) as { status?: unknown } | null;
+    return payload?.status === "ok";
   } catch {
     return false;
   }
@@ -5931,6 +5943,21 @@ async function stopRuntimeService(serviceId: string) {
   await persistRuntimeServiceRecord(record.db, record);
 }
 
+async function findHealthyRunningRuntimeService(reuseKey: string | null) {
+  const existingId = reuseKey ? runtimeServicesByReuseKey.get(reuseKey) : null;
+  const existing = existingId ? runtimeServicesById.get(existingId) : null;
+  if (!existing || existing.status !== "running") return null;
+  const healthy = await isRuntimeServiceUrlHealthy(existing.url, {
+    serviceName: existing.serviceName,
+    command: existing.command,
+    provider: existing.provider,
+    port: existing.port,
+  });
+  if (healthy) return existing;
+  await stopRuntimeService(existing.id);
+  return null;
+}
+
 async function markPersistedRuntimeServicesStoppedForExecutionWorkspace(input: {
   db: Db;
   executionWorkspaceId: string;
@@ -6304,9 +6331,8 @@ export async function ensureRuntimeServicesForRun(input: {
       }).reuseKey;
 
       if (reuseKey) {
-        const existingId = runtimeServicesByReuseKey.get(reuseKey);
-        const existing = existingId ? runtimeServicesById.get(existingId) : null;
-        if (existing && existing.status === "running") {
+        const existing = await findHealthyRunningRuntimeService(reuseKey);
+        if (existing) {
           existing.leaseRunIds.add(input.runId);
           existing.lastUsedAt = new Date().toISOString();
           existing.stoppedAt = null;
@@ -6417,9 +6443,8 @@ async function startRuntimeServicesForWorkspaceControlUnlocked(
     }).reuseKey;
 
     if (reuseKey) {
-      const existingId = runtimeServicesByReuseKey.get(reuseKey);
-      const existing = existingId ? runtimeServicesById.get(existingId) : null;
-      if (existing && existing.status === "running") {
+      const existing = await findHealthyRunningRuntimeService(reuseKey);
+      if (existing) {
         const prepared = options?.preparedProvisioning;
         if (prepared?.service === service && prepared.record.id !== existing.id && persistenceDb) {
           await persistenceDb
@@ -6608,9 +6633,8 @@ export async function startRuntimeServicesForWorkspaceControl(
           scopeType,
           scopeId,
         }).reuseKey;
-        const existingId = reuseKey ? runtimeServicesByReuseKey.get(reuseKey) : null;
-        const existing = existingId ? runtimeServicesById.get(existingId) : null;
-        if (existing?.status === "running") continue;
+        const existing = await findHealthyRunningRuntimeService(reuseKey);
+        if (existing) continue;
 
         const record = await prepareRuntimeProvisioning({
           db: input.db,
@@ -7004,6 +7028,59 @@ async function buildPersistedRuntimeExposureIntentLookup(db: Db) {
   };
 }
 
+export async function refreshPersistedRuntimeServiceHealth(input: {
+  db: Db;
+  companyId: string;
+  executionWorkspaceId: string;
+  projectWorkspaceId?: string | null;
+}) {
+  const ownershipCondition = input.projectWorkspaceId
+    ? or(
+        eq(workspaceRuntimeServices.executionWorkspaceId, input.executionWorkspaceId),
+        and(
+          eq(workspaceRuntimeServices.projectWorkspaceId, input.projectWorkspaceId),
+          eq(workspaceRuntimeServices.scopeType, "project_workspace"),
+        ),
+      )
+    : eq(workspaceRuntimeServices.executionWorkspaceId, input.executionWorkspaceId);
+  const rows = await input.db
+    .select({
+      id: workspaceRuntimeServices.id,
+      serviceName: workspaceRuntimeServices.serviceName,
+      command: workspaceRuntimeServices.command,
+      provider: workspaceRuntimeServices.provider,
+      port: workspaceRuntimeServices.port,
+      url: workspaceRuntimeServices.url,
+      healthStatus: workspaceRuntimeServices.healthStatus,
+    })
+    .from(workspaceRuntimeServices)
+    .where(and(
+      eq(workspaceRuntimeServices.companyId, input.companyId),
+      eq(workspaceRuntimeServices.provider, "local_process"),
+      eq(workspaceRuntimeServices.status, "running"),
+      ownershipCondition,
+    ));
+  const results = await Promise.all(rows.map(async (row) => ({
+    row,
+    healthStatus: await isRuntimeServiceUrlHealthy(row.url, row) ? "healthy" as const : "unhealthy" as const,
+  })));
+  await Promise.all(results.map(async ({ row, healthStatus }) => {
+    const liveRecord = runtimeServicesById.get(row.id);
+    if (liveRecord) liveRecord.healthStatus = healthStatus;
+    if (row.healthStatus === healthStatus) return;
+    await input.db.update(workspaceRuntimeServices).set({ healthStatus, updatedAt: new Date() }).where(and(
+      eq(workspaceRuntimeServices.id, row.id),
+      eq(workspaceRuntimeServices.companyId, input.companyId),
+      eq(workspaceRuntimeServices.status, "running"),
+    ));
+  }));
+  return {
+    checked: results.length,
+    healthy: results.filter((result) => result.healthStatus === "healthy").length,
+    unhealthy: results.filter((result) => result.healthStatus === "unhealthy").length,
+  };
+}
+
 export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
   const rows = await db
     .select()
@@ -7185,7 +7262,12 @@ export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
       if (
         backfillDecision.action === "reprovision"
         || !exposureHealthMatches
-        || !(await isRuntimeServiceUrlHealthy(adoptedUrl, { serviceName: row.serviceName, command: row.command }))
+        || !(await isRuntimeServiceUrlHealthy(adoptedUrl, {
+          serviceName: row.serviceName,
+          command: row.command,
+          provider: "local_process",
+          port: adoptedRecord.port ?? row.port,
+        }))
       ) {
         if (backfillDecision.action === "reprovision") backfilled += 1;
         await terminateLocalService(adoptedRecord);

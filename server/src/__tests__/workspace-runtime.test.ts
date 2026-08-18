@@ -3919,6 +3919,44 @@ describe("ensureRuntimeServicesForRun", () => {
     }
   });
 
+  it("replaces a reused Paperclip dev runtime whose 2xx health payload is unhealthy", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-misreported-health-"));
+    const workspace = buildWorkspace(workspaceRoot);
+    const serviceCommand =
+      "node -e \"let healthy=true;const http=require('node:http');http.createServer((req,res)=>{if(req.url==='/misreport'){healthy=false;res.end('failed');return;}if(req.url==='/api/health'){res.setHeader('content-type','application/json');res.end(JSON.stringify(healthy?{status:'ok'}:{status:'unhealthy',error:'database_unreachable'}));return;}res.end('ok')}).listen(Number(process.env.PORT),'127.0.0.1')\"";
+    const input = {
+      actor: { id: "agent-1", name: "Codex Coder", companyId: "company-1" },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "execution-workspace-health",
+      config: { workspaceRuntime: { services: [{
+        name: "paperclip-dev",
+        command: serviceCommand,
+        cwd: ".",
+        port: { type: "auto" as const },
+        readiness: { type: "http" as const, urlTemplate: "http://127.0.0.1:{{port}}", timeoutSec: 3, intervalMs: 100 },
+        expose: { type: "url" as const, urlTemplate: "http://127.0.0.1:{{port}}" },
+        lifecycle: "shared" as const,
+        stopPolicy: { type: "manual" as const },
+      }] } },
+      adapterEnv: {},
+    };
+    try {
+      const [first] = await startRuntimeServicesForWorkspaceControl(input);
+      await expect(fetch(`${first!.url}/misreport`)).resolves.toMatchObject({ ok: true });
+      await expect(fetch(`${first!.url}/api/health`)).resolves.toMatchObject({ ok: true });
+      const [replacement] = await startRuntimeServicesForWorkspaceControl(input);
+      expect(replacement?.id).not.toBe(first?.id);
+      expect(replacement?.reused).toBe(false);
+    } finally {
+      await stopRuntimeServicesForExecutionWorkspace({
+        executionWorkspaceId: "execution-workspace-health",
+        workspaceCwd: workspaceRoot,
+      });
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   it("uses explicit readiness URL when exposed URL is not the local probe address", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-explicit-readiness-"));
     const workspace = buildWorkspace(workspaceRoot);
@@ -6803,7 +6841,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     const projectWorkspaceId = randomUUID();
     // Binds the app port and its HMR companion, both loopback-only.
     const command =
-      "node -e \"const http=require('node:http');const p=Number(process.env.PORT);for(const q of [p,p+10000])http.createServer((req,res)=>res.end('ok')).listen(q,'127.0.0.1');setInterval(()=>{},1000)\"";
+      "node -e \"const http=require('node:http');const p=Number(process.env.PORT);for(const q of [p,p+10000])http.createServer((req,res)=>{if(req.url==='/api/health'){res.setHeader('content-type','application/json');res.end(JSON.stringify({status:'ok'}));return;}res.end('ok')}).listen(q,'127.0.0.1');setInterval(()=>{},1000)\"";
     const workspaceRuntime = {
       services: [
         {
