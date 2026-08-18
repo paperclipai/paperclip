@@ -12688,13 +12688,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return cancelled;
   }
 
-  // AGE-671: the continuation summary's "Next Action" text is an LLM-authored
-  // hint, not ground truth about review posture. It is written once (often
-  // while the issue is briefly `in_review`) and can outlive the state that
+  // Approval kinds that represent review of *this issue's own current work*
+  // -- as opposed to an approval that is merely linked to the issue for
+  // provenance while concerning something else entirely (hiring another
+  // agent, a budget hard-stop override, a credential grant). Only these
+  // kinds may gate a queued continuation on "waiting for review".
+  const ISSUE_WORK_REVIEW_APPROVAL_TYPES = ["request_board_approval"];
+
+  // The continuation summary's "Next Action" text is an LLM-authored hint,
+  // not ground truth about review posture. It is written once (often while
+  // the issue is briefly `in_review`) and can outlive the state that
   // produced it, so it must never be the sole reason a queued continuation is
   // cancelled. Only cancel when a *real* review posture still exists:
   // executionState.reviewRequest, a pending issue-thread interaction, or an
-  // open approval linked to the issue.
+  // open approval that represents review of *this issue's own work* --
+  // linked via issue_approvals and restricted to approval kinds in
+  // ISSUE_WORK_REVIEW_APPROVAL_TYPES. Approvals that merely happen to be
+  // linked to the issue for provenance (hiring another agent, a budget
+  // hard-stop override, a credential grant) are not review of this issue's
+  // work and must never gate its continuation.
   async function hasLiveIssueReviewPosture(issue: {
     id: string;
     companyId: string;
@@ -12725,6 +12737,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             eq(issueApprovals.companyId, issue.companyId),
             eq(issueApprovals.issueId, issue.id),
             inArray(approvals.status, ["pending", "revision_requested"]),
+            inArray(approvals.type, ISSUE_WORK_REVIEW_APPROVAL_TYPES),
           ),
         )
         .limit(1)
