@@ -549,22 +549,22 @@ describe("InviteLandingPage", () => {
     expect(container.textContent).toContain("Request to join Acme Robotics");
     expect(container.textContent).toContain("A company admin must approve your request to join.");
     expect(container.textContent).toContain(
-      "Ask them to visit Company Settings → Members to approve your request.",
+      "Ask them to visit Settings → Members to approve your request.",
     );
     expect(container.querySelector('img[alt="Acme Robotics logo"]')).not.toBeNull();
     expect(container.textContent).not.toContain("http://localhost/company/settings/members");
 
-    // The "Company Settings → Members" guidance addresses the company admin,
+    // The "Settings → Members" guidance addresses the company admin,
     // not the requester. It must render as plain text so the requester cannot
     // navigate themselves to /company/settings/members — a route they have no
     // permission to view, which renders a misleading "No company access"
     // panel and makes the invite flow look broken. See #6784.
     const approvalAnchors = Array.from(container.querySelectorAll("a")).filter(
-      (link) => link.textContent === "Company Settings → Members",
+      (link) => link.textContent === "Settings → Members",
     );
     expect(approvalAnchors).toHaveLength(0);
     const approvalMentions =
-      container.textContent?.match(/Company Settings → Members/g) ?? [];
+      container.textContent?.match(/Settings → Members/g) ?? [];
     expect(approvalMentions).toHaveLength(2);
 
     await act(async () => {

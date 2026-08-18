@@ -631,7 +631,7 @@ describe("CompanyEnvironments — test provider button", () => {
     await flushReact();
 
     await act(async () => {
-      click(findAction(container, "Add environment"));
+      click(container.querySelector('[aria-label="Add environment"]'));
     });
 
     await waitForAssertion(() => {

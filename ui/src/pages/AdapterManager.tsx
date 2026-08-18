@@ -271,7 +271,6 @@ export function AdapterManager() {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
       { label: "Settings", href: "/company/settings" },
-      { label: "Instance settings", href: "/company/settings/instance/general" },
       { label: "Adapters" },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs]);

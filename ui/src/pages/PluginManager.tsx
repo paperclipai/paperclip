@@ -101,7 +101,6 @@ export function PluginManager() {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
       { label: "Settings", href: "/company/settings" },
-      { label: "Instance settings", href: "/company/settings/instance/general" },
       { label: "Plugins" },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs]);

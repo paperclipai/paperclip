@@ -38,7 +38,6 @@ export function ProfileSettings() {
   useEffect(() => {
     setBreadcrumbs([
       { label: "Settings", href: "/company/settings" },
-      { label: "Instance settings", href: "/company/settings/instance/general" },
       { label: "Profile" },
     ]);
   }, [setBreadcrumbs]);
@@ -271,9 +270,7 @@ export function ProfileSettings() {
           </div>
         </form>
 
-        <Card className="rounded-(--rad-28) border-border/70 p-6">
-          <InboxAgentPolicyControl companyId={selectedCompanyId} />
-        </Card>
+        <InboxAgentPolicyControl companyId={selectedCompanyId} />
       </section>
     </div>
   );
