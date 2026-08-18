@@ -424,9 +424,9 @@ export function environmentRunOrchestrator(
     // The host `provisionCommand` runs on the host worktree during the
     // `workspace_provision` step, before the run reaches the environment.
     // A `sandbox`-driver environment does not receive the repo tree here. The
-    // Daytona driver `realizeWorkspace` only creates the remote folder. The
-    // adapter uploads the provisioned tree later, in its `stage.sync` step. So
-    // the host command must not run inside the still-empty sandbox; it fails
+    // sandbox driver `realizeWorkspace` step only creates the remote folder.
+    // The adapter uploads the provisioned tree later, in its `stage.sync` step.
+    // So the host command must not run inside the still-empty sandbox; it fails
     // there (exit 127). Skip the step for `sandbox`, and keep the existing skip
     // for `local`. Keep the step for `ssh`, which runs the command on the
     // remote host that shares the workspace path.

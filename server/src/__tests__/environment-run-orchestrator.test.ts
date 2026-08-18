@@ -416,6 +416,84 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     expect(result.persistedExecutionWorkspace).toEqual(updatedEw);
   });
 
+  it("runs a remote provision command after workspace realization when configured", async () => {
+    mockBuildWorkspaceRealizationRequest.mockReturnValue({
+      version: 1,
+      adapterType: "claude_local",
+      companyId: "company-1",
+      environmentId: "env-1",
+      executionWorkspaceId: null,
+      issueId: null,
+      heartbeatRunId: "run-1",
+      requestedMode: null,
+      source: {
+        kind: "project_primary",
+        localPath: "/workspace/project",
+        projectId: null,
+        projectWorkspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+        strategy: "project_primary",
+        branchName: null,
+        worktreePath: null,
+      },
+      runtimeOverlay: {
+        provisionCommand: "npm install -g @anthropic-ai/claude-code",
+      },
+    });
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue({
+      kind: "remote",
+      transport: "ssh",
+      remoteCwd: "/remote/workspace",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+      spec: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteCwd: "/remote/workspace",
+        remoteWorkspacePath: "/remote/workspace",
+        privateKey: null,
+        knownHosts: null,
+        strictHostKeyChecking: true,
+      },
+    });
+
+    const runtime = makeMockRuntime({
+      realizeWorkspace: vi.fn().mockResolvedValue({
+        cwd: "/remote/workspace",
+        metadata: {
+          workspaceRealization: {
+            version: 1,
+            transport: "ssh",
+            remote: { path: "/remote/workspace" },
+          },
+        },
+      }),
+    });
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+
+    await orchestrator.realizeForRun(makeRealizeInput({
+      environment: makeEnvironment("ssh"),
+    }));
+
+    // The `ssh` driver runs the command on the remote host that shares the
+    // workspace path, so the configured provision command still runs there.
+    expect(runtime.execute).toHaveBeenCalledOnce();
+    expect(runtime.execute).toHaveBeenCalledWith(expect.objectContaining({
+      environment: expect.objectContaining({ driver: "ssh" }),
+      lease: expect.objectContaining({ id: "lease-1" }),
+      command: "bash",
+      args: ["-lc", "npm install -g @anthropic-ai/claude-code"],
+      cwd: "/remote/workspace",
+      env: {
+        SHELL: "/bin/bash",
+      },
+    }));
+    // The sandbox skip log is specific to the sandbox driver; ssh stays quiet.
+    expect(mockLoggerInfo).not.toHaveBeenCalled();
+  });
+
   it("skips the host provision command for a sandbox environment and logs the skip", async () => {
     mockBuildWorkspaceRealizationRequest.mockReturnValue({
       version: 1,
