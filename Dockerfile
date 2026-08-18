@@ -63,10 +63,26 @@ FROM base AS build
 WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
+RUN pnpm --filter @paperclipai/shared build
+RUN pnpm --filter @paperclipai/db build
+RUN pnpm --filter @paperclipai/adapter-utils build
+RUN pnpm --filter "@paperclipai/adapter-*" build
+RUN pnpm --filter @paperclipai/hermes-paperclip-adapter build
+RUN pnpm --filter @paperclipai/mcp-server build \
+  && pnpm --filter @paperclipai/google-sheets-mcp-server build \
+  && pnpm --filter @paperclipai/kv-demo-mcp-server build
+RUN pnpm --filter @paperclipai/skills-catalog build \
+  && pnpm --filter @paperclipai/teams-catalog build
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
+RUN pnpm --filter paperclipai build
 RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
+RUN test -f packages/adapter-utils/dist/index.js \
+  && test -f packages/mcp-server/dist/stdio.js \
+  && test -f packages/google-sheets-mcp-server/dist/stdio.js \
+  && test -f packages/kv-demo-mcp-server/dist/main.js \
+  || (echo "ERROR: required package build output missing" && exit 1)
 
 FROM base AS production
 ARG USER_UID=1000
