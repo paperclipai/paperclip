@@ -65,11 +65,22 @@ export const models: Array<{ id: string; label: string }> = [
 
 export const DEFAULT_OPENCODE_CHEAP_MODEL = "openai/gpt-5.1-codex-mini";
 
+// The `variant: "low"` setting is Codex-specific. Only apply it when the
+// cheap model is a Codex model, so non-Codex overrides (e.g. a local
+// gpt-oss model) do not receive an unsupported variant.
+function cheapModelAdapterConfig(model: string): { model: string; variant?: string } {
+  if (model.includes("/gpt-5.1-codex-")) {
+    return { model, variant: "low" };
+  }
+  return { model };
+}
+
 // The "cheap" budget profile (used for recovery retries and other low-cost lanes).
 // Defaults to OpenCode's known Codex mini model, but is overridable so a deployment
-// routing through a gateway that does not serve that model (e.g. an EU LLM gateway)
-// can point the budget lane at a gateway-served model instead -- otherwise recovery
-// retries fail with "model not found". PAPERCLIP_OPENCODE_CHEAP_MODEL takes priority;
+// routing through a gateway that does not serve that model (e.g. an EU LLM gateway,
+// or a local-only Ollama deployment) can point the budget lane at a gateway-served
+// or local model instead -- otherwise recovery retries fail with "model not found".
+// PAPERCLIP_OPENCODE_CHEAP_MODEL takes priority;
 // PAPERCLIP_OPENCODE_SMALL_MODEL (the auxiliary/title model) is reused as a sensible
 // fallback so a single setting covers both budget lanes. The default keeps the
 // upstream behaviour (with the Codex `variant: "low"`).
@@ -89,8 +100,8 @@ export function buildOpenCodeModelProfiles(
       label: "Cheap",
       description: "Budget lane model for recovery retries and other low-cost tasks.",
       adapterConfig: override
-        ? { model: override }
-        : { model: DEFAULT_OPENCODE_CHEAP_MODEL, variant: "low" },
+        ? cheapModelAdapterConfig(override)
+        : cheapModelAdapterConfig(DEFAULT_OPENCODE_CHEAP_MODEL),
       source: "adapter_default",
     },
   ];
