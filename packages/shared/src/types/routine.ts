@@ -1,6 +1,7 @@
 import type {
   IssueOriginKind,
   IssuePriority,
+  ModelProfileKey,
   RoutineActivityGatePolicy,
   RoutineActivityGateScope,
   RoutineCatchUpPolicy,
@@ -69,6 +70,10 @@ export interface RoutineVariable {
 
 export type RoutineEnvConfig = Record<string, EnvBinding>;
 
+export interface RoutineAssigneeAdapterOverrides {
+  modelProfile?: ModelProfileKey;
+}
+
 export interface Routine {
   id: string;
   companyId: string;
@@ -79,6 +84,7 @@ export interface Routine {
   title: string;
   description: string | null;
   assigneeAgentId: string | null;
+  assigneeAdapterOverrides: RoutineAssigneeAdapterOverrides | null;
   priority: string;
   status: string;
   concurrencyPolicy: string;
@@ -124,6 +130,7 @@ export interface RoutineRevisionSnapshotRoutineV1 {
   title: string;
   description: string | null;
   assigneeAgentId: string | null;
+  assigneeAdapterOverrides: RoutineAssigneeAdapterOverrides | null;
   priority: IssuePriority;
   status: RoutineStatus;
   concurrencyPolicy: RoutineConcurrencyPolicy;

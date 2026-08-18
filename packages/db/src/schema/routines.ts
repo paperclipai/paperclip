@@ -18,7 +18,12 @@ import { projects } from "./projects.js";
 import { goals } from "./goals.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { folders } from "./folders.js";
-import type { RoutineEnvConfig, RoutineRevisionSnapshotV1, RoutineVariable } from "@paperclipai/shared";
+import type {
+  RoutineAssigneeAdapterOverrides,
+  RoutineEnvConfig,
+  RoutineRevisionSnapshotV1,
+  RoutineVariable,
+} from "@paperclipai/shared";
 
 export const routines = pgTable(
   "routines",
@@ -32,6 +37,7 @@ export const routines = pgTable(
     title: text("title").notNull(),
     description: text("description"),
     assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id),
+    assigneeAdapterOverrides: jsonb("assignee_adapter_overrides").$type<RoutineAssigneeAdapterOverrides>(),
     priority: text("priority").notNull().default("medium"),
     status: text("status").notNull().default("active"),
     concurrencyPolicy: text("concurrency_policy").notNull().default("coalesce_if_active"),

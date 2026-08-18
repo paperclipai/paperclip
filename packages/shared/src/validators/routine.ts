@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   ISSUE_PRIORITIES,
+  MODEL_PROFILE_KEYS,
   ROUTINE_ACTIVITY_GATE_POLICIES,
   ROUTINE_ACTIVITY_GATE_SCOPES,
   ROUTINE_CATCH_UP_POLICIES,
@@ -69,6 +70,9 @@ export const createRoutineSchema = z.object({
   title: z.string().trim().min(1).max(200),
   description: z.string().optional().nullable(),
   assigneeAgentId: z.string().uuid().optional().nullable(),
+  assigneeAdapterOverrides: z.object({
+    modelProfile: z.enum(MODEL_PROFILE_KEYS).optional(),
+  }).strict().optional().nullable(),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   status: z.enum(ROUTINE_STATUSES).optional().default("active"),
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES).optional().default("coalesce_if_active"),
@@ -96,6 +100,9 @@ export const routineRevisionSnapshotRoutineV1Schema = z.object({
   title: z.string().trim().min(1).max(200),
   description: z.string().nullable(),
   assigneeAgentId: z.string().uuid().nullable(),
+  assigneeAdapterOverrides: z.object({
+    modelProfile: z.enum(MODEL_PROFILE_KEYS).optional(),
+  }).strict().nullable().default(null),
   priority: z.enum(ISSUE_PRIORITIES),
   status: z.enum(ROUTINE_STATUSES),
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES),
