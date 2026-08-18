@@ -935,6 +935,35 @@ function invalidIdentityPluginManifest() {
   } as const;
 }
 
+function prototypeKeyIdentityPluginManifest() {
+  return {
+    id: "paperclip.fake-prototype-key-sandbox-provider",
+    apiVersion: 1,
+    version: "0.1.0",
+    displayName: "Fake Prototype Key Sandbox Provider",
+    categories: ["automation"],
+    capabilities: ["environment.drivers.register"],
+    entrypoints: { worker: "./dist/worker.js" },
+    environmentDrivers: [
+      {
+        driverKey: "fake-prototype-key-plugin",
+        kind: "sandbox_provider",
+        displayName: "Fake Prototype Key Sandbox Provider",
+        supportsInteractiveSetup: true,
+        interactiveSetupConnectionTypes: ["ssh"],
+        supportsTemplateCapture: true,
+        templateRefKind: "snapshot",
+        templateConfigBinding: { field: "customTemplate", unsetFields: ["image"] },
+        // Every prototype key has an identifier shape but names no own field.
+        // Each must fail canonicalization and record only the marker.
+        templateIdentityPaths: ["__proto__", "constructor", "prototype", "nested.__proto__"],
+        supportsTemplateDelete: true,
+        configSchema: { type: "object" },
+      },
+    ],
+  } as const;
+}
+
 describeEmbeddedPostgres("environmentCustomImageService relink", () => {
   let stopDb: (() => Promise<void>) | null = null;
   let db!: ReturnType<typeof createDb>;
@@ -959,7 +988,7 @@ describeEmbeddedPostgres("environmentCustomImageService relink", () => {
   });
 
   async function seed(opts?: {
-    manifest?: ReturnType<typeof pluginManifest> | ReturnType<typeof secretPluginManifest> | ReturnType<typeof invalidIdentityPluginManifest>;
+    manifest?: ReturnType<typeof pluginManifest> | ReturnType<typeof secretPluginManifest> | ReturnType<typeof invalidIdentityPluginManifest> | ReturnType<typeof prototypeKeyIdentityPluginManifest>;
     config?: Record<string, unknown>;
   }) {
     const manifest = opts?.manifest ?? pluginManifest();
@@ -1233,5 +1262,50 @@ describeEmbeddedPostgres("environmentCustomImageService relink", () => {
       companyId,
     });
     expect(relinked.classification).toBe("unclassified");
+  });
+
+  it("fails closed for prototype-key driver identity paths and never persists them", async () => {
+    const { companyId, environmentId } = await seed({ manifest: prototypeKeyIdentityPluginManifest(), config: {
+      provider: "fake-prototype-key-plugin",
+      image: "fake:base",
+      reuseLease: false,
+    } });
+    const service = environmentCustomImageService(db, { pluginWorkerManager: createWorkerManager() });
+    const started = await service.startSetupSession({ environmentId, actor: { userId: "user-1" } });
+    const promoted = await service.finishSetupSession({ sessionId: started.session.id });
+
+    const boot = (promoted.template.metadata as Record<string, unknown>).bootRelevantConfig as {
+      values: Record<string, unknown>;
+      excludedPaths: string[];
+    };
+    // Every prototype key fails canonicalization and records only the marker.
+    expect(boot.excludedPaths).toContain("[unresolved-identity-path]");
+    // No raw prototype-key path and no value for one persists in the snapshot.
+    expect(boot.excludedPaths).not.toContain("__proto__");
+    expect(boot.excludedPaths).not.toContain("constructor");
+    expect(boot.excludedPaths).not.toContain("prototype");
+    expect(Object.keys(boot.values)).not.toContain("__proto__");
+    expect(Object.keys(boot.values)).not.toContain("constructor");
+    expect(Object.keys(boot.values)).not.toContain("prototype");
+    // The prototype of the values map stays clean; no key leaked onto it.
+    expect(Object.getPrototypeOf(boot.values)).toBe(Object.prototype);
+    const metadataJson = JSON.stringify(promoted.template.metadata);
+    expect(metadataJson).not.toContain("__proto__");
+    expect(metadataJson).not.toContain("nested.__proto__");
+
+    // An unflagged relink fails closed with 409 and the unclassified class.
+    await expect(service.relinkActiveTemplate({ environmentId, actor: relinkActor, companyId }))
+      .rejects.toMatchObject({ status: 409, details: { classification: "unclassified" } });
+    // A confirmed relink succeeds and writes the relinked activity entry.
+    const relinked = await service.relinkActiveTemplate({
+      environmentId,
+      confirmBootSourceDrift: true,
+      actor: relinkActor,
+      companyId,
+    });
+    expect(relinked.classification).toBe("unclassified");
+    const activities = await relinkActivityRows(environmentId);
+    const relinkActivity = activities.find((row) => row.action === "environment.custom_image_template.relinked");
+    expect(relinkActivity).toBeDefined();
   });
 });

@@ -238,6 +238,10 @@ export const ENVIRONMENT_CUSTOM_IMAGE_BOOT_RELEVANT_UNRESOLVED_PATH = "[unresolv
 
 const BOOT_RELEVANT_CONFIG_MAX_PATH_DEPTH = 8;
 const BOOT_RELEVANT_CONFIG_PATH_SEGMENT_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+// Prototype keys have an identifier shape but never name an own config field.
+// A driver that declares one is hostile or broken. Reject it so the path fails
+// closed as an unresolved identity path.
+const BOOT_RELEVANT_CONFIG_RESERVED_SEGMENTS = new Set(["__proto__", "prototype", "constructor"]);
 
 export type EnvironmentCustomImageRelinkClassification =
   | "knob_only"
@@ -277,6 +281,7 @@ export function canonicalizeEnvironmentCustomImageConfigPath(raw: unknown): stri
   if (segments.length === 0 || segments.length > BOOT_RELEVANT_CONFIG_MAX_PATH_DEPTH) return null;
   for (const segment of segments) {
     if (!BOOT_RELEVANT_CONFIG_PATH_SEGMENT_RE.test(segment)) return null;
+    if (BOOT_RELEVANT_CONFIG_RESERVED_SEGMENTS.has(segment)) return null;
   }
   return segments.join(".");
 }
@@ -313,7 +318,9 @@ export function buildEnvironmentCustomImageBootRelevantConfig(input: {
 }): EnvironmentCustomImageBootRelevantConfig {
   const config = input.config as Record<string, unknown>;
   const secretPaths = [...(input.secretRefExcludePaths ?? [])];
-  const values: Record<string, unknown> = {};
+  // A null-prototype map is a second guard: a reserved segment assignment can
+  // never mutate the prototype, so a hostile path cannot vanish from `values`.
+  const values: Record<string, unknown> = Object.create(null);
   const excludedPaths = new Set<string>();
   const seen = new Set<string>();
 
