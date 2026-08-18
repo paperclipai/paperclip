@@ -1908,7 +1908,7 @@ export function authorizationService(db: Db) {
 
     const visibleIssueWriteDecision =
       trustResolution.kind === "standard" &&
-      (input.action === "issue:comment" || input.action === "issue:mutate")
+      input.action === "issue:mutate"
         ? await decideVisibleIssueWrite()
         : null;
     if (visibleIssueWriteDecision && !visibleIssueWriteDecision.allowed) {
@@ -2148,12 +2148,22 @@ export function authorizationService(db: Db) {
           explanation: "Allowed because the actor owns the assigned issue.",
         });
       }
-      if (!resource?.assigneeAgentId) {
+      if (!resource?.assigneeAgentId && input.action === "issue:mutate") {
         return allow({
           action: input.action,
           reason: "allow_company_agent",
           explanation: "Allowed because the issue has no agent assignee.",
         });
+      }
+      if (input.action === "issue:comment" && resource?.assigneeAgentId) {
+        const assignee = await loadAgent(resource.assigneeAgentId);
+        if (assignee?.companyId === companyId && assignee.reportsTo === actorAgentId) {
+          return allow({
+            action: input.action,
+            reason: "allow_manager_chain",
+            explanation: "Allowed because the issue assignee reports directly to the actor.",
+          });
+        }
       }
       if (
         input.action === "issue:comment" &&
