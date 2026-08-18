@@ -997,6 +997,44 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => Boolean(rows[0]));
   }
 
+  // AGE-691 — `didAutomaticRecoveryFail` classifies the *latest* run as an
+  // already-failed automatic recovery attempt purely from that run's own
+  // retryReason/status. It never asks whether anyone has acted on the issue
+  // since that run finished. A manual `blocked` -> `todo`/`in_progress`/
+  // `in_review` reset (or the dedicated recovery-actions resolve endpoint)
+  // always resolves/cancels the active recovery action
+  // (`classifySourceRecoveryRevalidation`'s `blockedToTodoRecovery` and
+  // `assigneeAgentId`-with-agent-owner branches), but the stale `latestRun`
+  // this sweep reads is unchanged by that reset. Without this check, the very
+  // next sweep tick re-derives the same "automatic recovery already failed"
+  // verdict from that same stale run and re-blocks the issue within minutes
+  // of a correct manual unblock, destroying whatever the human/agent just did.
+  // Any resolved/cancelled recovery action recorded after the run finished
+  // means someone already acted on this exact evidence — give the issue one
+  // fresh recovery-retry dispatch instead of re-escalating on it again.
+  async function wasRecoveryActionResolvedSinceRun(
+    issue: typeof issues.$inferSelect,
+    latestRun: LatestIssueRun,
+  ) {
+    if (!latestRun) return false;
+    const runFinishedAt = latestRun.startedAt ?? latestRun.createdAt;
+    if (!runFinishedAt) return false;
+
+    return db
+      .select({ id: issueRecoveryActions.id })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, issue.companyId),
+          eq(issueRecoveryActions.sourceIssueId, issue.id),
+          inArray(issueRecoveryActions.status, ["resolved", "cancelled"]),
+          gte(issueRecoveryActions.resolvedAt, runFinishedAt),
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
   async function hasQueuedIssueWake(companyId: string, issueId: string, agentId?: string | null) {
     return db
       .select({ id: agentWakeupRequests.id })
@@ -3892,6 +3930,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.skipped += 1;
         continue;
       }
+      // AGE-691 — the check above only ever covered a *succeeded* run (e.g. a
+      // clean successful-run handoff that legitimately left a monitor/blocker
+      // as its resume path). Terminal-run recovery's own subject — a run
+      // that crashed/timed out *after* it had already scheduled a monitor —
+      // was never covered: escalation ran unconditionally on any unsuccessful
+      // terminal run, silently clearing the very monitor the assignee had
+      // correctly armed, because `applyMonitorTransition` clears
+      // `monitorNextCheckAt` on any status change away from
+      // in_progress/in_review. Extend the exemption to a persisted monitor on
+      // any terminal run so it is never destroyed by recovery, regardless of
+      // why the run that scheduled it ultimately ended. This is
+      // deliberately narrower than `hasPersistedDurableWaitPath` (monitor
+      // only, not the delegated-blocker-relation check) so it does not
+      // shadow the more specific waiting-on-review blocker conversion below,
+      // which formalizes an existing blocking relation into a real `blocked`
+      // status + `blockedByIssueIds` rather than silently skipping.
+      if (
+        latestRun &&
+        isUnsuccessfulTerminalIssueRun(latestRun) &&
+        issue.monitorNextCheckAt
+      ) {
+        result.skipped += 1;
+        continue;
+      }
       const recoveryNow = new Date();
       const participantLatestRunForRecovery = issue.status === "in_review" && participantAgentId
         ? await getLatestIssueRunForAgent(issue.companyId, issue.id, participantAgentId)
@@ -4150,7 +4212,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
-        if (didAutomaticRecoveryFail(participantLatestRun, EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON)) {
+        if (
+          didAutomaticRecoveryFail(participantLatestRun, EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON) &&
+          !(await wasRecoveryActionResolvedSinceRun(issue, participantLatestRun))
+        ) {
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: "in_review",
@@ -4231,7 +4296,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
-        if (didAutomaticRecoveryFail(latestRun, "assignment_recovery")) {
+        if (
+          didAutomaticRecoveryFail(latestRun, "assignment_recovery") &&
+          !(await wasRecoveryActionResolvedSinceRun(issue, latestRun))
+        ) {
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: "todo",
@@ -4402,7 +4470,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
-        if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
+        if (
+          didAutomaticRecoveryFail(latestRun, "issue_continuation_needed") &&
+          !(await wasRecoveryActionResolvedSinceRun(issue, latestRun))
+        ) {
           const { consecutive, latestFinishedAt } = await summarizeRecentContinuationRetries(
             issue.companyId,
             issue.id,

@@ -5897,6 +5897,57 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     )).toBe(true);
   });
 
+  it("gives assigned todo work one fresh dispatch instead of re-escalating a stale run after a manual blocked-to-todo reset (AGE-691)", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      retryReason: "assignment_recovery",
+      runErrorCode: "process_lost",
+    });
+    // Mirrors what classifySourceRecoveryRevalidation records when a human/agent
+    // manually resets `blocked` -> `todo` via a plain issue PATCH (not the
+    // dedicated recovery-actions resolve endpoint): the previously active
+    // recovery action is cancelled, but the stale failed `latestRun` above is
+    // untouched by that reset.
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "stranded_assigned_issue",
+      status: "cancelled",
+      ownerType: "agent",
+      ownerAgentId: agentId,
+      previousOwnerAgentId: agentId,
+      cause: "process_lost",
+      fingerprint: `manual-reset:${issueId}`,
+      nextAction: "Resume source work",
+      outcome: "cancelled",
+      resolutionNote: "Recovery action became stale because the source issue was manually moved from blocked to todo.",
+      resolvedAt: new Date("2026-03-19T00:06:00.000Z"),
+      createdAt: new Date("2026-03-19T00:01:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:06:00.000Z"),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+    expect(result.dispatchRequeued).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("todo");
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect((retryRun?.contextSnapshot as Record<string, unknown>)?.retryReason).toBe("assignment_recovery");
+
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveryIssues).toHaveLength(0);
+  });
+
   it("blocks an already stranded recovery issue without creating a recovery child", async () => {
     const { companyId, issueId } = await seedStrandedIssueFixture({
       status: "todo",
@@ -6965,6 +7016,43 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "succeeded",
+      livenessState: "advanced",
+      monitorNextCheckAt: new Date("2026-03-19T01:00:00.000Z"),
+      resultJson: {
+        summary: "Waiting for the deploy to settle; monitor is scheduled.",
+        externalWait: { kind: "issue_monitor", durable: true },
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.monitorNextCheckAt?.toISOString()).toBe("2026-03-19T01:00:00.000Z");
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveryIssues).toHaveLength(0);
+  });
+
+  it("preserves a persisted issue monitor when the run that scheduled it crashed instead of succeeding (AGE-691)", async () => {
+    // Mirrors AGE-602: the assignee's run scheduled a durable external_service
+    // monitor (e.g. to read back a CI run) and then the *run process itself*
+    // terminated abnormally (crashed/timed out) rather than reporting
+    // `succeeded`. Terminal-run recovery must not treat that as stranding and
+    // clear the monitor — the monitor is the live wake path, regardless of
+    // how the run that scheduled it ended.
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
       livenessState: "advanced",
       monitorNextCheckAt: new Date("2026-03-19T01:00:00.000Z"),
       resultJson: {
