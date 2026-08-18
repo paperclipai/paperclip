@@ -11,6 +11,7 @@ import {
   assertSyncOperationsConfined,
   mirrorDirectory,
   prepareSandboxManagedRuntime,
+  type SandboxManagedRuntimeAsset,
   type SandboxManagedRuntimeClient,
   type SandboxSyncOperation,
   type SandboxSyncResult,
@@ -2514,5 +2515,360 @@ describe("sandbox managed runtime inbound coordinator", () => {
     await prepared;
     // The serial order stays workspace first, then the asset.
     expect(control.started).toEqual(["workspace", "asset-a"]);
+  });
+});
+
+// A controlled outbound restore. It reuses the deferred-promise fakes. The
+// native `syncOut` copies the sandbox workspace back into the restore temp
+// directory, and a gate holds the workspace restore open. Each asset carries a
+// controlled `restore` callback the test can hold, release, or make fail. One
+// label rides the workspace restore and one label rides each asset restore, so
+// a test can watch the outbound coordinator schedule, bound, failure semantics,
+// and teardown barrier.
+interface OutboundControl {
+  started: string[];
+  settled: string[];
+  restoreTempDirs: Map<string, string | undefined>;
+  waitForStart(label: string): Promise<void>;
+  hold(label: string): void;
+  release(label: string): void;
+  failWith(label: string, error: Error): void;
+}
+
+function makeOutboundControl(): {
+  control: OutboundControl;
+  gate: <T>(label: string, run: () => Promise<T>) => Promise<T>;
+} {
+  const started: string[] = [];
+  const settled: string[] = [];
+  const restoreTempDirs = new Map<string, string | undefined>();
+  const gates = new Map<string, Deferred<void>>();
+  const failures = new Map<string, Error>();
+  const startWaiters = new Map<string, Array<() => void>>();
+
+  const control: OutboundControl = {
+    started,
+    settled,
+    restoreTempDirs,
+    waitForStart(label) {
+      if (started.includes(label)) {
+        return Promise.resolve();
+      }
+      return new Promise<void>((resolve) => {
+        const waiters = startWaiters.get(label) ?? [];
+        waiters.push(resolve);
+        startWaiters.set(label, waiters);
+      });
+    },
+    hold(label) {
+      if (!gates.has(label)) {
+        gates.set(label, defer<void>());
+      }
+    },
+    release(label) {
+      gates.get(label)?.resolve();
+    },
+    failWith(label, error) {
+      failures.set(label, error);
+      gates.get(label)?.resolve();
+    },
+  };
+
+  // Record the task start, notify start waiters, wait for the gate, raise a set
+  // failure, then run the task body and record the settle. A gate that a test
+  // never holds resolves at once, so an unheld task runs straight through.
+  async function gate<T>(label: string, run: () => Promise<T>): Promise<T> {
+    started.push(label);
+    const waiters = startWaiters.get(label) ?? [];
+    startWaiters.delete(label);
+    for (const waiter of waiters) {
+      waiter();
+    }
+    try {
+      const held = gates.get(label);
+      if (held) {
+        await held.promise;
+      }
+      const failure = failures.get(label);
+      if (failure) {
+        throw failure;
+      }
+      return await run();
+    } finally {
+      settled.push(label);
+    }
+  }
+
+  return { control, gate };
+}
+
+// A native filesystem client whose `syncOut` copies the sandbox workspace back
+// through the gate. The inbound prepare step uses the base64-tar fallback
+// `syncIn`. The client opts into concurrency by the flag.
+function makeGatedOutboundClient(
+  concurrent: boolean,
+  gate: <T>(label: string, run: () => Promise<T>) => Promise<T>,
+): SandboxManagedRuntimeClient {
+  const client: SandboxManagedRuntimeClient = {
+    makeDir: async (remotePath) => {
+      await mkdir(remotePath, { recursive: true });
+    },
+    writeFile: async (remotePath, bytes) => {
+      await mkdir(path.dirname(remotePath), { recursive: true });
+      await writeFile(remotePath, Buffer.from(bytes));
+    },
+    readFile: async (remotePath) => await readFile(remotePath),
+    listFiles: async (remotePath) => {
+      const entries = await readdir(remotePath, { withFileTypes: true }).catch(() => []);
+      return entries.filter((entry) => entry.isFile()).map((entry) => entry.name).sort();
+    },
+    remove: async (remotePath) => {
+      await rm(remotePath, { recursive: true, force: true });
+    },
+    run: async (command) => {
+      await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+    },
+    allowConcurrentSyncOperations: concurrent,
+    syncOut: async (operations) =>
+      gate("workspace", async () => {
+        for (const operation of operations) {
+          for (const mapping of operation.files) {
+            if (mapping.kind === "directory") {
+              await mirrorDirectory(mapping.sourcePath, mapping.targetPath);
+            } else {
+              await mkdir(path.dirname(mapping.targetPath), { recursive: true });
+              await writeFile(mapping.targetPath, await readFile(mapping.sourcePath));
+            }
+          }
+        }
+        return {
+          operations: operations.map((operation) => ({
+            operationId: operation.operationId,
+            filesTransferred: operation.files.length,
+            bytesTransferred: 0,
+          })),
+        };
+      }),
+  };
+  attachFallbackSyncIn(client);
+  return client;
+}
+
+// Build one asset with a controlled `restore`. The restore records its own
+// temp directory, then runs through the gate. The temp directory proves that
+// two concurrent restore tasks keep separate scratch state.
+function makeControlledAsset(
+  key: string,
+  localDir: string,
+  control: OutboundControl,
+  gate: <T>(label: string, run: () => Promise<T>) => Promise<T>,
+): SandboxManagedRuntimeAsset {
+  return {
+    key,
+    localDir,
+    restore: async (ctx) => {
+      control.restoreTempDirs.set(key, ctx.tempDir);
+      await gate(key, async () => {
+        if (ctx.tempDir) {
+          await writeFile(path.join(ctx.tempDir, `scratch-${key}.txt`), key, "utf8");
+        }
+      });
+    },
+  };
+}
+
+describe("sandbox managed runtime outbound coordinator", () => {
+  const cleanupDirs: string[] = [];
+
+  afterEach(async () => {
+    while (cleanupDirs.length > 0) {
+      const dir = cleanupDirs.pop();
+      if (!dir) continue;
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  function makeSpec(remoteCwd: string) {
+    return {
+      transport: "sandbox" as const,
+      provider: "test",
+      sandboxId: "sandbox-1",
+      remoteCwd,
+      timeoutMs: 30_000,
+      apiKey: null,
+    };
+  }
+
+  // Create a temp root with one workspace directory and any named asset
+  // directories. Each directory carries one file, so the host tar step has
+  // bytes and the merge has content.
+  async function makeOutboundDirs(names: string[]): Promise<{
+    rootDir: string;
+    workspaceDir: string;
+    remoteWorkspaceDir: string;
+    dirOf: (name: string) => string;
+  }> {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-outbound-coordinator-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    await writeFile(path.join(workspaceDir, "file.txt"), "workspace\n", "utf8");
+    const dirs = new Map<string, string>();
+    for (const name of names) {
+      const dir = path.join(rootDir, name);
+      await mkdir(dir, { recursive: true });
+      await writeFile(path.join(dir, "file.txt"), `${name}\n`, "utf8");
+      dirs.set(name, dir);
+    }
+    return { rootDir, workspaceDir, remoteWorkspaceDir, dirOf: (name) => dirs.get(name)! };
+  }
+
+  // Resolve true when the label started within the window, false on timeout.
+  async function startedWithin(control: OutboundControl, label: string, ms: number): Promise<boolean> {
+    return Promise.race([
+      control.waitForStart(label).then(() => true),
+      settleTick(ms).then(() => false),
+    ]);
+  }
+
+  it("with concurrency permitted, an asset restore starts while the workspace restore is held open", async () => {
+    const { workspaceDir, remoteWorkspaceDir, dirOf } = await makeOutboundDirs(["home"]);
+    const { control, gate } = makeOutboundControl();
+    const client = makeGatedOutboundClient(true, gate);
+    control.hold("workspace");
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: makeSpec(remoteWorkspaceDir),
+      adapterKey: "codex",
+      client,
+      workspaceLocalDir: workspaceDir,
+      assets: [makeControlledAsset("home", dirOf("home"), control, gate)],
+    });
+
+    const restore = prepared.restoreWorkspace();
+    restore.catch(() => undefined);
+
+    // The workspace restore is open and held. The home asset restore still
+    // starts, so the coordinator runs the two tasks concurrently.
+    await control.waitForStart("workspace");
+    expect(await startedWithin(control, "home", 4000)).toBe(true);
+    expect(control.settled).not.toContain("workspace");
+
+    control.release("workspace");
+    await restore;
+    expect(control.settled).toContain("home");
+    expect(control.settled).toContain("workspace");
+  });
+
+  it("holds one restore open after another restore fails, and returns only after both settle", async () => {
+    const { workspaceDir, remoteWorkspaceDir, dirOf } = await makeOutboundDirs(["asset-a", "asset-b"]);
+    const { control, gate } = makeOutboundControl();
+    const client = makeGatedOutboundClient(true, gate);
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: makeSpec(remoteWorkspaceDir),
+      adapterKey: "codex",
+      client,
+      syncWorkspace: false,
+      workspaceLocalDir: workspaceDir,
+      assets: [
+        makeControlledAsset("asset-a", dirOf("asset-a"), control, gate),
+        makeControlledAsset("asset-b", dirOf("asset-b"), control, gate),
+      ],
+    });
+
+    control.hold("asset-b");
+    control.failWith("asset-a", new Error("asset-a-fail"));
+
+    let coordinatorSettled = false;
+    const done = prepared.restoreWorkspace().then(
+      () => { coordinatorSettled = true; },
+      () => { coordinatorSettled = true; },
+    );
+
+    await control.waitForStart("asset-b");
+    await settleTick(100);
+
+    // The first restore already failed. The second restore is still open, so
+    // the coordinator must not return yet.
+    expect(coordinatorSettled).toBe(false);
+    expect(control.settled).toContain("asset-a");
+    expect(control.settled).not.toContain("asset-b");
+
+    control.release("asset-b");
+    await done;
+    expect(coordinatorSettled).toBe(true);
+    expect(control.settled).toEqual(expect.arrayContaining(["asset-a", "asset-b"]));
+  });
+
+  it("with concurrency forbidden, keeps the serial restore schedule in the current order", async () => {
+    const { workspaceDir, remoteWorkspaceDir, dirOf } = await makeOutboundDirs(["asset-a"]);
+    const { control, gate } = makeOutboundControl();
+    const client = makeGatedOutboundClient(false, gate);
+    control.hold("workspace");
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: makeSpec(remoteWorkspaceDir),
+      adapterKey: "codex",
+      client,
+      workspaceLocalDir: workspaceDir,
+      assets: [makeControlledAsset("asset-a", dirOf("asset-a"), control, gate)],
+    });
+
+    const restore = prepared.restoreWorkspace();
+    restore.catch(() => undefined);
+
+    // The workspace restore runs first and is held open. Serial mode runs one
+    // task at a time, so the asset restore does not start until the workspace
+    // restore settles.
+    await control.waitForStart("workspace");
+    expect(await startedWithin(control, "asset-a", 300)).toBe(false);
+    expect(control.started).toEqual(["workspace"]);
+
+    control.release("workspace");
+    await control.waitForStart("asset-a");
+    await restore;
+    // The serial order stays the workspace restore first, then the asset.
+    expect(control.started).toEqual(["workspace", "asset-a"]);
+  });
+
+  it("with concurrency permitted, two concurrent restore tasks use separate temporary state", async () => {
+    const { workspaceDir, remoteWorkspaceDir, dirOf } = await makeOutboundDirs(["asset-a", "asset-b"]);
+    const { control, gate } = makeOutboundControl();
+    const client = makeGatedOutboundClient(true, gate);
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: makeSpec(remoteWorkspaceDir),
+      adapterKey: "codex",
+      client,
+      syncWorkspace: false,
+      workspaceLocalDir: workspaceDir,
+      assets: [
+        makeControlledAsset("asset-a", dirOf("asset-a"), control, gate),
+        makeControlledAsset("asset-b", dirOf("asset-b"), control, gate),
+      ],
+    });
+
+    control.hold("asset-a");
+    control.hold("asset-b");
+    const restore = prepared.restoreWorkspace();
+
+    // Both restore tasks start together under the bound. Each task carries its
+    // own restore temp directory, so the two directories differ.
+    await control.waitForStart("asset-a");
+    await control.waitForStart("asset-b");
+    const tempA = control.restoreTempDirs.get("asset-a");
+    const tempB = control.restoreTempDirs.get("asset-b");
+    expect(tempA).toBeTruthy();
+    expect(tempB).toBeTruthy();
+    expect(tempA).not.toBe(tempB);
+    expect(tempA!).toContain("paperclip-sandbox-restore-");
+    expect(tempB!).toContain("paperclip-sandbox-restore-");
+
+    control.release("asset-a");
+    control.release("asset-b");
+    await restore;
+    expect(control.settled).toEqual(expect.arrayContaining(["asset-a", "asset-b"]));
   });
 });
