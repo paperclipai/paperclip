@@ -74,7 +74,6 @@ import { instanceSettingsService } from "../services/instance-settings.ts";
 import { issueService } from "../services/issues.ts";
 import { runningProcesses } from "../adapters/index.ts";
 import { DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS } from "../services/recovery/service.ts";
-import { PARKED_V1_LABEL_ID } from "../services/issue-liveness.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -386,13 +385,12 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       blockerStatus: "backlog",
       blockerAssigneeAgentId,
     });
-    await db.insert(labels).values({
-      id: PARKED_V1_LABEL_ID,
+    const [parkedLabel] = await db.insert(labels).values({
       companyId,
       name: "parked",
       color: "#64748b",
-    });
-    await db.insert(issueLabels).values({ companyId, issueId: blockerIssueId, labelId: PARKED_V1_LABEL_ID });
+    }).returning({ id: labels.id });
+    await db.insert(issueLabels).values({ companyId, issueId: blockerIssueId, labelId: parkedLabel!.id });
 
     const result = await heartbeatService(db).reconcileIssueGraphLiveness();
 
@@ -421,8 +419,11 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       blockerStatus: "backlog",
       blockerAssigneeAgentId,
     });
-    await db.insert(labels).values({ id: PARKED_V1_LABEL_ID, companyId, name: "parked", color: "#64748b" });
-    await db.insert(issueLabels).values({ companyId, issueId: blockerIssueId, labelId: PARKED_V1_LABEL_ID });
+    const [parkedLabel] = await db
+      .insert(labels)
+      .values({ companyId, name: "parked", color: "#64748b" })
+      .returning({ id: labels.id });
+    await db.insert(issueLabels).values({ companyId, issueId: blockerIssueId, labelId: parkedLabel!.id });
     const previous = process.env.PAPERCLIP_ENABLE_PARKED_V1_LIVENESS_SUPPRESSION;
     process.env.PAPERCLIP_ENABLE_PARKED_V1_LIVENESS_SUPPRESSION = "false";
 

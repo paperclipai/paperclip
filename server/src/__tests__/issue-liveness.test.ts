@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyIssueGraphLiveness, PARKED_V1_LABEL_ID } from "../services/issue-liveness.ts";
+import { classifyIssueGraphLiveness, PARKED_V1_LABEL_NAME } from "../services/issue-liveness.ts";
 
 const companyId = "company-1";
 const managerId = "manager-1";
@@ -193,7 +193,7 @@ describe("issue graph liveness classifier", () => {
   ])("suppresses $state for parked backlog and records parked-v1", ({ assigneeAgentId, state }) => {
     const suppressions: unknown[] = [];
     const findings = classifyIssueGraphLiveness({
-      issues: [issue(), issue({ id: blockerId, status: "backlog", assigneeAgentId, labelIds: [PARKED_V1_LABEL_ID] })],
+      issues: [issue(), issue({ id: blockerId, status: "backlog", assigneeAgentId, labelNames: [PARKED_V1_LABEL_NAME] })],
       relations: blocks,
       agents: [agent(), manager, agent({ id: "blocker-agent", reportsTo: managerId })],
       onSuppression: (suppression) => suppressions.push(suppression),
@@ -203,10 +203,11 @@ describe("issue graph liveness classifier", () => {
   });
 
   it("keeps parked-v1 narrow and reversible", () => {
-    const parked = issue({ id: blockerId, status: "backlog", assigneeAgentId: null, labelIds: [PARKED_V1_LABEL_ID] });
+    const parked = issue({ id: blockerId, status: "backlog", assigneeAgentId: null, labelNames: [PARKED_V1_LABEL_NAME] });
     const base = { issues: [issue(), parked], relations: blocks, agents: [agent(), manager] };
     expect(classifyIssueGraphLiveness({ ...base, enableParkedV1Suppression: false })[0]?.state).toBe("blocked_by_unassigned_issue");
-    expect(classifyIssueGraphLiveness({ ...base, issues: [issue(), { ...parked, labelIds: [] }] })[0]?.state).toBe("blocked_by_unassigned_issue");
+    expect(classifyIssueGraphLiveness({ ...base, issues: [issue(), { ...parked, labelNames: [] }] })[0]?.state).toBe("blocked_by_unassigned_issue");
+    expect(classifyIssueGraphLiveness({ ...base, issues: [issue(), { ...parked, labelNames: ["Parked"] }] })[0]?.state).toBe("blocked_by_unassigned_issue");
     expect(classifyIssueGraphLiveness({ ...base, issues: [issue(), { ...parked, status: "todo" }] })[0]?.state).toBe("blocked_by_unassigned_issue");
     expect(classifyIssueGraphLiveness({ ...base, issues: [issue(), { ...parked, status: "cancelled" }] })[0]?.state).toBe("blocked_by_cancelled_issue");
   });

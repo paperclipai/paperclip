@@ -28,10 +28,10 @@ export interface IssueLivenessIssueInput {
   executionState?: Record<string, unknown> | null;
   monitorNextCheckAt?: Date | string | null;
   monitorAttemptCount?: number | null;
-  labelIds?: string[];
+  labelNames?: string[];
 }
 
-export const PARKED_V1_LABEL_ID = "ea801106-1bbf-41ea-baab-a8beacb4f2d8";
+export const PARKED_V1_LABEL_NAME = "parked";
 export const PARKED_V1_POLICY_VERSION = "parked-v1";
 
 export interface IssueLivenessSuppression {
@@ -144,7 +144,7 @@ export interface IssueGraphLivenessInput {
 }
 
 export function parkedV1SuppressionFor(issue: IssueLivenessIssueInput, state: IssueLivenessState, enabled = true): IssueLivenessSuppression | null {
-  if (!enabled || issue.status !== "backlog" || !issue.labelIds?.includes(PARKED_V1_LABEL_ID) ||
+  if (!enabled || issue.status !== "backlog" || !issue.labelNames?.includes(PARKED_V1_LABEL_NAME) ||
     (state !== "blocked_by_unassigned_issue" && state !== "blocked_by_assigned_backlog_issue")) return null;
   return { reason: "parked_v1", policyVersion: PARKED_V1_POLICY_VERSION, issueId: issue.id, companyId: issue.companyId, suppressedState: state };
 }

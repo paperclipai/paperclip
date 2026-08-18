@@ -27,6 +27,7 @@ import {
   issueLabels,
   issueThreadInteractions,
   issues,
+  labels,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -4459,17 +4460,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         return issueIdsUnderAnalysis.length === 0
           ? []
           : db
-            .select({ issueId: issueLabels.issueId, labelId: issueLabels.labelId })
+            .select({
+              issueId: issueLabels.issueId,
+              companyId: issueLabels.companyId,
+              labelName: labels.name,
+            })
             .from(issueLabels)
+            .innerJoin(labels, and(
+              eq(issueLabels.labelId, labels.id),
+              eq(issueLabels.companyId, labels.companyId),
+            ))
             .where(inArray(issueLabels.issueId, issueIdsUnderAnalysis));
       }),
     ]);
 
-    const labelIdsByIssueId = new Map<string, string[]>();
+    const labelNamesByIssueKey = new Map<string, string[]>();
     for (const row of issueLabelRows) {
-      const labelIds = labelIdsByIssueId.get(row.issueId) ?? [];
-      labelIds.push(row.labelId);
-      labelIdsByIssueId.set(row.issueId, labelIds);
+      const issueKey = `${row.companyId}:${row.issueId}`;
+      const labelNames = labelNamesByIssueKey.get(issueKey) ?? [];
+      labelNames.push(row.labelName);
+      labelNamesByIssueKey.set(issueKey, labelNames);
     }
 
     const openRecoveryIssues = recoveryIssueRows.flatMap((row) => {
@@ -4500,7 +4510,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
 
     return classifyIssueGraphLiveness({
-      issues: issueRows.map((issue) => ({ ...issue, labelIds: labelIdsByIssueId.get(issue.id) ?? [] })),
+      issues: issueRows.map((issue) => ({
+        ...issue,
+        labelNames: labelNamesByIssueKey.get(`${issue.companyId}:${issue.id}`) ?? [],
+      })),
       relations: relationRows,
       agents: agentRows,
       activeRuns: activeRunRows.map((row) => ({
