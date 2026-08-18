@@ -169,6 +169,70 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     await tempDb?.cleanup();
   });
 
+  it("treats a CANCELLED blocker as satisfied (terminal-means-resolved, 2026-08-18)", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const cancelledBlockerId = randomUUID();
+    const dependentIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: cancelledBlockerId,
+        companyId,
+        title: "Echo card, closed as cancelled by a sweep",
+        status: "cancelled",
+        priority: "high",
+        responsibleUserId: "responsible-user",
+      },
+      {
+        id: dependentIssueId,
+        companyId,
+        title: "Real work wedged behind the cancelled echo",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: cancelledBlockerId,
+      relatedIssueId: dependentIssueId,
+      type: "blocks",
+    });
+
+    // Before the fix this wake skipped with issue_dependencies_blocked even
+    // though the only blocker was terminal (TSR-5429 / TSMC-20757 in prod).
+    const wake = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: dependentIssueId },
+      contextSnapshot: { issueId: dependentIssueId, wakeReason: "issue_assigned" },
+    });
+    expect(wake).not.toBeNull();
+  });
+
   it("keeps blocked descendants idle until their blockers resolve", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

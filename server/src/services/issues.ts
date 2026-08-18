@@ -1471,9 +1471,14 @@ async function listIssueDependencyReadinessMap(
   for (const row of blockerRows) {
     const current = readinessMap.get(row.issueId) ?? createIssueDependencyReadiness(row.issueId);
     current.blockerIssueIds.push(row.blockerIssueId);
-    // Only done blockers resolve dependents; cancelled blockers stay unresolved
-    // until an operator removes or replaces the blocker relationship explicitly.
-    if (row.blockerStatus !== "done") {
+    // Terminal blockers (done OR cancelled) resolve dependents. A cancelled
+    // blocker can never complete, so holding the dependent means waiting
+    // forever: after the 2026-08-17/18 echo sweeps closed ~100 meta cards as
+    // cancelled, their dependents wake-skipped issue_dependencies_blocked
+    // with every blocker terminal (TSR-5429, TSMC-20757). The finalize
+    // barrier below is unaffected — its pair set only ever contains done
+    // blockers, so cancelled ones fall through resolved with no sync-back gate.
+    if (row.blockerStatus !== "done" && row.blockerStatus !== "cancelled") {
       current.unresolvedBlockerIssueIds.push(row.blockerIssueId);
       current.unresolvedBlockerCount += 1;
       current.allBlockersDone = false;
