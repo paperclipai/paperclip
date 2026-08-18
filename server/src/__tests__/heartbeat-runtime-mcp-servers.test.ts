@@ -348,7 +348,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       transport: "local_stdio",
       status: "active",
       enabled: true,
-      config: { templateId: stdioTemplateKey },
+      config: { templateId: ` ${stdioTemplateKey} ` },
     }).returning();
     const [profile] = await db.insert(toolProfiles).values({
       companyId: company!.id,

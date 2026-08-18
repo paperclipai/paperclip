@@ -3411,7 +3411,9 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     const templateId = connection.config && typeof connection.config === "object"
       ? (connection.config as Record<string, unknown>).templateId
       : null;
-    return typeof templateId === "string" && !disabledStdioTemplateKeys.has(templateId);
+    return typeof templateId === "string"
+      && templateId.trim().length > 0
+      && !disabledStdioTemplateKeys.has(templateId.trim());
   });
   const service = createToolGatewayService(input.db);
   if (uniqueConnections.length === 0) {
