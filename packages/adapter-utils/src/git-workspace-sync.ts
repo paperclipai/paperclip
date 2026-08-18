@@ -495,10 +495,18 @@ export async function integrateImportedGitHead(input: {
     if (!currentHead || currentHead === input.importedHead) return;
 
     const headRef = snapshot.branchName ? `refs/heads/${snapshot.branchName}` : "HEAD";
+    // `git merge-base` exits 1 when the commits share no ancestor — the only
+    // outcome that authorizes the graft fallback below. Every other failure
+    // (timeout, missing object, repository error) must keep failing the
+    // integration instead of silently rewriting the tip.
+    let noCommonAncestor = false;
     const mergeBase = await runLocalGit(input.localDir, ["merge-base", currentHead, input.importedHead], {
       timeout: 10_000,
       maxBuffer: 16 * 1024,
-    }).catch(() => null);
+    }).catch((error: unknown) => {
+      noCommonAncestor = (error as { code?: unknown } | null)?.code === 1;
+      return null;
+    });
     const mergeBaseHead = mergeBase?.stdout.trim() ?? "";
 
     if (mergeBaseHead === input.importedHead) {
@@ -518,7 +526,7 @@ export async function integrateImportedGitHead(input: {
       }
     }
 
-    if (!mergeBaseHead) {
+    if (noCommonAncestor) {
       // No common ancestor — merging is impossible and failing here would
       // discard the imported work. Graft it onto the current head instead;
       // see createUnrelatedHistoryGraftCommit.

@@ -512,6 +512,28 @@ describe("git workspace sync", () => {
     expect(body).toContain(`Paperclip remote git sync graft ${importedHead.slice(0, 12)}`);
     expect(body).toContain("shares no ancestor");
   });
+
+  it("does not graft when merge-base fails for a reason other than missing ancestry", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-no-graft-"));
+    cleanupDirs.push(rootDir);
+    const setupIdentity = ["-c", "user.name=Setup", "-c", "user.email=setup@paperclip.dev"];
+    const repo = path.join(rootDir, "repo");
+    await mkdir(repo, { recursive: true });
+    await git(repo, ["init"]);
+    await git(repo, ["checkout", "-b", "main"]);
+    await writeFile(path.join(repo, "tracked.txt"), "base\n", "utf8");
+    await git(repo, ["add", "tracked.txt"]);
+    await git(repo, [...setupIdentity, "commit", "-m", "base"]);
+    const currentHead = await git(repo, ["rev-parse", "HEAD"]);
+
+    // A well-formed sha the repository does not hold: merge-base fails with an
+    // object error (exit 128), not the no-ancestor signal (exit 1). The graft
+    // must not fire, and the integration keeps its loud failure.
+    const missingHead = "0123456789abcdef0123456789abcdef01234567";
+    await expect(integrateImportedGitHead({ localDir: repo, importedHead: missingHead }))
+      .rejects.toThrow(/Failed to merge concurrent remote git histories/);
+    expect(await git(repo, ["rev-parse", "HEAD"])).toBe(currentHead);
+  });
 });
 
 describe("sanitizeGitRemoteUrl", () => {
