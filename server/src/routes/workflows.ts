@@ -502,8 +502,8 @@ export function workflowRoutes(db: Db) {
     const { token: _token, ...input } = req.body as CreateWorkflowHandoff & { token: string };
     const handoff = await svc.createRuntimeHandoff(runId, input);
 
-    // A ClickUp bridge is an optional delivery channel. The handoff itself remains
-    // actionable from Bizbox when that delivery cannot be opened.
+    // Attempt to open a ClickUp bridge for the handoff.
+    // If ClickUp is not configured, return 503 immediately so the caller knows.
     try {
       const bridgeSvc = workflowHandoffBridgeService(db);
       await bridgeSvc.openForHandoff({
@@ -513,9 +513,12 @@ export function workflowRoutes(db: Db) {
         kind: handoff.kind,
         promptMarkdown: handoff.promptMarkdown,
       });
-    } catch {
-      // The runtime polls this handoff directly, and a board operator can resolve
-      // it in Bizbox, so a failed external notification must not fail the run.
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      const status = (error as { status?: number }).status ?? 500;
+      const message = error instanceof Error ? error.message : String(error);
+      res.status(status).json({ error: message, code });
+      return;
     }
 
     res.status(201).json(handoff);

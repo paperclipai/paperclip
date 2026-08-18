@@ -75,7 +75,7 @@ describe("workflow routes", () => {
     mockWorkflowHandoffBridgeService.mockReturnValue({ openForHandoff: vi.fn() });
   });
 
-  it("keeps a runtime handoff available in Bizbox when its ClickUp bridge is unavailable", async () => {
+  it("returns the ClickUp bridge error when a runtime handoff cannot be delivered", async () => {
     const handoff = {
       id: "handoff-1",
       companyId,
@@ -106,8 +106,8 @@ describe("workflow routes", () => {
         promptMarkdown: "Approve this draft.",
       });
 
-    expect(res.status).toBe(201);
-    expect(res.body).toEqual(handoff);
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({ error: "ClickUp integration is not configured" });
     expect(mockWorkflowService.createRuntimeHandoff).toHaveBeenCalledWith(runId, {
       phaseKey: "review",
       kind: "approval",
