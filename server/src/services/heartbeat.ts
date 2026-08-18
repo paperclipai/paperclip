@@ -67,6 +67,7 @@ import {
   toolMcpGatewayTokens,
   toolConnections,
   toolProfiles,
+  toolStdioCommandTemplates,
   workspaceOperations,
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
@@ -3391,12 +3392,27 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     )
     .map(({ id, name }) => ({ id, name }))
     .sort((a, b) => a.name.localeCompare(b.name));
-  const uniqueConnections = effective.installedConnections.filter((connection) =>
-    permittedConnectionIds.has(connection.id)
-    && connection.status === "active"
-    && connection.enabled
-    && (connection.transport === "mcp_remote" || connection.transport === "local_stdio")
+  const disabledStdioTemplateKeys = new Set(
+    (await input.db
+      .select({ templateKey: toolStdioCommandTemplates.templateKey })
+      .from(toolStdioCommandTemplates)
+      .where(and(
+        eq(toolStdioCommandTemplates.companyId, input.agent.companyId),
+        eq(toolStdioCommandTemplates.status, "disabled"),
+      )))
+      .map((template) => template.templateKey),
   );
+  const uniqueConnections = effective.installedConnections.filter((connection) => {
+    if (!permittedConnectionIds.has(connection.id) || connection.status !== "active" || !connection.enabled) {
+      return false;
+    }
+    if (connection.transport === "mcp_remote") return true;
+    if (connection.transport !== "local_stdio") return false;
+    const templateId = connection.config && typeof connection.config === "object"
+      ? (connection.config as Record<string, unknown>).templateId
+      : null;
+    return typeof templateId === "string" && !disabledStdioTemplateKeys.has(templateId);
+  });
   const service = createToolGatewayService(input.db);
   if (uniqueConnections.length === 0) {
     await service.recordRuntimeMcpDeliveryDiagnostic({
