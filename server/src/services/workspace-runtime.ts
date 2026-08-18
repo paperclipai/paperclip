@@ -232,6 +232,7 @@ const runtimeServicesById = new Map<string, RuntimeServiceRecord>();
 const runtimeServicesByReuseKey = new Map<string, string>();
 const runtimeServiceLeasesByRun = new Map<string, string[]>();
 const runtimeProvisionByWorkspace = new Map<string, Promise<void>>();
+const runtimeControlStartByWorkspace = new Map<string, Promise<void>>();
 const quarantinedRuntimeExposurePorts = new Set<number>();
 /**
  * Pair-atomic in-process claims for exposure allocations that have not bound a
@@ -477,6 +478,7 @@ export async function resetRuntimeServicesForTests(
   runtimeServicesByReuseKey.clear();
   runtimeServiceLeasesByRun.clear();
   runtimeProvisionByWorkspace.clear();
+  runtimeControlStartByWorkspace.clear();
   quarantinedRuntimeExposurePorts.clear();
   exposurePortPairClaims.clear();
   workspaceRuntimeExposureDeps = defaultWorkspaceRuntimeExposureDeps();
@@ -6576,7 +6578,7 @@ async function discardFailedDeferredRuntimeStart(db: Db, record: RuntimeServiceR
   await persistRuntimeServiceRecord(db, record);
 }
 
-export async function startRuntimeServicesForWorkspaceControl(
+async function startRuntimeServicesForWorkspaceControlInvocation(
   input: StartRuntimeServicesForWorkspaceControlInput,
 ): Promise<RuntimeServiceRef[]> {
   const rawServices = selectRuntimeServiceEntries({
@@ -6791,6 +6793,28 @@ export async function startRuntimeServicesForWorkspaceControl(
       await persistRuntimeServiceRecord(input.db, preparedProvisioning.record).catch(() => undefined);
     }
     throw error;
+  }
+}
+
+export async function startRuntimeServicesForWorkspaceControl(
+  input: StartRuntimeServicesForWorkspaceControlInput,
+): Promise<RuntimeServiceRef[]> {
+  const workspaceKey = `${input.actor.companyId}:${path.resolve(input.workspace.cwd)}`;
+  const previous = runtimeControlStartByWorkspace.get(workspaceKey) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queued = previous.then(() => current);
+  runtimeControlStartByWorkspace.set(workspaceKey, queued);
+  await previous;
+  try {
+    return await startRuntimeServicesForWorkspaceControlInvocation(input);
+  } finally {
+    release();
+    if (runtimeControlStartByWorkspace.get(workspaceKey) === queued) {
+      runtimeControlStartByWorkspace.delete(workspaceKey);
+    }
   }
 }
 

@@ -3945,9 +3945,14 @@ describe("ensureRuntimeServicesForRun", () => {
       const [first] = await startRuntimeServicesForWorkspaceControl(input);
       await expect(fetch(`${first!.url}/misreport`)).resolves.toMatchObject({ ok: true });
       await expect(fetch(`${first!.url}/api/health`)).resolves.toMatchObject({ ok: true });
-      const [replacement] = await startRuntimeServicesForWorkspaceControl(input);
+      const [[replacement], [concurrentReuse]] = await Promise.all([
+        startRuntimeServicesForWorkspaceControl(input),
+        startRuntimeServicesForWorkspaceControl(input),
+      ]);
       expect(replacement?.id).not.toBe(first?.id);
       expect(replacement?.reused).toBe(false);
+      expect(concurrentReuse?.id).toBe(replacement?.id);
+      expect(concurrentReuse?.reused).toBe(true);
     } finally {
       await stopRuntimeServicesForExecutionWorkspace({
         executionWorkspaceId: "execution-workspace-health",
