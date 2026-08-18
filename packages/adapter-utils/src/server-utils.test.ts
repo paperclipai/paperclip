@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   applyPaperclipWorkspaceEnv,
   appendWithByteCap,
@@ -15,6 +15,7 @@ import {
   materializePaperclipSkillCopy,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
+  resolveLocalRunLogFilePaths,
   selectPaperclipTaskMarkdown,
   runningProcesses,
   runChildProcess,
@@ -392,6 +393,25 @@ describe("adapter skill snapshots", () => {
 });
 
 describe("runChildProcess", () => {
+  // AGE-656: every local spawn now writes stdout/stderr to append-mode log
+  // files under the Paperclip instance root instead of a server-owned pipe.
+  // Point PAPERCLIP_HOME at a scratch directory for the duration of this
+  // describe block so these tests never touch a real ~/.paperclip.
+  let tempPaperclipHome: string;
+  let previousPaperclipHome: string | undefined;
+
+  beforeEach(async () => {
+    tempPaperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-child-process-"));
+    previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_HOME = tempPaperclipHome;
+  });
+
+  afterEach(async () => {
+    if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+    else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+    await fs.rm(tempPaperclipHome, { recursive: true, force: true });
+  });
+
   it("does not arm a timeout when timeoutSec is 0", async () => {
     const result = await runChildProcess(
       randomUUID(),
@@ -444,14 +464,15 @@ describe("runChildProcess", () => {
     expect(finishedAt - startedAt).toBeGreaterThanOrEqual(spawnDelayMs);
   });
 
-  it("reports server_stdio topology and the cli execution engine on every local spawn", async () => {
+  it("reports detached topology and the cli execution engine on every local spawn", async () => {
     // The hot-restart classifier trusts these two fields to decide whether a
     // run's process is safe to adopt after a server restart. They must come
     // from what was actually wired into `spawn()` here, never from an
     // adapter-name allowlist: every local child this function spawns has its
-    // stdout/stderr piped straight into this server process, so its only
-    // output channel dies with the server, and it is always a plain CLI
-    // process (the ACP engine never routes a spawn through here).
+    // stdout/stderr backed by its own log file (AGE-656), not a server-owned
+    // pipe, so its output channel is independent of this process, and it is
+    // always a plain CLI process (the ACP engine never routes a spawn
+    // through here).
     let spawnMeta: {
       pid: number;
       processGroupId: number | null;
@@ -478,9 +499,58 @@ describe("runChildProcess", () => {
 
     expect(result.exitCode).toBe(0);
     expect(spawnMeta).toMatchObject({
-      processTopology: "server_stdio",
+      processTopology: "detached",
       executionEngine: "cli",
     });
+  });
+
+  it("passes a file descriptor, not a pipe, for the child's stdout and stderr", async () => {
+    // Regression guard for AGE-656: a pipe-bound child's only output channel
+    // is a socketpair whose peer lives in this server process, so it dies
+    // the instant the control plane exits. Proven black-box (no internal
+    // mocking of `spawn`): the spawned child inspects its own fd 1/2 via
+    // `fs.fstatSync`, which is only a regular file when `spawn()` was given a
+    // real fd instead of "pipe". This fails against current `master`, where
+    // both fds are pipes and `isFile()` is false.
+    const runId = randomUUID();
+    const result = await runChildProcess(
+      runId,
+      process.execPath,
+      [
+        "-e",
+        [
+          "const fs = require('fs');",
+          "const stdoutIsFile = fs.fstatSync(1).isFile();",
+          "const stderrIsFile = fs.fstatSync(2).isFile();",
+          "process.stdout.write(String(stdoutIsFile));",
+          "fs.writeSync(2, String(stderrIsFile));",
+        ].join(" "),
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("true");
+    expect(result.stderr).toBe("true");
+
+    // `resolveLocalRunLogFilePaths` also requires the per-spawn invocationId
+    // `runChildProcess` mints internally (a single `runId` spans many
+    // discrete spawns — see the doc comment on that function), so find the
+    // one invocation directory this call created rather than guessing its id.
+    const runDir = path.join(resolveLocalRunLogFilePaths(runId, "unused", { env: process.env }).stdoutLogFilePath, "..", "..");
+    const invocationDirs = await fs.readdir(runDir);
+    expect(invocationDirs).toHaveLength(1);
+    const logPaths = resolveLocalRunLogFilePaths(runId, invocationDirs[0]!, { env: process.env });
+    const stdoutLogContents = await fs.readFile(logPaths.stdoutLogFilePath, "utf8");
+    const stderrLogContents = await fs.readFile(logPaths.stderrLogFilePath, "utf8");
+    expect(stdoutLogContents).toBe("true");
+    expect(stderrLogContents).toBe("true");
   });
 
   it.skipIf(process.platform === "win32")("kills descendant processes on timeout via the process group", async () => {

@@ -10,6 +10,7 @@ import {
 } from "./local-process-sandbox.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
+import { createLocalRunLogTail } from "./local-run-log-tail.js";
 import type {
   AdapterProcessSpawnMeta,
   AdapterSkillEntry,
@@ -154,6 +155,37 @@ export function resolvePaperclipInstanceRootForAdapter(input: {
   const instanceId = input.instanceId?.trim() || env.PAPERCLIP_INSTANCE_ID?.trim() || DEFAULT_PAPERCLIP_INSTANCE_ID;
   if (!PATH_SEGMENT_RE.test(instanceId)) throw new Error(`Invalid PAPERCLIP_INSTANCE_ID '${instanceId}'.`);
   return path.resolve(homeDir, "instances", instanceId);
+}
+
+// AGE-656: append-mode log files a local (non-sandbox, non-ssh-remote) run's
+// child process writes to directly, instead of the server process owning the
+// stdout/stderr pipe peers. A run's stdout and stderr are kept in separate
+// files (rather than one shared fd) so adapters that parse stdout as a
+// structured stream (e.g. pi_local's JSONL) keep an unmixed stdout — merging
+// interleaved stderr diagnostics into that stream would corrupt parsing.
+//
+// Keyed by `runId` *and* a per-spawn `invocationId`, not `runId` alone:
+// `runChildProcess` is shared infrastructure for every one-off shell command
+// a run's lifecycle makes (staging syncs, hash checks, session-header probes)
+// as well as the run's own long-lived CLI process, so a single `runId` spans
+// many discrete spawns. Files are opened in append mode so an adopted run can
+// resume tailing from a remembered offset across a restart; collapsing them
+// onto one `runId`-only path would let one spawn's output corrupt another's.
+export interface LocalRunLogFilePaths {
+  stdoutLogFilePath: string;
+  stderrLogFilePath: string;
+}
+
+export function resolveLocalRunLogFilePaths(
+  runId: string,
+  invocationId: string,
+  input: { homeDir?: string; instanceId?: string; env?: NodeJS.ProcessEnv } = {},
+): LocalRunLogFilePaths {
+  const runDir = path.join(resolvePaperclipInstanceRootForAdapter(input), "runs", runId, invocationId);
+  return {
+    stdoutLogFilePath: path.join(runDir, "output.log"),
+    stderrLogFilePath: path.join(runDir, "output.stderr.log"),
+  };
 }
 
 export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
@@ -3335,29 +3367,51 @@ export async function runChildProcess(
       remoteEnv: opts.remoteExecution ? opts.env : null,
       localProcessSandbox: opts.localProcessSandbox ?? null,
     })
-      .then((target) => {
+      .then(async (target) => {
         const childEnv = { ...mergedEnv, ...target.env };
         for (const [key, value] of Object.entries(childEnv)) {
           if (value === undefined) delete childEnv[key];
         }
-        const stdio: ["pipe" | "ignore", "pipe", "pipe"] = [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"];
-        const child = spawn(target.command, target.args, {
-          cwd: target.cwd ?? opts.cwd,
-          env: childEnv,
-          detached: process.platform !== "win32",
-          shell: false,
-          stdio,
-        }) as ChildProcessWithEvents;
+
+        // AGE-656: stdout/stderr are backed by append-mode log files this
+        // process opens and hands off to the child as raw fds, instead of
+        // "pipe" (a socketpair whose read end lives in this server process).
+        // A pipe-bound child's only output channel dies the instant this
+        // server process exits; a file-backed child keeps writing to a file
+        // that exists independently of this process, so it survives a
+        // control-plane restart. The file is still read back out (via
+        // `createLocalRunLogTail` below) to preserve live streaming to
+        // `opts.onLog` and the accumulated `stdout`/`stderr` capture this
+        // function has always returned.
+        const logInvocationId = randomUUID();
+        const logPaths = resolveLocalRunLogFilePaths(runId, logInvocationId, { env: process.env });
+        await fs.mkdir(path.dirname(logPaths.stdoutLogFilePath), { recursive: true });
+        const stdoutLogHandle = await fs.open(logPaths.stdoutLogFilePath, "a");
+        const stderrLogHandle = await fs.open(logPaths.stderrLogFilePath, "a");
+
+        let child: ChildProcessWithEvents;
+        try {
+          child = spawn(target.command, target.args, {
+            cwd: target.cwd ?? opts.cwd,
+            env: childEnv,
+            detached: process.platform !== "win32",
+            shell: false,
+            stdio: [opts.stdin != null ? "pipe" : "ignore", stdoutLogHandle.fd, stderrLogHandle.fd],
+          }) as ChildProcessWithEvents;
+        } finally {
+          // `spawn()` dup2's these fds into the child's own fd table before
+          // returning; this process's handles are no longer needed and would
+          // otherwise leak for the lifetime of the run.
+          await Promise.all([stdoutLogHandle.close(), stderrLogHandle.close()]).catch(() => undefined);
+        }
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
-        // Derived from the stdio spec actually passed to `spawn()`, never from
-        // `command`/adapter identity. Every local child spawned here has its
-        // stdout/stderr wired to a pipe whose peer lives in this server
-        // process, so its only output channel dies with the server: that is
-        // "server_stdio". A future file-backed local run (AGE-656) will pass a
-        // file-descriptor/path stdio spec instead and derive "detached" here.
-        const processTopology: "server_stdio" | "detached" =
-          stdio[1] === "pipe" && stdio[2] === "pipe" ? "server_stdio" : "detached";
+        // Every local child this function spawns now writes its stdout/stderr
+        // to its own log file rather than a server-owned pipe, so its output
+        // channel is independent of this process: "detached". (ACP-over-stdio
+        // runs are driven by the ACPX engine, a separate producer, and are not
+        // affected by this change.)
+        const processTopology: "server_stdio" | "detached" = "detached";
 
         const spawnPersistPromise =
           typeof child.pid === "number" && child.pid > 0 && opts.onSpawn
@@ -3370,6 +3424,11 @@ export async function runChildProcess(
               // engine never routes a spawn through here, it announces its own
               // process identity via the ACPX runtime's `onAgentSpawn` hook.
               executionEngine: "cli",
+              // AGE-656: recorded so a run row surviving a hot restart can be
+              // traced back to its raw output on disk even before a live
+              // reattachment mechanism exists (tracked as a follow-up).
+              stdoutLogFilePath: logPaths.stdoutLogFilePath,
+              stderrLogFilePath: logPaths.stderrLogFilePath,
             }).catch((err) => {
               onLogError(err, runId, "failed to record child process metadata");
             })
@@ -3381,6 +3440,11 @@ export async function runChildProcess(
         let stdout = "";
         let stderr = "";
         let logChain: Promise<void> = Promise.resolve();
+        // AGE-656: this run's stdout/stderr are its own log files (see the
+        // fd-backed spawn above); these tail them for live streaming to
+        // `opts.onLog` the same way the old pipe listeners did.
+        const stdoutTail = createLocalRunLogTail(logPaths.stdoutLogFilePath);
+        const stderrTail = createLocalRunLogTail(logPaths.stderrLogFilePath);
         let terminalResultSeen = false;
         let terminalCleanupStarted = false;
         let terminalCleanupSignal: NodeJS.Signals | null = null;
@@ -3447,11 +3511,23 @@ export async function runChildProcess(
               }, opts.timeoutSec * 1000)
             : null;
 
-        child.stdout?.on("data", (chunk: unknown) => {
-          const readable = child.stdout;
-          if (!readable) return;
-          readable.pause();
-          const text = String(chunk);
+        // Neither slot is "pipe" anymore, so `child.stdout`/`child.stderr`
+        // are `null` (no Readable stream is created for an fd-backed stdio
+        // slot). Output is read back by tailing the same log files the child
+        // writes to directly, so this loop is the counterpart to the old
+        // `child.stdout.on("data", ...)` listeners: same accumulation into
+        // `stdout`/`stderr`, same `maybeArmTerminalResultCleanup` calls, same
+        // serialized `logChain` used to hand each chunk to `opts.onLog`.
+        let tailsStopped = false;
+        const stopTails = async (): Promise<void> => {
+          if (tailsStopped) return;
+          tailsStopped = true;
+          await Promise.all([stdoutTail.stop(), stderrTail.stop()]).catch((err) =>
+            onLogError(err, runId, "failed to flush local run log tail"),
+          );
+        };
+
+        stdoutTail.start((text) => {
           stdout = appendWithCap(stdout, text);
           maybeArmTerminalResultCleanup();
           logChain = logChain
@@ -3459,15 +3535,11 @@ export async function runChildProcess(
             .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"))
             .finally(() => {
               maybeArmTerminalResultCleanup();
-              resumeReadable(readable);
             });
+          return logChain;
         });
 
-        child.stderr?.on("data", (chunk: unknown) => {
-          const readable = child.stderr;
-          if (!readable) return;
-          readable.pause();
-          const text = String(chunk);
+        stderrTail.start((text) => {
           stderr = appendWithCap(stderr, text);
           maybeArmTerminalResultCleanup();
           logChain = logChain
@@ -3475,8 +3547,8 @@ export async function runChildProcess(
             .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"))
             .finally(() => {
               maybeArmTerminalResultCleanup();
-              resumeReadable(readable);
             });
+          return logChain;
         });
 
         const stdin = child.stdin;
@@ -3492,7 +3564,9 @@ export async function runChildProcess(
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
-          void target.cleanup?.();
+          void stopTails().finally(() => {
+            void target.cleanup?.();
+          });
           const errno = (err as NodeJS.ErrnoException).code;
           const pathValue = mergedEnv.PATH ?? mergedEnv.Path ?? "";
           const msg =
@@ -3502,38 +3576,71 @@ export async function runChildProcess(
           reject(new Error(msg));
         });
 
-        child.on("exit", () => {
-          maybeArmTerminalResultCleanup();
-        });
+        // A piped child's `close` event doesn't fire until every process
+        // holding the piped fd (including a descendant that inherited it)
+        // releases it, which is how this function used to wait out a
+        // lingering "unmanaged background task" before resolving. Fd-backed
+        // stdio (AGE-656) has no equivalent signal — a file descriptor does
+        // not block on other holders the way a pipe does, so `close` now
+        // fires as soon as this run's own process exits, regardless of any
+        // descendant still running. `waitForProcessGroupToSettle` rebuilds
+        // the same wait explicitly: poll the process group instead of
+        // relying on stdio plumbing.
+        const waitForProcessGroupToSettle = async (): Promise<void> => {
+          if (process.platform === "win32" || processGroupId === null) return;
+          const pollMs = 20;
+          for (;;) {
+            try {
+              process.kill(-processGroupId, 0);
+            } catch {
+              return;
+            }
+            await new Promise((r) => setTimeout(r, pollMs));
+          }
+        };
 
-        child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
-          if (timeout) clearTimeout(timeout);
-          clearTerminalCleanupTimers();
-          runningProcesses.delete(runId);
-          void logChain.finally(() => {
-            void Promise.resolve()
-              .then(() => target.cleanup?.())
+        let finalizeStarted = false;
+        child.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
+          maybeArmTerminalResultCleanup();
+          if (finalizeStarted) return;
+          finalizeStarted = true;
+          void waitForProcessGroupToSettle().then(() => {
+            if (timeout) clearTimeout(timeout);
+            clearTerminalCleanupTimers();
+            runningProcesses.delete(runId);
+            // Flush any output written right before exit (or right before the
+            // process-group kill above): `stopTails` performs one last read
+            // past the tail's current offset before resolving, so a chunk
+            // landed between the previous poll tick and process exit is not
+            // lost from `stdout`/`stderr` or the final terminal-result-cleanup
+            // scan.
+            void stopTails()
+              .then(() => logChain)
               .finally(() => {
-              resolve({
-                exitCode: code,
-                signal,
-                timedOut,
-                stdout,
-                stderr,
-                pid: child.pid ?? null,
-                startedAt,
-                terminalResultCleanup: terminalCleanupStarted
-                  ? {
-                    kind: "terminal_result_cleanup",
-                    stopped: true,
-                    stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
-                    reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
-                    terminalResultSeen,
-                    signal: terminalCleanupSignal,
-                    forceKilled: terminalCleanupForceKilled,
-                  }
-                  : null,
-              });
+                void Promise.resolve()
+                  .then(() => target.cleanup?.())
+                  .finally(() => {
+                    resolve({
+                      exitCode: code,
+                      signal,
+                      timedOut,
+                      stdout,
+                      stderr,
+                      pid: child.pid ?? null,
+                      startedAt,
+                      terminalResultCleanup: terminalCleanupStarted
+                        ? {
+                          kind: "terminal_result_cleanup",
+                          stopped: true,
+                          stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+                          reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+                          terminalResultSeen,
+                          signal: terminalCleanupSignal,
+                          forceKilled: terminalCleanupForceKilled,
+                        }
+                        : null,
+                    });
+                  });
               });
           });
         });

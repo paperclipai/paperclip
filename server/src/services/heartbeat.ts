@@ -9789,12 +9789,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // warm-handle borrow that isn't a fresh spawn) still compiles.
       processTopology?: "server_stdio" | "detached";
       executionEngine?: "acp" | "cli";
+      // AGE-656: raw stdout/stderr file paths for a file-backed local spawn.
+      // Persisted so a run adopted after a hot restart can be traced back to
+      // its output on disk. Not yet consumed by a live reattachment path —
+      // that is tracked as a follow-up (see the AGE-656 closing comment).
+      stdoutLogFilePath?: string;
+      stderrLogFilePath?: string;
     },
   ) {
     const startedAt = new Date(meta.startedAt);
     const contextPatch: Record<string, string> = {};
     if (meta.processTopology) contextPatch.processTopology = meta.processTopology;
     if (meta.executionEngine) contextPatch.executionEngine = meta.executionEngine;
+    if (meta.stdoutLogFilePath) contextPatch.stdoutLogFilePath = meta.stdoutLogFilePath;
+    if (meta.stderrLogFilePath) contextPatch.stderrLogFilePath = meta.stderrLogFilePath;
     return db
       .update(heartbeatRuns)
       .set({
@@ -16031,6 +16039,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               startedAt: meta.startedAt,
               processTopology: meta.processTopology,
               executionEngine: meta.executionEngine,
+              stdoutLogFilePath: meta.stdoutLogFilePath,
+              stderrLogFilePath: meta.stderrLogFilePath,
             });
           },
           authToken: authToken ?? undefined,

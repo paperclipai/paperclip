@@ -195,6 +195,16 @@ export interface AdapterProcessSpawnMeta {
    */
   processTopology?: AdapterProcessTopology;
   executionEngine?: AdapterExecutionEngine;
+  /**
+   * AGE-656: absolute paths to the append-mode files backing this spawn's
+   * stdout/stderr, set only when `processTopology` is `"detached"` via a
+   * file-backed local spawn. Persisted so a future hot-restart adoption can
+   * locate this run's raw output on disk without recomputing a fresh (and
+   * wrong) per-spawn invocation id. Reattaching a live tail from these paths
+   * is not yet implemented — see the follow-up tracked from AGE-656.
+   */
+  stdoutLogFilePath?: string;
+  stderrLogFilePath?: string;
 }
 
 export interface AdapterExecutionContext {
