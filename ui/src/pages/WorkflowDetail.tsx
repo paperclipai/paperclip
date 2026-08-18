@@ -136,7 +136,7 @@ function readPhaseMetaNumber(phase: WorkflowPhase, key: string) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-type GraphNodeKind = "start" | "phase" | "human" | "terminal" | "deliverable";
+export type GraphNodeKind = "start" | "phase" | "human" | "terminal" | "deliverable";
 
 type GraphNode = {
   id: string;
@@ -164,7 +164,19 @@ type WorkflowGraph = {
   edges: GraphEdge[];
   width: number;
   height: number;
+  isRunLive: boolean;
 };
+
+export function shouldAnimatePipelineNode(
+  kind: GraphNodeKind,
+  status: string | null | undefined,
+  isRunLive: boolean,
+) {
+  if (!isRunLive) return false;
+  if (kind === "deliverable") return true;
+  if (kind === "human") return status === "waiting_for_human";
+  return (kind === "start" || kind === "phase") && status === "running";
+}
 
 const GRAPH_NODE_WIDTH = 260;
 const GRAPH_TOOL_WIDTH = 220;
@@ -266,6 +278,9 @@ export function buildWorkflowGraph(
   handoffsByPhase: Map<string, WorkflowHandoff[]>,
   runDetail: WorkflowRunDetail | null,
 ): WorkflowGraph {
+  const isRunLive = Boolean(
+    runDetail && ["queued", "running", "awaiting_human"].includes(runDetail.status),
+  );
   const pipelinePhases = workflowPipelineAgentPhases(phases);
   const phaseKeys = new Set(pipelinePhases.map((phase) => phase.phaseKey));
   const childrenByParent = new Map<string | null, WorkflowPhase[]>();
@@ -612,6 +627,7 @@ export function buildWorkflowGraph(
     edges,
     width: graphWidth,
     height: graphHeight,
+    isRunLive,
   };
 }
 
@@ -692,6 +708,7 @@ function WorkflowTopologyGraph({
           >
             <GraphNodeCard
               node={node}
+              isRunLive={graph.isRunLive}
               response={
                 node.handoff ? (handoffResponses[node.handoff.id] ?? "") : ""
               }
@@ -718,6 +735,7 @@ function WorkflowTopologyGraph({
 
 function GraphNodeCard({
   node,
+  isRunLive,
   response,
   onChangeResponse,
   onApprove,
@@ -726,6 +744,7 @@ function GraphNodeCard({
   pending,
 }: {
   node: GraphNode;
+  isRunLive: boolean;
   response: string;
   onChangeResponse: (value: string) => void;
   onApprove: () => void;
@@ -733,10 +752,17 @@ function GraphNodeCard({
   onRespond: () => void;
   pending: boolean;
 }) {
+  const animationStatus = node.kind === "human"
+    ? node.handoff?.bridgeStatus
+    : node.kind === "phase"
+      ? node.phase?.status
+      : node.status;
+  const animate = shouldAnimatePipelineNode(node.kind, animationStatus, isRunLive);
   if (node.kind === "human" && node.handoff) {
     return (
       <GraphHumanNode
         handoff={node.handoff}
+        animate={animate}
         response={response}
         onChange={onChangeResponse}
         onApprove={onApprove}
@@ -747,20 +773,20 @@ function GraphNodeCard({
     );
   }
   if (node.kind === "start")
-    return <GraphStartNode status={node.status ?? "idle"} />;
+    return <GraphStartNode status={node.status ?? "idle"} animate={animate} />;
   if (node.kind === "terminal")
     return <GraphTerminalNode status={node.status ?? "idle"} />;
   if (node.kind === "deliverable" && node.deliverable)
-    return <GraphDeliverableNode node={node} />;
-  return <GraphPhaseNode node={node} />;
+    return <GraphDeliverableNode node={node} animate={animate} />;
+  return <GraphPhaseNode node={node} animate={animate} />;
 }
 
-function GraphStartNode({ status }: { status: string }) {
+function GraphStartNode({ status, animate }: { status: string; animate: boolean }) {
   return (
     <div
       className={cn(
         "rounded-full border px-5 py-4 shadow-sm",
-        status === "running"
+        animate
           ? "border-amber-500/60 bg-amber-500/10 animate-pulse"
           : "border-border bg-background/90",
       )}
@@ -821,9 +847,12 @@ function GraphTerminalNode({ status }: { status: string }) {
   );
 }
 
-function GraphDeliverableNode({ node }: { node: GraphNode }) {
+function GraphDeliverableNode({ node, animate }: { node: GraphNode; animate: boolean }) {
   return (
-    <div className="rounded-3xl border border-emerald-500/55 bg-emerald-500/[0.08] p-4 shadow-[0_0_0_1px_rgba(16,185,129,0.18),0_0_28px_rgba(16,185,129,0.18)] animate-pulse">
+    <div className={cn(
+      "rounded-3xl border border-emerald-500/55 bg-emerald-500/[0.08] p-4 shadow-[0_0_0_1px_rgba(16,185,129,0.18),0_0_28px_rgba(16,185,129,0.18)]",
+      animate && "animate-pulse",
+    )}>
       <div className="flex items-start gap-3">
         <div className="rounded-2xl border border-emerald-500/50 bg-emerald-500/10 p-2 text-emerald-500">
           <Download className="h-4 w-4" />
@@ -844,7 +873,7 @@ function GraphDeliverableNode({ node }: { node: GraphNode }) {
   );
 }
 
-function GraphPhaseNode({ node }: { node: GraphNode }) {
+function GraphPhaseNode({ node, animate }: { node: GraphNode; animate: boolean }) {
   const phase = node.phase;
   if (!phase) return null;
   const description = readPhaseMetaString(phase, "description");
@@ -862,7 +891,10 @@ function GraphPhaseNode({ node }: { node: GraphNode }) {
             : "Phase";
   const tone =
     phase.status === "running"
-      ? "border-amber-500/60 bg-amber-500/10 shadow-[0_0_0_1px_rgba(245,158,11,0.2)] animate-pulse"
+      ? cn(
+          "border-amber-500/60 bg-amber-500/10 shadow-[0_0_0_1px_rgba(245,158,11,0.2)]",
+          animate && "animate-pulse",
+        )
       : phase.status === "succeeded"
         ? "border-emerald-500/40 bg-emerald-500/10"
         : phase.status === "failed"
@@ -927,6 +959,7 @@ function GraphPhaseNode({ node }: { node: GraphNode }) {
 
 function GraphHumanNode({
   handoff,
+  animate,
   response,
   onChange,
   onApprove,
@@ -935,6 +968,7 @@ function GraphHumanNode({
   pending,
 }: {
   handoff: WorkflowHandoff;
+  animate: boolean;
   response: string;
   onChange: (value: string) => void;
   onApprove: () => void;
@@ -965,7 +999,7 @@ function GraphHumanNode({
             </div>
             {handoff.bridgeStatus === "waiting_for_human" && (
               <span className="inline-flex items-center gap-1 rounded-full bg-sky-500/15 px-2 py-0.5 text-xs font-medium text-sky-600 dark:text-sky-400">
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500" />
+                <span className={cn("h-1.5 w-1.5 rounded-full bg-sky-500", animate && "animate-pulse")} />
                 Waiting on ClickUp reply
               </span>
             )}

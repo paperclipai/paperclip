@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildWorkflowGraph, WorkflowDetail } from "./WorkflowDetail";
+import { buildWorkflowGraph, shouldAnimatePipelineNode, WorkflowDetail } from "./WorkflowDetail";
 import { queryKeys } from "../lib/queryKeys";
 import type { ResourceOutputResult, ResourceVersionReference, WorkflowHandoff } from "@paperclipai/shared";
 
@@ -1031,6 +1031,23 @@ describe("buildWorkflowGraph", () => {
     finishedAt: null,
     createdAt: new Date("2026-06-10T09:00:00.000Z"),
     updatedAt: new Date("2026-06-10T09:00:00.000Z"),
+  });
+
+  it("only animates pipeline nodes while the overall run is live", () => {
+    for (const status of ["queued", "running", "awaiting_human"] as const) {
+      const graph = buildWorkflowGraph([], new Map(), { status, deliverables: [] } as never);
+      expect(graph.isRunLive).toBe(true);
+      expect(shouldAnimatePipelineNode("phase", "running", graph.isRunLive)).toBe(true);
+      expect(shouldAnimatePipelineNode("deliverable", undefined, graph.isRunLive)).toBe(true);
+    }
+
+    for (const status of ["succeeded", "failed", "cancelled", "rejected"] as const) {
+      const graph = buildWorkflowGraph([], new Map(), { status, deliverables: [] } as never);
+      expect(graph.isRunLive).toBe(false);
+      expect(shouldAnimatePipelineNode("phase", "running", graph.isRunLive)).toBe(false);
+      expect(shouldAnimatePipelineNode("deliverable", undefined, graph.isRunLive)).toBe(false);
+      expect(shouldAnimatePipelineNode("human", "waiting_for_human", graph.isRunLive)).toBe(false);
+    }
   });
 
   it("shows agent phases without rendering helper tools", () => {
