@@ -642,11 +642,11 @@ export async function readLocalServicePortOwner(port: number) {
  * out to for port ownership, so this adds no new dependency. `-d cwd` narrows
  * the output to the working directory.
  *
- * `-F0n` terminates each field with NUL instead of a newline, and the path is
- * returned byte for byte. That matters because the caller compares this value
- * against a workspace root: a directory name may legitimately contain leading
- * or trailing spaces, or even a newline, and trimming or line-splitting the
- * path would report a different directory than the one the process runs in.
+ * `-F0n` terminates each field with NUL instead of a newline. The parser does
+ * not trim the path or split it on newlines. That matters because the caller
+ * compares this value against a workspace root: a directory name may contain
+ * leading or trailing spaces, or even a newline, and changing the path would
+ * report a different directory than the one the process runs in.
  *
  * Returning a real path on macOS is what lets `adoptLocalServiceFromPortOwner`
  * verify a listener actually belongs to the workspace. While this returned
@@ -694,7 +694,7 @@ export async function isLocalServiceProcessInWorkspace(processCwd: string, works
 }
 
 export async function isLocalServiceRegistryCwdCompatible(processCwd: string | null, workspaceCwd: string) {
-  if (!processCwd) return process.platform !== "linux";
+  if (!processCwd) return process.platform !== "linux" && process.platform !== "darwin";
   return isLocalServiceProcessInWorkspace(processCwd, workspaceCwd);
 }
 

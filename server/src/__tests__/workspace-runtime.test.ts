@@ -5070,7 +5070,7 @@ describe("readLocalServicePortOwner", () => {
     await expect(isLocalServiceProcessInWorkspace(serviceCwd, workspace)).resolves.toBe(true);
   });
 
-  it("keeps a live registry record adoptable when cwd inspection is unsupported", async () => {
+  it("keeps a live registry record adoptable when Darwin cwd inspection confirms it", async () => {
     try {
       await execFileAsync("lsof", ["-v"]);
     } catch {
@@ -5122,12 +5122,15 @@ describe("readLocalServicePortOwner", () => {
     }
   });
 
-  it("trusts unavailable cwd for registry records only off Linux", async () => {
+  it("trusts unavailable cwd for registry records only on unsupported platforms", async () => {
     Object.defineProperty(process, "platform", { value: "darwin" });
-    await expect(isLocalServiceRegistryCwdCompatible(null, process.cwd())).resolves.toBe(true);
+    await expect(isLocalServiceRegistryCwdCompatible(null, process.cwd())).resolves.toBe(false);
 
     Object.defineProperty(process, "platform", { value: "linux" });
     await expect(isLocalServiceRegistryCwdCompatible(null, process.cwd())).resolves.toBe(false);
+
+    Object.defineProperty(process, "platform", { value: "win32" });
+    await expect(isLocalServiceRegistryCwdCompatible(null, process.cwd())).resolves.toBe(true);
   });
 
   it("refuses to adopt a listener whose real cwd belongs to another workspace", async () => {
