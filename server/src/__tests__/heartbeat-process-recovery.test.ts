@@ -113,6 +113,7 @@ import {
   writeHotRestartIntent,
 } from "../services/hot-restart.ts";
 import { secretService } from "../services/secrets.ts";
+import { getRunLogStore } from "../services/run-log-store.ts";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
@@ -2296,6 +2297,114 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(finalized?.status).toBe("failed");
     expect(finalized?.errorCode).not.toBe("process_lost");
     expect(finalized?.errorCode).toBe("adopted_run_outcome_unknown");
+  });
+
+  it("recovers a hot-restart-adopted run's outcome from the general-purpose run transcript log when no direct log-file path was ever persisted", async () => {
+    // This is the path that is already reachable in production TODAY,
+    // independent of the sibling file-backed-local-run-output change: every
+    // run writes its stdout/stderr through `runLogStore` right now, so
+    // recovery must be able to reconstruct a terminal result from that NDJSON
+    // transcript alone -- not only from `contextSnapshot.stdoutLogFilePath`.
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "claude_local",
+      agentStatus: "running",
+      processPid: 999_999_995,
+      processGroupId: null,
+    });
+
+    const runLogStore = getRunLogStore();
+    const handle = await runLogStore.begin({ companyId, agentId, runId });
+    // Split the terminal Claude "result" event across two appends to also
+    // exercise the reconstruction's cross-page leftover-line buffering.
+    const resultLine = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      session_id: "sess-1",
+      result: "All done.",
+    });
+    await runLogStore.append(handle, {
+      stream: "stdout",
+      chunk: `${resultLine.slice(0, 20)}`,
+      ts: "2026-03-19T00:00:10.000Z",
+      seq: 1,
+    });
+    await runLogStore.append(handle, {
+      stream: "stdout",
+      chunk: `${resultLine.slice(20)}\n`,
+      ts: "2026-03-19T00:00:11.000Z",
+      seq: 2,
+    });
+    await runLogStore.append(handle, {
+      stream: "stderr",
+      chunk: "warning: ignored\n",
+      ts: "2026-03-19T00:00:11.500Z",
+      seq: 3,
+    });
+    await runLogStore.finalize(handle);
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        logStore: handle.store,
+        logRef: handle.logRef,
+        resultJson: {
+          hotRestart: {
+            adopted: true,
+            adoptedAt: "2026-03-19T00:00:30.000Z",
+            previousServerPid: 1,
+            newServerPid: process.pid,
+            previousServerVersion: "old-version",
+            processPid: 999_999_995,
+            processGroupId: null,
+          },
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    vi.mocked(getServerAdapter).mockReturnValueOnce({
+      type: "claude_local",
+      execute: mockAdapterExecute,
+      testEnvironment: async () => ({
+        adapterType: "claude_local",
+        status: "ok",
+        testedAt: new Date().toISOString(),
+        checks: [],
+      }),
+      // Mirrors the shape of the real claude_local wiring in
+      // server/src/adapters/registry.ts without importing the real package,
+      // so this test isolates the NDJSON-transcript reconstruction from
+      // claude-specific parsing (covered separately by parse.test.ts).
+      recoverAdoptedRunOutcome: ({ stdout }) => {
+        for (const line of stdout.split("\n")) {
+          if (!line.trim()) continue;
+          const event = JSON.parse(line) as { type?: string; is_error?: boolean };
+          if (event.type === "result") {
+            return event.is_error ? { outcome: "failed" as const } : { outcome: "succeeded" as const };
+          }
+        }
+        return null;
+      },
+    } as unknown as ReturnType<typeof getServerAdapter>);
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+
+    const finalized = runs.find((row) => row.id === runId);
+    expect(finalized?.status).toBe("succeeded");
+    expect(finalized?.errorCode).not.toBe("process_lost");
+    expect(finalized?.errorCode).toBeNull();
+    expect(finalized?.resultJson).toMatchObject({
+      adoptedRunLogEvidence: { recoverySource: "run_log_store" },
+    });
   });
 
   it("interrupts running runs on graceful shutdown and queues restart recovery without recording a failure", async () => {

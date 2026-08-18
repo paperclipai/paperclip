@@ -372,6 +372,15 @@ const ADOPTED_RUN_OUTCOME_UNKNOWN_ERROR_CODE = "adopted_run_outcome_unknown";
 // itself a failure. Also never auto-retried (see above) -- the run already
 // ran to completion, so this is a real failure outcome, not a lost process.
 const ADOPTED_RUN_RECOVERED_FAILURE_ERROR_CODE = "adopted_run_recovered_failure";
+// AGE-697: pagination size for reconstructing a run's stdout/stderr text from
+// the general-purpose NDJSON run transcript log (see
+// `reconstructRunLogStreamsTail`). Large enough to keep round trips low for a
+// typical run log without holding an unreasonable amount in memory per page.
+const RUN_LOG_STREAM_PAGE_BYTES = 512 * 1024;
+// Safety valve on the total bytes scanned while reconstructing a run's
+// transcript tail: bounds the I/O cost for a pathologically large log. This
+// only runs for a rare adopted-and-now-dead reap tick, not on every heartbeat.
+const RUN_LOG_STREAM_SCAN_MAX_BYTES = 32 * 1024 * 1024;
 // The reaper sweeps at most this many pending_cleanup leases per tick.
 const PENDING_CLEANUP_SWEEP_PAGE_SIZE = 20;
 // The reaper stops retrying a pending_cleanup lease after this many attempts.
@@ -13502,6 +13511,89 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
+  // AGE-697: fallback reconstruction of a run's stdout/stderr text from the
+  // general-purpose run transcript log (`run.logStore`/`run.logRef`), which
+  // EVERY run already writes today via `runLogStore` -- unlike the raw
+  // file-backed stdout/stderr paths on `contextSnapshot`, which only exist
+  // once the sibling file-backed-local-run-output change lands. This is what
+  // makes real-outcome recovery actually reachable in production before that
+  // change ships, instead of always falling through to the unknown-outcome
+  // floor.
+  //
+  // The transcript is NDJSON: each line is `{ts, stream, chunk, seq}`, not raw
+  // adapter stdout, so this reads it page by page (oldest-to-newest, since the
+  // store's `read` only supports forward pagination from a byte offset) and
+  // reconstructs the stdout/stderr streams by concatenating each line's
+  // `chunk` in order, keeping only the last `MAX_CAPTURE_BYTES` of each stream
+  // so a terminal-result parser sees the same tail-shaped input it would from
+  // the direct-file path above. A `RUN_LOG_STREAM_SCAN_MAX_BYTES` safety valve
+  // bounds the total scan for a pathologically large log; this only runs for
+  // a rare adopted-and-now-dead reap tick, so the extra I/O is an acceptable
+  // trade for correctness over the direct-file path's single read.
+  async function reconstructRunLogStreamsTail(
+    run: typeof heartbeatRuns.$inferSelect,
+  ): Promise<{ stdout: string; stderr: string } | null> {
+    if (!run.logStore || !run.logRef) return null;
+    const runLogStore = getRunLogStore();
+    const handle: RunLogHandle = { store: run.logStore as RunLogHandle["store"], logRef: run.logRef };
+    const trimToCap = (parts: string[]): string[] => {
+      const joined = parts.join("");
+      return joined.length > MAX_CAPTURE_BYTES ? [joined.slice(-MAX_CAPTURE_BYTES)] : parts;
+    };
+    let stdoutParts: string[] = [];
+    let stderrParts: string[] = [];
+    let offset = 0;
+    let scanned = 0;
+    let leftover = "";
+    for (;;) {
+      let page: Awaited<ReturnType<typeof runLogStore.read>> | null = null;
+      try {
+        page = await runLogStore.read(handle, { offset, limitBytes: RUN_LOG_STREAM_PAGE_BYTES });
+      } catch {
+        break;
+      }
+      if (!page || !page.content) break;
+      scanned += Buffer.byteLength(page.content, "utf8");
+      const combined = leftover + page.content;
+      const lines = combined.split("\n");
+      leftover = page.nextOffset ? (lines.pop() ?? "") : "";
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        let event: { stream?: unknown; chunk?: unknown } | null = null;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        const chunk = typeof event?.chunk === "string" ? event.chunk : "";
+        if (!chunk) continue;
+        if (event?.stream === "stdout") {
+          stdoutParts.push(chunk);
+          stdoutParts = trimToCap(stdoutParts);
+        } else if (event?.stream === "stderr") {
+          stderrParts.push(chunk);
+          stderrParts = trimToCap(stderrParts);
+        }
+      }
+      if (!page.nextOffset || scanned >= RUN_LOG_STREAM_SCAN_MAX_BYTES) break;
+      offset = page.nextOffset;
+    }
+    if (leftover.trim()) {
+      try {
+        const event = JSON.parse(leftover.trim()) as { stream?: unknown; chunk?: unknown };
+        const chunk = typeof event.chunk === "string" ? event.chunk : "";
+        if (chunk) {
+          if (event.stream === "stdout") stdoutParts = trimToCap([...stdoutParts, chunk]);
+          else if (event.stream === "stderr") stderrParts = trimToCap([...stderrParts, chunk]);
+        }
+      } catch {
+        // Trailing partial line with no closing newline yet -- drop it.
+      }
+    }
+    return { stdout: stdoutParts.join(""), stderr: stderrParts.join("") };
+  }
+
   // AGE-697: finalize a hot-restart-adopted run once its process (pid AND
   // process group) is confirmed dead. This path is deliberately separate from
   // the generic `process_lost` finalization below it: an adopted run may
@@ -13523,17 +13615,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const recoverOutcome = getServerAdapter(agentInfo.adapterType).recoverAdoptedRunOutcome;
 
     let recovered: ReturnType<NonNullable<typeof recoverOutcome>> = null;
+    let recoverySource: "log_file" | "run_log_store" | null = null;
     if (recoverOutcome && stdoutLogFilePath) {
+      // Preferred: the raw file-backed stdout/stderr this run's own process
+      // wrote to directly (see the sibling file-backed-local-run-output
+      // change). A single tail read, and the content an adapter's terminal-
+      // result parser expects with no reconstruction needed.
       const [stdout, stderr] = await Promise.all([
         readAdoptedRunOutputLogTail(stdoutLogFilePath),
         stderrLogFilePath ? readAdoptedRunOutputLogTail(stderrLogFilePath) : Promise.resolve(""),
       ]);
       recovered = recoverOutcome({ stdout, stderr });
+      if (recovered) recoverySource = "log_file";
+    }
+    if (!recovered && recoverOutcome) {
+      // Fallback: every run already writes its general-purpose NDJSON
+      // transcript via `runLogStore` today, independent of whether the
+      // direct-file path above has ever been persisted for this run. This is
+      // what makes recovery reachable right now rather than only once the
+      // sibling change ships.
+      const reconstructed = await reconstructRunLogStreamsTail(run);
+      if (reconstructed) {
+        recovered = recoverOutcome(reconstructed);
+        if (recovered) recoverySource = "run_log_store";
+      }
     }
 
     const logEvidence = {
       stdoutLogFilePath: stdoutLogFilePath ?? null,
       stderrLogFilePath: stderrLogFilePath ?? null,
+      runLogStore: run.logStore ?? null,
+      runLogRef: run.logRef ?? null,
+      recoverySource,
     };
 
     let finalizedRun: typeof heartbeatRuns.$inferSelect | null;
