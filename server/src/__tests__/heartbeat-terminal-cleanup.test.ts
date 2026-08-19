@@ -69,6 +69,27 @@ describe("terminal heartbeat cleanup fallback", () => {
     });
   });
 
+  it("skips omitted steps without reporting them", async () => {
+    const calls: string[] = [];
+    const reported: string[] = [];
+
+    await completeTerminalCleanupFallback({
+      finalizeWakeup: async () => {
+        calls.push("wakeup");
+      },
+      releaseIssue: async () => {
+        calls.push("issue_release");
+      },
+      // scheduleRetry and finalizeAgent intentionally omitted.
+      onError: (step) => {
+        reported.push(step);
+      },
+    });
+
+    expect(calls).toEqual(["wakeup", "issue_release"]);
+    expect(reported).toEqual([]);
+  });
+
   it("continues cleanup when error reporting also fails", async () => {
     const calls: string[] = [];
 

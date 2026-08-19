@@ -16375,7 +16375,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         failureReason: runErrorMessage,
         keepIdleOnFailure:
           outcome === "failed" &&
-          (persistedRun ? readHeartbeatRunErrorFamily(persistedRun) === "provider_quota" : runErrorCode === "provider_quota"),
+          ((persistedRun ? readHeartbeatRunErrorFamily(persistedRun) === "provider_quota" : runErrorCode === "provider_quota") ||
+            isWorkspaceSyncConflictFailure(adapterResult.errorMessage)),
         retryOptions,
         retryAttempted: false,
         retryCompleted: false,
