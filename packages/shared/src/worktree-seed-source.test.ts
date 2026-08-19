@@ -17,6 +17,27 @@ function makeInstance(prefix: string, instanceId: string) {
   return { cwd, configPath, instanceId };
 }
 
+/**
+ * A control plane's own instance root: `<home>/instances/<id>/config.json`, which
+ * names its instance by directory and has no adjacent .env.
+ */
+function makeInstanceRoot(instanceId: string) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-seed-home-"));
+  cleanup.push(home);
+  const configDir = path.join(home, "instances", instanceId);
+  fs.mkdirSync(configDir, { recursive: true });
+  const configPath = path.join(configDir, "config.json");
+  fs.writeFileSync(configPath, "{}\n");
+  return { configPath, instanceId };
+}
+
+/** A managed project checkout: a plain clone with no `.paperclip` of its own. */
+function makePlainCheckout() {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-seed-checkout-"));
+  cleanup.push(cwd);
+  return cwd;
+}
+
 afterEach(() => {
   for (const dir of cleanup.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -37,6 +58,38 @@ describe("resolveCanonicalWorktreeSeedSource", () => {
       configPath: source.configPath,
       targetConfigPath: target.configPath,
     });
+  });
+
+  it("takes the named source when the base workspace carries no config of its own", () => {
+    const baseCwd = makePlainCheckout();
+    const source = makeInstanceRoot("default");
+    const target = makeInstance("paperclip-seed-target-", "target-instance");
+
+    expect(resolveCanonicalWorktreeSeedSource({
+      registeredBaseWorkspaceCwd: baseCwd,
+      explicitSourceConfigPath: source.configPath,
+      targetConfigPath: target.configPath,
+      expectedTargetInstanceId: target.instanceId,
+      manifestSource: { configPath: source.configPath, instanceId: source.instanceId },
+      manifestTargetInstanceId: target.instanceId,
+    })).toMatchObject({
+      baseWorkspaceCwd: baseCwd,
+      configPath: source.configPath,
+      instanceId: "default",
+    });
+  });
+
+  it("fails closed when the base workspace carries no config and none is named", () => {
+    const baseCwd = makePlainCheckout();
+    const target = makeInstance("paperclip-seed-unnamed-target-", "target-instance");
+
+    expect(() => resolveCanonicalWorktreeSeedSource({
+      registeredBaseWorkspaceCwd: baseCwd,
+      targetConfigPath: target.configPath,
+      expectedTargetInstanceId: target.instanceId,
+      manifestSource: { configPath: target.configPath, instanceId: target.instanceId },
+      manifestTargetInstanceId: target.instanceId,
+    })).toThrow(/no Paperclip config of its own/);
   });
 
   it("fails closed without registration and when source equals target", () => {

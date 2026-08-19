@@ -18,6 +18,7 @@ import {
   resolveCanonicalWorktreeSeedSource,
   type CanonicalWorktreeSeedSource,
 } from "@paperclipai/shared/worktree-seed-source";
+import { resolvePaperclipConfigPath } from "../paths.js";
 import { validate } from "../middleware/validate.js";
 import {
   accessService,
@@ -69,6 +70,18 @@ function isReadableFile(filePath: string) {
   } catch {
     return false;
   }
+}
+
+/**
+ * The control plane's own instance config, named as the seed source only when the base
+ * project workspace is a plain checkout carrying no instance config of its own. A base
+ * workspace that has one stays authoritative, so an operator's mismatched source is
+ * still rejected.
+ */
+function resolveFallbackSeedSourceConfigPath(baseWorkspaceCwd: string): string | null {
+  return existsSync(path.join(baseWorkspaceCwd, ".paperclip", "config.json"))
+    ? null
+    : resolvePaperclipConfigPath();
 }
 
 export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: PluginWorkerManager } = {}) {
@@ -395,6 +408,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         }
         repairSeedSource = resolveCanonicalWorktreeSeedSource({
           registeredBaseWorkspaceCwd: projectWorkspace.cwd,
+          explicitSourceConfigPath: resolveFallbackSeedSourceConfigPath(projectWorkspace.cwd),
           targetConfigPath: path.join(workspaceCwd, ".paperclip", "config.json"),
           expectedTargetInstanceId,
           manifestSource: manifest.source,
@@ -782,6 +796,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
             }
             resolveCanonicalWorktreeSeedSource({
               registeredBaseWorkspaceCwd: baseWorkspaceCwd,
+              explicitSourceConfigPath: resolveFallbackSeedSourceConfigPath(baseWorkspaceCwd),
               targetConfigPath: path.join(workspaceCwd, ".paperclip", "config.json"),
               expectedTargetInstanceId: repairSeedSource.targetInstanceId,
               manifestSource: manifest.source as { configPath?: unknown; instanceId?: unknown } | undefined,
