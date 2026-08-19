@@ -5509,6 +5509,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
       command,
       cwd: input.workspace.cwd,
       executionWorkspaceId: input.executionWorkspaceId ?? null,
+      companyId: input.agent.companyId,
     }))) {
       await terminateLocalService(adoptedRecord);
       await removeLocalServiceRegistryRecord(adoptedRecord.serviceKey);
@@ -6070,6 +6071,7 @@ async function findHealthyRunningRuntimeService(reuseKey: string | null) {
     port: existing.port,
     cwd: existing.cwd,
     executionWorkspaceId: existing.executionWorkspaceId,
+    companyId: existing.companyId,
   };
   let healthy = await isRuntimeServiceUrlHealthy(existing.url, healthInput);
   if (!healthy) {
@@ -7347,6 +7349,7 @@ export async function refreshPersistedRuntimeServiceHealth(input: {
       healthStatus: workspaceRuntimeServices.healthStatus,
       cwd: workspaceRuntimeServices.cwd,
       executionWorkspaceId: workspaceRuntimeServices.executionWorkspaceId,
+      companyId: workspaceRuntimeServices.companyId,
     })
     .from(workspaceRuntimeServices)
     .where(and(
@@ -7564,6 +7567,7 @@ export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
           port: adoptedRecord.port ?? row.port,
           cwd: row.cwd,
           executionWorkspaceId: row.executionWorkspaceId ?? null,
+          companyId: row.companyId,
         }))
       ) {
         if (backfillDecision.action === "reprovision") backfilled += 1;

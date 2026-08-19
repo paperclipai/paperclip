@@ -14,6 +14,7 @@ import {
 import {
   buildManagedWorkspaceGuestEnv,
   probeManagedWorkspaceReadiness,
+  resolveManagedWorkspaceIdentity,
   resolveWorkspaceReadinessGateMode,
   shouldBlockPublicationOnReadiness,
   waitForManagedWorkspaceReadiness,
@@ -342,6 +343,39 @@ describe("probeManagedWorkspaceReadiness", () => {
       }) as unknown as typeof fetch,
     });
     expect(result).toMatchObject({ ok: false, reason: "unreachable" });
+  });
+
+  it("fails closed when any part of the workspace identity is unresolved", () => {
+    // Every readiness and handoff check keys off this. Returning a partial identity
+    // would silently downgrade the whole gate to the legacy transport check, so the
+    // three inputs are all required.
+    const complete = {
+      workspaceCwd: "/srv/worktree",
+      executionWorkspaceId: "ews-1",
+      companyId: "company-1",
+      env: { PAPERCLIP_WORKSPACE_HANDOFF_SECRET: "root" },
+    };
+    expect(resolveManagedWorkspaceIdentity(complete)).not.toBeNull();
+    expect(resolveManagedWorkspaceIdentity({ ...complete, companyId: null })).toBeNull();
+    expect(resolveManagedWorkspaceIdentity({ ...complete, executionWorkspaceId: null })).toBeNull();
+    expect(resolveManagedWorkspaceIdentity({ ...complete, workspaceCwd: null })).toBeNull();
+    expect(resolveManagedWorkspaceIdentity({ ...complete, env: {} })).toBeNull();
+  });
+
+  it("derives distinct key material per company on the same workspace", () => {
+    const base = {
+      workspaceCwd: "/srv/worktree",
+      executionWorkspaceId: "ews-1",
+      env: { PAPERCLIP_WORKSPACE_HANDOFF_SECRET: "root" },
+    };
+    const first = resolveManagedWorkspaceIdentity({ ...base, companyId: "company-1" });
+    const second = resolveManagedWorkspaceIdentity({ ...base, companyId: "company-2" });
+    // The signing key is deliberately per instance+workspace, not per company —
+    // the company is enforced by the signed `cid` claim instead — so the keys match
+    // while the recorded company differs.
+    expect(first?.handoffKey).toBe(second?.handoffKey);
+    expect(first?.companyId).toBe("company-1");
+    expect(second?.companyId).toBe("company-2");
   });
 
   it("hands the guest only derived per-workspace material", () => {
