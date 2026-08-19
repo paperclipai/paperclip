@@ -13,7 +13,16 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
   archiveWorkspaceUnderLifecycleLock: vi.fn(),
   fenceClosedWorkspaceDestruction: vi.fn(),
   runManualArchiveArtifactCleanup: vi.fn(async () => ({ cleaned: true, warnings: [] as string[] })),
-  applyClosedWorkspaceCleanupOutcome: vi.fn(async () => null),
+  applyClosedWorkspaceCleanupOutcome: vi.fn(async (input: {
+    cleanupReason: string | null;
+    markCleanupFailed: boolean;
+  }) => ({
+    id: "workspace-1",
+    companyId: "company-1",
+    sourceIssueId: "issue-1",
+    status: input.markCleanupFailed ? "cleanup_failed" : "archived",
+    cleanupReason: input.cleanupReason,
+  })),
   reconcileExecutionWorkspaceBranch: vi.fn(),
   update: vi.fn(),
 }));
@@ -595,6 +604,63 @@ describe.sequential("execution workspace routes", () => {
     );
     expect(mockWorkspaceRuntimeTeardown.stopRuntimeServicesForExecutionWorkspace).not.toHaveBeenCalledWith(
       expect.objectContaining({ workspaceCwd: "/tmp/shared-primary" }),
+    );
+  });
+
+  it("returns cleanup_failed instead of 500 when cleanup and the recovery write both throw", async () => {
+    const archivedWorkspace = {
+      id: "workspace-1",
+      companyId: "company-1",
+      sourceIssueId: "issue-1",
+      status: "archived",
+      mode: "isolated_workspace",
+      projectWorkspaceId: null,
+      projectId: null,
+      cwd: "/tmp/worktree",
+    };
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      ...archivedWorkspace,
+      status: "active",
+    });
+    mockExecutionWorkspaceService.getCloseReadiness.mockResolvedValue({
+      state: "ready",
+      blockingReasons: [],
+      workspaceHeadSha: "readiness-head-sha",
+    });
+    mockExecutionWorkspaceService.archiveWorkspaceUnderLifecycleLock.mockResolvedValue({
+      outcome: "archived",
+      workspace: archivedWorkspace,
+      capturedGeneration: 3,
+    });
+    mockExecutionWorkspaceService.runManualArchiveArtifactCleanup.mockRejectedValue(
+      new Error("worktree remove failed"),
+    );
+    mockExecutionWorkspaceService.applyClosedWorkspaceCleanupOutcome.mockRejectedValue(
+      new Error("database unavailable"),
+    );
+    mockExecutionWorkspaceService.fenceClosedWorkspaceDestruction.mockImplementation(
+      async ({ destroy }: { destroy: () => Promise<unknown> }) => ({
+        skippedReopened: false,
+        result: await destroy(),
+      }),
+    );
+
+    const res = await request(createApp())
+      .patch("/api/execution-workspaces/workspace-1")
+      .send({ status: "archived" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      id: "workspace-1",
+      status: "cleanup_failed",
+      cleanupSucceeded: false,
+    });
+    expect(res.body.cleanupReason).toMatch(/^worktree_remove_failed:/);
+    expect(mockExecutionWorkspaceService.applyClosedWorkspaceCleanupOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        markCleanupFailed: true,
+        cleanupReason: "worktree_remove_failed: worktree remove failed",
+      }),
     );
   });
 

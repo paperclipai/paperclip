@@ -5124,6 +5124,58 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(cleanup.cleaned).toBe(true);
   }, 20_000);
 
+  it("fails closed when workspace path stat rejects with EACCES instead of treating it as absent", async () => {
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    const workspace = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId))
+      .then((rows) => rows[0]!);
+    const closedAt = new Date();
+    await db
+      .update(executionWorkspaces)
+      .set({
+        status: "archived",
+        closedAt,
+        metadata: {
+          createdByRuntime: true,
+          [EXECUTION_WORKSPACE_LIFECYCLE_GENERATION_METADATA_KEY]: 2,
+        },
+      })
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const eacces = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    const realStat = fs.stat.bind(fs);
+    const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (target, ...rest) => {
+      const targetPath = path.resolve(String(target));
+      if (targetPath === path.resolve(seeded.worktreePath)) {
+        throw eacces;
+      }
+      return realStat(target as Parameters<typeof realStat>[0], ...(rest as []));
+    });
+
+    try {
+      await expect(
+        svc.runManualArchiveArtifactCleanup({ workspace, expectedHeadSha: seeded.headSha }),
+      ).rejects.toMatchObject({ code: "EACCES" });
+
+      const applied = await svc.applyClosedWorkspaceCleanupOutcome({
+        id: seeded.executionWorkspaceId,
+        closedAt,
+        capturedGeneration: 2,
+        cleanupReason: formatIsolatedArchiveCleanupFailureReason(["EACCES: permission denied"]),
+        markCleanupFailed: true,
+      });
+      expect(applied?.status).toBe("cleanup_failed");
+      expect(applied?.cleanupReason).toMatch(/^worktree_remove_failed:/);
+      expect(applied?.cleanupReason).not.toBeNull();
+    } finally {
+      statSpy.mockRestore();
+    }
+
+    await expect(fs.stat(seeded.worktreePath)).resolves.toBeTruthy();
+  }, 20_000);
+
   it("refuses manual archive cleanup when HEAD moved after readiness cleared the close", async () => {
     const seeded = await seedTerminalWorkspace({ mergedPr: true });
     const workspace = await db

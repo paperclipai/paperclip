@@ -1354,14 +1354,26 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         const failureReason = formatIsolatedArchiveCleanupFailureReason([
           error instanceof Error ? error.message : String(error),
         ]);
-        const marked = await svc.applyClosedWorkspaceCleanupOutcome({
-          id,
-          closedAt,
-          capturedGeneration,
-          cleanupReason: failureReason,
-          markCleanupFailed: true,
-        });
-        if (marked) workspace = marked;
+        try {
+          const marked = await svc.applyClosedWorkspaceCleanupOutcome({
+            id,
+            closedAt,
+            capturedGeneration,
+            cleanupReason: failureReason,
+            markCleanupFailed: true,
+          });
+          if (marked) workspace = marked;
+        } catch (recoveryError) {
+          logger.warn(
+            { err: recoveryError, executionWorkspaceId: id, cleanupFailureReason: failureReason },
+            "failed to record isolated archive cleanup failure",
+          );
+          workspace = {
+            ...workspace,
+            status: "cleanup_failed",
+            cleanupReason: failureReason,
+          };
+        }
         archiveCleanupOutcome = { cleaned: false, cleanupSucceeded: false };
       }
     } else {

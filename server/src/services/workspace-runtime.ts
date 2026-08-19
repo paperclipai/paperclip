@@ -2578,7 +2578,12 @@ async function detectDefaultBranch(
 }
 
 async function directoryExists(value: string) {
-  return fs.stat(value).then((stats) => stats.isDirectory()).catch(() => false);
+  try {
+    return (await fs.stat(value)).isDirectory();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return false;
+    throw err;
+  }
 }
 
 async function resolvePathForWorktreeComparison(value: string): Promise<string> {
