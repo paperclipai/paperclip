@@ -1,6 +1,6 @@
 import { and, count, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -110,7 +110,23 @@ export async function observeCrossIssueInfluence(
     }
 
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
+    if (!sourceIssueId) {
+      // Timer-triggered runs have no issueId/taskId in their contextSnapshot.
+      // They are still allowed to write to issues they have checked out in
+      // this run — that is not cross-issue influence; it is in-scope work.
+      // Check whether this run holds an executionRunId checkout on the target.
+      const ownCheckout = await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, input.companyId),
+          eq(issues.id, input.targetIssueId),
+          eq(issues.executionRunId, input.runId),
+        ))
+        .then((rows) => rows.length > 0);
+      if (ownCheckout) return null;
+      throw crossIssueInfluenceRunContextError();
+    }
     if (
       sourceIssueId === input.targetIssueId ||
       (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())

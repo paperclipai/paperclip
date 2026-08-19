@@ -10,6 +10,8 @@ import {
 function counterDb(
   initialCount = 0,
   runOverrides: Record<string, unknown> | null = {},
+  /** Set to true to simulate that the target issue is checked out by this run. */
+  targetIssueCheckedOutByRun = false,
 ) {
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
@@ -18,10 +20,19 @@ function counterDb(
       from: () => ({
         where: () => {
           if (Object.keys(selection).includes("count")) {
+            // Activity-log count query.
             return {
               then: (resolve: (rows: unknown[]) => unknown) => resolve([{ count: observedCount }]),
             };
           }
+          if (Object.keys(selection).length === 1 && "id" in selection) {
+            // Issues checkout query (select {id} from issues where ...).
+            return {
+              then: (resolve: (rows: unknown[]) => unknown) =>
+                resolve(targetIssueCheckedOutByRun ? [{ id: "55555555-5555-4555-8555-555555555555" }] : []),
+            };
+          }
+          // Heartbeat-runs row query (uses .for("update")).
           return {
             for: () => ({
               then: (resolve: (rows: unknown[]) => unknown) => resolve(runOverrides === null ? [] : [{
@@ -198,8 +209,9 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([]);
   });
 
-  it("fails closed when the persisted run has no source issue", async () => {
-    const fake = counterDb(0, { contextSnapshot: {} });
+  it("fails closed when the persisted run has no source issue and no checkout on the target", async () => {
+    // Timer run: empty contextSnapshot, no checkout on the target issue.
+    const fake = counterDb(0, { contextSnapshot: {} }, false);
 
     await expect(observeCrossIssueInfluence(fake.db as never, {
       companyId: "22222222-2222-4222-8222-222222222222",
@@ -211,6 +223,21 @@ describe("cross-issue influence limit rollout", () => {
       status: 403,
       details: { code: "cross_issue_influence_run_context_required" },
     });
+    expect(fake.inserted).toEqual([]);
+  });
+
+  it("allows writes for a timer run that has checked out the target issue", async () => {
+    // Timer run: empty contextSnapshot (no issueId), but has a checkout on the target.
+    const fake = counterDb(0, { contextSnapshot: {} }, true);
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "comment",
+    })).resolves.toBeNull();
+    // No cross-issue-influence activity should be recorded.
     expect(fake.inserted).toEqual([]);
   });
 });
