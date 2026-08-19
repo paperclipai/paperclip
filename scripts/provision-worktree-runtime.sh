@@ -6,8 +6,6 @@ worktree_cwd="${PAPERCLIP_WORKSPACE_CWD:?PAPERCLIP_WORKSPACE_CWD is required}"
 paperclip_dir="$worktree_cwd/.paperclip"
 worktree_config_path="$paperclip_dir/config.json"
 seed_manifest_path="$paperclip_dir/seed-manifest.json"
-seed_pending_marker_path="$paperclip_dir/seed-pending"
-seed_complete_marker_path="$paperclip_dir/seed-complete"
 
 if [[ ! -d "$base_cwd" ]]; then
   echo "Base workspace does not exist: $base_cwd" >&2
@@ -48,13 +46,23 @@ EOF
     echo "Worktree database has a verified seed manifest; skipping runtime provisioning." >&2
     exit 0
   fi
-elif [[ -e "$seed_complete_marker_path" || ! -e "$seed_pending_marker_path" ]]; then
-  echo "Worktree database is already seeded by a legacy marker; skipping runtime provisioning." >&2
-  exit 0
 fi
 
 if [[ ! -f "$worktree_config_path" ]]; then
-  echo "Worktree config does not exist: $worktree_config_path" >&2
+  initial_provision_script="$base_cwd/scripts/provision-worktree.sh"
+  if [[ ! -f "$initial_provision_script" ]]; then
+    echo "Worktree config does not exist and the built-in provision script is unavailable: $worktree_config_path" >&2
+    exit 1
+  fi
+  echo "Worktree config is missing; running the built-in worktree provisioner before database seeding." >&2
+  (
+    cd "$worktree_cwd" &&
+      bash "$initial_provision_script"
+  )
+fi
+
+if [[ ! -f "$worktree_config_path" ]]; then
+  echo "Worktree config still does not exist after built-in provisioning: $worktree_config_path" >&2
   exit 1
 fi
 

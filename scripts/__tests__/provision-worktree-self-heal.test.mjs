@@ -71,7 +71,21 @@ if (cliArgs[0] === "worktree" && cliArgs[1] === "ensure-seeded") {
     process.exit(${ensureExit});
   }
   fs.rmSync(".paperclip/seed-pending", { force: true });
-  fs.writeFileSync(".paperclip/seed-complete", "{}\\n");
+  fs.rmSync(".paperclip/seed-complete", { force: true });
+  fs.writeFileSync(".paperclip/seed-manifest.json", JSON.stringify({
+    version: 2,
+    source: { instanceId: "base-source", configPath: ${JSON.stringify(path.join(baseCwd, ".paperclip", "config.json"))} },
+    snapshotAt: "2026-08-19T00:00:00.000Z",
+    seedMode: "minimal",
+    migrationRevision: "0142_test.sql",
+    targetInstanceId: "target-test",
+    phase: "complete",
+    state: "verified",
+    attemptId: "attempt-test",
+    startedAt: "2026-08-19T00:00:00.000Z",
+    finishedAt: "2026-08-19T00:01:00.000Z",
+    diagnostics: [{ phase: "complete", status: "succeeded", at: "2026-08-19T00:01:00.000Z" }],
+  }) + "\\n");
   process.exit(0);
 }
 process.exit(0);
@@ -182,6 +196,45 @@ test("falls back to an isolated config when the base CLI cannot boot", () => {
   );
 });
 
+test("reconciles deployment mode from the registered source when reusing a guest config", () => {
+  const baseCwd = makeBaseWorkspace({ helpExit: 1, initExit: 0 });
+  const { result: first, worktreeCwd, worktreesHome } = runProvision(baseCwd);
+  assert.equal(first.status, 0, first.stderr);
+  assert.equal(readWorktreeConfig(worktreeCwd).server.deploymentMode, "local_trusted");
+
+  fs.writeFileSync(
+    path.join(baseCwd, ".paperclip", "config.json"),
+    `${JSON.stringify({
+      server: {
+        deploymentMode: "authenticated",
+        exposure: "private",
+      },
+    }, null, 2)}\n`,
+  );
+
+  const second = spawnSync("bash", [script], {
+    cwd: worktreeCwd,
+    encoding: "utf8",
+    env: {
+      PATH: testPath,
+      HOME: os.homedir(),
+      PAPERCLIP_WORKSPACE_BASE_CWD: baseCwd,
+      PAPERCLIP_WORKSPACE_CWD: worktreeCwd,
+      PAPERCLIP_WORKSPACE_BRANCH: "feature/provision-test",
+      PAPERCLIP_WORKTREES_DIR: worktreesHome,
+      PAPERCLIP_HOME: path.join(worktreesHome, "no-such-instance-home"),
+      PAPERCLIP_PROJECT_WORKSPACE_ID: "project-workspace-1",
+      PAPERCLIP_SEED_EXPECTED_COMPANY_ID: "company-1",
+    },
+  });
+
+  assert.equal(second.status, 0, second.stderr);
+  assert.match(second.stderr, /Reusing existing isolated Paperclip worktree config/);
+  assert.match(second.stderr, /Reconciled isolated Paperclip worktree deployment mode/);
+  assert.equal(readWorktreeConfig(worktreeCwd).server.deploymentMode, "authenticated");
+  assert.equal(readWorktreeConfig(worktreeCwd).server.exposure, "private");
+});
+
 test("repairs an unhealthy base install under the lock and then uses the CLI", (t) => {
   const hasTools = ["flock", "git"].every(
     (tool) => spawnSync("bash", ["-lc", `command -v ${tool}`], { env: { PATH: testPath } }).status === 0,
@@ -276,7 +329,10 @@ test("runtime provisioning invokes ensure-seeded once and fast-exits after succe
 
   const first = runRuntimeProvision(baseCwd, worktreeCwd);
   assert.equal(first.status, 0, first.stderr);
-  assert.ok(fs.existsSync(path.join(worktreeCwd, ".paperclip", "seed-complete")));
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(worktreeCwd, ".paperclip", "seed-manifest.json"), "utf8")).state,
+    "verified",
+  );
   assert.ok(!fs.existsSync(path.join(worktreeCwd, ".paperclip", "seed-pending")));
 
   const ensureCallsAfterFirst = readCliInvocations(baseCwd)
@@ -287,10 +343,56 @@ test("runtime provisioning invokes ensure-seeded once and fast-exits after succe
 
   const second = runRuntimeProvision(baseCwd, worktreeCwd);
   assert.equal(second.status, 0, second.stderr);
-  assert.match(second.stderr, /already seeded.*skipping/);
+  assert.match(second.stderr, /verified seed manifest.*skipping/);
   const ensureCallsAfterSecond = readCliInvocations(baseCwd)
     .filter((args) => args[0] === "worktree" && args[1] === "ensure-seeded");
   assert.equal(ensureCallsAfterSecond.length, 1);
+});
+
+test("runtime provisioning seeds a worktree config that has no seed markers", () => {
+  const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+  const worktreeCwd = makeTempDir("paperclip-provision-runtime-unmarked-config-");
+  fs.mkdirSync(path.join(worktreeCwd, ".paperclip"), { recursive: true });
+  fs.writeFileSync(path.join(worktreeCwd, ".paperclip", "config.json"), "{}\n");
+
+  const result = runRuntimeProvision(baseCwd, worktreeCwd);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    readCliInvocations(baseCwd)
+      .filter((args) => args[0] === "worktree" && args[1] === "ensure-seeded").length,
+    1,
+  );
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(worktreeCwd, ".paperclip", "seed-manifest.json"), "utf8")).state,
+    "verified",
+  );
+});
+
+test("runtime provisioning bootstraps and seeds an empty .paperclip directory", () => {
+  const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
+  fs.mkdirSync(path.join(baseCwd, "scripts"), { recursive: true });
+  fs.copyFileSync(script, path.join(baseCwd, "scripts", "provision-worktree.sh"));
+  const worktreeCwd = makeTempDir("paperclip-provision-runtime-empty-state-");
+  fs.mkdirSync(path.join(worktreeCwd, ".paperclip"), { recursive: true });
+
+  const result = runRuntimeProvision(baseCwd, worktreeCwd);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /config is missing; running the built-in worktree provisioner/);
+  const invocations = readCliInvocations(baseCwd);
+  assert.equal(
+    invocations.filter((args) => args[0] === "worktree" && args[1] === "init").length,
+    1,
+  );
+  assert.equal(
+    invocations.filter((args) => args[0] === "worktree" && args[1] === "ensure-seeded").length,
+    1,
+  );
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(worktreeCwd, ".paperclip", "seed-manifest.json"), "utf8")).state,
+    "verified",
+  );
 });
 
 test("runtime provisioning leaves seed-pending in place when ensure-seeded fails", () => {

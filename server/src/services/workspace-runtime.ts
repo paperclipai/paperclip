@@ -52,6 +52,7 @@ import {
   findAdoptableLocalService,
   isLocalServiceProcessOwnedBy,
   isLocalServiceProcessInWorkspace,
+  openLocalServiceLogFile,
   readLocalServiceProcessCwd,
   readLocalServicePortOwner,
   removeLocalServiceRegistryRecord,
@@ -475,7 +476,7 @@ type ProcessOutputAccumulator = {
  * broker fake handles the removal rather than the real host broker.
  */
 export async function resetRuntimeServicesForTests(
-  opts: { terminateProcesses?: boolean } = {},
+  opts: { terminateProcesses?: boolean; simulateSupervisorExit?: boolean } = {},
 ) {
   if (opts.terminateProcesses) {
     for (const serviceId of [...runtimeServicesById.keys()]) {
@@ -484,6 +485,13 @@ export async function resetRuntimeServicesForTests(
   }
   for (const record of runtimeServicesById.values()) {
     clearIdleTimer(record);
+    if (opts.simulateSupervisorExit) {
+      // A real supervisor exit closes its side of every inherited pipe. Tests
+      // use this to prove surviving request-logging services do not depend on
+      // Paperclip keeping an anonymous stdio peer alive.
+      record.child?.stdout?.destroy();
+      record.child?.stderr?.destroy();
+    }
   }
   runtimeServicesById.clear();
   runtimeServicesByReuseKey.clear();
@@ -2757,6 +2765,20 @@ function quoteShellArg(value: string) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+const BUILTIN_WORKSPACE_PROVISION_COMMAND = "bash ./scripts/provision-worktree.sh";
+
+function resolveWorkspaceProvisionCommand(
+  strategy: Record<string, unknown>,
+  repoRoot: string,
+) {
+  const configuredCommand = asString(strategy.provisionCommand, "").trim();
+  if (configuredCommand) return configuredCommand;
+
+  return existsSync(path.join(repoRoot, "scripts", "provision-worktree.sh"))
+    ? BUILTIN_WORKSPACE_PROVISION_COMMAND
+    : "";
+}
+
 function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string) {
   const patterns = [
     /^(?<prefix>(?:bash|sh|zsh)\s+)(?<quote>["']?)(?<relative>\.\/[^"'\s]+)\k<quote>(?<suffix>(?:\s.*)?)$/s,
@@ -2953,7 +2975,7 @@ async function provisionExecutionWorktree(input: {
   created: boolean;
   recorder?: WorkspaceOperationRecorder | null;
 }) {
-  const provisionCommand = asString(input.strategy.provisionCommand, "").trim();
+  const provisionCommand = resolveWorkspaceProvisionCommand(input.strategy, input.repoRoot);
   if (!provisionCommand) return;
   const resolvedProvisionCommand = resolveRepoManagedWorkspaceCommand(provisionCommand, input.repoRoot);
 
@@ -3434,22 +3456,20 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     });
     realized.warnings = [...repairWarnings, ...baseRefreshWarnings, ...baseDrift.warnings];
     realized.baseRefSha = refresh.baseRefSha ?? recordedBaseRefSha ?? baseDrift.branchBaseRefSha ?? baseDrift.currentBaseRefSha;
-    if (provisionCommand) {
-      await provisionExecutionWorktree({
-        strategy: {
-          type: "git_worktree",
-          provisionCommand,
-        },
-        base: input.base,
-        repoRoot,
-        worktreePath: realized.worktreePath ?? cwd,
-        branchName: realized.branchName ?? "",
-        issue: input.issue,
-        agent: input.agent,
-        created: false,
-        recorder: input.recorder ?? null,
-      });
-    }
+    await provisionExecutionWorktree({
+      strategy: {
+        type: "git_worktree",
+        ...(provisionCommand ? { provisionCommand } : {}),
+      },
+      base: input.base,
+      repoRoot,
+      worktreePath: realized.worktreePath ?? cwd,
+      branchName: realized.branchName ?? "",
+      issue: input.issue,
+      agent: input.agent,
+      created: false,
+      recorder: input.recorder ?? null,
+    });
     return realized;
   }
 
@@ -5139,17 +5159,12 @@ export function resolveRuntimeProvisionCommand(input: {
 
   const stateDir = path.join(input.workspace.cwd, ".paperclip");
   const manifestPath = path.join(stateDir, "seed-manifest.json");
-  const pendingMarker = path.join(stateDir, "seed-pending");
-  const completeMarker = path.join(stateDir, "seed-complete");
   const provisionScript = path.join(
     input.workspace.baseCwd,
     "scripts",
     "provision-worktree-runtime.sh",
   );
-  let needsSeed = existsSync(pendingMarker) && !existsSync(completeMarker);
-  if (existsSync(manifestPath)) {
-    needsSeed = !hasVerifiedWorktreeSeedManifest(manifestPath);
-  }
+  const needsSeed = !existsSync(manifestPath) || !hasVerifiedWorktreeSeedManifest(manifestPath);
   if (!needsSeed || !existsSync(provisionScript)) {
     return "";
   }
@@ -5535,7 +5550,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     // still rejected by the broker unless /proc proves loopback-only listeners.
     //
     // Three independent layers force the loopback bind, because a guest checkout
-    // can be arbitrarily old (PAP-17256): the `--bind custom --bind-host` argv
+    // can be arbitrarily old (PAP-17256): the `--bind loopback` argv
     // added above, these env vars for a runner that reads them, and HOST for one
     // old enough to ignore both and infer its bind mode from HOST alone.
     env.PAPERCLIP_BIND = RUNTIME_EXPOSURE_BIND_MODE;
@@ -5748,12 +5763,21 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   }
 
   const shell = resolveShell();
-  const child = spawn(shell, ["-lc", command], {
-    cwd: serviceCwd,
-    env,
-    detached: process.platform !== "win32",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const serviceLog = await openLocalServiceLogFile(serviceKey);
+  let child: ChildProcess;
+  try {
+    child = spawn(shell, ["-lc", command], {
+      cwd: serviceCwd,
+      env,
+      detached: process.platform !== "win32",
+      // The service receives duplicate append-only file descriptors. Closing
+      // Paperclip (or this parent handle below) cannot strand a request logger
+      // on an orphaned socketpair during startup reconciliation.
+      stdio: ["ignore", serviceLog.handle.fd, serviceLog.handle.fd],
+    });
+  } finally {
+    await serviceLog.handle.close();
+  }
   record.child = child;
   record.providerRef = child.pid ? String(child.pid) : null;
   record.processGroupId = child.pid ?? null;
@@ -5763,24 +5787,23 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     });
   });
   const earlyExitPromise = new Promise<never>((_, reject) => {
-    child.once("exit", (code, signal) => {
+    // `close` follows `exit` after the child's inherited stdout/stderr file
+    // descriptors are closed. Waiting for it makes the startup log excerpt
+    // deterministic instead of racing the final validation line.
+    child.once("close", (code, signal) => {
       reject(new Error(
         `service process exited before readiness (code ${code ?? "unknown"}, signal ${signal ?? "none"})`,
       ));
     });
   });
-  let stderrExcerpt = "";
-  let stdoutExcerpt = "";
-  child.stdout?.on("data", async (chunk) => {
-    const text = String(chunk);
-    stdoutExcerpt = (stdoutExcerpt + text).slice(-4096);
-    if (input.onLog) await input.onLog("stdout", `[service:${serviceName}] ${text}`);
-  });
-  child.stderr?.on("data", async (chunk) => {
-    const text = String(chunk);
-    stderrExcerpt = (stderrExcerpt + text).slice(-4096);
-    if (input.onLog) await input.onLog("stderr", `[service:${serviceName}] ${text}`);
-  });
+  const readServiceOutputExcerpt = async () => {
+    try {
+      const contents = await fs.readFile(serviceLog.logPath);
+      return contents.subarray(Math.max(serviceLog.startOffset, contents.length - 4096)).toString("utf8");
+    } catch {
+      return "";
+    }
+  };
 
   if (child.pid) {
     await writeLocalServiceRegistryRecord({
@@ -5907,6 +5930,10 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     record.healthStatus = "healthy";
     record.lastUsedAt = new Date().toISOString();
     record.stoppedAt = null;
+    const serviceOutputExcerpt = await readServiceOutputExcerpt();
+    if (serviceOutputExcerpt && input.onLog) {
+      await input.onLog("stdout", `[service:${serviceName}] ${serviceOutputExcerpt}`);
+    }
     await touchLocalServiceRegistryRecord(record.serviceKey, {
       runtimeServiceId: record.id,
       lastSeenAt: record.lastUsedAt,
@@ -5914,18 +5941,20 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   }).catch(async (err) => {
     releasePortReservation(reservedPort);
     releasePortReservation(claimedIdentityPort);
-        const failureMessage = err instanceof Error ? err.message : String(err);
+    const failureMessage = err instanceof Error ? err.message : String(err);
+    const serviceOutputExcerpt = await readServiceOutputExcerpt();
     const bindCollision = !exposureConfig && (
       err instanceof RuntimeServicePortBindCollision || Boolean(
         port
         && (input.allowFixedPortFallback || portType === "auto")
-        && /(?:EADDRINUSE|address already in use)/i.test(`${failureMessage}\n${stderrExcerpt}`),
+        && /(?:EADDRINUSE|address already in use)/i.test(`${failureMessage}\n${serviceOutputExcerpt}`),
       )
     );
     if (child.pid) {
       await terminateLocalService({
         pid: child.pid,
         processGroupId: child.pid,
+        port,
       });
     }
     await cleanupRecordExposure(record, { preserveFailure: true });
@@ -5938,8 +5967,14 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
       await persistRuntimeServiceRecord(record.db, record).catch(() => undefined);
     }
     if (bindCollision && port) throw new RuntimeServicePortBindCollision(port);
+    const deploymentBindConflict = /local_trusted requires server\.bind=loopback/i.test(
+      `${failureMessage}\n${serviceOutputExcerpt}`,
+    );
+    const actionableFailure = deploymentBindConflict
+      ? `${failureMessage} | deployment/bind conflict: local_trusted requires server.bind=loopback; the managed runtime requested an incompatible bind mode`
+      : failureMessage;
     throw new Error(
-      `Failed to start runtime service "${serviceName}": ${failureMessage}${stderrExcerpt ? ` | stderr: ${stderrExcerpt.trim()}` : ""}`,
+      `Failed to start runtime service "${serviceName}": ${actionableFailure}${serviceOutputExcerpt ? ` | output: ${serviceOutputExcerpt.trim()}` : ""}`,
     );
   });
 
@@ -6125,19 +6160,14 @@ async function stopRuntimeService(serviceId: string) {
   const record = runtimeServicesById.get(serviceId);
   if (!record) return;
   clearIdleTimer(record);
-  record.status = "stopped";
-  record.healthStatus = "unknown";
-  record.lastUsedAt = new Date().toISOString();
-  record.stoppedAt = new Date().toISOString();
-  runtimeServicesById.delete(serviceId);
-  if (record.reuseKey && runtimeServicesByReuseKey.get(record.reuseKey) === record.id) {
-    runtimeServicesByReuseKey.delete(record.reuseKey);
-  }
+  // Remove any public exposure first, but keep the process registered and the
+  // row non-stopped until verified termination succeeds.
   await cleanupRecordExposure(record);
   if (record.child && record.child.pid) {
     await terminateLocalService({
       pid: record.child.pid,
       processGroupId: record.processGroupId ?? record.child.pid,
+      port: record.port,
     });
   } else if (record.providerRef) {
     const pid = Number.parseInt(record.providerRef, 10);
@@ -6145,8 +6175,17 @@ async function stopRuntimeService(serviceId: string) {
       await terminateLocalService({
         pid,
         processGroupId: record.processGroupId,
+        port: record.port,
       });
     }
+  }
+  record.status = "stopped";
+  record.healthStatus = "unknown";
+  record.lastUsedAt = new Date().toISOString();
+  record.stoppedAt = new Date().toISOString();
+  runtimeServicesById.delete(serviceId);
+  if (record.reuseKey && runtimeServicesByReuseKey.get(record.reuseKey) === record.id) {
+    runtimeServicesByReuseKey.delete(record.reuseKey);
   }
   await removeLocalServiceRegistryRecord(record.serviceKey);
   await persistRuntimeServiceRecord(record.db, record);

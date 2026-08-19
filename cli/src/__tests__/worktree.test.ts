@@ -30,12 +30,14 @@ import {
   ensureEmbeddedPostgres,
   ensureWorktreeSeeded,
   formatWorktreeSeedFailureDiagnostic,
+  inspectLegacyWorktreeDatabase,
   markWorktreeSeedPending,
   pauseSeededScheduledRoutines,
   quarantineSeededWorktreeExecutionState,
   readWorktreeSeedManifest,
   readSourceAttachmentBody,
   rebindWorkspaceCwd,
+  requiresWorktreeSeedCredentialAccount,
   resolveSourceConfigPath,
   resolveWorktreeReseedSource,
   resolveWorktreeReseedTargetPaths,
@@ -103,30 +105,36 @@ function mockVerifiedSeedResult() {
   };
 }
 
-async function seedValidWorktreeSource(connectionString: string) {
+async function seedValidWorktreeSource(
+  connectionString: string,
+  options: { includeCredentialAccount?: boolean; userId?: string } = {},
+) {
   const db = createDb(connectionString);
   const companyId = randomUUID();
   const issueId = randomUUID();
+  const userId = options.userId ?? "user-existing";
   const now = new Date();
   await db.insert(authUsers).values({
-    id: "user-existing",
-    email: "existing@paperclip.ing",
-    name: "Existing User",
+    id: userId,
+    email: userId === "local-board" ? "local@paperclip.local" : "existing@paperclip.ing",
+    name: userId === "local-board" ? "Board" : "Existing User",
     emailVerified: true,
     createdAt: now,
     updatedAt: now,
   });
-  await db.insert(authAccounts).values({
-    id: "credential-existing",
-    accountId: "existing@paperclip.ing",
-    providerId: "credential",
-    userId: "user-existing",
-    password: "fixture-password-hash",
-    createdAt: now,
-    updatedAt: now,
-  });
+  if (options.includeCredentialAccount !== false) {
+    await db.insert(authAccounts).values({
+      id: "credential-existing",
+      accountId: "existing@paperclip.ing",
+      providerId: "credential",
+      userId,
+      password: "fixture-password-hash",
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
   await db.insert(instanceUserRoles).values({
-    userId: "user-existing",
+    userId,
     role: "instance_admin",
   });
   await db.insert(companies).values({
@@ -138,7 +146,7 @@ async function seedValidWorktreeSource(connectionString: string) {
   await db.insert(companyMemberships).values({
     companyId,
     principalType: "user",
-    principalId: "user-existing",
+    principalId: userId,
     status: "active",
   });
   await db.insert(issues).values({
@@ -518,6 +526,22 @@ describe("worktree helpers", () => {
       .toBe("Seed failed during migrations.");
   });
 
+  it("surfaces the missing credential artifact for authenticated seed validation", () => {
+    expect(formatWorktreeSeedFailureDiagnostic(
+      "source_validation",
+      new Error(
+        "No auth user has a non-empty credential account, instance-admin role, and active company membership. Authenticated worktree seeding requires a credential-backed instance administrator.",
+      ),
+    )).toBe(
+      "Seed validation could not find a credential-backed instance administrator with an active company membership. Authenticated instances must create or sign in an administrator before seeding.",
+    );
+  });
+
+  it("requires credential accounts only for authenticated worktree seeds", () => {
+    expect(requiresWorktreeSeedCredentialAccount("local_trusted")).toBe(false);
+    expect(requiresWorktreeSeedCredentialAccount("authenticated")).toBe(true);
+  });
+
   it("rejects a source migration journal that diverges from the code journal", () => {
     expect(() => resolveWorktreeSeedMigrationRevision({
       status: "upToDate",
@@ -563,6 +587,42 @@ describe("worktree helpers", () => {
       journalEntryCount: 3,
       reason: "pending-migrations",
     }, "sourcePrefix")).toBe("0002_applied.sql");
+  });
+
+  itEmbeddedPostgres("recognizes positive legacy database schema evidence", async () => {
+    const tempDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-legacy-evidence-");
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-legacy-config-"));
+    try {
+      const configPath = path.join(tempRoot, "config.json");
+      const sourceConfig = buildSourceConfig();
+      const config: PaperclipConfig = {
+        ...sourceConfig,
+        database: {
+          ...sourceConfig.database,
+          mode: "postgres",
+          connectionString: tempDb.connectionString,
+          backup: {
+            ...sourceConfig.database.backup,
+            enabled: false,
+            intervalMinutes: 60,
+            retentionDays: 30,
+            dir: path.join(tempRoot, "backups"),
+          },
+        },
+      };
+      fs.writeFileSync(configPath, `${JSON.stringify(config)}\n`);
+      fs.writeFileSync(
+        path.join(tempRoot, ".env"),
+        `PAPERCLIP_INSTANCE_ID=legacy-target\nDATABASE_URL=${JSON.stringify(tempDb.connectionString)}\n`,
+      );
+
+      await expect(inspectLegacyWorktreeDatabase(configPath)).resolves.toEqual({
+        migrationRevision: expect.stringMatching(/\.sql$/),
+      });
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+      await tempDb.cleanup();
+    }
   });
 
   it("ensure-seeded seeds once and fast-exits on the verified manifest", async () => {
@@ -636,6 +696,149 @@ describe("worktree helpers", () => {
     }
   });
 
+  it("treats an unregistered markerless config as a normal non-worktree boot", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-unregistered-markerless-"));
+    try {
+      const configPath = path.join(tempRoot, "config.json");
+      fs.writeFileSync(configPath, `${JSON.stringify(buildSourceConfig())}\n`);
+      delete process.env.PAPERCLIP_WORKSPACE_BASE_CWD;
+      delete process.env.PAPERCLIP_PROJECT_WORKSPACE_ID;
+      delete process.env.PAPERCLIP_SEED_EXPECTED_COMPANY_ID;
+
+      const inspectLegacyDatabase = vi.fn();
+      const seedDatabase = vi.fn();
+
+      await expect(ensureWorktreeSeeded(
+        { config: configPath },
+        { inspectLegacyDatabase, seedDatabase },
+      )).resolves.toEqual({ seeded: false, reason: "legacy_unmarked" });
+
+      expect(inspectLegacyDatabase).not.toHaveBeenCalled();
+      expect(seedDatabase).not.toHaveBeenCalled();
+      expect(readWorktreeSeedManifest(configPath)).toBeNull();
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("honors a legacy complete marker without resolving a seed source", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-complete-marker-"));
+    try {
+      const configPath = path.join(tempRoot, "config.json");
+      fs.writeFileSync(configPath, `${JSON.stringify(buildSourceConfig())}\n`);
+      fs.writeFileSync(path.join(tempRoot, "seed-complete"), "complete\n");
+      delete process.env.PAPERCLIP_WORKSPACE_BASE_CWD;
+
+      const inspectLegacyDatabase = vi.fn();
+      const seedDatabase = vi.fn();
+
+      await expect(ensureWorktreeSeeded(
+        { config: configPath },
+        { inspectLegacyDatabase, seedDatabase },
+      )).resolves.toEqual({ seeded: false, reason: "complete_marker" });
+
+      expect(inspectLegacyDatabase).not.toHaveBeenCalled();
+      expect(seedDatabase).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("seeds a configured worktree with no seed markers when no legacy database is present", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-unmarked-empty-"));
+    try {
+      const sourceConfigPath = path.join(tempRoot, "source", "config.json");
+      const targetRoot = path.join(tempRoot, "worktree");
+      const targetConfigPath = path.join(targetRoot, ".paperclip", "config.json");
+      const targetPaths = resolveWorktreeLocalPaths({
+        cwd: targetRoot,
+        homeDir: path.join(tempRoot, "worktree-home"),
+        instanceId: "unmarked-empty-target",
+      });
+      const sourceConfig = buildSourceConfig();
+      const targetConfig = buildWorktreeConfig({
+        sourceConfig,
+        paths: targetPaths,
+        serverPort: 3194,
+        databasePort: 54994,
+      });
+      fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
+      fs.mkdirSync(path.dirname(targetConfigPath), { recursive: true });
+      fs.writeFileSync(sourceConfigPath, `${JSON.stringify(sourceConfig)}\n`);
+      fs.writeFileSync(path.join(path.dirname(sourceConfigPath), ".env"), "PAPERCLIP_INSTANCE_ID=source\n");
+      fs.writeFileSync(targetConfigPath, `${JSON.stringify(targetConfig)}\n`);
+      fs.writeFileSync(
+        path.join(targetRoot, ".paperclip", ".env"),
+        `PAPERCLIP_HOME=${targetPaths.homeDir}\nPAPERCLIP_INSTANCE_ID=${targetPaths.instanceId}\n`,
+      );
+      const inspectLegacyDatabase = vi.fn().mockResolvedValue(null);
+      const seedDatabase = vi.fn().mockResolvedValue(mockVerifiedSeedResult());
+
+      await expect(ensureWorktreeSeeded(
+        { config: targetConfigPath, fromConfig: sourceConfigPath },
+        { inspectLegacyDatabase, seedDatabase },
+      )).resolves.toMatchObject({ seeded: true, reason: "seeded" });
+
+      expect(inspectLegacyDatabase).toHaveBeenCalledWith(targetConfigPath);
+      expect(seedDatabase).toHaveBeenCalledTimes(1);
+      expect(readWorktreeSeedManifest(targetConfigPath)).toMatchObject({
+        state: "verified",
+        phase: "complete",
+        migrationRevision: "0142_test.sql",
+      });
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("adopts a markerless legacy worktree only after validating its database schema", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-unmarked-legacy-"));
+    try {
+      const sourceConfigPath = path.join(tempRoot, "source", "config.json");
+      const targetRoot = path.join(tempRoot, "worktree");
+      const targetConfigPath = path.join(targetRoot, ".paperclip", "config.json");
+      const targetPaths = resolveWorktreeLocalPaths({
+        cwd: targetRoot,
+        homeDir: path.join(tempRoot, "worktree-home"),
+        instanceId: "unmarked-legacy-target",
+      });
+      const sourceConfig = buildSourceConfig();
+      const targetConfig = buildWorktreeConfig({
+        sourceConfig,
+        paths: targetPaths,
+        serverPort: 3193,
+        databasePort: 54993,
+      });
+      fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
+      fs.mkdirSync(path.dirname(targetConfigPath), { recursive: true });
+      fs.writeFileSync(sourceConfigPath, `${JSON.stringify(sourceConfig)}\n`);
+      fs.writeFileSync(path.join(path.dirname(sourceConfigPath), ".env"), "PAPERCLIP_INSTANCE_ID=source\n");
+      fs.writeFileSync(targetConfigPath, `${JSON.stringify(targetConfig)}\n`);
+      fs.writeFileSync(
+        path.join(targetRoot, ".paperclip", ".env"),
+        `PAPERCLIP_HOME=${targetPaths.homeDir}\nPAPERCLIP_INSTANCE_ID=${targetPaths.instanceId}\n`,
+      );
+      const seedDatabase = vi.fn();
+
+      await expect(ensureWorktreeSeeded(
+        { config: targetConfigPath, fromConfig: sourceConfigPath },
+        {
+          inspectLegacyDatabase: vi.fn().mockResolvedValue({ migrationRevision: "0141_legacy.sql" }),
+          seedDatabase,
+        },
+      )).resolves.toEqual({ seeded: false, reason: "legacy_database" });
+
+      expect(seedDatabase).not.toHaveBeenCalled();
+      expect(readWorktreeSeedManifest(targetConfigPath)).toMatchObject({
+        state: "verified",
+        phase: "complete",
+        migrationRevision: "0141_legacy.sql",
+      });
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("managed ensure-seeded derives a valid source from the registered base workspace", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-managed-seed-"));
     try {
@@ -684,7 +887,7 @@ describe("worktree helpers", () => {
   });
 
   it.each(["sibling", "foreign_instance", "symlink", "instance_mismatch"] as const)(
-    "managed ensure-seeded rejects a %s manifest source before lock or seed mutation",
+    "managed ensure-seeded re-derives a stale %s manifest source from registration",
     async (variant) => {
       const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), `paperclip-worktree-managed-${variant}-`));
       try {
@@ -727,16 +930,31 @@ describe("worktree helpers", () => {
             JSON.stringify({ ...manifest, source: { ...manifest.source, instanceId: "foreign" } }),
           );
         }
-        const seedDatabase = vi.fn();
+        const seedDatabase = vi.fn().mockResolvedValue(mockVerifiedSeedResult());
 
         await expect(ensureWorktreeSeeded({
           config: targetConfigPath,
           registeredBaseWorkspaceCwd: baseRoot,
           registeredProjectWorkspaceId: "project-workspace-1",
           expectedCompanyId: "company-1",
-        }, { seedDatabase })).rejects.toThrow();
+        }, { seedDatabase })).resolves.toMatchObject({ seeded: true, reason: "seeded" });
 
-        expect(seedDatabase).not.toHaveBeenCalled();
+        expect(seedDatabase).toHaveBeenCalledWith(expect.objectContaining({
+          sourceConfigPath: canonicalSource,
+          expectedCompanyId: "company-1",
+        }));
+        expect(readWorktreeSeedManifest(targetConfigPath)).toMatchObject({
+          source: {
+            configPath: canonicalSource,
+            instanceId: "registered-source",
+          },
+          state: "verified",
+          diagnostics: expect.arrayContaining([
+            expect.objectContaining({
+              message: "Re-derived seed source diagnostics from the registered canonical source.",
+            }),
+          ]),
+        });
         expect(fs.existsSync(path.join(targetRoot, ".paperclip", "seed.lock"))).toBe(false);
       } finally {
         fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -1309,6 +1527,93 @@ describe("worktree helpers", () => {
   });
 
   itEmbeddedPostgres(
+    "seeds a local-trusted implicit board user without a credential account",
+    async () => {
+      const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-local-board-seed-"));
+      const worktreeRoot = path.join(tempRoot, "PAP-17696-local-board-seed");
+      const sourceConfigDir = path.join(tempRoot, "source");
+      const sourceConfigPath = path.join(sourceConfigDir, "config.json");
+      const sourceKeyPath = path.join(sourceConfigDir, "secrets", "master.key");
+      const worktreeHome = path.join(tempRoot, ".paperclip-worktrees");
+      const originalCwd = process.cwd();
+      const sourceDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-local-board-source-");
+
+      try {
+        await seedValidWorktreeSource(sourceDb.connectionString, {
+          includeCredentialAccount: false,
+          userId: "local-board",
+        });
+        fs.mkdirSync(path.dirname(sourceKeyPath), { recursive: true });
+        fs.mkdirSync(worktreeRoot, { recursive: true });
+
+        const sourceConfig = buildSourceConfig();
+        sourceConfig.database = {
+          ...sourceConfig.database,
+          mode: "postgres",
+          connectionString: sourceDb.connectionString,
+        };
+        sourceConfig.server.deploymentMode = "local_trusted";
+        sourceConfig.server.exposure = "private";
+        sourceConfig.auth.baseUrlMode = "auto";
+        delete sourceConfig.auth.publicBaseUrl;
+        sourceConfig.secrets.localEncrypted.keyFilePath = sourceKeyPath;
+
+        fs.writeFileSync(sourceConfigPath, `${JSON.stringify(sourceConfig, null, 2)}\n`, "utf8");
+        fs.writeFileSync(sourceKeyPath, "source-master-key", "utf8");
+
+        process.chdir(worktreeRoot);
+        await worktreeInitCommand({
+          name: "PAP-17696-local-board-seed",
+          home: worktreeHome,
+          fromConfig: sourceConfigPath,
+          force: true,
+        });
+
+        const targetConfigPath = path.join(worktreeRoot, ".paperclip", "config.json");
+        const targetConfig = JSON.parse(fs.readFileSync(targetConfigPath, "utf8")) as PaperclipConfig;
+        expect(readWorktreeSeedManifest(targetConfigPath)).toMatchObject({
+          state: "verified",
+          phase: "complete",
+        });
+
+        const { default: EmbeddedPostgres } = await import("embedded-postgres");
+        const targetPg = new EmbeddedPostgres({
+          databaseDir: targetConfig.database.embeddedPostgresDataDir,
+          user: "paperclip",
+          password: "paperclip",
+          port: targetConfig.database.embeddedPostgresPort,
+          persistent: true,
+          initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
+          onLog: () => {},
+          onError: () => {},
+        });
+
+        await targetPg.start();
+        try {
+          const targetDb = createDb(
+            `postgres://paperclip:paperclip@127.0.0.1:${targetConfig.database.embeddedPostgresPort}/paperclip`,
+          );
+          const [seededLocalBoard] = await targetDb
+            .select({ id: authUsers.id })
+            .from(authUsers)
+            .where(eq(authUsers.id, "local-board"));
+          const seededAccounts = await targetDb.select().from(authAccounts);
+          expect(seededLocalBoard?.id).toBe("local-board");
+          expect(seededAccounts).toHaveLength(0);
+          await targetDb.$client.end({ timeout: 5 });
+        } finally {
+          await targetPg.stop();
+        }
+      } finally {
+        process.chdir(originalCwd);
+        await sourceDb.cleanup();
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
+
+  itEmbeddedPostgres(
     "seeds a lagging source whose migration application order differs from filename order",
     async () => {
       const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-auth-seed-"));
@@ -1529,6 +1834,61 @@ describe("worktree helpers", () => {
       expect(config.database.embeddedPostgresPort).not.toBe(54330);
       expect(config.database.embeddedPostgresPort).not.toBe(config.server.port);
       expect(config.database.embeddedPostgresPort).toBeGreaterThan(54330);
+    } finally {
+      process.chdir(originalCwd);
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("reserves distinct ports for postgres-mode siblings under a custom worktree parent", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-custom-parent-"));
+    const homeDir = path.join(tempRoot, ".paperclip-worktrees");
+    const customParentDir = path.join(tempRoot, "custom", "workspace-lanes");
+    const firstWorktreeRoot = path.join(customParentDir, "lane-one");
+    const secondWorktreeRoot = path.join(customParentDir, "lane-two");
+    const missingSourceConfig = path.join(tempRoot, "missing", "config.json");
+    const firstConfigPath = path.join(firstWorktreeRoot, ".paperclip", "config.json");
+    const secondConfigPath = path.join(secondWorktreeRoot, ".paperclip", "config.json");
+    const originalCwd = process.cwd();
+
+    try {
+      fs.mkdirSync(firstWorktreeRoot, { recursive: true });
+      fs.mkdirSync(secondWorktreeRoot, { recursive: true });
+
+      process.chdir(firstWorktreeRoot);
+      await worktreeInitCommand({
+        name: "lane-one",
+        seed: false,
+        fromConfig: missingSourceConfig,
+        home: homeDir,
+      });
+
+      const firstConfig = JSON.parse(fs.readFileSync(firstConfigPath, "utf8"));
+      firstConfig.database = {
+        ...firstConfig.database,
+        mode: "postgres",
+        connectionString: "postgres://paperclip:paperclip@127.0.0.1:54330/paperclip",
+      };
+      fs.writeFileSync(firstConfigPath, `${JSON.stringify(firstConfig, null, 2)}\n`, "utf8");
+
+      process.chdir(secondWorktreeRoot);
+      await worktreeInitCommand({
+        name: "lane-two",
+        seed: false,
+        fromConfig: missingSourceConfig,
+        home: homeDir,
+      });
+
+      const secondConfig = JSON.parse(fs.readFileSync(secondConfigPath, "utf8"));
+      const registry = JSON.parse(
+        fs.readFileSync(path.join(homeDir, "worktree-port-reservations.json"), "utf8"),
+      );
+
+      expect(secondConfig.server.port).not.toBe(firstConfig.server.port);
+      expect(secondConfig.database.embeddedPostgresPort).not.toBe(
+        firstConfig.database.embeddedPostgresPort,
+      );
+      expect(registry.configPaths).toEqual([firstConfigPath, secondConfigPath].sort());
     } finally {
       process.chdir(originalCwd);
       fs.rmSync(tempRoot, { recursive: true, force: true });

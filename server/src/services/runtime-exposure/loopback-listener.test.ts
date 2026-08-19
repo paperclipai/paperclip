@@ -162,7 +162,7 @@ describe("diagnoseRuntimeListenerBinds against live listeners", () => {
       expect(diagnosis).toContain(`port ${appPort}`);
       // Node's hostless listen is dual-stack, so /proc shows :: and/or 0.0.0.0.
       expect(diagnosis).toMatch(/0\.0\.0\.0|::/);
-      expect(diagnosis).toContain("--bind custom --bind-host 127.0.0.1");
+      expect(diagnosis).toContain("--bind loopback");
     });
   });
 
