@@ -60,6 +60,19 @@ test("candidate-branch betas are validated and fully verified before publish", (
   assert.match(releaseWorkflow, /needs\.verify_beta_candidate\.result == 'success'/);
 });
 
+test("post-publish beta smoke survives the skipped candidate-verification ancestor", () => {
+  const releaseWorkflow = readWorkflow("release.yml");
+
+  // publish_beta's needs chain contains verify_beta_candidate, which is
+  // skipped on promote-mode betas. An `if:` without a status-check function
+  // gets an implicit success() that evaluates that chain transitively and
+  // silently skips the smoke. The condition must stay explicit.
+  assert.match(
+    releaseWorkflow,
+    /smoke_beta:\n\s+needs: publish_beta\n\s+if: \$\{\{ !cancelled\(\) && needs\.publish_beta\.result == 'success' && !inputs\.dry_run \}\}/,
+  );
+});
+
 test("every lane's tag push degrades to recovery instructions when rejected", () => {
   const releaseWorkflow = readWorkflow("release.yml");
 

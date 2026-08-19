@@ -2929,7 +2929,11 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
   }
 
   if (custom.kind === "interaction" && interaction) {
-    if (interaction.kind === "request_confirmation" && interaction.status === "expired") {
+    if (
+      interaction.kind === "request_confirmation"
+      && interaction.status === "expired"
+      && !interaction.payload.secretProposal
+    ) {
       return (
         <ExpiredRequestConfirmationActivity
           message={message}

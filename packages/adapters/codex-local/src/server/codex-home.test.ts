@@ -400,6 +400,142 @@ describe("seedManagedCodexHome", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  // A device-login promotion writes the company credential as a regular-file
+  // subscription auth.json. Re-seeding must keep it, or the first Test probe or
+  // run after a successful login silently signs the company out. The four cases
+  // below pin the identity-anchored rule: keep a subscription identity the
+  // shared source does not hold; still heal the same-identity stale copy
+  // (#5028) and still remove apikey-mode residue.
+  const subscriptionAuth = (accountId: string, marker: string) =>
+    JSON.stringify({
+      tokens: {
+        id_token: `synthetic-id-token-${marker}`,
+        access_token: `synthetic-access-token-${marker}`,
+        refresh_token: `synthetic-refresh-token-${marker}`,
+        account_id: accountId,
+      },
+      last_refresh: "2026-07-09T00:00:00Z",
+    });
+
+  it("keeps a promoted subscription auth.json when the shared source has no auth", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-promoted-"));
+    try {
+      const companyHome = path.join(root, "company-home");
+      const emptyShared = path.join(root, "empty-shared");
+      const promoted = subscriptionAuth("acct-promoted", "promoted");
+      await fs.mkdir(emptyShared, { recursive: true });
+      await fs.mkdir(companyHome, { recursive: true });
+      await fs.writeFile(path.join(companyHome, "auth.json"), promoted, "utf8");
+
+      await seedManagedCodexHome(companyHome, { CODEX_HOME: emptyShared }, async () => {});
+
+      const kept = path.join(companyHome, "auth.json");
+      expect((await fs.lstat(kept)).isSymbolicLink()).toBe(false);
+      expect(await fs.readFile(kept, "utf8")).toBe(promoted);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a promoted subscription auth.json whose identity differs from the shared source", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-foreign-"));
+    try {
+      const companyHome = path.join(root, "company-home");
+      const sharedCodexHome = path.join(root, "shared-codex-home");
+      const promoted = subscriptionAuth("acct-promoted", "promoted");
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.writeFile(
+        path.join(sharedCodexHome, "auth.json"),
+        subscriptionAuth("acct-host", "host"),
+        "utf8",
+      );
+      await fs.mkdir(companyHome, { recursive: true });
+      await fs.writeFile(path.join(companyHome, "auth.json"), promoted, "utf8");
+
+      await seedManagedCodexHome(companyHome, { CODEX_HOME: sharedCodexHome }, async () => {});
+
+      const kept = path.join(companyHome, "auth.json");
+      expect((await fs.lstat(kept)).isSymbolicLink()).toBe(false);
+      expect(await fs.readFile(kept, "utf8")).toBe(promoted);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("still replaces a same-identity stale regular copy with the shared symlink (#5028)", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-stale-"));
+    try {
+      const companyHome = path.join(root, "company-home");
+      const sharedCodexHome = path.join(root, "shared-codex-home");
+      const fresh = subscriptionAuth("acct-same", "fresh");
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.writeFile(path.join(sharedCodexHome, "auth.json"), fresh, "utf8");
+      await fs.mkdir(companyHome, { recursive: true });
+      await fs.writeFile(
+        path.join(companyHome, "auth.json"),
+        subscriptionAuth("acct-same", "stale"),
+        "utf8",
+      );
+
+      await seedManagedCodexHome(companyHome, { CODEX_HOME: sharedCodexHome }, async () => {});
+
+      const healed = path.join(companyHome, "auth.json");
+      expect((await fs.lstat(healed)).isSymbolicLink()).toBe(true);
+      expect(await fs.readFile(healed, "utf8")).toBe(fresh);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the usable target when the shared source exists but cannot be read", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-src-err-"));
+    try {
+      const companyHome = path.join(root, "company-home");
+      const sharedCodexHome = path.join(root, "shared-codex-home");
+      // A directory at the source auth.json path makes the read fail with
+      // EISDIR — a deterministic present-but-unreadable source. Removal plus
+      // the existence-only symlink pass would link the home to a source no
+      // downstream reader can use, so the usable target must survive.
+      await fs.mkdir(path.join(sharedCodexHome, "auth.json"), { recursive: true });
+      await fs.mkdir(companyHome, { recursive: true });
+      const target = subscriptionAuth("acct-unknown-source", "target");
+      await fs.writeFile(path.join(companyHome, "auth.json"), target, "utf8");
+
+      await seedManagedCodexHome(companyHome, { CODEX_HOME: sharedCodexHome }, async () => {});
+
+      const kept = path.join(companyHome, "auth.json");
+      expect((await fs.lstat(kept)).isSymbolicLink()).toBe(false);
+      expect(await fs.readFile(kept, "utf8")).toBe(target);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("still removes an apikey-mode auth.json so the chatgpt-mode symlink is restored", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-apikey-residue-"));
+    try {
+      const companyHome = path.join(root, "company-home");
+      const sharedCodexHome = path.join(root, "shared-codex-home");
+      const shared = subscriptionAuth("acct-host", "host");
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.writeFile(path.join(sharedCodexHome, "auth.json"), shared, "utf8");
+      await fs.mkdir(companyHome, { recursive: true });
+      await fs.writeFile(
+        path.join(companyHome, "auth.json"),
+        '{"OPENAI_API_KEY":"stale-key"}',
+        "utf8",
+      );
+
+      await seedManagedCodexHome(companyHome, { CODEX_HOME: sharedCodexHome }, async () => {});
+
+      const healed = path.join(companyHome, "auth.json");
+      expect((await fs.lstat(healed)).isSymbolicLink()).toBe(true);
+      expect(await fs.readFile(healed, "utf8")).toBe(shared);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 // Startup backfill for already-isolated managed homes.

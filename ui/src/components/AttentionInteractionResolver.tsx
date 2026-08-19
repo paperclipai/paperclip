@@ -28,6 +28,18 @@ interface AttentionInteractionResolverProps {
   onResolved?: () => void;
 }
 
+export function replaceResolvedInteraction(
+  current: IssueThreadInteraction[] | undefined,
+  resolvedInteraction: IssueThreadInteraction,
+): IssueThreadInteraction[] {
+  const existing = current ?? [];
+  const index = existing.findIndex((entry) => entry.id === resolvedInteraction.id);
+  if (index < 0) return [...existing, resolvedInteraction];
+  return existing.map((entry, entryIndex) =>
+    entryIndex === index ? resolvedInteraction : entry,
+  );
+}
+
 /**
  * Lazily fetches the full issue-thread interaction referenced by an attention
  * row and renders the existing {@link IssueThreadInteractionCard} inline, so
@@ -56,7 +68,17 @@ export function AttentionInteractionResolver({
     return match && isIssueThreadInteraction(match) ? match : null;
   }, [interactions, interactionId]);
 
-  const invalidate = () => {
+  const invalidate = (resolvedInteraction?: IssueThreadInteraction) => {
+    // The accept route returns the fully stitched interaction (including
+    // secretProposal.executed/failed). Put that receipt in the cache before
+    // invalidating so the attention surface never flashes a generic Accepted
+    // state while the refetch catches up.
+    if (resolvedInteraction) {
+      queryClient.setQueryData<IssueThreadInteraction[] | undefined>(
+        queryKeys.issues.interactions(issueId),
+        (current) => replaceResolvedInteraction(current, resolvedInteraction),
+      );
+    }
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(issueId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
     onResolved?.();

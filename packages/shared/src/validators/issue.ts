@@ -25,8 +25,11 @@ import {
   clampIssueRequestDepth,
   ISSUE_STATUSES,
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
+  ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES,
+  ISSUE_THREAD_INTERACTION_EFFECTIVE_RESOLVER_POLICY_SOURCES,
   ISSUE_THREAD_INTERACTION_KINDS,
   ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES,
+  ISSUE_THREAD_INTERACTION_RESOLVER_POLICY_PROVENANCES,
   ISSUE_THREAD_INTERACTION_STATUSES,
   ISSUE_WATCHDOG_DISCOVERY_KINDS,
   MODEL_PROFILE_KEYS,
@@ -692,7 +695,18 @@ export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
 
 export const issueThreadInteractionStatusSchema = z.enum(ISSUE_THREAD_INTERACTION_STATUSES);
 export const issueThreadInteractionKindSchema = z.enum(ISSUE_THREAD_INTERACTION_KINDS);
-export const issueThreadInteractionResolverPolicySchema = z.enum(ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES);
+export const issueThreadInteractionCanonicalResolverPolicySchema = z
+  .enum(ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES)
+  .describe("Canonical resolver audience: anyone, not_creator, or human_only.");
+export const issueThreadInteractionResolverPolicySchema = z
+  .enum(ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES)
+  .describe(
+    "Resolver audience. Use anyone, not_creator, or human_only; board_or_agents and board_only are deprecated compatibility aliases.",
+  );
+export const issueThreadInteractionResolverPolicyProvenanceSchema = z
+  .enum(ISSUE_THREAD_INTERACTION_RESOLVER_POLICY_PROVENANCES);
+export const issueThreadInteractionEffectiveResolverPolicySourceSchema = z
+  .enum(ISSUE_THREAD_INTERACTION_EFFECTIVE_RESOLVER_POLICY_SOURCES);
 export const issueThreadInteractionContinuationPolicySchema = z.enum(
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
 );
@@ -899,6 +913,17 @@ export const requestConfirmationToolActionPayloadSchema = z.object({
   expiresAt: z.string().datetime({ offset: true }),
 });
 
+export const requestConfirmationSecretProposalPayloadSchema = z.object({
+  version: z.literal(1),
+  proposalId: z.string().uuid(),
+  sourceSecretLabel: z.string().trim().min(1).max(500),
+  configPath: z.string().trim().min(1).max(500),
+  targetAgentId: z.string().uuid(),
+  targetAgentName: z.string().trim().min(1).max(500),
+  justification: z.string().trim().min(1).max(20000),
+  expiresAt: z.string().datetime({ offset: true }),
+});
+
 export const requestConfirmationPayloadSchema = z.object({
   version: z.literal(1),
   prompt: z.string().trim().min(1).max(1000),
@@ -912,6 +937,7 @@ export const requestConfirmationPayloadSchema = z.object({
   supersedeOnUserComment: z.boolean().optional(),
   target: requestConfirmationTargetSchema.nullable().optional(),
   toolAction: requestConfirmationToolActionPayloadSchema.optional(),
+  secretProposal: requestConfirmationSecretProposalPayloadSchema.optional(),
 });
 
 export const requestCheckboxConfirmationOptionSchema = z.object({
@@ -1038,6 +1064,13 @@ export const requestConfirmationToolActionResultSchema = z.object({
   updatedAt: z.string().datetime({ offset: true }),
 });
 
+export const requestConfirmationSecretProposalResultSchema = z.object({
+  version: z.literal(1),
+  status: z.enum(["executed", "failed", "rejected", "withdrawn", "expired"]),
+  errorCode: z.string().trim().min(1).max(120).nullable().optional(),
+  updatedAt: z.string().datetime({ offset: true }),
+});
+
 export const requestConfirmationResultSchema = z.object({
   version: z.literal(1),
   outcome: z.enum([
@@ -1056,6 +1089,7 @@ export const requestConfirmationResultSchema = z.object({
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
   resumeFailure: requestConfirmationResumeFailureSchema.nullable().optional(),
   toolAction: requestConfirmationToolActionResultSchema.optional(),
+  secretProposal: requestConfirmationSecretProposalResultSchema.optional(),
 });
 
 export const requestCheckboxConfirmationResultSchema = requestConfirmationResultSchema.extend({
@@ -1165,9 +1199,26 @@ export const requestItemVerdictsResultItemSchema = z.object({
   id: z.string().trim().min(1).max(120),
   verdict: requestItemVerdictValueSchema,
   reason: z.string().trim().max(4000).nullable().optional(),
-  resolvedByUserId: z.string().trim().min(1).max(255),
+  resolvedByUserId: z.string().trim().min(1).max(255).nullable().optional(),
+  resolvedByAgentId: z.string().uuid().nullable().optional(),
+  resolvedByRunId: z.string().uuid().nullable().optional(),
   resolvedAt: z.union([z.string().datetime(), z.date()]),
   commentId: z.string().uuid().nullable().optional(),
+}).superRefine((value, ctx) => {
+  if (!value.resolvedByUserId && !value.resolvedByAgentId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "a user or agent resolver is required",
+      path: ["resolvedByUserId"],
+    });
+  }
+  if (value.resolvedByAgentId && !value.resolvedByRunId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "resolvedByRunId is required for an agent resolver",
+      path: ["resolvedByRunId"],
+    });
+  }
 });
 
 export const requestItemVerdictsResultSchema = z.object({

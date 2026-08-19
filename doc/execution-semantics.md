@@ -575,6 +575,28 @@ On startup and on the periodic recovery loop, Paperclip now does five things in 
 
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output. The productivity-review pass is later and separate; it reviews unusual progression patterns on assigned source issues, not stale run handles after a source issue already has a valid disposition.
 
+### Issue-thread interaction resolution
+
+Every issue-thread interaction kind inherits resolver policy `anyone` when the
+creator omits a policy. `anyone` includes the creator agent and creating run.
+Callers opt into independent review with `not_creator` or human resolution with
+`human_only`; a named addressee and company cap may narrow the effective audience.
+The legacy input aliases `board_or_agents` and `board_only` normalize to `anyone`
+and `human_only` for new writes.
+
+Resolver policy is snapshotted with explicit/inherited provenance and an effective
+source (`requested`, `company_cap`, or `governed_action`). Existing ambiguous
+legacy rows are marked `legacy_inherited_restriction` and retain their old
+restriction: `board_or_agents` becomes `not_creator`, not `anyone`, while
+`board_only` becomes `human_only`. Pending cards are never silently widened.
+
+Resolution is exact-once and requires issue access in the same company. Agent
+resolution also requires valid run attribution and remains subject to low-trust
+and task-bridge containment. Target freshness and supersession are checked before
+the outcome commits. Resolution records an answer; every continuation, task
+creation, tool/provider call, execution-policy transition, spend, deployment, or
+other effect independently re-runs its own authorization and approval gates.
+
 ## 11. Task Watchdog for Issue Trees
 
 A task watchdog watches a configured issue subtree after that subtree has stopped moving. It is a product-level verification and recovery mechanism for selected work, not a process monitor.
@@ -623,13 +645,13 @@ When the source issue is non-terminal and has no other live path, the product sh
 
 ### Watchdog authority during execution
 
-The watchdog agent acts in a scoped capacity, not as the original deliverable worker and not as the board. The server must enforce the authority contract in `doc/SPEC-implementation.md` from persisted watchdog context. Prompt text and custom instructions may guide the watchdog's judgment, but they cannot grant authority outside the watched subtree or beyond the allowed mutation and interaction list.
+The watchdog agent acts in a scoped capacity, not as the original deliverable worker and not as the board. The server must enforce the authority contract in `doc/SPEC-implementation.md` from persisted watchdog context. Prompt text and custom instructions may guide the watchdog's judgment, but they cannot grant authority outside the watched subtree or widen an interaction's ordinary effective audience.
 
 Watchdogs must not create visible probe issues, comments, or throwaway tasks to discover capability boundaries. They should rely on the wake capability metadata and explicit API denials, then record any denied operation as evidence in the reusable watchdog issue.
 
 The watchdog should verify stopped leaves against comments, documents, work products, tests, screenshots, blockers, review state, and run context. It should not accept "I could not" or "waiting for approval" as sufficient by itself.
 
-When work should continue, the watchdog restores a live path inside the watched subtree: reopen or reassign stuck work, create follow-up issues, repair blockers, set a monitor, or resolve an eligible plan confirmation. When the stopped state is legitimate, the watchdog records why and leaves the subtree with a valid terminal, waiting, blocked, review, or explicit recovery path.
+When work should continue, the watchdog restores a live path inside the watched subtree: reopen or reassign stuck work, create follow-up issues, repair blockers, set a monitor, or resolve an interaction that its ordinary agent audience permits. When the stopped state is legitimate, the watchdog records why and leaves the subtree with a valid terminal, waiting, blocked, review, or explicit recovery path.
 
 ### Atomic recovery batch
 
@@ -637,16 +659,19 @@ Restoration is often more than one write — reopen the dead-end leaf **and** ex
 
 This preserves the stale-guard's purpose — never keep mutating a subtree that just went live under the watchdog's feet — while removing the failure mode where spending the only permitted write on an informational comment forfeits the state-restoring mutation the recovery actually needed.
 
-### Eligible interaction decisions
+### Interaction decisions
 
-A task watchdog may resolve only eligible `request_confirmation` plan confirmations. Eligibility is defined in `doc/SPEC-implementation.md` and must be checked by the server at decision time. The critical constraints are:
+A task watchdog is an ordinary agent for interaction resolution. Its watchdog
+context provides no special audience, plan-purpose marker, or kind allowlist, and
+it is not a categorical denial. The normal evaluator checks the effective policy,
+named addressee, company and issue scope, run attribution, low-trust/task-bridge
+containment, target freshness, and exact-once state.
 
-- the interaction is pending, targeted at the current `plan` document revision for an included subtree issue, and explicitly marked as a plan-approval confirmation
-- accepting it authorizes only decomposition or task-level continuation inside the watched subtree
-- the plan is not asking for board-only governance, spend, hiring, security, deployment, secret, destructive data, legal/compliance, cross-company, or other sensitive approval
-- no newer durable source activity or policy reserves the decision for a human, CTO, Security, or the board
-
-The watchdog cannot resolve `request_checkbox_confirmation`, `ask_user_questions`, `suggest_tasks`, linked approvals, execution-policy decisions unless it is the typed participant outside watchdog capacity, or document comments written as freeform approval.
+This does not give a watchdog downstream authority. Linked/formal approvals remain
+separate, execution-policy decisions still require the typed participant, and an
+accepted interaction cannot authorize spend, hiring, secrets, deployment,
+destructive data changes, cross-company work, or any mutation the watchdog scope
+otherwise forbids.
 
 ### Completion and fingerprint updates
 

@@ -8,22 +8,32 @@ import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  authAccounts,
   authUsers,
   companies,
+  companyMemberships,
   createDb,
+  executionWorkspaces,
+  inspectMigrations,
   issueComments,
   issues,
+  projectWorkspaces,
+  instanceUserRoles,
   projects,
   routines,
   routineTriggers,
+  workspaceRuntimeServices,
 } from "@paperclipai/db";
 import {
   copyGitHooksToWorktreeGitDir,
   copySeededSecretsKey,
+  ensureEmbeddedPostgres,
   ensureWorktreeSeeded,
+  formatWorktreeSeedFailureDiagnostic,
   markWorktreeSeedPending,
   pauseSeededScheduledRoutines,
   quarantineSeededWorktreeExecutionState,
+  readWorktreeSeedManifest,
   readSourceAttachmentBody,
   rebindWorkspaceCwd,
   resolveSourceConfigPath,
@@ -32,6 +42,7 @@ import {
   resolveGitWorktreeAddArgs,
   resolvePnpmInstallInvocation,
   resolveCurrentWorktreeEndpoint,
+  resolveWorktreeSeedMigrationRevision,
   resolveWorktreeSeedBackupEngine,
   resolveWorktreeMakeTargetPath,
   worktreeRepairCommand,
@@ -60,6 +71,88 @@ const ORIGINAL_ENV = { ...process.env };
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const itEmbeddedPostgres = embeddedPostgresSupport.supported ? it : it.skip;
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+function mockVerifiedSeedResult() {
+  return {
+    backupSummary: "snapshot.sql",
+    snapshotAt: "2026-08-18T00:00:00.000Z",
+    migrationRevision: "0142_test.sql",
+    pausedScheduledRoutines: 0,
+    executionQuarantine: {
+      disabledTimerHeartbeats: 0,
+      resetRunningAgents: 0,
+      quarantinedInProgressIssues: 0,
+      unassignedTodoIssues: 0,
+      unassignedReviewIssues: 0,
+      stoppedProjectWorkspaceRuntimes: 0,
+      stoppedExecutionWorkspaceRuntimes: 0,
+      stoppedRuntimeServices: 0,
+    },
+    reboundWorkspaces: [],
+    validation: {
+      authUserCount: 1,
+      credentialAccountCount: 1,
+      instanceAdminCount: 1,
+      activeMembershipCount: 1,
+      companyCount: 1,
+      issueCount: 1,
+      representativeCompanyId: "00000000-0000-4000-8000-000000000001",
+      representativeIssueId: "00000000-0000-4000-8000-000000000002",
+      migrationRevision: "0142_test.sql",
+    },
+  };
+}
+
+async function seedValidWorktreeSource(connectionString: string) {
+  const db = createDb(connectionString);
+  const companyId = randomUUID();
+  const issueId = randomUUID();
+  const now = new Date();
+  await db.insert(authUsers).values({
+    id: "user-existing",
+    email: "existing@paperclip.ing",
+    name: "Existing User",
+    emailVerified: true,
+    createdAt: now,
+    updatedAt: now,
+  });
+  await db.insert(authAccounts).values({
+    id: "credential-existing",
+    accountId: "existing@paperclip.ing",
+    providerId: "credential",
+    userId: "user-existing",
+    password: "fixture-password-hash",
+    createdAt: now,
+    updatedAt: now,
+  });
+  await db.insert(instanceUserRoles).values({
+    userId: "user-existing",
+    role: "instance_admin",
+  });
+  await db.insert(companies).values({
+    id: companyId,
+    name: "Seed Source",
+    issuePrefix: "SEED",
+    requireBoardApprovalForNewAgents: false,
+  });
+  await db.insert(companyMemberships).values({
+    companyId,
+    principalType: "user",
+    principalId: "user-existing",
+    status: "active",
+  });
+  await db.insert(issues).values({
+    id: issueId,
+    companyId,
+    title: "Representative seed issue",
+    status: "backlog",
+    priority: "medium",
+    issueNumber: 1,
+    identifier: "SEED-1",
+  });
+  await db.$client.end({ timeout: 5 });
+  return { companyId, issueId };
+}
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -397,7 +490,82 @@ describe("worktree helpers", () => {
     expect(full.nullifyColumns).toEqual({});
   });
 
-  it("ensure-seeded seeds once and fast-exits on the seed-complete marker", async () => {
+  it("requires the seed process to own the target embedded Postgres lifecycle", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-live-target-"));
+    try {
+      fs.writeFileSync(
+        path.join(tempRoot, "postmaster.pid"),
+        `${process.pid}\n${tempRoot}\n0\n55432\n`,
+      );
+
+      await expect(ensureEmbeddedPostgres(tempRoot, 55432, { allowExisting: false }))
+        .rejects.toThrow("while it is already running");
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces a credential-safe diagnostic when the target shuts down during restore", () => {
+    expect(formatWorktreeSeedFailureDiagnostic(
+      "restore",
+      new Error(
+        "Failed to restore seed.sql.gz: FATAL: the database system is shutting down; psql error: write EPIPE",
+      ),
+    )).toBe(
+      "Target embedded PostgreSQL shut down during restore. Stop any competing worktree service and retry the seed.",
+    );
+    expect(formatWorktreeSeedFailureDiagnostic("migrations", new Error("secret connection failure")))
+      .toBe("Seed failed during migrations.");
+  });
+
+  it("rejects a source migration journal that diverges from the code journal", () => {
+    expect(() => resolveWorktreeSeedMigrationRevision({
+      status: "upToDate",
+      tableCount: 1,
+      availableMigrations: ["0001_initial.sql", "0002_current.sql"],
+      appliedMigrations: ["0001_initial.sql", "0003_unknown.sql"],
+      journalEntryCount: 3,
+    }, "sourcePrefix")).toThrow("Migration journal is not a prefix of this Paperclip checkout");
+  });
+
+  it("accepts a current source whose migration application order differs from filename order", () => {
+    expect(resolveWorktreeSeedMigrationRevision({
+      status: "upToDate",
+      tableCount: 1,
+      availableMigrations: [
+        "0001_initial.sql",
+        "0002_renumbered.sql",
+        "0003_applied_earlier.sql",
+        "0004_current.sql",
+      ],
+      appliedMigrations: [
+        "0001_initial.sql",
+        "0003_applied_earlier.sql",
+        "0002_renumbered.sql",
+        "0004_current.sql",
+      ],
+      journalEntryCount: 6,
+    }, "upToDate")).toBe("0004_current.sql");
+  });
+
+  it("accepts a source migration journal that is multiple revisions behind", () => {
+    expect(resolveWorktreeSeedMigrationRevision({
+      status: "needsMigrations",
+      tableCount: 1,
+      availableMigrations: [
+        "0001_initial.sql",
+        "0002_applied.sql",
+        "0003_pending.sql",
+        "0004_pending.sql",
+      ],
+      appliedMigrations: ["0002_applied.sql", "0001_initial.sql"],
+      pendingMigrations: ["0003_pending.sql", "0004_pending.sql"],
+      journalEntryCount: 3,
+      reason: "pending-migrations",
+    }, "sourcePrefix")).toBe("0002_applied.sql");
+  });
+
+  it("ensure-seeded seeds once and fast-exits on the verified manifest", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-ensure-seeded-"));
     try {
       const sourceConfigPath = path.join(tempRoot, "source", "config.json");
@@ -418,6 +586,7 @@ describe("worktree helpers", () => {
       fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
       fs.mkdirSync(path.dirname(targetConfigPath), { recursive: true });
       fs.writeFileSync(sourceConfigPath, `${JSON.stringify(sourceConfig)}\n`);
+      fs.writeFileSync(path.join(path.dirname(sourceConfigPath), ".env"), "PAPERCLIP_INSTANCE_ID=source\n");
       fs.writeFileSync(targetConfigPath, `${JSON.stringify(targetConfig)}\n`);
       fs.writeFileSync(
         path.join(targetRoot, ".paperclip", ".env"),
@@ -426,7 +595,7 @@ describe("worktree helpers", () => {
       markWorktreeSeedPending({ configPath: targetConfigPath, sourceConfigPath });
 
       const seedDatabase = vi.fn().mockResolvedValue({
-        backupSummary: "snapshot.sql",
+        ...mockVerifiedSeedResult(),
         pausedScheduledRoutines: 2,
         executionQuarantine: {
           disabledTimerHeartbeats: 1,
@@ -434,16 +603,18 @@ describe("worktree helpers", () => {
           quarantinedInProgressIssues: 1,
           unassignedTodoIssues: 1,
           unassignedReviewIssues: 1,
+          stoppedProjectWorkspaceRuntimes: 0,
+          stoppedExecutionWorkspaceRuntimes: 0,
+          stoppedRuntimeServices: 0,
         },
-        reboundWorkspaces: [],
       });
 
       await expect(
-        ensureWorktreeSeeded({ config: targetConfigPath }, { seedDatabase }),
+        ensureWorktreeSeeded({ config: targetConfigPath, fromConfig: sourceConfigPath }, { seedDatabase }),
       ).resolves.toMatchObject({ seeded: true, reason: "seeded" });
       await expect(
         ensureWorktreeSeeded({ config: targetConfigPath }, { seedDatabase }),
-      ).resolves.toEqual({ seeded: false, reason: "complete_marker" });
+      ).resolves.toEqual({ seeded: false, reason: "verified_manifest" });
 
       expect(seedDatabase).toHaveBeenCalledTimes(1);
       expect(seedDatabase).toHaveBeenCalledWith(expect.objectContaining({
@@ -452,13 +623,128 @@ describe("worktree helpers", () => {
         instanceId: "ensure-seeded-test",
       }));
       expect(fs.existsSync(path.join(targetRoot, ".paperclip", "seed-pending"))).toBe(false);
-      expect(fs.existsSync(path.join(targetRoot, ".paperclip", "seed-complete"))).toBe(true);
+      expect(fs.existsSync(path.join(targetRoot, ".paperclip", "seed-complete"))).toBe(false);
+      expect(readWorktreeSeedManifest(targetConfigPath)).toMatchObject({
+        version: 2,
+        state: "verified",
+        phase: "complete",
+        migrationRevision: "0142_test.sql",
+        targetInstanceId: "ensure-seeded-test",
+      });
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
 
-  it("ensure-seeded keeps the pending marker when seeding fails", async () => {
+  it("managed ensure-seeded derives a valid source from the registered base workspace", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-managed-seed-"));
+    try {
+      const baseRoot = path.join(tempRoot, "base");
+      const sourceConfigPath = path.join(baseRoot, ".paperclip", "config.json");
+      const targetRoot = path.join(tempRoot, "worktree");
+      const targetConfigPath = path.join(targetRoot, ".paperclip", "config.json");
+      const targetPaths = resolveWorktreeLocalPaths({
+        cwd: targetRoot,
+        homeDir: path.join(tempRoot, "worktree-home"),
+        instanceId: "managed-target",
+      });
+      const sourceConfig = buildSourceConfig();
+      const targetConfig = buildWorktreeConfig({
+        sourceConfig,
+        paths: targetPaths,
+        serverPort: 3195,
+        databasePort: 54995,
+      });
+      fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
+      fs.mkdirSync(path.dirname(targetConfigPath), { recursive: true });
+      fs.writeFileSync(sourceConfigPath, `${JSON.stringify(sourceConfig)}\n`);
+      fs.writeFileSync(path.join(path.dirname(sourceConfigPath), ".env"), "PAPERCLIP_INSTANCE_ID=managed-source\n");
+      fs.writeFileSync(targetConfigPath, `${JSON.stringify(targetConfig)}\n`);
+      fs.writeFileSync(
+        path.join(path.dirname(targetConfigPath), ".env"),
+        `PAPERCLIP_HOME=${targetPaths.homeDir}\nPAPERCLIP_INSTANCE_ID=managed-target\n`,
+      );
+      markWorktreeSeedPending({ configPath: targetConfigPath, sourceConfigPath });
+      const seedDatabase = vi.fn().mockResolvedValue(mockVerifiedSeedResult());
+
+      await expect(ensureWorktreeSeeded({
+        config: targetConfigPath,
+        registeredBaseWorkspaceCwd: baseRoot,
+        registeredProjectWorkspaceId: "project-workspace-1",
+        expectedCompanyId: "company-1",
+      }, { seedDatabase })).resolves.toMatchObject({ seeded: true, reason: "seeded" });
+
+      expect(seedDatabase).toHaveBeenCalledWith(expect.objectContaining({
+        sourceConfigPath,
+        expectedCompanyId: "company-1",
+      }));
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["sibling", "foreign_instance", "symlink", "instance_mismatch"] as const)(
+    "managed ensure-seeded rejects a %s manifest source before lock or seed mutation",
+    async (variant) => {
+      const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), `paperclip-worktree-managed-${variant}-`));
+      try {
+        const baseRoot = path.join(tempRoot, "base");
+        const canonicalSource = path.join(baseRoot, ".paperclip", "config.json");
+        const targetRoot = path.join(tempRoot, "worktree");
+        const targetConfigPath = path.join(targetRoot, ".paperclip", "config.json");
+        const attackerRoot = path.join(tempRoot, variant);
+        const attackerConfig = path.join(attackerRoot, "config.json");
+        fs.mkdirSync(path.dirname(canonicalSource), { recursive: true });
+        fs.mkdirSync(path.dirname(targetConfigPath), { recursive: true });
+        fs.mkdirSync(attackerRoot, { recursive: true });
+        fs.writeFileSync(canonicalSource, `${JSON.stringify(buildSourceConfig())}\n`);
+        fs.writeFileSync(path.join(path.dirname(canonicalSource), ".env"), "PAPERCLIP_INSTANCE_ID=registered-source\n");
+        fs.writeFileSync(targetConfigPath, `${JSON.stringify(buildSourceConfig())}\n`);
+        fs.writeFileSync(
+          path.join(path.dirname(targetConfigPath), ".env"),
+          `PAPERCLIP_HOME=${path.join(tempRoot, "worktree-home")}\nPAPERCLIP_INSTANCE_ID=managed-target\n`,
+        );
+        fs.writeFileSync(attackerConfig, `${JSON.stringify(buildSourceConfig())}\n`);
+        fs.writeFileSync(
+          path.join(attackerRoot, ".env"),
+          `PAPERCLIP_INSTANCE_ID=${variant === "foreign_instance" ? "foreign" : "registered-source"}\n`,
+        );
+        const diagnosticPath = variant === "instance_mismatch"
+          ? canonicalSource
+          : variant === "symlink"
+          ? path.join(attackerRoot, "source-link.json")
+          : attackerConfig;
+        if (variant === "symlink") fs.symlinkSync(canonicalSource, diagnosticPath);
+        markWorktreeSeedPending({
+          configPath: targetConfigPath,
+          sourceConfigPath: diagnosticPath,
+          targetInstanceId: "managed-target",
+        });
+        if (variant === "instance_mismatch") {
+          const manifest = readWorktreeSeedManifest(targetConfigPath)!;
+          fs.writeFileSync(
+            path.join(path.dirname(targetConfigPath), "seed-manifest.json"),
+            JSON.stringify({ ...manifest, source: { ...manifest.source, instanceId: "foreign" } }),
+          );
+        }
+        const seedDatabase = vi.fn();
+
+        await expect(ensureWorktreeSeeded({
+          config: targetConfigPath,
+          registeredBaseWorkspaceCwd: baseRoot,
+          registeredProjectWorkspaceId: "project-workspace-1",
+          expectedCompanyId: "company-1",
+        }, { seedDatabase })).rejects.toThrow();
+
+        expect(seedDatabase).not.toHaveBeenCalled();
+        expect(fs.existsSync(path.join(targetRoot, ".paperclip", "seed.lock"))).toBe(false);
+      } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("ensure-seeded records a target shutdown diagnostic when restore fails", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-ensure-seeded-failure-"));
     try {
       const sourceConfigPath = path.join(tempRoot, "source", "config.json");
@@ -479,6 +765,7 @@ describe("worktree helpers", () => {
       fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
       fs.mkdirSync(path.dirname(targetConfigPath), { recursive: true });
       fs.writeFileSync(sourceConfigPath, `${JSON.stringify(sourceConfig)}\n`);
+      fs.writeFileSync(path.join(path.dirname(sourceConfigPath), ".env"), "PAPERCLIP_INSTANCE_ID=source\n");
       fs.writeFileSync(targetConfigPath, `${JSON.stringify(targetConfig)}\n`);
       fs.writeFileSync(
         path.join(targetRoot, ".paperclip", ".env"),
@@ -488,12 +775,31 @@ describe("worktree helpers", () => {
 
       await expect(
         ensureWorktreeSeeded(
-          { config: targetConfigPath },
-          { seedDatabase: vi.fn().mockRejectedValue(new Error("seed failed")) },
+          { config: targetConfigPath, fromConfig: sourceConfigPath },
+          {
+            seedDatabase: vi.fn(async (input) => {
+              input.onPhase?.("restore", "started");
+              throw new Error(
+                "Failed to restore seed.sql.gz: FATAL: the database system is shutting down; psql error: write EPIPE",
+              );
+            }),
+          },
         ),
-      ).rejects.toThrow("seed failed");
+      ).rejects.toThrow("database system is shutting down");
 
-      expect(fs.existsSync(path.join(targetRoot, ".paperclip", "seed-pending"))).toBe(true);
+      expect(readWorktreeSeedManifest(targetConfigPath)).toMatchObject({
+        state: "failed",
+        phase: "restore",
+        diagnostics: expect.arrayContaining([
+          expect.objectContaining({
+            phase: "restore",
+            status: "failed",
+            message:
+              "Target embedded PostgreSQL shut down during restore. Stop any competing worktree service and retry the seed.",
+          }),
+        ]),
+      });
+      expect(fs.existsSync(path.join(targetRoot, ".paperclip", "seed-pending"))).toBe(false);
       expect(fs.existsSync(path.join(targetRoot, ".paperclip", "seed-complete"))).toBe(false);
       expect(fs.existsSync(path.join(targetRoot, ".paperclip", "seed.lock"))).toBe(false);
     } finally {
@@ -522,6 +828,7 @@ describe("worktree helpers", () => {
       fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
       fs.mkdirSync(path.dirname(targetConfigPath), { recursive: true });
       fs.writeFileSync(sourceConfigPath, `${JSON.stringify(sourceConfig)}\n`);
+      fs.writeFileSync(path.join(path.dirname(sourceConfigPath), ".env"), "PAPERCLIP_INSTANCE_ID=source\n");
       fs.writeFileSync(targetConfigPath, `${JSON.stringify(targetConfig)}\n`);
       fs.writeFileSync(
         path.join(targetRoot, ".paperclip", ".env"),
@@ -531,31 +838,73 @@ describe("worktree helpers", () => {
 
       const seedDatabase = vi.fn(async () => {
         await new Promise((resolve) => setTimeout(resolve, 100));
-        return {
-          backupSummary: "snapshot.sql",
-          pausedScheduledRoutines: 0,
-          executionQuarantine: {
-            disabledTimerHeartbeats: 0,
-            resetRunningAgents: 0,
-            quarantinedInProgressIssues: 0,
-            unassignedTodoIssues: 0,
-            unassignedReviewIssues: 0,
-          },
-          reboundWorkspaces: [],
-        };
+        return mockVerifiedSeedResult();
       });
 
       const results = await Promise.all([
-        ensureWorktreeSeeded({ config: targetConfigPath }, { seedDatabase }),
-        ensureWorktreeSeeded({ config: targetConfigPath }, { seedDatabase }),
+        ensureWorktreeSeeded({ config: targetConfigPath, fromConfig: sourceConfigPath }, { seedDatabase }),
+        ensureWorktreeSeeded({ config: targetConfigPath, fromConfig: sourceConfigPath }, { seedDatabase }),
       ]);
 
       expect(results).toEqual(expect.arrayContaining([
         expect.objectContaining({ seeded: true, reason: "seeded" }),
-        { seeded: false, reason: "complete_marker" },
+        { seeded: false, reason: "verified_manifest" },
       ]));
       expect(seedDatabase).toHaveBeenCalledTimes(1);
       expect(fs.existsSync(path.join(targetRoot, ".paperclip", "seed.lock"))).toBe(false);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("records an interrupted phase before retrying to a verified terminal state", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-interrupted-seed-"));
+    try {
+      const sourceConfigPath = path.join(tempRoot, "source", "config.json");
+      const targetRoot = path.join(tempRoot, "worktree");
+      const targetConfigPath = path.join(targetRoot, ".paperclip", "config.json");
+      const targetPaths = resolveWorktreeLocalPaths({
+        cwd: targetRoot,
+        homeDir: path.join(tempRoot, "worktree-home"),
+        instanceId: "interrupted-seed",
+      });
+      const sourceConfig = buildSourceConfig();
+      const targetConfig = buildWorktreeConfig({
+        sourceConfig,
+        paths: targetPaths,
+        serverPort: 3196,
+        databasePort: 54996,
+      });
+      fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
+      fs.mkdirSync(path.dirname(targetConfigPath), { recursive: true });
+      fs.writeFileSync(sourceConfigPath, `${JSON.stringify(sourceConfig)}\n`);
+      fs.writeFileSync(path.join(path.dirname(sourceConfigPath), ".env"), "PAPERCLIP_INSTANCE_ID=source\n");
+      fs.writeFileSync(targetConfigPath, `${JSON.stringify(targetConfig)}\n`);
+      fs.writeFileSync(
+        path.join(targetRoot, ".paperclip", ".env"),
+        `PAPERCLIP_HOME=${targetPaths.homeDir}\nPAPERCLIP_INSTANCE_ID=${targetPaths.instanceId}\n`,
+      );
+      markWorktreeSeedPending({ configPath: targetConfigPath, sourceConfigPath });
+      const interrupted = readWorktreeSeedManifest(targetConfigPath)!;
+      fs.writeFileSync(
+        path.join(targetRoot, ".paperclip", "seed-manifest.json"),
+        `${JSON.stringify({ ...interrupted, state: "running", phase: "restore" }, null, 2)}\n`,
+      );
+
+      await expect(ensureWorktreeSeeded(
+        { config: targetConfigPath, fromConfig: sourceConfigPath },
+        { seedDatabase: vi.fn().mockResolvedValue(mockVerifiedSeedResult()) },
+      )).resolves.toMatchObject({ seeded: true, reason: "seeded" });
+
+      const verified = readWorktreeSeedManifest(targetConfigPath)!;
+      expect(verified.state).toBe("verified");
+      expect(verified.diagnostics).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          phase: "restore",
+          status: "failed",
+          message: "The previous seed attempt ended without a terminal result.",
+        }),
+      ]));
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -599,6 +948,10 @@ describe("worktree helpers", () => {
     const todoIssueId = randomUUID();
     const reviewIssueId = randomUUID();
     const userIssueId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const runtimeServiceId = randomUUID();
 
     try {
       await db.insert(companies).values({
@@ -634,6 +987,64 @@ describe("worktree helpers", () => {
           permissions: {},
         },
       ]);
+      await db.insert(projects).values({
+        id: projectId,
+        companyId,
+        name: "Runtime quarantine",
+        status: "in_progress",
+      });
+      await db.insert(projectWorkspaces).values({
+        id: projectWorkspaceId,
+        companyId,
+        projectId,
+        name: "Primary workspace",
+        cwd: "/source/project",
+        metadata: {
+          keep: "project-metadata",
+          runtimeConfig: {
+            workspaceRuntime: { services: [{ name: "paperclip-dev" }] },
+            desiredState: "running",
+            serviceStates: { "0": "running", "1": "manual" },
+          },
+        },
+      });
+      await db.insert(executionWorkspaces).values({
+        id: executionWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "Copied runtime workspace",
+        cwd: "/source/worktree",
+        providerType: "git_worktree",
+        metadata: {
+          keep: "execution-metadata",
+          config: {
+            environmentId: "environment-1",
+            desiredState: "running",
+            serviceStates: { "0": "running" },
+          },
+        },
+      });
+      await db.insert(workspaceRuntimeServices).values({
+        id: runtimeServiceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        executionWorkspaceId,
+        scopeType: "project_workspace",
+        scopeId: projectWorkspaceId,
+        serviceName: "paperclip-dev",
+        status: "running",
+        lifecycle: "shared",
+        provider: "local_process",
+        providerRef: "12345",
+        ownerAgentId: agentId,
+        port: 42013,
+        url: "https://paperclip-dev.example.test:42013",
+        healthStatus: "healthy",
+      });
       await db.insert(issues).values([
         {
           id: inProgressIssueId,
@@ -685,6 +1096,9 @@ describe("worktree helpers", () => {
         quarantinedInProgressIssues: 1,
         unassignedTodoIssues: 1,
         unassignedReviewIssues: 1,
+        stoppedProjectWorkspaceRuntimes: 1,
+        stoppedExecutionWorkspaceRuntimes: 1,
+        stoppedRuntimeServices: 1,
       });
 
       const [quarantinedAgent] = await db.select().from(agents).where(eq(agents.id, agentId));
@@ -715,6 +1129,47 @@ describe("worktree helpers", () => {
       const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, inProgressIssueId));
       expect(comments).toHaveLength(1);
       expect(comments[0]?.body).toContain("Quarantined during worktree seed");
+
+      const [projectWorkspace] = await db
+        .select()
+        .from(projectWorkspaces)
+        .where(eq(projectWorkspaces.id, projectWorkspaceId));
+      expect(projectWorkspace?.metadata).toEqual({
+        keep: "project-metadata",
+        runtimeConfig: {
+          workspaceRuntime: { services: [{ name: "paperclip-dev" }] },
+          desiredState: "stopped",
+          serviceStates: { "0": "stopped", "1": "manual" },
+        },
+      });
+
+      const [executionWorkspace] = await db
+        .select()
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, executionWorkspaceId));
+      expect(executionWorkspace?.metadata).toEqual({
+        keep: "execution-metadata",
+        config: {
+          environmentId: "environment-1",
+          desiredState: "stopped",
+          serviceStates: { "0": "stopped" },
+        },
+      });
+
+      const [runtimeService] = await db
+        .select()
+        .from(workspaceRuntimeServices)
+        .where(eq(workspaceRuntimeServices.id, runtimeServiceId));
+      expect(runtimeService).toMatchObject({
+        status: "stopped",
+        healthStatus: "unknown",
+        providerRef: null,
+        ownerAgentId: null,
+        startedByRunId: null,
+        port: null,
+        url: null,
+      });
+      expect(runtimeService?.stoppedAt).toBeInstanceOf(Date);
     } finally {
       await db.$client?.end?.({ timeout: 5 }).catch(() => undefined);
       await tempDb.cleanup();
@@ -854,7 +1309,7 @@ describe("worktree helpers", () => {
   });
 
   itEmbeddedPostgres(
-    "seeds authenticated users into minimally cloned worktree instances",
+    "seeds a lagging source whose migration application order differs from filename order",
     async () => {
       const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-auth-seed-"));
       const worktreeRoot = path.join(tempRoot, "PAP-999-auth-seed");
@@ -868,15 +1323,57 @@ describe("worktree helpers", () => {
       const sourceDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-auth-source-");
 
       try {
+        await seedValidWorktreeSource(sourceDb.connectionString);
         const sourceDbClient = createDb(sourceDb.connectionString);
-        await sourceDbClient.insert(authUsers).values({
-          id: "user-existing",
-          email: "existing@paperclip.ing",
-          name: "Existing User",
-          emailVerified: true,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        });
+        await sourceDbClient.$client.unsafe(`
+          DELETE FROM "drizzle"."__drizzle_migrations"
+          WHERE "id" = (
+            SELECT max("id") FROM "drizzle"."__drizzle_migrations"
+          );
+
+          WITH pair AS (
+            SELECT
+              array_agg("id" ORDER BY "id" DESC) AS ids,
+              array_agg("hash" ORDER BY "id" DESC) AS hashes
+            FROM (
+              SELECT "id", "hash"
+              FROM "drizzle"."__drizzle_migrations"
+              ORDER BY "id" DESC
+              LIMIT 2
+            ) latest
+          )
+          UPDATE "drizzle"."__drizzle_migrations" migrations
+          SET "hash" = CASE
+            WHEN migrations."id" = pair.ids[1] THEN pair.hashes[2]
+            WHEN migrations."id" = pair.ids[2] THEN pair.hashes[1]
+            ELSE migrations."hash"
+          END
+          FROM pair
+          WHERE migrations."id" IN (pair.ids[1], pair.ids[2]);
+
+          INSERT INTO "drizzle"."__drizzle_migrations" ("hash", "created_at")
+          VALUES ('stale-unresolvable-migration-hash', 0)
+        `);
+        await sourceDbClient.$client.end({ timeout: 5 });
+        const laggingMigrationState = await inspectMigrations(sourceDb.connectionString);
+        expect(laggingMigrationState.status).toBe("needsMigrations");
+        if (laggingMigrationState.status !== "needsMigrations") {
+          throw new Error("Expected the source migration journal to lag the code journal");
+        }
+        expect(laggingMigrationState.pendingMigrations).toHaveLength(1);
+        const expectedAppliedPrefix = laggingMigrationState.availableMigrations.slice(
+          0,
+          laggingMigrationState.appliedMigrations.length,
+        );
+        expect(laggingMigrationState.appliedMigrations).not.toEqual(expectedAppliedPrefix);
+        expect([...laggingMigrationState.appliedMigrations].sort()).toEqual(
+          [...expectedAppliedPrefix].sort(),
+        );
+        expect(laggingMigrationState.journalEntryCount).toBeGreaterThan(
+          laggingMigrationState.appliedMigrations.length,
+        );
+        const sourceMigrationRevision = expectedAppliedPrefix.at(-1);
+        expect(sourceMigrationRevision).toBeTruthy();
 
         fs.mkdirSync(path.dirname(sourceKeyPath), { recursive: true });
         fs.mkdirSync(worktreeRoot, { recursive: true });
@@ -913,6 +1410,19 @@ describe("worktree helpers", () => {
         const targetConfig = JSON.parse(
           fs.readFileSync(path.join(worktreeRoot, ".paperclip", "config.json"), "utf8"),
         ) as PaperclipConfig;
+        const manifestText = fs.readFileSync(
+          path.join(worktreeRoot, ".paperclip", "seed-manifest.json"),
+          "utf8",
+        );
+        expect(JSON.parse(manifestText)).toMatchObject({
+          version: 2,
+          seedMode: "minimal",
+          state: "verified",
+          phase: "complete",
+        });
+        expect(manifestText).toContain(`Validated migration ${sourceMigrationRevision}`);
+        expect(manifestText).not.toContain("fixture-password-hash");
+        expect(manifestText).not.toContain("source-master-key");
         const { default: EmbeddedPostgres } = await import("embedded-postgres");
         const targetPg = new EmbeddedPostgres({
           databaseDir: targetConfig.database.embeddedPostgresDataDir,
@@ -1169,9 +1679,8 @@ describe("worktree helpers", () => {
     const originalCwd = process.cwd();
     const originalPaperclipConfig = process.env.PAPERCLIP_CONFIG;
     const currentDatabaseReservation = await reserveTestPort();
-    const sourceDatabaseReservation = await reserveTestPort();
     const currentDatabasePort = currentDatabaseReservation.port;
-    const sourceDatabasePort = sourceDatabaseReservation.port;
+    const sourceDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-reseed-source-");
 
     try {
       fs.mkdirSync(path.dirname(currentPaths.configPath), { recursive: true });
@@ -1186,15 +1695,28 @@ describe("worktree helpers", () => {
         serverPort: 3114,
         databasePort: currentDatabasePort,
       });
-      const sourceConfig = buildWorktreeConfig({
-        sourceConfig: buildSourceConfig(),
-        paths: sourcePaths,
-        serverPort: 3200,
-        databasePort: sourceDatabasePort,
-      });
+      const sourceConfig = buildSourceConfig();
+      sourceConfig.database = {
+        mode: "postgres",
+        embeddedPostgresDataDir: sourcePaths.embeddedPostgresDataDir,
+        embeddedPostgresPort: 54329,
+        backup: {
+          enabled: true,
+          intervalMinutes: 60,
+          retentionDays: 30,
+          dir: sourcePaths.backupDir,
+        },
+        connectionString: sourceDb.connectionString,
+      };
+      sourceConfig.logging.logDir = sourcePaths.logDir;
+      sourceConfig.storage.localDisk.baseDir = sourcePaths.storageDir;
+      sourceConfig.secrets.localEncrypted.keyFilePath = sourcePaths.secretsKeyFilePath;
+      await seedValidWorktreeSource(sourceDb.connectionString);
       fs.writeFileSync(currentPaths.configPath, JSON.stringify(currentConfig, null, 2), "utf8");
       fs.writeFileSync(sourcePaths.configPath, JSON.stringify(sourceConfig, null, 2), "utf8");
       fs.writeFileSync(sourcePaths.secretsKeyFilePath, "source-secret", "utf8");
+      const worktreeSentinelPath = path.join(repoRoot, "user-worktree-file.txt");
+      fs.writeFileSync(worktreeSentinelPath, "preserve me", "utf8");
       fs.writeFileSync(
         currentPaths.envPath,
         [
@@ -1210,11 +1732,11 @@ describe("worktree helpers", () => {
       process.chdir(repoRoot);
 
       await currentDatabaseReservation.release();
-      await sourceDatabaseReservation.release();
 
       await worktreeReseedCommand({
         fromConfig: sourcePaths.configPath,
         yes: true,
+        backupTarget: true,
       });
 
       const rewrittenConfig = JSON.parse(fs.readFileSync(currentPaths.configPath, "utf8"));
@@ -1226,9 +1748,13 @@ describe("worktree helpers", () => {
       expect(rewrittenEnv).toContain(`PAPERCLIP_INSTANCE_ID=${currentInstanceId}`);
       expect(rewrittenEnv).toContain("PAPERCLIP_WORKTREE_NAME=existing-name");
       expect(rewrittenEnv).toContain("PAPERCLIP_WORKTREE_COLOR=\"#112233\"");
+      expect(fs.readFileSync(worktreeSentinelPath, "utf8")).toBe("preserve me");
+      expect(
+        fs.readdirSync(path.join(currentPaths.backupDir, "repair")).some((name) => name.endsWith(".sql.gz")),
+      ).toBe(true);
     } finally {
       await currentDatabaseReservation.release();
-      await sourceDatabaseReservation.release();
+      await sourceDb.cleanup();
       process.chdir(originalCwd);
       if (originalPaperclipConfig === undefined) {
         delete process.env.PAPERCLIP_CONFIG;

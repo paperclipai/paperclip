@@ -14,12 +14,18 @@ export interface TaskChatInteractionCardProps extends InteractionCardProps {
  * question card, suggested tasks…) inside the redesigned thread: cards are the
  * only rows that get bubble-level emphasis, so the shared
  * IssueThreadInteractionCard renders full-width with the standard bubble
- * entrance. Expired confirmations demote to a marker row — superseded asks are
- * history, not calls to action (legacy-thread parity).
+ * entrance. Generic expired confirmations demote to a marker row — superseded
+ * asks are history, not calls to action (legacy-thread parity). Secret proposals
+ * remain full receipts because their safe binding metadata and recovery guidance
+ * are part of the terminal outcome.
  */
 export function TaskChatInteractionCard({ item, ...cardProps }: TaskChatInteractionCardProps) {
   const interaction = item.interaction;
-  if (interaction.kind === "request_confirmation" && interaction.status === "expired") {
+  if (
+    interaction.kind === "request_confirmation"
+    && interaction.status === "expired"
+    && !interaction.payload.secretProposal
+  ) {
     return (
       <TaskChatMarker
         item={{

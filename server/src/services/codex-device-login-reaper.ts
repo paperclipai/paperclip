@@ -1,8 +1,9 @@
-import { inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { adapterAuthSessions } from "@paperclipai/db";
 import {
   ADAPTER_AUTH_ACTIVE_STATUSES,
+  CODEX_DEVICE_LOGIN_ADAPTER_TYPE,
   decodePendingTerminal,
   LOGIN_LEASE_SESSION_TAG_KEY,
   observeSandboxDelete,
@@ -166,6 +167,7 @@ export function createCodexDeviceLoginReaper(deps: CodexDeviceLoginReaperDeps) {
       const pendingWrite = terminalCleanupWrite(false, "timed_out", null);
       const claimed = await store.withCompanyAdapterPromotionLock(
         row.companyId,
+        row.startedByUserId,
         row.adapterType,
         () =>
           store.compareAndSetStatus({
@@ -313,10 +315,15 @@ export function createProductionLoginSessionReaperRuntime(
         .selectDistinct({ environmentId: adapterAuthSessions.environmentId })
         .from(adapterAuthSessions)
         .where(
-          inArray(adapterAuthSessions.status, [
-            ...ADAPTER_AUTH_ACTIVE_STATUSES,
-            "cleanup_pending",
-          ]),
+          and(
+            // The shared table also holds the setup-token rows. Filter by the
+            // device-login adapter, so the orphan sweep reads only Codex rows.
+            eq(adapterAuthSessions.adapterType, CODEX_DEVICE_LOGIN_ADAPTER_TYPE),
+            inArray(adapterAuthSessions.status, [
+              ...ADAPTER_AUTH_ACTIVE_STATUSES,
+              "cleanup_pending",
+            ]),
+          ),
         );
       const tagged: TaggedLease[] = [];
       for (const { environmentId } of environmentRows) {

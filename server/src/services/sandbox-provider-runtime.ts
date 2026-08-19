@@ -20,6 +20,14 @@ export interface AcquireSandboxLeaseInput {
   issueId: string | null;
   agentId?: string | null;
   executionWorkspaceId?: string | null;
+  /**
+   * The absolute latest time the acquired lease may stay active, as an ISO 8601
+   * timestamp. A caller with an independent deadline sets it. The provider must
+   * configure a provider-side expiry at or before this time, and return the real
+   * provider expiry in `SandboxLeaseHandle.expiresAt`. When omitted, the provider
+   * keeps its default lifetime.
+   */
+  requestedExpiresAt?: string | null;
 }
 
 export interface ResumeSandboxLeaseInput {
@@ -63,6 +71,12 @@ export interface SandboxExecuteInput {
 export interface SandboxLeaseHandle {
   providerLeaseId: string;
   metadata: Record<string, unknown>;
+  /**
+   * The real provider-side expiry the provider granted, as an ISO 8601 timestamp.
+   * A provider that honors a requested deadline returns the actual expiry it
+   * configured. Absent when the provider granted no bounded lifetime.
+   */
+  expiresAt?: string | null;
 }
 
 export interface PreparedSandboxWorkspace {
@@ -336,6 +350,7 @@ export async function acquireSandboxProviderLease(input: {
   agentId?: string | null;
   executionWorkspaceId?: string | null;
   reusableProviderLeaseId?: string | null;
+  requestedExpiresAt?: string | null;
 }): Promise<SandboxLeaseHandle> {
   const provider = requireSandboxProvider(input.config.provider);
   if (provider.supportsReusableLeases && input.config.reuseLease && input.reusableProviderLeaseId) {
@@ -355,6 +370,7 @@ export async function acquireSandboxProviderLease(input: {
     issueId: input.issueId,
     agentId: input.agentId,
     executionWorkspaceId: input.executionWorkspaceId,
+    requestedExpiresAt: input.requestedExpiresAt,
   });
 }
 

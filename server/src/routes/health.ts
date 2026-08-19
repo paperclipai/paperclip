@@ -19,6 +19,13 @@ import {
   type InspectDatabaseBackupHealthOptions,
 } from "../services/database-backup-health.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { isManagedWorkspaceInstance, resolveWorkspaceReadiness } from "../services/workspace-readiness.js";
+import {
+  resolveWorkspaceReadinessLocalToken,
+  WORKSPACE_READINESS_TOKEN_HEADER,
+  WORKSPACE_READINESS_USER_EMAIL_HEADER,
+  WORKSPACE_READINESS_USER_ID_HEADER,
+} from "../auth/workspace-login-handoff.js";
 import { serverVersion } from "../version.js";
 
 function shouldExposeFullHealthDetails(
@@ -29,15 +36,31 @@ function shouldExposeFullHealthDetails(
   return actorType === "board" || actorType === "agent";
 }
 
-function hasDevServerStatusToken(providedToken: string | undefined) {
-  const expectedToken = process.env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN?.trim();
+function matchesSharedToken(expectedToken: string | undefined | null, providedToken: string | undefined) {
+  const expectedValue = expectedToken?.trim();
   const token = providedToken?.trim();
-  if (!expectedToken || !token) return false;
+  if (!expectedValue || !token) return false;
 
-  const expected = Buffer.from(expectedToken);
+  const expected = Buffer.from(expectedValue);
   const provided = Buffer.from(token);
   if (expected.length !== provided.length) return false;
   return timingSafeEqual(expected, provided);
+}
+
+function hasDevServerStatusToken(providedToken: string | undefined) {
+  return matchesSharedToken(process.env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN, providedToken);
+}
+
+/**
+ * Whether the caller may read this instance's workspace readiness.
+ *
+ * A managed workspace runs in `authenticated` mode, so its own control plane has
+ * no board session against it. The runtime injects a derived probe token into the
+ * guest and presents it here — the same shared-secret shape the dev-server
+ * supervisor already uses, and never a browser-supplied identity header.
+ */
+function hasWorkspaceReadinessToken(providedToken: string | undefined) {
+  return matchesSharedToken(resolveWorkspaceReadinessLocalToken(), providedToken);
 }
 
 function redactedDatabaseBackupWarning(warning: DatabaseBackupHealthWarning): DatabaseBackupHealthWarning {
@@ -147,6 +170,17 @@ export function healthRoutes(
     const commit = serverInfo.git.available ? serverInfo.git.fullSha : null;
     const exposeDevServerDetails =
       exposeFullDetails || hasDevServerStatusToken(req.get("x-paperclip-dev-server-status-token"));
+    // Workspace readiness names the instance and execution workspace that
+    // answered, so it rides the protected responses only. Public health stays
+    // redacted: an anonymous caller still learns liveness and nothing else.
+    const exposeWorkspaceReadiness =
+      isManagedWorkspaceInstance()
+      && (exposeFullDetails || hasWorkspaceReadinessToken(req.get(WORKSPACE_READINESS_TOKEN_HEADER)));
+    const requestedHandoffUserId = req.get(WORKSPACE_READINESS_USER_ID_HEADER)?.trim();
+    const requestedHandoffUserEmail = req.get(WORKSPACE_READINESS_USER_EMAIL_HEADER)?.trim();
+    const handoffSubject = requestedHandoffUserId && requestedHandoffUserEmail
+      ? { userId: requestedHandoffUserId, email: requestedHandoffUserEmail }
+      : null;
 
     if (!db) {
       res.json(
@@ -173,6 +207,12 @@ export function healthRoutes(
       await db.execute(sql`SELECT 1`);
     } catch (error) {
       logger.warn({ err: error }, "Health check database probe failed");
+      // Carry readiness on the unhealthy response too: the seed phase recorded on
+      // disk is exactly what tells an operator whether this is a half-finished
+      // restore or a database that died after being verified.
+      const workspace = exposeWorkspaceReadiness
+        ? await resolveWorkspaceReadiness({ db, handoffSubject }).catch(() => null)
+        : null;
       res.status(503).json({
         status: "unhealthy",
         version: serverVersion,
@@ -180,6 +220,7 @@ export function healthRoutes(
         commit,
         error: "database_unreachable",
         ...(exposeFullDetails ? { serverInfo } : {}),
+        ...(workspace ? { workspace } : {}),
         ...(cloud ? { cloud } : {}),
       });
       return;
@@ -236,6 +277,13 @@ export function healthRoutes(
       });
     }
 
+    const workspaceReadiness = exposeWorkspaceReadiness
+      ? await resolveWorkspaceReadiness({ db, handoffSubject }).catch((error) => {
+          logger.warn({ err: error }, "workspace readiness probe failed");
+          return null;
+        })
+      : null;
+
     const databaseBackup = opts.databaseBackupHealth
       ? inspectDatabaseBackupHealth(opts.databaseBackupHealth)
       : undefined;
@@ -254,6 +302,10 @@ export function healthRoutes(
         ...(redactedDatabaseBackup ? { databaseBackup: redactedDatabaseBackup } : {}),
         ...(redactedWarnings ? { warnings: redactedWarnings } : {}),
         ...(devServer ? { devServer } : {}),
+        // Token-authorized probe on an otherwise redacted response: the control
+        // plane needs readiness without a board session, and nothing else about
+        // this instance becomes visible.
+        ...(workspaceReadiness ? { workspace: workspaceReadiness } : {}),
         ...(cloud ? { cloud } : {}),
       });
       return;
@@ -276,6 +328,7 @@ export function healthRoutes(
       ...(databaseBackup ? { databaseBackup } : {}),
       ...(warnings ? { warnings } : {}),
       ...(devServer ? { devServer } : {}),
+      ...(workspaceReadiness ? { workspace: workspaceReadiness } : {}),
       ...(cloud ? { cloud } : {}),
     });
   });

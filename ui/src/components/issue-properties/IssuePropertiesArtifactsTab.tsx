@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { Issue, IssueDocument, IssueWorkProduct } from "@paperclipai/shared";
@@ -31,6 +31,10 @@ import { useLocation } from "@/lib/router";
 
 interface IssuePropertiesArtifactsTabProps {
   issue: Issue;
+  documentDeepLink?: {
+    requestId: number;
+    documentKey: string;
+  } | null;
 }
 
 function formatBytes(n: number): string {
@@ -118,14 +122,31 @@ function WorkProductRow({ workProduct }: { workProduct: IssueWorkProduct }) {
   return <div className={ROW_CLASS}>{body}</div>;
 }
 
-function DocumentRow({ issueId, doc }: { issueId: string; doc: IssueDocument }) {
+function DocumentRow({
+  issueId,
+  doc,
+  openRequestId,
+}: {
+  issueId: string;
+  doc: IssueDocument;
+  openRequestId?: number;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
+  const headerRef = useRef<HTMLDivElement | null>(null);
   const location = useLocation();
   const Chevron = expanded ? ChevronDown : ChevronRight;
+  useEffect(() => {
+    if (openRequestId === undefined) return;
+    setExpanded(true);
+  }, [openRequestId]);
+  useEffect(() => {
+    if (openRequestId === undefined || !expanded) return;
+    headerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [expanded, openRequestId]);
   return (
     <div className="rounded-md border border-border bg-card/50">
-      <div className="flex items-center hover:bg-accent/50">
+      <div ref={headerRef} className="flex items-center hover:bg-accent/50">
         <button
           type="button"
           onClick={() => setExpanded((open) => !open)}
@@ -182,7 +203,7 @@ function DocumentRow({ issueId, doc }: { issueId: string; doc: IssueDocument }) 
  * user uploads are excluded — those stay first-class in the conversation
  * thread.
  */
-export function IssuePropertiesArtifactsTab({ issue }: IssuePropertiesArtifactsTabProps) {
+export function IssuePropertiesArtifactsTab({ issue, documentDeepLink }: IssuePropertiesArtifactsTabProps) {
   const { data: attachments } = useQuery({
     queryKey: queryKeys.issues.attachments(issue.id),
     queryFn: () => issuesApi.listAttachments(issue.id),
@@ -225,7 +246,13 @@ export function IssuePropertiesArtifactsTab({ issue }: IssuePropertiesArtifactsT
           <ul className="flex flex-col gap-1">
             {documentRows.map((doc) => (
               <li key={doc.key}>
-                <DocumentRow issueId={issue.id} doc={doc} />
+                <DocumentRow
+                  issueId={issue.id}
+                  doc={doc}
+                  openRequestId={documentDeepLink?.documentKey === doc.key
+                    ? documentDeepLink.requestId
+                    : undefined}
+                />
               </li>
             ))}
           </ul>

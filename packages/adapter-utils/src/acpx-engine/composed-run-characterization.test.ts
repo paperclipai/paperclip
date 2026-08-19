@@ -715,7 +715,7 @@ describe("composed ACPX run: host-lane warm handle set", () => {
     vi.clearAllMocks();
   });
 
-  it("warm-saves a persistent local runtime and reuses it for the next compatible run", async () => {
+  it("closes and relaunches a persistent local runtime, so the next compatible run re-creates it", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     let createCount = 0;
@@ -746,8 +746,9 @@ describe("composed ACPX run: host-lane warm handle set", () => {
       onEvent: async () => {},
     } as never);
     expect(first.exitCode).toBe(0);
-    // A persistent local completed turn warm-saves the runtime handle.
-    expect(warmHandles.size).toBe(1);
+    // Amendment B: a persistent local completed turn closes and relaunches the
+    // runtime instead of warm-saving it (the run-minted API key is never revoked).
+    expect(warmHandles.size).toBe(0);
     expect(createCount).toBe(1);
 
     const second = await execute({
@@ -761,9 +762,8 @@ describe("composed ACPX run: host-lane warm handle set", () => {
       onEvent: async () => {},
     } as never);
     expect(second.exitCode).toBe(0);
-    // The compatible second run reuses the warm runtime, so createRuntime is not
-    // called again.
-    expect(createCount).toBe(1);
+    // No warm runtime survived, so the compatible second run re-creates it.
+    expect(createCount).toBe(2);
   });
 
   it("closes (does not warm-save) a completed non-persistent runtime, so the next run re-creates", async () => {
@@ -819,7 +819,7 @@ describe("composed ACPX run: host-lane warm handle set", () => {
     expect(createCount).toBe(2);
   });
 
-  it("emits a skipped acp.handshake event on a warm-handle hit and does not re-create the runtime", async () => {
+  it("runs a fresh acp.handshake on the second run and re-creates the runtime (no warm reuse)", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     let createCount = 0;
@@ -863,15 +863,14 @@ describe("composed ACPX run: host-lane warm handle set", () => {
       },
     } as never);
 
-    // The warm-hit skips the handshake work: it emits exactly one acp.handshake
-    // event with outcome = skipped and a zero wall time, and never re-creates the
-    // runtime.
+    // Amendment B: the first run closed and relaunched, so no warm handle survives.
+    // The second run runs a fresh acp.handshake (outcome ok, not skipped) and
+    // re-creates the runtime.
     const handshakeEvents = secondEvents.filter(
       (event) => event.eventType === "run.startup.step" && event.payload?.step === "acp.handshake",
     );
     expect(handshakeEvents).toHaveLength(1);
-    expect(handshakeEvents[0]!.payload?.outcome).toBe("skipped");
-    expect(handshakeEvents[0]!.payload?.durationMs).toBe(0);
-    expect(createCount).toBe(1);
+    expect(handshakeEvents[0]!.payload?.outcome).not.toBe("skipped");
+    expect(createCount).toBe(2);
   });
 });

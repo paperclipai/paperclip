@@ -56,3 +56,37 @@ export function redactCommandText(command: string, redactedValue = REDACTED_COMM
     .replace(COMMAND_GITHUB_TOKEN_RE, redactedValue)
     .replace(COMMAND_JWT_RE, redactedValue);
 }
+
+// A JSON secret field is a key/value pair such as `"token":"opaque-value"`. The
+// command redaction handles shell `KEY=value` syntax only. A sandbox diagnostic
+// can also carry a serialized JSON error, so the sanitizer must redact the JSON
+// form too. The value body consumes JSON escape sequences. An escaped quote
+// (`\"`) inside the value does not end the match early.
+const JSON_SECRET_FIELD_RE = new RegExp(
+  String.raw`("(?:${SECRET_NAME_PATTERN})"\s*:\s*")(?:\\[\s\S]|[^"\\])*(")`,
+  "gi",
+);
+// An escaped JSON secret field is the same pair inside a JSON string. The double
+// quote appears as `\"` and a backslash appears as `\\`. The value body
+// consumes the doubled escape sequences. An escaped quote inside the value does
+// not end the match early. The value ends at the next unescaped `\"`.
+const JSON_ESCAPED_SECRET_FIELD_RE = new RegExp(
+  String.raw`(\\"(?:${SECRET_NAME_PATTERN})\\"\s*:\s*\\")(?:\\\\\\\\|\\\\\\"|\\\\[\s\S]|[^\\"])*(\\")`,
+  "gi",
+);
+
+/**
+ * Redact secrets from an untrusted diagnostic string.
+ *
+ * The function first runs the command redaction. The command redaction handles
+ * shell `KEY=value` assignments, CLI secret options, bearer headers, and common
+ * token shapes. The function then redacts JSON and escaped-JSON secret fields,
+ * because a sandbox diagnostic can carry a serialized JSON error such as
+ * `{"token":"opaque-value"}`. The caller must still bound the length after this
+ * step.
+ */
+export function redactDiagnosticText(text: string, redactedValue = REDACTED_COMMAND_TEXT_VALUE): string {
+  return redactCommandText(text, redactedValue)
+    .replace(JSON_ESCAPED_SECRET_FIELD_RE, `$1${redactedValue}$2`)
+    .replace(JSON_SECRET_FIELD_RE, `$1${redactedValue}$2`);
+}

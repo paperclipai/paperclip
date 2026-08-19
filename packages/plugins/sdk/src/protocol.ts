@@ -628,6 +628,17 @@ export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDr
    */
   adapterType?: string;
   executionWorkspaceSettings?: Record<string, unknown> | null;
+  /**
+   * The absolute latest time the acquired lease may stay active, as an ISO 8601
+   * timestamp. A caller with an independent deadline (for example the setup-token
+   * login session) sets it. A provider that materializes a sandbox must configure
+   * a provider-side expiry at or before this time, and return the real provider
+   * expiry in `PluginEnvironmentLease.expiresAt`. When the provider cannot bound
+   * the sandbox at or before this time, it returns no expiry, so the server fails
+   * closed and releases the lease. When omitted, the provider keeps its default
+   * lifetime.
+   */
+  requestedExpiresAt?: string | null;
 }
 
 export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDriverBaseParams {
@@ -960,6 +971,117 @@ export interface PluginRenderCloseEvent {
   nativeEvent?: unknown;
 }
 
+// ---------------------------------------------------------------------------
+// Setup-token login pseudo-terminal (PTY) worker methods.
+// ---------------------------------------------------------------------------
+// The host drives one live Claude `setup-token` login pseudo-terminal inside a
+// sandbox provider worker. The host owns the route. It mints an opaque host
+// route identifier, carries that identifier in the open request, and keys the
+// close on that identifier. The worker registers the terminal under the host
+// route identifier and returns a worker session identifier for the output
+// notification binding only. The worker never keys a close on the worker
+// session identifier, so the host closes a worker-created terminal even when the
+// open reply was lost and no worker session identifier arrived. The worker sends
+// output and exit as notifications, never as a reply, so the host binds them by
+// the worker session identifier while the route is open.
+
+/** The open request for one live login pseudo-terminal. The worker registers the terminal by `hostRouteId`. */
+export interface PluginSetupTokenPtyOpenParams {
+  /** The host-owned opaque route identifier. The worker registers the terminal by it. */
+  hostRouteId: string;
+  /** The environment driver key, for the worker sandbox scope. */
+  driverKey: string;
+  /** The company that owns the login session. */
+  companyId: string;
+  /** The environment the login session runs in. */
+  environmentId: string;
+  /** The provider lease the sandbox is cached under. The worker resolves the sandbox by it. */
+  providerLeaseId: string;
+  /** The fixed login command. The worker runs only this command on the terminal. */
+  command: string;
+}
+
+/** The open reply. It returns the worker session identifier for output binding only. */
+export interface PluginSetupTokenPtyOpenResult {
+  /** The worker session identifier. It binds the output and the exit notification only. */
+  workerSessionId: string;
+}
+
+/** The input request. It carries the worker session identifier and the raw input bytes. */
+export interface PluginSetupTokenPtyInputParams {
+  /** The worker session identifier that the open reply returned. */
+  workerSessionId: string;
+  /** The raw input bytes to write to the terminal. */
+  data: string;
+}
+
+/** The stop request. It carries the worker session identifier. */
+export interface PluginSetupTokenPtyStopParams {
+  /** The worker session identifier that the open reply returned. */
+  workerSessionId: string;
+}
+
+/** The close request. The host route identifier is the authoritative key. */
+export interface PluginSetupTokenPtyCloseParams {
+  /**
+   * The host-owned opaque route identifier. This is the authoritative close key,
+   * so the host closes the terminal even when no worker session identifier
+   * arrived after a lost open reply.
+   */
+  hostRouteId: string;
+  /**
+   * A non-authoritative worker session identifier. The worker never keys the
+   * close on it. The field is optional, so a close with only the host route
+   * identifier is a valid request for this lifecycle.
+   */
+  workerSessionId?: string;
+}
+
+/** The close reply. It acknowledges the close and carries the same host route identifier. */
+export interface PluginSetupTokenPtyCloseResult {
+  /** The close acknowledgement. It carries the same host route identifier the close sent. */
+  hostRouteId: string;
+}
+
+/** The worker→host pseudo-terminal output notification parameters. Modeled on `execute.log`. */
+export interface PluginSetupTokenPtyOutputParams {
+  /** The worker session identifier that the open reply returned. */
+  workerSessionId: string;
+  /** The raw terminal output bytes. */
+  chunk: string;
+}
+
+/** The worker→host pseudo-terminal exit notification parameters. */
+export interface PluginSetupTokenPtyExitParams {
+  /** The worker session identifier that the open reply returned. */
+  workerSessionId: string;
+  /** The child exit code, or null when the child ended with no code. */
+  exitCode: number | null;
+}
+
+/**
+ * One live login pseudo-terminal session in the worker. The worker opener returns
+ * it. The shape matches the sandbox provider setup-token pseudo-terminal session,
+ * so a provider passes its session with no adapter.
+ */
+export interface PluginSetupTokenPtyWorkerSession {
+  /** Registers the one output listener. The session streams each raw chunk in order. */
+  onData(listener: (chunk: string) => void): void;
+  /** Writes raw input bytes to the pseudo-terminal. */
+  write(data: string): void;
+  /** Resolves with the child exit code when the command ends. */
+  wait(): Promise<{ exitCode: number | null }>;
+  /** Stops the child process. Safe to call more than one time. */
+  kill(): void;
+  /** Releases the session resources. Safe to call more than one time. */
+  close(): Promise<void>;
+}
+
+/** The worker→host notification method for one pseudo-terminal output chunk. */
+export const SETUP_TOKEN_PTY_OUTPUT_NOTIFICATION = "setupTokenPty.output";
+/** The worker→host notification method for one pseudo-terminal exit. */
+export const SETUP_TOKEN_PTY_EXIT_NOTIFICATION = "setupTokenPty.exit";
+
 /**
  * Map of host→worker RPC method names to their `[params, result]` types.
  *
@@ -1064,6 +1186,20 @@ export interface HostToWorkerMethods {
     params: PluginEnvironmentDeleteTemplateParams,
     result: PluginEnvironmentDeleteTemplateResult,
   ];
+  /** Open one live login pseudo-terminal keyed by a host-owned route identifier. */
+  setupTokenPtyOpen: [
+    params: PluginSetupTokenPtyOpenParams,
+    result: PluginSetupTokenPtyOpenResult,
+  ];
+  /** Write delayed input to a live login pseudo-terminal, keyed by the worker session identifier. */
+  setupTokenPtyInput: [params: PluginSetupTokenPtyInputParams, result: void];
+  /** Stop a live login pseudo-terminal child, keyed by the worker session identifier. */
+  setupTokenPtyStop: [params: PluginSetupTokenPtyStopParams, result: void];
+  /** Close a live login pseudo-terminal by the host route identifier and return a bound acknowledgement. */
+  setupTokenPtyClose: [
+    params: PluginSetupTokenPtyCloseParams,
+    result: PluginSetupTokenPtyCloseResult,
+  ];
 }
 
 /** Union of all host→worker method names. */
@@ -1105,6 +1241,10 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "environmentCaptureTemplate",
   "environmentCancelInteractiveSetup",
   "environmentDeleteTemplate",
+  "setupTokenPtyOpen",
+  "setupTokenPtyInput",
+  "setupTokenPtyStop",
+  "setupTokenPtyClose",
 ] as const;
 
 // ---------------------------------------------------------------------------

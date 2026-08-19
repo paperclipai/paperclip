@@ -14,9 +14,11 @@ import {
   createSuccessResponse,
   isJsonRpcRequest,
   isJsonRpcResponse,
+  isJsonRpcNotification,
   parseMessage,
   PLUGIN_RPC_ERROR_CODES,
   serializeMessage,
+  type JsonRpcNotification,
   type JsonRpcResponse,
   type PluginInvocationContext,
 } from "../src/protocol.js";
@@ -753,5 +755,153 @@ describe("worker execute.log emitter", () => {
     expect(records).toEqual([
       { params: { stream: "stdout", chunk: "kept" }, invocationId: "invocation-a" },
     ]);
+  });
+});
+
+describe("worker setup-token pseudo-terminal dispatch", () => {
+  it("dispatches open, input, stop, and close, and streams output and exit as notifications", async () => {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const pending = new Map<string, (response: JsonRpcResponse) => void>();
+    const notifications: JsonRpcNotification[] = [];
+    let nextRequestId = 1;
+
+    // The fake session the opener returns. The test drives its output and exit.
+    let emitOutput: ((chunk: string) => void) | null = null;
+    let resolveWait: ((value: { exitCode: number | null }) => void) | null = null;
+    const inputs: string[] = [];
+    let killed = 0;
+    let closed = 0;
+
+    // The worker emits output and exit through `ctx.setupTokenPty`, bound to the
+    // worker session id. The test drives them through the captured emitters.
+    const controllablePlugin = definePlugin({
+      async setup(ctx) {
+        emitOutput = (chunk: string) => ctx.setupTokenPty.output("ws-1", chunk);
+        resolveWait = (value) => ctx.setupTokenPty.exit("ws-1", value.exitCode);
+      },
+      async onSetupTokenPtyOpen(params) {
+        // The open carries the host route id and the fixed command. The worker
+        // returns a worker session id for the output binding only.
+        expect(params.hostRouteId).toBe("route-1");
+        expect(params.command).toBe("claude setup-token");
+        expect(params.providerLeaseId).toBe("lease-1");
+        return { workerSessionId: "ws-1" };
+      },
+      async onSetupTokenPtyInput(params) {
+        inputs.push(params.data);
+      },
+      async onSetupTokenPtyStop() {
+        killed += 1;
+      },
+      async onSetupTokenPtyClose(params) {
+        // The close keys on the host route id and returns a bound acknowledgement.
+        closed += 1;
+        return { hostRouteId: params.hostRouteId };
+      },
+    });
+
+    const worker = startWorkerRpcHost({
+      plugin: controllablePlugin,
+      stdin: hostToWorker,
+      stdout: workerToHost,
+    });
+
+    function callWorker(method: string, params: unknown) {
+      const id = `host-${nextRequestId++}`;
+      const result = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, (response) => {
+          if ("error" in response && response.error) {
+            reject(new Error(response.error.message));
+            return;
+          }
+          resolve((response as { result?: unknown }).result);
+        });
+      });
+      hostToWorker.write(serializeMessage(createRequest(method, params, id)));
+      return result;
+    }
+
+    hostReadline.on("line", (line) => {
+      const message = parseMessage(line);
+      if (isJsonRpcResponse(message)) {
+        pending.get(String(message.id))?.(message);
+        pending.delete(String(message.id));
+        return;
+      }
+      if (isJsonRpcNotification(message)) {
+        notifications.push(message as JsonRpcNotification);
+      }
+    });
+
+    try {
+      await expect(
+        callWorker("initialize", {
+          manifest: {
+            id: "paperclip.setup-token-pty",
+            apiVersion: 1,
+            version: "1.0.0",
+            displayName: "Setup Token PTY Test",
+            description: "Test plugin",
+            author: "Paperclip",
+            categories: ["automation"],
+            capabilities: [],
+            entrypoints: {},
+          },
+          config: {},
+          databaseNamespace: null,
+        }),
+      ).resolves.toMatchObject({
+        ok: true,
+        supportedMethods: expect.arrayContaining([
+          "setupTokenPtyOpen",
+          "setupTokenPtyInput",
+          "setupTokenPtyStop",
+          "setupTokenPtyClose",
+        ]),
+      });
+
+      await expect(
+        callWorker("setupTokenPtyOpen", {
+          hostRouteId: "route-1",
+          driverKey: "daytona",
+          companyId: "company-1",
+          environmentId: "env-1",
+          providerLeaseId: "lease-1",
+          command: "claude setup-token",
+        }),
+      ).resolves.toEqual({ workerSessionId: "ws-1" });
+
+      // The worker streams output as a notification bound to the worker session id.
+      emitOutput?.("prompt output");
+      await callWorker("setupTokenPtyInput", { workerSessionId: "ws-1", data: "browser-code" });
+      await callWorker("setupTokenPtyStop", { workerSessionId: "ws-1" });
+      resolveWait?.({ exitCode: 0 });
+      await expect(
+        callWorker("setupTokenPtyClose", { hostRouteId: "route-1" }),
+      ).resolves.toEqual({ hostRouteId: "route-1" });
+
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(inputs).toEqual(["browser-code"]);
+      expect(killed).toBe(1);
+      expect(closed).toBe(1);
+      const outputNotes = notifications.filter(
+        (note) => note.method === "setupTokenPty.output",
+      );
+      expect(outputNotes.map((note) => note.params)).toEqual([
+        { workerSessionId: "ws-1", chunk: "prompt output" },
+      ]);
+      const exitNotes = notifications.filter(
+        (note) => note.method === "setupTokenPty.exit",
+      );
+      expect(exitNotes.map((note) => note.params)).toEqual([
+        { workerSessionId: "ws-1", exitCode: 0 },
+      ]);
+    } finally {
+      worker.stop();
+      hostReadline.close();
+    }
   });
 });

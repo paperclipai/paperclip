@@ -336,7 +336,7 @@ const ALLOWED_TURN_SPAN_ATTRIBUTE_KEYS = new Set<string>([
 ]);
 
 describe("shared ACPX engine runtime behavior", () => {
-  it("persists ACP agent process identity before prompting and reuses it for the next warm heartbeat", async () => {
+  it("persists ACP agent process identity before prompting on each run (host lane re-creates, no warm reuse)", async () => {
     const root = await makeTempRoot();
     const startedAt = "2026-07-30T07:00:00.000Z";
     const processPid = 43_210;
@@ -419,7 +419,9 @@ describe("shared ACPX engine runtime behavior", () => {
     } as never);
 
     expect(second.exitCode).toBe(0);
-    expect(runtimeCreateCount).toBe(1);
+    // Amendment B: the host lane closes and relaunches (no warm reuse), so the
+    // second run re-creates the runtime and re-persists the process identity.
+    expect(runtimeCreateCount).toBe(2);
     expect(secondOnSpawn).toHaveBeenCalledOnce();
     expect(turnStartedBeforeProcessIdentity).toBe(false);
   });
@@ -4382,7 +4384,7 @@ describe("ACPX engine per-step startup timing (run.startup.step events)", () => 
     }
   });
 
-  it("emits a skipped acp.handshake event when a warm-handle hit skips the handshake", async () => {
+  it("runs a fresh acp.handshake on a compatible second run (host lane re-creates, no warm hit)", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const warmHandles = new Map();
@@ -4408,9 +4410,9 @@ describe("ACPX engine per-step startup timing (run.startup.step events)", () => 
       onMeta: async () => {},
       onEvent: async () => {},
     } as never);
-    // The second run reuses the warm handle, so the handshake does no work. It
-    // must emit exactly one acp.handshake event with outcome = skipped and a
-    // zero wall time, not a misleading zero-work `ok` event.
+    // Amendment B: the first run closed and relaunched (no warm save), so the
+    // compatible second run re-creates the runtime and runs a fresh handshake — one
+    // acp.handshake event whose outcome is not `skipped`.
     await execute({
       runId: "run-warm-2",
       agent: { id: "agent-1", companyId: "company-1" },
@@ -4428,8 +4430,7 @@ describe("ACPX engine per-step startup timing (run.startup.step events)", () => 
       (event) => event.eventType === "run.startup.step" && event.payload?.step === "acp.handshake",
     );
     expect(handshakeEvents).toHaveLength(1);
-    expect(handshakeEvents[0]!.payload?.outcome).toBe("skipped");
-    expect(handshakeEvents[0]!.payload?.durationMs).toBe(0);
+    expect(handshakeEvents[0]!.payload?.outcome).not.toBe("skipped");
   });
 
   it("does not emit startup-step events on a local (non-sandbox) run except workspace.resolve", async () => {
@@ -4663,7 +4664,7 @@ describe("ACPX engine run lifecycle corrections (F2: close the runtime for every
     runtimeSessionName: "runtime-session",
   };
 
-  it("test_handshake_failure_closes_runtime_and_removes_warm_entry", async () => {
+  it("test_persistent_host_failure_closes_recreated_runtime_no_warm_reuse", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const closeSpy = vi.fn(async () => {});
@@ -4709,10 +4710,13 @@ describe("ACPX engine run lifecycle corrections (F2: close the runtime for every
       onSpawn: async () => {},
     } as never);
     expect(first.exitCode).toBe(0);
-    expect(warmHandles.size).toBe(1);
+    // Amendment B: the first clean persistent turn closes and relaunches instead of
+    // warm-saving, so no warm handle survives.
+    expect(warmHandles.size).toBe(0);
     expect(created).toBe(1);
 
-    // The warm-hit reuses runtime #1 and fails while persisting process identity.
+    // The second run finds no warm handle, so it re-creates the runtime and fails
+    // while persisting process identity.
     const second = await execute({
       runId: "warm-handshake-2",
       agent: { id: "agent-1", companyId: "company-1" },
@@ -4726,11 +4730,11 @@ describe("ACPX engine run lifecycle corrections (F2: close the runtime for every
       },
     } as never);
 
-    expect(created).toBe(1);
+    expect(created).toBe(2);
     expect(second.exitCode).toBe(1);
     expect(second.resultJson?.phase).toBe("ensure_session");
-    // The reused runtime is closed and the warm entry removed.
-    expect(closeSpy).toHaveBeenCalledTimes(1);
+    // Each run closed its own runtime (one per run); no warm entry survived.
+    expect(closeSpy).toHaveBeenCalledTimes(2);
     expect(warmHandles.size).toBe(0);
   });
 
@@ -4768,7 +4772,7 @@ describe("ACPX engine run lifecycle corrections (F2: close the runtime for every
     expect(closeSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("test_warm_hit_failure_closes_runtime_and_does_not_rearm_idle_timer", async () => {
+  it("test_host_lane_closes_and_relaunches_every_run_and_leaves_no_warm_entry", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     let created = 0;
@@ -4816,9 +4820,13 @@ describe("ACPX engine run lifecycle corrections (F2: close the runtime for every
       onSpawn: async () => {},
     } as never);
     expect(first.exitCode).toBe(0);
-    expect(warmHandles.size).toBe(1);
+    // Amendment B: the first clean persistent turn closes runtime #1 and leaves no
+    // warm entry, so the host lane never keeps a live runtime warm.
+    expect(warmHandles.size).toBe(0);
+    expect(closes).toEqual([1]);
 
-    // A warm-hit whose identity-persist step fails reuses runtime #1 (no new create).
+    // The second run finds no warm entry, so it re-creates runtime #2 and fails
+    // while persisting process identity; runtime #2 closes.
     const second = await execute({
       runId: "warm-timer-2",
       agent: { id: "agent-1", companyId: "company-1" },
@@ -4831,15 +4839,12 @@ describe("ACPX engine run lifecycle corrections (F2: close the runtime for every
         throw new Error("onSpawn boom");
       },
     } as never);
-    expect(created).toBe(1);
+    expect(created).toBe(2);
     expect(second.exitCode).toBe(1);
-    // Runtime #1 is closed and its warm entry removed. The warm-hit already cleared
-    // the idle timer, and the failure does not re-arm it, so the map is empty.
-    expect(closes).toEqual([1]);
+    expect(closes).toEqual([1, 2]);
     expect(warmHandles.size).toBe(0);
 
-    // A later heartbeat finds no warm entry and constructs a fresh runtime, proving
-    // the failed warm-hit did not leave a re-armed entry behind.
+    // A later heartbeat also finds no warm entry and constructs a fresh runtime.
     const third = await execute({
       runId: "warm-timer-3",
       agent: { id: "agent-1", companyId: "company-1" },
@@ -4851,7 +4856,7 @@ describe("ACPX engine run lifecycle corrections (F2: close the runtime for every
       onSpawn: async () => {},
     } as never);
     expect(third.exitCode).toBe(0);
-    expect(created).toBe(2);
+    expect(created).toBe(3);
   });
 });
 

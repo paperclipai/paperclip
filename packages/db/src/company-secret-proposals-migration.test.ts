@@ -44,6 +44,6 @@ describeEmbeddedPostgres("company secret proposals migration", () => {
         (SELECT count(*)::int FROM pg_constraint WHERE conrelid = 'company_secret_proposals'::regclass AND contype <> 'n') AS constraints,
         (SELECT count(*)::int FROM pg_indexes WHERE tablename = 'company_secret_proposals') AS indexes
     `;
-    expect(result).toEqual({ constraints: 13, indexes: 5 });
+    expect(result).toEqual({ constraints: 14, indexes: 6 });
   }, 30_000);
 });

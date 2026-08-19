@@ -49,6 +49,7 @@ describe("issue properties document annotation mounting", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    Element.prototype.scrollIntoView = vi.fn();
   });
 
   afterEach(() => {
@@ -72,6 +73,36 @@ describe("issue properties document annotation mounting", () => {
     await act(async () => expand.click());
     expect(container.querySelector('[data-testid="annotation-surface-qa-evidence"]')?.getAttribute("data-document-id"))
       .toBe("document-1");
+    await act(async () => root.unmount());
+  });
+
+  it("expands and scrolls the requested document into view", async () => {
+    const root = createRoot(container);
+    await act(async () => root.render(
+      <IssuePropertiesArtifactsTab
+        issue={issue}
+        documentDeepLink={{ documentKey: "qa-evidence", requestId: 1 }}
+      />,
+    ));
+
+    expect(container.querySelector('button[aria-expanded="true"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="annotation-surface-qa-evidence"]')).not.toBeNull();
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "center" });
+    await act(async () => root.unmount());
+  });
+
+  it("does not expand an unrelated document when the requested key is missing", async () => {
+    const root = createRoot(container);
+    await act(async () => root.render(
+      <IssuePropertiesArtifactsTab
+        issue={issue}
+        documentDeepLink={{ documentKey: "deleted-document", requestId: 1 }}
+      />,
+    ));
+
+    expect(container.querySelector('button[aria-expanded="true"]')).toBeNull();
+    expect(container.querySelector('[data-testid="annotation-surface-qa-evidence"]')).toBeNull();
+    expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
     await act(async () => root.unmount());
   });
 });

@@ -20,9 +20,12 @@ function confirmation(
     summary: null,
     status: "pending",
     continuationPolicy: "wake_assignee",
-    resolverPolicy: "board_only",
-    requestedResolverPolicy: "board_only",
-    effectiveResolverPolicy: "board_only",
+    resolverPolicy: "anyone",
+    requestedResolverPolicy: "anyone",
+    effectiveResolverPolicy: "anyone",
+    resolverPolicyProvenance: "inherited",
+    effectiveResolverPolicySource: "requested",
+    legacyResolverPolicyAliases: { requested: "board_or_agents", effective: "board_or_agents" },
     createdByAgentId: "agent-1",
     createdByUserId: null,
     resolvedByAgentId: null,
@@ -63,6 +66,31 @@ describe("isSuppressedThreadInteraction", () => {
         confirmation({ status: "expired", result: result("superseded_by_newer_request") }),
       ),
     ).toBe(true);
+  });
+
+  it("keeps superseded secret proposals as terminal audit receipts", () => {
+    expect(
+      isSuppressedThreadInteraction(
+        confirmation({
+          status: "expired",
+          payload: {
+            version: 1,
+            prompt: "Approve this secret binding?",
+            secretProposal: {
+              version: 1,
+              proposalId: "proposal-1",
+              sourceSecretLabel: "OpenAI API key",
+              configPath: "access.evals_openai_api_key",
+              targetAgentId: "agent-2",
+              targetAgentName: "EvalsEngineer",
+              justification: "The runner needs this binding.",
+              expiresAt: "2026-05-04T15:02:00.000Z",
+            },
+          },
+          result: result("superseded_by_newer_request"),
+        }),
+      ),
+    ).toBe(false);
   });
 
   it("keeps accepted, rejected, and still-pending confirmations", () => {

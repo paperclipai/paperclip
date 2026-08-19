@@ -45,4 +45,6 @@ export type RetentionClass = keyof typeof RETENTION_DAYS;
  */
 export const EVENT_RETENTION_CLASS: Partial<Record<string, RetentionClass>> = {
   "codex.credential_health": "operational_enum_count",
+  "interaction.created": "operational_enum_count",
+  "interaction.resolved": "operational_enum_count",
 };

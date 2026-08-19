@@ -9,6 +9,7 @@ import {
   type HostServices,
   type HostToWorkerMethods,
 } from "@paperclipai/plugin-sdk";
+import { CLAUDE_SETUP_TOKEN_COMMAND } from "@paperclipai/adapter-claude-local/server";
 import {
   appendStderrExcerpt,
   createPluginWorkerHandle,
@@ -1049,6 +1050,265 @@ describe("plugin worker manager execute.log route", () => {
         executeParams({ logs: [{ stream: "stdout", chunk: "no-sink" }] }),
       );
       expect(result).toMatchObject({ exitCode: 0 });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Host-owned setup-token login pseudo-terminal route gate
+// ---------------------------------------------------------------------------
+
+const SETUP_TOKEN_PTY_WORKER_ENTRYPOINT = path.join(
+  FIXTURES_DIR,
+  "plugin-worker-setup-token-pty.cjs",
+);
+
+function makeSetupTokenPtyHandle(extra?: Record<string, unknown>) {
+  return createPluginWorkerHandle("test.plugin", {
+    entrypointPath: SETUP_TOKEN_PTY_WORKER_ENTRYPOINT,
+    manifest: TEST_MANIFEST,
+    config: {},
+    instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+    apiVersion: 1,
+    hostHandlers: {},
+    ...extra,
+  });
+}
+
+function ptyOpenInput(directive: unknown) {
+  return {
+    driverKey: "daytona",
+    companyId: "company-1",
+    environmentId: "env-1",
+    // The test directive rides in `providerLeaseId`, an opaque field the manager
+    // forwards to the worker unchanged. The manager allowlists `command`, so the
+    // command stays the fixed `CLAUDE_SETUP_TOKEN_COMMAND` for every route-gate
+    // case.
+    providerLeaseId: JSON.stringify(directive),
+    command: CLAUDE_SETUP_TOKEN_COMMAND,
+  };
+}
+
+describe("plugin worker manager setup-token pty route gate", () => {
+  it("rejects a command that is not the allowlisted setup-token command before the worker call", async () => {
+    const handle = makeSetupTokenPtyHandle();
+    try {
+      await handle.start();
+      // A caller passes a command other than the fixed `CLAUDE_SETUP_TOKEN_COMMAND`.
+      // The manager rejects it with one fixed non-secret error before the worker
+      // call, so no arbitrary process spawns in the sandbox pseudo-terminal.
+      await expect(
+        handle.openSetupTokenPtySession({
+          driverKey: "daytona",
+          companyId: "company-1",
+          environmentId: "env-1",
+          providerLeaseId: JSON.stringify({ mode: "normal" }),
+          command: "rm -rf /",
+        }),
+      ).rejects.toThrow("SETUP_TOKEN_PTY_COMMAND_NOT_ALLOWED");
+      // The rejected open never consumed the single route, so a later open with
+      // the allowlisted command still succeeds.
+      const session = await handle.openSetupTokenPtySession(
+        ptyOpenInput({ mode: "normal" }),
+      );
+      expect(session).toBeDefined();
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("permits one active credential pseudo-terminal per worker", async () => {
+    const handle = makeSetupTokenPtyHandle();
+    try {
+      await handle.start();
+      const first = await handle.openSetupTokenPtySession(
+        ptyOpenInput({ mode: "normal" }),
+      );
+      // A second open while the first route is not closed rejects with one fixed
+      // non-secret error before it reaches the worker.
+      await expect(
+        handle.openSetupTokenPtySession(ptyOpenInput({ mode: "normal" })),
+      ).rejects.toThrow("SETUP_TOKEN_PTY_ROUTE_BUSY");
+      await first.close();
+      // After the first route closes and the worker acknowledges the close, a new
+      // open is admitted.
+      const second = await handle.openSetupTokenPtySession(
+        ptyOpenInput({ mode: "normal" }),
+      );
+      await second.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("delivers output only for the exact bound worker session id and drops a mismatch", async () => {
+    const handle = makeSetupTokenPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openSetupTokenPtySession(
+        ptyOpenInput({
+          workerSessionId: "ws-A",
+          outputs: [
+            { chunk: "good-1" },
+            { chunk: "forged", sid: "ws-EVIL" },
+            { chunk: "good-2" },
+          ],
+          exitCode: 0,
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      // The forged notification carries a wrong worker session id, so the host
+      // drops it. Only the two bound chunks reach the listener, in order.
+      expect(chunks).toEqual(["good-1", "good-2"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("routes delayed input to the worker and back to the listener", async () => {
+    const handle = makeSetupTokenPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openSetupTokenPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A" }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      session.write("browser-code");
+      // The worker echoes the input as one output notification for the bound
+      // session, so the listener receives it.
+      await vi.waitFor(() => expect(chunks).toContain("echo:browser-code"));
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("terminalizes the route when the cumulative output passes the per-route bound", async () => {
+    const handle = makeSetupTokenPtyHandle({
+      setupTokenPtyLimits: { maxTotalChars: 10 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openSetupTokenPtySession(
+        ptyOpenInput({
+          outputs: [
+            { chunk: "aaaaa" }, // total 5 → delivered
+            { chunk: "bbbbb" }, // total 10 → delivered
+            { chunk: "ccccc" }, // total 15 > 10 → terminalize
+          ],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      // The per-route bound terminalizes the route, so the login wait resolves
+      // with a null exit code and the third chunk never reaches the listener.
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      expect(chunks).toEqual(["aaaaa", "bbbbb"]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("terminalizes and fails closed on a malformed open reply, then admits a later open", async () => {
+    const handle = makeSetupTokenPtyHandle();
+    try {
+      await handle.start();
+      await expect(
+        handle.openSetupTokenPtySession(ptyOpenInput({ mode: "malformed-open" })),
+      ).rejects.toThrow("SETUP_TOKEN_PTY_OPEN_FAILED");
+      // The terminalize closed the route by the host route id and the worker
+      // acknowledged the close, so a later open is admitted.
+      const session = await handle.openSetupTokenPtySession(
+        ptyOpenInput({ mode: "normal" }),
+      );
+      expect(session).toBeDefined();
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("terminalizes the route on an open timeout", async () => {
+    const handle = makeSetupTokenPtyHandle({
+      setupTokenPtyLimits: { openTimeoutMs: 200 },
+    });
+    try {
+      await handle.start();
+      await expect(
+        handle.openSetupTokenPtySession(ptyOpenInput({ mode: "no-open-reply" })),
+      ).rejects.toThrow();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("binds the worker session id one time and ignores a duplicate open reply", async () => {
+    const handle = makeSetupTokenPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openSetupTokenPtySession(
+        ptyOpenInput({
+          mode: "duplicate-open-reply",
+          workerSessionId: "ws-A",
+          outputs: [{ chunk: "hello" }],
+          exitCode: 0,
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      // The duplicate open reply never rebinds or reopens the route, so the
+      // session runs normally on the one bind.
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      expect(chunks).toEqual(["hello"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("closes the route with a fixed exit when the worker exits", async () => {
+    const handle = makeSetupTokenPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openSetupTokenPtySession(
+        ptyOpenInput({ mode: "normal" }),
+      );
+      const waitResult = session.wait();
+      await handle.stop();
+      // A worker exit closes the one route and resolves the login wait with the
+      // fixed non-secret exit.
+      await expect(waitResult).resolves.toEqual({ exitCode: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("retires the worker on an unconfirmed close acknowledgement", async () => {
+    const handle = makeSetupTokenPtyHandle({
+      setupTokenPtyLimits: { closeTimeoutMs: 200 },
+    });
+    try {
+      await handle.start();
+      const exited = new Promise<void>((resolve) => {
+        handle.on("exit", () => resolve());
+      });
+      const session = await handle.openSetupTokenPtySession(
+        ptyOpenInput({ mode: "normal", closeMode: "bad-ack" }),
+      );
+      await session.close();
+      // The close acknowledgement carried a mismatched host route id, so the host
+      // fails closed and retires the worker before any reuse.
+      await exited;
+      await expect(
+        handle.openSetupTokenPtySession(ptyOpenInput({ mode: "normal" })),
+      ).rejects.toThrow();
     } finally {
       await handle.stop().catch(() => undefined);
     }

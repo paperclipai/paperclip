@@ -148,6 +148,13 @@ interface IssuePropertiesProps {
   onRetryExternalObjects?: () => void;
   onCheckMonitorNow?: () => void;
   checkingMonitorNow?: boolean;
+  documentDeepLink?: IssuePropertiesDocumentDeepLink | null;
+}
+
+export interface IssuePropertiesDocumentDeepLink {
+  requestId: number;
+  tab: "plans" | "artifacts";
+  documentKey: string;
 }
 
 const ISSUE_BLOCKER_SEARCH_LIMIT = 50;
@@ -166,6 +173,7 @@ export function IssueProperties({
   onRetryExternalObjects,
   onCheckMonitorNow,
   checkingMonitorNow = false,
+  documentDeepLink,
 }: IssuePropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const { isMobile } = useSidebar();
@@ -245,6 +253,11 @@ export function IssueProperties({
       setPaneTab("plans");
     }
   }, [hasPlanTab]);
+  useEffect(() => {
+    if (!documentDeepLink) return;
+    paneTabUserChosenRef.current = true;
+    setPaneTab(documentDeepLink.tab);
+  }, [documentDeepLink]);
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   /** When a run is live, a selection is staged here until the operator confirms
@@ -2655,7 +2668,10 @@ export function IssueProperties({
       ) : null}
       {hasArtifactsTab ? (
         <TabsContent value="artifacts">
-          <IssuePropertiesArtifactsTab issue={issue} />
+          <IssuePropertiesArtifactsTab
+            issue={issue}
+            documentDeepLink={documentDeepLink?.tab === "artifacts" ? documentDeepLink : null}
+          />
         </TabsContent>
       ) : null}
     </Tabs>

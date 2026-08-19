@@ -19,6 +19,13 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
 const mockWorkspaceOperationService = vi.hoisted(() => ({
   listForExecutionWorkspace: vi.fn(),
   createRecorder: vi.fn(),
+  assertRuntimeControlAvailable: vi.fn(async () => undefined),
+}));
+
+const mockWorkspaceRuntimeLeaseService = vi.hoisted(() => ({
+  claim: vi.fn(async () => ({ outcome: "created", ownerKey: "issue:issue-1", lease: null, reclaimedFrom: null })),
+  release: vi.fn(async () => ({ released: false, ownerKey: null })),
+  get: vi.fn(async () => null),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -40,6 +47,8 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => mockHeartbeatService,
   logActivity: mockLogActivity,
   workspaceOperationService: () => mockWorkspaceOperationService,
+  workspaceRuntimeLeaseService: () => mockWorkspaceRuntimeLeaseService,
+  LEASED_WORKSPACE_RUNTIME_ACTIONS: ["start", "stop", "restart", "repair"],
 }));
 
 vi.mock("../services/environment-runtime.js", () => ({

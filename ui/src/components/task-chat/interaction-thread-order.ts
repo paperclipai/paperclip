@@ -49,6 +49,12 @@ function interactionOutcome(interaction: IssueThreadInteraction): string | null 
  * so it never stacks above the confirmation that replaced it.
  */
 export function isSuppressedThreadInteraction(interaction: IssueThreadInteraction): boolean {
+  // A secret proposal is also a terminal audit receipt: even when a newer
+  // request superseded it, the safe source/target/path metadata and recovery
+  // guidance must remain visible in the issue where the proposal happened.
+  if (interaction.kind === "request_confirmation" && interaction.payload.secretProposal) {
+    return false;
+  }
   if (!CONFIRMATION_KINDS.has(interaction.kind)) return false;
   const outcome = interactionOutcome(interaction);
   return outcome != null && SUPPRESSED_CONFIRMATION_OUTCOMES.has(outcome);

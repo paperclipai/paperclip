@@ -710,7 +710,7 @@ function watchdogWakeContext(input: {
           "reassign_watched_subtree_issues",
           "create_child_issues_under_non_watchdog_watched_subtree",
           "create_product_bug_followups_outside_watched_subtree",
-          "resolve_eligible_request_confirmation_plan_interactions",
+          "resolve_issue_thread_interactions_through_ordinary_audience_policy",
           "update_reusable_watchdog_issue",
         ],
         deniedOperations: [
@@ -718,7 +718,7 @@ function watchdogWakeContext(input: {
           "create_product_bug_followups_as_source_tree_children",
           "mutate_task_watchdog_descendants",
           "mutate_outside_watched_subtree",
-          "resolve_board_only_or_security_sensitive_approvals",
+          "resolve_human_only_interactions_or_security_sensitive_approvals",
           "create_nested_task_watchdogs",
         ],
       },

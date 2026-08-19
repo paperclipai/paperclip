@@ -74,6 +74,48 @@ describe("secret routes", () => {
     mockLogActivity.mockReset();
   });
 
+  it("returns an opaque secretRef in agent secret metadata without internal binding details", async () => {
+    const secretId = "11111111-1111-4111-8111-111111111111";
+    mockSecretService.listAgentSecretAccess.mockResolvedValue([{
+      secretId,
+      bindingId: "22222222-2222-4222-8222-222222222222",
+      configPath: "env.OPENAI_API_KEY",
+      key: "openai_api_key",
+      name: "OpenAI API key",
+      description: "Used for model access",
+      delivery: "env",
+      projectionClass: "unclassified",
+      latestVersion: 3,
+      versionSelector: "latest",
+      resolvedVersion: 3,
+    }]);
+
+    const res = await request(createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "44444444-4444-4444-8444-444444444444",
+      runId: "55555555-5555-4555-8555-555555555555",
+      source: "agent_jwt",
+      keyScope: { kind: "standard" },
+    })).get("/api/agents/me/secrets");
+
+    expect(res.status).toBe(200);
+    expect(res.body.secrets).toEqual([{
+      secretRef: secretId,
+      key: "openai_api_key",
+      name: "OpenAI API key",
+      description: "Used for model access",
+      delivery: "env",
+      projectionClass: "unclassified",
+      latestVersion: 3,
+      versionSelector: "latest",
+      resolvedVersion: 3,
+    }]);
+    expect(res.body.secrets[0]).not.toHaveProperty("secretId");
+    expect(res.body.secrets[0]).not.toHaveProperty("bindingId");
+    expect(res.body.secrets[0]).not.toHaveProperty("configPath");
+  });
+
   it("returns provider health checks for board callers with company access", async () => {
     mockSecretService.checkProviders.mockResolvedValue([
       {

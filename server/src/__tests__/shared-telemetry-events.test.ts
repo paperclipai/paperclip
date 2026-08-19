@@ -3,6 +3,7 @@ import {
   trackAgentCreated,
   trackAgentFirstHeartbeat,
   trackAgentTaskCompleted,
+  trackInteractionCreated,
   trackInteractionResolved,
   trackInstallCompleted,
 } from "@paperclipai/shared/telemetry";
@@ -111,6 +112,7 @@ describe("shared telemetry agent events", () => {
       optionCount: 2,
       selectedOptionCount: 1,
       skippedTaskCount: 3,
+      legacyInheritedRestriction: true,
     });
 
     expect(client.track).toHaveBeenCalledWith("interaction.resolved", {
@@ -125,6 +127,21 @@ describe("shared telemetry agent events", () => {
       option_count: 2,
       selected_option_count: 1,
       skipped_task_count: 3,
+      legacy_inherited_restriction: true,
+    });
+  });
+
+  it("emits only enum and boolean dimensions for interaction creation compatibility", () => {
+    const client = createClient();
+
+    trackInteractionCreated(client, {
+      interactionKind: "request_confirmation",
+      usedDeprecatedResolverPolicyAlias: true,
+    });
+
+    expect(client.track).toHaveBeenCalledWith("interaction.created", {
+      interaction_kind: "request_confirmation",
+      used_deprecated_resolver_policy_alias: true,
     });
   });
 });

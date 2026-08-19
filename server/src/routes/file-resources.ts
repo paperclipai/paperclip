@@ -1,6 +1,6 @@
 import { createReadStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 import { ZodError } from "zod";
 import type { Db } from "@paperclipai/db";
 import {
@@ -17,6 +17,10 @@ import { badRequest, HttpError, notFound, unprocessable } from "../errors.js";
 import { workspaceFileResourceService } from "../services/index.js";
 import { assertBoard, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { logActivity } from "../services/activity-log.js";
+import {
+  isWorkspaceGitScanError,
+  WORKSPACE_GIT_SCAN_ERROR_CODES,
+} from "../services/workspace-git-operation-scheduler.js";
 
 export type WorkspaceFileResourceService = {
   getIssue(issueId: string): Promise<{ companyId: string }>;
@@ -34,7 +38,10 @@ export type WorkspaceFileResourceService = {
     q?: string | null;
     limit?: number | null;
     offset?: number | null;
-  }, opts?: { issue?: Awaited<ReturnType<WorkspaceFileResourceService["getIssue"]>> }): Promise<WorkspaceFileListResponse>;
+  }, opts?: {
+    issue?: Awaited<ReturnType<WorkspaceFileResourceService["getIssue"]>>;
+    scanContext?: { signal?: AbortSignal; fairnessKeys?: readonly string[] };
+  }): Promise<WorkspaceFileListResponse>;
   resolve(
     issueId: string,
     input: { path: string; workspace?: "auto" | "execution" | "project" | null; projectId?: string | null; workspaceId?: string | null },
@@ -131,6 +138,23 @@ export function createFileResourceAvailabilityLimiter(opts: {
 
 function limiterKey(companyId: string, actorId: string, issueId: string) {
   return `${companyId}:${actorId}:${issueId}`;
+}
+
+function requestAbortController(req: Request, res: Response) {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  const abortIfResponseIncomplete = () => {
+    if (!res.writableEnded) abort();
+  };
+  req.once("aborted", abort);
+  res.once("close", abortIfResponseIncomplete);
+  return {
+    signal: controller.signal,
+    cleanup() {
+      req.off("aborted", abort);
+      res.off("close", abortIfResponseIncomplete);
+    },
+  };
 }
 
 function parseBooleanQuery(value: unknown) {
@@ -569,8 +593,19 @@ export function fileResourceRoutes(db: Db, opts: {
       throw error;
     }
 
+    const requestAbort = requestAbortController(req, res);
     try {
-      const result = await svc.list(req.params.issueId, query, { issue });
+      const result = await svc.list(req.params.issueId, query, {
+        issue,
+        scanContext: {
+          signal: requestAbort.signal,
+          fairnessKeys: [
+            `company:${issue.companyId}`,
+            `actor:${actor.actorId}`,
+            `issue:${req.params.issueId}`,
+          ],
+        },
+      });
       await logActivity(db, {
         companyId: issue.companyId,
         actorType: actor.actorType,
@@ -597,6 +632,17 @@ export function fileResourceRoutes(db: Db, opts: {
       });
       res.json(result);
     } catch (error) {
+      if (
+        isWorkspaceGitScanError(error) &&
+        error.code === WORKSPACE_GIT_SCAN_ERROR_CODES.cancelled &&
+        requestAbort.signal.aborted &&
+        (res.destroyed || res.writableEnded)
+      ) {
+        return;
+      }
+      if (isWorkspaceGitScanError(error) && error.status >= 500) {
+        res.setHeader("Retry-After", "1");
+      }
       await logListDeniedAttempt({
         companyId: issue.companyId,
         actor,
@@ -607,6 +653,7 @@ export function fileResourceRoutes(db: Db, opts: {
       });
       throw error;
     } finally {
+      requestAbort.cleanup();
       release?.();
     }
   });

@@ -10,7 +10,14 @@ export const environmentLeases = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-    environmentId: uuid("environment_id").notNull().references(() => environments.id, { onDelete: "cascade" }),
+    // A lease-less orphan sandbox is recorded here as a `pending_cleanup` row.
+    // That row is the only durable teardown reference the cleanup sweep has for
+    // the remote sandbox. So the environment reference must survive an
+    // environment delete: `on delete set null` keeps the row, and the sweep
+    // tears the orphan down from the row's immutable provider metadata. The
+    // column is nullable so an orphan the acquire records after a concurrent
+    // environment delete still persists with a null reference.
+    environmentId: uuid("environment_id").references(() => environments.id, { onDelete: "set null" }),
     executionWorkspaceId: uuid("execution_workspace_id").references(() => executionWorkspaces.id, { onDelete: "set null" }),
     issueId: uuid("issue_id").references(() => issues.id, { onDelete: "set null" }),
     heartbeatRunId: uuid("heartbeat_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),

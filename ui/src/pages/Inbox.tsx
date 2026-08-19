@@ -79,7 +79,7 @@ import {
   issueTrailingColumns,
 } from "../components/IssueColumns";
 import { IssueFiltersPopover } from "../components/IssueFiltersPopover";
-import { IssueRow } from "../components/IssueRow";
+import { InboxArchiveButton, IssueRow } from "../components/IssueRow";
 import { BlockedInboxView } from "../components/BlockedInboxView";
 import { SwipeToArchive } from "../components/SwipeToArchive";
 
@@ -340,16 +340,6 @@ export function FailedRunInboxRow({
                   unreadState === "fading" ? "opacity-0" : "opacity-100",
                 )} />
               </button>
-            ) : onArchive ? (
-              <button
-                type="button"
-                onClick={onArchive}
-                disabled={archiveDisabled}
-                className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
-                aria-label="Dismiss from inbox"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
             ) : (
               <span className="inline-flex h-4 w-4" aria-hidden="true" />
             )}
@@ -389,6 +379,9 @@ export function FailedRunInboxRow({
           </span>
         </Link>
         <div className="hidden shrink-0 items-center gap-2 sm:flex">
+          {onArchive ? (
+            <InboxArchiveButton onArchive={onArchive} disabled={archiveDisabled} />
+          ) : null}
           <Button
             type="button"
             variant="outline"
@@ -496,16 +489,6 @@ function ApprovalInboxRow({
                   unreadState === "fading" ? "opacity-0" : "opacity-100",
                 )} />
               </button>
-            ) : onArchive ? (
-              <button
-                type="button"
-                onClick={onArchive}
-                disabled={archiveDisabled}
-                className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
-                aria-label="Dismiss from inbox"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
             ) : (
               <span className="inline-flex h-4 w-4" aria-hidden="true" />
             )}
@@ -534,25 +517,32 @@ function ApprovalInboxRow({
             </span>
           </span>
         </Link>
-        {showResolutionButtons ? (
+        {(onArchive || showResolutionButtons) ? (
           <div className="hidden shrink-0 items-center gap-2 sm:flex">
-            <Button
-              size="sm"
-              className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
-              onClick={onApprove}
-              disabled={isPending}
-            >
-              Approve
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              className="h-8 px-3"
-              onClick={onReject}
-              disabled={isPending}
-            >
-              Reject
-            </Button>
+            {onArchive ? (
+              <InboxArchiveButton onArchive={onArchive} disabled={archiveDisabled} />
+            ) : null}
+            {showResolutionButtons ? (
+              <>
+                <Button
+                  size="sm"
+                  className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"
+                  onClick={onApprove}
+                  disabled={isPending}
+                >
+                  Approve
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="h-8 px-3"
+                  onClick={onReject}
+                  disabled={isPending}
+                >
+                  Reject
+                </Button>
+              </>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -632,16 +622,6 @@ function JoinRequestInboxRow({
                   unreadState === "fading" ? "opacity-0" : "opacity-100",
                 )} />
               </button>
-            ) : onArchive ? (
-              <button
-                type="button"
-                onClick={onArchive}
-                disabled={archiveDisabled}
-                className="inline-flex h-4 w-4 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 disabled:pointer-events-none disabled:opacity-30"
-                aria-label="Dismiss from inbox"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
             ) : (
               <span className="inline-flex h-4 w-4" aria-hidden="true" />
             )}
@@ -664,6 +644,9 @@ function JoinRequestInboxRow({
           </span>
         </div>
         <div className="hidden shrink-0 items-center gap-2 sm:flex">
+          {onArchive ? (
+            <InboxArchiveButton onArchive={onArchive} disabled={archiveDisabled} />
+          ) : null}
           <Button
             size="sm"
             className="h-8 bg-green-700 px-3 text-white hover:bg-green-600"

@@ -94,6 +94,12 @@ export const cancelEnvironmentCustomImageSetupSessionSchema = z.object({
 export type CancelEnvironmentCustomImageSetupSession =
   z.infer<typeof cancelEnvironmentCustomImageSetupSessionSchema>;
 
+export const relinkEnvironmentCustomImageTemplateSchema = z.object({
+  confirmBootSourceDrift: z.boolean().optional().default(false),
+}).strict();
+export type RelinkEnvironmentCustomImageTemplate =
+  z.infer<typeof relinkEnvironmentCustomImageTemplateSchema>;
+
 export const createEnvironmentCustomImageTerminalSessionTokenSchema = z.object({}).strict().default({});
 export type CreateEnvironmentCustomImageTerminalSessionToken =
   z.infer<typeof createEnvironmentCustomImageTerminalSessionTokenSchema>;

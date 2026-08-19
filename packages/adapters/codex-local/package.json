@@ -52,8 +52,9 @@
     "probe:quota": "pnpm exec tsx src/cli/quota-probe.ts --json"
   },
   "dependencies": {
-    "@agentclientprotocol/codex-acp": "^1.1.4",
+    "@agentclientprotocol/codex-acp": "^1.2.0",
     "@paperclipai/adapter-utils": "workspace:*",
+    "@paperclipai/shared": "workspace:*",
     "picocolors": "^1.1.1"
   },
   "devDependencies": {

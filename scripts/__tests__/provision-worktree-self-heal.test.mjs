@@ -37,6 +37,9 @@ test.after(() => {
  */
 function makeBaseWorkspace({ helpExit, initExit, ensureExit = 0 }) {
   const baseCwd = makeTempDir("paperclip-provision-base-");
+  fs.mkdirSync(path.join(baseCwd, ".paperclip"), { recursive: true });
+  fs.writeFileSync(path.join(baseCwd, ".paperclip", "config.json"), "{}\n");
+  fs.writeFileSync(path.join(baseCwd, ".paperclip", ".env"), "PAPERCLIP_INSTANCE_ID=base-source\n");
   const runnerPath = path.join(baseCwd, "cli", "node_modules", "tsx", "dist", "cli.mjs");
   const entryPath = path.join(baseCwd, "cli", "src", "index.ts");
   fs.mkdirSync(path.dirname(runnerPath), { recursive: true });
@@ -91,6 +94,8 @@ function runProvision(baseCwd, { pathPrefix } = {}) {
       PAPERCLIP_WORKSPACE_BRANCH: "feature/provision-test",
       PAPERCLIP_WORKTREES_DIR: worktreesHome,
       PAPERCLIP_HOME: path.join(worktreesHome, "no-such-instance-home"),
+      PAPERCLIP_PROJECT_WORKSPACE_ID: "project-workspace-1",
+      PAPERCLIP_SEED_EXPECTED_COMPANY_ID: "company-1",
     },
   });
   return { result, worktreeCwd, worktreesHome };
@@ -109,6 +114,8 @@ function runRuntimeProvision(baseCwd, worktreeCwd) {
       PAPERCLIP_WORKSPACE_BRANCH: "feature/provision-runtime-test",
       PAPERCLIP_WORKTREES_DIR: worktreesHome,
       PAPERCLIP_HOME: path.join(worktreesHome, "no-such-instance-home"),
+      PAPERCLIP_PROJECT_WORKSPACE_ID: "project-workspace-1",
+      PAPERCLIP_COMPANY_ID: "company-1",
     },
   });
 }
@@ -137,7 +144,10 @@ test("uses the base CLI when its import graph boots", () => {
   assert.equal(result.status, 0, result.stderr);
   const config = readWorktreeConfig(worktreeCwd);
   assert.equal(config.$meta.source, "fake-cli");
-  assert.ok(fs.existsSync(path.join(worktreeCwd, ".paperclip", "seed-pending")));
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(worktreeCwd, ".paperclip", "seed-manifest.json"), "utf8")).state,
+    "pending",
+  );
   const initInvocation = readCliInvocations(baseCwd).find(
     (args) => args[0] === "worktree" && args[1] === "init",
   );
@@ -166,7 +176,10 @@ test("falls back to an isolated config when the base CLI cannot boot", () => {
   );
   const env = fs.readFileSync(path.join(worktreeCwd, ".paperclip", ".env"), "utf8");
   assert.match(env, /PAPERCLIP_IN_WORKTREE=true/);
-  assert.ok(fs.existsSync(path.join(worktreeCwd, ".paperclip", "seed-pending")));
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(worktreeCwd, ".paperclip", "seed-manifest.json"), "utf8")).state,
+    "pending",
+  );
 });
 
 test("repairs an unhealthy base install under the lock and then uses the CLI", (t) => {
@@ -181,6 +194,9 @@ test("repairs an unhealthy base install under the lock and then uses the CLI", (
   // The CLI's health is controlled by a flag file, and a fake `pnpm install`
   // creates that flag — modeling a forced reinstall that relinks the store.
   const baseCwd = makeTempDir("paperclip-provision-repair-base-");
+  fs.mkdirSync(path.join(baseCwd, ".paperclip"), { recursive: true });
+  fs.writeFileSync(path.join(baseCwd, ".paperclip", "config.json"), "{}\n");
+  fs.writeFileSync(path.join(baseCwd, ".paperclip", ".env"), "PAPERCLIP_INSTANCE_ID=base-source\n");
   const healthFlag = path.join(baseCwd, "cli-healthy.flag");
   const runnerPath = path.join(baseCwd, "cli", "node_modules", "tsx", "dist", "cli.mjs");
   const entryPath = path.join(baseCwd, "cli", "src", "index.ts");
@@ -267,11 +283,11 @@ test("runtime provisioning invokes ensure-seeded once and fast-exits after succe
     .filter((args) => args[0] === "worktree" && args[1] === "ensure-seeded");
   assert.equal(ensureCallsAfterFirst.length, 1);
   assert.ok(ensureCallsAfterFirst[0].includes("--config"));
-  assert.ok(ensureCallsAfterFirst[0].includes("--from-config"));
+  assert.ok(!ensureCallsAfterFirst[0].includes("--from-config"));
 
   const second = runRuntimeProvision(baseCwd, worktreeCwd);
   assert.equal(second.status, 0, second.stderr);
-  assert.match(second.stderr, /already seeded; skipping/);
+  assert.match(second.stderr, /already seeded.*skipping/);
   const ensureCallsAfterSecond = readCliInvocations(baseCwd)
     .filter((args) => args[0] === "worktree" && args[1] === "ensure-seeded");
   assert.equal(ensureCallsAfterSecond.length, 1);
@@ -289,4 +305,23 @@ test("runtime provisioning leaves seed-pending in place when ensure-seeded fails
   assert.match(result.stderr, /fake worktree ensure-seeded failure/);
   assert.ok(fs.existsSync(path.join(worktreeCwd, ".paperclip", "seed-pending")));
   assert.ok(!fs.existsSync(path.join(worktreeCwd, ".paperclip", "seed-complete")));
+});
+
+test("runtime provisioning does not trust a truncated verified manifest", () => {
+  const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0, ensureExit: 4 });
+  const worktreeCwd = makeTempDir("paperclip-provision-runtime-truncated-");
+  fs.mkdirSync(path.join(worktreeCwd, ".paperclip"), { recursive: true });
+  fs.writeFileSync(path.join(worktreeCwd, ".paperclip", "config.json"), "{}\n");
+  fs.writeFileSync(
+    path.join(worktreeCwd, ".paperclip", "seed-manifest.json"),
+    JSON.stringify({ version: 2, state: "verified" }),
+  );
+
+  const result = runRuntimeProvision(baseCwd, worktreeCwd);
+  assert.equal(result.status, 4, result.stderr);
+  assert.equal(
+    readCliInvocations(baseCwd)
+      .filter((args) => args[0] === "worktree" && args[1] === "ensure-seeded").length,
+    1,
+  );
 });

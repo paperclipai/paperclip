@@ -7,15 +7,17 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 dry_run=false
 version=""
+notes_file_override=""
 
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/create-github-release.sh <version> [--dry-run]
+  ./scripts/create-github-release.sh <version> [--dry-run] [--notes-file PATH]
 
 Examples:
   ./scripts/create-github-release.sh 2026.318.0
   ./scripts/create-github-release.sh 2026.318.0 --dry-run
+  ./scripts/create-github-release.sh 2026.318.0 --notes-file /tmp/stable-notes.md
 
 Notes:
   - Run this after pushing the stable tag.
@@ -28,6 +30,14 @@ EOF
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) dry_run=true ;;
+    --notes-file)
+      shift
+      if [ $# -eq 0 ]; then
+        echo "Error: --notes-file requires a path." >&2
+        exit 1
+      fi
+      notes_file_override="$1"
+      ;;
     -h|--help)
       usage
       exit 0
@@ -55,6 +65,9 @@ fi
 
 tag="v$version"
 notes_file="$REPO_ROOT/releases/${tag}.md"
+if [ -n "$notes_file_override" ]; then
+  notes_file="$notes_file_override"
+fi
 if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -z "${PUBLISH_REMOTE:-}" ] && git_remote_exists origin; then
   PUBLISH_REMOTE=origin
 fi
