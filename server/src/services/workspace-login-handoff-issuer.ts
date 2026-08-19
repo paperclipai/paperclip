@@ -136,6 +136,7 @@ export async function issueWorkspaceLoginHandoff(input: {
   const identity = resolveManagedWorkspaceIdentity({
     workspaceCwd: input.executionWorkspace.cwd,
     executionWorkspaceId: input.executionWorkspace.id,
+    companyId: input.companyId,
   });
   if (!identity) return { ok: false, failure: { reason: "handoff_not_configured" } };
 
@@ -176,6 +177,7 @@ export async function issueWorkspaceLoginHandoff(input: {
     userId: boardIdentity.userId,
     email: boardIdentity.email,
     executionWorkspaceId: identity.executionWorkspaceId,
+    companyId: identity.companyId,
     instanceId: identity.instanceId,
     origin,
     issuerInstanceId: resolvePaperclipInstanceId(),

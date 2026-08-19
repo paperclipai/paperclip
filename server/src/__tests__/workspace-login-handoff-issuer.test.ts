@@ -109,6 +109,7 @@ describe("issueWorkspaceLoginHandoff", () => {
     const identity = resolveManagedWorkspaceIdentity({
       workspaceCwd: cwd,
       executionWorkspaceId: EXECUTION_WORKSPACE_ID,
+      companyId: COMPANY_ID,
     });
     const verification = verifyWorkspaceHandoffTicket({
       ticket: url.searchParams.get(WORKSPACE_HANDOFF_TICKET_QUERY_PARAM),
@@ -116,6 +117,7 @@ describe("issueWorkspaceLoginHandoff", () => {
       expected: {
         instanceId: INSTANCE_ID,
         executionWorkspaceId: EXECUTION_WORKSPACE_ID,
+        companyId: COMPANY_ID,
         origin: "https://workspace.example.ts.net:42013",
       },
     });
@@ -235,6 +237,7 @@ describe("issueWorkspaceLoginHandoff", () => {
     const identity = resolveManagedWorkspaceIdentity({
       workspaceCwd: cwd,
       executionWorkspaceId: EXECUTION_WORKSPACE_ID,
+      companyId: COMPANY_ID,
     });
     const verification = verifyWorkspaceHandoffTicket({
       ticket: new URL(result.issuance.url).searchParams.get(WORKSPACE_HANDOFF_TICKET_QUERY_PARAM),
@@ -242,6 +245,7 @@ describe("issueWorkspaceLoginHandoff", () => {
       expected: {
         instanceId: INSTANCE_ID,
         executionWorkspaceId: EXECUTION_WORKSPACE_ID,
+        companyId: COMPANY_ID,
         origin: "https://workspace.example.ts.net:42013",
       },
     });

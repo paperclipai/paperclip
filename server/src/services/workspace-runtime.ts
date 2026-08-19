@@ -4743,13 +4743,14 @@ type RuntimeServiceHealthProbeInput = {
   provider?: string | null;
   port?: number | null;
   /**
-   * Workspace identity, when the caller knows it. Supplying both upgrades the
-   * probe from "the port answered with status ok" to the full protected
+   * Workspace identity, when the caller knows it. Supplying all three upgrades
+   * the probe from "the port answered with status ok" to the full protected
    * readiness contract, which is what stops a relocated port or a half-restored
    * clone from masquerading as healthy (PAP-17572).
    */
   cwd?: string | null;
   executionWorkspaceId?: string | null;
+  companyId?: string | null;
 };
 
 /**
@@ -4774,6 +4775,7 @@ async function probeManagedWorkspaceRuntimeReadiness(
   const identity = resolveManagedWorkspaceIdentity({
     workspaceCwd: input.cwd ?? null,
     executionWorkspaceId: input.executionWorkspaceId ?? null,
+    companyId: input.companyId ?? null,
   });
   if (!identity) return null;
 
@@ -5440,6 +5442,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     ? resolveManagedWorkspaceIdentity({
         workspaceCwd: input.workspace.cwd,
         executionWorkspaceId: input.executionWorkspaceId ?? null,
+        companyId: input.agent.companyId,
       })
     : null;
   if (managedWorkspaceIdentity) {

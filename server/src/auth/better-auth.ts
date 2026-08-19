@@ -18,6 +18,7 @@ import {
 } from "./workspace-login-handoff-plugin.js";
 import {
   normalizeWorkspaceHandoffOrigin,
+  resolveWorkspaceHandoffLocalCompanyId,
   resolveWorkspaceHandoffLocalKey,
   resolveWorkspaceHandoffLocalWorkspaceId,
 } from "./workspace-login-handoff.js";
@@ -176,6 +177,7 @@ export function resolveWorkspaceHandoffIdentity(
     key,
     instanceId: resolvePaperclipInstanceId(),
     executionWorkspaceId: resolveWorkspaceHandoffLocalWorkspaceId(env),
+    companyId: resolveWorkspaceHandoffLocalCompanyId(env),
     origin: configuredOrigin,
   };
 }
@@ -237,6 +239,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
                   key: null,
                   instanceId: null,
                   executionWorkspaceId: null,
+                  companyId: null,
                   origin: null,
                 },
             }),

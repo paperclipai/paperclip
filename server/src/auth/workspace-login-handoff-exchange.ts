@@ -19,13 +19,19 @@ export type WorkspaceHandoffClonedIdentity = {
   userId: string;
   email: string | null;
   name?: string | null;
-  /** Whether the cloned user still has an active company membership. */
+  /**
+   * Whether the cloned user has an active membership **in the ticket's company**.
+   * An unscoped "has some membership" answer would let the exchange hand out a
+   * session with no access to the board the caller was opening.
+   */
   hasActiveMembership: boolean;
 };
 
 export type WorkspaceHandoffExchangeDeps = {
-  /** Resolve the cloned user by the id the ticket names. */
-  findClonedIdentity: (userId: string) => Promise<WorkspaceHandoffClonedIdentity | null>;
+  /** Resolve the cloned user by the id the ticket names, scoped to its company. */
+  findClonedIdentity: (
+    input: { userId: string; companyId: string },
+  ) => Promise<WorkspaceHandoffClonedIdentity | null>;
   /**
    * Record the nonce, returning false when it was already recorded.
    * Must be atomic: this is the only defense against a same-window replay.
@@ -75,6 +81,7 @@ export async function exchangeWorkspaceHandoffTicket(input: {
   expected: {
     instanceId: string | null;
     executionWorkspaceId: string | null;
+    companyId: string | null;
     origin: string | null;
   };
   deps: WorkspaceHandoffExchangeDeps;
@@ -89,7 +96,7 @@ export async function exchangeWorkspaceHandoffTicket(input: {
   if (!verification.ok) return { ok: false, reason: verification.reason, payload: null };
   const payload = verification.payload;
 
-  const identity = await input.deps.findClonedIdentity(payload.sub);
+  const identity = await input.deps.findClonedIdentity({ userId: payload.sub, companyId: payload.cid });
   if (!identity) return { ok: false, reason: "unknown_user", payload };
   // The email is bound into the signature, so a mismatch means the clone drifted
   // from the source instance (a reused id after a reseed), not a forged ticket.

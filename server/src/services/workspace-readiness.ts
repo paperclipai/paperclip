@@ -26,6 +26,7 @@ import type {
   WorkspaceSeedReadinessState,
 } from "@paperclipai/shared";
 import {
+  resolveWorkspaceHandoffLocalCompanyId,
   resolveWorkspaceHandoffLocalKey,
   resolveWorkspaceHandoffLocalWorkspaceId,
 } from "../auth/workspace-login-handoff.js";
@@ -183,6 +184,11 @@ export async function resolveWorkspaceReadiness(deps: WorkspaceReadinessDeps): P
   const seed = readSeedManifestSummary(resolveWorkspaceSeedMarkerDir(env));
   const instanceId = resolvePaperclipInstanceId();
   const executionWorkspaceId = resolveWorkspaceHandoffLocalWorkspaceId(env);
+  // The company this workspace's board represents. Both product probes below are
+  // scoped to it: "some company in the clone has issues" and "some user has some
+  // membership" can both be true while the company the operator is opening is
+  // missing or has no members, which is a workspace that must not report ready.
+  const companyId = resolveWorkspaceHandoffLocalCompanyId(env);
   const handoffKeyPresent = Boolean(resolveWorkspaceHandoffLocalKey(env));
 
   let databaseReady = false;
@@ -207,6 +213,7 @@ export async function resolveWorkspaceReadiness(deps: WorkspaceReadinessDeps): P
           .select({ companyId: companies.id })
           .from(companies)
           .innerJoin(issues, eq(issues.companyId, companies.id))
+          .where(companyId ? eq(companies.id, companyId) : undefined)
           .limit(1)
           .then((rows) => rows.length);
         cloneDataReady = clonedRows > 0;
@@ -218,10 +225,11 @@ export async function resolveWorkspaceReadiness(deps: WorkspaceReadinessDeps): P
 
       try {
         // The handoff can only sign in a user who survived the clone with an
-        // active membership, so readiness asserts that identity exists here
-        // rather than discovering it at click time. Existence, not a count: this
-        // runs on every protected health request and counting the whole join
-        // would scale with instance size for an answer that needs one row.
+        // active membership *in this workspace's company*, so readiness asserts
+        // that identity exists here rather than discovering it at click time.
+        // Existence, not a count: this runs on every protected health request and
+        // counting the whole join would scale with instance size for an answer
+        // that needs one row.
         const eligibleUsers = await deps.db
           .select({ userId: authUsers.id })
           .from(authUsers)
@@ -231,6 +239,7 @@ export async function resolveWorkspaceReadiness(deps: WorkspaceReadinessDeps): P
               eq(companyMemberships.principalType, "user"),
               eq(companyMemberships.principalId, authUsers.id),
               eq(companyMemberships.status, "active"),
+              ...(companyId ? [eq(companyMemberships.companyId, companyId)] : []),
             ),
           )
           .limit(1)

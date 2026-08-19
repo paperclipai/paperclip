@@ -40,6 +40,7 @@ export type WorkspaceHandoffExpectedIdentity = {
   key: string | null;
   instanceId: string | null;
   executionWorkspaceId: string | null;
+  companyId: string | null;
   origin: string | null;
 };
 
@@ -109,22 +110,25 @@ export function workspaceLoginHandoffPlugin(deps: {
             expected: {
               instanceId: expected.instanceId,
               executionWorkspaceId: expected.executionWorkspaceId,
+              companyId: expected.companyId,
               origin: expected.origin,
             },
             deps: {
-              findClonedIdentity: async (userId) => {
+              findClonedIdentity: async ({ userId, companyId }) => {
                 const user = await ctx.context.internalAdapter.findUserById(userId);
                 if (!user) return null;
                 // Membership lives in Paperclip's own schema, so it is read
                 // through the app's `db` handle rather than the Better Auth
-                // adapter. One active row is enough — the ticket authorizes a
-                // sign-in and per-company authorization is enforced downstream —
-                // so this asks for existence rather than counting them all.
+                // adapter. Scoped to the ticket's company: an unscoped check
+                // would accept a clone where this user belongs to some *other*
+                // company and hand them a session with no access to the board
+                // they opened. Existence, not a count.
                 const activeMemberships = await deps.db
                   .select({ id: companyMemberships.id })
                   .from(companyMemberships)
                   .where(
                     and(
+                      eq(companyMemberships.companyId, companyId),
                       eq(companyMemberships.principalType, "user"),
                       eq(companyMemberships.principalId, userId),
                       eq(companyMemberships.status, "active"),

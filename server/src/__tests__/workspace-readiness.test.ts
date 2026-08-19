@@ -60,6 +60,7 @@ function readyDb() {
       const chain = {
         from: vi.fn(() => chain),
         innerJoin: vi.fn(() => chain),
+        where: vi.fn(() => chain),
         limit: vi.fn(() => Promise.resolve(result)),
         then: (resolve: (rows: unknown) => unknown) => Promise.resolve(result).then(resolve),
       };
@@ -228,6 +229,7 @@ describe("probeManagedWorkspaceReadiness", () => {
   const identity: ManagedWorkspaceIdentity = {
     instanceId: "instance-a",
     executionWorkspaceId: "ews-1",
+    companyId: "company-1",
     handoffKey: "handoff-key",
     readinessToken: "probe-token",
     secretSource: "derived",
@@ -347,6 +349,7 @@ describe("probeManagedWorkspaceReadiness", () => {
       [WORKSPACE_HANDOFF_KEY_ENV_KEY]: "handoff-key",
       [WORKSPACE_READINESS_TOKEN_ENV_KEY]: "probe-token",
       [WORKSPACE_EXECUTION_WORKSPACE_ID_ENV_KEY]: "ews-1",
+      PAPERCLIP_EXECUTION_WORKSPACE_COMPANY_ID: "company-1",
     });
   });
 });
@@ -379,6 +382,7 @@ describe("waitForManagedWorkspaceReadiness", () => {
   const identity: ManagedWorkspaceIdentity = {
     instanceId: "instance-a",
     executionWorkspaceId: "ews-1",
+    companyId: "company-1",
     handoffKey: "k",
     readinessToken: "t",
     secretSource: "derived",

@@ -17,6 +17,7 @@ import {
   deriveWorkspaceHandoffKey,
   deriveWorkspaceReadinessToken,
   resolveWorkspaceHandoffRootSecret,
+  WORKSPACE_EXECUTION_WORKSPACE_COMPANY_ID_ENV_KEY,
   WORKSPACE_EXECUTION_WORKSPACE_ID_ENV_KEY,
   WORKSPACE_HANDOFF_KEY_ENV_KEY,
   WORKSPACE_READINESS_TOKEN_ENV_KEY,
@@ -38,6 +39,7 @@ export const WORKSPACE_READINESS_PROBE_TIMEOUT_MS = 2_000;
 export type ManagedWorkspaceIdentity = {
   instanceId: string;
   executionWorkspaceId: string;
+  companyId: string;
   handoffKey: string;
   readinessToken: string;
   /** Whether the root secret was configured explicitly or derived. */
@@ -62,11 +64,13 @@ export function resolveManagedWorkspaceInstanceId(workspaceCwd: string): string 
 export function resolveManagedWorkspaceIdentity(input: {
   workspaceCwd: string | null | undefined;
   executionWorkspaceId: string | null | undefined;
+  companyId: string | null | undefined;
   env?: NodeJS.ProcessEnv;
 }): ManagedWorkspaceIdentity | null {
   const workspaceCwd = input.workspaceCwd?.trim();
   const executionWorkspaceId = input.executionWorkspaceId?.trim();
-  if (!workspaceCwd || !executionWorkspaceId) return null;
+  const companyId = input.companyId?.trim();
+  if (!workspaceCwd || !executionWorkspaceId || !companyId) return null;
 
   const root = resolveWorkspaceHandoffRootSecret(input.env ?? process.env);
   if (!root) return null;
@@ -77,6 +81,7 @@ export function resolveManagedWorkspaceIdentity(input: {
   return {
     instanceId,
     executionWorkspaceId,
+    companyId,
     handoffKey: deriveWorkspaceHandoffKey({ rootSecret: root.secret, instanceId, executionWorkspaceId }),
     readinessToken: deriveWorkspaceReadinessToken({ rootSecret: root.secret, instanceId, executionWorkspaceId }),
     secretSource: root.source,
@@ -95,6 +100,7 @@ export function buildManagedWorkspaceGuestEnv(identity: ManagedWorkspaceIdentity
     [WORKSPACE_HANDOFF_KEY_ENV_KEY]: identity.handoffKey,
     [WORKSPACE_READINESS_TOKEN_ENV_KEY]: identity.readinessToken,
     [WORKSPACE_EXECUTION_WORKSPACE_ID_ENV_KEY]: identity.executionWorkspaceId,
+    [WORKSPACE_EXECUTION_WORKSPACE_COMPANY_ID_ENV_KEY]: identity.companyId,
   };
 }
 

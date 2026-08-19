@@ -13,11 +13,17 @@ import type { WorkspaceAccessState } from "../lib/workspace-access-state";
  * "invalid email or password".
  */
 
+/**
+ * Badge tones come from the semantic status token layer, so a theme change moves
+ * these states with every other status surface. `ready` reuses the "done" tone
+ * and `degraded` the "todo" (amber) tone; the icon variants are the contrast-
+ * corrected pair the token layer already tunes per mode.
+ */
 const STATE_BADGE_CLASSES: Record<WorkspaceAccessState["state"], string> = {
   provisioning: "border-border text-muted-foreground",
   validating: "border-border text-muted-foreground",
-  ready: "border-emerald-500/40 text-emerald-600 dark:text-emerald-400",
-  degraded: "border-amber-500/40 text-amber-600 dark:text-amber-400",
+  ready: "border-(--status-task-done) text-(--status-task-icon-done)",
+  degraded: "border-(--status-task-todo) text-(--status-task-icon-todo)",
   repairing: "border-border text-muted-foreground",
   failed: "border-destructive/50 text-destructive",
 };
