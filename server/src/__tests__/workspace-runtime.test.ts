@@ -6848,6 +6848,13 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
   });
 
   afterEach(async () => {
+    // `reconcilePersistedRuntimeServicesOnStartup` can write an
+    // `activityLog` row (exposure reservation drift) for the company under
+    // test. Deleting it before `companies` avoids an
+    // `activity_log_company_id_companies_id_fk` violation that would
+    // otherwise leave that company un-cleaned and cascade-fail every
+    // subsequent test's cleanup in this describe block.
+    await db.delete(activityLog);
     await db.delete(workspaceRuntimeServices);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
