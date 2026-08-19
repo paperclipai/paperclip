@@ -48,7 +48,7 @@ import { appendWithCap } from "../adapters/utils.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { runExclusiveWorkspaceRuntimeControl } from "../services/workspace-operations.js";
-import { deriveWorktreeInstanceId } from "../services/workspace-instance-cleanup.js";
+import { resolveManagedWorkspaceInstanceId } from "../services/managed-workspace-identity.js";
 import { isVerifiedWorktreeSeedManifest } from "../worktree-seed-manifest.js";
 import {
   issueWorkspaceLoginHandoff,
@@ -703,7 +703,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
             if (!isVerifiedWorktreeSeedManifest(manifest)) {
               throw new Error("Workspace reseed returned without a verified terminal manifest.");
             }
-            const expectedInstanceId = deriveWorktreeInstanceId(workspaceCwd);
+            const expectedInstanceId = resolveManagedWorkspaceInstanceId(workspaceCwd);
             if (manifest.targetInstanceId !== expectedInstanceId) {
               throw new Error("Verified seed manifest belongs to a different workspace instance.");
             }

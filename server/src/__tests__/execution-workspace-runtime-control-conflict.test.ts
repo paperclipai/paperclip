@@ -261,10 +261,11 @@ describe.sequential("execution workspace runtime control conflict and failure re
     );
   });
 
-  it("runs an audited full repair through terminal seed and service readiness validation", async () => {
+  it("uses the recorded instance pointer consistently for readiness, handoff, and repair", async () => {
     const workspaceCwd = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-route-repair-success-"));
     try {
       const configDir = path.join(workspaceCwd, ".paperclip");
+      const recordedInstanceId = "recorded-repair-instance";
       const sourceConfigPath = path.join(workspaceCwd, "source", "config.json");
       const cliRunner = path.join(workspaceCwd, "cli", "node_modules", "tsx", "dist", "cli.mjs");
       const cliEntry = path.join(workspaceCwd, "cli", "src", "index.ts");
@@ -273,6 +274,10 @@ describe.sequential("execution workspace runtime control conflict and failure re
       fs.mkdirSync(path.dirname(cliRunner), { recursive: true });
       fs.mkdirSync(path.dirname(cliEntry), { recursive: true });
       fs.writeFileSync(path.join(configDir, "config.json"), "{}\n");
+      fs.writeFileSync(
+        path.join(configDir, ".env"),
+        `PAPERCLIP_HOME=/srv/home\nPAPERCLIP_INSTANCE_ID=${recordedInstanceId}\n`,
+      );
       fs.writeFileSync(sourceConfigPath, "{}\n");
       fs.writeFileSync(cliRunner, "// test runner\n");
       fs.writeFileSync(cliEntry, "// test entry\n");
@@ -284,6 +289,18 @@ describe.sequential("execution workspace runtime control conflict and failure re
       }));
 
       const { deriveWorktreeInstanceId } = await import("../services/workspace-instance-cleanup.js");
+      const {
+        resolveManagedWorkspaceIdentity,
+        resolveManagedWorkspaceInstanceId,
+      } = await import("../services/managed-workspace-identity.js");
+      expect(deriveWorktreeInstanceId(workspaceCwd)).not.toBe(recordedInstanceId);
+      expect(resolveManagedWorkspaceInstanceId(workspaceCwd)).toBe(recordedInstanceId);
+      expect(resolveManagedWorkspaceIdentity({
+        workspaceCwd,
+        executionWorkspaceId,
+        companyId: "company-1",
+        env: { PAPERCLIP_WORKSPACE_HANDOFF_SECRET: "test-root-secret" },
+      })?.instanceId).toBe(recordedInstanceId);
       mockExecutionWorkspaceService.getById.mockResolvedValue(buildExecutionWorkspace({ cwd: workspaceCwd }));
       mockEnsurePersistedExecutionWorkspaceAvailable.mockResolvedValue({ cwd: workspaceCwd });
       mockStartRuntimeServices.mockResolvedValue([{
@@ -310,7 +327,7 @@ describe.sequential("execution workspace runtime control conflict and failure re
             snapshotAt: "2026-08-18T00:00:00.000Z",
             seedMode: "full",
             migrationRevision: "0142_test.sql",
-            targetInstanceId: deriveWorktreeInstanceId(workspaceCwd),
+            targetInstanceId: recordedInstanceId,
             phase: "complete",
             state: "verified",
             attemptId: "repair-attempt",
