@@ -1553,6 +1553,25 @@ export function createPluginWorkerHandle(
     }
   }
 
+  // Deliver one duplex channel chunk to the bound listener in isolation. A
+  // listener that throws must not escape the worker stdout notification handler
+  // or the buffered replay, so a throw here breaks neither the notification
+  // dispatch loop nor the pre-bind drain. The manager catches the error and logs
+  // it without the raw bytes. This mirrors the `execute.log` delivery isolation.
+  function deliverDuplexChannelChunk(
+    listener: (chunk: string) => void,
+    chunk: string,
+  ): void {
+    try {
+      listener(chunk);
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err.message : String(err) },
+        "duplex channel data delivery threw",
+      );
+    }
+  }
+
   // Route one duplex channel data notification to the per-session listener.
   // Deliver only while the route is `open` and the notification carries the exact
   // bound worker session identifier and a valid chunk. Count a mismatched or
@@ -1593,7 +1612,7 @@ export function createPluginWorkerHandle(
     }
     route.totalDataBytes += chunkBytes;
     if (route.listener) {
-      route.listener(chunk);
+      deliverDuplexChannelChunk(route.listener, chunk);
       return;
     }
     // No listener attached yet. Buffer the frame under the pre-bind bounds. End
@@ -1741,7 +1760,7 @@ export function createPluginWorkerHandle(
           const pending = route.buffered;
           route.buffered = [];
           route.bufferedChars = 0;
-          for (const chunk of pending) listener(chunk);
+          for (const chunk of pending) deliverDuplexChannelChunk(listener, chunk);
         }
       },
       write(data: string): void {

@@ -116,6 +116,62 @@ describe("plugin worker manager duplex channel route", () => {
     }
   });
 
+  it("isolates a throwing listener during live delivery so later chunks still route", async () => {
+    const handle = makeDuplexHandle();
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          workerSessionId: "ws-A",
+          data: [{ chunk: "ok-1" }, { chunk: "boom" }, { chunk: "ok-2" }],
+          exitCode: 0,
+        }),
+      );
+      const chunks: string[] = [];
+      // The listener throws on one chunk. The manager catches the throw, so it
+      // does not escape the worker stdout notification handler. The later chunk
+      // still routes and the route still settles.
+      session.onData((chunk) => {
+        chunks.push(chunk);
+        if (chunk === "boom") throw new Error("listener failure");
+      });
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      expect(chunks).toEqual(["ok-1", "boom", "ok-2"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("isolates a throwing listener during the buffered replay so every buffered chunk routes", async () => {
+    const handle = makeDuplexHandle();
+    try {
+      await handle.start();
+      const session = await handle.openDuplexChannel(
+        duplexOpenInput({
+          data: [{ chunk: "one" }, { chunk: "boom" }, { chunk: "three" }],
+        }),
+      );
+      // Wait so the three data notifications arrive and buffer before a listener
+      // attaches. The drain then delivers them in order.
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      const chunks: string[] = [];
+      // The listener throws on one buffered chunk. The manager catches the throw
+      // inside the drain, so it does not escape `onData` and every buffered chunk
+      // still routes.
+      expect(() =>
+        session.onData((chunk) => {
+          chunks.push(chunk);
+          if (chunk === "boom") throw new Error("listener failure");
+        }),
+      ).not.toThrow();
+      expect(chunks).toEqual(["one", "boom", "three"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("binds the worker session id one time and ignores a duplicate open reply", async () => {
     const handle = makeDuplexHandle();
     try {
