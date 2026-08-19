@@ -670,8 +670,21 @@ export function saveInboxNesting(enabled: boolean) {
   }
 }
 
-export function resolveInboxNestingEnabled(preferenceEnabled: boolean, isMobile: boolean): boolean {
-  return preferenceEnabled && !isMobile;
+/**
+ * Whether the inbox nests sub-tasks under their parent.
+ *
+ * This used to return `false` on mobile unconditionally, so a phone inbox
+ * showed a flat list and a parent's sub-tasks were simply not there — with no
+ * way to reveal them, since the nesting toggle is itself a desktop-only
+ * control. Mobile now nests like desktop: rows carry a per-depth left indent
+ * in place of the desktop tree guides, and the collapse chevron already has a
+ * mobile affordance (`mobileLeading` in Inbox.tsx).
+ *
+ * `isMobile` stays in the signature: callers pass it, and keeping it documents
+ * that the mobile behaviour is a decision rather than an oversight.
+ */
+export function resolveInboxNestingEnabled(preferenceEnabled: boolean, _isMobile: boolean): boolean {
+  return preferenceEnabled;
 }
 
 export function loadLastInboxTab(): InboxTab {

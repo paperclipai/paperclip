@@ -18,6 +18,7 @@ import { productivityReviewTriggerLabel } from "./ProductivityReviewBadge";
 import { hasAssignedBacklogBlocker } from "../lib/issue-blockers";
 import { ExternalObjectStatusSummary } from "./ExternalObjectStatusSummary";
 import { Badge } from "@/components/ui/badge";
+import { useIssueSignals } from "../context/IssueSignalsContext";
 
 type UnreadState = "hidden" | "visible" | "fading";
 
@@ -192,6 +193,39 @@ export function IssueRow({
       Blocked by parked work
     </Badge>
   ) : null;
+  // Pending issue-thread interactions, served from one company-wide query held
+  // by IssueSignalsProvider. Inert in any tree without the provider — unit
+  // tests and Storybook included.
+  const signals = useIssueSignals(issue.id);
+  // The "waiting on a human" dot. Deliberately red and deliberately NOT the
+  // same control as the blue unread dot: unread means "you have not looked at
+  // this", this means "this task cannot move until you answer".
+  const awaitingIndicator = signals.awaiting ? (
+    <span
+      data-testid="issue-row-awaiting-response"
+      data-awaiting-count={signals.awaitingCount}
+      role="status"
+      aria-label={
+        signals.awaitingCount > 1
+          ? `${signals.awaitingCount} questions are waiting for your answer`
+          : "A question is waiting for your answer"
+      }
+      title={
+        signals.awaitingCount > 1
+          ? `${signals.awaitingCount} pending requests are waiting for your answer — open the task to reply.`
+          : "A pending request is waiting for your answer — open the task to reply."
+      }
+      className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
+    >
+      <span
+        aria-hidden
+        className={cn(
+          "block h-2 w-2 rounded-full ring-2 ring-red-500/25",
+          selected ? "bg-muted-foreground ring-muted-foreground/25" : "bg-red-500 dark:bg-red-400",
+        )}
+      />
+    </span>
+  ) : null;
 
   return (
     <div
@@ -231,6 +265,7 @@ export function IssueRow({
         <span className="sr-only">Open {identifier}: {issue.title}</span>
       </Link>
       <span className="flex shrink-0 items-center gap-1 pt-px sm:hidden">
+        {awaitingIndicator}
         {mobileLeading ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} size="md" className={selectedStatusClass} />}
         {productivityReviewIndicator}
         {parkedBlockerIndicator}
@@ -296,6 +331,9 @@ export function IssueRow({
             : null}
           {desktopLeadingSpacer ? (
             <span className="hidden w-3.5 shrink-0 sm:block" />
+          ) : null}
+          {awaitingIndicator ? (
+            <span className="hidden shrink-0 items-center sm:inline-flex">{awaitingIndicator}</span>
           ) : null}
           {desktopMetaLeading ?? (
             <>

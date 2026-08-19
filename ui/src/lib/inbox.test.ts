@@ -1198,8 +1198,10 @@ describe("inbox helpers", () => {
     expect(resolveInboxNestingEnabled(true, false)).toBe(true);
   });
 
-  it("forces nesting off on mobile even when the saved preference is on", () => {
-    expect(resolveInboxNestingEnabled(true, true)).toBe(false);
+  it("keeps nesting enabled on mobile when the saved preference is on", () => {
+    // Mobile used to be forced flat, which hid every sub-task on a phone and
+    // gave no way to reveal them — the nesting toggle was desktop-only.
+    expect(resolveInboxNestingEnabled(true, true)).toBe(true);
   });
 
   it("keeps nesting off when the saved preference is off", () => {

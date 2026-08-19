@@ -175,12 +175,14 @@ export function InboxIssueMetaLeading({
       ) : null}
       {isLive && (
         <Badge variant="ghost"
+          data-testid="issue-live-badge"
+          title="An agent run is executing on this task right now."
           className={cn(
-            "px-1.5 sm:gap-1.5 sm:px-2",
+            "gap-1 px-1.5 sm:gap-1.5 sm:px-2",
             "bg-blue-500/10",
           )}
         >
-          <span className="relative flex h-2 w-2">
+          <span className="relative flex h-2 w-2 shrink-0">
             <span className="absolute inline-flex h-full w-full animate-pulse rounded-full bg-blue-400 opacity-75" />
             <span
               className={cn(
@@ -189,9 +191,14 @@ export function InboxIssueMetaLeading({
               )}
             />
           </span>
+          {/* The label is readable at every width. It used to be `hidden
+              sm:inline`, which left phones with a bare blue dot indistinguish-
+              able from every other coloured dot in the row — the list then read
+              as "no live marker at all" on the device the board is mostly
+              checked from. */}
           <span
             className={cn(
-              "hidden text-(length:--text-micro) font-medium sm:inline",
+              "text-(length:--text-micro) font-medium",
               "text-blue-600 dark:text-blue-400",
             )}
           >
@@ -201,8 +208,9 @@ export function InboxIssueMetaLeading({
       )}
       {showSubtreeLiveChip && !isLive && subtreeLiveCount > 0 && (
         <Badge variant="outline"
+          data-testid="issue-subtree-live-badge"
           className={cn(
-            "px-1.5 sm:gap-1.5 sm:px-2",
+            "gap-1 px-1.5 sm:gap-1.5 sm:px-2",
             "border-border bg-transparent",
           )}
           title={`${subtreeLiveCount} sub-task${subtreeLiveCount === 1 ? "" : "s"} running below`}
@@ -214,8 +222,9 @@ export function InboxIssueMetaLeading({
             )}
             aria-hidden="true"
           />
-          <span className="hidden text-(length:--text-micro) font-medium text-muted-foreground sm:inline">
-            {subtreeLiveCount} live below
+          <span className="text-(length:--text-micro) font-medium text-muted-foreground">
+            <span className="sm:hidden">{subtreeLiveCount}</span>
+            <span className="hidden sm:inline">{subtreeLiveCount} live below</span>
           </span>
         </Badge>
       )}

@@ -8,6 +8,7 @@ import { App } from "./App";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { CompanyProvider, useCompany } from "./context/CompanyContext";
 import { LiveUpdatesProvider } from "./context/LiveUpdatesProvider";
+import { IssueSignalsProvider } from "./context/IssueSignalsContext";
 import { BreadcrumbProvider } from "./context/BreadcrumbContext";
 import { PanelProvider } from "./context/PanelContext";
 import { SidebarProvider } from "./context/SidebarContext";
@@ -63,19 +64,21 @@ createRoot(document.getElementById("root")!).render(
               <EditorAutocompleteProvider>
                 <ToastProvider>
                   <LiveUpdatesProvider>
-                    <TooltipProvider>
-                      <CompanyAwareBreadcrumbProvider>
-                        <SidebarProvider>
-                          <PanelProvider>
-                            <PluginLauncherProvider>
-                              <DialogProvider>
-                                <App />
-                              </DialogProvider>
-                            </PluginLauncherProvider>
-                          </PanelProvider>
-                        </SidebarProvider>
-                      </CompanyAwareBreadcrumbProvider>
-                    </TooltipProvider>
+                    <IssueSignalsProvider>
+                      <TooltipProvider>
+                        <CompanyAwareBreadcrumbProvider>
+                          <SidebarProvider>
+                            <PanelProvider>
+                              <PluginLauncherProvider>
+                                <DialogProvider>
+                                  <App />
+                                </DialogProvider>
+                              </PluginLauncherProvider>
+                            </PanelProvider>
+                          </SidebarProvider>
+                        </CompanyAwareBreadcrumbProvider>
+                      </TooltipProvider>
+                    </IssueSignalsProvider>
                   </LiveUpdatesProvider>
                 </ToastProvider>
               </EditorAutocompleteProvider>

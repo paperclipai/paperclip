@@ -182,6 +182,16 @@ import {
   type InboxOrderPin,
 } from "../lib/inboxOrderPin";
 
+/**
+ * Mobile-only indent for nested inbox rows. Desktop shows depth through
+ * `IssueRow`'s tree guides, which are `sm:` only, so without this a nested row
+ * on a phone is indistinguishable from a root row.
+ *
+ * Margin, not padding: `IssueRow` sets its own `pl-*` (including the reserved
+ * unread-dot gutter) and tailwind-merge would let a `pl-*` here silently win.
+ */
+const MOBILE_INBOX_TREE_INDENT = ["", "ml-4 sm:ml-0", "ml-8 sm:ml-0", "ml-12 sm:ml-0", "ml-16 sm:ml-0"];
+
 const INBOX_HEARTBEAT_RUN_LIMIT = 200;
 const INBOX_ISSUE_LIST_LIMIT = 500;
 const INBOX_HOT_PATH_STALE_MS = 30_000;
@@ -2294,7 +2304,15 @@ export function Inbox() {
         </div>
         <div className="flex flex-wrap items-center justify-between gap-2">
         <Tabs value={tab} onValueChange={(value) => navigate(`/inbox/${value}`)}>
+          {/* `value` + `onValueChange` are what switch PageTabBar to its compact
+              mobile <select>. Without them the full five-tab list renders at a
+              fixed ~311px inside a ~358px toolbar; the icon group no longer fits
+              beside it and the `flex-wrap` container breaks onto a second row,
+              doubling its height (36px -> 88px) and leaving the dead gap Simon
+              sees on iPhone. Desktop is unchanged — it still renders TabsList. */}
           <PageTabBar
+            value={tab}
+            onValueChange={(value) => navigate(`/inbox/${value}`)}
             items={[
               {
                 value: "mine",
@@ -2434,7 +2452,10 @@ export function Inbox() {
                 type="button"
                 variant="outline"
                 size="icon"
-                className={cn("hidden h-8 w-8 shrink-0 sm:inline-flex", nestingEnabled && "bg-accent")}
+                // Reachable on mobile too, now that the inbox nests there:
+                // leaving it desktop-only made nesting a setting phones could
+                // be subject to but never change.
+                className={cn("inline-flex h-8 w-8 shrink-0", nestingEnabled && "bg-accent")}
                 onClick={toggleNesting}
                 title={nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
               >
@@ -2502,15 +2523,25 @@ export function Inbox() {
               />
               {canMarkAllRead && (
                 <>
+                  {/* Icon-only on mobile. At 390px the label is 132px wide and
+                      pushed this whole action group onto a second toolbar row
+                      (99px tabs + 292px actions > 358px available), which is the
+                      dead band Simon reads as "grosses espaces". Icon-only the
+                      group is ~192px and the toolbar stays one row. */}
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="h-8 shrink-0"
+                    className="h-8 w-8 shrink-0 px-0 sm:w-auto sm:px-3"
                     onClick={() => setShowMarkAllReadConfirm(true)}
                     disabled={markAllReadMutation.isPending}
+                    title="Mark all as read"
+                    aria-label="Mark all as read"
                   >
-                    {markAllReadMutation.isPending ? "Marking…" : "Mark all as read"}
+                    <Check className="h-4 w-4 sm:hidden" aria-hidden />
+                    <span className="hidden sm:inline">
+                      {markAllReadMutation.isPending ? "Marking…" : "Mark all as read"}
+                    </span>
                   </Button>
                   <Dialog open={showMarkAllReadConfirm} onOpenChange={setShowMarkAllReadConfirm}>
                     <DialogContent className="sm:max-w-md">
@@ -2688,11 +2719,16 @@ export function Inbox() {
                       issueLinkState={issueLinkState}
                       treeGuides={depth}
                       selected={selected}
-                      className={
+                      className={cn(
                         isArchiving
                           ? "pointer-events-none -translate-x-4 scale-(--s-0_98) opacity-0 transition-all duration-200 ease-out"
-                          : "transition-all duration-200 ease-out"
-                      }
+                          : "transition-all duration-200 ease-out",
+                        // Mobile has no tree guides (those are `sm:` only), so
+                        // depth reads as a plain left indent instead.
+                        nestingEnabled
+                          ? MOBILE_INBOX_TREE_INDENT[Math.min(depth, MOBILE_INBOX_TREE_INDENT.length - 1)]
+                          : null,
+                      )}
                       desktopMetaLeading={
                         <>
                           {nestingEnabled ? (

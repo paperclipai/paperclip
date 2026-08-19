@@ -7,6 +7,7 @@ import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueRow } from "./IssueRow";
 import { StatusIcon } from "./StatusIcon";
+import { IssueSignalsContext } from "../context/IssueSignalsContext";
 
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -95,6 +96,63 @@ describe("IssueRow", () => {
 
   afterEach(() => {
     container.remove();
+  });
+
+  it("shows no awaiting-response dot without an IssueSignalsProvider", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(<IssueRow issue={createIssue()} />);
+    });
+
+    expect(container.querySelectorAll('[data-testid="issue-row-awaiting-response"]').length).toBe(0);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("marks a task that has a pending issue-thread interaction", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueSignalsContext.Provider value={new Map([["issue-1", 2]])}>
+          <IssueRow issue={createIssue({ id: "issue-1" })} />
+        </IssueSignalsContext.Provider>,
+      );
+    });
+
+    // Once for mobile, once for desktop — each side of the row is visibility-
+    // gated by a Tailwind breakpoint, so both must carry the marker.
+    const dots = container.querySelectorAll('[data-testid="issue-row-awaiting-response"]');
+    expect(dots.length).toBe(2);
+    dots.forEach((dot) => {
+      expect(dot.getAttribute("data-awaiting-count")).toBe("2");
+      expect(dot.getAttribute("aria-label")).toBe("2 questions are waiting for your answer");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("leaves rows without a pending interaction unmarked", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueSignalsContext.Provider value={new Map([["other-issue", 1]])}>
+          <IssueRow issue={createIssue({ id: "issue-1" })} />
+        </IssueSignalsContext.Provider>,
+      );
+    });
+
+    expect(container.querySelectorAll('[data-testid="issue-row-awaiting-response"]').length).toBe(0);
+
+    act(() => {
+      root.unmount();
+    });
   });
 
   it("renders the list status glyph at md (16px)", () => {
