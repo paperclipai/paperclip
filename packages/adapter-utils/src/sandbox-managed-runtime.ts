@@ -1117,11 +1117,9 @@ export async function prepareSandboxManagedRuntime(input: {
             additionalSourceDirs[projectId] = remoteProjectDir;
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            console.warn(
-              `[paperclip] Failed to stage referenced project ${projectId}; skipping it. ${message}`,
-            );
             // Record the failure as a first-class per-project outcome so the run can count it in the
-            // requested-vs-synced accounting instead of losing it to a warning line.
+            // requested-vs-synced accounting and surface the reason on the run result and the run log.
+            // The structured slot carries the reason, so no `console.warn` line is needed here.
             additionalFailureSlots[sourceIndex] = { projectId, error: message };
           }
         }),

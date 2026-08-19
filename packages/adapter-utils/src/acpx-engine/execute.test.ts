@@ -2594,6 +2594,42 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
     expect(stageArgs.assets ?? []).toEqual([]);
     expect(sessionInputs[0]?.cwd).toBe(remoteCwd);
   });
+
+  it("test_remote_seam_surfaces_referenced_project_staging_failure_reason", async () => {
+    // A referenced project that failed to stage into the sandbox is a first-class
+    // run outcome. The run result carries the failure reason for each dropped
+    // project, and the run log gains one stderr line per failure that names the
+    // project id and the reason. The run stays successful (per-project isolation).
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const { result, logs } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      {
+        authToken: "real-run-jwt",
+        executionTarget,
+        prepareRemoteManagedHome: async (input) => {
+          const stagedRuntime = await input.stage([]);
+          // Inject a per-project staging failure the coordinator would record on a
+          // real sandbox extract failure.
+          stagedRuntime.additionalSourceFailures = [
+            { projectId: "proj-x", error: "extract failed: boom" },
+          ];
+          return { stagedRuntime };
+        },
+      },
+    );
+
+    // The run result carries the failure with its reason.
+    expect(result.referencedProjectStagingFailures).toEqual([
+      { projectId: "proj-x", error: "extract failed: boom" },
+    ]);
+    // The run log gains one stderr line that names the project id and the reason.
+    const failureLine = logs.find(
+      (entry) => entry.stream === "stderr" && entry.text.includes("proj-x"),
+    );
+    expect(failureLine?.text).toBe(
+      "[paperclip] Referenced project proj-x failed to stage; the run continues without it: extract failed: boom\n",
+    );
+  });
 });
 
 describe("ACPX engine remote session-lifecycle re-staging (PR 3: stage once / reuse on compatible resume)", () => {

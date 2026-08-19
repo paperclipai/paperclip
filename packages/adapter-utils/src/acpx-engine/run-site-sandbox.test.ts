@@ -140,6 +140,23 @@ describe("sandbox run site", () => {
     expect(scopeOf("agent_bridge")).toBe("per_run");
   });
 
+  it("test_sandbox_site_place_workspace_carries_referenced_project_failure_reason", async () => {
+    // A referenced project that fails to stage carries its failure reason back on
+    // the placed-workspace result, so a reader of the run learns why it dropped.
+    const failedStaged = {
+      runtimeRootDir: "/remote/fail/.paperclip-runtime/acpx",
+      additionalSourceDirs: {},
+      additionalSourceFailures: [{ projectId: "proj-x", error: "extract failed: boom" }],
+    } as unknown as PreparedAdapterExecutionTargetRuntime;
+    const { site } = makeSite({ stage: async () => failedStaged });
+
+    const placed = await site.placeWorkspace(makeContext("s"));
+
+    expect(placed).toEqual({
+      referencedProjectStagingFailures: [{ projectId: "proj-x", error: "extract failed: boom" }],
+    });
+  });
+
   it("test_sandbox_site_preserves_bridge_overlap_and_callback_sequencing", async () => {
     const events: string[] = [];
     let releasePaperclip!: () => void;
