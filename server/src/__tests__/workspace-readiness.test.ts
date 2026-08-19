@@ -132,6 +132,7 @@ describe("resolveWorkspaceReadiness", () => {
       seedState: "verified",
       seedMode: "minimal",
       executionWorkspaceId: "ews-1",
+      companyId: "company-1",
       failurePhase: null,
     });
   });
@@ -298,6 +299,7 @@ describe("probeManagedWorkspaceReadiness", () => {
       seedMode: "minimal",
       instanceId: "instance-a",
       executionWorkspaceId: "ews-1",
+      companyId: "company-1",
       failurePhase: null,
     },
   };
@@ -315,7 +317,7 @@ describe("probeManagedWorkspaceReadiness", () => {
       .toBe("probe-token");
   });
 
-  it("rejects a workspace serving another instance or workspace", async () => {
+  it("rejects a workspace serving another instance, workspace, or company", async () => {
     const wrongInstance = await probeManagedWorkspaceReadiness({
       healthUrl: "http://127.0.0.1:42013/api/health",
       identity,
@@ -335,6 +337,27 @@ describe("probeManagedWorkspaceReadiness", () => {
       }),
     });
     expect(wrongWorkspace).toMatchObject({ ok: false, reason: "identity_mismatch" });
+
+    const wrongCompany = await probeManagedWorkspaceReadiness({
+      healthUrl: "http://127.0.0.1:42013/api/health",
+      identity,
+      fetchImpl: respond({
+        ...readyPayload,
+        workspace: { ...readyPayload.workspace, companyId: "company-other" },
+      }),
+    });
+    expect(wrongCompany).toMatchObject({ ok: false, reason: "identity_mismatch" });
+  });
+
+  it("rejects a partial readiness contract with no company identity", async () => {
+    const { companyId: _companyId, ...partialReadiness } = readyPayload.workspace;
+    expect(
+      await probeManagedWorkspaceReadiness({
+        healthUrl: "http://127.0.0.1:42013/api/health",
+        identity,
+        fetchImpl: respond({ ...readyPayload, workspace: partialReadiness }),
+      }),
+    ).toMatchObject({ ok: false, reason: "identity_mismatch", readiness: null });
   });
 
   it("rejects a 200 response whose payload is not semantically healthy", async () => {
@@ -475,6 +498,7 @@ describe("waitForManagedWorkspaceReadiness", () => {
       seedMode: "minimal",
       instanceId: "instance-a",
       executionWorkspaceId: "ews-1",
+      companyId: "company-1",
       failurePhase: null,
     },
   };

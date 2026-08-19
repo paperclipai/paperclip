@@ -282,6 +282,7 @@ export async function resolveWorkspaceReadiness(deps: WorkspaceReadinessDeps): P
     seedMode: seed.mode,
     instanceId,
     executionWorkspaceId,
+    companyId,
     // A seed-recorded failure phase is more specific than anything this probe
     // can infer, so it wins.
     failurePhase: seed.failurePhase ?? (state === "ready" ? null : probeFailurePhase),

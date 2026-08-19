@@ -113,6 +113,7 @@ function isWorkspaceReadinessShape(value: unknown): value is WorkspaceReadiness 
     && typeof candidate.cloneDataReady === "boolean"
     && typeof candidate.authHandoffReady === "boolean"
     && typeof candidate.seedState === "string"
+    && (typeof candidate.companyId === "string" || candidate.companyId === null)
   );
 }
 
@@ -156,6 +157,21 @@ export async function probeManagedWorkspaceReadiness(input: {
   if (payload?.status !== "ok") {
     return { ok: false, reason: "unhealthy_payload", readiness: null, detail: String(payload?.status ?? "missing") };
   }
+  if (
+    payload.workspace
+    && typeof payload.workspace === "object"
+    && !("companyId" in payload.workspace)
+  ) {
+    // A guest that implements readiness but predates the company binding is not
+    // a legacy transport-only guest. Treat the partial contract as an identity
+    // disagreement so auto compatibility mode cannot publish an unopenable clone.
+    return {
+      ok: false,
+      reason: "identity_mismatch",
+      readiness: null,
+      detail: `expected company ${input.identity.companyId}, got missing`,
+    };
+  }
   if (!isWorkspaceReadinessShape(payload.workspace)) {
     // Either the token was rejected or the guest predates this contract. Both
     // mean the control plane cannot prove user readiness, so neither may publish.
@@ -166,12 +182,13 @@ export async function probeManagedWorkspaceReadiness(input: {
   if (
     readiness.instanceId !== input.identity.instanceId
     || readiness.executionWorkspaceId !== input.identity.executionWorkspaceId
+    || readiness.companyId !== input.identity.companyId
   ) {
     return {
       ok: false,
       reason: "identity_mismatch",
       readiness,
-      detail: `expected ${input.identity.instanceId}/${input.identity.executionWorkspaceId}, got ${readiness.instanceId}/${readiness.executionWorkspaceId}`,
+      detail: `expected ${input.identity.instanceId}/${input.identity.executionWorkspaceId}/${input.identity.companyId}, got ${readiness.instanceId}/${readiness.executionWorkspaceId}/${readiness.companyId}`,
     };
   }
   if (!readiness.databaseReady || !readiness.cloneDataReady || !readiness.authHandoffReady) {

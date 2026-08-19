@@ -107,6 +107,7 @@ describe("GET /api/health workspace readiness", () => {
       authHandoffReady: true,
       seedState: "verified",
       executionWorkspaceId: "ews-1",
+      companyId: "company-1",
     });
   });
 
