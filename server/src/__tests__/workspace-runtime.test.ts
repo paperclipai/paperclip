@@ -4198,8 +4198,10 @@ describe("ensureRuntimeServicesForRun", () => {
       branchName: "PAP-874-chat-speed-issues",
       worktreePath: worktreeWorkspaceRoot,
     };
+    // A Paperclip dev runtime must answer `/api/health` semantically before it may
+    // be published, so the fake serves the same shape a real one does.
     const serviceCommand =
-      "node -e \"require('node:http').createServer((req,res)=>res.end(process.env.PAPERCLIP_HOME)).listen(Number(process.env.PORT), '127.0.0.1')\"";
+      "node -e \"require('node:http').createServer((req,res)=>{if(req.url==='/api/health'){res.setHeader('content-type','application/json');res.end(JSON.stringify({status:'ok'}));return;}res.end(process.env.PAPERCLIP_HOME)}).listen(Number(process.env.PORT), '127.0.0.1')\"";
     const config = {
       workspaceRuntime: {
         services: [
@@ -6084,7 +6086,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
     const delayedHmrScript = [
       "const http=require('node:http');",
       "const port=Number(process.env.PORT);",
-      "http.createServer((_req,res)=>res.end('ok')).listen(port,'127.0.0.1');",
+      "http.createServer((req,res)=>{if(req.url==='/api/health'){res.setHeader('content-type','application/json');res.end(JSON.stringify({status:'ok'}));return;}res.end('ok')}).listen(port,'127.0.0.1');",
       "setTimeout(()=>http.createServer((_req,res)=>res.end('hmr')).listen(port+10000,'127.0.0.1'),750);",
       "setInterval(()=>{},1000);",
     ].join("");
@@ -7225,7 +7227,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     const executionWorkspaceId = randomUUID();
     const stoppedServiceId = randomUUID();
     const serviceCommand =
-      "node -e \"const http=require('node:http'); const stale=process.env.STALE_HEALTH==='1'; http.createServer((req,res)=>{ if (req.url==='/api/health' && stale) { res.statusCode=503; res.end('database_unreachable'); return; } res.end('ok'); }).listen(Number(process.env.PORT), '127.0.0.1')\"";
+      "node -e \"const http=require('node:http'); const stale=process.env.STALE_HEALTH==='1'; http.createServer((req,res)=>{ if (req.url==='/api/health') { if (stale) { res.statusCode=503; res.end('database_unreachable'); return; } res.setHeader('content-type','application/json'); res.end(JSON.stringify({status:'ok'})); return; } res.end('ok'); }).listen(Number(process.env.PORT), '127.0.0.1')\"";
     const scopeType = "agent";
     const scopeId = agentId;
     const reuseKey = createHash("sha256")
