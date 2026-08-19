@@ -4868,6 +4868,92 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(readiness?.plannedActions.map((action) => action.kind)).toEqual(["archive_record"]);
   }, 20_000);
 
+  it("keeps git conditions as warnings for a project-primary workspace and preserves the path on archive", async () => {
+    // A project-primary isolated workspace points at the project's primary
+    // worktree. Archiving it only removes the workspace record, so dirty tracked
+    // state must not block the close or unrelated work would strand the record.
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+
+    await fs.appendFile(path.join(repoRoot, "README.md"), "dirty tracked work\n", "utf8");
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `P${companyId.slice(0, 8).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Primary workspace",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "git_repo",
+      isPrimary: true,
+      cwd: repoRoot,
+      cleanupCommand: "rm -rf dist",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "project_primary",
+      name: "Primary checkout",
+      status: "active",
+      providerType: "local_fs",
+      cwd: repoRoot,
+      providerRef: repoRoot,
+      metadata: {
+        config: {
+          cleanupCommand: "rm -rf dist",
+        },
+      },
+    });
+
+    const readiness = await svc.getCloseReadiness(executionWorkspaceId);
+
+    expect(readiness?.isSharedWorkspace).toBe(false);
+    expect(readiness?.isProjectPrimaryWorkspace).toBe(true);
+    expect(readiness?.state).toBe("ready_with_warnings");
+    expect(readiness?.isDestructiveCloseAllowed).toBe(true);
+    expect(readiness?.blockingReasons).toEqual([]);
+    expect(readiness?.warnings).toEqual(expect.arrayContaining([
+      "The workspace has 1 modified tracked file.",
+      "This workspace points at the project primary worktree. Archiving it only removes the workspace record.",
+    ]));
+    expect(readiness?.plannedActions.map((action) => action.kind)).toEqual(["archive_record"]);
+
+    const workspace = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, executionWorkspaceId))
+      .then((rows) => rows[0]!);
+    const headSha = await readGit(repoRoot, ["rev-parse", "HEAD"]);
+
+    const cleanup = await svc.runManualArchiveArtifactCleanup({
+      workspace,
+      expectedHeadSha: headSha,
+      cleanupCommand: "rm -rf dist",
+    });
+
+    expect(cleanup.cleaned).toBe(true);
+    await expect(fs.stat(repoRoot)).resolves.toBeTruthy();
+    await expect(fs.readFile(path.join(repoRoot, "README.md"), "utf8")).resolves.toContain("dirty tracked work");
+  }, 20_000);
+
   it("formats isolated archive cleanup failures with a stable prefix", () => {
     expect(formatIsolatedArchiveCleanupFailureReason([])).toBe("worktree_remove_failed: unknown");
     expect(formatIsolatedArchiveCleanupFailureReason(["fatal: not a git repository"])).toBe(

@@ -2459,8 +2459,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           blockingIssues.length === 1
             ? "This workspace is still linked to an open issue."
             : `This workspace is still linked to ${blockingIssues.length} open issues.`;
-        if (isSharedWorkspace) {
-          warnings.push(`${linkedIssueMessage} Archiving it will detach this shared workspace session from those issues, but keep the underlying project workspace available.`);
+        if (isRecordOnlyArchive) {
+          const detachSuffix = isSharedWorkspace
+            ? " Archiving it will detach this shared workspace session from those issues, but keep the underlying project workspace available."
+            : " Archiving it will detach this workspace record from those issues, but keep the underlying project workspace available.";
+          warnings.push(`${linkedIssueMessage}${detachSuffix}`);
         } else {
           blockingReasons.push(linkedIssueMessage);
         }
@@ -2480,8 +2483,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           openTreeIssues.length === 1
             ? "The source issue tree still has 1 open issue."
             : `The source issue tree still has ${openTreeIssues.length} open issues.`;
-        if (isSharedWorkspace) {
-          warnings.push(`${treeIssueMessage} Archiving this shared workspace session keeps the underlying project workspace available.`);
+        if (isRecordOnlyArchive) {
+          const treeSuffix = isSharedWorkspace
+            ? " Archiving this shared workspace session keeps the underlying project workspace available."
+            : " Archiving this workspace keeps the underlying project workspace available.";
+          warnings.push(`${treeIssueMessage}${treeSuffix}`);
         } else {
           blockingReasons.push(treeIssueMessage);
         }
@@ -2489,6 +2495,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
       if (isSharedWorkspace) {
         warnings.push("This shared workspace session points at project workspace infrastructure. Archiving it only removes the session record.");
+      } else if (isProjectPrimaryWorkspace) {
+        warnings.push("This workspace points at the project primary worktree. Archiving it only removes the workspace record.");
       }
 
       if (runtimeServices.some((service) => service.status !== "stopped")) {
@@ -2499,14 +2507,13 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         );
       }
 
-      // Archiving a shared workspace session only removes the session record; it
-      // never destroys the underlying project workspace (see the warning above).
-      // A shared session points at the project's primary worktree, which carries
-      // unrelated in-flight work almost all of the time, so treating its git
-      // state as a blocker would make the session record impossible to close
-      // while protecting nothing. Keep the same signals as warnings there.
+      // Record-only archive (shared session or project-primary path) only removes
+      // the workspace record; it never destroys the underlying project workspace.
+      // Those paths carry unrelated in-flight work almost all of the time, so
+      // treating their git state as a blocker would make the record impossible to
+      // close while protecting nothing. Keep the same signals as warnings there.
       const pushGitCloseSignal = (message: string) => {
-        if (isSharedWorkspace) warnings.push(message);
+        if (isRecordOnlyArchive) warnings.push(message);
         else blockingReasons.push(message);
       };
 
