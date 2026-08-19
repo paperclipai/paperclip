@@ -2,7 +2,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import {
+  applyTokenRateCard,
+  inferOpenAiCompatibleBiller,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+} from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -671,25 +676,37 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stderrLine ||
         `OpenCode exited with code ${synthesizedExitCode ?? -1}`;
       const modelId = model || null;
+      const usage = {
+        inputTokens: attempt.parsed.usage.inputTokens,
+        outputTokens: attempt.parsed.usage.outputTokens,
+        cachedInputTokens: attempt.parsed.usage.cachedInputTokens,
+      };
+      const openCodeProvider = parseModelProvider(modelId);
+      const biller = resolveOpenCodeBiller(runtimeEnv, openCodeProvider);
+      // Same credit-billing correction as pi-local: OpenCode can route through
+      // GitHub Copilot, where cache reads are not discounted.
+      const priced = applyTokenRateCard({
+        biller,
+        model: modelId,
+        usage,
+        reportedCostUsd: attempt.parsed.costUsd,
+        env: runtimeEnv,
+      });
 
       return {
         exitCode: synthesizedExitCode,
         signal: attempt.proc.signal,
         timedOut: false,
         errorMessage: (synthesizedExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
-        usage: {
-          inputTokens: attempt.parsed.usage.inputTokens,
-          outputTokens: attempt.parsed.usage.outputTokens,
-          cachedInputTokens: attempt.parsed.usage.cachedInputTokens,
-        },
+        usage,
         sessionId: resolvedSessionId,
         sessionParams: resolvedSessionParams,
         sessionDisplayId: resolvedSessionId,
-        provider: parseModelProvider(modelId),
-        biller: resolveOpenCodeBiller(runtimeEnv, parseModelProvider(modelId)),
+        provider: openCodeProvider,
+        biller,
         model: modelId,
-        billingType: "unknown",
-        costUsd: attempt.parsed.costUsd,
+        billingType: priced.billingType,
+        costUsd: priced.costUsd,
         resultJson: {
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,

@@ -2,7 +2,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import {
+  applyTokenRateCard,
+  inferOpenAiCompatibleBiller,
+  type AdapterExecutionContext,
+  type AdapterExecutionResult,
+} from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -762,6 +767,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           }
         : null;
 
+      const usage = {
+        inputTokens: attempt.parsed.usage.inputTokens,
+        outputTokens: attempt.parsed.usage.outputTokens,
+        cachedInputTokens: attempt.parsed.usage.cachedInputTokens,
+      };
+      const biller = resolvePiBiller(runtimeEnv, provider);
+      // Credit-billed lanes (GitHub Copilot) do not discount cache reads, so the
+      // CLI's API-priced cost is re-derived from token counts. Everything else
+      // keeps the cost Pi reported.
+      const priced = applyTokenRateCard({
+        biller,
+        model,
+        usage,
+        reportedCostUsd: attempt.parsed.usage.costUsd,
+        env: runtimeEnv,
+      });
+
       const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
       const rawExitCode = attempt.proc.exitCode;
       const parsedError = attempt.parsed.errors.find((error) => error.trim().length > 0) ?? "";
@@ -773,19 +795,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         signal: attempt.proc.signal,
         timedOut: false,
         errorMessage: (effectiveExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
-        usage: {
-          inputTokens: attempt.parsed.usage.inputTokens,
-          outputTokens: attempt.parsed.usage.outputTokens,
-          cachedInputTokens: attempt.parsed.usage.cachedInputTokens,
-        },
+        usage,
         sessionId: resolvedSessionId,
         sessionParams: resolvedSessionParams,
         sessionDisplayId: resolvedSessionId,
         provider: provider,
-        biller: resolvePiBiller(runtimeEnv, provider),
+        biller,
         model: model,
-        billingType: "unknown",
-        costUsd: attempt.parsed.usage.costUsd,
+        billingType: priced.billingType,
+        costUsd: priced.costUsd,
         resultJson: {
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
