@@ -196,11 +196,11 @@ export function Sidebar() {
               width; a nav row also keeps search reachable from the
               collapsed rail, where the old header icon was dropped entirely.
               Cmd/Ctrl+K remains the keyboard path (command palette). */}
-          <SidebarNavItem to="/search" label="Search" icon={Search} />
-          <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
+          <SidebarNavItem to="/search" label="Buscar" icon={Search} />
+          <SidebarNavItem to="/dashboard" label="Painel" icon={LayoutDashboard} liveCount={liveRunCount} />
           <SidebarNavItem
             to="/inbox"
-            label="Inbox"
+            label="Entrada"
             icon={Inbox}
             badge={inboxBadge.inbox}
             badgeLabel="unread"
@@ -210,7 +210,7 @@ export function Sidebar() {
           {showDecisions ? (
             <SidebarNavItem
               to="/decisions"
-              label="Decisions"
+              label="Decisões"
               icon={ListChecks}
               badge={attentionCount}
               badgeLabel="decisions"
@@ -220,21 +220,21 @@ export function Sidebar() {
             <SidebarNavItem to="/status" label="Status" icon={LayoutGrid} textBadge="beta" />
           ) : null}
           {conferenceRoomChatEnabled ? (
-            <SidebarNavItem to="/board-chat" label="Conference Room" icon={MessagesSquare} />
+            <SidebarNavItem to="/board-chat" label="Sala de Reunião" icon={MessagesSquare} />
           ) : null}
         </div>
 
-        <SidebarSection label="Work" collapsible={{ open: workOpen, onOpenChange: setWorkOpen }}>
-          <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} />
+        <SidebarSection label="Trabalho" collapsible={{ open: workOpen, onOpenChange: setWorkOpen }}>
+          <SidebarNavItem to="/issues" label="Tarefas" icon={CircleDot} />
           {showCases ? (
-            <SidebarNavItem to="/cases" label="Cases" icon={Layers} textBadge="beta" />
+            <SidebarNavItem to="/cases" label="Casos" icon={Layers} textBadge="beta" />
           ) : null}
-          <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
+          <SidebarNavItem to="/routines" label="Rotinas" icon={Repeat} />
           {showPipelines ? (
             <SidebarNavItem to="/pipelines" label="Pipelines" icon={GitBranch} />
           ) : null}
           {showGoalsLink ? (
-            <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+            <SidebarNavItem to="/goals" label="Metas" icon={Target} />
           ) : goalsLinkPending ? (
             <div
               data-testid="sidebar-goals-placeholder"
@@ -242,14 +242,14 @@ export function Sidebar() {
               aria-hidden="true"
             />
           ) : null}
-          <SidebarNavItem to="/artifacts" label="Artifacts" icon={Package} />
-          <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
+          <SidebarNavItem to="/artifacts" label="Artefatos" icon={Package} />
+          <SidebarNavItem to="/skills" label="Habilidades" icon={Boxes} />
           {showWorkspacesLink ? (
-            <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
+            <SidebarNavItem to="/workspaces" label="Áreas de trabalho" icon={GitBranch} />
           ) : null}
           {streamlined ? (
             <>
-              <SidebarNavItem to="/projects" label="Projects" icon={FolderOpen} />
+              <SidebarNavItem to="/projects" label="Projetos" icon={FolderOpen} />
               <SidebarStarredProjects />
             </>
           ) : null}
@@ -273,14 +273,14 @@ export function Sidebar() {
 
         <SidebarAgents streamlined={streamlined} />
 
-        <SidebarSection label="Company" collapsible={{ open: companyOpen, onOpenChange: setCompanyOpen }}>
-          <SidebarNavItem to="/org" label="Org" icon={Network} />
+        <SidebarSection label="Empresa" collapsible={{ open: companyOpen, onOpenChange: setCompanyOpen }}>
+          <SidebarNavItem to="/org" label="Organograma" icon={Network} />
           {showApps ? <SidebarNavItem to="/apps" label="Apps" icon={AppWindow} /> : null}
-          <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
-          <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
+          <SidebarNavItem to="/timeline" label="Linha do tempo" icon={GanttChartSquare} />
+          <SidebarNavItem to="/costs" label="Custos" icon={DollarSign} />
           {/* One entry — /audit merged into the rich Activity feed (PAP-16302). */}
-          <SidebarNavItem to="/activity" label="Activity" icon={History} />
-          <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
+          <SidebarNavItem to="/activity" label="Atividade" icon={History} />
+          <SidebarNavItem to="/company/settings" label="Configurações" icon={Settings} />
         </SidebarSection>
 
         <PluginSlotOutlet

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -12,7 +12,9 @@ import {
   Star,
   Users,
   AlertTriangle,
+  ChevronRight,
 } from "lucide-react";
+import { buildAgentTree, type AgentTreeNode } from "./agentTree";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useSidebar } from "../context/SidebarContext";
@@ -67,9 +69,9 @@ const RECENT_AGENT_LIMIT = 3;
 const LIVE_AGENT_LINGER_MS = 120_000;
 
 const AGENT_SORT_CHOICES: SidebarSectionRadioChoice[] = [
-  { value: "top", label: "Top" },
-  { value: "alphabetical", label: "Alphabetical" },
-  { value: "recent", label: "Recent" },
+  { value: "top", label: "Prioritário" },
+  { value: "alphabetical", label: "Alfabético" },
+  { value: "recent", label: "Recente" },
 ];
 
 function agentTimestamp(agent: Agent, field: "lastHeartbeatAt" | "updatedAt" | "createdAt"): number {
@@ -121,6 +123,10 @@ function SidebarAgentItem({
   starred = false,
   onToggleStar,
   starPending = false,
+  depth = 0,
+  hasReports = false,
+  expanded = true,
+  onToggleExpand,
 }: {
   activeAgentId: string | null;
   activeTab: string | null;
@@ -137,6 +143,14 @@ function SidebarAgentItem({
   starred?: boolean;
   onToggleStar?: (agent: Agent, starred: boolean) => void;
   starPending?: boolean;
+  /** Org-tree depth (0 = CEO/root). Drives left indentation of the row. */
+  depth?: number;
+  /** Whether this agent has direct reports (shows the expand/collapse chevron). */
+  hasReports?: boolean;
+  /** Whether this node's reports are currently shown. */
+  expanded?: boolean;
+  /** Toggle this node's reports. Absent = not collapsible. */
+  onToggleExpand?: (agent: Agent) => void;
 }) {
   const routeRef = agentRouteRef(agent);
   const href = activeTab ? `${agentUrl(agent)}/${activeTab}` : agentUrl(agent);
@@ -145,19 +159,19 @@ function SidebarAgentItem({
   const isPaused = agent.status === "paused";
   const isBudgetPaused = isPaused && agent.pauseReason === "budget";
   const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
-  const pauseResumeLabel = isPaused ? "Resume agent" : "Pause agent";
+  const pauseResumeLabel = isPaused ? "Retomar agente" : "Pausar agente";
   const pauseResumeDisabled = disabled || agent.status === "pending_approval" || isBudgetPaused || (isPaused && hasInvalidOrgChain);
   const pauseResumeDisabledLabel = disabled
-    ? "Updating..."
+    ? "Atualizando..."
     : isBudgetPaused
-      ? "Budget paused"
+      ? "Pausado por orçamento"
       : isPaused && hasInvalidOrgChain
-        ? "Invalid org chain"
+        ? "Cadeia hierárquica inválida"
       : pauseResumeLabel;
   const showBuiltInLifecycle = builtInStatus === "needs_setup" || builtInStatus === "pending_approval";
   const trailingLabel = [
     showBuiltInLifecycle ? `Built-in agent ${builtInStatus.replace(/_/g, " ")}` : null,
-    hasInvalidOrgChain ? "Invalid reporting chain" : null,
+    hasInvalidOrgChain ? "Cadeia hierárquica inválida" : null,
   ].filter(Boolean).join(", ") || undefined;
 
   // C11 (DECISION-SHEET.md): the row itself is a SidebarNavItem, so agent rows
@@ -181,14 +195,14 @@ function SidebarAgentItem({
           <span className="ml-1 flex shrink-0 items-center gap-1">
             {showBuiltInLifecycle ? <BuiltInLifecycleChip status={builtInStatus} compact /> : null}
             {hasInvalidOrgChain ? (
-              <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Cadeia hierárquica inválida" />
             ) : null}
           </span>
         ) : undefined
       }
       trailingLabel={trailingLabel}
       liveAccessory={
-        agent.pauseReason === "budget" ? <BudgetSidebarMarker title="Agent paused by budget" /> : undefined
+        agent.pauseReason === "budget" ? <BudgetSidebarMarker title="Agente pausado por orçamento" /> : undefined
       }
     />
   );
@@ -199,7 +213,24 @@ function SidebarAgentItem({
   if (rail) return navItem;
 
   return (
-    <div className="group/agent relative flex items-center">
+    <div
+      className="group/agent relative flex items-center"
+      style={depth > 0 ? { paddingLeft: depth * 14 } : undefined}
+    >
+      {hasReports ? (
+        <button
+          type="button"
+          onClick={() => onToggleExpand?.(agent)}
+          aria-label={expanded ? `Recolher liderados de ${agent.name}` : `Expandir liderados de ${agent.name}`}
+          aria-expanded={expanded}
+          className="mr-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+        >
+          <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", expanded && "rotate-90")} />
+        </button>
+      ) : (
+        // Spacer keeps leaf-row icons aligned with rows that have a chevron.
+        <span aria-hidden className="mr-0.5 h-5 w-5 shrink-0" />
+      )}
       {navItem}
 
       {starred && !isMobile && onToggleStar ? (
@@ -228,7 +259,7 @@ function SidebarAgentItem({
                 ? "opacity-100"
                 : "pointer-events-none opacity-0 group-hover/agent:pointer-events-auto group-hover/agent:opacity-100 group-focus-within/agent:pointer-events-auto group-focus-within/agent:opacity-100",
             )}
-            aria-label={`Open actions for ${agent.name}`}
+            aria-label={`Ações de ${agent.name}`}
           >
             <MoreHorizontal className="h-3.5 w-3.5" />
           </Button>
@@ -248,7 +279,7 @@ function SidebarAgentItem({
                 ) : (
                   <Star className={cn("size-4", starred && "fill-amber-500 text-amber-500")} />
                 )}
-                <span>{starred ? "Remove from starred" : "Star agent"}</span>
+                <span>{starred ? "Remover dos favoritos" : "Favoritar agente"}</span>
               </DropdownMenuItem>
               <DropdownMenuSeparator />
             </>
@@ -261,7 +292,7 @@ function SidebarAgentItem({
               }}
             >
               <Pencil className="size-4" />
-              <span>Edit agent</span>
+              <span>Editar agente</span>
             </Link>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
@@ -285,7 +316,7 @@ function SidebarAgentItem({
             disabled={leaving}
           >
             {leaving ? <Loader2 className="size-4 motion-safe:animate-spin" /> : <LogOut className="size-4" />}
-            <span>{leaving ? "Leaving..." : "Leave agent"}</span>
+            <span>{leaving ? "Saindo..." : "Sair do agente"}</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -295,6 +326,17 @@ function SidebarAgentItem({
 
 export function SidebarAgents({ streamlined = false }: { streamlined?: boolean } = {}) {
   const [open, setOpen] = useState(true);
+  // Org-tree: which CEO/manager nodes are collapsed (session-scoped). Default is
+  // expanded, so the hierarchy is visible without a click.
+  const [collapsedNodeIds, setCollapsedNodeIds] = useState<Set<string>>(() => new Set());
+  const toggleNodeCollapsed = useCallback((agent: Agent) => {
+    setCollapsedNodeIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(agent.id)) next.delete(agent.id);
+      else next.add(agent.id);
+      return next;
+    });
+  }, []);
   const [pendingAgentIds, setPendingAgentIds] = useState<Set<string>>(() => new Set());
   const [liveLingerVersion, setLiveLingerVersion] = useState(0);
   const lastSeenLiveAtRef = useRef<Map<string, number>>(new Map());
@@ -608,7 +650,11 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     [displayedAgents, starredAgentIdSet],
   );
 
-  const renderAgentRow = (agent: Agent, isStarredRow: boolean) => (
+  const renderAgentRow = (
+    agent: Agent,
+    isStarredRow: boolean,
+    tree?: { depth: number; hasReports: boolean; expanded: boolean },
+  ) => (
     <SidebarAgentItem
       key={agent.id}
       activeAgentId={activeAgentId}
@@ -626,32 +672,57 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
       starred={isStarredRow || isStarred(membershipsQuery.data, "agent", agent.id)}
       onToggleStar={toggleStarAgent}
       starPending={agentStarPending(agent)}
+      depth={tree?.depth ?? 0}
+      hasReports={tree?.hasReports ?? false}
+      expanded={tree?.expanded ?? true}
+      onToggleExpand={tree ? toggleNodeCollapsed : undefined}
     />
   );
 
+  // Org tree (CEOs → reports) built from the flat non-starred list. Falls back to
+  // a flat list in the collapsed rail and in streamlined mode, where a nested
+  // tree has no room / doesn't fit the "recent few" affordance.
+  const agentTree = useMemo(
+    () => buildAgentTree(dedupedDisplayedAgents),
+    [dedupedDisplayedAgents],
+  );
+  const useTreeLayout = !rail && !streamlined;
+  const renderAgentTree = (nodes: AgentTreeNode[]): ReactNode[] =>
+    nodes.flatMap((node) => {
+      const hasReports = node.reports.length > 0;
+      const expanded = !collapsedNodeIds.has(node.agent.id);
+      const rows: ReactNode[] = [
+        renderAgentRow(node.agent, false, { depth: node.depth, hasReports, expanded }),
+      ];
+      if (hasReports && expanded) rows.push(...renderAgentTree(node.reports));
+      return rows;
+    });
+
   return (
     <SidebarSection
-      label="Agents"
+      label="Agentes"
       collapsible={{ open, onOpenChange: setOpen }}
       headerAction={{
-        ariaLabel: "New agent",
+        ariaLabel: "Novo agente",
         icon: Plus,
         onClick: openNewAgent,
       }}
       menu={{
-        ariaLabel: "Agents section actions",
+        ariaLabel: "Ações da seção Agentes",
         actions: [
-          { type: "item", label: "Browse agents", icon: Users, href: "/agents/all" },
+          { type: "item", label: "Ver agentes", icon: Users, href: "/agents/all" },
           { type: "separator" },
         ],
-        radioLabel: "Agent sort",
+        radioLabel: "Ordenar agentes",
         radioChoices: AGENT_SORT_CHOICES,
         radioValue: sortMode,
         onRadioValueChange: persistSortMode,
       }}
     >
       {starredAgents.map((agent: Agent) => renderAgentRow(agent, true))}
-      {dedupedDisplayedAgents.map((agent: Agent) => renderAgentRow(agent, false))}
+      {useTreeLayout
+        ? renderAgentTree(agentTree)
+        : dedupedDisplayedAgents.map((agent: Agent) => renderAgentRow(agent, false))}
       {showSeeAllLink && (() => {
         // Deliberately NOT a SidebarNavItem: this is a quiet muted affordance
         // (plain Link) that must not adopt nav-row active-route highlighting.
@@ -659,20 +730,20 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
           <Link
             to="/agents/all"
             state={SIDEBAR_SCROLL_RESET_STATE}
-            aria-label={rail ? "See all agents" : undefined}
+            aria-label={rail ? "Ver todos os agentes" : undefined}
             onClick={() => {
               if (isMobile) setSidebarOpen(false);
             }}
             className="flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
           >
             <Users className="shrink-0 h-4 w-4" />
-            <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : undefined}>See all agents</span>
+            <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : undefined}>Ver todos os agentes</span>
           </Link>
         );
         return rail ? (
           <Tooltip>
             <TooltipTrigger asChild>{seeAllLink}</TooltipTrigger>
-            <TooltipContent side="right">See all agents</TooltipContent>
+            <TooltipContent side="right">Ver todos os agentes</TooltipContent>
           </Tooltip>
         ) : (
           seeAllLink
