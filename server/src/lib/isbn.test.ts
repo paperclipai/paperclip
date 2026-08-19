@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validateAndNormalizeIsbn } from '../lib/isbn';
+import { validateAndNormalizeIsbn } from '../lib/isbn.js';
 
 describe('validateAndNormalizeIsbn', () => {
   describe('ISBN-13', () => {
