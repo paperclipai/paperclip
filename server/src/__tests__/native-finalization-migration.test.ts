@@ -14,7 +14,7 @@ describe("P6-18 / MIG-01..04 native finalization migration", () => {
   it("repairs only later duplicates and preserves legacy event bytes and cursors", async () => {
     const temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-migration-");
     const migration = await readFile(
-      new URL("../../../packages/db/src/migrations/0224_flippant_goliath.sql", import.meta.url),
+      new URL("../../../packages/db/src/migrations/0226_sharp_lilandra.sql", import.meta.url),
       "utf8",
     );
     const migrationHash = createHash("sha256").update(migration).digest("hex");
@@ -23,7 +23,7 @@ describe("P6-18 / MIG-01..04 native finalization migration", () => {
       const companyId = "10000000-0000-4000-8000-000000000001";
       const agentId = "10000000-0000-4000-8000-000000000002";
       const runId = "10000000-0000-4000-8000-000000000003";
-      // Reconstruct the actual pre-0224 shape rather than extracting selected
+      // Reconstruct the actual pre-0226 shape rather than extracting selected
       // repair statements from the migration under test.
       await rawDb.execute(sql.raw(`
         DROP TABLE IF EXISTS status_decision_effects, status_decisions, work_assessments,

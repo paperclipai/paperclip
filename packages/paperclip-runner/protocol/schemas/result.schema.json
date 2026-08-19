@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v1/result.schema.json",
+  "title": "PRP structured run result",
+  "type": "object",
+  "required": [
+    "schema",
+    "reportedWorkDisposition",
+    "summary",
+    "completionClaim",
+    "evidence",
+    "verification",
+    "attentionRequests",
+    "artifacts"
+  ],
+  "properties": {
+    "schema": { "const": "paperclip.run_result.v1" },
+    "reportedWorkDisposition": {
+      "enum": ["done", "blocked", "needs_review", "yielded"]
+    },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 12000 },
+    "completionClaim": {
+      "type": "object",
+      "required": ["contractRevision", "objectiveSatisfied", "criteria", "remainingWork"],
+      "properties": {
+        "contractRevision": { "type": "string", "minLength": 1 },
+        "objectiveSatisfied": { "type": "boolean" },
+        "criteria": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["criterionId", "status", "evidenceRefs"],
+            "properties": {
+              "criterionId": { "type": "string", "minLength": 1 },
+              "status": { "enum": ["satisfied", "not_satisfied", "unknown"] },
+              "evidenceRefs": { "type": "array", "items": { "type": "string" } },
+              "explanation": { "type": "string" }
+            },
+            "additionalProperties": true
+          }
+        },
+        "remainingWork": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["description", "blocksCompletion"],
+            "properties": {
+              "description": { "type": "string", "minLength": 1 },
+              "blocksCompletion": { "type": "boolean" }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "evidence": { "type": "array", "items": { "type": "object" } },
+    "verification": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["commandOrCheck", "status"],
+        "properties": {
+          "commandOrCheck": { "type": "string", "minLength": 1 },
+          "status": { "enum": ["passed", "failed", "not_run"] },
+          "detail": { "type": "string" },
+          "artifactRef": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "blocker": {
+      "type": "object",
+      "required": ["reasonCode", "owner", "unblockAction", "scope"],
+      "properties": {
+        "reasonCode": { "type": "string", "minLength": 1 },
+        "owner": { "type": "object", "additionalProperties": true },
+        "unblockAction": { "type": "string", "minLength": 1 },
+        "scope": { "enum": ["current_track", "task_wide"] }
+      },
+      "additionalProperties": true
+    },
+    "attentionRequests": { "type": "array", "items": { "type": "object" } },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "ref"],
+        "properties": {
+          "kind": { "type": "string", "minLength": 1 },
+          "ref": { "type": "string", "minLength": 1 },
+          "title": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "continuation": {
+      "type": "object",
+      "required": ["kind", "summary", "idempotencyKey"],
+      "properties": {
+        "kind": {
+          "enum": ["same_agent", "retry", "delegated_issue", "response_wake", "monitor"]
+        },
+        "summary": { "type": "string", "minLength": 1 },
+        "idempotencyKey": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "reportedWorkDisposition": { "const": "blocked" } } },
+      "then": { "required": ["blocker"] }
+    },
+    {
+      "if": { "properties": { "reportedWorkDisposition": { "const": "yielded" } } },
+      "then": { "required": ["continuation"] }
+    }
+  ],
+  "additionalProperties": true
+}

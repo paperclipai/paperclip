@@ -1,0 +1,684 @@
+{
+  "schema": "paperclip.capability.live-codex-matrix.v1",
+  "groups": 16,
+  "providerModel": {
+    "id": "gpt-5.5",
+    "provider": "openai"
+  },
+  "matrix": [
+    {
+      "caseId": "ap-approval-deny-01",
+      "group": "ap",
+      "semanticOperation": "request_approval",
+      "expectedCalls": [
+        "request_approval"
+      ],
+      "forbiddenCalls": [],
+      "observedCalls": [
+        "request_approval"
+      ],
+      "finalState": {
+        "expected": "mutated",
+        "observed": "mutated"
+      },
+      "providerModel": {
+        "id": "gpt-5.5",
+        "provider": "openai"
+      },
+      "scoringEvidence": {
+        "trace": {
+          "runId": "run-capability-live-ap-approval-deny-01",
+          "sessionId": "session-capability-live-ap-approval-deny-01",
+          "turnId": "019ff208-7d1d-74f3-8bb2-1f2489e336d5",
+          "itemId": "evidence-000015",
+          "receiptIds": [
+            "evidence-000016"
+          ],
+          "terminalPresent": true
+        },
+        "authorization": {
+          "expected": "allowed",
+          "observed": "allowed"
+        },
+        "efficiency": {
+          "latencyMs": 5762,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      }
+    },
+    {
+      "caseId": "ar-no-done-without-upload-01",
+      "group": "ar",
+      "semanticOperation": "register_deliverable",
+      "expectedCalls": [
+        "register_deliverable"
+      ],
+      "forbiddenCalls": [],
+      "observedCalls": [
+        "register_deliverable"
+      ],
+      "finalState": {
+        "expected": "mutated",
+        "observed": "mutated"
+      },
+      "providerModel": {
+        "id": "gpt-5.5",
+        "provider": "openai"
+      },
+      "scoringEvidence": {
+        "trace": {
+          "runId": "run-capability-live-ar-no-done-without-upload-01",
+          "sessionId": "session-capability-live-ar-no-done-without-upload-01",
+          "turnId": "019ff208-94a3-7be2-a152-6558026f2c81",
+          "itemId": "evidence-000015",
+          "receiptIds": [
+            "evidence-000016"
+          ],
+          "terminalPresent": true
+        },
+        "authorization": {
+          "expected": "allowed",
+          "observed": "allowed"
+        },
+        "efficiency": {
+          "latencyMs": 6153,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      }
+    },
+    {
+      "caseId": "bl-cancelled-not-resolved-01",
+      "group": "bl",
+      "semanticOperation": "block_task",
+      "expectedCalls": [
+        "block_task"
+      ],
+      "forbiddenCalls": [],
+      "observedCalls": [
+        "block_task"
+      ],
+      "finalState": {
+        "expected": "mutated",
+        "observed": "mutated"
+      },
+      "providerModel": {
+        "id": "gpt-5.5",
+        "provider": "openai"
+      },
+      "scoringEvidence": {
+        "trace": {
+          "runId": "run-capability-live-bl-cancelled-not-resolved-01",
+          "sessionId": "session-capability-live-bl-cancelled-not-resolved-01",
+          "turnId": "019ff208-ada0-7402-8f7c-9170569cd3c8",
+          "itemId": "evidence-000015",
+          "receiptIds": [
+            "evidence-000016"
+          ],
+          "terminalPresent": true
+        },
+        "authorization": {
+          "expected": "allowed",
+          "observed": "allowed"
+        },
+        "efficiency": {
+          "latencyMs": 3412,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      }
+    },
+    {
+      "caseId": "cm-mention-structured-01",
+      "group": "cm",
+      "semanticOperation": "report_progress",
+      "expectedCalls": [
+        "report_progress"
+      ],
+      "forbiddenCalls": [],
+      "observedCalls": [
+        "report_progress"
+      ],
+      "finalState": {
+        "expected": "mutated",
+        "observed": "mutated"
+      },
+      "providerModel": {
+        "id": "gpt-5.5",
+        "provider": "openai"
+      },
+      "scoringEvidence": {
+        "trace": {
+          "runId": "run-capability-live-cm-mention-structured-01",
+          "sessionId": "session-capability-live-cm-mention-structured-01",
+          "turnId": "019ff208-bbe7-7cb0-b299-9fe09ccaf31a",
+          "itemId": "evidence-000015",
+          "receiptIds": [
+            "evidence-000016"
+          ],
+          "terminalPresent": true
+        },
+        "authorization": {
+          "expected": "allowed",
+          "observed": "allowed"
+        },
+        "efficiency": {
+          "latencyMs": 3525,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      }
+    },
+    {
+      "caseId": "co-409-stop-01",
+      "group": "co",
+      "semanticOperation": "checkout_task",
+      "expectedCalls": [],
+      "forbiddenCalls": [],
+      "observedCalls": [],
+      "finalState": {
+        "expected": "unchanged",
+        "observed": "unchanged"
+      },
+      "providerModel": {
+        "id": "gpt-5.5",
+        "provider": "openai"
+      },
+      "scoringEvidence": {
+        "trace": {
+          "runId": "run-capability-live-co-409-stop-01",
+          "sessionId": "session-capability-live-co-409-stop-01",
+          "turnId": "019ff208-caa9-7573-9c98-cdfda85e0d6a",
+          "itemId": "transcript-000016",
+          "receiptIds": [],
+          "terminalPresent": true
+        },
+        "authorization": {
+          "expected": "absent",
+          "observed": "absent"
+        },
+        "efficiency": {
+          "latencyMs": 4763,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      }
+    },
+    {
+      "caseId": "dp-base-revision-01",
+      "group": "dp",
+      "semanticOperation": "write_document",
+      "expectedCalls": [
+        "write_document"
+      ],
+      "forbiddenCalls": [],
+      "observedCalls": [
+        "write_document"
+      ],
+      "finalState": {
+        "expected": "mutated",
+        "observed": "mutated"
+      },
+      "providerModel": {
+        "id": "gpt-5.5",
+        "provider": "openai"
+      },
+      "scoringEvidence": {
+        "trace": {
+          "runId": "run-capability-live-dp-base-revision-01",
+          "sessionId": "session-capability-live-dp-base-revision-01",
+          "turnId": "019ff208-de3c-7572-8b4c-622fa11b671b",
+          "itemId": "evidence-000015",
+          "receiptIds": [
+            "evidence-000016"
+          ],
+          "terminalPresent": true
+        },
+        "authorization": {
+          "expected": "allowed",
+          "observed": "allowed"
+        },
+        "efficiency": {
+          "latencyMs": 3258,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      }
+    },
+    {
+      "caseId": "er-blocked-dedup-01",
+      "group": "er",
+      "semanticOperation": "checkout_task",
+      "expectedCalls": [],
+      "forbiddenCalls": [],
+      "observedCalls": [],
+      "finalState": {
+        "expected": "unchanged",
+        "observed": "unchanged"
+      },
+      "providerModel": {
+        "id": "gpt-5.5",
+        "provider": "openai"
+      },
+      "scoringEvidence": {
+        "trace": {
+          "runId": "run-capability-live-er-blocked-dedup-01",
+          "sessionId": "session-capability-live-er-blocked-dedup-01",
+          "turnId": "019ff208-ebe0-74c3-8ec0-5d771d020a9c",
+          "itemId": "transcript-000016",
+          "receiptIds": [],
+          "terminalPresent": true
+        },
+        "authorization": {
+          "expected": "absent",
+          "observed": "absent"
+        },
+        "efficiency": {
+          "latencyMs": 4953,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      }
+    },
+    {
+      "caseId": "hb-context-01",
+      "group": "hb",
+      "semanticOperation": "checkout_task",
+      "expectedCalls": [],
+      "forbiddenCalls": [],
+      "observedCalls": [],
+      "finalState": {
+        "expected": "unchanged",
+        "observed": "unchanged"
+      },
+      "providerModel": {
+        "id": "gpt-5.5",
+        "provider": "openai"
+      },
+      "scoringEvidence": {
+        "trace": {
+          "runId": "run-capability-live-hb-context-01",
+          "sessionId": "session-capability-live-hb-context-01",
+          "turnId": "019ff209-0043-7423-9957-be6301c6e951",
+          "itemId": "transcript-000016",
+          "receiptIds": [],
+          "terminalPresent": true
+        },
+        "authorization": {
+          "expected": "absent",
+          "observed": "absent"
+        },
+        "efficiency": {
+          "latencyMs": 1660,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      }
+    },
+    {
+      "caseId": "ix-checkbox-01",
+      "group": "ix",
+      "semanticOperation": "request_human_input",
+      "expectedCalls": [
+        "request_human_input"
+      ],
+      "forbiddenCalls": [],
+      "observedCalls": [
+        "request_human_input"
+      ],
+      "finalState": {
+        "expected": "mutated",
+        "observed": "mutated"
+      },
+      "providerModel": {
+        "id": "gpt-5.5",
+        "provider": "openai"
+      },
+      "scoringEvidence": {
+        "trace": {
+          "runId": "run-capability-live-ix-checkbox-01",
+          "sessionId": "session-capability-live-ix-checkbox-01",
+          "turnId": "019ff209-0839-7db2-9a98-bd9296ef4db5",
+          "itemId": "evidence-000015",
+          "receiptIds": [
+            "evidence-000016"
+          ],
+          "terminalPresent": true
+        },
+        "authorization": {
+          "expected": "allowed",
+          "observed": "allowed"
+        },
+        "efficiency": {
+          "latencyMs": 8222,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      }
+    },
+    {
+      "caseId": "mh-blocked-handoff-01",
+      "group": "mh",
+      "semanticOperation": "create_task",
+      "expectedCalls": [
+        "create_task"
+      ],
+      "forbiddenCalls": [],
+      "observedCalls": [
+        "create_task"
+      ],
+      "finalState": {
+        "expected": "mutated",
+        "observed": "mutated"
+      },
+      "providerModel": {
+        "id": "gpt-5.5",
+        "provider": "openai"
+      },
+      "scoringEvidence": {
+        "trace": {
+          "runId": "run-capability-live-mh-blocked-handoff-01",
+          "sessionId": "session-capability-live-mh-blocked-handoff-01",
+          "turnId": "019ff209-2953-7062-a513-6e7e28b324af",
+          "itemId": "evidence-000015",
+          "receiptIds": [
+            "evidence-000016"
+          ],
+          "terminalPresent": true
+        },
+        "authorization": {
+          "expected": "allowed",
+          "observed": "allowed"
+        },
+        "efficiency": {
+          "latencyMs": 3811,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      }
+    },
+    {
+      "caseId": "rf-api-404-report-01",
+      "group": "rf",
+      "semanticOperation": "list_agents",
+      "expectedCalls": [
+        "list_agents"
+      ],
+      "forbiddenCalls": [],
+      "observedCalls": [
+        "list_agents"
+      ],
+      "finalState": {
+        "expected": "unchanged",
+        "observed": "unchanged"
+      },
+      "providerModel": {
+        "id": "gpt-5.5",
+        "provider": "openai"
+      },
+      "scoringEvidence": {
+        "trace": {
+          "runId": "run-capability-live-rf-api-404-report-01",
+          "sessionId": "session-capability-live-rf-api-404-report-01",
+          "turnId": "019ff209-393b-79c2-bb53-6be66cf76b9a",
+          "itemId": "evidence-000015",
+          "receiptIds": [
+            "evidence-000016"
+          ],
+          "terminalPresent": true
+        },
+        "authorization": {
+          "expected": "allowed",
+          "observed": "allowed"
+        },
+        "efficiency": {
+          "latencyMs": 2986,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      }
+    },
+    {
+      "caseId": "rs-dependency-blocked-wake-01",
+      "group": "rs",
+      "semanticOperation": "checkout_task",
+      "expectedCalls": [],
+      "forbiddenCalls": [],
+      "observedCalls": [],
+      "finalState": {
+        "expected": "unchanged",
+        "observed": "unchanged"
+      },
+      "providerModel": {
+        "id": "gpt-5.5",
+        "provider": "openai"
+      },
+      "scoringEvidence": {
+        "trace": {
+          "runId": "run-capability-live-rs-dependency-blocked-wake-01",
+          "sessionId": "session-capability-live-rs-dependency-blocked-wake-01",
+          "turnId": "019ff209-45de-7522-a2b0-1d92a284d0e0",
+          "itemId": "transcript-000016",
+          "receiptIds": [],
+          "terminalPresent": true
+        },
+        "authorization": {
+          "expected": "absent",
+          "observed": "absent"
+        },
+        "efficiency": {
+          "latencyMs": 1895,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      }
+    },
+    {
+      "caseId": "se-get-issue-01",
+      "group": "se",
+      "semanticOperation": "search_tasks",
+      "expectedCalls": [
+        "search_tasks"
+      ],
+      "forbiddenCalls": [],
+      "observedCalls": [
+        "search_tasks"
+      ],
+      "finalState": {
+        "expected": "unchanged",
+        "observed": "unchanged"
+      },
+      "providerModel": {
+        "id": "gpt-5.5",
+        "provider": "openai"
+      },
+      "scoringEvidence": {
+        "trace": {
+          "runId": "run-capability-live-se-get-issue-01",
+          "sessionId": "session-capability-live-se-get-issue-01",
+          "turnId": "019ff209-51ed-70b2-95ee-bdadb2065065",
+          "itemId": "evidence-000014",
+          "receiptIds": [
+            "evidence-000016"
+          ],
+          "terminalPresent": true
+        },
+        "authorization": {
+          "expected": "allowed",
+          "observed": "allowed"
+        },
+        "efficiency": {
+          "latencyMs": 3067,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      }
+    },
+    {
+      "caseId": "st-backlog-park-01",
+      "group": "st",
+      "semanticOperation": "finish_task",
+      "expectedCalls": [
+        "finish_task"
+      ],
+      "forbiddenCalls": [],
+      "observedCalls": [
+        "finish_task"
+      ],
+      "finalState": {
+        "expected": "mutated",
+        "observed": "mutated"
+      },
+      "providerModel": {
+        "id": "gpt-5.5",
+        "provider": "openai"
+      },
+      "scoringEvidence": {
+        "trace": {
+          "runId": "run-capability-live-st-backlog-park-01",
+          "sessionId": "session-capability-live-st-backlog-park-01",
+          "turnId": "019ff209-6083-7312-bed2-2d89633f7a43",
+          "itemId": "evidence-000015",
+          "receiptIds": [
+            "evidence-000016"
+          ],
+          "terminalPresent": true
+        },
+        "authorization": {
+          "expected": "allowed",
+          "observed": "allowed"
+        },
+        "efficiency": {
+          "latencyMs": 3508,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      }
+    },
+    {
+      "caseId": "su-crossteam-billing-01",
+      "group": "su",
+      "semanticOperation": "create_task",
+      "expectedCalls": [
+        "create_task"
+      ],
+      "forbiddenCalls": [],
+      "observedCalls": [
+        "create_task"
+      ],
+      "finalState": {
+        "expected": "mutated",
+        "observed": "mutated"
+      },
+      "providerModel": {
+        "id": "gpt-5.5",
+        "provider": "openai"
+      },
+      "scoringEvidence": {
+        "trace": {
+          "runId": "run-capability-live-su-crossteam-billing-01",
+          "sessionId": "session-capability-live-su-crossteam-billing-01",
+          "turnId": "019ff209-6f30-7003-8833-a84e62737f6b",
+          "itemId": "evidence-000015",
+          "receiptIds": [
+            "evidence-000016"
+          ],
+          "terminalPresent": true
+        },
+        "authorization": {
+          "expected": "allowed",
+          "observed": "allowed"
+        },
+        "efficiency": {
+          "latencyMs": 4524,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      }
+    },
+    {
+      "caseId": "wk-ask-mode-01",
+      "group": "wk",
+      "semanticOperation": "checkout_task",
+      "expectedCalls": [],
+      "forbiddenCalls": [],
+      "observedCalls": [],
+      "finalState": {
+        "expected": "unchanged",
+        "observed": "unchanged"
+      },
+      "providerModel": {
+        "id": "gpt-5.5",
+        "provider": "openai"
+      },
+      "scoringEvidence": {
+        "trace": {
+          "runId": "run-capability-live-wk-ask-mode-01",
+          "sessionId": "session-capability-live-wk-ask-mode-01",
+          "turnId": "019ff209-81ce-71a3-973c-5afea691f385",
+          "itemId": "transcript-000016",
+          "receiptIds": [],
+          "terminalPresent": true
+        },
+        "authorization": {
+          "expected": "absent",
+          "observed": "absent"
+        },
+        "efficiency": {
+          "latencyMs": 1498,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      }
+    }
+  ]
+}

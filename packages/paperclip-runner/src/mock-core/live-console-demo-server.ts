@@ -91,6 +91,17 @@ interface BrowserCreateBody {
   startTurn?: boolean;
 }
 
+export function liveEventsAfterCursor(
+  events: readonly PrpEvent[],
+  after: number,
+): PrpEvent[] {
+  return events.filter((event) => event.sourceSeq > after);
+}
+
+export function liveEventCursor(events: readonly PrpEvent[]): number {
+  return events.at(-1)?.sourceSeq ?? 0;
+}
+
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -653,8 +664,8 @@ export class LiveConsoleDemoServer {
       const url = new URL(request.url ?? "/", "http://liveConsole.invalid");
       const after = Math.max(0, Number.parseInt(url.searchParams.get("after") ?? "0", 10) || 0);
       json(response, 200, {
-        events: entry.events.slice(after),
-        cursor: entry.events.length,
+        events: liveEventsAfterCursor(entry.events, after),
+        cursor: liveEventCursor(entry.events),
         replay: after === 0,
       });
       return;
@@ -678,7 +689,7 @@ export class LiveConsoleDemoServer {
       // last event, and Node would otherwise hold the response open with no
       // bytes sent, leaving the browser stuck in CONNECTING.
       response.write(": stream open\n\n");
-      for (const event of entry.events.slice(after)) {
+      for (const event of liveEventsAfterCursor(entry.events, after)) {
         const output = serializeBrowserJson(event);
         if (!output.overflow) response.write(`data: ${output.serialized}\n\n`);
       }
@@ -882,7 +893,7 @@ export class LiveConsoleDemoServer {
       pendingRequests: entry.session.pendingRuntimeRequests?.() ?? [],
       goal: harnessSnapshot.goal ?? null,
       lineage: entry.session.lineage?.() ?? [],
-      cursor: entry.events.length,
+      cursor: liveEventCursor(entry.events),
       snapshot,
     };
   }

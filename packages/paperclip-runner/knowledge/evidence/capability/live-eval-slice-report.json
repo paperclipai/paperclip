@@ -1,0 +1,1544 @@
+{
+  "schema": "paperclip.runner.eval-slice-report.v1",
+  "bundle": {
+    "id": "evb-ccfa51b713b10e13",
+    "summary": "runnerd/codex-app-server@codex-app-server-v2 · gpt-5.5 · mock · 4 grants · prompt:capability-live-exact-call-v1 · faults:clean",
+    "declaration": {
+      "schema": "paperclip.runner.eval-bundle.v1",
+      "provider": {
+        "runtime": "runnerd",
+        "transport": "codex-app-server",
+        "protocolVersion": "codex-app-server-v2"
+      },
+      "model": {
+        "id": "gpt-5.5"
+      },
+      "launchContext": {
+        "workingDirectoryClass": "workspace-checkout",
+        "scenarioId": "capability-live-codex-matrix-v1",
+        "turnTimeoutMs": 60000
+      },
+      "promptPolicy": {
+        "id": "capability-live-exact-call-v1",
+        "callTemplate": "Call the named semantic operation exactly once with the declared JSON input.",
+        "restraintTemplate": "Do not call any tool for a control-plane-owned behavior."
+      },
+      "grants": [
+        "delegation:tasks:create",
+        "discovery:agents:read",
+        "discovery:tasks:read",
+        "governance:approvals:request"
+      ],
+      "runner": {
+        "package": "@paperclipai/paperclip-runner",
+        "binary": "paperclip-runnerd",
+        "version": "0.1.2"
+      },
+      "controlPlaneAdapter": {
+        "kind": "mock",
+        "contract": "paperclip.capability.mock-state.v1"
+      },
+      "faultInjection": []
+    }
+  },
+  "generatedFromLiveModel": true,
+  "cases": [
+    {
+      "observation": {
+        "caseId": "ap-approval-deny-01",
+        "provenance": {
+          "source": "live_model"
+        },
+        "controlPlaneOwned": false,
+        "expectedCalls": [
+          "request_approval"
+        ],
+        "observedCalls": [
+          "request_approval"
+        ],
+        "forbiddenCalls": [],
+        "finalState": {
+          "expected": "mutated",
+          "observed": "mutated"
+        },
+        "authorization": {
+          "expected": "allowed",
+          "observed": "allowed"
+        },
+        "trace": {
+          "runId": "run-capability-live-ap-approval-deny-01",
+          "sessionId": "session-capability-live-ap-approval-deny-01",
+          "turnId": "019ff208-7d1d-74f3-8bb2-1f2489e336d5",
+          "itemId": "evidence-000015",
+          "receiptIds": [
+            "evidence-000016"
+          ],
+          "terminalPresent": true
+        },
+        "efficiency": {
+          "latencyMs": 5762,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      },
+      "scorecard": {
+        "schema": "paperclip.runner.eval-scorecard.v1",
+        "bundleId": "evb-ccfa51b713b10e13",
+        "caseId": "ap-approval-deny-01",
+        "dimensions": {
+          "hard_invariants": {
+            "dimension": "hard_invariants",
+            "score": 1,
+            "passed": true,
+            "gate": true,
+            "weight": 0,
+            "reasons": []
+          },
+          "semantic_outcome": {
+            "dimension": "semantic_outcome",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.35,
+            "reasons": []
+          },
+          "trajectory_restraint": {
+            "dimension": "trajectory_restraint",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.3,
+            "reasons": []
+          },
+          "trace_completeness": {
+            "dimension": "trace_completeness",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.2,
+            "reasons": []
+          },
+          "quality_efficiency": {
+            "dimension": "quality_efficiency",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.15,
+            "reasons": []
+          }
+        },
+        "overall": {
+          "score": 1,
+          "gatePassed": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "observation": {
+        "caseId": "ar-no-done-without-upload-01",
+        "provenance": {
+          "source": "live_model"
+        },
+        "controlPlaneOwned": false,
+        "expectedCalls": [
+          "register_deliverable"
+        ],
+        "observedCalls": [
+          "register_deliverable"
+        ],
+        "forbiddenCalls": [],
+        "finalState": {
+          "expected": "mutated",
+          "observed": "mutated"
+        },
+        "authorization": {
+          "expected": "allowed",
+          "observed": "allowed"
+        },
+        "trace": {
+          "runId": "run-capability-live-ar-no-done-without-upload-01",
+          "sessionId": "session-capability-live-ar-no-done-without-upload-01",
+          "turnId": "019ff208-94a3-7be2-a152-6558026f2c81",
+          "itemId": "evidence-000015",
+          "receiptIds": [
+            "evidence-000016"
+          ],
+          "terminalPresent": true
+        },
+        "efficiency": {
+          "latencyMs": 6153,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      },
+      "scorecard": {
+        "schema": "paperclip.runner.eval-scorecard.v1",
+        "bundleId": "evb-ccfa51b713b10e13",
+        "caseId": "ar-no-done-without-upload-01",
+        "dimensions": {
+          "hard_invariants": {
+            "dimension": "hard_invariants",
+            "score": 1,
+            "passed": true,
+            "gate": true,
+            "weight": 0,
+            "reasons": []
+          },
+          "semantic_outcome": {
+            "dimension": "semantic_outcome",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.35,
+            "reasons": []
+          },
+          "trajectory_restraint": {
+            "dimension": "trajectory_restraint",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.3,
+            "reasons": []
+          },
+          "trace_completeness": {
+            "dimension": "trace_completeness",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.2,
+            "reasons": []
+          },
+          "quality_efficiency": {
+            "dimension": "quality_efficiency",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.15,
+            "reasons": []
+          }
+        },
+        "overall": {
+          "score": 1,
+          "gatePassed": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "observation": {
+        "caseId": "bl-cancelled-not-resolved-01",
+        "provenance": {
+          "source": "live_model"
+        },
+        "controlPlaneOwned": false,
+        "expectedCalls": [
+          "block_task"
+        ],
+        "observedCalls": [
+          "block_task"
+        ],
+        "forbiddenCalls": [],
+        "finalState": {
+          "expected": "mutated",
+          "observed": "mutated"
+        },
+        "authorization": {
+          "expected": "allowed",
+          "observed": "allowed"
+        },
+        "trace": {
+          "runId": "run-capability-live-bl-cancelled-not-resolved-01",
+          "sessionId": "session-capability-live-bl-cancelled-not-resolved-01",
+          "turnId": "019ff208-ada0-7402-8f7c-9170569cd3c8",
+          "itemId": "evidence-000015",
+          "receiptIds": [
+            "evidence-000016"
+          ],
+          "terminalPresent": true
+        },
+        "efficiency": {
+          "latencyMs": 3412,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      },
+      "scorecard": {
+        "schema": "paperclip.runner.eval-scorecard.v1",
+        "bundleId": "evb-ccfa51b713b10e13",
+        "caseId": "bl-cancelled-not-resolved-01",
+        "dimensions": {
+          "hard_invariants": {
+            "dimension": "hard_invariants",
+            "score": 1,
+            "passed": true,
+            "gate": true,
+            "weight": 0,
+            "reasons": []
+          },
+          "semantic_outcome": {
+            "dimension": "semantic_outcome",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.35,
+            "reasons": []
+          },
+          "trajectory_restraint": {
+            "dimension": "trajectory_restraint",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.3,
+            "reasons": []
+          },
+          "trace_completeness": {
+            "dimension": "trace_completeness",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.2,
+            "reasons": []
+          },
+          "quality_efficiency": {
+            "dimension": "quality_efficiency",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.15,
+            "reasons": []
+          }
+        },
+        "overall": {
+          "score": 1,
+          "gatePassed": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "observation": {
+        "caseId": "cm-mention-structured-01",
+        "provenance": {
+          "source": "live_model"
+        },
+        "controlPlaneOwned": false,
+        "expectedCalls": [
+          "report_progress"
+        ],
+        "observedCalls": [
+          "report_progress"
+        ],
+        "forbiddenCalls": [],
+        "finalState": {
+          "expected": "mutated",
+          "observed": "mutated"
+        },
+        "authorization": {
+          "expected": "allowed",
+          "observed": "allowed"
+        },
+        "trace": {
+          "runId": "run-capability-live-cm-mention-structured-01",
+          "sessionId": "session-capability-live-cm-mention-structured-01",
+          "turnId": "019ff208-bbe7-7cb0-b299-9fe09ccaf31a",
+          "itemId": "evidence-000015",
+          "receiptIds": [
+            "evidence-000016"
+          ],
+          "terminalPresent": true
+        },
+        "efficiency": {
+          "latencyMs": 3525,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      },
+      "scorecard": {
+        "schema": "paperclip.runner.eval-scorecard.v1",
+        "bundleId": "evb-ccfa51b713b10e13",
+        "caseId": "cm-mention-structured-01",
+        "dimensions": {
+          "hard_invariants": {
+            "dimension": "hard_invariants",
+            "score": 1,
+            "passed": true,
+            "gate": true,
+            "weight": 0,
+            "reasons": []
+          },
+          "semantic_outcome": {
+            "dimension": "semantic_outcome",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.35,
+            "reasons": []
+          },
+          "trajectory_restraint": {
+            "dimension": "trajectory_restraint",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.3,
+            "reasons": []
+          },
+          "trace_completeness": {
+            "dimension": "trace_completeness",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.2,
+            "reasons": []
+          },
+          "quality_efficiency": {
+            "dimension": "quality_efficiency",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.15,
+            "reasons": []
+          }
+        },
+        "overall": {
+          "score": 1,
+          "gatePassed": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "observation": {
+        "caseId": "co-409-stop-01",
+        "provenance": {
+          "source": "live_model"
+        },
+        "controlPlaneOwned": true,
+        "expectedCalls": [],
+        "observedCalls": [],
+        "forbiddenCalls": [],
+        "finalState": {
+          "expected": "unchanged",
+          "observed": "unchanged"
+        },
+        "authorization": {
+          "expected": "absent",
+          "observed": "absent"
+        },
+        "trace": {
+          "runId": "run-capability-live-co-409-stop-01",
+          "sessionId": "session-capability-live-co-409-stop-01",
+          "turnId": "019ff208-caa9-7573-9c98-cdfda85e0d6a",
+          "itemId": "transcript-000016",
+          "receiptIds": [],
+          "terminalPresent": true
+        },
+        "efficiency": {
+          "latencyMs": 4763,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      },
+      "scorecard": {
+        "schema": "paperclip.runner.eval-scorecard.v1",
+        "bundleId": "evb-ccfa51b713b10e13",
+        "caseId": "co-409-stop-01",
+        "dimensions": {
+          "hard_invariants": {
+            "dimension": "hard_invariants",
+            "score": 1,
+            "passed": true,
+            "gate": true,
+            "weight": 0,
+            "reasons": []
+          },
+          "semantic_outcome": {
+            "dimension": "semantic_outcome",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.35,
+            "reasons": []
+          },
+          "trajectory_restraint": {
+            "dimension": "trajectory_restraint",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.3,
+            "reasons": [
+              "restraint honored: no call made"
+            ]
+          },
+          "trace_completeness": {
+            "dimension": "trace_completeness",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.2,
+            "reasons": []
+          },
+          "quality_efficiency": {
+            "dimension": "quality_efficiency",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.15,
+            "reasons": []
+          }
+        },
+        "overall": {
+          "score": 1,
+          "gatePassed": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "observation": {
+        "caseId": "dp-base-revision-01",
+        "provenance": {
+          "source": "live_model"
+        },
+        "controlPlaneOwned": false,
+        "expectedCalls": [
+          "write_document"
+        ],
+        "observedCalls": [
+          "write_document"
+        ],
+        "forbiddenCalls": [],
+        "finalState": {
+          "expected": "mutated",
+          "observed": "mutated"
+        },
+        "authorization": {
+          "expected": "allowed",
+          "observed": "allowed"
+        },
+        "trace": {
+          "runId": "run-capability-live-dp-base-revision-01",
+          "sessionId": "session-capability-live-dp-base-revision-01",
+          "turnId": "019ff208-de3c-7572-8b4c-622fa11b671b",
+          "itemId": "evidence-000015",
+          "receiptIds": [
+            "evidence-000016"
+          ],
+          "terminalPresent": true
+        },
+        "efficiency": {
+          "latencyMs": 3258,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      },
+      "scorecard": {
+        "schema": "paperclip.runner.eval-scorecard.v1",
+        "bundleId": "evb-ccfa51b713b10e13",
+        "caseId": "dp-base-revision-01",
+        "dimensions": {
+          "hard_invariants": {
+            "dimension": "hard_invariants",
+            "score": 1,
+            "passed": true,
+            "gate": true,
+            "weight": 0,
+            "reasons": []
+          },
+          "semantic_outcome": {
+            "dimension": "semantic_outcome",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.35,
+            "reasons": []
+          },
+          "trajectory_restraint": {
+            "dimension": "trajectory_restraint",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.3,
+            "reasons": []
+          },
+          "trace_completeness": {
+            "dimension": "trace_completeness",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.2,
+            "reasons": []
+          },
+          "quality_efficiency": {
+            "dimension": "quality_efficiency",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.15,
+            "reasons": []
+          }
+        },
+        "overall": {
+          "score": 1,
+          "gatePassed": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "observation": {
+        "caseId": "er-blocked-dedup-01",
+        "provenance": {
+          "source": "live_model"
+        },
+        "controlPlaneOwned": true,
+        "expectedCalls": [],
+        "observedCalls": [],
+        "forbiddenCalls": [],
+        "finalState": {
+          "expected": "unchanged",
+          "observed": "unchanged"
+        },
+        "authorization": {
+          "expected": "absent",
+          "observed": "absent"
+        },
+        "trace": {
+          "runId": "run-capability-live-er-blocked-dedup-01",
+          "sessionId": "session-capability-live-er-blocked-dedup-01",
+          "turnId": "019ff208-ebe0-74c3-8ec0-5d771d020a9c",
+          "itemId": "transcript-000016",
+          "receiptIds": [],
+          "terminalPresent": true
+        },
+        "efficiency": {
+          "latencyMs": 4953,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      },
+      "scorecard": {
+        "schema": "paperclip.runner.eval-scorecard.v1",
+        "bundleId": "evb-ccfa51b713b10e13",
+        "caseId": "er-blocked-dedup-01",
+        "dimensions": {
+          "hard_invariants": {
+            "dimension": "hard_invariants",
+            "score": 1,
+            "passed": true,
+            "gate": true,
+            "weight": 0,
+            "reasons": []
+          },
+          "semantic_outcome": {
+            "dimension": "semantic_outcome",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.35,
+            "reasons": []
+          },
+          "trajectory_restraint": {
+            "dimension": "trajectory_restraint",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.3,
+            "reasons": [
+              "restraint honored: no call made"
+            ]
+          },
+          "trace_completeness": {
+            "dimension": "trace_completeness",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.2,
+            "reasons": []
+          },
+          "quality_efficiency": {
+            "dimension": "quality_efficiency",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.15,
+            "reasons": []
+          }
+        },
+        "overall": {
+          "score": 1,
+          "gatePassed": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "observation": {
+        "caseId": "hb-context-01",
+        "provenance": {
+          "source": "live_model"
+        },
+        "controlPlaneOwned": true,
+        "expectedCalls": [],
+        "observedCalls": [],
+        "forbiddenCalls": [],
+        "finalState": {
+          "expected": "unchanged",
+          "observed": "unchanged"
+        },
+        "authorization": {
+          "expected": "absent",
+          "observed": "absent"
+        },
+        "trace": {
+          "runId": "run-capability-live-hb-context-01",
+          "sessionId": "session-capability-live-hb-context-01",
+          "turnId": "019ff209-0043-7423-9957-be6301c6e951",
+          "itemId": "transcript-000016",
+          "receiptIds": [],
+          "terminalPresent": true
+        },
+        "efficiency": {
+          "latencyMs": 1660,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      },
+      "scorecard": {
+        "schema": "paperclip.runner.eval-scorecard.v1",
+        "bundleId": "evb-ccfa51b713b10e13",
+        "caseId": "hb-context-01",
+        "dimensions": {
+          "hard_invariants": {
+            "dimension": "hard_invariants",
+            "score": 1,
+            "passed": true,
+            "gate": true,
+            "weight": 0,
+            "reasons": []
+          },
+          "semantic_outcome": {
+            "dimension": "semantic_outcome",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.35,
+            "reasons": []
+          },
+          "trajectory_restraint": {
+            "dimension": "trajectory_restraint",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.3,
+            "reasons": [
+              "restraint honored: no call made"
+            ]
+          },
+          "trace_completeness": {
+            "dimension": "trace_completeness",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.2,
+            "reasons": []
+          },
+          "quality_efficiency": {
+            "dimension": "quality_efficiency",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.15,
+            "reasons": []
+          }
+        },
+        "overall": {
+          "score": 1,
+          "gatePassed": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "observation": {
+        "caseId": "ix-checkbox-01",
+        "provenance": {
+          "source": "live_model"
+        },
+        "controlPlaneOwned": false,
+        "expectedCalls": [
+          "request_human_input"
+        ],
+        "observedCalls": [
+          "request_human_input"
+        ],
+        "forbiddenCalls": [],
+        "finalState": {
+          "expected": "mutated",
+          "observed": "mutated"
+        },
+        "authorization": {
+          "expected": "allowed",
+          "observed": "allowed"
+        },
+        "trace": {
+          "runId": "run-capability-live-ix-checkbox-01",
+          "sessionId": "session-capability-live-ix-checkbox-01",
+          "turnId": "019ff209-0839-7db2-9a98-bd9296ef4db5",
+          "itemId": "evidence-000015",
+          "receiptIds": [
+            "evidence-000016"
+          ],
+          "terminalPresent": true
+        },
+        "efficiency": {
+          "latencyMs": 8222,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      },
+      "scorecard": {
+        "schema": "paperclip.runner.eval-scorecard.v1",
+        "bundleId": "evb-ccfa51b713b10e13",
+        "caseId": "ix-checkbox-01",
+        "dimensions": {
+          "hard_invariants": {
+            "dimension": "hard_invariants",
+            "score": 1,
+            "passed": true,
+            "gate": true,
+            "weight": 0,
+            "reasons": []
+          },
+          "semantic_outcome": {
+            "dimension": "semantic_outcome",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.35,
+            "reasons": []
+          },
+          "trajectory_restraint": {
+            "dimension": "trajectory_restraint",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.3,
+            "reasons": []
+          },
+          "trace_completeness": {
+            "dimension": "trace_completeness",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.2,
+            "reasons": []
+          },
+          "quality_efficiency": {
+            "dimension": "quality_efficiency",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.15,
+            "reasons": []
+          }
+        },
+        "overall": {
+          "score": 1,
+          "gatePassed": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "observation": {
+        "caseId": "mh-blocked-handoff-01",
+        "provenance": {
+          "source": "live_model"
+        },
+        "controlPlaneOwned": false,
+        "expectedCalls": [
+          "create_task"
+        ],
+        "observedCalls": [
+          "create_task"
+        ],
+        "forbiddenCalls": [],
+        "finalState": {
+          "expected": "mutated",
+          "observed": "mutated"
+        },
+        "authorization": {
+          "expected": "allowed",
+          "observed": "allowed"
+        },
+        "trace": {
+          "runId": "run-capability-live-mh-blocked-handoff-01",
+          "sessionId": "session-capability-live-mh-blocked-handoff-01",
+          "turnId": "019ff209-2953-7062-a513-6e7e28b324af",
+          "itemId": "evidence-000015",
+          "receiptIds": [
+            "evidence-000016"
+          ],
+          "terminalPresent": true
+        },
+        "efficiency": {
+          "latencyMs": 3811,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      },
+      "scorecard": {
+        "schema": "paperclip.runner.eval-scorecard.v1",
+        "bundleId": "evb-ccfa51b713b10e13",
+        "caseId": "mh-blocked-handoff-01",
+        "dimensions": {
+          "hard_invariants": {
+            "dimension": "hard_invariants",
+            "score": 1,
+            "passed": true,
+            "gate": true,
+            "weight": 0,
+            "reasons": []
+          },
+          "semantic_outcome": {
+            "dimension": "semantic_outcome",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.35,
+            "reasons": []
+          },
+          "trajectory_restraint": {
+            "dimension": "trajectory_restraint",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.3,
+            "reasons": []
+          },
+          "trace_completeness": {
+            "dimension": "trace_completeness",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.2,
+            "reasons": []
+          },
+          "quality_efficiency": {
+            "dimension": "quality_efficiency",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.15,
+            "reasons": []
+          }
+        },
+        "overall": {
+          "score": 1,
+          "gatePassed": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "observation": {
+        "caseId": "rf-api-404-report-01",
+        "provenance": {
+          "source": "live_model"
+        },
+        "controlPlaneOwned": false,
+        "expectedCalls": [
+          "list_agents"
+        ],
+        "observedCalls": [
+          "list_agents"
+        ],
+        "forbiddenCalls": [],
+        "finalState": {
+          "expected": "unchanged",
+          "observed": "unchanged"
+        },
+        "authorization": {
+          "expected": "allowed",
+          "observed": "allowed"
+        },
+        "trace": {
+          "runId": "run-capability-live-rf-api-404-report-01",
+          "sessionId": "session-capability-live-rf-api-404-report-01",
+          "turnId": "019ff209-393b-79c2-bb53-6be66cf76b9a",
+          "itemId": "evidence-000015",
+          "receiptIds": [
+            "evidence-000016"
+          ],
+          "terminalPresent": true
+        },
+        "efficiency": {
+          "latencyMs": 2986,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      },
+      "scorecard": {
+        "schema": "paperclip.runner.eval-scorecard.v1",
+        "bundleId": "evb-ccfa51b713b10e13",
+        "caseId": "rf-api-404-report-01",
+        "dimensions": {
+          "hard_invariants": {
+            "dimension": "hard_invariants",
+            "score": 1,
+            "passed": true,
+            "gate": true,
+            "weight": 0,
+            "reasons": []
+          },
+          "semantic_outcome": {
+            "dimension": "semantic_outcome",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.35,
+            "reasons": []
+          },
+          "trajectory_restraint": {
+            "dimension": "trajectory_restraint",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.3,
+            "reasons": []
+          },
+          "trace_completeness": {
+            "dimension": "trace_completeness",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.2,
+            "reasons": []
+          },
+          "quality_efficiency": {
+            "dimension": "quality_efficiency",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.15,
+            "reasons": []
+          }
+        },
+        "overall": {
+          "score": 1,
+          "gatePassed": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "observation": {
+        "caseId": "rs-dependency-blocked-wake-01",
+        "provenance": {
+          "source": "live_model"
+        },
+        "controlPlaneOwned": true,
+        "expectedCalls": [],
+        "observedCalls": [],
+        "forbiddenCalls": [],
+        "finalState": {
+          "expected": "unchanged",
+          "observed": "unchanged"
+        },
+        "authorization": {
+          "expected": "absent",
+          "observed": "absent"
+        },
+        "trace": {
+          "runId": "run-capability-live-rs-dependency-blocked-wake-01",
+          "sessionId": "session-capability-live-rs-dependency-blocked-wake-01",
+          "turnId": "019ff209-45de-7522-a2b0-1d92a284d0e0",
+          "itemId": "transcript-000016",
+          "receiptIds": [],
+          "terminalPresent": true
+        },
+        "efficiency": {
+          "latencyMs": 1895,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      },
+      "scorecard": {
+        "schema": "paperclip.runner.eval-scorecard.v1",
+        "bundleId": "evb-ccfa51b713b10e13",
+        "caseId": "rs-dependency-blocked-wake-01",
+        "dimensions": {
+          "hard_invariants": {
+            "dimension": "hard_invariants",
+            "score": 1,
+            "passed": true,
+            "gate": true,
+            "weight": 0,
+            "reasons": []
+          },
+          "semantic_outcome": {
+            "dimension": "semantic_outcome",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.35,
+            "reasons": []
+          },
+          "trajectory_restraint": {
+            "dimension": "trajectory_restraint",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.3,
+            "reasons": [
+              "restraint honored: no call made"
+            ]
+          },
+          "trace_completeness": {
+            "dimension": "trace_completeness",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.2,
+            "reasons": []
+          },
+          "quality_efficiency": {
+            "dimension": "quality_efficiency",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.15,
+            "reasons": []
+          }
+        },
+        "overall": {
+          "score": 1,
+          "gatePassed": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "observation": {
+        "caseId": "se-get-issue-01",
+        "provenance": {
+          "source": "live_model"
+        },
+        "controlPlaneOwned": false,
+        "expectedCalls": [
+          "search_tasks"
+        ],
+        "observedCalls": [
+          "search_tasks"
+        ],
+        "forbiddenCalls": [],
+        "finalState": {
+          "expected": "unchanged",
+          "observed": "unchanged"
+        },
+        "authorization": {
+          "expected": "allowed",
+          "observed": "allowed"
+        },
+        "trace": {
+          "runId": "run-capability-live-se-get-issue-01",
+          "sessionId": "session-capability-live-se-get-issue-01",
+          "turnId": "019ff209-51ed-70b2-95ee-bdadb2065065",
+          "itemId": "evidence-000014",
+          "receiptIds": [
+            "evidence-000016"
+          ],
+          "terminalPresent": true
+        },
+        "efficiency": {
+          "latencyMs": 3067,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      },
+      "scorecard": {
+        "schema": "paperclip.runner.eval-scorecard.v1",
+        "bundleId": "evb-ccfa51b713b10e13",
+        "caseId": "se-get-issue-01",
+        "dimensions": {
+          "hard_invariants": {
+            "dimension": "hard_invariants",
+            "score": 1,
+            "passed": true,
+            "gate": true,
+            "weight": 0,
+            "reasons": []
+          },
+          "semantic_outcome": {
+            "dimension": "semantic_outcome",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.35,
+            "reasons": []
+          },
+          "trajectory_restraint": {
+            "dimension": "trajectory_restraint",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.3,
+            "reasons": []
+          },
+          "trace_completeness": {
+            "dimension": "trace_completeness",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.2,
+            "reasons": []
+          },
+          "quality_efficiency": {
+            "dimension": "quality_efficiency",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.15,
+            "reasons": []
+          }
+        },
+        "overall": {
+          "score": 1,
+          "gatePassed": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "observation": {
+        "caseId": "st-backlog-park-01",
+        "provenance": {
+          "source": "live_model"
+        },
+        "controlPlaneOwned": false,
+        "expectedCalls": [
+          "finish_task"
+        ],
+        "observedCalls": [
+          "finish_task"
+        ],
+        "forbiddenCalls": [],
+        "finalState": {
+          "expected": "mutated",
+          "observed": "mutated"
+        },
+        "authorization": {
+          "expected": "allowed",
+          "observed": "allowed"
+        },
+        "trace": {
+          "runId": "run-capability-live-st-backlog-park-01",
+          "sessionId": "session-capability-live-st-backlog-park-01",
+          "turnId": "019ff209-6083-7312-bed2-2d89633f7a43",
+          "itemId": "evidence-000015",
+          "receiptIds": [
+            "evidence-000016"
+          ],
+          "terminalPresent": true
+        },
+        "efficiency": {
+          "latencyMs": 3508,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      },
+      "scorecard": {
+        "schema": "paperclip.runner.eval-scorecard.v1",
+        "bundleId": "evb-ccfa51b713b10e13",
+        "caseId": "st-backlog-park-01",
+        "dimensions": {
+          "hard_invariants": {
+            "dimension": "hard_invariants",
+            "score": 1,
+            "passed": true,
+            "gate": true,
+            "weight": 0,
+            "reasons": []
+          },
+          "semantic_outcome": {
+            "dimension": "semantic_outcome",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.35,
+            "reasons": []
+          },
+          "trajectory_restraint": {
+            "dimension": "trajectory_restraint",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.3,
+            "reasons": []
+          },
+          "trace_completeness": {
+            "dimension": "trace_completeness",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.2,
+            "reasons": []
+          },
+          "quality_efficiency": {
+            "dimension": "quality_efficiency",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.15,
+            "reasons": []
+          }
+        },
+        "overall": {
+          "score": 1,
+          "gatePassed": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "observation": {
+        "caseId": "su-crossteam-billing-01",
+        "provenance": {
+          "source": "live_model"
+        },
+        "controlPlaneOwned": false,
+        "expectedCalls": [
+          "create_task"
+        ],
+        "observedCalls": [
+          "create_task"
+        ],
+        "forbiddenCalls": [],
+        "finalState": {
+          "expected": "mutated",
+          "observed": "mutated"
+        },
+        "authorization": {
+          "expected": "allowed",
+          "observed": "allowed"
+        },
+        "trace": {
+          "runId": "run-capability-live-su-crossteam-billing-01",
+          "sessionId": "session-capability-live-su-crossteam-billing-01",
+          "turnId": "019ff209-6f30-7003-8833-a84e62737f6b",
+          "itemId": "evidence-000015",
+          "receiptIds": [
+            "evidence-000016"
+          ],
+          "terminalPresent": true
+        },
+        "efficiency": {
+          "latencyMs": 4524,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      },
+      "scorecard": {
+        "schema": "paperclip.runner.eval-scorecard.v1",
+        "bundleId": "evb-ccfa51b713b10e13",
+        "caseId": "su-crossteam-billing-01",
+        "dimensions": {
+          "hard_invariants": {
+            "dimension": "hard_invariants",
+            "score": 1,
+            "passed": true,
+            "gate": true,
+            "weight": 0,
+            "reasons": []
+          },
+          "semantic_outcome": {
+            "dimension": "semantic_outcome",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.35,
+            "reasons": []
+          },
+          "trajectory_restraint": {
+            "dimension": "trajectory_restraint",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.3,
+            "reasons": []
+          },
+          "trace_completeness": {
+            "dimension": "trace_completeness",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.2,
+            "reasons": []
+          },
+          "quality_efficiency": {
+            "dimension": "quality_efficiency",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.15,
+            "reasons": []
+          }
+        },
+        "overall": {
+          "score": 1,
+          "gatePassed": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "observation": {
+        "caseId": "wk-ask-mode-01",
+        "provenance": {
+          "source": "live_model"
+        },
+        "controlPlaneOwned": true,
+        "expectedCalls": [],
+        "observedCalls": [],
+        "forbiddenCalls": [],
+        "finalState": {
+          "expected": "unchanged",
+          "observed": "unchanged"
+        },
+        "authorization": {
+          "expected": "absent",
+          "observed": "absent"
+        },
+        "trace": {
+          "runId": "run-capability-live-wk-ask-mode-01",
+          "sessionId": "session-capability-live-wk-ask-mode-01",
+          "turnId": "019ff209-81ce-71a3-973c-5afea691f385",
+          "itemId": "transcript-000016",
+          "receiptIds": [],
+          "terminalPresent": true
+        },
+        "efficiency": {
+          "latencyMs": 1498,
+          "attempts": 1
+        },
+        "budget": {
+          "maxLatencyMs": 60000,
+          "maxAttempts": 1
+        }
+      },
+      "scorecard": {
+        "schema": "paperclip.runner.eval-scorecard.v1",
+        "bundleId": "evb-ccfa51b713b10e13",
+        "caseId": "wk-ask-mode-01",
+        "dimensions": {
+          "hard_invariants": {
+            "dimension": "hard_invariants",
+            "score": 1,
+            "passed": true,
+            "gate": true,
+            "weight": 0,
+            "reasons": []
+          },
+          "semantic_outcome": {
+            "dimension": "semantic_outcome",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.35,
+            "reasons": []
+          },
+          "trajectory_restraint": {
+            "dimension": "trajectory_restraint",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.3,
+            "reasons": [
+              "restraint honored: no call made"
+            ]
+          },
+          "trace_completeness": {
+            "dimension": "trace_completeness",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.2,
+            "reasons": []
+          },
+          "quality_efficiency": {
+            "dimension": "quality_efficiency",
+            "score": 1,
+            "passed": true,
+            "gate": false,
+            "weight": 0.15,
+            "reasons": []
+          }
+        },
+        "overall": {
+          "score": 1,
+          "gatePassed": true,
+          "passed": true
+        }
+      }
+    }
+  ],
+  "aggregate": {
+    "caseCount": 16,
+    "passed": 16,
+    "gateFailures": 0,
+    "meanOverall": 1,
+    "dimensionMeans": {
+      "hard_invariants": 1,
+      "semantic_outcome": 1,
+      "trajectory_restraint": 1,
+      "trace_completeness": 1,
+      "quality_efficiency": 1
+    }
+  }
+}

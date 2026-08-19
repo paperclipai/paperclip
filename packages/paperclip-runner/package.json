@@ -1,0 +1,151 @@
+{
+  "name": "@paperclipai/paperclip-runner",
+  "version": "0.1.2",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js"
+    },
+    "./evals": {
+      "types": "./dist/evals/index.d.ts",
+      "import": "./dist/evals/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser/index.d.ts",
+      "import": "./dist/browser/index.js"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "import": "./dist/react/index.js"
+    },
+    "./standalone": {
+      "types": "./dist/standalone/index.d.ts",
+      "import": "./dist/standalone/index.js"
+    },
+    "./styles.css": "./styles.css"
+  },
+  "files": [
+    "dist",
+    "protocol",
+    "styles.css",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "pnpm run build:typescript && pnpm run build:rust && pnpm run build:browser && pnpm run build:sdk && pnpm run build:standalone && pnpm run build:scenarios && pnpm run build:issue-thread",
+    "build:typescript": "pnpm run generate:protocol-types && tsc -p tsconfig.json",
+    "build:rust": "cargo build --manifest-path runner/Cargo.toml --locked --workspace",
+    "build:browser": "vite build --config vite.config.ts",
+    "build:sdk": "vite build --config vite.sdk.config.ts",
+    "build:standalone": "vite build --config vite.standalone.config.ts",
+    "build:scenarios": "vite build --config vite.scenarios.config.ts && node scripts/check-capability-csp-bundle.mjs",
+    "build:issue-thread": "vite build --config vite.issue-thread.config.ts",
+    "generate:capability-contract": "node scripts/generate-capability-contract.mjs",
+    "check:capability-contract": "node scripts/generate-capability-contract.mjs --check",
+    "generate:semantic-contracts": "pnpm run build:typescript && node scripts/generate-semantic-contracts.mjs",
+    "check:semantic-contracts": "pnpm run build:typescript && node scripts/generate-semantic-contracts.mjs --check",
+    "typecheck": "pnpm run typecheck:typescript && pnpm run typecheck:rust && pnpm run typecheck:browser",
+    "typecheck:typescript": "pnpm run check:protocol-types && tsc -p tsconfig.json --noEmit",
+    "typecheck:rust": "cargo check --manifest-path runner/Cargo.toml --locked --workspace",
+    "typecheck:browser": "tsc -p tsconfig.browser.json --noEmit",
+    "test": "pnpm run build:runner-binaries && pnpm run test:typescript && pnpm run test:rust && node --test scripts/check-forbidden-imports.test.mjs scripts/check-numbered-milestones.test.mjs scripts/check-tracked-imports.test.mjs scripts/record-codex-evidence.test.mjs scripts/validate-doc-links.test.mjs test/capability-contract.test.mjs",
+    "test:typescript": "vitest run",
+    "test:rust": "cargo test --manifest-path runner/Cargo.toml --locked --workspace",
+    "test:browser": "pnpm run build:typescript && pnpm run build:runner-binaries && pnpm run build:browser && playwright test --config devtools/browser/playwright.config.ts",
+    "test:sdk": "vitest run src/browser/client.test.ts src/browser/transcript-model.test.ts src/react/public-contract.test.tsx",
+    "test:scenarios": "vitest run src/scenarios src/live src/semantic-tools/semantic-tools.test.ts src/mock-core/capability-mock-control-plane-adapter.test.ts src/issue-thread devtools/issue-thread/src examples/scenario-explorer",
+    "test:browser:sdk": "pnpm run build:typescript && playwright test --config examples/playwright.config.ts",
+    "test:browser:scenarios": "playwright test --config examples/playwright.scenarios.config.ts && pnpm run test:browser:issue-thread",
+    "test:browser:issue-thread": "pnpm run build:typescript && pnpm run build:issue-thread && playwright test --config devtools/issue-thread/playwright.config.ts",
+    "record:sdk:codex": "pnpm run build:typescript && playwright test --config examples/playwright.real.config.ts",
+    "build:runner-binaries": "cargo build --manifest-path runner/Cargo.toml --locked --workspace --bins",
+    "generate:protocol-types": "node scripts/generate-protocol-schema-module.mjs",
+    "check:protocol-types": "node scripts/generate-protocol-schema-module.mjs --check",
+    "generate:replay-goldens": "pnpm run build:typescript && node scripts/generate-replay-goldens.mjs",
+    "check:replay-goldens": "node scripts/generate-replay-goldens.mjs --check",
+    "check:browser-tokens": "node scripts/check-browser-tokens.mjs",
+    "check:forbidden-imports": "node scripts/check-forbidden-imports.mjs",
+    "check:tracked-imports": "node scripts/check-tracked-imports.mjs",
+    "check:numbered-milestones": "node scripts/check-numbered-milestones.mjs",
+    "check:package-boundaries": "node scripts/check-package-boundaries.mjs",
+    "check:clean-consumers": "node scripts/check-clean-consumers.mjs",
+    "generate:capability-inventory": "node scripts/generate-capability-inventory.mjs",
+    "check:capability-inventory": "node scripts/check-capability-inventory.mjs",
+    "test:capability-inventory": "node scripts/check-capability-inventory.test.mjs",
+    "test:capability-evals": "vitest run src/conformance/capability-eval-suite.test.ts",
+    "test:eval-slice": "vitest run src/eval",
+    "report:capability-evals": "pnpm run build:typescript && node scripts/run-capability-eval-suite.mjs",
+    "report:capability-live-evals": "pnpm run build:typescript && cargo build --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd && node scripts/run-capability-live-eval-matrix.mjs",
+    "check:conformance-parity": "vitest run src/tracer/conformance-runner.test.ts && cargo test --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core runs_the_mock_core_path_with_stable_output && node -e \"process.stdout.write('Rust and TypeScript Conformance tracer output matches the shared golden fixture.\\n')\"",
+    "check:replay-parity": "vitest run src/reducer/session-reducer.test.ts && cargo test --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core replay_fixture_parity && node -e \"process.stdout.write('Rust and TypeScript Replay reducer summaries match the shared golden fixtures.\\n')\"",
+    "docs:validate": "node scripts/validate-doc-links.mjs && node scripts/validate-okf.mjs",
+    "trace:conformance": "pnpm run trace:conformance:rust",
+    "trace:conformance:rust": "pnpm run build:rust && cargo run --quiet --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin conformance-tracer",
+    "trace:conformance:typescript": "pnpm run build:typescript && node dist/tracer/conformance.js",
+    "replay:fixture": "pnpm run build:typescript && node dist/cli/replay.js",
+    "trace:local-runner": "pnpm run build:typescript && pnpm run build:runner-binaries && node dist/cli/local-runner.js",
+    "record:local-runner": "pnpm run trace:local-runner -- --quiet --output knowledge/evidence/local-runner-happy-path.json",
+    "trace:durable-recovery": "pnpm run build:typescript && pnpm run build:runner-binaries && node dist/cli/durable-recovery.js",
+    "trace:codex": "pnpm run build:typescript && node dist/cli/codex.js",
+    "trace:standalone": "pnpm run build:typescript && node dist/cli/paperclip-adapter.js",
+    "trace:live-runner": "pnpm run build:typescript && cargo build --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd && node dist/cli/live-runner.js",
+    "demo:standalone": "pnpm run build:typescript && vite --config vite.standalone.config.ts --host 127.0.0.1 --port 4182",
+    "demo:scenarios": "pnpm run build:typescript && vite --config vite.scenarios.config.ts --host 127.0.0.1 --port 4183",
+    "console:issue-thread": "pnpm run build:typescript && vite --config vite.issue-thread.config.ts --host 127.0.0.1 --port 4184",
+    "demo:live-console": "pnpm run build:typescript && node scripts/live-console-demo-server.mjs",
+    "record:live-console": "pnpm run build:typescript && node scripts/record-live-console-evidence.mjs",
+    "record:codex": "pnpm run build:typescript && node scripts/record-codex-evidence.mjs",
+    "record:capability": "node scripts/record-capability-evidence.mjs",
+    "record:scenario-chat": "node scripts/record-scenario-chat-evidence.mjs",
+    "record:capability:ui": "pnpm run build:typescript && pnpm run build:issue-thread && node scripts/record-capability-ui-evidence.mjs",
+    "check:capability:ui": "pnpm run build:typescript && pnpm run build:issue-thread && node scripts/record-capability-ui-evidence.mjs --check",
+    "smoke:capability:ui": "pnpm run build:typescript && cargo build --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd && node scripts/capability-issue-thread-smoke.mjs",
+    "smoke:capability:cleanroom": "pnpm run build:typescript && cargo build --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd && node scripts/capability-clean-room-smoke.mjs",
+    "record:capability:ui:live": "pnpm run build:typescript && pnpm run build:issue-thread && cargo build --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd && node scripts/record-capability-ui-live-evidence.mjs",
+    "record:capability:cleanroom": "pnpm run build:typescript && pnpm run build:issue-thread && cargo build --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd && node scripts/record-capability-clean-room-evidence.mjs",
+    "diagnose:durable-recovery": "pnpm run trace:durable-recovery",
+    "record:durable-recovery": "pnpm run build:typescript && pnpm run build:runner-binaries && node scripts/record-durable-recovery-evidence.mjs",
+    "record:durable-recovery:lost-ack": "pnpm run trace:durable-recovery -- --fault lost-ack --output knowledge/evidence/durable-recovery-lost-ack.json",
+    "console:live-console": "pnpm run build:typescript && vite --config vite.config.ts --host 127.0.0.1 --port 4180",
+    "console:sdk": "pnpm run build:typescript && vite --config vite.sdk.config.ts --host 127.0.0.1 --port 4181",
+    "browser:dev": "pnpm run build:typescript && pnpm run build:runner-binaries && vite --config vite.config.ts",
+    "browser:preview": "vite preview --config vite.config.ts",
+    "verify": "pnpm run build && pnpm run typecheck && pnpm run check:replay-goldens && pnpm run test && pnpm run test:sdk && pnpm run test:scenarios && pnpm run check:browser-tokens && pnpm run test:browser && pnpm run test:browser:sdk && pnpm run test:browser:scenarios && pnpm run check:forbidden-imports && pnpm run check:tracked-imports && pnpm run check:numbered-milestones && pnpm run check:package-boundaries && pnpm run check:clean-consumers && pnpm run docs:validate && pnpm run check:conformance-parity && pnpm run check:replay-parity && pnpm run trace:conformance && pnpm run replay:fixture && pnpm run trace:local-runner -- --quiet && pnpm run trace:durable-recovery",
+    "verify:rootless": "bash scripts/verify-rootless-linux.sh"
+  },
+  "dependencies": {
+    "ajv": "^8.20.0"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@types/node": "^22.20.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^4.7.0",
+    "axe-core": "^4.12.1",
+    "json-schema-to-ts": "^3.1.1",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "typescript": "^5.7.3",
+    "vite": "^6.1.0",
+    "vitest": "^4.1.10"
+  }
+}

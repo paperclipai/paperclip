@@ -1,0 +1,1554 @@
+/*
+ * Capability issue-thread surface.
+ *
+ * Package-local implementation of the Paperclip visual language (contract §8):
+ * dark default, OKLCH neutral grays, semantic tokens only. Components carry no
+ * raw color literals — `pnpm check:browser-tokens` enforces that.
+ */
+
+@font-face {
+  font-family: "Paperclip Issue Thread Inter";
+  src: url("./fonts/inter-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Paperclip Issue Thread DejaVu Sans Mono";
+  src: url("./fonts/dejavu-sans-mono-latin-400.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Paperclip Issue Thread DejaVu Sans Mono";
+  src: url("./fonts/dejavu-sans-mono-latin-700.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 700;
+  font-display: block;
+}
+
+/* Inter intentionally omits several status glyphs. Keep those deterministic
+   with two tiny, disjoint symbol subsets instead of consulting host fonts. */
+@font-face {
+  font-family: "Paperclip Issue Thread Symbols";
+  src: url("./fonts/dejavu-sans-symbols.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  unicode-range: U+00A7, U+00B7, U+2013-2014, U+2022, U+2026, U+203A, U+2192,
+    U+22EF, U+2304, U+25AC, U+25B2, U+25B6, U+25BC, U+25C6, U+25CB, U+25D0-25D1,
+    U+2699, U+26A0, U+2713, U+2715, U+275A;
+}
+
+@font-face {
+  font-family: "Paperclip Issue Thread Symbols";
+  src: url("./fonts/noto-sans-symbols2-hourglass.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  unicode-range: U+231B, U+23F3, U+FE0E;
+}
+
+:root {
+  color-scheme: dark;
+
+  /* Neutral ramp */
+  --pit-background: oklch(0.17 0.005 285);
+  --pit-surface: oklch(0.21 0.006 285);
+  --pit-surface-raised: oklch(0.245 0.007 285);
+  --pit-surface-sunken: oklch(0.145 0.005 285);
+  --pit-border: oklch(0.31 0.008 285);
+  --pit-border-strong: oklch(0.42 0.01 285);
+  --pit-foreground: oklch(0.95 0.004 285);
+  --pit-muted-foreground: oklch(0.72 0.008 285);
+  --pit-faint-foreground: oklch(0.64 0.008 285);
+
+  /* Semantic hues — product status table */
+  --pit-todo: oklch(0.72 0.13 245);
+  --pit-in-progress: oklch(0.7 0.15 275);
+  --pit-in-review: oklch(0.72 0.16 300);
+  --pit-done: oklch(0.74 0.15 155);
+  --pit-blocked: oklch(0.68 0.18 25);
+  --pit-neutral: oklch(0.66 0.01 285);
+
+  --pit-accent: oklch(0.7 0.15 275);
+  --pit-accent-surface: oklch(0.28 0.05 275);
+  --pit-success: oklch(0.74 0.15 155);
+  --pit-success-surface: oklch(0.27 0.05 155);
+  --pit-warning: oklch(0.8 0.13 80);
+  --pit-warning-surface: oklch(0.29 0.05 80);
+  --pit-danger: oklch(0.7 0.17 25);
+  --pit-danger-surface: oklch(0.28 0.06 25);
+  --pit-live: oklch(0.78 0.12 200);
+  --pit-live-surface: oklch(0.27 0.05 200);
+  --pit-ring: oklch(0.78 0.11 275);
+
+  /* Type ramp */
+  --pit-font-sans: "Paperclip Issue Thread Inter", "Paperclip Issue Thread Symbols", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --pit-font-mono: "Paperclip Issue Thread DejaVu Sans Mono", "Paperclip Issue Thread Symbols", "DejaVu Sans Mono", ui-monospace, monospace;
+  --pit-font-symbols: "Paperclip Issue Thread Symbols";
+  --pit-text-xs: 0.75rem;
+  --pit-text-sm: 0.875rem;
+  --pit-text-base: 1rem;
+  --pit-text-xl: 1.25rem;
+  --pit-leading-tight: 1.25;
+  --pit-leading-normal: 1.55;
+
+  /* Space and shape */
+  --pit-space-1: 0.25rem;
+  --pit-space-2: 0.5rem;
+  --pit-space-3: 0.75rem;
+  --pit-space-4: 1rem;
+  --pit-space-5: 1.25rem;
+  --pit-space-6: 1.5rem;
+  --pit-radius-sm: 0.375rem;
+  --pit-radius-md: 0.5rem;
+  --pit-radius-lg: 0.75rem;
+  --pit-shadow-sm: 0 1px 2px oklch(0 0 0 / 0.35);
+  --pit-scrim: oklch(0 0 0 / 0.6);
+  --pit-thread-measure: 47.5rem;
+  --pit-panel-min: 20rem;
+  --pit-panel-max: 40rem;
+  --pit-touch-target: 2.75rem;
+  --pit-motion: 160ms;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  /* A layout class must never win over the hidden attribute. */
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--pit-background);
+  color: var(--pit-foreground);
+}
+
+/*
+ * Body carries the type scale, never `html`. Shrinking the root font size
+ * would rescale every `rem`, including the 44px touch-target token.
+ */
+body {
+  font-family: var(--pit-font-sans);
+  font-variant-emoji: text;
+  font-size: var(--pit-text-sm);
+  line-height: var(--pit-leading-normal);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 3px solid var(--pit-ring);
+  outline-offset: 2px;
+}
+
+/*
+ * The app owns the viewport so the thread column scrolls internally and the
+ * composer stays pinned to the bottom of the thread column (§2.1).
+ */
+.pit-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--pit-background);
+}
+
+.pit-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------------------------------------------------------- surface nav */
+
+/*
+ * Two primary paths, one rail. The links wrap rather than scroll horizontally,
+ * because the narrow layout must never introduce a horizontal scrollbar (§10).
+ */
+.pit-surface-nav {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--pit-space-2);
+  padding: var(--pit-space-2) var(--pit-space-4);
+  background: var(--pit-surface-sunken);
+  border-bottom: 1px solid var(--pit-border);
+}
+
+.pit-surface-link {
+  display: inline-flex;
+  align-items: center;
+  /* The label and its qualifier are separate flex items, so the space between
+     them has to be a gap: a leading space inside the qualifier collapses. */
+  gap: var(--pit-space-1);
+  min-height: var(--pit-touch-target);
+  padding: 0 var(--pit-space-3);
+  border: 1px solid var(--pit-border);
+  border-radius: var(--pit-radius-md);
+  color: var(--pit-muted-foreground);
+  font-size: var(--pit-text-xs);
+  text-decoration: none;
+}
+
+.pit-surface-link:hover {
+  color: var(--pit-foreground);
+  border-color: var(--pit-border-strong);
+}
+
+.pit-surface-link[aria-current="page"] {
+  background: var(--pit-accent-surface);
+  border-color: var(--pit-accent);
+  color: var(--pit-foreground);
+}
+
+.pit-surface-note {
+  color: var(--pit-faint-foreground);
+}
+
+.pit-surface-link[aria-current="page"] .pit-surface-note {
+  color: var(--pit-muted-foreground);
+}
+
+/* A load failure and the pre-session wait share the centred single-column. */
+.pit-app-error {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--pit-space-3);
+  max-width: var(--pit-thread-measure);
+  padding: var(--pit-space-6) var(--pit-space-4);
+}
+
+.pit-muted {
+  margin: 0;
+  color: var(--pit-muted-foreground);
+}
+
+/*
+ * The clean-room blank state. It carries the whole explanation of what the
+ * surface is, because the thread it replaces is deliberately empty.
+ */
+.pit-empty-thread {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pit-space-3);
+  padding: var(--pit-space-5);
+  background: var(--pit-surface);
+  border: 1px dashed var(--pit-border-strong);
+  border-radius: var(--pit-radius-lg);
+}
+
+.pit-empty-thread h2 {
+  margin: 0;
+  font-size: var(--pit-text-base);
+  line-height: var(--pit-leading-tight);
+}
+
+.pit-empty-thread p {
+  margin: 0;
+}
+
+/* ---------------------------------------------------------------- header */
+
+.pit-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--pit-space-2);
+  padding: var(--pit-space-3) var(--pit-space-4);
+  background: var(--pit-surface);
+  border-bottom: 1px solid var(--pit-border);
+}
+
+.pit-header-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--pit-space-2);
+  min-width: 0;
+}
+
+.pit-identifier {
+  font-family: var(--pit-font-mono);
+  font-size: var(--pit-text-xs);
+  color: var(--pit-muted-foreground);
+}
+
+.pit-title {
+  margin: 0;
+  font-size: var(--pit-text-xl);
+  font-weight: 700;
+  line-height: var(--pit-leading-tight);
+  min-width: 0;
+}
+
+.pit-assignee {
+  font-size: var(--pit-text-xs);
+  color: var(--pit-muted-foreground);
+}
+
+.pit-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--pit-space-2);
+  min-width: 0;
+}
+
+.pit-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--pit-space-1);
+  padding: 0.125rem var(--pit-space-2);
+  border: 1px solid var(--pit-border);
+  border-radius: var(--pit-radius-sm);
+  background: var(--pit-surface-raised);
+  color: var(--pit-muted-foreground);
+  font-size: var(--pit-text-xs);
+  white-space: nowrap;
+}
+
+.pit-chip[data-tone="live"] {
+  border-color: var(--pit-live);
+  background: var(--pit-live-surface);
+  color: var(--pit-foreground);
+}
+
+.pit-chip[data-tone="mock"] {
+  border-color: var(--pit-warning);
+  background: var(--pit-warning-surface);
+  color: var(--pit-foreground);
+}
+
+.pit-chip[data-tone="accent"] {
+  border-color: var(--pit-accent);
+  background: var(--pit-accent-surface);
+  color: var(--pit-foreground);
+}
+
+.pit-chip[data-tone="success"] {
+  border-color: var(--pit-success);
+  background: var(--pit-success-surface);
+  color: var(--pit-foreground);
+}
+
+.pit-chip[data-tone="danger"] {
+  border-color: var(--pit-danger);
+  background: var(--pit-danger-surface);
+  color: var(--pit-foreground);
+}
+
+.pit-process-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--pit-neutral);
+  flex: none;
+}
+
+.pit-process-dot[data-attached="true"] {
+  background: var(--pit-live);
+  animation: pit-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pit-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.pit-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--pit-space-1);
+  padding: 0.125rem var(--pit-space-2);
+  border-radius: var(--pit-radius-sm);
+  border: 1px solid currentColor;
+  font-size: var(--pit-text-xs);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.pit-status-badge[data-status="todo"] {
+  color: var(--pit-todo);
+}
+.pit-status-badge[data-status="in_progress"] {
+  color: var(--pit-in-progress);
+}
+.pit-status-badge[data-status="in_review"] {
+  color: var(--pit-in-review);
+}
+.pit-status-badge[data-status="done"] {
+  color: var(--pit-done);
+}
+.pit-status-badge[data-status="blocked"] {
+  color: var(--pit-blocked);
+}
+.pit-status-badge[data-status="backlog"],
+.pit-status-badge[data-status="cancelled"] {
+  color: var(--pit-neutral);
+}
+
+.pit-priority {
+  font-size: var(--pit-text-xs);
+  color: var(--pit-muted-foreground);
+  white-space: nowrap;
+}
+
+.pit-header-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--pit-space-2);
+}
+
+.pit-run-state {
+  font-family: var(--pit-font-mono);
+  font-size: var(--pit-text-xs);
+  color: var(--pit-faint-foreground);
+}
+
+.pit-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--pit-space-1);
+  min-height: var(--pit-touch-target);
+  padding: 0 var(--pit-space-3);
+  border: 1px solid var(--pit-border-strong);
+  border-radius: var(--pit-radius-sm);
+  background: var(--pit-surface-raised);
+  color: var(--pit-foreground);
+  font-size: var(--pit-text-xs);
+  cursor: pointer;
+}
+
+.pit-button:hover:not(:disabled) {
+  background: var(--pit-surface);
+}
+
+.pit-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pit-button[data-variant="primary"] {
+  background: var(--pit-accent);
+  border-color: var(--pit-accent);
+  color: var(--pit-surface-sunken);
+  font-weight: 600;
+}
+
+.pit-button[data-variant="destructive"] {
+  border-color: var(--pit-danger);
+  color: var(--pit-danger);
+}
+
+.pit-select {
+  min-height: var(--pit-touch-target);
+  padding: 0 var(--pit-space-2);
+  border: 1px solid var(--pit-border-strong);
+  border-radius: var(--pit-radius-sm);
+  background: var(--pit-surface-raised);
+  font-size: var(--pit-text-xs);
+}
+
+/* ---------------------------------------------------------------- layout */
+
+.pit-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.pit-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.pit-thread-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--pit-space-5) var(--pit-space-4);
+}
+
+.pit-thread {
+  width: 100%;
+  max-width: var(--pit-thread-measure);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--pit-space-5);
+  min-width: 0;
+}
+
+.pit-turn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pit-space-3);
+  min-width: 0;
+}
+
+.pit-turn-header {
+  display: flex;
+  align-items: center;
+  gap: var(--pit-space-2);
+  font-size: var(--pit-text-xs);
+  color: var(--pit-faint-foreground);
+  font-family: var(--pit-font-mono);
+}
+
+.pit-turn-header::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--pit-border);
+}
+
+.pit-stopped-marker {
+  color: var(--pit-warning);
+  font-family: var(--pit-font-sans);
+}
+
+/* ------------------------------------------------------------ thread items */
+
+.pit-card {
+  border: 1px solid var(--pit-border);
+  border-radius: var(--pit-radius-lg);
+  background: var(--pit-surface);
+  padding: var(--pit-space-3) var(--pit-space-4);
+  box-shadow: var(--pit-shadow-sm);
+  min-width: 0;
+}
+
+/*
+ * Chat messages follow the familiar assistant flow: the board's message is a
+ * compact bubble, while the assistant answer sits directly on the page. The
+ * heavier card remains available for durable control-plane records below.
+ */
+.pit-message {
+  min-width: 0;
+}
+
+.pit-message[data-role="user"] {
+  align-self: flex-end;
+  width: fit-content;
+  max-width: 85%;
+  padding: var(--pit-space-3) var(--pit-space-4);
+  border-radius: var(--pit-radius-lg);
+  background: var(--pit-surface-raised);
+}
+
+.pit-message[data-role="assistant"] {
+  padding: var(--pit-space-2) 0;
+}
+
+.pit-message .pit-card-head {
+  color: var(--pit-muted-foreground);
+}
+
+.pit-app[data-surface="chat"] .pit-turn-label,
+.pit-app[data-surface="chat"] .pit-turn-header::after {
+  display: none;
+}
+
+.pit-card-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--pit-space-2);
+  margin-bottom: var(--pit-space-2);
+}
+
+.pit-card-author {
+  font-size: var(--pit-text-sm);
+  font-weight: 500;
+}
+
+.pit-card-meta {
+  font-size: var(--pit-text-xs);
+  color: var(--pit-muted-foreground);
+  font-family: var(--pit-font-mono);
+}
+
+.pit-card-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.pit-durable-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--pit-space-1);
+  padding: 0.0625rem var(--pit-space-2);
+  border-radius: var(--pit-radius-sm);
+  background: var(--pit-accent-surface);
+  border: 1px solid var(--pit-accent);
+  color: var(--pit-foreground);
+  font-size: var(--pit-text-xs);
+}
+
+.pit-strip {
+  border: 1px solid var(--pit-border);
+  border-radius: var(--pit-radius-md);
+  background: var(--pit-surface-sunken);
+  min-width: 0;
+}
+
+.pit-strip[data-status="denied"] {
+  border-color: var(--pit-danger);
+}
+
+.pit-strip-button {
+  display: flex;
+  align-items: center;
+  gap: var(--pit-space-2);
+  width: 100%;
+  min-height: var(--pit-touch-target);
+  padding: var(--pit-space-2) var(--pit-space-3);
+  background: none;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  min-width: 0;
+}
+
+.pit-strip-glyph {
+  font-family: var(--pit-font-mono);
+  flex: none;
+}
+
+.pit-strip[data-status="ok"] .pit-strip-glyph {
+  color: var(--pit-success);
+}
+.pit-strip[data-status="denied"] .pit-strip-glyph {
+  color: var(--pit-danger);
+}
+.pit-strip[data-status="running"] .pit-strip-glyph {
+  color: var(--pit-warning);
+}
+
+.pit-strip-operation {
+  font-family: var(--pit-font-mono);
+  font-size: var(--pit-text-xs);
+  flex: none;
+}
+
+.pit-strip-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--pit-muted-foreground);
+  font-size: var(--pit-text-xs);
+}
+
+.pit-strip-caret {
+  flex: none;
+  color: var(--pit-faint-foreground);
+}
+
+.pit-strip-detail {
+  padding: 0 var(--pit-space-3) var(--pit-space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--pit-space-2);
+}
+
+/* Lightweight assistant-style reasoning/tool disclosures. */
+.pit-activity-item {
+  min-width: 0;
+  color: var(--pit-muted-foreground);
+}
+
+.pit-activity-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--pit-space-2);
+  min-height: var(--pit-touch-target);
+  padding: var(--pit-space-1) 0;
+  cursor: pointer;
+  list-style: none;
+}
+
+.pit-activity-summary::-webkit-details-marker {
+  display: none;
+}
+
+.pit-activity-glyph {
+  flex: none;
+  width: var(--pit-space-5);
+  color: var(--pit-muted-foreground);
+  font-family: var(--pit-font-mono);
+  text-align: center;
+}
+
+.pit-activity-item[data-status="ok"] .pit-activity-glyph,
+.pit-activity-item[data-status="complete"] .pit-activity-glyph {
+  color: var(--pit-success);
+}
+
+.pit-activity-item[data-status="denied"] .pit-activity-glyph {
+  color: var(--pit-danger);
+}
+
+.pit-activity-item[data-status="running"] .pit-activity-glyph {
+  color: var(--pit-live);
+  animation: pit-pulse 1.6s ease-in-out infinite;
+}
+
+.pit-activity-operation {
+  flex: none;
+  color: var(--pit-foreground);
+  font-family: var(--pit-font-mono);
+  font-size: var(--pit-text-xs);
+  font-weight: 600;
+}
+
+.pit-progress-activity .pit-activity-operation {
+  font-family: var(--pit-font-sans);
+}
+
+.pit-activity-description {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--pit-muted-foreground);
+  font-size: var(--pit-text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pit-activity-caret {
+  flex: none;
+  color: var(--pit-faint-foreground);
+  transition: transform var(--pit-motion) ease-out;
+}
+
+.pit-activity-item[open] > .pit-activity-summary .pit-activity-caret {
+  transform: rotate(90deg);
+}
+
+.pit-activity-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pit-space-2);
+  margin-left: calc(var(--pit-space-5) + var(--pit-space-2));
+  padding: 0 0 var(--pit-space-3) var(--pit-space-3);
+  border-left: 1px solid var(--pit-border);
+  font-size: var(--pit-text-xs);
+}
+
+.pit-activity-detail p {
+  margin: 0;
+}
+
+.pit-activity-payloads {
+  display: grid;
+  gap: var(--pit-space-2);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.pit-code {
+  margin: 0;
+  padding: var(--pit-space-2);
+  border-radius: var(--pit-radius-sm);
+  background: var(--pit-background);
+  border: 1px solid var(--pit-border);
+  font-family: var(--pit-font-mono);
+  font-size: var(--pit-text-xs);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.pit-more-button {
+  align-self: flex-start;
+  min-height: var(--pit-touch-target);
+  padding: 0 var(--pit-space-2);
+  background: none;
+  border: 1px dashed var(--pit-border-strong);
+  border-radius: var(--pit-radius-sm);
+  color: var(--pit-muted-foreground);
+  font-size: var(--pit-text-xs);
+  cursor: pointer;
+}
+
+.pit-notice {
+  display: flex;
+  align-items: center;
+  gap: var(--pit-space-2);
+  font-size: var(--pit-text-xs);
+  color: var(--pit-faint-foreground);
+  min-width: 0;
+}
+
+.pit-notice-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pit-link-button {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--pit-accent);
+  text-decoration: underline;
+  cursor: pointer;
+  font-size: var(--pit-text-xs);
+}
+
+.pit-terminal-card {
+  border-left: 3px solid var(--pit-done);
+}
+
+.pit-denial {
+  border-left: 3px solid var(--pit-danger);
+}
+
+/* ------------------------------------------------------ interaction cards */
+
+.pit-interaction {
+  border: 1px solid var(--pit-border);
+  border-left: 3px solid var(--pit-border-strong);
+  border-radius: var(--pit-radius-lg);
+  background: var(--pit-surface);
+  padding: var(--pit-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--pit-space-3);
+  min-width: 0;
+}
+
+.pit-interaction[data-interaction-state="pending"] {
+  border-left-color: var(--pit-accent);
+}
+
+.pit-interaction[data-interaction-state="accepted"],
+.pit-interaction[data-interaction-state="answered"] {
+  border-left-color: var(--pit-success);
+}
+
+.pit-interaction[data-interaction-state="rejected"] {
+  border-left-color: var(--pit-danger);
+}
+
+/*
+ * Expired-family cards read as history without a blanket opacity. The contract
+ * asks for a 60% dimmed body (§5); a literal opacity drops the card's text to
+ * ~3.2:1 and fails the blocking axe gate (§9.7), so the dim is expressed as a
+ * recessed surface plus muted text that still clears 4.5:1. Recorded as
+ * revision 2 of the contract.
+ */
+.pit-interaction[data-interaction-state="stale_target"],
+.pit-interaction[data-interaction-state="superseded_by_comment"],
+.pit-interaction[data-interaction-state="expired"],
+.pit-interaction[data-interaction-state="withdrawn"],
+.pit-interaction[data-interaction-state="issue_closed"] {
+  border-left-color: var(--pit-neutral);
+  background: var(--pit-surface-sunken);
+  color: var(--pit-muted-foreground);
+}
+
+.pit-interaction[data-interaction-state="stale_target"] .pit-card-meta,
+.pit-interaction[data-interaction-state="superseded_by_comment"] .pit-card-meta,
+.pit-interaction[data-interaction-state="expired"] .pit-card-meta,
+.pit-interaction[data-interaction-state="withdrawn"] .pit-card-meta,
+.pit-interaction[data-interaction-state="issue_closed"] .pit-card-meta,
+.pit-interaction[data-interaction-state="stale_target"] .pit-quote,
+.pit-interaction[data-interaction-state="superseded_by_comment"] .pit-quote,
+.pit-interaction[data-interaction-state="expired"] .pit-quote,
+.pit-interaction[data-interaction-state="withdrawn"] .pit-quote,
+.pit-interaction[data-interaction-state="issue_closed"] .pit-quote {
+  color: var(--pit-muted-foreground);
+}
+
+.pit-interaction-title {
+  margin: 0;
+  font-size: var(--pit-text-sm);
+  font-weight: 600;
+}
+
+.pit-interaction-controls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pit-space-3);
+}
+
+.pit-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pit-space-1);
+  min-width: 0;
+}
+
+.pit-field-label {
+  font-size: var(--pit-text-sm);
+  font-weight: 500;
+}
+
+.pit-option-row {
+  display: flex;
+  align-items: center;
+  gap: var(--pit-space-2);
+  min-height: var(--pit-touch-target);
+}
+
+.pit-input,
+.pit-textarea {
+  width: 100%;
+  min-height: var(--pit-touch-target);
+  padding: var(--pit-space-2);
+  border: 1px solid var(--pit-border-strong);
+  border-radius: var(--pit-radius-sm);
+  background: var(--pit-surface-sunken);
+  color: var(--pit-foreground);
+}
+
+.pit-textarea {
+  min-height: 4rem;
+  resize: vertical;
+}
+
+.pit-button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--pit-space-2);
+}
+
+.pit-summary-list {
+  margin: 0;
+  padding-left: var(--pit-space-5);
+  color: var(--pit-muted-foreground);
+  font-size: var(--pit-text-xs);
+}
+
+.pit-quote {
+  margin: 0;
+  padding-left: var(--pit-space-3);
+  border-left: 2px solid var(--pit-border-strong);
+  color: var(--pit-muted-foreground);
+}
+
+.pit-segmented-verdicts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--pit-space-2);
+  align-items: center;
+}
+
+/* ------------------------------------------------------------- composer */
+
+.pit-composer {
+  border-top: 1px solid var(--pit-border);
+  background: var(--pit-surface);
+  padding: var(--pit-space-3) var(--pit-space-4)
+    calc(var(--pit-space-3) + env(safe-area-inset-bottom, 0px));
+}
+
+.pit-composer-inner {
+  width: 100%;
+  max-width: var(--pit-thread-measure);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--pit-space-2);
+  min-width: 0;
+}
+
+.pit-composer-row {
+  display: flex;
+  gap: var(--pit-space-2);
+  align-items: flex-end;
+  min-width: 0;
+}
+
+.pit-composer-input {
+  flex: 1;
+  min-width: 0;
+  min-height: var(--pit-touch-target);
+  padding: var(--pit-space-2);
+  border: 1px solid var(--pit-border-strong);
+  border-radius: var(--pit-radius-md);
+  background: var(--pit-surface-sunken);
+  color: var(--pit-foreground);
+  resize: none;
+}
+
+.pit-composer-helper {
+  font-size: var(--pit-text-xs);
+  color: var(--pit-muted-foreground);
+}
+
+.pit-composer-reason {
+  font-size: var(--pit-text-xs);
+  color: var(--pit-warning);
+}
+
+.pit-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--pit-space-2);
+  padding: var(--pit-space-2) var(--pit-space-4);
+  background: var(--pit-warning-surface);
+  border-bottom: 1px solid var(--pit-warning);
+  color: var(--pit-foreground);
+  font-size: var(--pit-text-xs);
+  animation: pit-slide var(--pit-motion) ease-out;
+}
+
+.pit-banner[data-tone="success"] {
+  background: var(--pit-success-surface);
+  border-bottom-color: var(--pit-success);
+}
+
+.pit-banner[data-tone="danger"] {
+  background: var(--pit-danger-surface);
+  border-bottom-color: var(--pit-danger);
+}
+
+@keyframes pit-slide {
+  from {
+    transform: translateY(-0.5rem);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.pit-jump-pill {
+  position: absolute;
+  left: 50%;
+  bottom: var(--pit-space-4);
+  transform: translateX(-50%);
+  z-index: 4;
+}
+
+.pit-main-inner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* -------------------------------------------------------- evidence panel */
+
+.pit-splitter {
+  width: 0.5rem;
+  flex: none;
+  cursor: col-resize;
+  background: var(--pit-border);
+  border: 0;
+  padding: 0;
+}
+
+.pit-splitter:hover {
+  background: var(--pit-border-strong);
+}
+
+.pit-panel {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-left: 1px solid var(--pit-border);
+  background: var(--pit-surface-sunken);
+  overflow-y: auto;
+}
+
+.pit-panel-head {
+  position: sticky;
+  top: 0;
+  background: var(--pit-surface-sunken);
+  border-bottom: 1px solid var(--pit-border);
+  padding: var(--pit-space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--pit-space-2);
+  z-index: 2;
+}
+
+.pit-panel-title {
+  margin: 0;
+  font-size: var(--pit-text-sm);
+  font-weight: 600;
+}
+
+.pit-section {
+  border-bottom: 1px solid var(--pit-border);
+}
+
+.pit-section-button {
+  display: flex;
+  align-items: center;
+  gap: var(--pit-space-2);
+  width: 100%;
+  min-height: var(--pit-touch-target);
+  padding: var(--pit-space-2) var(--pit-space-3);
+  background: none;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font-size: var(--pit-text-sm);
+  font-weight: 500;
+}
+
+.pit-section-count {
+  margin-left: auto;
+  font-family: var(--pit-font-mono);
+  font-size: var(--pit-text-xs);
+  color: var(--pit-muted-foreground);
+}
+
+.pit-section-body {
+  padding: 0 var(--pit-space-3) var(--pit-space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--pit-space-2);
+  min-width: 0;
+}
+
+.pit-record {
+  border: 1px solid var(--pit-border);
+  border-radius: var(--pit-radius-sm);
+  background: var(--pit-surface);
+  padding: var(--pit-space-2);
+  font-size: var(--pit-text-xs);
+  display: flex;
+  flex-direction: column;
+  gap: var(--pit-space-1);
+  min-width: 0;
+}
+
+.pit-record[data-highlighted="true"] {
+  border-color: var(--pit-accent);
+}
+
+.pit-record[data-allowed="false"] {
+  border-left: 3px solid var(--pit-danger);
+}
+
+.pit-record-title {
+  font-family: var(--pit-font-mono);
+  overflow-wrap: anywhere;
+}
+
+.pit-record-detail {
+  color: var(--pit-muted-foreground);
+  overflow-wrap: anywhere;
+}
+
+.pit-runner-event,
+.pit-runner-group {
+  min-width: 0;
+  border: 1px solid var(--pit-border);
+  border-radius: var(--pit-radius-sm);
+  background: var(--pit-surface);
+  font-size: var(--pit-text-xs);
+}
+
+.pit-runner-event-summary,
+.pit-runner-group-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--pit-space-2);
+  min-height: var(--pit-touch-target);
+  padding: var(--pit-space-2);
+  cursor: pointer;
+  list-style: none;
+  min-width: 0;
+}
+
+.pit-runner-event-summary::-webkit-details-marker,
+.pit-runner-group-summary::-webkit-details-marker {
+  display: none;
+}
+
+.pit-runner-event-summary .pit-record-detail,
+.pit-runner-group-summary .pit-record-detail {
+  flex: 1;
+  min-width: 0;
+}
+
+.pit-runner-event[open] > .pit-runner-event-summary .pit-activity-caret,
+.pit-runner-group[open] > .pit-runner-group-summary .pit-activity-caret {
+  transform: rotate(90deg);
+}
+
+.pit-runner-event-details {
+  display: grid;
+  gap: var(--pit-space-2);
+  margin: 0;
+  padding: 0 var(--pit-space-2) var(--pit-space-2);
+}
+
+.pit-runner-event-details > div {
+  display: grid;
+  grid-template-columns: minmax(0, 7rem) minmax(0, 1fr);
+  gap: var(--pit-space-2);
+}
+
+.pit-runner-event-details dt,
+.pit-runner-event-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.pit-runner-event-details dt {
+  color: var(--pit-faint-foreground);
+}
+
+.pit-runner-event-details dd {
+  color: var(--pit-muted-foreground);
+  font-family: var(--pit-font-mono);
+}
+
+.pit-runner-group-events {
+  display: grid;
+  gap: var(--pit-space-2);
+  padding: 0 var(--pit-space-2) var(--pit-space-2);
+}
+
+.pit-runner-group-events .pit-runner-event {
+  background: var(--pit-surface-sunken);
+}
+
+.pit-tool-group-label {
+  font-size: var(--pit-text-xs);
+  font-weight: 600;
+  color: var(--pit-muted-foreground);
+  margin-top: var(--pit-space-2);
+}
+
+.pit-tool-group-label[data-group="control_plane_owned"] {
+  color: var(--pit-faint-foreground);
+}
+
+.pit-tool-row {
+  display: flex;
+  gap: var(--pit-space-2);
+  align-items: baseline;
+  font-size: var(--pit-text-xs);
+  min-width: 0;
+}
+
+.pit-tool-row[data-disposition="control_plane_owned"] {
+  color: var(--pit-faint-foreground);
+}
+
+.pit-grant {
+  font-family: var(--pit-font-mono);
+  color: var(--pit-muted-foreground);
+  overflow-wrap: anywhere;
+}
+
+.pit-verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--pit-space-1);
+  font-size: var(--pit-text-xs);
+}
+
+.pit-verdict[data-verdict="pass"] {
+  color: var(--pit-success);
+}
+.pit-verdict[data-verdict="fail"] {
+  color: var(--pit-danger);
+}
+.pit-verdict[data-verdict="intentional_gap"] {
+  color: var(--pit-neutral);
+}
+
+.pit-diff-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--pit-space-1);
+}
+
+/* ------------------------------------------------------------- dialog */
+
+.pit-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--pit-space-4);
+  background: var(--pit-scrim);
+}
+
+.pit-dialog {
+  width: min(28rem, 100%);
+  border: 1px solid var(--pit-border-strong);
+  border-radius: var(--pit-radius-lg);
+  background: var(--pit-surface);
+  padding: var(--pit-space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--pit-space-3);
+}
+
+.pit-dialog-title {
+  margin: 0;
+  font-size: var(--pit-text-base);
+  font-weight: 600;
+}
+
+.pit-menu {
+  position: relative;
+}
+
+.pit-menu-list {
+  position: absolute;
+  right: 0;
+  top: calc(100% + var(--pit-space-1));
+  z-index: 10;
+  min-width: 12rem;
+  border: 1px solid var(--pit-border-strong);
+  border-radius: var(--pit-radius-md);
+  background: var(--pit-surface-raised);
+  box-shadow: var(--pit-shadow-sm);
+  padding: var(--pit-space-1);
+  display: flex;
+  flex-direction: column;
+}
+
+.pit-menu-item {
+  min-height: var(--pit-touch-target);
+  padding: 0 var(--pit-space-3);
+  background: none;
+  border: 0;
+  border-radius: var(--pit-radius-sm);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font-size: var(--pit-text-sm);
+}
+
+.pit-menu-item:hover {
+  background: var(--pit-surface);
+}
+
+/* -------------------------------------------------------- replay strip */
+
+.pit-replay-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--pit-space-2);
+  padding: var(--pit-space-2) var(--pit-space-4);
+  border-bottom: 1px solid var(--pit-border);
+  background: var(--pit-surface-raised);
+  font-size: var(--pit-text-xs);
+}
+
+.pit-progress {
+  flex: 1;
+  height: 0.25rem;
+  border-radius: var(--pit-radius-sm);
+  background: var(--pit-border);
+  overflow: hidden;
+  min-width: 0;
+}
+
+.pit-progress-fill {
+  height: 100%;
+  background: var(--pit-accent);
+}
+
+/* --------------------------------------------------------- mobile rules */
+
+.pit-segmented {
+  display: none;
+}
+
+/*
+ * §2.2: on mobile the header condenses to identifier + status + `⋯`, and
+ * Scenario/Replay/Reset move inside the overflow menu. Stop stays outside it.
+ */
+.pit-mobile-only {
+  display: none;
+}
+
+@media (max-width: 1100px) {
+  .pit-panel[data-layout="overlay"] {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 15;
+    width: min(28rem, 100vw);
+    box-shadow: var(--pit-shadow-sm);
+  }
+
+  .pit-splitter {
+    display: none;
+  }
+}
+
+@media (max-width: 767px) {
+  .pit-desktop-only {
+    display: none;
+  }
+
+  .pit-mobile-only {
+    display: block;
+  }
+
+  .pit-segmented {
+    display: flex;
+    gap: var(--pit-space-1);
+    padding: var(--pit-space-1);
+    border: 1px solid var(--pit-border);
+    border-radius: var(--pit-radius-md);
+    background: var(--pit-surface-sunken);
+  }
+
+  .pit-segment {
+    flex: 1;
+    min-height: var(--pit-touch-target);
+    background: none;
+    border: 0;
+    border-radius: var(--pit-radius-sm);
+    color: var(--pit-muted-foreground);
+    cursor: pointer;
+    font-size: var(--pit-text-xs);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--pit-space-1);
+  }
+
+  .pit-segment[aria-selected="true"] {
+    background: var(--pit-surface-raised);
+    color: var(--pit-foreground);
+    font-weight: 600;
+  }
+
+  .pit-segment-badge {
+    min-width: 1.25rem;
+    padding: 0 var(--pit-space-1);
+    border-radius: var(--pit-radius-sm);
+    background: var(--pit-danger-surface);
+    border: 1px solid var(--pit-danger);
+    color: var(--pit-foreground);
+  }
+
+  .pit-panel[data-layout="segment"] {
+    position: static;
+    width: 100%;
+    border-left: 0;
+    box-shadow: none;
+  }
+
+  .pit-link-button {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--pit-touch-target);
+  }
+
+  .pit-title {
+    font-size: var(--pit-text-base);
+  }
+
+  .pit-thread-scroll {
+    padding: var(--pit-space-4) var(--pit-space-3);
+  }
+
+  .pit-message[data-role="user"] {
+    max-width: 92%;
+  }
+
+  .pit-activity-payloads {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pit-activity-description {
+    white-space: normal;
+  }
+
+  /*
+   * Three transport controls plus a progress bar do not fit on one 390px row —
+   * squeezing them leaves the bar as an unreadable stub. Wrap so the bar keeps
+   * the full width on its own line, below the label and buttons.
+   */
+  .pit-replay-strip {
+    flex-wrap: wrap;
+    padding: var(--pit-space-2) var(--pit-space-3);
+  }
+
+  .pit-replay-strip .pit-progress {
+    order: 1;
+    flex-basis: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .pit-process-dot[data-attached="true"] {
+    animation: none;
+  }
+}
+
+/* Capture mode: the screenshot recorder freezes every animated affordance. */
+:root[data-capture="true"] *,
+:root[data-capture="true"] *::before,
+:root[data-capture="true"] *::after {
+  animation: none !important;
+  transition: none !important;
+  caret-color: transparent !important;
+  scroll-behavior: auto !important;
+}

@@ -14,7 +14,11 @@ import type {
   PersistedHarnessSession,
 } from "../contracts/harness-driver.js";
 import type { PrpEvent } from "../protocol/replay-contract.js";
-import { LiveConsoleDemoServer } from "./live-console-demo-server.js";
+import {
+  liveEventCursor,
+  liveEventsAfterCursor,
+  LiveConsoleDemoServer,
+} from "./live-console-demo-server.js";
 
 const OPAQUE_BROWSER_CREDENTIALS = {
   clientSecret: "opaque-client-secret-value",
@@ -25,6 +29,20 @@ const OPAQUE_BROWSER_CREDENTIALS = {
   authorization: "opaque-authorization-value",
   cookie: "opaque-cookie-value",
 } as const;
+
+describe("live console durable cursors", () => {
+  it("replays unseen retained events after positional compaction", () => {
+    const retained = [
+      { sourceEventId: "event-4095", sourceSeq: 4095 },
+      { sourceEventId: "event-4096", sourceSeq: 4096 },
+      { sourceEventId: "event-4097", sourceSeq: 4097 },
+    ] as PrpEvent[];
+
+    expect(liveEventsAfterCursor(retained, 4095).map((event) => event.sourceSeq))
+      .toEqual([4096, 4097]);
+    expect(liveEventCursor(retained)).toBe(4097);
+  });
+});
 
 class Queue<T> implements AsyncIterable<T> {
   #values: T[] = [];

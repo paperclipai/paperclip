@@ -1,0 +1,603 @@
+{
+  "schema": "paperclip.runner.durable.trace.v1",
+  "diagnostics": {
+    "schema": "paperclip.runner.durable.diagnostics.v1",
+    "fault": "lease-expiry",
+    "connection": {
+      "state": "stopped",
+      "connectionCount": 2,
+      "reconnectCount": 2,
+      "leaseId": "connection_lease_42900de0-4a64-47c1-b20c-d14890a9be42",
+      "leaseExpiresAt": "2026-08-07T23:36:40.312Z"
+    },
+    "identity": {
+      "runnerInstanceId": "runner_durableRecovery_stable",
+      "environmentLeaseId": "environment_lease_durableRecovery_stable",
+      "runId": "run_durableRecovery_stable",
+      "normalizedSessionId": "session_durableRecovery_stable",
+      "turnId": "turn_durableRecovery_stable",
+      "itemId": "item_durableRecovery_stable"
+    },
+    "cursors": {
+      "runnerAckedSourceSeq": 10,
+      "runnerNextSourceSeq": 11,
+      "coreAckedSourceSeq": 10,
+      "highestCommittedSourceSeq": 10
+    },
+    "outbox": {
+      "events": 0,
+      "bytes": 0,
+      "peakBytes": 5314,
+      "maxBytes": 65536,
+      "backpressure": false,
+      "p0Committed": 6,
+      "p0Lost": 0
+    },
+    "commands": {
+      "issued": 4,
+      "completed": 4,
+      "rejected": 0,
+      "logicalEffects": 4,
+      "duplicateDeliveries": 0
+    },
+    "recovery": {
+      "replayDeliveries": 9,
+      "runnerRestarts": 1,
+      "harnessRestarts": 0,
+      "malformedFrames": 0,
+      "freshBootstraps": 2,
+      "outcome": "recovered",
+      "reason": "lease_expiry_completed"
+    },
+    "security": {
+      "bootstrapTicketPersisted": false,
+      "connectionLeaseTokenPersisted": false,
+      "secretLeakCount": 0
+    },
+    "committedEvents": [
+      {
+        "sourceSeq": 1,
+        "sourceEventId": "event_runner_durableRecovery_stable_000001",
+        "eventType": "runner.reconciled",
+        "priority": 0,
+        "envelope": {
+          "envelopeId": "envelope_event_000001",
+          "kind": "event",
+          "normalizedSessionId": "session_durableRecovery_stable",
+          "payload": {
+            "emittedAt": "2026-08-07T23:00:00.001Z",
+            "eventType": "runner.reconciled",
+            "normalizedSessionId": "session_durableRecovery_stable",
+            "payload": {
+              "itemId": "item_durableRecovery_stable",
+              "normalizedSessionId": "session_durableRecovery_stable",
+              "outcome": "same_durable_session_resumed",
+              "runnerInstanceId": "runner_durableRecovery_stable",
+              "turnId": "turn_durableRecovery_stable"
+            },
+            "priority": 0,
+            "runId": "run_durableRecovery_stable",
+            "schema": "paperclip.prp.event.v1",
+            "schemaVersion": 1,
+            "sourceEventId": "event_runner_durableRecovery_stable_000001",
+            "sourceInstanceId": "runner_durableRecovery_stable",
+            "sourceKind": "runner",
+            "sourceSeq": 1,
+            "turnId": "turn_durableRecovery_stable"
+          },
+          "protocol": "paperclip.runner",
+          "runId": "run_durableRecovery_stable",
+          "runnerInstanceId": "runner_durableRecovery_stable",
+          "sentAt": "2026-08-07T23:00:00.001Z",
+          "turnId": "turn_durableRecovery_stable",
+          "version": 1
+        },
+        "deliveryCount": 2,
+        "logicalEffectCount": 1
+      },
+      {
+        "sourceSeq": 2,
+        "sourceEventId": "event_runner_durableRecovery_stable_000002",
+        "eventType": "workspace.ready",
+        "priority": 1,
+        "envelope": {
+          "envelopeId": "envelope_event_000002",
+          "kind": "event",
+          "normalizedSessionId": "session_durableRecovery_stable",
+          "payload": {
+            "emittedAt": "2026-08-07T23:00:00.002Z",
+            "eventType": "workspace.ready",
+            "normalizedSessionId": "session_durableRecovery_stable",
+            "payload": {
+              "workspace": "durable-recovery-durable-fixture"
+            },
+            "priority": 1,
+            "runId": "run_durableRecovery_stable",
+            "schema": "paperclip.prp.event.v1",
+            "schemaVersion": 1,
+            "sourceEventId": "event_runner_durableRecovery_stable_000002",
+            "sourceInstanceId": "runner_durableRecovery_stable",
+            "sourceKind": "runner",
+            "sourceSeq": 2,
+            "turnId": "turn_durableRecovery_stable"
+          },
+          "protocol": "paperclip.runner",
+          "runId": "run_durableRecovery_stable",
+          "runnerInstanceId": "runner_durableRecovery_stable",
+          "sentAt": "2026-08-07T23:00:00.002Z",
+          "turnId": "turn_durableRecovery_stable",
+          "version": 1
+        },
+        "deliveryCount": 2,
+        "logicalEffectCount": 1
+      },
+      {
+        "sourceSeq": 3,
+        "sourceEventId": "event_runner_durableRecovery_stable_000003",
+        "eventType": "session.started",
+        "priority": 0,
+        "envelope": {
+          "envelopeId": "envelope_event_000003",
+          "kind": "event",
+          "normalizedSessionId": "session_durableRecovery_stable",
+          "payload": {
+            "emittedAt": "2026-08-07T23:00:00.003Z",
+            "eventType": "session.started",
+            "normalizedSessionId": "session_durableRecovery_stable",
+            "payload": {
+              "driverSessionId": "driver_durableRecovery_fake",
+              "normalizedSessionId": "session_durableRecovery_stable",
+              "resumed": true
+            },
+            "priority": 0,
+            "runId": "run_durableRecovery_stable",
+            "schema": "paperclip.prp.event.v1",
+            "schemaVersion": 1,
+            "sourceEventId": "event_runner_durableRecovery_stable_000003",
+            "sourceInstanceId": "runner_durableRecovery_stable",
+            "sourceKind": "runner",
+            "sourceSeq": 3,
+            "turnId": "turn_durableRecovery_stable"
+          },
+          "protocol": "paperclip.runner",
+          "runId": "run_durableRecovery_stable",
+          "runnerInstanceId": "runner_durableRecovery_stable",
+          "sentAt": "2026-08-07T23:00:00.003Z",
+          "turnId": "turn_durableRecovery_stable",
+          "version": 1
+        },
+        "deliveryCount": 2,
+        "logicalEffectCount": 1
+      },
+      {
+        "sourceSeq": 4,
+        "sourceEventId": "event_runner_durableRecovery_stable_000004",
+        "eventType": "turn.accepted",
+        "priority": 0,
+        "envelope": {
+          "envelopeId": "envelope_event_000004",
+          "kind": "event",
+          "normalizedSessionId": "session_durableRecovery_stable",
+          "payload": {
+            "emittedAt": "2026-08-07T23:00:00.004Z",
+            "eventType": "turn.accepted",
+            "normalizedSessionId": "session_durableRecovery_stable",
+            "payload": {
+              "sameSession": true,
+              "turnId": "turn_durableRecovery_stable"
+            },
+            "priority": 0,
+            "runId": "run_durableRecovery_stable",
+            "schema": "paperclip.prp.event.v1",
+            "schemaVersion": 1,
+            "sourceEventId": "event_runner_durableRecovery_stable_000004",
+            "sourceInstanceId": "runner_durableRecovery_stable",
+            "sourceKind": "runner",
+            "sourceSeq": 4,
+            "turnId": "turn_durableRecovery_stable"
+          },
+          "protocol": "paperclip.runner",
+          "runId": "run_durableRecovery_stable",
+          "runnerInstanceId": "runner_durableRecovery_stable",
+          "sentAt": "2026-08-07T23:00:00.004Z",
+          "turnId": "turn_durableRecovery_stable",
+          "version": 1
+        },
+        "deliveryCount": 2,
+        "logicalEffectCount": 1
+      },
+      {
+        "sourceSeq": 5,
+        "sourceEventId": "event_runner_durableRecovery_stable_000005",
+        "eventType": "item.started",
+        "priority": 1,
+        "envelope": {
+          "envelopeId": "envelope_event_000005",
+          "kind": "event",
+          "normalizedSessionId": "session_durableRecovery_stable",
+          "payload": {
+            "emittedAt": "2026-08-07T23:00:00.005Z",
+            "eventType": "item.started",
+            "itemId": "item_durableRecovery_stable",
+            "normalizedSessionId": "session_durableRecovery_stable",
+            "payload": {
+              "kind": "assistant_message"
+            },
+            "priority": 1,
+            "runId": "run_durableRecovery_stable",
+            "schema": "paperclip.prp.event.v1",
+            "schemaVersion": 1,
+            "sourceEventId": "event_runner_durableRecovery_stable_000005",
+            "sourceInstanceId": "runner_durableRecovery_stable",
+            "sourceKind": "runner",
+            "sourceSeq": 5,
+            "turnId": "turn_durableRecovery_stable"
+          },
+          "protocol": "paperclip.runner",
+          "runId": "run_durableRecovery_stable",
+          "runnerInstanceId": "runner_durableRecovery_stable",
+          "sentAt": "2026-08-07T23:00:00.005Z",
+          "turnId": "turn_durableRecovery_stable",
+          "version": 1
+        },
+        "deliveryCount": 2,
+        "logicalEffectCount": 1
+      },
+      {
+        "sourceSeq": 6,
+        "sourceEventId": "event_runner_durableRecovery_stable_000006",
+        "eventType": "item.delta",
+        "priority": 2,
+        "envelope": {
+          "envelopeId": "envelope_event_000006",
+          "kind": "event",
+          "normalizedSessionId": "session_durableRecovery_stable",
+          "payload": {
+            "emittedAt": "2026-08-07T23:00:00.006Z",
+            "eventType": "item.delta",
+            "itemId": "item_durableRecovery_stable",
+            "normalizedSessionId": "session_durableRecovery_stable",
+            "payload": {
+              "text": "Prove Durable recovery."
+            },
+            "priority": 2,
+            "runId": "run_durableRecovery_stable",
+            "schema": "paperclip.prp.event.v1",
+            "schemaVersion": 1,
+            "sourceEventId": "event_runner_durableRecovery_stable_000006",
+            "sourceInstanceId": "runner_durableRecovery_stable",
+            "sourceKind": "runner",
+            "sourceSeq": 6,
+            "turnId": "turn_durableRecovery_stable"
+          },
+          "protocol": "paperclip.runner",
+          "runId": "run_durableRecovery_stable",
+          "runnerInstanceId": "runner_durableRecovery_stable",
+          "sentAt": "2026-08-07T23:00:00.006Z",
+          "turnId": "turn_durableRecovery_stable",
+          "version": 1
+        },
+        "deliveryCount": 2,
+        "logicalEffectCount": 1
+      },
+      {
+        "sourceSeq": 7,
+        "sourceEventId": "event_runner_durableRecovery_stable_000007",
+        "eventType": "item.completed",
+        "priority": 1,
+        "envelope": {
+          "envelopeId": "envelope_event_000007",
+          "kind": "event",
+          "normalizedSessionId": "session_durableRecovery_stable",
+          "payload": {
+            "emittedAt": "2026-08-07T23:00:00.007Z",
+            "eventType": "item.completed",
+            "itemId": "item_durableRecovery_stable",
+            "normalizedSessionId": "session_durableRecovery_stable",
+            "payload": {
+              "text": "Durable recovery completed."
+            },
+            "priority": 1,
+            "runId": "run_durableRecovery_stable",
+            "schema": "paperclip.prp.event.v1",
+            "schemaVersion": 1,
+            "sourceEventId": "event_runner_durableRecovery_stable_000007",
+            "sourceInstanceId": "runner_durableRecovery_stable",
+            "sourceKind": "runner",
+            "sourceSeq": 7,
+            "turnId": "turn_durableRecovery_stable"
+          },
+          "protocol": "paperclip.runner",
+          "runId": "run_durableRecovery_stable",
+          "runnerInstanceId": "runner_durableRecovery_stable",
+          "sentAt": "2026-08-07T23:00:00.007Z",
+          "turnId": "turn_durableRecovery_stable",
+          "version": 1
+        },
+        "deliveryCount": 2,
+        "logicalEffectCount": 1
+      },
+      {
+        "sourceSeq": 8,
+        "sourceEventId": "event_runner_durableRecovery_stable_000008",
+        "eventType": "run.result.proposed",
+        "priority": 0,
+        "envelope": {
+          "envelopeId": "envelope_event_000008",
+          "kind": "event",
+          "normalizedSessionId": "session_durableRecovery_stable",
+          "payload": {
+            "emittedAt": "2026-08-07T23:00:00.008Z",
+            "eventType": "run.result.proposed",
+            "normalizedSessionId": "session_durableRecovery_stable",
+            "payload": {
+              "reportedWorkDisposition": "done",
+              "schema": "paperclip.prp.result.v1",
+              "status": "succeeded",
+              "summary": "Durable transport recovered without duplicate effects."
+            },
+            "priority": 0,
+            "runId": "run_durableRecovery_stable",
+            "schema": "paperclip.prp.event.v1",
+            "schemaVersion": 1,
+            "sourceEventId": "event_runner_durableRecovery_stable_000008",
+            "sourceInstanceId": "runner_durableRecovery_stable",
+            "sourceKind": "runner",
+            "sourceSeq": 8,
+            "turnId": "turn_durableRecovery_stable"
+          },
+          "protocol": "paperclip.runner",
+          "runId": "run_durableRecovery_stable",
+          "runnerInstanceId": "runner_durableRecovery_stable",
+          "sentAt": "2026-08-07T23:00:00.008Z",
+          "turnId": "turn_durableRecovery_stable",
+          "version": 1
+        },
+        "deliveryCount": 2,
+        "logicalEffectCount": 1
+      },
+      {
+        "sourceSeq": 9,
+        "sourceEventId": "event_runner_durableRecovery_stable_000009",
+        "eventType": "run.terminal",
+        "priority": 0,
+        "envelope": {
+          "envelopeId": "envelope_event_000009",
+          "kind": "event",
+          "normalizedSessionId": "session_durableRecovery_stable",
+          "payload": {
+            "emittedAt": "2026-08-07T23:00:00.009Z",
+            "eventType": "run.terminal",
+            "normalizedSessionId": "session_durableRecovery_stable",
+            "payload": {
+              "reportedWorkDisposition": "done",
+              "runTerminalState": "succeeded",
+              "schema": "paperclip.prp.terminal.v1",
+              "turnTerminalState": "completed"
+            },
+            "priority": 0,
+            "runId": "run_durableRecovery_stable",
+            "schema": "paperclip.prp.event.v1",
+            "schemaVersion": 1,
+            "sourceEventId": "event_runner_durableRecovery_stable_000009",
+            "sourceInstanceId": "runner_durableRecovery_stable",
+            "sourceKind": "runner",
+            "sourceSeq": 9,
+            "turnId": "turn_durableRecovery_stable"
+          },
+          "protocol": "paperclip.runner",
+          "runId": "run_durableRecovery_stable",
+          "runnerInstanceId": "runner_durableRecovery_stable",
+          "sentAt": "2026-08-07T23:00:00.009Z",
+          "turnId": "turn_durableRecovery_stable",
+          "version": 1
+        },
+        "deliveryCount": 2,
+        "logicalEffectCount": 1
+      },
+      {
+        "sourceSeq": 10,
+        "sourceEventId": "event_runner_durableRecovery_stable_000010",
+        "eventType": "runner.stopped",
+        "priority": 0,
+        "envelope": {
+          "envelopeId": "envelope_event_000010",
+          "kind": "event",
+          "normalizedSessionId": "session_durableRecovery_stable",
+          "payload": {
+            "emittedAt": "2026-08-07T23:00:00.010Z",
+            "eventType": "runner.stopped",
+            "normalizedSessionId": "session_durableRecovery_stable",
+            "payload": {
+              "afterDurableFlush": true
+            },
+            "priority": 0,
+            "runId": "run_durableRecovery_stable",
+            "schema": "paperclip.prp.event.v1",
+            "schemaVersion": 1,
+            "sourceEventId": "event_runner_durableRecovery_stable_000010",
+            "sourceInstanceId": "runner_durableRecovery_stable",
+            "sourceKind": "runner",
+            "sourceSeq": 10,
+            "turnId": "turn_durableRecovery_stable"
+          },
+          "protocol": "paperclip.runner",
+          "runId": "run_durableRecovery_stable",
+          "runnerInstanceId": "runner_durableRecovery_stable",
+          "sentAt": "2026-08-07T23:00:00.010Z",
+          "turnId": "turn_durableRecovery_stable",
+          "version": 1
+        },
+        "deliveryCount": 1,
+        "logicalEffectCount": 1
+      }
+    ]
+  },
+  "runnerState": {
+    "schema": "paperclip.runner.durable.state.v1",
+    "runnerInstanceId": "runner_durableRecovery_stable",
+    "environmentLeaseId": "environment_lease_durableRecovery_stable",
+    "runId": "run_durableRecovery_stable",
+    "normalizedSessionId": "session_durableRecovery_stable",
+    "turnId": "turn_durableRecovery_stable",
+    "itemId": "item_durableRecovery_stable",
+    "lifecycle": "stopped",
+    "nextSourceSeq": 11,
+    "ackedSourceSeq": 10,
+    "lastControllerCommandSeq": 4,
+    "reconnectCount": 2,
+    "maxOutboxBytes": 65536,
+    "peakOutboxBytes": 5314,
+    "outbox": [],
+    "processedCommands": {
+      "command_durableRecovery_001": {
+        "commandId": "command_durableRecovery_001",
+        "controllerSeq": 1,
+        "commandDigest": "fnv1a64:c19dfbbf86a3dbb4",
+        "status": "completed",
+        "logicalEffectCount": 1,
+        "result": {
+          "commandId": "command_durableRecovery_001",
+          "controllerSeq": 1,
+          "detail": "run prepared",
+          "logicalEffectCount": 1,
+          "status": "completed"
+        }
+      },
+      "command_durableRecovery_002": {
+        "commandId": "command_durableRecovery_002",
+        "controllerSeq": 2,
+        "commandDigest": "fnv1a64:b5198f3ce67ce88e",
+        "status": "completed",
+        "logicalEffectCount": 1,
+        "result": {
+          "commandId": "command_durableRecovery_002",
+          "controllerSeq": 2,
+          "detail": "session bound",
+          "logicalEffectCount": 1,
+          "status": "completed"
+        }
+      },
+      "command_durableRecovery_003": {
+        "commandId": "command_durableRecovery_003",
+        "controllerSeq": 3,
+        "commandDigest": "fnv1a64:fb3b206fe67e1dc8",
+        "status": "completed",
+        "logicalEffectCount": 1,
+        "result": {
+          "commandId": "command_durableRecovery_003",
+          "controllerSeq": 3,
+          "detail": "turn completed",
+          "logicalEffectCount": 1,
+          "status": "completed"
+        }
+      },
+      "command_durableRecovery_004": {
+        "commandId": "command_durableRecovery_004",
+        "controllerSeq": 4,
+        "commandDigest": "fnv1a64:d11bf8308f863bad",
+        "status": "completed",
+        "logicalEffectCount": 1,
+        "result": {
+          "commandId": "command_durableRecovery_004",
+          "controllerSeq": 4,
+          "detail": "runner will stop after durable flush",
+          "logicalEffectCount": 1,
+          "status": "completed"
+        }
+      }
+    },
+    "diagnostics": [
+      "WebSocket connection closed: failed to fill whole buffer",
+      "connection lease expired; a fresh bootstrap may resume this state",
+      "runner process restored the same durable identity"
+    ],
+    "backpressure": false,
+    "recoverableFailure": null,
+    "unrecoverableOutcome": null,
+    "harnessGeneration": 1,
+    "stopAfterFlush": true
+  },
+  "commands": [
+    {
+      "schema": "paperclip.prp.command.v1",
+      "commandId": "command_durableRecovery_001",
+      "controllerSeq": 1,
+      "type": "run.prepare",
+      "issuedAt": "2026-08-07T23:30:01.000Z",
+      "payload": {
+        "workspace": "durable-recovery-durable-fixture"
+      },
+      "status": "completed",
+      "result": {
+        "commandId": "command_durableRecovery_001",
+        "controllerSeq": 1,
+        "detail": "run prepared",
+        "logicalEffectCount": 1,
+        "status": "completed"
+      }
+    },
+    {
+      "schema": "paperclip.prp.command.v1",
+      "commandId": "command_durableRecovery_002",
+      "controllerSeq": 2,
+      "type": "session.open",
+      "issuedAt": "2026-08-07T23:30:02.000Z",
+      "payload": {
+        "reuse": "same_session"
+      },
+      "status": "completed",
+      "result": {
+        "commandId": "command_durableRecovery_002",
+        "controllerSeq": 2,
+        "detail": "session bound",
+        "logicalEffectCount": 1,
+        "status": "completed"
+      }
+    },
+    {
+      "schema": "paperclip.prp.command.v1",
+      "commandId": "command_durableRecovery_003",
+      "controllerSeq": 3,
+      "type": "turn.start",
+      "issuedAt": "2026-08-07T23:30:03.000Z",
+      "payload": {
+        "turnId": "turn_durableRecovery_stable",
+        "text": "Prove Durable recovery."
+      },
+      "status": "completed",
+      "result": {
+        "commandId": "command_durableRecovery_003",
+        "controllerSeq": 3,
+        "detail": "turn completed",
+        "logicalEffectCount": 1,
+        "status": "completed"
+      }
+    },
+    {
+      "schema": "paperclip.prp.command.v1",
+      "commandId": "command_durableRecovery_004",
+      "controllerSeq": 4,
+      "type": "runner.shutdown",
+      "issuedAt": "2026-08-07T23:30:04.000Z",
+      "payload": {},
+      "status": "completed",
+      "result": {
+        "commandId": "command_durableRecovery_004",
+        "controllerSeq": 4,
+        "detail": "runner will stop after durable flush",
+        "logicalEffectCount": 1,
+        "status": "completed"
+      }
+    }
+  ],
+  "assertions": {
+    "stableIdentity": true,
+    "sourceCursorContinuous": true,
+    "oneLogicalEffectPerAcceptedCommand": true,
+    "noDuplicateLogicalEvents": true,
+    "p0Preserved": true,
+    "boundedStorage": true,
+    "secretsRedacted": true
+  }
+}
