@@ -35,6 +35,7 @@ COPY packages/adapters/gemini-local/package.json packages/adapters/gemini-local/
 COPY packages/adapters/grok-local/package.json packages/adapters/grok-local/
 COPY packages/adapters/hermes/package.json packages/adapters/hermes/
 COPY packages/adapters/hermes-gateway/package.json packages/adapters/hermes-gateway/
+COPY packages/adapters/ollama-local/package.json packages/adapters/ollama-local/
 COPY packages/adapters/openclaw-gateway/package.json packages/adapters/openclaw-gateway/
 COPY packages/adapters/opencode-local/package.json packages/adapters/opencode-local/
 COPY packages/adapters/pi-local/package.json packages/adapters/pi-local/
@@ -46,7 +47,12 @@ COPY packages/plugins/plugin-workspace-diff/package.json packages/plugins/plugin
 COPY patches/ patches/
 COPY scripts/link-plugin-dev-sdk.mjs scripts/
 
-RUN pnpm install --frozen-lockfile
+# PRs intentionally keep dependency lockfile refreshes in CI artifacts rather
+# than committing pnpm-lock.yaml. Regenerate from the copied manifests so a
+# direct Docker build has the same lockfile that CI supplies, then install from
+# that exact generated lockfile.
+RUN pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile \
+  && pnpm install --frozen-lockfile
 
 FROM base AS build
 WORKDIR /app
