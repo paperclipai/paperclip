@@ -505,6 +505,21 @@ export async function resolveEnvironmentExecutionTarget(input: {
                     }),
                 }
               : {}),
+            // Expose the duplex channel only when the effective snapshot grants
+            // the opt-in `duplexCommandStream` capability. A null snapshot
+            // (resolution failed or the snapshot is not resolvable) leaves the
+            // member undefined, so the caller keeps the file bridge. This mirrors
+            // the syncIn/syncOut gate above and fails closed.
+            ...(effectiveCapabilities?.duplexCommandStream
+              ? {
+                  openDuplexChannel: (channelInput) =>
+                    input.environmentRuntime!.openDuplexChannel({
+                      environment: input.environment as Environment,
+                      lease: input.lease!,
+                      command: channelInput.command,
+                    }),
+                }
+              : {}),
           }
         : undefined,
     };

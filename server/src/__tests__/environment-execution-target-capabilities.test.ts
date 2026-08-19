@@ -22,6 +22,7 @@ const SNAPSHOT: EffectiveSandboxCapabilities = {
   // Concurrent sync operations need BOTH sync verbs; this snapshot verified only
   // inbound sync, so the opt-in stays off.
   concurrentSyncOperations: false,
+  duplexCommandStream: false,
 };
 
 // A snapshot that grants every capability. A test overrides one flag to prove
@@ -34,6 +35,7 @@ const FULL_GRANT: EffectiveSandboxCapabilities = {
   independentControlCommands: true,
   incrementalSessionOutput: true,
   concurrentSyncOperations: true,
+  duplexCommandStream: true,
 };
 
 // Build a sandbox execution target with a fixed snapshot and a fixed

@@ -15,6 +15,9 @@ import type {
 import { resolveDeclaredSandboxCapabilities } from "@paperclipai/shared";
 import type { EffectiveSandboxCapabilities } from "@paperclipai/adapter-utils/execution-target";
 import type {
+  CommandManagedDuplexChannel,
+} from "@paperclipai/adapter-utils/command-managed-runtime";
+import type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentExecuteResult,
   PluginEnvironmentLease,
@@ -52,7 +55,12 @@ import {
   sandboxConfigFromLeaseMetadataLoose,
 } from "./sandbox-provider-runtime.js";
 import { pluginRegistryService } from "./plugin-registry.js";
-import type { ExecuteLogSink, PluginWorkerManager } from "./plugin-worker-manager.js";
+import type {
+  ExecuteLogSink,
+  PluginWorkerManager,
+  DuplexChannelHostSession,
+  DuplexChannelOpenInput as WorkerManagerDuplexChannelOpenInput,
+} from "./plugin-worker-manager.js";
 import {
   REUSABLE_LEASE_WORKER_METHODS,
   destroyPluginEnvironmentLease,
@@ -479,6 +487,11 @@ export interface EnvironmentDriverSyncInput extends EnvironmentDriverLeaseInput 
   operations: PluginSyncOperation[];
 }
 
+export interface EnvironmentDriverOpenDuplexChannelInput extends EnvironmentDriverLeaseInput {
+  /** The command line the sandbox runs as the duplex channel child process. */
+  command: string;
+}
+
 export interface EnvironmentRuntimeDriver {
   readonly driver: string;
   acquireRunLease(input: EnvironmentDriverAcquireInput): Promise<EnvironmentLease>;
@@ -495,6 +508,15 @@ export interface EnvironmentRuntimeDriver {
    */
   syncIn?(input: EnvironmentDriverSyncInput): Promise<PluginEnvironmentSyncResult>;
   syncOut?(input: EnvironmentDriverSyncInput): Promise<PluginEnvironmentSyncResult>;
+  /**
+   * Optional persistent duplex channel. Present only for a plugin-backed sandbox
+   * driver whose lease grants the `duplexCommandStream` capability. The driver
+   * opens the host-owned duplex route on the plugin worker and adapts it to the
+   * cross-layer {@link CommandManagedDuplexChannel}. Other drivers omit it.
+   */
+  openDuplexChannel?(
+    input: EnvironmentDriverOpenDuplexChannelInput,
+  ): Promise<CommandManagedDuplexChannel>;
   /** True when the lease's plugin worker advertises both sync verbs. */
   supportsSync?(input: EnvironmentDriverLeaseInput): boolean;
   /**
@@ -998,6 +1020,39 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
           workspaceRealization: record,
         },
       };
+    },
+  };
+}
+
+/**
+ * Adapt the worker manager's duplex host session to the cross-layer channel. The
+ * two shapes differ in the exit and stop members: the host session resolves the
+ * exit one time from `wait()`, so the channel bridges it to a one-time `onExit`
+ * listener; `kill()` maps to `stop()`. The `write`, `onData`, and `close`
+ * members map one to one.
+ */
+function adaptDuplexChannelHostSession(
+  session: DuplexChannelHostSession,
+): CommandManagedDuplexChannel {
+  return {
+    write(data: string): void {
+      session.write(data);
+    },
+    onData(listener: (chunk: string) => void): void {
+      session.onData(listener);
+    },
+    onExit(listener: (exit: { exitCode: number | null }) => void): void {
+      // `wait()` resolves one time with the exit and never rejects, so a single
+      // `then` bridges it to the one-time exit listener.
+      void session.wait().then((exit) => {
+        listener(exit);
+      });
+    },
+    stop(): void {
+      session.kill();
+    },
+    close(): Promise<void> {
+      return session.close();
     },
   };
 }
@@ -2378,6 +2433,37 @@ function createSandboxEnvironmentDriver(
       return await callPluginEnvironmentSync("environmentSyncOut", input);
     },
 
+    async openDuplexChannel(input) {
+      // Plugin-backed sandbox providers only: open the host-owned duplex route on
+      // the plugin worker. The lease scope mirrors the sandbox execute path — the
+      // provider driver key, the company, the environment, and the provider lease
+      // id — so the route binds to the same worker session the runner streams.
+      if (!input.lease.metadata?.sandboxProviderPlugin || !pluginWorkerManager) {
+        throw new Error("Sandbox driver does not support duplex channels for this lease.");
+      }
+      const pluginId = readString(input.lease.metadata?.pluginId);
+      const providerKey = readString(input.lease.metadata?.provider);
+      const providerLeaseId = readString(input.lease.providerLeaseId);
+      if (!pluginId || !providerKey || !providerLeaseId) {
+        throw new Error(
+          "Sandbox duplex channel needs a plugin id, a provider key, and a provider lease id on the lease.",
+        );
+      }
+      const worker = pluginWorkerManager.getWorker(pluginId);
+      if (!worker) {
+        throw new Error(`Plugin worker "${pluginId}" is not running for the duplex channel.`);
+      }
+      const managerInput: WorkerManagerDuplexChannelOpenInput = {
+        driverKey: providerKey,
+        companyId: input.lease.companyId,
+        environmentId: input.environment.id,
+        providerLeaseId,
+        command: input.command,
+      };
+      const session = await worker.openDuplexChannel(managerInput);
+      return adaptDuplexChannelHostSession(session);
+    },
+
     async effectiveSandboxCapabilities(input) {
       const metadata = input.lease.metadata ?? {};
       const providerKey =
@@ -3328,6 +3414,16 @@ export function environmentRuntimeService(
         throw new Error(`Environment driver "${driver.driver}" does not support native file sync.`);
       }
       return await driver.syncOut(input);
+    },
+
+    async openDuplexChannel(
+      input: EnvironmentDriverOpenDuplexChannelInput,
+    ): Promise<CommandManagedDuplexChannel> {
+      const driver = requireDriverKey(getLeaseDriverKey(input.lease, input.environment));
+      if (!driver.openDuplexChannel) {
+        throw new Error(`Environment driver "${driver.driver}" does not support duplex channels.`);
+      }
+      return await driver.openDuplexChannel(input);
     },
   };
 }
