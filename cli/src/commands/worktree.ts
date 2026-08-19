@@ -22,6 +22,7 @@ import { Readable } from "node:stream";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { and, eq, inArray, sql } from "drizzle-orm";
+import { resolveCanonicalWorktreeSeedSource } from "@paperclipai/shared/worktree-seed-source";
 import {
   applyPendingMigrations,
   agents,
@@ -166,6 +167,9 @@ type WorktreeEnsureSeededOptions = {
   fromDataDir?: string;
   fromInstance?: string;
   preserveLiveWork?: boolean;
+  registeredBaseWorkspaceCwd?: string;
+  registeredProjectWorkspaceId?: string;
+  expectedCompanyId?: string;
 };
 
 type EmbeddedPostgresInstance = {
@@ -1408,20 +1412,51 @@ type WorktreeSeedValidationExpectation = {
   representativeIssueId: string;
 };
 
-async function inspectVerifiedSeedDatabase(
-  connectionString: string,
-  expected?: WorktreeSeedValidationExpectation,
-): Promise<{ summary: WorktreeSeedValidationSummary; expectation: WorktreeSeedValidationExpectation }> {
-  const migrationState = await inspectMigrations(connectionString);
-  if (migrationState.status !== "upToDate") {
+export function resolveWorktreeSeedMigrationRevision(
+  migrationState: Awaited<ReturnType<typeof inspectMigrations>>,
+  requirement: "sourcePrefix" | "upToDate",
+): string {
+  if (migrationState.journalEntryCount > migrationState.availableMigrations.length) {
+    throw new Error(
+      `Migration journal is ahead of this Paperclip checkout (${migrationState.journalEntryCount} applied migration(s), ${migrationState.availableMigrations.length} available).`,
+    );
+  }
+
+  const expectedAppliedPrefix = migrationState.availableMigrations.slice(
+    0,
+    migrationState.appliedMigrations.length,
+  );
+  if (
+    migrationState.appliedMigrations.some(
+      (migration, index) => migration !== expectedAppliedPrefix[index],
+    )
+  ) {
+    throw new Error("Migration journal is not a prefix of this Paperclip checkout's migration journal.");
+  }
+
+  if (requirement === "upToDate" && migrationState.status !== "upToDate") {
     throw new Error(
       `Migration journal is not current (${migrationState.pendingMigrations.length} pending migration(s)).`,
     );
   }
+
   const migrationRevision = migrationState.appliedMigrations.at(-1);
   if (!migrationRevision) {
     throw new Error("Migration journal has no applied revision.");
   }
+  return migrationRevision;
+}
+
+async function inspectVerifiedSeedDatabase(
+  connectionString: string,
+  expected?: WorktreeSeedValidationExpectation,
+  migrationRequirement: "sourcePrefix" | "upToDate" = "upToDate",
+): Promise<{ summary: WorktreeSeedValidationSummary; expectation: WorktreeSeedValidationExpectation }> {
+  const migrationState = await inspectMigrations(connectionString);
+  const migrationRevision = resolveWorktreeSeedMigrationRevision(
+    migrationState,
+    migrationRequirement,
+  );
 
   const db = createDb(connectionString);
   try {
@@ -1573,11 +1608,15 @@ async function seedWorktreeDatabase(input: {
       sourceHandle?.port,
     );
     input.onPhase?.("source_validation", "started");
-    const sourceValidation = await inspectVerifiedSeedDatabase(sourceConnectionString);
+    const sourceValidation = await inspectVerifiedSeedDatabase(
+      sourceConnectionString,
+      undefined,
+      "sourcePrefix",
+    );
     input.onPhase?.(
       "source_validation",
       "succeeded",
-      `Validated ${sourceValidation.summary.companyCount} company record(s) and ${sourceValidation.summary.issueCount} issue record(s).`,
+      `Validated migration ${sourceValidation.summary.migrationRevision}, ${sourceValidation.summary.companyCount} company record(s), and ${sourceValidation.summary.issueCount} issue record(s).`,
     );
 
     const snapshotAt = new Date().toISOString();

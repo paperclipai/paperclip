@@ -14,6 +14,7 @@ import {
   companyMemberships,
   createDb,
   executionWorkspaces,
+  inspectMigrations,
   issueComments,
   issues,
   projectWorkspaces,
@@ -39,6 +40,7 @@ import {
   resolveGitWorktreeAddArgs,
   resolvePnpmInstallInvocation,
   resolveCurrentWorktreeEndpoint,
+  resolveWorktreeSeedMigrationRevision,
   resolveWorktreeSeedBackupEngine,
   resolveWorktreeMakeTargetPath,
   worktreeRepairCommand,
@@ -484,6 +486,33 @@ describe("worktree helpers", () => {
 
     expect(full.excludedTables).toEqual([]);
     expect(full.nullifyColumns).toEqual({});
+  });
+
+  it("rejects a source migration journal that is ahead of the code journal", () => {
+    expect(() => resolveWorktreeSeedMigrationRevision({
+      status: "upToDate",
+      tableCount: 1,
+      availableMigrations: ["0001_initial.sql", "0002_current.sql"],
+      appliedMigrations: ["0001_initial.sql", "0002_current.sql"],
+      journalEntryCount: 3,
+    }, "sourcePrefix")).toThrow("Migration journal is ahead of this Paperclip checkout");
+  });
+
+  it("accepts a source migration journal that is multiple revisions behind", () => {
+    expect(resolveWorktreeSeedMigrationRevision({
+      status: "needsMigrations",
+      tableCount: 1,
+      availableMigrations: [
+        "0001_initial.sql",
+        "0002_applied.sql",
+        "0003_pending.sql",
+        "0004_pending.sql",
+      ],
+      appliedMigrations: ["0001_initial.sql", "0002_applied.sql"],
+      pendingMigrations: ["0003_pending.sql", "0004_pending.sql"],
+      journalEntryCount: 2,
+      reason: "pending-migrations",
+    }, "sourcePrefix")).toBe("0002_applied.sql");
   });
 
   it("ensure-seeded seeds once and fast-exits on the verified manifest", async () => {
@@ -1103,7 +1132,7 @@ describe("worktree helpers", () => {
   });
 
   itEmbeddedPostgres(
-    "seeds authenticated users into minimally cloned worktree instances",
+    "seeds a source whose migration journal is behind the code journal",
     async () => {
       const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-auth-seed-"));
       const worktreeRoot = path.join(tempRoot, "PAP-999-auth-seed");
@@ -1118,6 +1147,22 @@ describe("worktree helpers", () => {
 
       try {
         await seedValidWorktreeSource(sourceDb.connectionString);
+        const sourceDbClient = createDb(sourceDb.connectionString);
+        await sourceDbClient.$client.unsafe(`
+          DELETE FROM "drizzle"."__drizzle_migrations"
+          WHERE "id" = (
+            SELECT max("id") FROM "drizzle"."__drizzle_migrations"
+          )
+        `);
+        await sourceDbClient.$client.end({ timeout: 5 });
+        const laggingMigrationState = await inspectMigrations(sourceDb.connectionString);
+        expect(laggingMigrationState.status).toBe("needsMigrations");
+        if (laggingMigrationState.status !== "needsMigrations") {
+          throw new Error("Expected the source migration journal to lag the code journal");
+        }
+        expect(laggingMigrationState.pendingMigrations).toHaveLength(1);
+        const sourceMigrationRevision = laggingMigrationState.appliedMigrations.at(-1);
+        expect(sourceMigrationRevision).toBeTruthy();
 
         fs.mkdirSync(path.dirname(sourceKeyPath), { recursive: true });
         fs.mkdirSync(worktreeRoot, { recursive: true });
@@ -1164,6 +1209,7 @@ describe("worktree helpers", () => {
           state: "verified",
           phase: "complete",
         });
+        expect(manifestText).toContain(`Validated migration ${sourceMigrationRevision}`);
         expect(manifestText).not.toContain("fixture-password-hash");
         expect(manifestText).not.toContain("source-master-key");
         const { default: EmbeddedPostgres } = await import("embedded-postgres");
