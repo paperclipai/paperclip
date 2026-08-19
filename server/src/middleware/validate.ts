@@ -13,7 +13,8 @@ export function validate(schema: ZodSchema) {
 // when a request pins an invalid executionWorkspaceSettings.workspaceStrategy
 // .existingBranch: bad branch syntax, placement outside isolated_workspace +
 // git_worktree, or combination with branchTemplate. All three semantic checks
-// report this exact path, so path equality is the full carve-out. Requests
+// report this exact path suffix, including when an issue-creating route nests
+// the settings (for example accepted-plan-decomposition children). Requests
 // that also fail unrelated validation keep the long-standing 400.
 const EXISTING_BRANCH_SETTINGS_PATH = [
   "executionWorkspaceSettings",
@@ -22,9 +23,10 @@ const EXISTING_BRANCH_SETTINGS_PATH = [
 ] as const;
 
 export function isExistingBranchSemanticsZodIssue(issue: Pick<ZodIssue, "path">): boolean {
+  const pathOffset = issue.path.length - EXISTING_BRANCH_SETTINGS_PATH.length;
   return (
-    issue.path.length === EXISTING_BRANCH_SETTINGS_PATH.length &&
-    EXISTING_BRANCH_SETTINGS_PATH.every((segment, index) => issue.path[index] === segment)
+    pathOffset >= 0 &&
+    EXISTING_BRANCH_SETTINGS_PATH.every((segment, index) => issue.path[pathOffset + index] === segment)
   );
 }
 

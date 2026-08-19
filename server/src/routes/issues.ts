@@ -8644,7 +8644,7 @@ export function issueRoutes(
     res.json(decompositions);
   });
 
-  router.post("/issues/:id/accepted-plan-decompositions", validate(createAcceptedPlanDecompositionSchema), async (req, res) => {
+  router.post("/issues/:id/accepted-plan-decompositions", validateIssueMutationBody(createAcceptedPlanDecompositionSchema), async (req, res) => {
     const sourceIssueId = req.params.id as string;
     const sourceIssue = await getAccessibleResource(req, res, svc.getById(sourceIssueId), "Issue not found");
     if (!sourceIssue) return;
