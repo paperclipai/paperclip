@@ -32,7 +32,10 @@ import {
   ISSUE_THREAD_INTERACTION_RESOLVER_POLICY_PROVENANCES,
   ISSUE_THREAD_INTERACTION_STATUSES,
   ISSUE_WATCHDOG_DISCOVERY_KINDS,
+  LEGACY_PLUGIN_OPERATION_ORIGIN_KINDS,
   MODEL_PROFILE_KEYS,
+  ONBOARDING_FIRST_TASK_ORIGIN_KIND,
+  TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND,
   REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT,
   REQUEST_ITEM_VERDICTS_ITEM_LIMIT,
 } from "../constants.js";
@@ -429,6 +432,9 @@ function withCreateIssueStatusDefault<T extends z.ZodRawShape>(schema: z.ZodObje
   }, schema);
 }
 
+// Every internal origin kind the server (or a plugin operation) mints itself.
+// External create callers must use namespaced values instead; add new internal
+// kinds here when they are introduced so they cannot be spoofed via the API.
 export const SYSTEM_RESERVED_ORIGIN_KINDS = [
   "routine_execution",
   "harness_liveness_escalation",
@@ -436,6 +442,10 @@ export const SYSTEM_RESERVED_ORIGIN_KINDS = [
   "issue_productivity_review",
   "stranded_issue_recovery",
   "blocker_attention_open_recovery",
+  "task_watchdog",
+  TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND,
+  ONBOARDING_FIRST_TASK_ORIGIN_KIND,
+  ...LEGACY_PLUGIN_OPERATION_ORIGIN_KINDS,
 ] as const;
 
 export type SystemReservedOriginKind = typeof SYSTEM_RESERVED_ORIGIN_KINDS[number];
@@ -451,7 +461,13 @@ export function isSystemReservedOriginKind(value: string): boolean {
   return false;
 }
 
-function applyOriginKindReservationGuard<Schema extends z.ZodTypeAny>(schema: Schema): Schema {
+// Returns a ZodEffects wrapper, which no longer supports `.shape`/`.merge`/
+// `.extend`. Consumers that need the object shape (e.g. the MCP tool
+// registration) must keep the plain ZodObject and apply this guard at the
+// point where the schema is terminally parsed.
+export function applyOriginKindReservationGuard<Schema extends z.ZodTypeAny>(
+  schema: Schema,
+): z.ZodEffects<Schema, z.output<Schema>, z.input<Schema>> {
   return schema.superRefine((value: { originKind?: string | null }, ctx) => {
     if (typeof value.originKind === "string" && isSystemReservedOriginKind(value.originKind)) {
       ctx.addIssue({
@@ -460,7 +476,7 @@ function applyOriginKindReservationGuard<Schema extends z.ZodTypeAny>(schema: Sc
         path: ["originKind"],
       });
     }
-  }) as unknown as Schema;
+  });
 }
 
 const createIssueBaseSchema = z.object({
@@ -538,13 +554,15 @@ const onboardingFirstTaskMarkerSchema = {
   onboardingFirstTask: z.boolean().optional(),
 };
 
-export const createIssueInputSchema = applyOriginKindReservationGuard(
-  createIssueBaseSchema.extend({
-    status: createIssueBaseSchema.shape.status.optional(),
-    ...createIssueDuplicateGuardSchema,
-    ...onboardingFirstTaskMarkerSchema,
-  }),
-);
+// Deliberately NOT wrapped in applyOriginKindReservationGuard: the MCP server
+// merges this schema and registers its `.shape`, both of which require a plain
+// ZodObject. The guard is applied there at parse time (and the server route's
+// createIssueSchema enforces it regardless).
+export const createIssueInputSchema = createIssueBaseSchema.extend({
+  status: createIssueBaseSchema.shape.status.optional(),
+  ...createIssueDuplicateGuardSchema,
+  ...onboardingFirstTaskMarkerSchema,
+});
 
 export const createIssueSchema = applyOriginKindReservationGuard(
   withCreateIssueStatusDefault(

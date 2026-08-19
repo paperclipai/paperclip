@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   addIssueCommentSchema,
+  applyOriginKindReservationGuard,
   askUserQuestionsPayloadSchema,
   checkoutIssueSchema,
   createApprovalSchema,
@@ -30,6 +31,11 @@ function makeTool<TSchema extends z.ZodRawShape>(
   description: string,
   schema: z.ZodObject<TSchema>,
   execute: (input: z.infer<typeof schema>) => Promise<unknown>,
+  // Refinements (superRefine/refine) turn a ZodObject into a ZodEffects, which
+  // the MCP SDK cannot register (it needs `.shape`). Tools that need them keep
+  // `schema` plain for registration and pass the refined wrapper here so it is
+  // enforced when the input is parsed.
+  parseSchema?: z.ZodEffects<z.ZodObject<TSchema>>,
 ): ToolDefinition {
   return {
     name,
@@ -37,7 +43,7 @@ function makeTool<TSchema extends z.ZodRawShape>(
     schema,
     execute: async (input) => {
       try {
-        const parsed = schema.parse(input);
+        const parsed = parseSchema ? parseSchema.parse(input) : schema.parse(input);
         return formatTextResponse(await execute(parsed));
       } catch (error) {
         return formatErrorResponse(error);
@@ -460,6 +466,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       createIssueToolSchema,
       async ({ companyId, ...body }) =>
         client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/issues`, { body }),
+      applyOriginKindReservationGuard(createIssueToolSchema),
     ),
     makeTool(
       "paperclipUpdateIssue",

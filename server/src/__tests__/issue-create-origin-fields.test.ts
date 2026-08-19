@@ -5,6 +5,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Verifies KEN-4172: POST /api/companies/:id/issues must accept and forward
 // originKind, originId, and originFingerprint to the service layer, while
 // rejecting system-reserved originKind values from external callers.
+//
+// Boundary note: issueService.create is mocked, so persistence is asserted
+// only up to the service call. The real insert spreads issueData with
+// `originKind: issueData.originKind ?? "manual"` (services/issues.ts), so the
+// forwarded values are what the row stores; a DB-backed GET round-trip would
+// need the full harness.
 
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
@@ -184,7 +190,9 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
   };
 }
 
-describe("POST /issues persists origin fields (KEN-4172)", () => {
+// vi.resetModules() in beforeEach re-imports the whole route module graph on
+// every test (~5s each under load), so the 5s default timeout is too tight.
+describe("POST /issues persists origin fields (KEN-4172)", { timeout: 20_000 }, () => {
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../services/access.js");
