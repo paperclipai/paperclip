@@ -468,6 +468,18 @@ export function Search() {
     }
   }, [scope]);
 
+  const handleScan = useCallback((isbn: string) => {
+    setDraftQuery(isbn);
+    setCommittedQuery(isbn);
+    setShowBarcodeModal(false);
+    if (typeof window !== "undefined") {
+      setUrlFilters({});
+      const next = buildSearchUrl(window.location.href, isbn, scope, {});
+      window.history.replaceState(window.history.state, "", next);
+    }
+    inputRef.current?.focus();
+  }, [scope]);
+
   const focusInput = useCallback(() => {
     inputRef.current?.focus();
   }, []);
@@ -746,6 +758,11 @@ export function Search() {
         ))}
       </Tabs>
 
+      <BarcodeScannerModal
+        isOpen={showBarcodeModal}
+        onClose={() => setShowBarcodeModal(false)}
+        onScan={handleScan}
+      />
       {isMobile ? (
         <SearchFilterSheet
           open={sheetOpen}
