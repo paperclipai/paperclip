@@ -13,6 +13,7 @@ function issue(overrides: Partial<TaskWatchdogClassifierIssue> = {}): TaskWatchd
     identifier: "PAP-1",
     title: "Source",
     status: "todo",
+    projectId: null,
     parentId: null,
     assigneeAgentId: "agent-1",
     assigneeUserId: null,
@@ -304,6 +305,32 @@ describe("task watchdog subtree classifier", () => {
 
     expect(result.state).toBe("stopped");
     expect(result.includedIssueIds).toEqual([sourceId]);
+  });
+
+  it("summarizes mixed terminal descendants while excluding a reusable watchdog branch", () => {
+    const result = classify({
+      issues: [
+        issue({ status: "done" }),
+        issue({ id: "done-child", identifier: "PAP-2", parentId: sourceId, originKind: null, status: "done" }),
+        issue({ id: "blocked-child", identifier: "PAP-3", parentId: sourceId, originKind: null, status: "blocked" }),
+        issue({ id: "review-child", identifier: "PAP-4", parentId: sourceId, originKind: null, status: "in_review" }),
+        issue({ id: watchdogId, identifier: "PAP-5", parentId: sourceId, originKind: "task_watchdog", status: "todo" }),
+        issue({ id: "watchdog-work", identifier: "PAP-6", parentId: watchdogId, originKind: null, status: "blocked" }),
+      ],
+    });
+
+    expect(result.state).toBe("stopped");
+    if (result.state !== "stopped") return;
+    expect(result.includedIssueIds).toEqual([sourceId, "blocked-child", "done-child", "review-child"]);
+    expect(result.stoppedLeaves.map((leaf) => [leaf.issueId, leaf.status])).toEqual([
+      ["blocked-child", "blocked"],
+      ["review-child", "in_review"],
+    ]);
+    expect(result.terminalLeafSummaries.map((leaf) => [leaf.issueId, leaf.status])).toEqual([
+      ["blocked-child", "blocked"],
+      ["done-child", "done"],
+      ["review-child", "in_review"],
+    ]);
   });
 
   it("defers a stopped verdict for an issue created inside the first-run grace window", () => {

@@ -466,6 +466,69 @@ describe.sequential("issue goal context routes", () => {
     expect(res.body.attachments).toEqual([]);
   });
 
+  it("surfaces non-watchdog child and descendant relationships in heartbeat context", async () => {
+    mockDb.execute.mockResolvedValueOnce([
+      { ...legacyProjectLinkedIssue, originKind: null, createdAt: new Date("2026-03-24T11:00:00Z") },
+      {
+        id: "child-1", companyId: "company-1", identifier: "PAP-582", title: "Blocked child",
+        status: "blocked", projectId: legacyProjectLinkedIssue.projectId, parentId: legacyProjectLinkedIssue.id,
+        assigneeAgentId: null, assigneeUserId: null,
+        originKind: null, updatedAt: new Date("2026-03-24T12:01:00Z"), createdAt: new Date("2026-03-24T11:01:00Z"),
+      },
+      {
+        id: "grandchild-1", companyId: "company-1", identifier: "PAP-583", title: "Review grandchild",
+        status: "in_review", projectId: legacyProjectLinkedIssue.projectId, parentId: "child-1",
+        assigneeAgentId: null, assigneeUserId: null,
+        originKind: null, updatedAt: new Date("2026-03-24T12:02:00Z"), createdAt: new Date("2026-03-24T11:02:00Z"),
+      },
+    ]);
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.children).toEqual([expect.objectContaining({ id: "child-1", parentId: legacyProjectLinkedIssue.id })]);
+    expect(res.body.descendants).toEqual([
+      expect.objectContaining({ id: "child-1", status: "blocked" }),
+      expect.objectContaining({ id: "grandchild-1", parentId: "child-1", status: "in_review" }),
+    ]);
+  });
+
+  it("filters heartbeat descendants through issue-read authorization", async () => {
+    mockDb.execute.mockResolvedValueOnce([
+      { ...legacyProjectLinkedIssue, originKind: null, createdAt: new Date("2026-03-24T11:00:00Z") },
+      {
+        id: "visible-child", companyId: "company-1", identifier: "PAP-582", title: "Visible child",
+        status: "blocked", projectId: legacyProjectLinkedIssue.projectId, parentId: legacyProjectLinkedIssue.id,
+        assigneeAgentId: null, assigneeUserId: null, originKind: null,
+        updatedAt: new Date("2026-03-24T12:01:00Z"), createdAt: new Date("2026-03-24T11:01:00Z"),
+      },
+      {
+        id: "hidden-child", companyId: "company-1", identifier: "PAP-583", title: "Hidden child",
+        status: "in_review", projectId: legacyProjectLinkedIssue.projectId, parentId: legacyProjectLinkedIssue.id,
+        assigneeAgentId: null, assigneeUserId: null, originKind: null,
+        updatedAt: new Date("2026-03-24T12:02:00Z"), createdAt: new Date("2026-03-24T11:02:00Z"),
+      },
+    ]);
+    mockAccessService.decide.mockImplementation(async (input) => ({
+      allowed: input.resource.issueId !== "hidden-child",
+      action: input.action,
+      reason: input.resource.issueId === "hidden-child" ? "deny_scope" : "allow_test",
+      explanation: "Test-scoped issue visibility.",
+    }));
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.children.map((child: { id: string }) => child.id)).toEqual(["visible-child"]);
+    expect(res.body.descendants.map((child: { id: string }) => child.id)).toEqual(["visible-child"]);
+    expect(JSON.stringify(res.body)).not.toContain("hidden-child");
+    expect(JSON.stringify(res.body)).not.toContain("Hidden child");
+  });
+
   it("preserves direct continuation summary lookup in GET /issues/:id/heartbeat-context", async () => {
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue({
       key: "continuation-summary",

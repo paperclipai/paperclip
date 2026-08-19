@@ -61,6 +61,7 @@ export type TaskWatchdogClassifierIssue = Pick<
   | "identifier"
   | "title"
   | "status"
+  | "projectId"
   | "parentId"
   | "assigneeAgentId"
   | "assigneeUserId"
@@ -172,6 +173,7 @@ export type TaskWatchdogClassifierResult =
     includedIssueIds: string[];
     stopFingerprint: string;
     stoppedLeaves: TaskWatchdogStoppedLeaf[];
+    terminalLeafSummaries: TaskWatchdogStoppedLeaf[];
     stopSnapshot: TaskWatchdogStopSnapshot;
     pendingInteractionsByIssueId: TaskWatchdogPendingInteractionsByIssueId;
   }
@@ -181,6 +183,7 @@ export type TaskWatchdogClassifierResult =
     includedIssueIds: string[];
     stopFingerprint: string;
     stoppedLeaves: TaskWatchdogStoppedLeaf[];
+    terminalLeafSummaries: TaskWatchdogStoppedLeaf[];
     stopSnapshot: TaskWatchdogStopSnapshot;
     pendingInteractionsByIssueId: TaskWatchdogPendingInteractionsByIssueId;
   };
@@ -484,9 +487,8 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
       .sort((left, right) => left.id.localeCompare(right.id))] as const)
     .filter(([, waits]) => waits.length > 0));
 
-  const leaves = included
+  const terminalLeafSummaries = included
     .filter((issue) => (includedChildrenByParentId.get(issue.id) ?? []).length === 0)
-    .filter((issue) => !isTerminalIssueStatus(issue.status))
     .sort((left, right) => left.id.localeCompare(right.id))
     .map((issue) => ({
       issueId: issue.id,
@@ -503,6 +505,7 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
       latestDocumentAt: optionalIso(issue.latestDocumentAt),
       latestWorkProductAt: optionalIso(issue.latestWorkProductAt),
     }));
+  const leaves = terminalLeafSummaries.filter((leaf) => !isTerminalIssueStatus(leaf.status));
   const materialLeaves = leaves.map(materialLeaf);
   const stopFingerprint = stableStopFingerprint({
     companyId: input.watchdog.companyId,
@@ -527,6 +530,7 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
       includedIssueIds: includedIds,
       stopFingerprint,
       stoppedLeaves: leaves,
+      terminalLeafSummaries,
       stopSnapshot: currentStopSnapshot,
       pendingInteractionsByIssueId,
     };
@@ -538,6 +542,7 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
     includedIssueIds: includedIds,
     stopFingerprint,
     stoppedLeaves: leaves,
+    terminalLeafSummaries,
     stopSnapshot: currentStopSnapshot,
     pendingInteractionsByIssueId,
   };
@@ -692,6 +697,7 @@ function watchdogWakeContext(input: {
       watchedIssueIdentifier: input.sourceIssue.identifier,
       watchedIssueTitle: input.sourceIssue.title,
       stopFingerprint: input.classification.stopFingerprint,
+      terminalLeafSummaries: input.classification.terminalLeafSummaries,
       pendingInteractions: input.classification.pendingInteractionsByIssueId,
       pendingApprovals: Object.fromEntries(Object.entries(input.classification.stopSnapshot.waitsByIssueId)
         .filter(([, waits]) => waits.pendingApprovalIds.length > 0)
@@ -728,6 +734,7 @@ function watchdogWakeContext(input: {
     watchedIssueIdentifier: input.sourceIssue.identifier,
     stopFingerprint: input.classification.stopFingerprint,
     stoppedLeaves: input.classification.stoppedLeaves,
+    terminalLeafSummaries: input.classification.terminalLeafSummaries,
     customInstructions: input.watchdog.instructions,
     resumeIntent: true,
     followUpRequested: true,
@@ -857,68 +864,42 @@ export async function upsertIssueWatchdogForIssue(
   return { watchdog: toIssueWatchdog(insertResult.row), created: insertResult.created };
 }
 
+export async function loadTaskWatchdogSubtreeIssues(db: Db, companyId: string, watchedIssueId: string) {
+  const rows = await db.execute(sql`
+    WITH RECURSIVE watched_issues AS (
+      SELECT id, company_id, identifier, title, status, project_id, parent_id, assignee_agent_id,
+        assignee_user_id, origin_kind, updated_at, created_at, 0 AS depth
+      FROM issues
+      WHERE company_id = ${companyId}
+        AND id = ${watchedIssueId}
+        AND hidden_at IS NULL
+        AND harness_kind IS NULL
+      UNION ALL
+      SELECT child.id, child.company_id, child.identifier, child.title, child.status,
+        child.project_id, child.parent_id, child.assignee_agent_id, child.assignee_user_id, child.origin_kind,
+        child.updated_at, child.created_at, watched_issues.depth + 1
+      FROM issues child
+      JOIN watched_issues ON child.parent_id = watched_issues.id
+      WHERE child.company_id = ${companyId}
+        AND child.hidden_at IS NULL
+        AND child.harness_kind IS NULL
+        AND child.origin_kind IS DISTINCT FROM ${TASK_WATCHDOG_ORIGIN_KIND}
+        AND watched_issues.depth < ${TASK_WATCHDOG_SUBTREE_MAX_DEPTH - 1}
+    )
+    SELECT id, company_id AS "companyId", identifier, title, status, project_id AS "projectId",
+      parent_id AS "parentId", assignee_agent_id AS "assigneeAgentId",
+      assignee_user_id AS "assigneeUserId", origin_kind AS "originKind",
+      updated_at AS "updatedAt", created_at AS "createdAt"
+    FROM watched_issues
+  `);
+  return (Array.isArray(rows) ? rows : []) as TaskWatchdogClassifierIssue[];
+}
+
 export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) {
   const issuesSvc = issueService(db);
 
   async function loadWatchdogSubtreeIssues(companyId: string, watchedIssueId: string) {
-    const rows = await db.execute(sql`
-      WITH RECURSIVE watched_issues AS (
-        SELECT
-          id,
-          company_id,
-          identifier,
-          title,
-          status,
-          parent_id,
-          assignee_agent_id,
-          assignee_user_id,
-          origin_kind,
-          updated_at,
-          created_at,
-          0 AS depth
-        FROM issues
-        WHERE company_id = ${companyId}
-          AND id = ${watchedIssueId}
-          AND hidden_at IS NULL
-          AND harness_kind IS NULL
-        UNION ALL
-        SELECT
-          child.id,
-          child.company_id,
-          child.identifier,
-          child.title,
-          child.status,
-          child.parent_id,
-          child.assignee_agent_id,
-          child.assignee_user_id,
-          child.origin_kind,
-          child.updated_at,
-          child.created_at,
-          watched_issues.depth + 1
-        FROM issues child
-        JOIN watched_issues ON child.parent_id = watched_issues.id
-        WHERE child.company_id = ${companyId}
-          AND child.hidden_at IS NULL
-          AND child.harness_kind IS NULL
-          AND child.origin_kind <> ${TASK_WATCHDOG_ORIGIN_KIND}
-          AND watched_issues.depth < ${TASK_WATCHDOG_SUBTREE_MAX_DEPTH - 1}
-      )
-      SELECT
-        id,
-        company_id AS "companyId",
-        identifier,
-        title,
-        status,
-        parent_id AS "parentId",
-        assignee_agent_id AS "assigneeAgentId",
-        assignee_user_id AS "assigneeUserId",
-        origin_kind AS "originKind",
-        updated_at AS "updatedAt",
-        created_at AS "createdAt"
-      FROM watched_issues
-    `);
-
-    return (Array.isArray(rows) ? rows : []) as TaskWatchdogClassifierIssue[];
+    return loadTaskWatchdogSubtreeIssues(db, companyId, watchedIssueId);
   }
 
   async function collectClassifierInput(companyId: string, watchdog: IssueWatchdogRow) {
