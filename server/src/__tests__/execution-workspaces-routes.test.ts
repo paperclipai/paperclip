@@ -13,6 +13,7 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
   archiveWorkspaceUnderLifecycleLock: vi.fn(),
   fenceClosedWorkspaceDestruction: vi.fn(),
   runManualArchiveArtifactCleanup: vi.fn(async () => ({ cleaned: true, warnings: [] as string[] })),
+  applyClosedWorkspaceCleanupOutcome: vi.fn(async () => null),
   reconcileExecutionWorkspaceBranch: vi.fn(),
   update: vi.fn(),
 }));
