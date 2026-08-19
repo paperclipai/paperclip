@@ -324,6 +324,48 @@ describe("sandbox capability contract normalizer", () => {
     expect(outOnly.concurrentSyncOperations).toBe(false);
   });
 
+  it("test_duplex_command_stream_absent_declaration_resolves_false", () => {
+    // The duplex channel is opt-in and fail-closed. An absent declaration denies
+    // the capability even when the worker verifies the duplex open verb. This
+    // matches the incremental-session-output pattern: an opt-in behavioral
+    // guarantee needs a positive declaration, not just a verified verb.
+    const undeclared = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["duplexChannelOpen"],
+      declared: null,
+    });
+    expect(undeclared.duplexCommandStream).toBe(false);
+  });
+
+  it("test_duplex_command_stream_needs_verified_worker_method", () => {
+    // A declaration never grants the capability without the verified duplex open
+    // verb. A provider that declares the capability but whose worker does not
+    // report the duplex open method resolves false.
+    const declaredButUnverified = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["environmentExecute"],
+      declared: { duplexCommandStream: true },
+    });
+    expect(declaredButUnverified.duplexCommandStream).toBe(false);
+  });
+
+  it("test_duplex_command_stream_declared_and_verified_resolves_true_but_narrowing_removes_it", () => {
+    // A provider that declares the capability and whose worker verifies the
+    // duplex open verb gets the capability.
+    const granted = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["duplexChannelOpen"],
+      declared: { duplexCommandStream: true },
+    });
+    expect(granted.duplexCommandStream).toBe(true);
+
+    // Per-target narrowing still removes a verified and declared capability, so a
+    // lease that cannot use the duplex channel keeps the file bridge.
+    const narrowed = resolveEffectiveSandboxCapabilities({
+      verifiedMethods: ["duplexChannelOpen"],
+      declared: { duplexCommandStream: true },
+      narrowing: { duplexCommandStream: false },
+    });
+    expect(narrowed.duplexCommandStream).toBe(false);
+  });
+
   it("test_unknown_or_unavailable_verification_resolves_false", () => {
     const declaredAll = {
       reusableLeases: true,

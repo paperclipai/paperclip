@@ -173,6 +173,17 @@ export interface SandboxProviderCapabilities {
    * `false`.
    */
   concurrentSyncOperations?: boolean;
+  /**
+   * Provider opens one persistent, bidirectional duplex channel that carries the
+   * command stream, in place of the file transport of the callback bridge. This
+   * is an opt-in behavioral guarantee, not a worker-method property: a provider
+   * that keeps persistent sessions and runs independent control commands still
+   * does not carry a framed duplex stream unless it declares this key. An omitted
+   * key denies the capability, so the provider keeps the file bridge. Only a
+   * provider that declares this key `true` and whose worker verifies the duplex
+   * open method selects the duplex channel path.
+   */
+  duplexCommandStream?: boolean;
 }
 
 export interface PluginEnvironmentDriverDeclaration {
