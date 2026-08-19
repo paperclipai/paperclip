@@ -587,6 +587,8 @@ export interface CreateConfigValues {
   envVars: string;
   envBindings: Record<string, unknown>;
   url: string;
+  authorizationHeader?: string;
+  timeoutMs?: number;
   bootstrapPrompt: string;
   /**
    * The non-secret stored-session claim from a completed Claude subscription
